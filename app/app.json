@@ -1,0 +1,30 @@
+{
+  "expo": {
+    "name": "BloomCart POS",
+    "slug": "bloomcart-pos",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "splash": {
+      "backgroundColor": "#E91E63",
+      "resizeMode": "contain"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.bloomcart.pos"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#E91E63"
+      },
+      "package": "com.bloomcart.pos"
+    },
+    "web": {
+      "favicon": "./assets/favicon.png",
+      "bundler": "metro"
+    },
+    "platforms": ["ios", "android", "web"]
+  }
+}
