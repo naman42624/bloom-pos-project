@@ -6,6 +6,7 @@ import {
   ScrollView,
   TouchableOpacity,
   Alert,
+  Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../context/AuthContext';
@@ -70,10 +71,14 @@ export default function ProfileScreen() {
   };
 
   const handleLogout = () => {
-    Alert.alert('Logout', 'Are you sure you want to log out?', [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Logout', style: 'destructive', onPress: logout },
-    ]);
+    if (Platform.OS === 'web') {
+      if (window.confirm('Are you sure you want to log out?')) logout();
+    } else {
+      Alert.alert('Logout', 'Are you sure you want to log out?', [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Logout', style: 'destructive', onPress: logout },
+      ]);
+    }
   };
 
   return (
@@ -210,7 +215,7 @@ export default function ProfileScreen() {
         style={styles.logoutButton}
       />
 
-      <Text style={styles.versionText}>Toddle v1.0.0</Text>
+      <Text style={styles.versionText}>Naman v1.0.0</Text>
     </ScrollView>
     </DismissKeyboard>
   );

@@ -61,7 +61,7 @@ export default function PurchaseOrdersScreen({ navigation }) {
             <Text style={styles.cardMeta}>{item.supplier_name} · {item.location_name}</Text>
           </View>
           <View style={styles.cardRight}>
-            <Text style={styles.amount}>₹{item.total_amount}</Text>
+            {item.total_amount !== undefined && <Text style={styles.amount}>₹{item.total_amount}</Text>}
             <View style={[styles.statusBadge, { backgroundColor: cfg.color + '20' }]}>
               <Text style={[styles.statusText, { color: cfg.color }]}>
                 {item.status.replace(/_/g, ' ')}

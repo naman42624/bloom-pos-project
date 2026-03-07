@@ -429,6 +429,16 @@ router.put(
         return res.status(400).json({ success: false, message: `Cannot receive a ${transfer.status} transfer` });
       }
 
+      // Employees can only receive at their assigned locations
+      if (req.user.role === 'employee') {
+        const assigned = db.prepare(
+          'SELECT id FROM user_locations WHERE user_id = ? AND location_id = ?'
+        ).get(req.user.id, transfer.to_location_id);
+        if (!assigned) {
+          return res.status(403).json({ success: false, message: 'You are not assigned to the receiving location' });
+        }
+      }
+
       const receiveTransfer = db.transaction(() => {
         // Update transfer status
         db.prepare(

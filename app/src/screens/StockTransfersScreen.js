@@ -1,7 +1,7 @@
 import React, { useState, useCallback } from 'react';
 import {
-  View, Text, StyleSheet, FlatList, TouchableOpacity,
-  RefreshControl, Alert,
+  View, Text, StyleSheet, FlatList, TouchableOpacity, Pressable,
+  RefreshControl, Alert, ScrollView, Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
@@ -17,7 +17,7 @@ const STATUS_CONFIG = {
 };
 
 export default function StockTransfersScreen({ navigation }) {
-  const { user } = useAuth();
+  const { user, locations } = useAuth();
   const [transfers, setTransfers] = useState([]);
   const [statusFilter, setStatusFilter] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -36,35 +36,36 @@ export default function StockTransfersScreen({ navigation }) {
 
   useFocusEffect(useCallback(() => { fetchTransfers(); }, [fetchTransfers]));
 
-  const handleReceive = (transfer) => {
-    Alert.alert('Receive Transfer', `Receive ${transfer.quantity} ${transfer.unit} of ${transfer.material_name}?`, [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Receive',
-        onPress: async () => {
-          try {
-            await api.receiveStockTransfer(transfer.id);
-            fetchTransfers();
-          } catch (err) { Alert.alert('Error', err.message); }
-        },
-      },
-    ]);
+  const handleReceive = async (transfer) => {
+    const confirmed = Platform.OS === 'web'
+      ? window.confirm(`Receive ${transfer.quantity} ${transfer.unit} of ${transfer.material_name}?`)
+      : await new Promise((resolve) =>
+          Alert.alert('Receive Transfer', `Receive ${transfer.quantity} ${transfer.unit} of ${transfer.material_name}?`, [
+            { text: 'Cancel', onPress: () => resolve(false), style: 'cancel' },
+            { text: 'Receive', onPress: () => resolve(true) },
+          ])
+        );
+    if (!confirmed) return;
+    try {
+      await api.receiveStockTransfer(transfer.id);
+      fetchTransfers();
+    } catch (err) { Alert.alert('Error', err.message); }
   };
 
-  const handleCancel = (transfer) => {
-    Alert.alert('Cancel Transfer', 'Are you sure? Stock will be returned to source.', [
-      { text: 'No', style: 'cancel' },
-      {
-        text: 'Yes, Cancel',
-        style: 'destructive',
-        onPress: async () => {
-          try {
-            await api.cancelStockTransfer(transfer.id);
-            fetchTransfers();
-          } catch (err) { Alert.alert('Error', err.message); }
-        },
-      },
-    ]);
+  const handleCancel = async (transfer) => {
+    const confirmed = Platform.OS === 'web'
+      ? window.confirm('Are you sure? Stock will be returned to source.')
+      : await new Promise((resolve) =>
+          Alert.alert('Cancel Transfer', 'Are you sure? Stock will be returned to source.', [
+            { text: 'No', onPress: () => resolve(false), style: 'cancel' },
+            { text: 'Yes, Cancel', onPress: () => resolve(true), style: 'destructive' },
+          ])
+        );
+    if (!confirmed) return;
+    try {
+      await api.cancelStockTransfer(transfer.id);
+      fetchTransfers();
+    } catch (err) { Alert.alert('Error', err.message); }
   };
 
   const statusFilters = [
@@ -77,7 +78,8 @@ export default function StockTransfersScreen({ navigation }) {
 
   const renderItem = ({ item }) => {
     const cfg = STATUS_CONFIG[item.status] || STATUS_CONFIG.initiated;
-    const canReceive = item.status === 'initiated' || item.status === 'in_transit';
+    const canReceive = (item.status === 'initiated' || item.status === 'in_transit')
+      && (user?.role === 'owner' || user?.role === 'manager' || (locations || []).some((l) => l.id === item.to_location_id));
     const canCancel = item.status === 'initiated' || item.status === 'in_transit';
 
     return (
@@ -107,16 +109,16 @@ export default function StockTransfersScreen({ navigation }) {
         {(canReceive || canCancel) && (
           <View style={styles.actionRow}>
             {canReceive && (
-              <TouchableOpacity style={[styles.actionBtn, { backgroundColor: Colors.success }]} onPress={() => handleReceive(item)}>
+              <Pressable style={[styles.actionBtn, { backgroundColor: Colors.success }]} onPress={() => handleReceive(item)}>
                 <Ionicons name="checkmark" size={16} color={Colors.white} />
                 <Text style={styles.actionText}>Receive</Text>
-              </TouchableOpacity>
+              </Pressable>
             )}
             {canCancel && (user?.role === 'owner' || user?.role === 'manager') && (
-              <TouchableOpacity style={[styles.actionBtn, { backgroundColor: Colors.error }]} onPress={() => handleCancel(item)}>
+              <Pressable style={[styles.actionBtn, { backgroundColor: Colors.error }]} onPress={() => handleCancel(item)}>
                 <Ionicons name="close" size={16} color={Colors.white} />
                 <Text style={styles.actionText}>Cancel</Text>
-              </TouchableOpacity>
+              </Pressable>
             )}
           </View>
         )}
@@ -126,20 +128,17 @@ export default function StockTransfersScreen({ navigation }) {
 
   return (
     <View style={styles.container}>
-      <FlatList
-        horizontal showsHorizontalScrollIndicator={false}
-        data={statusFilters}
-        keyExtractor={(item) => String(item.key ?? 'all')}
-        contentContainerStyle={styles.chipList}
-        renderItem={({ item }) => (
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipList}>
+        {statusFilters.map((item) => (
           <TouchableOpacity
+            key={String(item.key ?? 'all')}
             style={[styles.chip, statusFilter === item.key && styles.chipActive]}
             onPress={() => setStatusFilter(item.key)}
           >
             <Text style={[styles.chipText, statusFilter === item.key && styles.chipTextActive]}>{item.label}</Text>
           </TouchableOpacity>
-        )}
-      />
+        ))}
+      </ScrollView>
 
       <FlatList
         data={transfers}

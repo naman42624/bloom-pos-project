@@ -118,6 +118,7 @@ function initializeDatabase() {
       ['pre_order_reminder_days', '2,1,0', 'Days before pre-order to send reminders'],
       ['special_date_reminder_days', '7,3,1', 'Days before special date to send reminders'],
       ['default_tax_rate_id', '', 'Default tax rate ID for new products'],
+      ['supplier_manager_fields', 'name,phone,materials', 'Comma-separated supplier fields visible to managers (name,phone,email,address,gst_number,notes,materials,pricing)'],
     ];
     const seedTx = db.transaction(() => {
       for (const [key, value, description] of defaults) {

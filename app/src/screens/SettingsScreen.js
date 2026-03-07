@@ -7,6 +7,7 @@ import {
   TextInput,
   Alert,
   RefreshControl,
+  Switch,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
@@ -34,7 +35,18 @@ const SETTING_LABELS = {
   bundle_size_medium: 'Medium Bundle Size',
   bundle_size_large: 'Large Bundle Size',
   bundle_size_bulk: 'Bulk Bundle Size',
+  supplier_manager_fields: 'Supplier Fields Visible to Managers',
 };
+
+const SUPPLIER_FIELD_OPTIONS = [
+  { key: 'phone', label: 'Phone Number' },
+  { key: 'email', label: 'Email' },
+  { key: 'address', label: 'Address' },
+  { key: 'gst_number', label: 'GST Number' },
+  { key: 'notes', label: 'Notes' },
+  { key: 'materials', label: 'Linked Materials' },
+  { key: 'pricing', label: 'Pricing & Orders' },
+];
 
 export default function SettingsScreen() {
   const { user } = useAuth();
@@ -101,6 +113,39 @@ export default function SettingsScreen() {
             const setting = settings[key];
             const currentValue = editedValues[key] !== undefined ? editedValues[key] : setting.value;
 
+            // Special rendering for supplier_manager_fields
+            if (key === 'supplier_manager_fields') {
+              const activeFields = currentValue.split(',').map((f) => f.trim()).filter(Boolean);
+              const toggleField = (fieldKey) => {
+                if (!isOwner) return;
+                let next;
+                if (activeFields.includes(fieldKey)) {
+                  next = activeFields.filter((f) => f !== fieldKey);
+                } else {
+                  next = [...activeFields, fieldKey];
+                }
+                handleChange(key, next.join(','));
+              };
+              return (
+                <View key={key} style={styles.settingRow}>
+                  <Text style={styles.settingLabel}>{SETTING_LABELS[key]}</Text>
+                  <Text style={styles.settingDesc}>Choose which supplier details managers can see</Text>
+                  {SUPPLIER_FIELD_OPTIONS.map((opt) => (
+                    <View key={opt.key} style={styles.toggleRow}>
+                      <Text style={styles.toggleLabel}>{opt.label}</Text>
+                      <Switch
+                        value={activeFields.includes(opt.key)}
+                        onValueChange={() => toggleField(opt.key)}
+                        disabled={!isOwner}
+                        trackColor={{ false: Colors.border, true: Colors.primary + '80' }}
+                        thumbColor={activeFields.includes(opt.key) ? Colors.primary : Colors.textLight}
+                      />
+                    </View>
+                  ))}
+                </View>
+              );
+            }
+
             return (
               <View key={key} style={styles.settingRow}>
                 <Text style={styles.settingLabel}>{SETTING_LABELS[key] || key}</Text>
@@ -165,6 +210,12 @@ const styles = StyleSheet.create({
     borderColor: Colors.border,
   },
   inputDisabled: { backgroundColor: Colors.surfaceAlt, color: Colors.textSecondary },
+
+  toggleRow: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    paddingVertical: Spacing.xs, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: Colors.border,
+  },
+  toggleLabel: { fontSize: FontSize.sm, color: Colors.text },
 
   saveButton: { marginTop: Spacing.lg },
 

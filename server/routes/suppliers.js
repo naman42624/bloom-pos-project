@@ -28,10 +28,25 @@ router.get('/', authenticate, (req, res, next) => {
 
     // Attach material count
     const countStmt = db.prepare('SELECT COUNT(*) as count FROM supplier_materials WHERE supplier_id = ?');
-    const result = suppliers.map((s) => ({
+    let result = suppliers.map((s) => ({
       ...s,
       material_count: countStmt.get(s.id).count,
     }));
+
+    // Filter fields for non-owner roles
+    if (req.user.role !== 'owner') {
+      const setting = db.prepare("SELECT value FROM settings WHERE key = 'supplier_manager_fields'").get();
+      const allowed = (setting?.value || 'name').split(',').map((f) => f.trim());
+      result = result.map((s) => {
+        const filtered = { id: s.id, name: s.name, is_active: s.is_active, material_count: s.material_count };
+        if (allowed.includes('phone')) filtered.phone = s.phone;
+        if (allowed.includes('email')) filtered.email = s.email;
+        if (allowed.includes('address')) filtered.address = s.address;
+        if (allowed.includes('gst_number')) filtered.gst_number = s.gst_number;
+        if (allowed.includes('notes')) filtered.notes = s.notes;
+        return filtered;
+      });
+    }
 
     res.json({ success: true, data: result });
   } catch (err) {
@@ -66,7 +81,32 @@ router.get('/:id', authenticate, (req, res, next) => {
       ORDER BY po.created_at DESC LIMIT 10
     `).all(req.params.id);
 
-    res.json({ success: true, data: { ...supplier, materials, recent_orders: recentOrders } });
+    let data = { ...supplier, materials, recent_orders: recentOrders, material_count: materials.length };
+
+    // Filter fields for non-owner roles
+    if (req.user.role !== 'owner') {
+      const setting = db.prepare("SELECT value FROM settings WHERE key = 'supplier_manager_fields'").get();
+      const allowed = (setting?.value || 'name').split(',').map((f) => f.trim());
+      const filtered = { id: data.id, name: data.name, is_active: data.is_active, material_count: data.material_count };
+      if (allowed.includes('phone')) filtered.phone = data.phone;
+      if (allowed.includes('email')) filtered.email = data.email;
+      if (allowed.includes('address')) filtered.address = data.address;
+      if (allowed.includes('gst_number')) filtered.gst_number = data.gst_number;
+      if (allowed.includes('notes')) filtered.notes = data.notes;
+      if (allowed.includes('materials')) filtered.materials = data.materials;
+      else filtered.materials = [];
+      if (allowed.includes('pricing')) {
+        filtered.recent_orders = data.recent_orders;
+      } else {
+        filtered.recent_orders = [];
+        if (filtered.materials) {
+          filtered.materials = filtered.materials.map(({ default_price_per_unit, ...rest }) => rest);
+        }
+      }
+      data = filtered;
+    }
+
+    res.json({ success: true, data });
   } catch (err) {
     next(err);
   }
@@ -135,7 +175,15 @@ router.put(
         return res.status(404).json({ success: false, message: 'Supplier not found' });
       }
 
-      const fields = ['name', 'phone', 'email', 'address', 'gst_number', 'notes', 'is_active'];
+      let fields = ['name', 'phone', 'email', 'address', 'gst_number', 'notes', 'is_active'];
+
+      // Restrict fields for non-owners based on supplier_manager_fields setting
+      if (req.user.role !== 'owner') {
+        const setting = db.prepare("SELECT value FROM settings WHERE key = 'supplier_manager_fields'").get();
+        const allowed = (setting?.value || 'name').split(',').map((f) => f.trim());
+        fields = fields.filter((f) => f === 'name' || allowed.includes(f));
+      }
+
       const updates = [];
       const values = [];
 
@@ -187,7 +235,7 @@ router.post(
   authorize('owner', 'manager'),
   [
     body('material_id').isInt().withMessage('Material ID is required'),
-    body('default_price_per_unit').isFloat({ min: 0 }).withMessage('Price must be a positive number'),
+    body('default_price_per_unit').optional({ nullable: true }).isFloat({ min: 0 }).withMessage('Price must be a positive number'),
   ],
   (req, res, next) => {
     try {
@@ -197,7 +245,7 @@ router.post(
       }
 
       const db = getDb();
-      const { material_id, default_price_per_unit } = req.body;
+      const { material_id, default_price_per_unit = 0 } = req.body;
 
       // Validate supplier exists
       const supplier = db.prepare('SELECT id FROM suppliers WHERE id = ?').get(req.params.id);

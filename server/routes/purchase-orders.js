@@ -52,10 +52,19 @@ router.get('/', authenticate, (req, res, next) => {
 
     // Attach item counts
     const countStmt = db.prepare('SELECT COUNT(*) as count FROM purchase_order_items WHERE purchase_order_id = ?');
-    const result = orders.map((o) => ({
+    let result = orders.map((o) => ({
       ...o,
       item_count: countStmt.get(o.id).count,
     }));
+
+    // Hide pricing for non-owners when 'pricing' is not allowed
+    if (req.user.role !== 'owner') {
+      const setting = db.prepare("SELECT value FROM settings WHERE key = 'supplier_manager_fields'").get();
+      const allowed = (setting?.value || 'name').split(',').map((f) => f.trim());
+      if (!allowed.includes('pricing')) {
+        result = result.map(({ total_amount, ...rest }) => rest);
+      }
+    }
 
     res.json({ success: true, data: result });
   } catch (err) {
@@ -82,9 +91,10 @@ router.get('/:id', authenticate, (req, res, next) => {
     }
 
     // Get items
-    const items = db.prepare(`
+    let items = db.prepare(`
       SELECT poi.*, m.name as material_name, m.sku,
              mc.name as category_name, mc.unit as unit,
+             mc.has_bundle, mc.default_bundle_size,
              ru.name as received_by_name
       FROM purchase_order_items poi
       JOIN materials m ON poi.material_id = m.id
@@ -93,7 +103,22 @@ router.get('/:id', authenticate, (req, res, next) => {
       WHERE poi.purchase_order_id = ?
     `).all(req.params.id);
 
-    res.json({ success: true, data: { ...order, items } });
+    let orderData = { ...order, items };
+
+    // Hide pricing for non-owners when 'pricing' is not allowed
+    if (req.user.role !== 'owner') {
+      const setting = db.prepare("SELECT value FROM settings WHERE key = 'supplier_manager_fields'").get();
+      const allowed = (setting?.value || 'name').split(',').map((f) => f.trim());
+      if (!allowed.includes('pricing')) {
+        const { total_amount, ...orderRest } = orderData;
+        orderData = {
+          ...orderRest,
+          items: items.map(({ expected_price_per_unit, actual_price_per_unit, ...rest }) => rest),
+        };
+      }
+    }
+
+    res.json({ success: true, data: orderData });
   } catch (err) {
     next(err);
   }
@@ -162,12 +187,15 @@ router.post(
         );
 
         const getMaterial = db.prepare(`
-          SELECT mc.unit FROM materials m JOIN material_categories mc ON m.category_id = mc.id WHERE m.id = ?
+          SELECT mc.unit, mc.has_bundle, mc.default_bundle_size FROM materials m JOIN material_categories mc ON m.category_id = mc.id WHERE m.id = ?
         `);
 
         for (const item of items) {
           const mat = getMaterial.get(item.material_id);
-          insertItem.run(orderId, item.material_id, item.expected_quantity, mat ? mat.unit : 'pieces', item.expected_price_per_unit || 0);
+          const baseUnit = mat ? mat.unit : 'pieces';
+          // Use client-provided unit if valid, otherwise default to base unit
+          const unit = (item.expected_unit === 'bundles' && mat && mat.has_bundle) ? 'bundles' : baseUnit;
+          insertItem.run(orderId, item.material_id, item.expected_quantity, unit, item.expected_price_per_unit || 0);
         }
 
         return orderId;
@@ -199,16 +227,22 @@ router.post(
 );
 
 // ─── PUT /api/purchase-orders/:id ────────────────────────────
-// Update order metadata (not items — use receive endpoint for that)
+// Update order metadata and optionally items (only when status is 'expected')
 router.put(
   '/:id',
   authenticate,
   authorize('owner', 'manager'),
   [
+    body('supplier_id').optional().isInt(),
+    body('location_id').optional().isInt(),
     body('expected_date').optional({ nullable: true }).isDate(),
     body('expected_time').optional({ nullable: true, checkFalsy: true }).trim(),
     body('notes').optional({ nullable: true, checkFalsy: true }).trim(),
     body('status').optional().isIn(['expected', 'cancelled']),
+    body('items').optional().isArray({ min: 1 }),
+    body('items.*.material_id').optional().isInt(),
+    body('items.*.expected_quantity').optional().isFloat({ gt: 0 }),
+    body('items.*.expected_price_per_unit').optional().isFloat({ min: 0 }),
   ],
   (req, res, next) => {
     try {
@@ -227,28 +261,75 @@ router.put(
         return res.status(400).json({ success: false, message: `Cannot update a ${existing.status} order` });
       }
 
-      const fields = ['expected_date', 'expected_time', 'notes', 'status'];
-      const updates = [];
-      const values = [];
+      // Items can only be replaced when order hasn't been partially received
+      if (req.body.items && existing.status !== 'expected') {
+        return res.status(400).json({ success: false, message: 'Cannot modify items of a partially received order' });
+      }
 
-      for (const field of fields) {
-        if (req.body[field] !== undefined) {
-          updates.push(`${field} = ?`);
-          values.push(req.body[field]);
+      const updateOrder = db.transaction(() => {
+        const metaFields = ['supplier_id', 'location_id', 'expected_date', 'expected_time', 'notes', 'status'];
+        const updates = [];
+        const values = [];
+
+        for (const field of metaFields) {
+          if (req.body[field] !== undefined) {
+            updates.push(`${field} = ?`);
+            values.push(req.body[field]);
+          }
         }
-      }
 
-      if (updates.length === 0) {
-        return res.status(400).json({ success: false, message: 'No fields to update' });
-      }
+        // Replace items if provided
+        if (req.body.items && req.body.items.length > 0) {
+          db.prepare('DELETE FROM purchase_order_items WHERE purchase_order_id = ?').run(req.params.id);
 
-      updates.push('updated_at = CURRENT_TIMESTAMP');
-      values.push(req.params.id);
+          const insertItem = db.prepare(
+            `INSERT INTO purchase_order_items (purchase_order_id, material_id, expected_quantity, expected_unit, expected_price_per_unit)
+             VALUES (?, ?, ?, ?, ?)`
+          );
+          const getMaterial = db.prepare(
+            `SELECT mc.unit, mc.has_bundle, mc.default_bundle_size FROM materials m JOIN material_categories mc ON m.category_id = mc.id WHERE m.id = ?`
+          );
 
-      db.prepare(`UPDATE purchase_orders SET ${updates.join(', ')} WHERE id = ?`).run(...values);
+          let totalAmount = 0;
+          for (const item of req.body.items) {
+            const mat = getMaterial.get(item.material_id);
+            const baseUnit = mat ? mat.unit : 'pieces';
+            const unit = (item.expected_unit === 'bundles' && mat && mat.has_bundle) ? 'bundles' : baseUnit;
+            insertItem.run(req.params.id, item.material_id, item.expected_quantity, unit, item.expected_price_per_unit || 0);
+            totalAmount += (item.expected_quantity || 0) * (item.expected_price_per_unit || 0);
+          }
+          updates.push('total_amount = ?');
+          values.push(totalAmount);
+        }
 
-      const order = db.prepare('SELECT * FROM purchase_orders WHERE id = ?').get(req.params.id);
-      res.json({ success: true, data: order });
+        if (updates.length === 0) {
+          return;
+        }
+
+        updates.push('updated_at = CURRENT_TIMESTAMP');
+        values.push(req.params.id);
+        db.prepare(`UPDATE purchase_orders SET ${updates.join(', ')} WHERE id = ?`).run(...values);
+      });
+
+      updateOrder();
+
+      // Return updated order with joins
+      const order = db.prepare(`
+        SELECT po.*, s.name as supplier_name, l.name as location_name
+        FROM purchase_orders po
+        JOIN suppliers s ON po.supplier_id = s.id
+        JOIN locations l ON po.location_id = l.id
+        WHERE po.id = ?
+      `).get(req.params.id);
+
+      const orderItems = db.prepare(`
+        SELECT poi.*, m.name as material_name, m.sku
+        FROM purchase_order_items poi
+        JOIN materials m ON poi.material_id = m.id
+        WHERE poi.purchase_order_id = ?
+      `).all(req.params.id);
+
+      res.json({ success: true, data: { ...order, items: orderItems } });
     } catch (err) {
       next(err);
     }
@@ -285,10 +366,20 @@ router.post(
         return res.status(400).json({ success: false, message: `Cannot receive items for a ${order.status} order` });
       }
 
+      // Employees can only receive at their assigned locations
+      if (req.user.role === 'employee') {
+        const assigned = db.prepare(
+          'SELECT id FROM user_locations WHERE user_id = ? AND location_id = ?'
+        ).get(req.user.id, order.location_id);
+        if (!assigned) {
+          return res.status(403).json({ success: false, message: 'You are not assigned to this location' });
+        }
+      }
+
       const receiveItems = db.transaction(() => {
         const updateItem = db.prepare(`
           UPDATE purchase_order_items
-          SET received_quantity = ?, received_quality = ?, actual_price_per_unit = ?,
+          SET received_quantity = received_quantity + ?, received_quality = ?, actual_price_per_unit = ?,
               received_by = ?, received_at = CURRENT_TIMESTAMP
           WHERE id = ? AND purchase_order_id = ?
         `);
@@ -307,12 +398,24 @@ router.post(
           VALUES (?, ?, 'purchase', ?, ?, 'purchase_order', ?, ?, ?)
         `);
 
+        const getBundleSize = db.prepare(`
+          SELECT mc.default_bundle_size FROM materials m JOIN material_categories mc ON m.category_id = mc.id WHERE m.id = ?
+        `);
+
         for (const item of req.body.items) {
           const poItem = db.prepare('SELECT * FROM purchase_order_items WHERE id = ? AND purchase_order_id = ?').get(item.item_id, req.params.id);
           if (!poItem) continue;
 
+          // Skip items already fully received
+          if (poItem.received_quantity >= poItem.expected_quantity) continue;
+
+          // Cap the receive quantity to not exceed expected
+          const maxReceivable = poItem.expected_quantity - poItem.received_quantity;
+          const actualReceiveQty = Math.min(item.received_quantity, maxReceivable);
+          if (actualReceiveQty <= 0) continue;
+
           updateItem.run(
-            item.received_quantity,
+            actualReceiveQty,
             item.received_quality || 'good',
             item.actual_price_per_unit ?? poItem.expected_price_per_unit,
             req.user.id,
@@ -320,13 +423,18 @@ router.post(
             req.params.id
           );
 
-          // Update stock
-          if (item.received_quantity > 0) {
-            upsertStock.run(poItem.material_id, order.location_id, item.received_quantity);
+          // Update stock — convert bundles to base units
+          if (actualReceiveQty > 0) {
+            let stockQty = actualReceiveQty;
+            if (poItem.expected_unit === 'bundles') {
+              const matInfo = getBundleSize.get(poItem.material_id);
+              stockQty = actualReceiveQty * (matInfo ? matInfo.default_bundle_size : 1);
+            }
+            upsertStock.run(poItem.material_id, order.location_id, stockQty);
             insertTransaction.run(
               poItem.material_id,
               order.location_id,
-              item.received_quantity,
+              actualReceiveQty,
               poItem.expected_unit,
               order.id,
               `Received from PO ${order.po_number}`,

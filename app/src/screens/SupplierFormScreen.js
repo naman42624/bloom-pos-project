@@ -4,14 +4,17 @@ import {
   ScrollView, Alert,
 } from 'react-native';
 import api from '../services/api';
+import { useAuth } from '../context/AuthContext';
 import Input from '../components/Input';
 import Button from '../components/Button';
 import DismissKeyboard from '../components/DismissKeyboard';
 import { Colors, Spacing } from '../constants/theme';
 
 export default function SupplierFormScreen({ route, navigation }) {
+  const { user } = useAuth();
   const existing = route.params?.supplier;
   const isEditing = !!existing;
+  const isOwner = user?.role === 'owner';
 
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
@@ -21,6 +24,7 @@ export default function SupplierFormScreen({ route, navigation }) {
   const [notes, setNotes] = useState('');
   const [loading, setLoading] = useState(false);
   const [errors, setErrors] = useState({});
+  const [allowedFields, setAllowedFields] = useState(null);
 
   useEffect(() => {
     if (existing) {
@@ -32,6 +36,16 @@ export default function SupplierFormScreen({ route, navigation }) {
       setNotes(existing.notes || '');
     }
   }, [existing]);
+
+  useEffect(() => {
+    if (!isOwner) {
+      api.getSettings().then((res) => {
+        const settings = res.data?.settings || {};
+        const val = settings.supplier_manager_fields?.value || 'name';
+        setAllowedFields(val.split(',').map((f) => f.trim()));
+      }).catch(() => setAllowedFields(['name', 'phone']));
+    }
+  }, [isOwner]);
 
   const validate = () => {
     const e = {};
@@ -67,16 +81,18 @@ export default function SupplierFormScreen({ route, navigation }) {
     }
   };
 
+  const canSee = (field) => isOwner || !allowedFields || allowedFields.includes(field);
+
   return (
     <DismissKeyboard>
       <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
         <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag">
           <Input label="Supplier Name" value={name} onChangeText={setName} error={errors.name} placeholder="e.g. Krishna Flowers" />
-          <Input label="Phone" value={phone} onChangeText={setPhone} error={errors.phone} keyboardType="phone-pad" placeholder="10-digit mobile" />
-          <Input label="Email (optional)" value={email} onChangeText={setEmail} error={errors.email} keyboardType="email-address" placeholder="supplier@email.com" autoCapitalize="none" />
-          <Input label="Address (optional)" value={address} onChangeText={setAddress} placeholder="Full address" multiline />
-          <Input label="GST Number (optional)" value={gstNumber} onChangeText={setGstNumber} placeholder="GST number" autoCapitalize="characters" />
-          <Input label="Notes (optional)" value={notes} onChangeText={setNotes} placeholder="Any notes about this supplier" multiline />
+          {canSee('phone') && <Input label="Phone" value={phone} onChangeText={setPhone} error={errors.phone} keyboardType="phone-pad" placeholder="10-digit mobile" />}
+          {canSee('email') && <Input label="Email (optional)" value={email} onChangeText={setEmail} error={errors.email} keyboardType="email-address" placeholder="supplier@email.com" autoCapitalize="none" />}
+          {canSee('address') && <Input label="Address (optional)" value={address} onChangeText={setAddress} placeholder="Full address" multiline />}
+          {canSee('gst_number') && <Input label="GST Number (optional)" value={gstNumber} onChangeText={setGstNumber} placeholder="GST number" autoCapitalize="characters" />}
+          {canSee('notes') && <Input label="Notes (optional)" value={notes} onChangeText={setNotes} placeholder="Any notes about this supplier" multiline />}
 
           <View style={styles.actions}>
             <Button title={isEditing ? 'Update Supplier' : 'Add Supplier'} onPress={handleSubmit} loading={loading} />
