@@ -246,6 +246,12 @@ function initializeDatabase() {
     CREATE INDEX IF NOT EXISTS idx_materials_sku ON materials(sku);
   `);
 
+  // Migrate: add selling_price column if missing
+  const matCols = db.prepare("PRAGMA table_info(materials)").all().map(c => c.name);
+  if (!matCols.includes('selling_price')) {
+    db.exec("ALTER TABLE materials ADD COLUMN selling_price REAL DEFAULT 0");
+  }
+
   // ─── Phase 2: Material Stock (per location) ────────────────
   db.exec(`
     CREATE TABLE IF NOT EXISTS material_stock (
@@ -481,6 +487,199 @@ function initializeDatabase() {
     );
 
     CREATE INDEX IF NOT EXISTS idx_pi_product ON product_images(product_id);
+  `);
+
+  // ─── Phase 4: Sales ─────────────────────────────────────────
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS sales (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      sale_number TEXT UNIQUE,
+      location_id INTEGER NOT NULL,
+      customer_id INTEGER DEFAULT NULL,
+      customer_name TEXT DEFAULT NULL,
+      customer_phone TEXT DEFAULT NULL,
+      subtotal REAL DEFAULT 0,
+      tax_total REAL DEFAULT 0,
+      discount_amount REAL DEFAULT 0,
+      discount_type TEXT DEFAULT NULL CHECK(discount_type IN ('fixed', 'percentage')),
+      discount_percentage REAL DEFAULT NULL,
+      discount_approved_by INTEGER DEFAULT NULL,
+      delivery_charges REAL DEFAULT 0,
+      delivery_address TEXT DEFAULT NULL,
+      scheduled_date DATE DEFAULT NULL,
+      scheduled_time TEXT DEFAULT NULL,
+      grand_total REAL DEFAULT 0,
+      payment_status TEXT NOT NULL DEFAULT 'pending' CHECK(payment_status IN ('paid', 'partial', 'pending', 'refunded')),
+      order_type TEXT NOT NULL DEFAULT 'walk_in' CHECK(order_type IN ('walk_in', 'pickup', 'delivery', 'pre_order')),
+      status TEXT NOT NULL DEFAULT 'completed' CHECK(status IN ('draft', 'completed', 'cancelled')),
+      special_instructions TEXT DEFAULT '',
+      customer_notes TEXT DEFAULT '',
+      created_by INTEGER NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (location_id) REFERENCES locations(id) ON DELETE CASCADE,
+      FOREIGN KEY (customer_id) REFERENCES users(id) ON DELETE SET NULL,
+      FOREIGN KEY (discount_approved_by) REFERENCES users(id) ON DELETE SET NULL,
+      FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_sales_number ON sales(sale_number);
+    CREATE INDEX IF NOT EXISTS idx_sales_location ON sales(location_id);
+    CREATE INDEX IF NOT EXISTS idx_sales_customer ON sales(customer_id);
+    CREATE INDEX IF NOT EXISTS idx_sales_status ON sales(payment_status);
+    CREATE INDEX IF NOT EXISTS idx_sales_order_type ON sales(order_type);
+    CREATE INDEX IF NOT EXISTS idx_sales_created ON sales(created_at);
+  `);
+
+  // Add missing columns for existing databases
+  const salesCols = db.prepare("PRAGMA table_info(sales)").all().map(c => c.name);
+  if (!salesCols.includes('delivery_address')) {
+    db.exec("ALTER TABLE sales ADD COLUMN delivery_address TEXT DEFAULT NULL");
+  }
+  if (!salesCols.includes('scheduled_date')) {
+    db.exec("ALTER TABLE sales ADD COLUMN scheduled_date DATE DEFAULT NULL");
+  }
+  if (!salesCols.includes('scheduled_time')) {
+    db.exec("ALTER TABLE sales ADD COLUMN scheduled_time TEXT DEFAULT NULL");
+  }
+
+  // Migrate sale_items: add material_id if missing
+  const saleItemCols = db.prepare("PRAGMA table_info(sale_items)").all().map(c => c.name);
+  if (!saleItemCols.includes('material_id')) {
+    db.exec("ALTER TABLE sale_items ADD COLUMN material_id INTEGER DEFAULT NULL REFERENCES materials(id) ON DELETE CASCADE");
+  }
+
+  // ─── Phase 4: Sale Items ────────────────────────────────────
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS sale_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      sale_id INTEGER NOT NULL,
+      product_id INTEGER DEFAULT NULL,
+      material_id INTEGER DEFAULT NULL,
+      product_name TEXT NOT NULL,
+      quantity INTEGER NOT NULL DEFAULT 1,
+      unit_price REAL NOT NULL,
+      tax_rate REAL NOT NULL DEFAULT 0,
+      tax_amount REAL NOT NULL DEFAULT 0,
+      discount_amount REAL DEFAULT 0,
+      line_total REAL NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE CASCADE,
+      FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
+      FOREIGN KEY (material_id) REFERENCES materials(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_sale_items_sale ON sale_items(sale_id);
+    CREATE INDEX IF NOT EXISTS idx_sale_items_product ON sale_items(product_id);
+  `);
+
+  // ─── Phase 4: Payments ──────────────────────────────────────
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS payments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      sale_id INTEGER NOT NULL,
+      method TEXT NOT NULL CHECK(method IN ('cash', 'card', 'upi')),
+      amount REAL NOT NULL,
+      reference_number TEXT DEFAULT NULL,
+      received_by INTEGER NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE CASCADE,
+      FOREIGN KEY (received_by) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_payments_sale ON payments(sale_id);
+    CREATE INDEX IF NOT EXISTS idx_payments_method ON payments(method);
+  `);
+
+  // ─── Phase 4: Refunds ──────────────────────────────────────
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS refunds (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      sale_id INTEGER NOT NULL,
+      amount REAL NOT NULL,
+      reason TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'requested' CHECK(status IN ('requested', 'approved', 'rejected', 'processed')),
+      requested_by INTEGER NOT NULL,
+      approved_by INTEGER DEFAULT NULL,
+      refund_method TEXT NOT NULL CHECK(refund_method IN ('cash', 'card', 'upi', 'store_credit')),
+      notes TEXT DEFAULT '',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE CASCADE,
+      FOREIGN KEY (requested_by) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (approved_by) REFERENCES users(id) ON DELETE SET NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_refunds_sale ON refunds(sale_id);
+    CREATE INDEX IF NOT EXISTS idx_refunds_status ON refunds(status);
+  `);
+
+  // ─── Phase 4: Cash Registers ────────────────────────────────
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS cash_registers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      location_id INTEGER NOT NULL,
+      date DATE NOT NULL,
+      opened_by INTEGER NOT NULL,
+      opening_balance REAL NOT NULL DEFAULT 0,
+      total_cash_sales REAL DEFAULT 0,
+      total_card_sales REAL DEFAULT 0,
+      total_upi_sales REAL DEFAULT 0,
+      total_refunds_cash REAL DEFAULT 0,
+      expected_cash REAL DEFAULT 0,
+      actual_cash REAL DEFAULT NULL,
+      discrepancy REAL DEFAULT NULL,
+      closed_by INTEGER DEFAULT NULL,
+      closing_notes TEXT DEFAULT '',
+      opened_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      closed_at DATETIME DEFAULT NULL,
+      FOREIGN KEY (location_id) REFERENCES locations(id) ON DELETE CASCADE,
+      FOREIGN KEY (opened_by) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (closed_by) REFERENCES users(id) ON DELETE SET NULL,
+      UNIQUE(location_id, date)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_cr_location_date ON cash_registers(location_id, date);
+  `);
+
+  // ─── Phase 4: Pre-Orders ───────────────────────────────────
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS pre_orders (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      sale_id INTEGER NOT NULL UNIQUE,
+      scheduled_date DATE NOT NULL,
+      scheduled_time TEXT DEFAULT NULL,
+      advance_payment REAL NOT NULL DEFAULT 0,
+      remaining_amount REAL NOT NULL DEFAULT 0,
+      reminder_sent INTEGER DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_pre_orders_scheduled ON pre_orders(scheduled_date);
+  `);
+
+  // ─── Expenses ───────────────────────────────────────────────
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS expenses (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      location_id INTEGER NOT NULL,
+      category TEXT NOT NULL DEFAULT 'other' CHECK(category IN ('supplies', 'petty_cash', 'maintenance', 'transport', 'food', 'utilities', 'salary', 'other')),
+      amount REAL NOT NULL,
+      description TEXT DEFAULT '',
+      payment_method TEXT NOT NULL DEFAULT 'cash' CHECK(payment_method IN ('cash', 'card', 'upi')),
+      expense_date DATE NOT NULL,
+      created_by INTEGER NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (location_id) REFERENCES locations(id) ON DELETE CASCADE,
+      FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_expenses_location ON expenses(location_id);
+    CREATE INDEX IF NOT EXISTS idx_expenses_date ON expenses(expense_date);
+    CREATE INDEX IF NOT EXISTS idx_expenses_category ON expenses(category);
   `);
 }
 

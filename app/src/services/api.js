@@ -432,6 +432,82 @@ class ApiService {
   scanProductQR(payload) {
     return this.request('/products/scan', { method: 'POST', body: JSON.stringify({ payload }) });
   }
+
+  // ═══════════════════════════════════════════════════════════
+  // Phase 4 — POS & Sales
+  // ═══════════════════════════════════════════════════════════
+
+  // ─── Sales ──────────────────────────────────────────────
+  getSales(params = {}) {
+    const query = new URLSearchParams(params).toString();
+    return this.request(`/sales${query ? `?${query}` : ''}`);
+  }
+
+  getSale(id) {
+    return this.request(`/sales/${id}`);
+  }
+
+  getTodaySummary(locationId) {
+    return this.request(`/sales/today-summary${locationId ? `?location_id=${locationId}` : ''}`);
+  }
+
+  customerLookup(phone) {
+    return this.request(`/sales/customer-lookup?phone=${encodeURIComponent(phone)}`);
+  }
+
+  createSale(data) {
+    return this.request('/sales', { method: 'POST', body: JSON.stringify(data) });
+  }
+
+  addPaymentToSale(saleId, data) {
+    return this.request(`/sales/${saleId}/payments`, { method: 'POST', body: JSON.stringify(data) });
+  }
+
+  cancelSale(saleId) {
+    return this.request(`/sales/${saleId}/cancel`, { method: 'PUT' });
+  }
+
+  // ─── Refunds ────────────────────────────────────────────
+  refundSale(saleId, data) {
+    return this.request(`/sales/${saleId}/refund`, { method: 'POST', body: JSON.stringify(data) });
+  }
+
+  // ─── Cash Register ─────────────────────────────────────
+  getRegisterStatus(locationId) {
+    return this.request(`/sales/register/status?location_id=${locationId}`);
+  }
+
+  openRegister(data) {
+    return this.request('/sales/register/open', { method: 'POST', body: JSON.stringify(data) });
+  }
+
+  closeRegister(data) {
+    return this.request('/sales/register/close', { method: 'PUT', body: JSON.stringify(data) });
+  }
+
+  getRegisterHistory(params = {}) {
+    const query = new URLSearchParams(params).toString();
+    return this.request(`/sales/register/history${query ? `?${query}` : ''}`);
+  }
+
+  // ─── Expenses ───────────────────────────────────────────
+  getExpenses(params = {}) {
+    const query = new URLSearchParams(params).toString();
+    return this.request(`/expenses${query ? `?${query}` : ''}`);
+  }
+
+  createExpense(data) {
+    return this.request('/expenses', { method: 'POST', body: JSON.stringify(data) });
+  }
+
+  deleteExpense(id) {
+    return this.request(`/expenses/${id}`, { method: 'DELETE' });
+  }
+
+  getExpenseSummary(params = {}) {
+    const query = new URLSearchParams(params).toString();
+    return this.request(`/expenses/summary${query ? `?${query}` : ''}`);
+  }
 }
 
 export default new ApiService();

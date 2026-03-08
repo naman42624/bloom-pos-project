@@ -1,0 +1,788 @@
+import React, { useState, useEffect, useCallback } from 'react';
+import {
+  View, Text, StyleSheet, FlatList, TextInput,
+  TouchableOpacity, Alert, Platform, ScrollView, Modal, ActivityIndicator,
+  KeyboardAvoidingView,
+} from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
+import { useFocusEffect } from '@react-navigation/native';
+import api from '../services/api';
+import { useAuth } from '../context/AuthContext';
+import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
+
+export default function POSScreen({ navigation, route }) {
+  const { user } = useAuth();
+  const [products, setProducts] = useState([]);
+  const [materials, setMaterials] = useState([]);
+  const [search, setSearch] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [cart, setCart] = useState([]);
+  const [locations, setLocations] = useState([]);
+  const [selectedLocation, setSelectedLocation] = useState(null);
+  const [activeTab, setActiveTab] = useState('products'); // 'products' or 'materials'
+  const [selectedCategory, setSelectedCategory] = useState(null); // null = all
+
+  const PRODUCT_CATEGORIES = [
+    { key: null, label: 'All' },
+    { key: 'bouquet', label: 'Bouquets' },
+    { key: 'arrangement', label: 'Arrangements' },
+    { key: 'basket', label: 'Baskets' },
+    { key: 'single_stem', label: 'Single Stem' },
+    { key: 'gift_combo', label: 'Gift Combos' },
+    { key: 'other', label: 'Other' },
+  ];
+
+  // Quick-add product modal
+  const [showQuickAdd, setShowQuickAdd] = useState(false);
+  const [qaName, setQaName] = useState('');
+  const [qaPrice, setQaPrice] = useState('');
+  const [qaCategory, setQaCategory] = useState('other');
+  const [qaSubmitting, setQaSubmitting] = useState(false);
+  const [qaMaterials, setQaMaterials] = useState([]); // [{material_id, name, qty}]
+  const [allMaterialsList, setAllMaterialsList] = useState([]);
+
+  useFocusEffect(
+    useCallback(() => {
+      fetchProducts();
+      fetchMaterials();
+      fetchLocations();
+    }, [selectedLocation])
+  );
+
+  const fetchProducts = async (q) => {
+    try {
+      const params = { search: q || '', is_active: 1 };
+      if (selectedLocation) params.location_id = selectedLocation;
+      const res = await api.getProducts(params);
+      setProducts(res.data || []);
+    } catch {
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const fetchMaterials = async (q) => {
+    try {
+      const params = {};
+      if (selectedLocation) params.location_id = selectedLocation;
+      if (q) params.search = q;
+      const res = await api.getMaterials(params);
+      setMaterials(res.data || []);
+    } catch {}
+  };
+
+  const fetchLocations = async () => {
+    try {
+      const res = await api.getLocations();
+      const locs = res.data?.locations || res.data || [];
+      setLocations(locs);
+      if (locs.length > 0 && !selectedLocation) {
+        setSelectedLocation(locs[0].id);
+      }
+    } catch {}
+  };
+
+  const handleSearch = (text) => {
+    setSearch(text);
+    if (activeTab === 'products') fetchProducts(text);
+    else fetchMaterials(text);
+  };
+
+  const addToCart = (product) => {
+    setCart((prev) => {
+      const existing = prev.find((c) => c.product_id === product.id && !c.material_id);
+      if (existing) {
+        return prev.map((c) =>
+          c.product_id === product.id && !c.material_id
+            ? { ...c, quantity: c.quantity + 1, line_total: (c.quantity + 1) * c.unit_price + ((c.quantity + 1) * c.unit_price * c.tax_rate / 100) }
+            : c
+        );
+      }
+      const taxRate = product.tax_percentage || 0;
+      const unitPrice = product.selling_price || 0;
+      const taxAmount = (unitPrice * taxRate) / 100;
+      return [...prev, {
+        product_id: product.id,
+        material_id: null,
+        product_name: product.name,
+        product_sku: product.sku,
+        quantity: 1,
+        unit_price: unitPrice,
+        tax_rate: taxRate,
+        tax_amount: taxAmount,
+        line_total: unitPrice + taxAmount,
+        image_url: product.image_url,
+      }];
+    });
+  };
+
+  const addMaterialToCart = (material) => {
+    setCart((prev) => {
+      const cartKey = `mat_${material.id}`;
+      const existing = prev.find((c) => c.material_id === material.id);
+      if (existing) {
+        return prev.map((c) =>
+          c.material_id === material.id
+            ? { ...c, quantity: c.quantity + 1, line_total: (c.quantity + 1) * c.unit_price }
+            : c
+        );
+      }
+      const unitPrice = material.selling_price || material.avg_cost || 0;
+      return [...prev, {
+        product_id: null,
+        material_id: material.id,
+        product_name: material.name,
+        product_sku: material.sku,
+        quantity: 1,
+        unit_price: unitPrice,
+        tax_rate: 0,
+        tax_amount: 0,
+        line_total: unitPrice,
+        image_url: material.image_url,
+      }];
+    });
+  };
+
+  const cartItemKey = (c) => c.material_id ? `mat_${c.material_id}` : `prod_${c.product_id}`;
+
+  const updateCartQty = (item, delta) => {
+    const key = cartItemKey(item);
+    setCart((prev) => {
+      return prev.map((c) => {
+        if (cartItemKey(c) !== key) return c;
+        const newQty = c.quantity + delta;
+        if (newQty <= 0) return null;
+        const taxAmt = (c.unit_price * newQty * c.tax_rate) / 100;
+        return { ...c, quantity: newQty, tax_amount: taxAmt, line_total: (c.unit_price * newQty) + taxAmt };
+      }).filter(Boolean);
+    });
+  };
+
+  const updateCartPrice = (item, newPrice) => {
+    const key = cartItemKey(item);
+    const price = parseFloat(newPrice) || 0;
+    setCart((prev) => {
+      return prev.map((c) => {
+        if (cartItemKey(c) !== key) return c;
+        const taxAmt = (price * c.quantity * c.tax_rate) / 100;
+        return { ...c, unit_price: price, tax_amount: taxAmt, line_total: (price * c.quantity) + taxAmt };
+      });
+    });
+  };
+
+  const removeFromCart = (item) => {
+    const key = cartItemKey(item);
+    setCart((prev) => prev.filter((c) => cartItemKey(c) !== key));
+  };
+
+  const clearCart = () => {
+    if (cart.length === 0) return;
+    const doClear = () => setCart([]);
+    if (Platform.OS === 'web') {
+      if (window.confirm('Clear entire cart?')) doClear();
+    } else {
+      Alert.alert('Clear Cart', 'Remove all items?', [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Clear', style: 'destructive', onPress: doClear },
+      ]);
+    }
+  };
+
+  const subtotal = cart.reduce((s, c) => s + (c.unit_price * c.quantity), 0);
+  const taxTotal = cart.reduce((s, c) => s + ((c.unit_price * c.quantity * c.tax_rate) / 100), 0);
+  const grandTotal = subtotal + taxTotal;
+  const itemCount = cart.reduce((s, c) => s + c.quantity, 0);
+
+  const handleQuickAdd = async () => {
+    if (!qaName.trim()) { Alert.alert('Required', 'Enter product name'); return; }
+    const price = parseFloat(qaPrice) || 0;
+    if (price <= 0) { Alert.alert('Required', 'Enter a valid price'); return; }
+    setQaSubmitting(true);
+    try {
+      const res = await api.createProduct({
+        name: qaName.trim(),
+        selling_price: price,
+        category: qaCategory,
+        type: 'standard',
+        location_id: selectedLocation,
+      });
+      if (res.success && res.data) {
+        // Add BOM materials if any selected
+        for (const m of qaMaterials) {
+          if (m.material_id && (parseFloat(m.qty) || 0) > 0) {
+            try {
+              await api.addProductMaterial(res.data.id, {
+                material_id: m.material_id,
+                quantity: parseFloat(m.qty),
+              });
+            } catch {}
+          }
+        }
+        addToCart(res.data);
+        setShowQuickAdd(false);
+        setQaName(''); setQaPrice(''); setQaCategory('other'); setQaMaterials([]);
+        fetchProducts(search);
+      }
+    } catch (err) {
+      Alert.alert('Error', err.message || 'Failed to create product');
+    } finally {
+      setQaSubmitting(false);
+    }
+  };
+
+  const openQuickAdd = async () => {
+    setShowQuickAdd(true);
+    try {
+      const res = await api.getMaterials({ location_id: selectedLocation });
+      setAllMaterialsList(res.data || []);
+    } catch {}
+  };
+
+  const addQaMaterial = () => {
+    setQaMaterials([...qaMaterials, { material_id: null, name: '', qty: '1' }]);
+  };
+
+  const updateQaMaterial = (idx, field, value) => {
+    setQaMaterials(qaMaterials.map((m, i) => i === idx ? { ...m, [field]: value } : m));
+  };
+
+  const selectQaMaterial = (idx, material) => {
+    setQaMaterials(qaMaterials.map((m, i) => i === idx ? { ...m, material_id: material.id, name: material.name } : m));
+  };
+
+  const removeQaMaterial = (idx) => {
+    setQaMaterials(qaMaterials.filter((_, i) => i !== idx));
+  };
+
+  const goToCheckout = () => {
+    if (cart.length === 0) {
+      Alert.alert('Empty Cart', 'Add items before checkout');
+      return;
+    }
+    if (!selectedLocation) {
+      Alert.alert('Location', 'Please select a location');
+      return;
+    }
+    navigation.navigate('Checkout', { cart, locationId: selectedLocation });
+  };
+
+  const handleScanQR = () => {
+    navigation.navigate('QRScanner', { fromPOS: true });
+  };
+
+  // Handle scanned product returned from QR scanner
+  useEffect(() => {
+    if (route.params?.scannedProduct) {
+      addToCart(route.params.scannedProduct);
+      navigation.setParams({ scannedProduct: undefined });
+    }
+  }, [route.params?.scannedProduct]);
+
+  const renderProduct = ({ item, index }) => {
+    const inCart = cart.find((c) => c.product_id === item.id && !c.material_id);
+    const outOfStock = item.available_qty !== null && item.available_qty !== undefined && item.available_qty <= 0;
+    const isPopular = (item.sale_count || 0) > 0 && index < 5;
+    return (
+      <TouchableOpacity style={[styles.productCard, outOfStock && styles.productCardDimmed]} onPress={() => addToCart(item)} activeOpacity={0.7}>
+        <View style={styles.productIconWrap}>
+          <Ionicons name="gift" size={24} color={Colors.primary} />
+          {inCart && (
+            <View style={styles.qtyBadge}>
+              <Text style={styles.qtyBadgeText}>{inCart.quantity}</Text>
+            </View>
+          )}
+        </View>
+        <View style={styles.productInfo}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+            <Text style={styles.productName} numberOfLines={1}>{item.name}</Text>
+            {isPopular && (
+              <View style={styles.popularBadge}>
+                <Ionicons name="flame" size={10} color="#FF6D00" />
+                <Text style={styles.popularText}>Popular</Text>
+              </View>
+            )}
+          </View>
+          <Text style={styles.productSku}>
+            {item.sku}
+            {item.available_qty !== null && item.available_qty !== undefined
+              ? (outOfStock ? '  •  Out of Stock' : `  •  Stock: ${item.available_qty}`)
+              : ''}
+          </Text>
+        </View>
+        <Text style={styles.productPrice}>₹{(item.selling_price || 0).toFixed(0)}</Text>
+      </TouchableOpacity>
+    );
+  };
+
+  const renderMaterial = ({ item }) => {
+    const inCart = cart.find((c) => c.material_id === item.id);
+    const stockQty = item.stock_quantity ?? null;
+    const outOfStock = stockQty !== null && stockQty <= 0;
+    return (
+      <TouchableOpacity style={[styles.productCard, outOfStock && styles.productCardDimmed]} onPress={() => addMaterialToCart(item)} activeOpacity={0.7}>
+        <View style={[styles.productIconWrap, { backgroundColor: Colors.success + '12' }]}>
+          <Ionicons name="leaf" size={24} color={Colors.success} />
+          {inCart && (
+            <View style={styles.qtyBadge}>
+              <Text style={styles.qtyBadgeText}>{inCart.quantity}</Text>
+            </View>
+          )}
+        </View>
+        <View style={styles.productInfo}>
+          <Text style={styles.productName} numberOfLines={1}>{item.name}</Text>
+          <Text style={styles.productSku}>
+            {item.sku}{item.category_name ? `  •  ${item.category_name}` : ''}
+            {stockQty !== null ? (outOfStock ? '  •  Out of Stock' : `  •  Stock: ${stockQty}`) : ''}
+          </Text>
+        </View>
+        <Text style={styles.productPrice}>₹{(item.selling_price || item.avg_cost || 0).toFixed(0)}</Text>
+      </TouchableOpacity>
+    );
+  };
+
+  return (
+    <View style={styles.container}>
+      {/* Location selector */}
+      {locations.length > 1 && (
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.locRow} contentContainerStyle={{ paddingHorizontal: Spacing.md, gap: Spacing.xs }}>
+          {locations.map((loc) => (
+            <TouchableOpacity
+              key={loc.id}
+              style={[styles.locChip, selectedLocation === loc.id && styles.locChipActive]}
+              onPress={() => setSelectedLocation(loc.id)}
+            >
+              <Text style={[styles.locChipText, selectedLocation === loc.id && styles.locChipTextActive]}>{loc.name}</Text>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
+      )}
+
+      {/* Search & scan row */}
+      <View style={styles.searchRow}>
+        <View style={styles.searchWrap}>
+          <Ionicons name="search" size={18} color={Colors.textLight} style={{ marginRight: 6 }} />
+          <TextInput
+            style={styles.searchInput}
+            value={search}
+            onChangeText={handleSearch}
+            placeholder={activeTab === 'products' ? 'Search products...' : 'Search materials...'}
+            placeholderTextColor={Colors.textLight}
+          />
+          {search.length > 0 && (
+            <TouchableOpacity onPress={() => handleSearch('')}>
+              <Ionicons name="close-circle" size={18} color={Colors.textLight} />
+            </TouchableOpacity>
+          )}
+        </View>
+        <TouchableOpacity style={styles.scanBtn} onPress={handleScanQR}>
+          <Ionicons name="qr-code" size={22} color={Colors.white} />
+        </TouchableOpacity>
+        <TouchableOpacity style={[styles.scanBtn, { backgroundColor: Colors.success }]} onPress={openQuickAdd}>
+          <Ionicons name="add" size={22} color={Colors.white} />
+        </TouchableOpacity>
+      </View>
+
+      {/* Products / Materials toggle */}
+      <View style={styles.tabRow}>
+        <TouchableOpacity
+          style={[styles.tabBtn, activeTab === 'products' && styles.tabBtnActive]}
+          onPress={() => { setActiveTab('products'); setSearch(''); }}
+        >
+          <Ionicons name="gift" size={16} color={activeTab === 'products' ? Colors.white : Colors.textSecondary} />
+          <Text style={[styles.tabBtnText, activeTab === 'products' && styles.tabBtnTextActive]}>Products</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.tabBtn, activeTab === 'materials' && styles.tabBtnActive]}
+          onPress={() => { setActiveTab('materials'); setSearch(''); }}
+        >
+          <Ionicons name="leaf" size={16} color={activeTab === 'materials' ? Colors.white : Colors.textSecondary} />
+          <Text style={[styles.tabBtnText, activeTab === 'materials' && styles.tabBtnTextActive]}>Raw Materials</Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* List */}
+      {activeTab === 'products' ? (
+        <>
+          {/* Category filter chips */}
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.catFilterRow} contentContainerStyle={{ paddingHorizontal: Spacing.md, gap: Spacing.xs }}>
+            {PRODUCT_CATEGORIES.map((cat) => (
+              <TouchableOpacity
+                key={cat.key || 'all'}
+                style={[styles.locChip, selectedCategory === cat.key && styles.locChipActive]}
+                onPress={() => setSelectedCategory(cat.key)}
+              >
+                <Text style={[styles.locChipText, selectedCategory === cat.key && styles.locChipTextActive]}>{cat.label}</Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+          <FlatList
+            data={selectedCategory ? products.filter(p => p.category === selectedCategory) : products}
+            keyExtractor={(item) => `prod_${item.id}`}
+            renderItem={renderProduct}
+          contentContainerStyle={styles.listContent}
+          ListEmptyComponent={
+            <View style={styles.empty}>
+              <Ionicons name="gift-outline" size={48} color={Colors.textLight} />
+              <Text style={styles.emptyText}>{loading ? 'Loading...' : 'No products found'}</Text>
+            </View>
+          }
+        />
+        </>
+      ) : (
+        <FlatList
+          data={materials}
+          keyExtractor={(item) => `mat_${item.id}`}
+          renderItem={renderMaterial}
+          contentContainerStyle={styles.listContent}
+          ListEmptyComponent={
+            <View style={styles.empty}>
+              <Ionicons name="leaf-outline" size={48} color={Colors.textLight} />
+              <Text style={styles.emptyText}>{loading ? 'Loading...' : 'No materials found'}</Text>
+            </View>
+          }
+        />
+      )}
+
+      {/* Cart items panel */}
+      {cart.length > 0 && (
+        <View style={styles.cartPanel}>
+          <View style={styles.cartPanelHeader}>
+            <Text style={styles.cartPanelTitle}>Cart ({itemCount} items)</Text>
+            <TouchableOpacity onPress={clearCart}>
+              <Text style={styles.clearText}>Clear All</Text>
+            </TouchableOpacity>
+          </View>
+          <ScrollView style={styles.cartItemsList} nestedScrollEnabled>
+            {cart.map((c) => (
+              <View key={cartItemKey(c)} style={styles.cartItem}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.cartItemName} numberOfLines={1}>
+                    {c.material_id ? '🌿 ' : ''}{c.product_name}
+                  </Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                    <Text style={styles.cartItemPrice}>₹</Text>
+                    <TextInput
+                      style={styles.cartPriceInput}
+                      value={String(c.unit_price)}
+                      onChangeText={(v) => updateCartPrice(c, v)}
+                      keyboardType="numeric"
+                      selectTextOnFocus
+                    />
+                    <Text style={styles.cartItemPrice}> × {c.quantity} = ₹{(c.unit_price * c.quantity).toFixed(0)}</Text>
+                  </View>
+                </View>
+                <View style={styles.qtyControls}>
+                  <TouchableOpacity style={styles.qtyBtn} onPress={() => updateCartQty(c, -1)}>
+                    <Ionicons name={c.quantity === 1 ? 'trash-outline' : 'remove'} size={16} color={c.quantity === 1 ? Colors.error : Colors.primary} />
+                  </TouchableOpacity>
+                  <Text style={styles.qtyText}>{c.quantity}</Text>
+                  <TouchableOpacity style={styles.qtyBtn} onPress={() => updateCartQty(c, 1)}>
+                    <Ionicons name="add" size={16} color={Colors.primary} />
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ))}
+          </ScrollView>
+          <View style={styles.cartTotals}>
+            {taxTotal > 0 && (
+              <View style={styles.cartTotalRow}>
+                <Text style={styles.cartTotalLabel}>Tax</Text>
+                <Text style={styles.cartTotalVal}>₹{taxTotal.toFixed(2)}</Text>
+              </View>
+            )}
+            <View style={styles.cartTotalRow}>
+              <Text style={styles.cartGrandLabel}>Total</Text>
+              <Text style={styles.cartGrandVal}>₹{grandTotal.toFixed(2)}</Text>
+            </View>
+          </View>
+          <TouchableOpacity style={styles.checkoutBtn} onPress={goToCheckout}>
+            <Text style={styles.checkoutBtnText}>Checkout</Text>
+            <Ionicons name="arrow-forward" size={18} color={Colors.white} />
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {/* Quick-add Product Modal */}
+      <Modal visible={showQuickAdd} transparent animationType="slide">
+        <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          <View style={styles.modalOverlay}>
+            <View style={styles.modalCard}>
+              <View style={styles.modalHeader}>
+                <Text style={styles.modalTitle}>Quick Add Product</Text>
+                <TouchableOpacity onPress={() => { setShowQuickAdd(false); setQaMaterials([]); }}>
+                  <Ionicons name="close" size={24} color={Colors.text} />
+                </TouchableOpacity>
+              </View>
+              <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+                <Text style={styles.fieldLabel}>Name *</Text>
+                <TextInput
+                  style={styles.modalInput}
+                  value={qaName}
+                  onChangeText={setQaName}
+                  placeholder="Product name"
+                  placeholderTextColor={Colors.textLight}
+                  autoFocus
+                />
+                <Text style={styles.fieldLabel}>Selling Price (₹) *</Text>
+                <TextInput
+                  style={styles.modalInput}
+                  value={qaPrice}
+                  onChangeText={setQaPrice}
+                  placeholder="0"
+                  placeholderTextColor={Colors.textLight}
+                  keyboardType="numeric"
+                />
+                <Text style={styles.fieldLabel}>Category</Text>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: Spacing.xs, paddingBottom: Spacing.sm }}>
+                  {['bouquet', 'arrangement', 'basket', 'single_stem', 'gift_combo', 'other'].map((cat) => (
+                    <TouchableOpacity
+                      key={cat}
+                      style={[styles.catChip, qaCategory === cat && styles.catChipActive]}
+                      onPress={() => setQaCategory(cat)}
+                    >
+                      <Text style={[styles.catChipText, qaCategory === cat && styles.catChipTextActive]}>
+                        {cat.replace(/_/g, ' ')}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+
+                {/* BOM Materials */}
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: Spacing.sm }}>
+                  <Text style={styles.fieldLabel}>Materials Used (optional)</Text>
+                  <TouchableOpacity onPress={addQaMaterial} style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                    <Ionicons name="add-circle" size={18} color={Colors.primary} />
+                    <Text style={{ fontSize: FontSize.xs, color: Colors.primary, fontWeight: '600' }}>Add</Text>
+                  </TouchableOpacity>
+                </View>
+                {qaMaterials.map((m, idx) => (
+                  <View key={idx} style={{ flexDirection: 'row', gap: Spacing.xs, alignItems: 'center', marginBottom: Spacing.xs }}>
+                    <View style={{ flex: 2 }}>
+                      {m.material_id ? (
+                        <TouchableOpacity
+                          style={[styles.modalInput, { justifyContent: 'center', paddingVertical: Spacing.xs + 4 }]}
+                          onPress={() => {
+                            const filtered = allMaterialsList.filter(
+                              (mat) => !qaMaterials.some((qm, qi) => qi !== idx && qm.material_id === mat.id)
+                            );
+                            if (filtered.length === 0) { Alert.alert('No materials', 'All materials already added'); return; }
+                            Alert.alert('Select Material', '', filtered.map((mat) => ({
+                              text: mat.name,
+                              onPress: () => selectQaMaterial(idx, mat),
+                            })).concat([{ text: 'Cancel', style: 'cancel' }]));
+                          }}
+                        >
+                          <Text style={{ color: Colors.text, fontSize: FontSize.sm }}>{m.name}</Text>
+                        </TouchableOpacity>
+                      ) : (
+                        <TouchableOpacity
+                          style={[styles.modalInput, { justifyContent: 'center', paddingVertical: Spacing.xs + 4 }]}
+                          onPress={() => {
+                            const filtered = allMaterialsList.filter(
+                              (mat) => !qaMaterials.some((qm, qi) => qi !== idx && qm.material_id === mat.id)
+                            );
+                            if (filtered.length === 0) { Alert.alert('No materials', 'No materials available'); return; }
+                            Alert.alert('Select Material', '', filtered.map((mat) => ({
+                              text: mat.name,
+                              onPress: () => selectQaMaterial(idx, mat),
+                            })).concat([{ text: 'Cancel', style: 'cancel' }]));
+                          }}
+                        >
+                          <Text style={{ color: Colors.textLight, fontSize: FontSize.sm }}>Select material...</Text>
+                        </TouchableOpacity>
+                      )}
+                    </View>
+                    <TextInput
+                      style={[styles.modalInput, { flex: 1 }]}
+                      value={m.qty}
+                      onChangeText={(v) => updateQaMaterial(idx, 'qty', v)}
+                      placeholder="Qty"
+                      placeholderTextColor={Colors.textLight}
+                      keyboardType="numeric"
+                    />
+                    <TouchableOpacity onPress={() => removeQaMaterial(idx)}>
+                      <Ionicons name="close-circle" size={22} color={Colors.error} />
+                    </TouchableOpacity>
+                  </View>
+                ))}
+
+                <TouchableOpacity
+                  style={[styles.qaSubmitBtn, qaSubmitting && { opacity: 0.6 }]}
+                  onPress={handleQuickAdd}
+                  disabled={qaSubmitting}
+                >
+                  {qaSubmitting ? (
+                    <ActivityIndicator color={Colors.white} />
+                  ) : (
+                    <>
+                      <Ionicons name="add-circle" size={18} color={Colors.white} />
+                      <Text style={styles.qaSubmitText}>Create & Add to Cart</Text>
+                    </>
+                  )}
+                </TouchableOpacity>
+              </ScrollView>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: Colors.background },
+  locRow: { maxHeight: 44, backgroundColor: Colors.surface, borderBottomWidth: 1, borderBottomColor: Colors.border },
+  locChip: {
+    paddingHorizontal: Spacing.md, paddingVertical: Spacing.xs + 2,
+    borderRadius: BorderRadius.full, backgroundColor: Colors.background,
+    borderWidth: 1, borderColor: Colors.border,
+  },
+  locChipActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
+  locChipText: { fontSize: FontSize.xs, color: Colors.textSecondary },
+  locChipTextActive: { color: Colors.white, fontWeight: '600' },
+
+  searchRow: {
+    flexDirection: 'row', alignItems: 'center',
+    paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm,
+    gap: Spacing.sm, backgroundColor: Colors.surface,
+    borderBottomWidth: 1, borderBottomColor: Colors.border,
+  },
+  searchWrap: {
+    flex: 1, flexDirection: 'row', alignItems: 'center',
+    backgroundColor: Colors.background, borderRadius: BorderRadius.md,
+    paddingHorizontal: Spacing.sm, height: 40,
+    borderWidth: 1, borderColor: Colors.border,
+  },
+  searchInput: { flex: 1, fontSize: FontSize.sm, color: Colors.text },
+  scanBtn: {
+    width: 40, height: 40, borderRadius: BorderRadius.md,
+    backgroundColor: Colors.primary, justifyContent: 'center', alignItems: 'center',
+  },
+
+  tabRow: {
+    flexDirection: 'row', paddingHorizontal: Spacing.md, paddingVertical: Spacing.xs,
+    gap: Spacing.xs, backgroundColor: Colors.surface,
+    borderBottomWidth: 1, borderBottomColor: Colors.border,
+  },
+  tabBtn: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4,
+    paddingVertical: Spacing.xs + 2, borderRadius: BorderRadius.md,
+    backgroundColor: Colors.background, borderWidth: 1, borderColor: Colors.border,
+  },
+  tabBtnActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
+  tabBtnText: { fontSize: FontSize.xs, color: Colors.textSecondary, fontWeight: '500' },
+  tabBtnTextActive: { color: Colors.white, fontWeight: '600' },
+
+  catFilterRow: { maxHeight: 36, backgroundColor: Colors.background, paddingVertical: Spacing.xs },
+
+  listContent: { padding: Spacing.md, paddingBottom: 20 },
+  productCard: {
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: Colors.surface, borderRadius: BorderRadius.md,
+    padding: Spacing.md, marginBottom: Spacing.sm,
+    borderWidth: 1, borderColor: Colors.border,
+  },
+  productCardDimmed: { opacity: 0.5 },
+  productIconWrap: {
+    width: 44, height: 44, borderRadius: BorderRadius.md,
+    backgroundColor: Colors.primary + '12', justifyContent: 'center', alignItems: 'center',
+    marginRight: Spacing.sm,
+  },
+  productInfo: { flex: 1 },
+  productName: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.text },
+  productSku: { fontSize: FontSize.xs, color: Colors.textLight, marginTop: 2 },
+  productPrice: { fontSize: FontSize.md, fontWeight: '700', color: Colors.success },
+
+  popularBadge: {
+    flexDirection: 'row', alignItems: 'center', gap: 2,
+    backgroundColor: '#FFF3E0', paddingHorizontal: 6, paddingVertical: 1,
+    borderRadius: BorderRadius.sm,
+  },
+  popularText: { fontSize: 9, fontWeight: '700', color: '#FF6D00' },
+
+  empty: { alignItems: 'center', paddingTop: 80 },
+  emptyText: { color: Colors.textLight, marginTop: Spacing.sm, fontSize: FontSize.sm },
+
+  qtyBadge: {
+    position: 'absolute', top: -6, right: -6,
+    width: 20, height: 20, borderRadius: 10,
+    backgroundColor: Colors.primary, justifyContent: 'center', alignItems: 'center',
+  },
+  qtyBadgeText: { color: Colors.white, fontSize: 10, fontWeight: '700' },
+
+  cartPanel: {
+    backgroundColor: Colors.surface, borderTopWidth: 1, borderTopColor: Colors.border,
+    maxHeight: 320,
+  },
+  cartPanelHeader: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    paddingHorizontal: Spacing.md, paddingTop: Spacing.sm, paddingBottom: Spacing.xs,
+  },
+  cartPanelTitle: { fontSize: FontSize.sm, fontWeight: '700', color: Colors.text },
+  clearText: { fontSize: FontSize.xs, color: Colors.error, fontWeight: '600' },
+  cartItemsList: { maxHeight: 140, paddingHorizontal: Spacing.md },
+  cartItem: {
+    flexDirection: 'row', alignItems: 'center',
+    paddingVertical: Spacing.xs, borderBottomWidth: 1, borderBottomColor: Colors.border,
+  },
+  cartItemName: { fontSize: FontSize.xs, color: Colors.text, fontWeight: '500' },
+  cartItemPrice: { fontSize: FontSize.xs, color: Colors.textSecondary },
+  cartPriceInput: {
+    fontSize: FontSize.xs, color: Colors.primary, fontWeight: '600',
+    borderBottomWidth: 1, borderBottomColor: Colors.border,
+    paddingVertical: 0, paddingHorizontal: 2, minWidth: 36,
+  },
+  qtyControls: { flexDirection: 'row', alignItems: 'center', gap: 2 },
+  qtyBtn: {
+    width: 30, height: 30, borderRadius: BorderRadius.sm,
+    backgroundColor: Colors.background, borderWidth: 1, borderColor: Colors.border,
+    justifyContent: 'center', alignItems: 'center',
+  },
+  qtyText: { fontSize: FontSize.sm, fontWeight: '700', color: Colors.text, minWidth: 24, textAlign: 'center' },
+  cartTotals: { paddingHorizontal: Spacing.md, paddingVertical: Spacing.xs },
+  cartTotalRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 2 },
+  cartTotalLabel: { fontSize: FontSize.xs, color: Colors.textSecondary },
+  cartTotalVal: { fontSize: FontSize.xs, color: Colors.text },
+  cartGrandLabel: { fontSize: FontSize.sm, fontWeight: '700', color: Colors.text },
+  cartGrandVal: { fontSize: FontSize.sm, fontWeight: '700', color: Colors.primary },
+  checkoutBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    backgroundColor: Colors.primary, marginHorizontal: Spacing.md,
+    marginBottom: Spacing.sm, paddingVertical: Spacing.sm, borderRadius: BorderRadius.md,
+  },
+  checkoutBtnText: { color: Colors.white, fontWeight: '600', fontSize: FontSize.sm },
+
+  // Quick-add modal
+  modalOverlay: {
+    flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end',
+  },
+  modalCard: {
+    backgroundColor: Colors.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20,
+    padding: Spacing.lg, maxHeight: '85%',
+  },
+  modalHeader: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    marginBottom: Spacing.md,
+  },
+  modalTitle: { fontSize: FontSize.md, fontWeight: '700', color: Colors.text },
+  fieldLabel: { fontSize: FontSize.xs, fontWeight: '600', color: Colors.text, marginTop: Spacing.sm, marginBottom: Spacing.xs },
+  modalInput: {
+    backgroundColor: Colors.background, borderWidth: 1, borderColor: Colors.border,
+    borderRadius: BorderRadius.md, paddingHorizontal: Spacing.sm,
+    paddingVertical: Spacing.xs + 2, fontSize: FontSize.sm, color: Colors.text,
+  },
+  catChip: {
+    paddingHorizontal: Spacing.md, paddingVertical: Spacing.xs + 2,
+    borderRadius: BorderRadius.full, backgroundColor: Colors.background,
+    borderWidth: 1, borderColor: Colors.border,
+  },
+  catChipActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
+  catChipText: { fontSize: FontSize.xs, color: Colors.textSecondary, textTransform: 'capitalize' },
+  catChipTextActive: { color: Colors.white, fontWeight: '600' },
+  qaSubmitBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    backgroundColor: Colors.success, paddingVertical: Spacing.sm,
+    borderRadius: BorderRadius.md, marginTop: Spacing.md, marginBottom: Spacing.sm,
+  },
+  qaSubmitText: { color: Colors.white, fontWeight: '600', fontSize: FontSize.sm },
+});

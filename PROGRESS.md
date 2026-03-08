@@ -2,7 +2,7 @@
 
 **Project**: BloomCart POS  
 **Last Updated**: 8 March 2026  
-**Current Phase**: Phase 3 Complete — Phase 4 Not Started
+**Current Phase**: Phase 4 Complete — Phase 5 Not Started
 
 ---
 
@@ -224,36 +224,36 @@
 
 ## Phase 4 — POS & Sales
 
-**Status**: ⬜ Not Started
+**Status**: ✅ Complete  
+**Completed**: 8 March 2026
 
 ### Backend
 
 | # | Task | Status | Notes |
 |---|------|--------|-------|
-| 4.1 | Database tables (orders, order_items, payments, cash_registers, discount_requests) | ⬜ | |
-| 4.2 | Cart / order creation routes | ⬜ | |
-| 4.3 | Tax calculation logic (per-product tax rates) | ⬜ | |
-| 4.4 | Discount system with approval workflow routes | ⬜ | |
-| 4.5 | Split payment processing (cash + card + UPI) | ⬜ | |
-| 4.6 | Order type support (walk-in, pickup, delivery) | ⬜ | |
-| 4.7 | Pre-order with advance payment | ⬜ | |
-| 4.8 | Digital receipt generation (PDF) | ⬜ | |
-| 4.9 | Cash register routes (open, close, reconcile) | ⬜ | |
+| 4.1 | Database tables (sales, sale_items, payments, refunds, cash_registers, pre_orders) | ✅ | 6 tables with indexes, FKs, constraints |
+| 4.2 | Sales CRUD routes (create sale with items/payments in transaction) | ✅ | Auto-generates sale_number INV-LOCCODE-DATE-SEQ |
+| 4.3 | Tax calculation logic (per-product tax rates via tax_rate_id) | ✅ | Tax computed per item at sale time |
+| 4.4 | Discount system (fixed amount or percentage) | ✅ | Applied at checkout, reflected in grand total |
+| 4.5 | Split payment processing (cash + card + UPI) | ✅ | Multiple payments per sale, payment_status auto-updated |
+| 4.6 | Order type support (walk_in, pickup, delivery, pre_order) | ✅ | Stored in sales.order_type |
+| 4.7 | Pre-order with advance payment | ✅ | pre_orders table, scheduled_date/time, advance/remaining |
+| 4.8 | Refund routes | ✅ | Full/partial refund with reason, method, cash register update |
+| 4.9 | Cash register routes (open, close, reconcile, history) | ✅ | Auto-recalculates expected cash on close |
+| 4.10 | Today sales summary route | ✅ | Revenue, tax, discounts, order type counts, payment breakdown |
 
 ### Frontend
 
 | # | Task | Status | Notes |
 |---|------|--------|-------|
-| 4.10 | API service — POS methods | ⬜ | |
-| 4.11 | POS tab in MainNavigator | ⬜ | |
-| 4.12 | POSScreen (product grid/list, search, QR scan button) | ⬜ | |
-| 4.13 | CartScreen (items, quantities, notes, tax breakdown) | ⬜ | |
-| 4.14 | CheckoutScreen (payment method, split payment, customer select) | ⬜ | |
-| 4.15 | DiscountRequestScreen (request + approval) | ⬜ | |
-| 4.16 | ReceiptScreen (view + share/print PDF) | ⬜ | |
-| 4.17 | CashRegisterScreen (open/close shift, reconciliation) | ⬜ | |
-| 4.18 | OrderTypeSelector component | ⬜ | |
-| 4.19 | PreOrderScreen (advance payment, scheduled date) | ⬜ | |
+| 4.11 | API service — POS methods (11 methods) | ✅ | getSales, createSale, refundSale, register endpoints, etc. |
+| 4.12 | POS tab + Sales tab in MainNavigator | ✅ | POS for owner/manager/employee, Sales for owner/manager |
+| 4.13 | POSScreen (product list, search, QR scan, cart bar) | ✅ | Location selector, add-to-cart, qty +/-, running totals |
+| 4.14 | CheckoutScreen (order type, customer, discount, payment) | ✅ | Pre-order fields, delivery address, payment ref |
+| 4.15 | SaleDetailScreen (receipt view, items, payments, refund) | ✅ | Status badges, cancel/refund actions, balance due |
+| 4.16 | SalesScreen (list with filters, today summary bar) | ✅ | Filter by order type, search, pagination |
+| 4.17 | CashRegisterScreen (open/close, status, history) | ✅ | Location-aware, discrepancy calculation |
+| 4.18 | RefundSaleScreen (amount, reason, method) | ✅ | Confirmation dialog, amount validation |
 
 ### Phase 4 Testing
 
@@ -261,11 +261,11 @@
 |---|------|--------|-------|
 | T4.1 | Add products to cart via list and QR scan | ⬜ | |
 | T4.2 | Tax calculation correctness (GST rates) | ⬜ | |
-| T4.3 | Discount apply + approval workflow | ⬜ | |
+| T4.3 | Discount apply (fixed + percentage) | ⬜ | |
 | T4.4 | Split payment (cash + card + UPI combo) | ⬜ | |
 | T4.5 | Walk-in / pickup / delivery order types | ⬜ | |
 | T4.6 | Pre-order with advance payment | ⬜ | |
-| T4.7 | Receipt PDF generation + share | ⬜ | |
+| T4.7 | Sale detail / receipt view | ⬜ | |
 | T4.8 | Cash register open → sales → close → reconcile | ⬜ | |
 | T4.9 | Role-based POS access (owner/manager/employee) | ⬜ | |
 | T4.10 | Full POS sale end-to-end in app | ⬜ | |

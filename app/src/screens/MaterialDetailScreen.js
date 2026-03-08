@@ -198,6 +198,10 @@ export default function MaterialDetailScreen({ route, navigation }) {
                   <Text style={styles.metaLabel}>Min Alert</Text>
                   <Text style={styles.metaValue}>{material.min_stock_alert}</Text>
                 </View>
+                <View style={styles.metaItem}>
+                  <Text style={styles.metaLabel}>Selling Price</Text>
+                  <Text style={[styles.metaValue, { color: Colors.success }]}>₹{(material.selling_price || 0).toFixed(2)}</Text>
+                </View>
               </View>
               {canManage && (
                 <TouchableOpacity

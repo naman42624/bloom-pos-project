@@ -88,11 +88,12 @@ function recalcEstimatedCost(db, productId) {
 router.get('/', authenticate, (req, res, next) => {
   try {
     const db = getDb();
-    const { type, category, search, is_active } = req.query;
+    const { type, category, search, is_active, location_id } = req.query;
 
     let sql = `
       SELECT p.*, tr.name as tax_name, tr.percentage as tax_percentage,
-             l.name as location_name
+             l.name as location_name,
+             COALESCE((SELECT SUM(si.quantity) FROM sale_items si JOIN sales s ON si.sale_id = s.id WHERE si.product_id = p.id AND s.status != 'cancelled'), 0) as sale_count
       FROM products p
       LEFT JOIN tax_rates tr ON p.tax_rate_id = tr.id
       LEFT JOIN locations l ON p.location_id = l.id
@@ -106,9 +107,31 @@ router.get('/', authenticate, (req, res, next) => {
     else { sql += ' AND p.is_active = 1'; }
     if (search) { sql += ' AND (p.name LIKE ? OR p.sku LIKE ? OR p.description LIKE ?)'; const s = `%${search}%`; params.push(s, s, s); }
 
-    sql += ' ORDER BY p.name ASC';
+    sql += ' ORDER BY sale_count DESC, p.name ASC';
 
     const products = db.prepare(sql).all(...params);
+
+    // Calculate available quantity based on BOM and material stock
+    const locId = location_id ? Number(location_id) : null;
+    if (locId) {
+      const getBOM = db.prepare('SELECT material_id, quantity as qty_needed FROM product_materials WHERE product_id = ?');
+      const getStock = db.prepare('SELECT quantity FROM material_stock WHERE material_id = ? AND location_id = ?');
+      for (const product of products) {
+        const bom = getBOM.all(product.id);
+        if (bom.length === 0) {
+          product.available_qty = null; // no BOM = unlimited
+        } else {
+          let minAvail = Infinity;
+          for (const b of bom) {
+            const stock = getStock.get(b.material_id, locId);
+            const available = stock ? Math.floor(stock.quantity / b.qty_needed) : 0;
+            if (available < minAvail) minAvail = available;
+          }
+          product.available_qty = minAvail === Infinity ? null : minAvail;
+        }
+      }
+    }
+
     res.json({ success: true, data: products });
   } catch (err) { next(err); }
 });

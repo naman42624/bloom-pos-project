@@ -35,8 +35,19 @@ import StockTransferFormScreen from '../screens/StockTransferFormScreen';
 import ProductsScreen from '../screens/ProductsScreen';
 import ProductDetailScreen from '../screens/ProductDetailScreen';
 import ProductFormScreen from '../screens/ProductFormScreen';
+import ProductStockScreen from '../screens/ProductStockScreen';
 import QRScannerScreen from '../screens/QRScannerScreen';
 import QRLabelScreen from '../screens/QRLabelScreen';
+
+// Phase 4 — POS & Sales
+import POSScreen from '../screens/POSScreen';
+import CheckoutScreen from '../screens/CheckoutScreen';
+import SaleDetailScreen from '../screens/SaleDetailScreen';
+import SalesScreen from '../screens/SalesScreen';
+import CashRegisterScreen from '../screens/CashRegisterScreen';
+import RefundSaleScreen from '../screens/RefundSaleScreen';
+import AddPaymentScreen from '../screens/AddPaymentScreen';
+import ExpensesScreen from '../screens/ExpensesScreen';
 
 import { Colors, FontSize } from '../constants/theme';
 
@@ -153,6 +164,7 @@ function InventoryStack() {
       />
       {/* Stock */}
       <Stack.Screen name="StockAdjust" component={StockAdjustScreen} options={{ title: 'Adjust Stock', presentation: 'modal' }} />
+      <Stack.Screen name="ProductStock" component={ProductStockScreen} options={{ title: 'Product Stock' }} />
       <Stack.Screen name="StockTransfers" component={StockTransfersScreen} options={{ title: 'Transfers' }} />
       <Stack.Screen
         name="StockTransferForm"
@@ -184,9 +196,41 @@ function ProfileStack() {
   );
 }
 
+// ─── POS Stack ──────────────────────────────────────────────
+function POSStack() {
+  return (
+    <Stack.Navigator screenOptions={stackScreenOptions}>
+      <Stack.Screen name="POSHome" component={POSScreen} options={{ title: 'Point of Sale' }} />
+      <Stack.Screen name="Checkout" component={CheckoutScreen} options={{ title: 'Checkout' }} />
+      <Stack.Screen name="SaleDetail" component={SaleDetailScreen} options={{ title: 'Sale Details' }} />
+      <Stack.Screen name="RefundSale" component={RefundSaleScreen} options={{ title: 'Refund' }} />
+      <Stack.Screen name="AddPayment" component={AddPaymentScreen} options={{ title: 'Record Payment' }} />
+      <Stack.Screen name="QRScanner" component={QRScannerScreen} options={{ title: 'Scan QR' }} />
+      <Stack.Screen name="CashRegister" component={CashRegisterScreen} options={{ title: 'Cash Register' }} />
+      <Stack.Screen name="Expenses" component={ExpensesScreen} options={{ title: 'Expenses' }} />
+    </Stack.Navigator>
+  );
+}
+
+// ─── Sales Stack ────────────────────────────────────────────
+function SalesStack() {
+  return (
+    <Stack.Navigator screenOptions={stackScreenOptions}>
+      <Stack.Screen name="SalesList" component={SalesScreen} options={{ title: 'Sales' }} />
+      <Stack.Screen name="SaleDetail" component={SaleDetailScreen} options={{ title: 'Sale Details' }} />
+      <Stack.Screen name="RefundSale" component={RefundSaleScreen} options={{ title: 'Refund' }} />
+      <Stack.Screen name="AddPayment" component={AddPaymentScreen} options={{ title: 'Record Payment' }} />
+      <Stack.Screen name="CashRegister" component={CashRegisterScreen} options={{ title: 'Cash Register' }} />
+      <Stack.Screen name="Expenses" component={ExpensesScreen} options={{ title: 'Expenses' }} />
+    </Stack.Navigator>
+  );
+}
+
 // ─── Tab config per role ────────────────────────────────────
 const TAB_ICONS = {
   Dashboard: { active: 'grid', inactive: 'grid-outline' },
+  POS: { active: 'cart', inactive: 'cart-outline' },
+  Sales: { active: 'receipt', inactive: 'receipt-outline' },
   Inventory: { active: 'leaf', inactive: 'leaf-outline' },
   Locations: { active: 'location', inactive: 'location-outline' },
   Staff: { active: 'people', inactive: 'people-outline' },
@@ -227,6 +271,24 @@ export default function MainNavigator() {
         component={DashboardStack}
         options={{ tabBarLabel: 'Home' }}
       />
+
+      {/* POS tab — Owner, Manager, Employee */}
+      {(role === 'owner' || role === 'manager' || role === 'employee') && (
+        <Tab.Screen
+          name="POS"
+          component={POSStack}
+          options={{ tabBarLabel: 'POS' }}
+        />
+      )}
+
+      {/* Sales tab — Owner, Manager */}
+      {(role === 'owner' || role === 'manager') && (
+        <Tab.Screen
+          name="Sales"
+          component={SalesStack}
+          options={{ tabBarLabel: 'Sales' }}
+        />
+      )}
 
       {/* Owner, Manager, and Employee see Inventory tab */}
       {(role === 'owner' || role === 'manager' || role === 'employee') && (

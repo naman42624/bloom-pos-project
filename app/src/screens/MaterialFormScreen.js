@@ -18,6 +18,7 @@ export default function MaterialFormScreen({ route, navigation }) {
   const [name, setName] = useState('');
   const [sku, setSku] = useState('');
   const [bundleSizeOverride, setBundleSizeOverride] = useState('');
+  const [sellingPrice, setSellingPrice] = useState('');
   const [minStockAlert, setMinStockAlert] = useState('10');
   const [loading, setLoading] = useState(false);
   const [errors, setErrors] = useState({});
@@ -29,6 +30,7 @@ export default function MaterialFormScreen({ route, navigation }) {
       setName(existing.name || '');
       setSku(existing.sku || '');
       setBundleSizeOverride(existing.bundle_size_override ? String(existing.bundle_size_override) : '');
+      setSellingPrice(existing.selling_price ? String(existing.selling_price) : '');
       setMinStockAlert(String(existing.min_stock_alert ?? 10));
     }
   }, [existing]);
@@ -60,6 +62,7 @@ export default function MaterialFormScreen({ route, navigation }) {
         name: name.trim(),
         sku: sku.trim() || undefined,
         bundle_size_override: bundleSizeOverride ? parseInt(bundleSizeOverride) : undefined,
+        selling_price: sellingPrice ? parseFloat(sellingPrice) : 0,
         min_stock_alert: parseInt(minStockAlert) || 10,
       };
       if (isEditing) {
@@ -97,6 +100,7 @@ export default function MaterialFormScreen({ route, navigation }) {
 
           <Input label="Material Name" value={name} onChangeText={setName} error={errors.name} placeholder="e.g. Red Rose" />
           <Input label="SKU (optional)" value={sku} onChangeText={setSku} placeholder="Auto-generated if blank" />
+          <Input label="Selling Price (₹)" value={sellingPrice} onChangeText={setSellingPrice} keyboardType="decimal-pad" placeholder="Price when sold via POS" />
           <Input label="Bundle Size Override (optional)" value={bundleSizeOverride} onChangeText={setBundleSizeOverride} keyboardType="number-pad" placeholder="Override category default" />
           <Input label="Min Stock Alert" value={minStockAlert} onChangeText={setMinStockAlert} keyboardType="number-pad" placeholder="10" />
 

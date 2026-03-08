@@ -144,7 +144,7 @@ router.post(
         return res.status(400).json({ success: false, message: 'Validation failed', errors: errors.array() });
       }
 
-      const { category_id, name, sku, bundle_size_override, min_stock_alert, image_url } = req.body;
+      const { category_id, name, sku, bundle_size_override, min_stock_alert, image_url, selling_price } = req.body;
       const db = getDb();
 
       // Validate category exists
@@ -165,9 +165,9 @@ router.post(
       const finalSku = sku || `MAT-${Date.now()}`;
 
       const result = db.prepare(
-        `INSERT INTO materials (category_id, name, sku, bundle_size_override, min_stock_alert, image_url, created_by)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`
-      ).run(category_id, name, finalSku, bundle_size_override || null, min_stock_alert ?? 10, image_url || null, req.user.id);
+        `INSERT INTO materials (category_id, name, sku, bundle_size_override, min_stock_alert, image_url, selling_price, created_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(category_id, name, finalSku, bundle_size_override || null, min_stock_alert ?? 10, image_url || null, selling_price || 0, req.user.id);
 
       const material = db.prepare(`
         SELECT m.*, mc.name as category_name, mc.unit as category_unit
@@ -217,7 +217,7 @@ router.put(
         }
       }
 
-      const fields = ['category_id', 'name', 'sku', 'bundle_size_override', 'image_url', 'min_stock_alert', 'is_active'];
+      const fields = ['category_id', 'name', 'sku', 'bundle_size_override', 'image_url', 'min_stock_alert', 'is_active', 'selling_price'];
       const updates = [];
       const values = [];
 
@@ -236,6 +236,32 @@ router.put(
       values.push(req.params.id);
 
       db.prepare(`UPDATE materials SET ${updates.join(', ')} WHERE id = ?`).run(...values);
+
+      // If selling_price changed, recalculate estimated_cost for all products using this material
+      if (req.body.selling_price !== undefined) {
+        const affectedProducts = db.prepare(
+          'SELECT DISTINCT product_id FROM product_materials WHERE material_id = ?'
+        ).all(req.params.id);
+        for (const { product_id } of affectedProducts) {
+          // Recalculate: sum(pm.quantity * material.selling_price) for all BOM materials
+          const bomRows = db.prepare(`
+            SELECT pm.quantity, COALESCE(m.selling_price, 0) as selling_price,
+              COALESCE(
+                (SELECT AVG(sm.default_price_per_unit) FROM supplier_materials sm WHERE sm.material_id = pm.material_id AND sm.default_price_per_unit > 0),
+                0
+              ) as avg_cost
+            FROM product_materials pm
+            JOIN materials m ON pm.material_id = m.id
+            WHERE pm.product_id = ?
+          `).all(product_id);
+          let total = 0;
+          for (const r of bomRows) {
+            const unitCost = r.selling_price > 0 ? r.selling_price : (r.avg_cost || 0);
+            total += r.quantity * unitCost;
+          }
+          db.prepare('UPDATE products SET estimated_cost = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(total, product_id);
+        }
+      }
 
       const material = db.prepare(`
         SELECT m.*, mc.name as category_name, mc.unit as category_unit

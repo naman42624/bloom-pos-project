@@ -7,10 +7,11 @@ import { CameraView, useCameraPermissions } from 'expo-camera';
 import api from '../services/api';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 
-export default function QRScannerScreen({ navigation }) {
+export default function QRScannerScreen({ navigation, route }) {
   const [permission, requestPermission] = useCameraPermissions();
   const [scanned, setScanned] = useState(false);
   const [processing, setProcessing] = useState(false);
+  const fromPOS = route.params?.fromPOS || false;
 
   const handleBarCodeScanned = async ({ data }) => {
     if (scanned || processing) return;
@@ -20,7 +21,12 @@ export default function QRScannerScreen({ navigation }) {
     try {
       const res = await api.scanProductQR(data);
       if (res.success && res.data) {
-        navigation.replace('ProductDetail', { productId: res.data.id });
+        if (fromPOS) {
+          // Return product to POS cart
+          navigation.navigate('POSHome', { scannedProduct: res.data });
+        } else {
+          navigation.replace('ProductDetail', { productId: res.data.id });
+        }
       } else {
         Alert.alert('Not Found', 'No product matched this QR code');
         setScanned(false);
