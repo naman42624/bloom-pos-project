@@ -254,6 +254,23 @@ class ApiService {
     return this.request(`/materials/low-stock${query ? `?${query}` : ''}`);
   }
 
+  async uploadMaterialImage(materialId, imageUri) {
+    const formData = new FormData();
+    const filename = imageUri.split('/').pop();
+    const match = /\.(\w+)$/.exec(filename);
+    const ext = match ? match[1] : 'jpg';
+    formData.append('image', { uri: imageUri, name: filename, type: `image/${ext}` });
+
+    const url = `${API_BASE_URL}/materials/${materialId}/image`;
+    const headers = {};
+    if (this.token) headers['Authorization'] = `Bearer ${this.token}`;
+
+    const response = await fetch(url, { method: 'POST', headers, body: formData });
+    const data = await response.json();
+    if (!response.ok) throw { status: response.status, message: data.message || 'Upload failed' };
+    return data;
+  }
+
   // ─── Suppliers ──────────────────────────────────────────
   getSuppliers(params = {}) {
     const query = new URLSearchParams(params).toString();
@@ -347,6 +364,73 @@ class ApiService {
 
   cancelStockTransfer(id) {
     return this.request(`/stock/transfers/${id}/cancel`, { method: 'PUT' });
+  }
+
+  // ─── Products ───────────────────────────────────────────
+  getProducts(params = {}) {
+    const query = new URLSearchParams(params).toString();
+    return this.request(`/products${query ? `?${query}` : ''}`);
+  }
+
+  getProduct(id) {
+    return this.request(`/products/${id}`);
+  }
+
+  createProduct(data) {
+    return this.request('/products', { method: 'POST', body: JSON.stringify(data) });
+  }
+
+  updateProduct(id, data) {
+    return this.request(`/products/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+  }
+
+  deleteProduct(id) {
+    return this.request(`/products/${id}`, { method: 'DELETE' });
+  }
+
+  // ─── Product Materials ─────────────────────────────────
+  addProductMaterial(productId, data) {
+    return this.request(`/products/${productId}/materials`, { method: 'POST', body: JSON.stringify(data) });
+  }
+
+  updateProductMaterial(productId, materialId, data) {
+    return this.request(`/products/${productId}/materials/${materialId}`, { method: 'PUT', body: JSON.stringify(data) });
+  }
+
+  removeProductMaterial(productId, materialId) {
+    return this.request(`/products/${productId}/materials/${materialId}`, { method: 'DELETE' });
+  }
+
+  // ─── Product Images ────────────────────────────────────
+  async uploadProductImage(productId, imageUri, isPrimary = false) {
+    const formData = new FormData();
+    const filename = imageUri.split('/').pop();
+    const match = /\.(\w+)$/.exec(filename);
+    const ext = match ? match[1] : 'jpg';
+    formData.append('image', { uri: imageUri, name: filename, type: `image/${ext}` });
+    if (isPrimary) formData.append('is_primary', '1');
+
+    const url = `${API_BASE_URL}/products/${productId}/images`;
+    const headers = {};
+    if (this.token) headers['Authorization'] = `Bearer ${this.token}`;
+
+    const response = await fetch(url, { method: 'POST', headers, body: formData });
+    const data = await response.json();
+    if (!response.ok) throw { status: response.status, message: data.message || 'Upload failed' };
+    return data;
+  }
+
+  deleteProductImage(productId, imageId) {
+    return this.request(`/products/${productId}/images/${imageId}`, { method: 'DELETE' });
+  }
+
+  // ─── Product QR ─────────────────────────────────────────
+  getProductQR(productId, size = 300) {
+    return this.request(`/products/${productId}/qr?size=${size}`);
+  }
+
+  scanProductQR(payload) {
+    return this.request('/products/scan', { method: 'POST', body: JSON.stringify({ payload }) });
   }
 }
 

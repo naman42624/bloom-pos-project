@@ -15,6 +15,7 @@ const materialsRoutes = require('./routes/materials');
 const suppliersRoutes = require('./routes/suppliers');
 const purchaseOrdersRoutes = require('./routes/purchase-orders');
 const stockRoutes = require('./routes/stock');
+const productsRoutes = require('./routes/products');
 const { errorHandler, notFound } = require('./middleware/errorHandler');
 const { getDb, closeDb } = require('./config/database');
 
@@ -51,6 +52,7 @@ app.use('/api/materials', materialsRoutes);
 app.use('/api/suppliers', suppliersRoutes);
 app.use('/api/purchase-orders', purchaseOrdersRoutes);
 app.use('/api/stock', stockRoutes);
+app.use('/api/products', productsRoutes);
 
 // ─── Error Handling ──────────────────────────────────────────
 app.use(notFound);

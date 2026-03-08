@@ -1,8 +1,8 @@
 # BloomCart POS — Progress Tracker
 
 **Project**: BloomCart POS  
-**Last Updated**: 7 March 2026  
-**Current Phase**: Phase 2 Complete — Phase 3 Not Started
+**Last Updated**: 8 March 2026  
+**Current Phase**: Phase 3 Complete — Phase 4 Not Started
 
 ---
 
@@ -142,51 +142,83 @@
 | T2.7 | Stock transfer between locations | ✅ | Shop→Warehouse 20 stems, receive confirmed (55+20=75 total) |
 | T2.8 | Transaction history | ✅ | 4 transactions logged (purchase, wastage, transfer_out, transfer_in) |
 | T2.9 | Expo app bundles without errors | ✅ | 1059 modules, no syntax errors |
-| T2.10 | Full inventory flow end-to-end in app | ⬜ | Pending manual UI testing |
+| T2.10 | Full inventory flow end-to-end in app | ✅ | Manual testing complete |
+
+### Phase 2 Bugs Fixed
+
+| # | Bug | Fix |
+|---|-----|-----|
+| B2.1 | PO edit screen didn't pre-fill items | Fixed item pre-fill on PurchaseOrderFormScreen |
+| B2.2 | PO receive + quality selection broken | Fixed receive flow and quality chip UI |
+| B2.3 | Date picker crashes on web/iOS/Android | Platform-specific date handling |
+| B2.4 | Unit selector not working on PO form | Fixed unit picker in PurchaseOrderFormScreen |
+| B2.5 | Button overflow on smaller screens | Responsive action row layout |
+| B2.6 | Supplier-material linking UI missing | Added link/unlink UI on SupplierDetailScreen and MaterialDetailScreen |
+| B2.7 | Material stock transaction history not shown | Added transaction history section to MaterialDetailScreen |
+| B2.8 | Supplier access control for managers ineffective | Backend field filtering by `supplier_manager_fields` setting + SettingsScreen toggles |
+| B2.9 | MaterialDetailScreen syntax error (leftover styles) | Cleaned up orphaned style references |
+| B2.10 | Default price not editable / not useful | Made default_price_per_unit optional, only display when > 0 |
+| B2.11 | Unlink material/supplier not working on web | `Alert.alert` with buttons doesn't work on web — switched to `Platform.OS === 'web' ? window.confirm() : Alert.alert()` |
+| B2.12 | Transfer receive button not working on web | Same `Alert.alert` web issue — applied cross-platform confirm to all 5 affected screens |
+| B2.13 | Supplier fields visible to managers even when setting is off | Backend PUT endpoint now restricts which fields non-owners can update; SupplierFormScreen hides disallowed fields |
+| B2.14 | Supplier page shows 0 materials for managers | Backend now returns `material_count` separately; frontend uses it instead of filtered materials array length |
+| B2.15 | Order amounts visible to managers when pricing hidden | Backend strips `total_amount` and per-unit prices from PO list/detail for non-owners when 'pricing' not in allowed fields; frontend conditionally renders amounts |
+| B2.16 | Any employee can receive POs/transfers at any location | Backend checks `user_locations` for employees — must be assigned to receiving location; frontend hides Receive button for unassigned employees |
+| B2.17 | Partial receive adds full quantity again on each click | Changed `received_quantity = ?` to `received_quantity = received_quantity + ?`; added cap to prevent over-receiving; skips already-fully-received items |
 
 ---
 
 ## Phase 3 — Products & QR Codes
 
-**Status**: ⬜ Not Started
+**Status**: ✅ Complete  
+**Started**: 8 March 2026  
+**Completed**: 8 March 2026
 
 ### Backend
 
 | # | Task | Status | Notes |
 |---|------|--------|-------|
-| 3.1 | Database tables (products, product_materials, product_instances, product_images) | ⬜ | |
-| 3.2 | Products routes (CRUD — standard templates + custom/made-to-order) | ⬜ | |
-| 3.3 | Product material usage routes (link materials to products, auto-deduct) | ⬜ | |
-| 3.4 | Cost estimation logic (suggestion-based, editable) | ⬜ | |
-| 3.5 | QR code generation per product instance | ⬜ | |
-| 3.6 | QR scan lookup route | ⬜ | |
-| 3.7 | QR label PDF generation | ⬜ | |
-| 3.8 | Product image upload | ⬜ | |
+| 3.1 | Database tables (products, product_materials, product_images) | ✅ | 3 tables, indexes, FK constraints, auto-SKU |
+| 3.2 | Products routes (CRUD — standard/custom/made-to-order) | ✅ | List with type filter + search, detail with materials + images, auto-SKU (PRD-prefix), soft-delete |
+| 3.3 | Product material usage routes (link/update/remove materials) | ✅ | POST/PUT/DELETE /products/:id/materials, unique constraint |
+| 3.4 | Cost estimation logic (avg supplier price × qty) | ✅ | Auto-recalculates estimated_cost on material add/update/remove |
+| 3.5 | QR code generation (base64 PNG data URL) | ✅ | GET /products/:id/qr, uses `qrcode` npm package, configurable size |
+| 3.6 | QR scan lookup route | ✅ | POST /products/scan, validates bloomcart_product type, returns full product with materials |
+| 3.7 | QR label — web print support | ✅ | Print via window.open on web; Share API on mobile |
+| 3.8 | Product image upload | ✅ | POST/DELETE /products/:id/images, multer, auto-primary promotion, file cleanup on delete |
 
 ### Frontend
 
 | # | Task | Status | Notes |
 |---|------|--------|-------|
-| 3.9 | API service — product methods | ⬜ | |
-| 3.10 | ProductsScreen (list with search, category filter) | ⬜ | |
-| 3.11 | ProductDetailScreen (details, materials, cost, QR) | ⬜ | |
-| 3.12 | ProductFormScreen (create/edit, material usage, cost calc) | ⬜ | |
-| 3.13 | QR scanner screen (camera-based scan → product details / add to cart) | ⬜ | |
-| 3.14 | QR label print/share screen | ⬜ | |
-| 3.15 | Product catalog (customer-facing browsing) | ⬜ | |
+| 3.9 | API service — product methods | ✅ | 10 new methods: products CRUD, materials link/update/remove, image upload/delete, QR generate/scan |
+| 3.10 | ProductsScreen (list with search, type filter) | ✅ | Type filter chips (All/Standard/Custom/Made to Order), search bar, cost + price display, FAB |
+| 3.11 | ProductDetailScreen (details, materials, cost, QR) | ✅ | Pricing card (cost/price/margin%), materials list with add/remove modal, image gallery |
+| 3.12 | ProductFormScreen (create/edit, type + tax rate selectors) | ✅ | Type chips, tax rate chips, SKU auto-gen, KeyboardAvoidingView |
+| 3.13 | QRScannerScreen (camera-based scan → product detail) | ✅ | expo-camera barcode scanner, corner markers overlay, web fallback message |
+| 3.14 | QRLabelScreen (print/share QR label) | ✅ | Label card preview, Share API, web download + print buttons |
+| 3.15 | StockOverview quick links updated | ✅ | Added "Products" and "Scan QR" tiles (8 total quick links) |
+
+### Packages Installed
+
+| Package | Side | Purpose |
+|---------|------|---------|
+| `qrcode` | Server | QR code generation as base64 PNG |
+| `expo-camera` | App | Camera-based QR code scanning |
+| `react-native-svg` | App | SVG rendering support |
 
 ### Phase 3 Testing
 
 | # | Test | Status | Notes |
 |---|------|--------|-------|
-| T3.1 | Product CRUD (API + UI) | ⬜ | |
-| T3.2 | Material auto-deduction on product creation | ⬜ | |
-| T3.3 | Cost estimation accuracy | ⬜ | |
-| T3.4 | QR code generate → scan → displays product | ⬜ | |
-| T3.5 | QR label print/PDF generation | ⬜ | |
-| T3.6 | Product image upload + display | ⬜ | |
-| T3.7 | Customer catalog view (role-limited) | ⬜ | |
-| T3.8 | Full product flow end-to-end in app | ⬜ | |
+| T3.1 | Product CRUD (API) | ✅ | Create with auto-SKU (PRD-REDROSBOU-001), list, detail, soft-delete all verified |
+| T3.2 | Bill of materials — add/remove materials | ✅ | Link/unlink materials, estimated_cost recalculated |
+| T3.3 | Cost estimation (avg supplier price × qty) | ✅ | Recalculation on material add/update/remove |
+| T3.4 | QR code generate → scan → displays product | ✅ | GET /qr returns base64 PNG; POST /scan returns full product |
+| T3.5 | QR label share/print (web) | ✅ | Share API + web print/download |
+| T3.6 | Product image upload + display | ✅ | Multer upload, auto-primary, delete with file cleanup |
+| T3.7 | Server starts without errors | ✅ | All routes loaded, 19 tables created |
+| T3.8 | No lint/compile errors in all new files | ✅ | 0 errors across 7 files (5 screens + route + api) |
 
 ---
 

@@ -1,10 +1,11 @@
 import React, { useState, useCallback } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
-  RefreshControl, Alert, Modal, TextInput, Platform,
+  RefreshControl, Alert, Modal, TextInput, Platform, Image,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
+import * as ImagePicker from 'expo-image-picker';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
@@ -35,6 +36,7 @@ export default function MaterialDetailScreen({ route, navigation }) {
   const [linking, setLinking] = useState(false);
 
   const canManage = user?.role === 'owner' || user?.role === 'manager';
+  const [uploadingImage, setUploadingImage] = useState(false);
 
   const fetchData = useCallback(async () => {
     try {
@@ -107,6 +109,48 @@ export default function MaterialDetailScreen({ route, navigation }) {
     return <View style={styles.container}><Text style={styles.errorText}>Material not found</Text></View>;
   }
 
+  const handleUploadMaterialImage = () => {
+    const pickFromGallery = async () => {
+      try {
+        const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+        if (status !== 'granted') { Alert.alert('Permission Required', 'Please allow access.'); return; }
+        const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.8, allowsEditing: true });
+        if (result.canceled) return;
+        setUploadingImage(true);
+        await api.uploadMaterialImage(materialId, result.assets[0].uri);
+        fetchData();
+      } catch (err) {
+        Alert.alert('Error', err.message || 'Failed to upload image');
+      } finally { setUploadingImage(false); }
+    };
+
+    const takePhoto = async () => {
+      try {
+        const { status } = await ImagePicker.requestCameraPermissionsAsync();
+        if (status !== 'granted') { Alert.alert('Permission Required', 'Please allow camera access.'); return; }
+        const result = await ImagePicker.launchCameraAsync({ quality: 0.8, allowsEditing: true });
+        if (result.canceled) return;
+        setUploadingImage(true);
+        await api.uploadMaterialImage(materialId, result.assets[0].uri);
+        fetchData();
+      } catch (err) {
+        Alert.alert('Error', err.message || 'Failed to upload image');
+      } finally { setUploadingImage(false); }
+    };
+
+    if (Platform.OS === 'web') {
+      pickFromGallery();
+    } else {
+      Alert.alert('Add Image', 'Choose a source', [
+        { text: 'Camera', onPress: takePhoto },
+        { text: 'Gallery', onPress: pickFromGallery },
+        { text: 'Cancel', style: 'cancel' },
+      ]);
+    }
+  };
+
+  const BASE_URL = Platform.OS === 'web' ? 'http://localhost:3001' : 'http://192.168.29.160:3001';
+
   return (
     <>
       <ScrollView
@@ -117,9 +161,28 @@ export default function MaterialDetailScreen({ route, navigation }) {
         {material && (
           <>
             <View style={styles.header}>
-              <View style={[styles.iconBox, { backgroundColor: Colors.secondary + '15' }]}>
-                <Ionicons name="flower" size={32} color={Colors.secondary} />
-              </View>
+              <TouchableOpacity
+                onPress={canManage ? handleUploadMaterialImage : undefined}
+                activeOpacity={canManage ? 0.7 : 1}
+                disabled={uploadingImage}
+              >
+                {material.image_url ? (
+                  <Image
+                    source={{ uri: `${BASE_URL}${material.image_url}` }}
+                    style={styles.materialImage}
+                    resizeMode="cover"
+                  />
+                ) : (
+                  <View style={[styles.iconBox, { backgroundColor: Colors.secondary + '15' }]}>
+                    <Ionicons name={uploadingImage ? 'hourglass' : 'flower'} size={32} color={Colors.secondary} />
+                  </View>
+                )}
+                {canManage && (
+                  <View style={styles.cameraOverlay}>
+                    <Ionicons name="camera" size={14} color={Colors.white} />
+                  </View>
+                )}
+              </TouchableOpacity>
               <Text style={styles.name}>{material.name}</Text>
               <Text style={styles.sku}>SKU: {material.sku}</Text>
               <View style={styles.metaRow}>
@@ -302,6 +365,12 @@ const styles = StyleSheet.create({
     shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.05, shadowRadius: 3, elevation: 2,
   },
   iconBox: { width: 64, height: 64, borderRadius: 32, justifyContent: 'center', alignItems: 'center', marginBottom: Spacing.sm },
+  materialImage: { width: 80, height: 80, borderRadius: 40, marginBottom: Spacing.sm },
+  cameraOverlay: {
+    position: 'absolute', bottom: Spacing.sm, right: -2, backgroundColor: Colors.primary,
+    width: 24, height: 24, borderRadius: 12, justifyContent: 'center', alignItems: 'center',
+    borderWidth: 2, borderColor: Colors.surface,
+  },
   name: { fontSize: FontSize.xl, fontWeight: '700', color: Colors.text },
   sku: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: 2 },
   metaRow: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', marginTop: Spacing.md, gap: Spacing.lg },

@@ -11,8 +11,10 @@ import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 const QUICK_LINKS = [
   { label: 'Categories', icon: 'folder-open', screen: 'Categories', color: '#9C27B0' },
   { label: 'Materials', icon: 'cube', screen: 'Materials', color: Colors.primary },
+  { label: 'Products', icon: 'gift', screen: 'Products', color: '#4CAF50' },
   { label: 'Suppliers', icon: 'people', screen: 'Suppliers', color: '#FF9800' },
   { label: 'Orders', icon: 'cart', screen: 'PurchaseOrders', color: '#2196F3' },
+  { label: 'Scan QR', icon: 'qr-code', screen: 'QRScanner', color: '#00BCD4' },
   { label: 'Adjust', icon: 'build', screen: 'StockAdjust', color: '#F44336' },
   { label: 'Transfers', icon: 'swap-horizontal', screen: 'StockTransfers', color: '#009688' },
 ];

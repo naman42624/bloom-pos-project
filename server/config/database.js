@@ -420,6 +420,68 @@ function initializeDatabase() {
     CREATE INDEX IF NOT EXISTS idx_st_to ON stock_transfers(to_location_id);
     CREATE INDEX IF NOT EXISTS idx_st_status ON stock_transfers(status);
   `);
+
+  // ─── Phase 3: Products ─────────────────────────────────────
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS products (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      sku TEXT UNIQUE,
+      description TEXT DEFAULT '',
+      type TEXT DEFAULT 'standard' CHECK(type IN ('standard', 'custom', 'made_to_order')),
+      category TEXT DEFAULT NULL CHECK(category IN ('bouquet', 'arrangement', 'basket', 'single_stem', 'gift_combo', 'other')),
+      selling_price REAL DEFAULT 0,
+      estimated_cost REAL DEFAULT 0,
+      tax_rate_id INTEGER DEFAULT NULL,
+      location_id INTEGER DEFAULT NULL,
+      image_url TEXT DEFAULT NULL,
+      is_active INTEGER DEFAULT 1,
+      created_by INTEGER,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (tax_rate_id) REFERENCES tax_rates(id) ON DELETE SET NULL,
+      FOREIGN KEY (location_id) REFERENCES locations(id) ON DELETE SET NULL,
+      FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_products_sku ON products(sku);
+    CREATE INDEX IF NOT EXISTS idx_products_type ON products(type);
+    CREATE INDEX IF NOT EXISTS idx_products_category ON products(category);
+    CREATE INDEX IF NOT EXISTS idx_products_active ON products(is_active);
+  `);
+
+  // ─── Phase 3: Product Materials (Bill of Materials) ────────
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS product_materials (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      product_id INTEGER NOT NULL,
+      material_id INTEGER NOT NULL,
+      quantity REAL NOT NULL DEFAULT 1,
+      cost_per_unit REAL DEFAULT 0,
+      notes TEXT DEFAULT '',
+      FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
+      FOREIGN KEY (material_id) REFERENCES materials(id) ON DELETE CASCADE,
+      UNIQUE(product_id, material_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_pm_product ON product_materials(product_id);
+    CREATE INDEX IF NOT EXISTS idx_pm_material ON product_materials(material_id);
+  `);
+
+  // ─── Phase 3: Product Images ───────────────────────────────
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS product_images (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      product_id INTEGER NOT NULL,
+      image_url TEXT NOT NULL,
+      is_primary INTEGER DEFAULT 0,
+      sort_order INTEGER DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_pi_product ON product_images(product_id);
+  `);
 }
 
 function closeDb() {

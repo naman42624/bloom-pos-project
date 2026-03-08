@@ -31,6 +31,13 @@ import StockAdjustScreen from '../screens/StockAdjustScreen';
 import StockTransfersScreen from '../screens/StockTransfersScreen';
 import StockTransferFormScreen from '../screens/StockTransferFormScreen';
 
+// Phase 3 — Products & QR
+import ProductsScreen from '../screens/ProductsScreen';
+import ProductDetailScreen from '../screens/ProductDetailScreen';
+import ProductFormScreen from '../screens/ProductFormScreen';
+import QRScannerScreen from '../screens/QRScannerScreen';
+import QRLabelScreen from '../screens/QRLabelScreen';
+
 import { Colors, FontSize } from '../constants/theme';
 
 const Tab = createBottomTabNavigator();
@@ -152,6 +159,17 @@ function InventoryStack() {
         component={StockTransferFormScreen}
         options={{ title: 'New Transfer', presentation: 'modal' }}
       />
+      {/* Products */}
+      <Stack.Screen name="Products" component={ProductsScreen} options={{ title: 'Products' }} />
+      <Stack.Screen name="ProductDetail" component={ProductDetailScreen} options={{ title: 'Product' }} />
+      <Stack.Screen
+        name="ProductForm"
+        component={ProductFormScreen}
+        options={({ route }) => ({ title: route.params?.product ? 'Edit Product' : 'New Product', presentation: 'modal' })}
+      />
+      {/* QR */}
+      <Stack.Screen name="QRScanner" component={QRScannerScreen} options={{ title: 'Scan QR Code' }} />
+      <Stack.Screen name="QRLabel" component={QRLabelScreen} options={{ title: 'QR Label' }} />
     </Stack.Navigator>
   );
 }

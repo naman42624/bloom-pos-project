@@ -122,6 +122,24 @@ export default function DashboardScreen({ navigation }) {
           <Text style={styles.sectionTitle}>Quick Actions</Text>
           <View style={styles.quickActions}>
             <QuickAction
+              icon="qr-code"
+              label="Scan QR"
+              color="#00BCD4"
+              onPress={() => navigation.navigate('Inventory', { screen: 'QRScanner' })}
+            />
+            <QuickAction
+              icon="leaf"
+              label="Inventory"
+              color={Colors.success}
+              onPress={() => navigation.navigate('Inventory')}
+            />
+            <QuickAction
+              icon="gift"
+              label="Products"
+              color="#9C27B0"
+              onPress={() => navigation.navigate('Inventory', { screen: 'Products' })}
+            />
+            <QuickAction
               icon="people"
               label="Staff"
               color={Colors.info}
@@ -139,11 +157,26 @@ export default function DashboardScreen({ navigation }) {
               color={Colors.warning}
               onPress={() => navigation.navigate('Profile', { screen: 'Settings' })}
             />
+          </View>
+        </View>
+      )}
+
+      {/* Employee quick actions */}
+      {role === 'employee' && (
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Quick Actions</Text>
+          <View style={styles.quickActions}>
             <QuickAction
-              icon="person"
-              label="Profile"
-              color={Colors.primary}
-              onPress={() => navigation.navigate('Profile')}
+              icon="qr-code"
+              label="Scan QR"
+              color="#00BCD4"
+              onPress={() => navigation.navigate('Inventory', { screen: 'QRScanner' })}
+            />
+            <QuickAction
+              icon="leaf"
+              label="Inventory"
+              color={Colors.success}
+              onPress={() => navigation.navigate('Inventory')}
             />
           </View>
         </View>
@@ -163,7 +196,7 @@ export default function DashboardScreen({ navigation }) {
         <Ionicons name="construct-outline" size={32} color={Colors.textLight} />
         <Text style={styles.comingSoonTitle}>More coming soon</Text>
         <Text style={styles.comingSoonText}>
-          Inventory, POS, Orders, and Reports will be available in upcoming updates.
+          POS, Orders, and Reports will be available in upcoming updates.
         </Text>
       </View>
     </ScrollView>

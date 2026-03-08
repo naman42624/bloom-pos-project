@@ -1,9 +1,37 @@
 const express = require('express');
 const { body, query, validationResult } = require('express-validator');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
 const { getDb } = require('../config/database');
 const { authenticate, authorize } = require('../middleware/auth');
 
 const router = express.Router();
+
+// ─── Multer config for material images ──────────────────────
+const storage = multer.diskStorage({
+  destination: (_req, _file, cb) => {
+    const dir = path.join(__dirname, '..', 'uploads', 'materials');
+    fs.mkdirSync(dir, { recursive: true });
+    cb(null, dir);
+  },
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname);
+    cb(null, `material-${Date.now()}-${Math.round(Math.random() * 1e6)}${ext}`);
+  },
+});
+const upload = multer({
+  storage,
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const allowed = /jpeg|jpg|png|webp/;
+    if (allowed.test(path.extname(file.originalname).toLowerCase()) && allowed.test(file.mimetype.split('/')[1])) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only JPEG, PNG, and WebP images are allowed'));
+    }
+  },
+});
 
 // ─── GET /api/materials ──────────────────────────────────────
 // List materials with optional filters: ?category_id=&location_id=&search=&all=1
@@ -13,7 +41,11 @@ router.get('/', authenticate, (req, res, next) => {
     const { category_id, location_id, search, all } = req.query;
 
     let sql = `
-      SELECT m.*, mc.name as category_name, mc.unit as category_unit, mc.has_bundle, mc.default_bundle_size
+      SELECT m.*, mc.name as category_name, mc.unit as category_unit, mc.has_bundle, mc.default_bundle_size,
+             COALESCE(
+               (SELECT AVG(sm.default_price_per_unit) FROM supplier_materials sm WHERE sm.material_id = m.id AND sm.default_price_per_unit > 0),
+               0
+             ) as avg_cost
       FROM materials m
       JOIN material_categories mc ON m.category_id = mc.id
     `;
@@ -266,5 +298,35 @@ router.get('/low-stock', authenticate, (req, res, next) => {
     next(err);
   }
 });
+
+// ─── POST /api/materials/:id/image ───────────────────────────
+// Upload an image for a material
+router.post(
+  '/:id/image',
+  authenticate,
+  authorize('owner', 'manager'),
+  upload.single('image'),
+  (req, res, next) => {
+    try {
+      const db = getDb();
+      const material = db.prepare('SELECT * FROM materials WHERE id = ?').get(req.params.id);
+      if (!material) return res.status(404).json({ success: false, message: 'Material not found' });
+
+      if (!req.file) return res.status(400).json({ success: false, message: 'No image file provided' });
+
+      // Delete old image file if exists
+      if (material.image_url) {
+        const oldPath = path.join(__dirname, '..', material.image_url);
+        if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
+      }
+
+      const imageUrl = `/uploads/materials/${req.file.filename}`;
+      db.prepare('UPDATE materials SET image_url = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+        .run(imageUrl, req.params.id);
+
+      res.json({ success: true, data: { image_url: imageUrl } });
+    } catch (err) { next(err); }
+  }
+);
 
 module.exports = router;
