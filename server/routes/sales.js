@@ -341,6 +341,57 @@ router.get('/register/history', authenticate, authorize('owner', 'manager'), (re
   } catch (err) { next(err); }
 });
 
+// ─── GET /api/sales/production-queue ─────────────────────────
+// Returns orders that need to be prepared (pending/preparing/ready)
+router.get(
+  '/production-queue',
+  authenticate,
+  authorize('owner', 'manager', 'employee'),
+  (req, res, next) => {
+    try {
+      const db = getDb();
+      const { location_id, status } = req.query;
+
+      let sql = `SELECT s.*, l.name as location_name, u.name as created_by_name
+                 FROM sales s
+                 LEFT JOIN locations l ON s.location_id = l.id
+                 LEFT JOIN users u ON s.created_by = u.id
+                 WHERE s.status IN ('pending', 'preparing', 'ready')`;
+      const params = [];
+
+      if (location_id) {
+        sql += ' AND s.location_id = ?';
+        params.push(parseInt(location_id));
+      }
+      if (status) {
+        sql += ' AND s.status = ?';
+        params.push(status);
+      }
+
+      // Scope managers to their assigned locations
+      if (req.user.role === 'manager' && !location_id) {
+        const userLocs = db.prepare('SELECT location_id FROM user_locations WHERE user_id = ?').all(req.user.id).map(r => r.location_id);
+        if (userLocs.length > 0) {
+          sql += ` AND s.location_id IN (${userLocs.map(() => '?').join(',')})`;
+          params.push(...userLocs);
+        }
+      }
+
+      sql += ' ORDER BY CASE s.status WHEN \'pending\' THEN 1 WHEN \'preparing\' THEN 2 WHEN \'ready\' THEN 3 END, s.scheduled_date ASC NULLS LAST, s.created_at ASC';
+
+      const orders = db.prepare(sql).all(...params);
+
+      // Enrich each order with items
+      const getItems = db.prepare('SELECT product_name, quantity FROM sale_items WHERE sale_id = ?');
+      for (const order of orders) {
+        order.items = getItems.all(order.id);
+      }
+
+      res.json({ success: true, data: orders });
+    } catch (err) { next(err); }
+  }
+);
+
 // ─── GET /api/sales/:id ──────────────────────────────────────
 router.get('/:id', authenticate, (req, res, next) => {
   try {
@@ -494,47 +545,124 @@ router.post(
 
         const saleNumber = generateSaleNumber(db, location_id);
 
+        // ─── Hybrid Stock Logic ──────────────────────────
+        // Determine initial status based on order type + stock availability
+        // Walk-in: if all products in stock → completed immediately
+        //          if any product needs production → preparing (production tasks created)
+        // Other types: always pending with production tasks
+        let initialStatus;
+        let stockDeducted = 0;
+        let needsProduction = false;
+
+        if (order_type === 'walk_in') {
+          // Check if all product items can be fulfilled from product_stock
+          const getReadyStock = db.prepare('SELECT quantity FROM product_stock WHERE product_id = ? AND location_id = ?');
+          let allInStock = true;
+          for (const item of processedItems) {
+            if (item.product_id) {
+              const ready = getReadyStock.get(item.product_id, location_id);
+              if (!ready || ready.quantity < item.quantity) {
+                allInStock = false;
+                break;
+              }
+            }
+            // Raw materials are always fulfilled directly
+          }
+          if (allInStock) {
+            initialStatus = 'completed';
+            stockDeducted = 1;
+          } else {
+            initialStatus = 'preparing';
+            needsProduction = true;
+          }
+        } else {
+          initialStatus = 'pending';
+          needsProduction = true;
+        }
+
         // Insert sale
         const saleResult = db.prepare(`
           INSERT INTO sales (sale_number, location_id, customer_id, customer_name, customer_phone,
             subtotal, tax_total, discount_amount, discount_type, discount_percentage,
             delivery_charges, delivery_address, scheduled_date, scheduled_time,
-            grand_total, payment_status, order_type, status,
+            grand_total, payment_status, order_type, status, stock_deducted,
             special_instructions, customer_notes, created_by)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           saleNumber, location_id, customer_id || null, customer_name || null, customer_phone || null,
           subtotal, taxTotal, discountAmount, discount_type || null, discountPercentage,
           delivery_charges || 0, delivery_address || null, scheduled_date || null, scheduled_time || null,
-          grandTotal, paymentStatus, order_type,
+          grandTotal, paymentStatus, order_type, initialStatus, stockDeducted,
           notes || special_instructions || '', customer_notes || '', req.user.id
         );
         const saleId = saleResult.lastInsertRowid;
 
         // Insert items
         const insertItem = db.prepare(
-          'INSERT INTO sale_items (sale_id, product_id, material_id, product_name, quantity, unit_price, tax_rate, tax_amount, line_total) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+          'INSERT INTO sale_items (sale_id, product_id, material_id, product_name, quantity, unit_price, tax_rate, tax_amount, line_total, materials_deducted, from_product_stock) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
         );
+        const saleItemIds = [];
         for (const item of processedItems) {
-          insertItem.run(saleId, item.product_id, item.material_id, item.product_name, item.quantity, item.unit_price, item.tax_rate, item.tax_amount, item.line_total);
+          const res = insertItem.run(saleId, item.product_id, item.material_id, item.product_name, item.quantity, item.unit_price, item.tax_rate, item.tax_amount, item.line_total, 0, 0);
+          saleItemIds.push({ ...item, sale_item_id: res.lastInsertRowid });
         }
 
-        // Deduct materials from stock
+        // ─── Stock deduction & production task creation ───
+        const deductProductStock = db.prepare('UPDATE product_stock SET quantity = MAX(0, quantity - ?), updated_at = CURRENT_TIMESTAMP WHERE product_id = ? AND location_id = ?');
+        const deductMaterialStock = db.prepare('UPDATE material_stock SET quantity = MAX(0, quantity - ?), updated_at = CURRENT_TIMESTAMP WHERE material_id = ? AND location_id = ?');
+        const logMaterialTx = db.prepare(`INSERT INTO material_transactions (material_id, location_id, type, quantity, reference_type, reference_id, notes, created_by) VALUES (?, ?, 'usage', ?, 'sale', ?, ?, ?)`);
         const getBOM = db.prepare('SELECT material_id, quantity FROM product_materials WHERE product_id = ?');
-        const deductStock = db.prepare('UPDATE material_stock SET quantity = MAX(0, quantity - ?), updated_at = CURRENT_TIMESTAMP WHERE material_id = ? AND location_id = ?');
-        const logTransaction = db.prepare(`INSERT INTO material_transactions (material_id, location_id, type, quantity, reference_type, reference_id, notes, created_by) VALUES (?, ?, 'usage', ?, 'sale', ?, ?, ?)`);
-        for (const item of processedItems) {
-          if (item.material_id) {
-            // Direct material sale — deduct the material itself
-            deductStock.run(item.quantity, item.material_id, location_id);
-            logTransaction.run(item.material_id, location_id, item.quantity, saleId, `Sale ${saleNumber}`, req.user.id);
-          } else if (item.product_id) {
-            // Product sale — deduct via BOM
-            const bomItems = getBOM.all(item.product_id);
-            for (const bom of bomItems) {
-              const usedQty = bom.quantity * item.quantity;
-              deductStock.run(usedQty, bom.material_id, location_id);
-              logTransaction.run(bom.material_id, location_id, usedQty, saleId, `Sale ${saleNumber}`, req.user.id);
+        const getReadyStock = db.prepare('SELECT quantity FROM product_stock WHERE product_id = ? AND location_id = ?');
+        const insertTask = db.prepare(
+          `INSERT INTO production_tasks (sale_id, sale_item_id, product_id, location_id, quantity, priority, notes)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`
+        );
+
+        if (initialStatus === 'completed' && order_type === 'walk_in') {
+          // Walk-in with all in stock: deduct from product_stock + raw materials
+          for (const item of saleItemIds) {
+            if (item.material_id) {
+              // Raw material direct sale
+              deductMaterialStock.run(item.quantity, item.material_id, location_id);
+              logMaterialTx.run(item.material_id, location_id, item.quantity, saleId, `Sale ${saleNumber}`, req.user.id);
+              db.prepare('UPDATE sale_items SET materials_deducted = 1 WHERE id = ?').run(item.sale_item_id);
+            } else if (item.product_id) {
+              // Deduct from ready product stock
+              deductProductStock.run(item.quantity, item.product_id, location_id);
+              db.prepare('UPDATE sale_items SET from_product_stock = 1, materials_deducted = 1 WHERE id = ?').run(item.sale_item_id);
+            }
+          }
+        } else if (needsProduction) {
+          // Create production tasks for product items
+          for (const item of saleItemIds) {
+            if (item.material_id) {
+              // Raw materials: deduct immediately for all order types
+              deductMaterialStock.run(item.quantity, item.material_id, location_id);
+              logMaterialTx.run(item.material_id, location_id, item.quantity, saleId, `Sale ${saleNumber}`, req.user.id);
+              db.prepare('UPDATE sale_items SET materials_deducted = 1 WHERE id = ?').run(item.sale_item_id);
+            } else if (item.product_id) {
+              // Check how much is in product_stock
+              const ready = getReadyStock.get(item.product_id, location_id);
+              const readyQty = ready ? ready.quantity : 0;
+              let fromStock = 0;
+              let toMake = item.quantity;
+
+              // For walk-in urgent orders, use whatever is in stock first
+              if (order_type === 'walk_in' && readyQty > 0) {
+                fromStock = Math.min(readyQty, item.quantity);
+                toMake = item.quantity - fromStock;
+                deductProductStock.run(fromStock, item.product_id, location_id);
+              }
+
+              // Create production task for remaining quantity
+              if (toMake > 0) {
+                const priority = order_type === 'walk_in' ? 'urgent' : 'normal';
+                insertTask.run(saleId, item.sale_item_id, item.product_id, location_id, toMake, priority, '');
+              }
+
+              if (fromStock > 0) {
+                db.prepare('UPDATE sale_items SET from_product_stock = 1 WHERE id = ?').run(item.sale_item_id);
+              }
             }
           }
         }
@@ -571,6 +699,16 @@ router.post(
           db.prepare(
             'INSERT INTO pre_orders (sale_id, scheduled_date, scheduled_time, advance_payment, remaining_amount) VALUES (?, ?, ?, ?, ?)'
           ).run(saleId, scheduled_date, scheduled_time || null, advPmt, Math.max(0, remaining));
+        }
+
+        // Update customer total_spent and credit_balance
+        if (customer_id) {
+          db.prepare('UPDATE users SET total_spent = total_spent + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(grandTotal, customer_id);
+          // If not fully paid, add remaining to credit balance
+          const unpaid = grandTotal - totalPaid;
+          if (unpaid > 0) {
+            db.prepare('UPDATE users SET credit_balance = credit_balance + ? WHERE id = ?').run(unpaid, customer_id);
+          }
         }
 
         // Return created sale
@@ -660,9 +798,87 @@ router.put(
       if (!sale) return res.status(404).json({ success: false, message: 'Sale not found' });
       if (sale.status === 'cancelled') return res.status(400).json({ success: false, message: 'Sale already cancelled' });
 
-      db.prepare("UPDATE sales SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(req.params.id);
+      const cancelTx = db.transaction(() => {
+        db.prepare("UPDATE sales SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(req.params.id);
 
-      res.json({ success: true, message: 'Sale cancelled' });
+        // Cancel any pending/in-progress production tasks
+        db.prepare("UPDATE production_tasks SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP WHERE sale_id = ? AND status NOT IN ('completed', 'cancelled')").run(req.params.id);
+
+        const items = db.prepare('SELECT * FROM sale_items WHERE sale_id = ?').all(req.params.id);
+
+        for (const item of items) {
+          if (item.from_product_stock && item.product_id) {
+            // Was fulfilled from product_stock → return to product_stock
+            const existing = db.prepare('SELECT id FROM product_stock WHERE product_id = ? AND location_id = ?').get(item.product_id, sale.location_id);
+            if (existing) {
+              db.prepare('UPDATE product_stock SET quantity = quantity + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(item.quantity, existing.id);
+            } else {
+              db.prepare('INSERT INTO product_stock (product_id, location_id, quantity) VALUES (?, ?, ?)').run(item.product_id, sale.location_id, item.quantity);
+            }
+          } else if (item.materials_deducted && item.product_id) {
+            // Materials already consumed (production done) → add finished product to product_stock
+            // Cannot restore raw materials — they're already used up
+            const existing = db.prepare('SELECT id FROM product_stock WHERE product_id = ? AND location_id = ?').get(item.product_id, sale.location_id);
+            if (existing) {
+              db.prepare('UPDATE product_stock SET quantity = quantity + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(item.quantity, existing.id);
+            } else {
+              db.prepare('INSERT INTO product_stock (product_id, location_id, quantity) VALUES (?, ?, ?)').run(item.product_id, sale.location_id, item.quantity);
+            }
+          } else if (item.materials_deducted && item.material_id) {
+            // Raw material sale — restore material stock
+            db.prepare('UPDATE material_stock SET quantity = quantity + ?, updated_at = CURRENT_TIMESTAMP WHERE material_id = ? AND location_id = ?').run(item.quantity, item.material_id, sale.location_id);
+            db.prepare(`INSERT INTO material_transactions (material_id, location_id, type, quantity, reference_type, reference_id, notes, created_by) VALUES (?, ?, 'return', ?, 'sale_cancel', ?, ?, ?)`)
+              .run(item.material_id, sale.location_id, item.quantity, sale.id, `Cancel ${sale.sale_number}`, req.user.id);
+          }
+          // If nothing was deducted yet (pending production), nothing to restore
+        }
+
+        db.prepare('UPDATE sales SET stock_deducted = 0 WHERE id = ?').run(req.params.id);
+      });
+      cancelTx();
+
+      res.json({ success: true, message: 'Sale cancelled and stock handled' });
+    } catch (err) { next(err); }
+  }
+);
+
+// ─── PUT /api/sales/:id/status ───────────────────────────────
+// Order lifecycle: pending → preparing → ready → completed
+// Materials are now deducted via production tasks, not at status transition
+router.put(
+  '/:id/status',
+  authenticate,
+  authorize('owner', 'manager', 'employee'),
+  [
+    body('status').isIn(['pending', 'preparing', 'ready', 'completed']).withMessage('Invalid status'),
+  ],
+  (req, res, next) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) return res.status(400).json({ success: false, message: 'Validation failed', errors: errors.array() });
+
+      const db = getDb();
+      const sale = db.prepare('SELECT * FROM sales WHERE id = ?').get(req.params.id);
+      if (!sale) return res.status(404).json({ success: false, message: 'Sale not found' });
+      if (sale.status === 'cancelled') return res.status(400).json({ success: false, message: 'Cannot update cancelled order' });
+
+      const { status } = req.body;
+      const validTransitions = {
+        pending: ['preparing', 'cancelled'],
+        preparing: ['ready', 'cancelled'],
+        ready: ['completed', 'cancelled'],
+        completed: [],
+      };
+
+      const allowed = validTransitions[sale.status] || [];
+      if (!allowed.includes(status)) {
+        return res.status(400).json({ success: false, message: `Cannot transition from ${sale.status} to ${status}` });
+      }
+
+      db.prepare('UPDATE sales SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(status, sale.id);
+
+      const updated = db.prepare('SELECT * FROM sales WHERE id = ?').get(sale.id);
+      res.json({ success: true, data: updated });
     } catch (err) { next(err); }
   }
 );

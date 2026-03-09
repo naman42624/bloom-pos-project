@@ -13,6 +13,9 @@ const STATUS_COLORS = {
   completed: Colors.success,
   cancelled: Colors.error,
   draft: Colors.warning,
+  pending: Colors.warning,
+  preparing: Colors.info,
+  ready: Colors.success,
 };
 
 const PAYMENT_STATUS_COLORS = {
@@ -61,6 +64,23 @@ export default function SaleDetailScreen({ route, navigation }) {
 
   const handleRefund = () => {
     navigation.navigate('RefundSale', { saleId, grandTotal: sale.grand_total });
+  };
+
+  const handleStatusTransition = (nextStatus, label) => {
+    Alert.alert(label, `${label} for this order?`, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: label,
+        onPress: async () => {
+          try {
+            await api.updateOrderStatus(saleId, nextStatus);
+            fetchSale();
+          } catch (err) {
+            Alert.alert('Error', err.message || 'Failed to update status');
+          }
+        },
+      },
+    ]);
   };
 
   const generateReceipt = async () => {
@@ -183,6 +203,17 @@ export default function SaleDetailScreen({ route, navigation }) {
         </View>
       )}
 
+      {/* Delivery address — for delivery orders (non-pre-order) */}
+      {sale.delivery_address && !sale.pre_order && (
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Delivery Address</Text>
+          <Text style={styles.infoText}>{sale.delivery_address}</Text>
+          {sale.scheduled_date && (
+            <Text style={styles.infoSubtext}>Scheduled: {sale.scheduled_date} {sale.scheduled_time || ''}</Text>
+          )}
+        </View>
+      )}
+
       {/* Items */}
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>Items ({(sale.items || []).length})</Text>
@@ -283,7 +314,45 @@ export default function SaleDetailScreen({ route, navigation }) {
         <Text style={styles.actionBtnText}>Share Receipt / PDF</Text>
       </TouchableOpacity>
 
-      {/* Actions */}
+      {/* Order status transitions */}
+      {sale.status === 'pending' && (
+        <View style={styles.actions}>
+          <TouchableOpacity style={[styles.actionBtn, { backgroundColor: Colors.info, flex: 1 }]} onPress={() => handleStatusTransition('preparing', 'Start Preparing')}>
+            <Ionicons name="flame-outline" size={18} color={Colors.white} />
+            <Text style={styles.actionBtnText}>Start Preparing</Text>
+          </TouchableOpacity>
+          {canManage && (
+            <TouchableOpacity style={[styles.actionBtn, { backgroundColor: Colors.error }]} onPress={handleCancel}>
+              <Ionicons name="close-circle" size={18} color={Colors.white} />
+              <Text style={styles.actionBtnText}>Cancel</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+      )}
+      {sale.status === 'preparing' && (
+        <View style={styles.actions}>
+          <TouchableOpacity style={[styles.actionBtn, { backgroundColor: Colors.success, flex: 1 }]} onPress={() => handleStatusTransition('ready', 'Mark Ready')}>
+            <Ionicons name="checkmark-circle-outline" size={18} color={Colors.white} />
+            <Text style={styles.actionBtnText}>Mark Ready</Text>
+          </TouchableOpacity>
+          {canManage && (
+            <TouchableOpacity style={[styles.actionBtn, { backgroundColor: Colors.error }]} onPress={handleCancel}>
+              <Ionicons name="close-circle" size={18} color={Colors.white} />
+              <Text style={styles.actionBtnText}>Cancel</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+      )}
+      {sale.status === 'ready' && (
+        <View style={styles.actions}>
+          <TouchableOpacity style={[styles.actionBtn, { backgroundColor: Colors.success, flex: 1 }]} onPress={() => handleStatusTransition('completed', 'Complete Order')}>
+            <Ionicons name="checkmark-done-outline" size={18} color={Colors.white} />
+            <Text style={styles.actionBtnText}>Complete Order</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {/* Actions for completed orders */}
       {canManage && sale.status === 'completed' && (
         <View style={styles.actions}>
           {!sale.refund && (

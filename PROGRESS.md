@@ -1,8 +1,8 @@
 # BloomCart POS — Progress Tracker
 
 **Project**: BloomCart POS  
-**Last Updated**: 8 March 2026  
-**Current Phase**: Phase 4 Complete — Phase 5 Not Started
+**Last Updated**: 9 March 2026  
+**Current Phase**: Phase 6 (Production & Hybrid Stock) In Progress
 
 ---
 
@@ -259,64 +259,189 @@
 
 | # | Test | Status | Notes |
 |---|------|--------|-------|
-| T4.1 | Add products to cart via list and QR scan | ⬜ | |
-| T4.2 | Tax calculation correctness (GST rates) | ⬜ | |
-| T4.3 | Discount apply (fixed + percentage) | ⬜ | |
-| T4.4 | Split payment (cash + card + UPI combo) | ⬜ | |
-| T4.5 | Walk-in / pickup / delivery order types | ⬜ | |
-| T4.6 | Pre-order with advance payment | ⬜ | |
-| T4.7 | Sale detail / receipt view | ⬜ | |
-| T4.8 | Cash register open → sales → close → reconcile | ⬜ | |
-| T4.9 | Role-based POS access (owner/manager/employee) | ⬜ | |
-| T4.10 | Full POS sale end-to-end in app | ⬜ | |
+| T4.1 | Add products to cart via list and QR scan | ✅ | Manual testing passed |
+| T4.2 | Tax calculation correctness (GST rates) | ✅ | Manual testing passed |
+| T4.3 | Discount apply (fixed + percentage) | ✅ | Manual testing passed |
+| T4.4 | Split payment (cash + card + UPI combo) | ✅ | Manual testing passed |
+| T4.5 | Walk-in / pickup / delivery order types | ✅ | Manual testing passed |
+| T4.6 | Pre-order with advance payment | ✅ | Manual testing passed |
+| T4.7 | Sale detail / receipt view | ✅ | Manual testing passed |
+| T4.8 | Cash register open → sales → close → reconcile | ✅ | Manual testing passed |
+| T4.9 | Role-based POS access (owner/manager/employee) | ✅ | Manual testing passed |
+| T4.10 | Full POS sale end-to-end in app | ✅ | Manual testing passed |
+
+### Post-Phase-4 Enhancements & Fixes
+
+| # | Enhancement | Status | Notes |
+|---|-------------|--------|-------|
+| 4E.1 | Product stock editing — two-mode (Set Product Qty / Adjust Material) | ✅ | ProductStockScreen updated |
+| 4E.2 | Quick-add modal fix (KeyboardAvoidingView + BOM material linking) | ✅ | POSScreen modal rebuilt |
+| 4E.3 | Centralized material selling price (column + auto-recalculate product cost) | ✅ | Migration, routes, MaterialFormScreen field, MaterialDetailScreen display |
+| 4E.4 | Expense tracking system (DB table, routes, ExpensesScreen) | ✅ | Full CRUD, cash register deduction |
+| 4E.5 | Best-sellers pinned at top with Popular badge | ✅ | POSScreen sort by order count |
+| 4E.6 | Customer phone auto-fill + returning customer hint | ✅ | CheckoutScreen lookup from sales history |
+| 4E.7 | Category filter chips on POS | ✅ | Horizontal scroll filter in products tab |
+| 4E.8 | Custom price override in cart | ✅ | Inline editable price field per cart item |
+| 4E.9 | Cash change due calculator | ✅ | Real-time display on CheckoutScreen |
+| 4E.10 | Cash register reopen after close | ✅ | Server clears closing data on reopen |
 
 ---
 
 ## Phase 5 — Customer Management
 
-**Status**: ⬜ Not Started
+**Status**: ✅ Complete  
+**Started**: 8 March 2026  
+**Completed**: 8 March 2026
 
 ### Backend
 
 | # | Task | Status | Notes |
 |---|------|--------|-------|
-| 5.1 | Database tables (customer_addresses, customer_credits, special_dates) | ⬜ | |
-| 5.2 | Customer routes (CRUD, phone-based lookup, search) | ⬜ | |
-| 5.3 | Customer address routes (multiple per customer) | ⬜ | |
-| 5.4 | Credit/dues tracking routes | ⬜ | |
-| 5.5 | Special dates storage & reminder system | ⬜ | |
-| 5.6 | Customer order history route | ⬜ | |
-| 5.7 | Guest checkout support | ⬜ | |
+| 5.1 | Database tables (customer_addresses, credit_payments, special_dates) | ✅ | + user columns: birthday, anniversary, custom_dates, total_spent, credit_balance, notes |
+| 5.2 | Customer routes (CRUD, phone-based lookup, search) | ✅ | server/routes/customers.js ~350 lines |
+| 5.3 | Customer address routes (multiple per customer) | ✅ | Add, update, delete with default flag |
+| 5.4 | Credit/dues tracking routes | ✅ | Record payments, auto-update balance |
+| 5.5 | Special dates storage & upcoming dates API | ✅ | Custom dates + birthday/anniversary from user |
+| 5.6 | Customer order history route | ✅ | Returns sales linked by customer_id |
+| 5.7 | Sales integration — auto-update total_spent & credit_balance | ✅ | In createSale transaction |
 
 ### Frontend
 
 | # | Task | Status | Notes |
 |---|------|--------|-------|
-| 5.8 | API service — customer methods | ⬜ | |
-| 5.9 | CustomersScreen (list, search by phone/name) | ⬜ | |
-| 5.10 | CustomerDetailScreen (profile, addresses, history, dues, special dates) | ⬜ | |
-| 5.11 | CustomerFormScreen (create/edit) | ⬜ | |
-| 5.12 | AddressFormScreen (add/edit delivery address) | ⬜ | |
-| 5.13 | CreditHistoryScreen (dues, payments) | ⬜ | |
-| 5.14 | SpecialDatesScreen (birthdays, anniversaries, reminders) | ⬜ | |
-| 5.15 | Customer self-service screens (order history, profile, addresses) | ⬜ | |
+| 5.8 | API service — 15 customer methods | ✅ | getCustomers, lookup, CRUD, addresses, credits, special dates |
+| 5.9 | CustomersScreen (list, search, stats badges) | ✅ | Avatar, orders/spent/due badges, FAB |
+| 5.10 | CustomerDetailScreen (profile, addresses, history, dues, special dates) | ✅ | 3 modals: credit payment, special date, address |
+| 5.11 | CustomerFormScreen (create/edit) | ✅ | Name, phone, email, birthday, anniversary, notes |
+| 5.12 | Address management (inline in CustomerDetailScreen) | ✅ | Modal with label, address lines, city, pincode |
+| 5.13 | Credit/dues management (inline in CustomerDetailScreen) | ✅ | Record payment modal, payment history list |
+| 5.14 | Special dates management (inline in CustomerDetailScreen) | ✅ | Add/delete custom dates, birthday & anniversary display |
+| 5.15 | Customers tab in MainNavigator (owner/manager) | ✅ | CustomersStack with list, detail, form, sale detail |
+| 5.16 | CheckoutScreen customer_id integration | ✅ | Enhanced lookup links registered customers |
 
 ### Phase 5 Testing
 
 | # | Test | Status | Notes |
 |---|------|--------|-------|
-| T5.1 | Customer CRUD + phone-based lookup | ⬜ | |
+| T5.1 | Customer CRUD + phone-based lookup | ✅ | API verified: create, list, lookup all working |
 | T5.2 | Multiple addresses per customer | ⬜ | |
 | T5.3 | Credit/dues tracking (add credit, payment, balance) | ⬜ | |
-| T5.4 | Special date reminders trigger | ⬜ | |
+| T5.4 | Special dates (add, delete, upcoming) | ⬜ | |
 | T5.5 | Customer order history display | ⬜ | |
-| T5.6 | Guest checkout flow | ⬜ | |
-| T5.7 | Customer-role app experience | ⬜ | |
-| T5.8 | Full customer management end-to-end in app | ⬜ | |
+| T5.6 | Checkout customer_id flow | ⬜ | |
+| T5.7 | Full customer management end-to-end in app | ⬜ | |
 
 ---
 
-## Phase 6 — Orders & Delivery
+## Post-Phase 5 — Bug Fixes & Production Queue
+
+**Status**: ✅ Complete  
+**Completed**: 8 March 2026
+
+### Bug Fixes
+
+| # | Bug | Status | Fix |
+|---|-----|--------|-----|
+| BF-1 | QR scan adds all stock to cart | ✅ Investigated | Code correct — `addToCart` always sets quantity:1. No code bug. |
+| BF-2 | Cash register not reopenable after close | 🐛 Fixed | CashRegisterScreen.js — condition `(!register \|\| register.closed_at === null)` was false when closed. Simplified to `!isOpen`. |
+| BF-3 | Delivery address not showing for orders | 🐛 Fixed | SaleDetailScreen.js — addressed only showed for pre_orders. Added display section for regular delivery orders. |
+| BF-4 | Customers appearing on Staff page | 🐛 Fixed | server/routes/users.js — excluded customer role from default query. Removed customer filter chip from UsersScreen. |
+| BF-5 | Product stock adjustment flow broken | 🐛 Fixed | ProductStockScreen.js — redesigned adjust modal with reason selector (Correction/Wastage/Return/Usage). Material deductions now use selected reason type. |
+| BF-6 | Inventory deduction timing wrong | 🐛 Fixed | See Production Queue feature below. |
+
+### Production Queue Feature (from Bug BF-6)
+
+| # | Task | Status | Notes |
+|---|------|--------|-------|
+| PQ-1 | DB migration: `stock_deducted` column on sales | ✅ | Tracks whether materials have been deducted |
+| PQ-2 | Order lifecycle: pending → preparing → ready → completed | ✅ | Walk-in = immediate complete + deduct. Others = pending, no deduction. |
+| PQ-3 | Stock deducted at 'preparing' stage (not at sale creation) | ✅ | Materials consumed when staff starts preparing |
+| PQ-4 | Cancel route restores stock if deducted | ✅ | Reverses BOM deductions, logs 'return' transactions |
+| PQ-5 | PUT /sales/:id/status — lifecycle transitions | ✅ | Validates allowed transitions, deducts stock at preparing |
+| PQ-6 | GET /sales/production-queue — pending/preparing/ready orders | ✅ | Sorted by status priority, enriched with items |
+| PQ-7 | API methods: `updateOrderStatus`, `getProductionQueue` | ✅ | Added to api.js |
+| PQ-8 | ProductionQueueScreen.js — staff-facing order queue | ✅ | Location filter, status tabs, order cards, action buttons |
+| PQ-9 | SaleDetailScreen — status transition buttons | ✅ | Start Preparing / Mark Ready / Complete Order buttons per status |
+| PQ-10 | SalesScreen + POSScreen — Queue access buttons | ✅ | Header "Queue" button on both screens |
+| PQ-11 | Status colors for new statuses (pending/preparing/ready) | ✅ | Added to SaleDetailScreen + SalesScreen STATUS_COLORS |
+
+---
+
+## Phase 6 — Production & Hybrid Stock System
+
+**Status**: ✅ Complete  
+**Completed**: 9 March 2026
+
+### Overview
+
+Redesigned the product/stock system from pure BOM-based calculation to a **hybrid model**:
+- Products now have real inventory (`product_stock` table) tracking ready-made items per location
+- Materials still tracked separately — BOM is a recipe, not auto-consumed on product creation
+- Employee production tracking (who made what, when, how many) for incentive purposes
+- Production task system with manager assignment and employee self-pick
+- POS restructured: order type selected first (walk-in/pickup/delivery/pre-order)
+
+### Database Changes
+
+| # | Task | Status | Notes |
+|---|------|--------|-------|
+| 6.1 | `product_stock` table (product_id, location_id, quantity) | ✅ | Real finished product inventory per location |
+| 6.2 | `production_logs` table (who produced what, when) | ✅ | Employee production tracking for incentives |
+| 6.3 | `production_tasks` table (per-item tasks from orders) | ✅ | Status: pending/assigned/in_progress/completed/cancelled |
+| 6.4 | `sale_items` columns: materials_deducted, from_product_stock | ✅ | Per-item tracking of what was deducted |
+| 6.5 | Fixed product creation material deduction bug | 🐛 | BOM is now recipe-only, no stock consumed on product creation |
+
+### Backend Routes
+
+| # | Task | Status | Notes |
+|---|------|--------|-------|
+| 6.6 | POST /production/produce — make products for display | ✅ | Validates BOM, checks material stock, deducts materials, adds to product_stock |
+| 6.7 | GET /production/product-stock — ready inventory | ✅ | Finished product counts per location |
+| 6.8 | POST /production/product-stock/adjust — manual correction | ✅ | Wastage, correction, damage, count adjustments |
+| 6.9 | GET /production/tasks — task queue with filters | ✅ | Full joins, priority sorting, location scoping |
+| 6.10 | GET /production/my-tasks — employee's own tasks | ✅ | Assigned + in_progress tasks |
+| 6.11 | PUT /production/tasks/:id/assign — manager assigns | ✅ | With reassignment support |
+| 6.12 | PUT /production/tasks/:id/pick — employee self-picks | ✅ | Sets both assigned_to and picked_by |
+| 6.13 | PUT /production/tasks/:id/start — begin working | ✅ | Updates sale status to 'preparing' |
+| 6.14 | PUT /production/tasks/:id/complete — finish task | ✅ | Deducts materials via BOM, logs production, checks all tasks done → sale 'ready' |
+| 6.15 | GET /production/stats — production statistics | ✅ | Per-employee totals, per-product breakdown |
+| 6.16 | GET /production/material-alerts — shortage warnings | ✅ | Compares pending order needs vs current stock |
+| 6.17 | GET /production/logs — production history | ✅ | Filterable by date, employee, product |
+| 6.18 | Rewrite createSale with hybrid logic | ✅ | Walk-in: deduct from product_stock if available, else create urgent tasks |
+| 6.19 | Update cancel route — product_stock handling | ✅ | Cancel after prep → add to product_stock (can't restore materials) |
+| 6.20 | Update product routes — ready_qty in responses | ✅ | GET /products returns ready_qty from product_stock |
+
+### Frontend Screens
+
+| # | Task | Status | Notes |
+|---|------|--------|-------|
+| 6.21 | POSScreen — order type selector | ✅ | Walk-in/Pickup/Delivery/Pre-order selected first |
+| 6.22 | POSScreen — ready_qty badges on products | ✅ | Green "X ready" badge, "Can make X" text |
+| 6.23 | POSScreen — Make & Queue header buttons | ✅ | Navigate to ProduceScreen and ProductionQueueScreen |
+| 6.24 | ProduceScreen — make products for display | ✅ | Location selector, product list, qty controls, material check |
+| 6.25 | ProductionQueueScreen — Tasks view (enhanced) | ✅ | Task cards with urgency, assignment, pick/start/complete actions |
+| 6.26 | ProductionQueueScreen — Orders view (legacy) | ✅ | Retained order-level queue alongside task view |
+| 6.27 | ProductionQueueScreen — Assign modal | ✅ | Manager picks employee from staff list, reassignment support |
+| 6.28 | DashboardScreen — Your Tasks section | ✅ | Shows pending/assigned/in_progress tasks for logged-in staff |
+| 6.29 | DashboardScreen — Your Production stats | ✅ | Items made + unique products count |
+| 6.30 | ProductStockScreen — ready_qty display | ✅ | Shows ready count + can-make count per product |
+| 6.31 | ProductStockScreen — product stock adjustment | ✅ | Uses adjustProductStock API for direct product inventory changes |
+| 6.32 | CheckoutScreen — receives orderType | ✅ | From POSScreen route params |
+| 6.33 | Navigator — ProduceScreen in POS + Sales stacks | ✅ | Accessible from POS and Sales tabs |
+| 6.34 | API service — 12 new production methods | ✅ | produce, tasks, assign, pick, start, complete, stats, alerts, logs |
+
+### Key Design Decisions
+
+- **Walk-in + all products in stock** → sale completed immediately, product_stock deducted
+- **Walk-in + out of stock** → sale allowed, urgent production tasks created
+- **Pickup/Delivery/Pre-order** → production tasks created, materials deducted when task completed
+- **Cancel after preparation** → finished products added to product_stock (materials can't be restored)
+- **Both self-pick AND manager assignment** → with reassignment support
+- **Production stats per employee** → total produced, unique products (for incentives)
+
+---
+
+## Phase 7 — Orders & Delivery
 
 **Status**: ⬜ Not Started
 
@@ -324,39 +449,39 @@
 
 | # | Task | Status | Notes |
 |---|------|--------|-------|
-| 6.1 | Database tables (deliveries, delivery_proofs, recurring_orders) | ⬜ | |
-| 6.2 | Order lifecycle routes (status transitions) | ⬜ | |
-| 6.3 | Delivery assignment routes | ⬜ | |
-| 6.4 | Delivery status update routes (with GPS + photo proof) | ⬜ | |
-| 6.5 | Delivery challan generation (shop + customer copies) | ⬜ | |
-| 6.6 | Delivery charges configuration | ⬜ | |
-| 6.7 | Recurring orders system | ⬜ | |
-| 6.8 | Order pickup flow (preferred time) | ⬜ | |
+| 7.1 | Database tables (deliveries, delivery_proofs, recurring_orders) | ⬜ | |
+| 7.2 | Order lifecycle routes (status transitions) | ⬜ | |
+| 7.3 | Delivery assignment routes | ⬜ | |
+| 7.4 | Delivery status update routes (with GPS + photo proof) | ⬜ | |
+| 7.5 | Delivery challan generation (shop + customer copies) | ⬜ | |
+| 7.6 | Delivery charges configuration | ⬜ | |
+| 7.7 | Recurring orders system | ⬜ | |
+| 7.8 | Order pickup flow (preferred time) | ⬜ | |
 
 ### Frontend
 
 | # | Task | Status | Notes |
 |---|------|--------|-------|
-| 6.9 | API service — order & delivery methods | ⬜ | |
-| 6.10 | OrdersScreen (list with status tabs) | ⬜ | |
-| 6.11 | OrderDetailScreen (items, status, delivery info) | ⬜ | |
-| 6.12 | DeliveryAssignScreen (assign delivery partner) | ⬜ | |
-| 6.13 | DeliveryPartnerScreen (assigned deliveries, navigation, mark delivered) | ⬜ | |
-| 6.14 | DeliveryProofScreen (photo capture + GPS) | ⬜ | |
-| 6.15 | DeliveryChallanScreen (view + print) | ⬜ | |
-| 6.16 | RecurringOrderScreen (setup + manage) | ⬜ | |
-| 6.17 | Customer order tracking screens | ⬜ | |
+| 7.9 | API service — order & delivery methods | ⬜ | |
+| 7.10 | OrdersScreen (list with status tabs) | ⬜ | |
+| 7.11 | OrderDetailScreen (items, status, delivery info) | ⬜ | |
+| 7.12 | DeliveryAssignScreen (assign delivery partner) | ⬜ | |
+| 7.13 | DeliveryPartnerScreen (assigned deliveries, navigation, mark delivered) | ⬜ | |
+| 7.14 | DeliveryProofScreen (photo capture + GPS) | ⬜ | |
+| 7.15 | DeliveryChallanScreen (view + print) | ⬜ | |
+| 7.16 | RecurringOrderScreen (setup + manage) | ⬜ | |
+| 7.17 | Customer order tracking screens | ⬜ | |
 
-### Phase 6 Testing
+### Phase 7 Testing
 
 | # | Test | Status | Notes |
 |---|------|--------|-------|
-| T6.1 | Order status transitions (full lifecycle) | ⬜ | |
-| T6.2 | Delivery assignment by manager | ⬜ | |
-| T6.3 | Delivery partner marks delivered with photo + GPS | ⬜ | |
-| T6.4 | Delivery challan PDF generation | ⬜ | |
-| T6.5 | Recurring order auto-creation | ⬜ | |
-| T6.6 | Pickup order with preferred time | ⬜ | |
+| T7.1 | Order status transitions (full lifecycle) | ⬜ | |
+| T7.2 | Delivery assignment by manager | ⬜ | |
+| T7.3 | Delivery partner marks delivered with photo + GPS | ⬜ | |
+| T7.4 | Delivery challan PDF generation | ⬜ | |
+| T7.5 | Recurring order auto-creation | ⬜ | |
+| T7.6 | Pickup order with preferred time | ⬜ | |
 | T6.7 | Customer order tracking view | ⬜ | |
 | T6.8 | Full order → delivery end-to-end in app | ⬜ | |
 
@@ -487,15 +612,16 @@
 | Phase | Description | Status | Tasks | Completed | Bugs Fixed |
 |-------|-------------|--------|-------|-----------|------------|
 | 1 | Foundation (Auth, Roles, Locations) | ✅ Complete | 26 | 26 | 8 |
-| 2 | Inventory & Raw Materials | ⬜ Not Started | 23 | 0 | 0 |
-| 3 | Products & QR Codes | ⬜ Not Started | 15 | 0 | 0 |
-| 4 | POS & Sales | ⬜ Not Started | 19 | 0 | 0 |
-| 5 | Customer Management | ⬜ Not Started | 15 | 0 | 0 |
-| 6 | Orders & Delivery | ⬜ Not Started | 17 | 0 | 0 |
-| 7 | Attendance & Location Tracking | ⬜ Not Started | 12 | 0 | 0 |
-| 8 | Reports & Dashboard | ⬜ Not Started | 13 | 0 | 0 |
-| 9 | Notifications & Polish | ⬜ Not Started | 10 | 0 | 0 |
-| **Total** | | | **150** | **26** | **7** |
+| 2 | Inventory & Raw Materials | ✅ Complete | 23 | 23 | 0 |
+| 3 | Products & QR Codes | ✅ Complete | 15 | 15 | 0 |
+| 4 | POS & Sales | ✅ Complete | 19 | 19 | 0 |
+| 5 | Customer Management | ✅ Complete | 15 | 15 | 0 |
+| 6 | Production & Hybrid Stock | ✅ Complete | 34 | 34 | 1 |
+| 7 | Orders & Delivery | ⬜ Not Started | 17 | 0 | 0 |
+| 8 | Attendance & Location Tracking | ⬜ Not Started | 12 | 0 | 0 |
+| 9 | Reports & Dashboard | ⬜ Not Started | 13 | 0 | 0 |
+| 10 | Notifications & Polish | ⬜ Not Started | 10 | 0 | 0 |
+| **Total** | | | **184** | **132** | **9** |
 
 ---
 

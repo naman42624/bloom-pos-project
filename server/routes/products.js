@@ -112,11 +112,18 @@ router.get('/', authenticate, (req, res, next) => {
     const products = db.prepare(sql).all(...params);
 
     // Calculate available quantity based on BOM and material stock
+    // Also get ready product stock from product_stock table
     const locId = location_id ? Number(location_id) : null;
     if (locId) {
       const getBOM = db.prepare('SELECT material_id, quantity as qty_needed FROM product_materials WHERE product_id = ?');
       const getStock = db.prepare('SELECT quantity FROM material_stock WHERE material_id = ? AND location_id = ?');
+      const getReadyStock = db.prepare('SELECT quantity FROM product_stock WHERE product_id = ? AND location_id = ?');
       for (const product of products) {
+        // Ready stock (already made products)
+        const readyStock = getReadyStock.get(product.id, locId);
+        product.ready_qty = readyStock ? readyStock.quantity : 0;
+
+        // Can-make qty from BOM
         const bom = getBOM.all(product.id);
         if (bom.length === 0) {
           product.available_qty = null; // no BOM = unlimited
@@ -165,6 +172,15 @@ router.get('/:id', authenticate, (req, res, next) => {
       WHERE pm.product_id = ?
       ORDER BY m.name
     `).all(req.params.id);
+
+    // Ready stock per location
+    product.stock = db.prepare(`
+      SELECT ps.*, l.name as location_name
+      FROM product_stock ps
+      JOIN locations l ON ps.location_id = l.id
+      WHERE ps.product_id = ?
+    `).all(req.params.id);
+    product.total_ready_qty = product.stock.reduce((sum, s) => sum + s.quantity, 0);
 
     // Images
     product.images = db.prepare(
@@ -221,28 +237,15 @@ router.post(
 
       const productId = result.lastInsertRowid;
 
-      // Add materials if provided and auto-deduct stock
+      // Add materials (BOM recipe definition only — no stock deduction)
       if (materials && materials.length > 0) {
         const insertPm = db.prepare(
           'INSERT INTO product_materials (product_id, material_id, quantity, cost_per_unit, notes) VALUES (?, ?, ?, ?, ?)'
         );
-        const deductStock = db.prepare(
-          'UPDATE material_stock SET quantity = MAX(0, quantity - ?), updated_at = CURRENT_TIMESTAMP WHERE material_id = ? AND location_id = ?'
-        );
-        const insertTx = db.prepare(
-          `INSERT INTO material_transactions (material_id, location_id, type, quantity, reference_type, reference_id, notes, created_by)
-           VALUES (?, ?, 'usage', ?, 'product', ?, ?, ?)`
-        );
-        const deductLocationId = location_id || db.prepare('SELECT id FROM locations LIMIT 1').get()?.id;
         const addMaterials = db.transaction(() => {
           for (const mat of materials) {
             const qty = mat.quantity || 1;
             insertPm.run(productId, mat.material_id, qty, mat.cost_per_unit || 0, mat.notes || '');
-            // Auto-deduct stock if we have a location
-            if (deductLocationId) {
-              deductStock.run(qty, mat.material_id, deductLocationId);
-              insertTx.run(mat.material_id, deductLocationId, qty, productId, `Used for product: ${name}`, req.user.id);
-            }
           }
         });
         addMaterials();

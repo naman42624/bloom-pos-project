@@ -467,6 +467,15 @@ class ApiService {
     return this.request(`/sales/${saleId}/cancel`, { method: 'PUT' });
   }
 
+  updateOrderStatus(saleId, status) {
+    return this.request(`/sales/${saleId}/status`, { method: 'PUT', body: JSON.stringify({ status }) });
+  }
+
+  getProductionQueue(params = {}) {
+    const query = new URLSearchParams(params).toString();
+    return this.request(`/sales/production-queue${query ? `?${query}` : ''}`);
+  }
+
   // ─── Refunds ────────────────────────────────────────────
   refundSale(saleId, data) {
     return this.request(`/sales/${saleId}/refund`, { method: 'POST', body: JSON.stringify(data) });
@@ -507,6 +516,131 @@ class ApiService {
   getExpenseSummary(params = {}) {
     const query = new URLSearchParams(params).toString();
     return this.request(`/expenses/summary${query ? `?${query}` : ''}`);
+  }
+
+  // ─── Customers ──────────────────────────────────────────
+  getCustomers(params = {}) {
+    const query = new URLSearchParams(params).toString();
+    return this.request(`/customers${query ? `?${query}` : ''}`);
+  }
+
+  getCustomer(id) {
+    return this.request(`/customers/${id}`);
+  }
+
+  createCustomer(data) {
+    return this.request('/customers', { method: 'POST', body: JSON.stringify(data) });
+  }
+
+  updateCustomer(id, data) {
+    return this.request(`/customers/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+  }
+
+  customerLookupEnhanced(phone) {
+    return this.request(`/customers/lookup?phone=${encodeURIComponent(phone)}`);
+  }
+
+  getUpcomingDates(days = 30) {
+    return this.request(`/customers/upcoming-dates?days=${days}`);
+  }
+
+  getCustomerOrders(id, params = {}) {
+    const query = new URLSearchParams(params).toString();
+    return this.request(`/customers/${id}/orders${query ? `?${query}` : ''}`);
+  }
+
+  // Addresses
+  addCustomerAddress(customerId, data) {
+    return this.request(`/customers/${customerId}/addresses`, { method: 'POST', body: JSON.stringify(data) });
+  }
+
+  updateCustomerAddress(customerId, addressId, data) {
+    return this.request(`/customers/${customerId}/addresses/${addressId}`, { method: 'PUT', body: JSON.stringify(data) });
+  }
+
+  deleteCustomerAddress(customerId, addressId) {
+    return this.request(`/customers/${customerId}/addresses/${addressId}`, { method: 'DELETE' });
+  }
+
+  // Credit payments
+  getCustomerCredits(customerId) {
+    return this.request(`/customers/${customerId}/credits`);
+  }
+
+  addCreditPayment(customerId, data) {
+    return this.request(`/customers/${customerId}/credits`, { method: 'POST', body: JSON.stringify(data) });
+  }
+
+  // Special dates
+  addSpecialDate(customerId, data) {
+    return this.request(`/customers/${customerId}/special-dates`, { method: 'POST', body: JSON.stringify(data) });
+  }
+
+  deleteSpecialDate(customerId, dateId) {
+    return this.request(`/customers/${customerId}/special-dates/${dateId}`, { method: 'DELETE' });
+  }
+
+  // ─── Production ───────────────────────────────────────────
+  produceProduct(data) {
+    return this.request('/production/produce', { method: 'POST', body: JSON.stringify(data) });
+  }
+
+  customProduceProduct(data) {
+    return this.request('/production/produce/custom', { method: 'POST', body: JSON.stringify(data) });
+  }
+
+  getProductStock(params = {}) {
+    const q = new URLSearchParams(params).toString();
+    return this.request(`/production/product-stock${q ? `?${q}` : ''}`);
+  }
+
+  adjustProductStock(data) {
+    return this.request('/production/product-stock/adjust', { method: 'POST', body: JSON.stringify(data) });
+  }
+
+  getProductionTasks(params = {}) {
+    const q = new URLSearchParams(params).toString();
+    return this.request(`/production/tasks${q ? `?${q}` : ''}`);
+  }
+
+  getMyTasks() {
+    return this.request('/production/my-tasks');
+  }
+
+  assignTask(taskId, data) {
+    return this.request(`/production/tasks/${taskId}/assign`, { method: 'PUT', body: JSON.stringify(data) });
+  }
+
+  pickTask(taskId) {
+    return this.request(`/production/tasks/${taskId}/pick`, { method: 'PUT' });
+  }
+
+  startTask(taskId) {
+    return this.request(`/production/tasks/${taskId}/start`, { method: 'PUT' });
+  }
+
+  completeTask(taskId) {
+    return this.request(`/production/tasks/${taskId}/complete`, { method: 'PUT' });
+  }
+
+  getProductionStats(params = {}) {
+    const q = new URLSearchParams(params).toString();
+    return this.request(`/production/stats${q ? `?${q}` : ''}`);
+  }
+
+  getMaterialAlerts(params = {}) {
+    const q = new URLSearchParams(params).toString();
+    return this.request(`/production/material-alerts${q ? `?${q}` : ''}`);
+  }
+
+  getDashboardSummary(params = {}) {
+    const q = new URLSearchParams(params).toString();
+    return this.request(`/production/dashboard-summary${q ? `?${q}` : ''}`);
+  }
+
+  getProductionLogs(params = {}) {
+    const q = new URLSearchParams(params).toString();
+    return this.request(`/production/logs${q ? `?${q}` : ''}`);
   }
 }
 

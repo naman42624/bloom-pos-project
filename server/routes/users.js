@@ -41,9 +41,14 @@ router.get(
       let whereClause = 'WHERE 1=1';
       const params = [];
 
-      // Managers can only see employees, delivery partners, and customers
+      // Managers can only see employees, delivery partners
       if (req.user.role === 'manager') {
-        whereClause += " AND u.role IN ('employee', 'delivery_partner', 'customer')";
+        whereClause += " AND u.role IN ('employee', 'delivery_partner')";
+      }
+
+      // Always exclude customers from staff listing (separate page)
+      if (!role || role !== 'customer') {
+        whereClause += " AND u.role != 'customer'";
       }
 
       if (role) {

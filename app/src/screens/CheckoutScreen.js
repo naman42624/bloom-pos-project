@@ -22,12 +22,13 @@ const PAYMENT_METHODS = [
 ];
 
 export default function CheckoutScreen({ route, navigation }) {
-  const { cart, locationId } = route.params;
+  const { cart, locationId, orderType: initialOrderType } = route.params;
   const { user } = useAuth();
 
-  const [orderType, setOrderType] = useState('walk_in');
+  const [orderType, setOrderType] = useState(initialOrderType || 'walk_in');
   const [customerName, setCustomerName] = useState('');
   const [customerPhone, setCustomerPhone] = useState('');
+  const [customerId, setCustomerId] = useState(null);
   const [discountType, setDiscountType] = useState('fixed');
   const [discountValue, setDiscountValue] = useState('');
   const [deliveryCharges, setDeliveryCharges] = useState('');
@@ -70,21 +71,25 @@ export default function CheckoutScreen({ route, navigation }) {
     if (customerPhone.length >= 10) {
       (async () => {
         try {
-          const res = await api.customerLookup(customerPhone);
+          const res = await api.customerLookupEnhanced(customerPhone);
           if (res.data) {
             setCustomerHistory(res.data);
-            if (!customerName && res.data.customer_name) {
-              setCustomerName(res.data.customer_name);
+            if (res.data.is_registered) setCustomerId(res.data.id);
+            if (!customerName && res.data.name) {
+              setCustomerName(res.data.name);
             }
           } else {
             setCustomerHistory(null);
+            setCustomerId(null);
           }
         } catch {
           setCustomerHistory(null);
+          setCustomerId(null);
         }
       })();
     } else {
       setCustomerHistory(null);
+      setCustomerId(null);
     }
   }, [customerPhone]);
 
@@ -133,6 +138,7 @@ export default function CheckoutScreen({ route, navigation }) {
     const saleData = {
       location_id: locationId,
       order_type: orderType,
+      customer_id: customerId || null,
       customer_name: customerName || null,
       customer_phone: customerPhone || null,
       discount_type: discount > 0 ? discountType : null,
@@ -197,7 +203,7 @@ export default function CheckoutScreen({ route, navigation }) {
               style={[styles.chip, orderType === t.key && styles.chipActive]}
               onPress={() => setOrderType(t.key)}
             >
-              <Ionicons name={t.icon} size={16} color={orderType === t.key ? Colors.white : Colors.textSecondary} />
+              <Ionicons name={t.icon} size={20} color={orderType === t.key ? Colors.white : Colors.textSecondary} />
               <Text style={[styles.chipText, orderType === t.key && styles.chipTextActive]}>{t.label}</Text>
             </TouchableOpacity>
           ))}
@@ -236,7 +242,8 @@ export default function CheckoutScreen({ route, navigation }) {
           <View style={styles.customerHint}>
             <Ionicons name="person-circle" size={16} color={Colors.primary} />
             <Text style={styles.customerHintText}>
-              Returning customer • {customerHistory.order_count} orders • ₹{(customerHistory.total_spent || 0).toFixed(0)} total
+              {customerId ? '✓ Registered' : 'Returning'} customer • {customerHistory.order_count} orders • ₹{(customerHistory.total_spent || 0).toFixed(0)} total
+              {(customerHistory.credit_balance || 0) > 0 ? ` • ₹${customerHistory.credit_balance.toFixed(0)} due` : ''}
             </Text>
           </View>
         )}
@@ -456,86 +463,86 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
   content: { padding: Spacing.md },
 
-  sectionTitle: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.text, marginTop: Spacing.md, marginBottom: Spacing.xs },
-  chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.xs },
+  sectionTitle: { fontSize: FontSize.md, fontWeight: '700', color: Colors.text, marginTop: Spacing.lg, marginBottom: Spacing.sm },
+  chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm },
   chip: {
-    flexDirection: 'row', alignItems: 'center', gap: 4,
-    paddingHorizontal: Spacing.md, paddingVertical: Spacing.xs + 2,
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm,
     borderRadius: BorderRadius.full, backgroundColor: Colors.surface,
-    borderWidth: 1, borderColor: Colors.border,
+    borderWidth: 1.5, borderColor: Colors.border, minHeight: 44,
   },
   chipActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
-  chipText: { fontSize: FontSize.xs, color: Colors.textSecondary },
-  chipTextActive: { color: Colors.white, fontWeight: '600' },
+  chipText: { fontSize: FontSize.sm, color: Colors.textSecondary, fontWeight: '500' },
+  chipTextActive: { color: Colors.white, fontWeight: '700' },
 
   row: { flexDirection: 'row', gap: Spacing.sm },
   input: {
     backgroundColor: Colors.surface, borderRadius: BorderRadius.md,
-    borderWidth: 1, borderColor: Colors.border, paddingHorizontal: Spacing.sm,
-    paddingVertical: Spacing.sm, fontSize: FontSize.sm, color: Colors.text, marginTop: Spacing.xs,
+    borderWidth: 1, borderColor: Colors.border, paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.md, fontSize: FontSize.md, color: Colors.text, marginTop: Spacing.xs,
   },
 
-  remainingHint: { fontSize: FontSize.xs, color: Colors.warning, marginTop: Spacing.xs, fontWeight: '600' },
+  remainingHint: { fontSize: FontSize.sm, color: Colors.warning, marginTop: Spacing.xs, fontWeight: '600' },
 
   discountToggle: { flexDirection: 'row', marginTop: Spacing.xs },
   discToggleBtn: {
-    paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm,
+    paddingHorizontal: Spacing.lg, paddingVertical: Spacing.md,
     backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.border,
   },
   discToggleBtnActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
-  discToggleText: { fontSize: FontSize.sm, color: Colors.textSecondary, fontWeight: '600' },
+  discToggleText: { fontSize: FontSize.md, color: Colors.textSecondary, fontWeight: '700' },
   discToggleTextActive: { color: Colors.white },
 
   summaryBox: {
     backgroundColor: Colors.surface, borderRadius: BorderRadius.md,
-    borderWidth: 1, borderColor: Colors.border, padding: Spacing.md, marginTop: Spacing.md,
+    borderWidth: 1, borderColor: Colors.border, padding: Spacing.md, marginTop: Spacing.lg,
   },
-  summaryTitle: { fontSize: FontSize.md, fontWeight: '700', color: Colors.text, marginBottom: Spacing.sm },
-  summaryRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 },
+  summaryTitle: { fontSize: FontSize.lg, fontWeight: '700', color: Colors.text, marginBottom: Spacing.sm },
+  summaryRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 },
   summaryItemName: { fontSize: FontSize.sm, color: Colors.textSecondary, flex: 1 },
-  summaryItemPrice: { fontSize: FontSize.sm, color: Colors.text },
+  summaryItemPrice: { fontSize: FontSize.sm, color: Colors.text, fontWeight: '500' },
   divider: { height: 1, backgroundColor: Colors.border, marginVertical: Spacing.sm },
   summaryLabel: { fontSize: FontSize.sm, color: Colors.textSecondary },
-  summaryValue: { fontSize: FontSize.sm, color: Colors.text, fontWeight: '500' },
-  grandLabel: { fontSize: FontSize.md, fontWeight: '700', color: Colors.text },
-  grandValue: { fontSize: FontSize.md, fontWeight: '700', color: Colors.primary },
+  summaryValue: { fontSize: FontSize.sm, color: Colors.text, fontWeight: '600' },
+  grandLabel: { fontSize: FontSize.lg, fontWeight: '700', color: Colors.text },
+  grandValue: { fontSize: FontSize.lg, fontWeight: '700', color: Colors.primary },
 
-  paymentSection: { marginTop: Spacing.sm },
+  paymentSection: { marginTop: Spacing.md },
   paymentHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   splitBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 4,
-    paddingHorizontal: Spacing.sm, paddingVertical: Spacing.xs,
+    paddingHorizontal: Spacing.sm, paddingVertical: Spacing.sm,
   },
-  splitBtnText: { fontSize: FontSize.xs, color: Colors.primary, fontWeight: '600' },
+  splitBtnText: { fontSize: FontSize.sm, color: Colors.primary, fontWeight: '600' },
   paymentEntry: {
     backgroundColor: Colors.surface, borderRadius: BorderRadius.md,
-    borderWidth: 1, borderColor: Colors.border, padding: Spacing.sm, marginTop: Spacing.xs,
+    borderWidth: 1, borderColor: Colors.border, padding: Spacing.md, marginTop: Spacing.sm,
   },
   paymentEntryHeader: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    marginBottom: Spacing.xs,
+    marginBottom: Spacing.sm,
   },
-  paymentEntryLabel: { fontSize: FontSize.xs, fontWeight: '600', color: Colors.textSecondary },
+  paymentEntryLabel: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.textSecondary },
 
   submitBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.sm,
     backgroundColor: Colors.primary, borderRadius: BorderRadius.md,
-    paddingVertical: Spacing.md, marginTop: Spacing.lg,
+    paddingVertical: Spacing.lg, marginTop: Spacing.lg,
   },
-  submitBtnText: { color: Colors.white, fontSize: FontSize.md, fontWeight: '700' },
+  submitBtnText: { color: Colors.white, fontSize: FontSize.lg, fontWeight: '700' },
 
   customerHint: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
-    backgroundColor: Colors.primary + '10', borderRadius: BorderRadius.sm,
-    paddingHorizontal: Spacing.sm, paddingVertical: Spacing.xs, marginTop: Spacing.xs,
+    backgroundColor: Colors.primary + '10', borderRadius: BorderRadius.md,
+    paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm, marginTop: Spacing.sm,
   },
-  customerHintText: { fontSize: FontSize.xs, color: Colors.primary, fontWeight: '500' },
+  customerHintText: { fontSize: FontSize.sm, color: Colors.primary, fontWeight: '500' },
 
   changeDueBox: {
     flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
     backgroundColor: Colors.success + '12', borderRadius: BorderRadius.md,
-    padding: Spacing.sm, marginTop: Spacing.sm,
+    padding: Spacing.md, marginTop: Spacing.sm,
   },
-  changeDueLabel: { fontSize: FontSize.sm, color: Colors.success, fontWeight: '600', flex: 1 },
-  changeDueAmount: { fontSize: FontSize.md, color: Colors.success, fontWeight: '700' },
+  changeDueLabel: { fontSize: FontSize.md, color: Colors.success, fontWeight: '600', flex: 1 },
+  changeDueAmount: { fontSize: FontSize.lg, color: Colors.success, fontWeight: '700' },
 });

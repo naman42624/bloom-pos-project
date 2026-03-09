@@ -511,7 +511,7 @@ function initializeDatabase() {
       grand_total REAL DEFAULT 0,
       payment_status TEXT NOT NULL DEFAULT 'pending' CHECK(payment_status IN ('paid', 'partial', 'pending', 'refunded')),
       order_type TEXT NOT NULL DEFAULT 'walk_in' CHECK(order_type IN ('walk_in', 'pickup', 'delivery', 'pre_order')),
-      status TEXT NOT NULL DEFAULT 'completed' CHECK(status IN ('draft', 'completed', 'cancelled')),
+      status TEXT NOT NULL DEFAULT 'completed' CHECK(status IN ('draft', 'pending', 'preparing', 'ready', 'completed', 'cancelled')),
       special_instructions TEXT DEFAULT '',
       customer_notes TEXT DEFAULT '',
       created_by INTEGER NOT NULL,
@@ -547,6 +547,41 @@ function initializeDatabase() {
   const saleItemCols = db.prepare("PRAGMA table_info(sale_items)").all().map(c => c.name);
   if (!saleItemCols.includes('material_id')) {
     db.exec("ALTER TABLE sale_items ADD COLUMN material_id INTEGER DEFAULT NULL REFERENCES materials(id) ON DELETE CASCADE");
+  }
+
+  // Fix sale_items.product_id NOT NULL constraint (may exist from older schema)
+  const saleItemColInfo = db.prepare("PRAGMA table_info(sale_items)").all();
+  const productIdCol = saleItemColInfo.find(c => c.name === 'product_id');
+  if (productIdCol && productIdCol.notnull === 1) {
+    // Rebuild table to make product_id nullable
+    db.exec(`
+      CREATE TABLE sale_items_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        sale_id INTEGER NOT NULL,
+        product_id INTEGER DEFAULT NULL,
+        material_id INTEGER DEFAULT NULL,
+        product_name TEXT NOT NULL,
+        quantity INTEGER NOT NULL DEFAULT 1,
+        unit_price REAL NOT NULL,
+        tax_rate REAL NOT NULL DEFAULT 0,
+        tax_amount REAL NOT NULL DEFAULT 0,
+        discount_amount REAL DEFAULT 0,
+        line_total REAL NOT NULL,
+        materials_deducted INTEGER DEFAULT 0,
+        from_product_stock INTEGER DEFAULT 0,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE CASCADE,
+        FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
+        FOREIGN KEY (material_id) REFERENCES materials(id) ON DELETE CASCADE
+      );
+      INSERT INTO sale_items_new SELECT id, sale_id, product_id, material_id, product_name, quantity, unit_price, tax_rate, tax_amount, discount_amount, line_total,
+        COALESCE(materials_deducted, 0), COALESCE(from_product_stock, 0), created_at FROM sale_items;
+      DROP TABLE sale_items;
+      ALTER TABLE sale_items_new RENAME TO sale_items;
+      CREATE INDEX IF NOT EXISTS idx_sale_items_sale ON sale_items(sale_id);
+      CREATE INDEX IF NOT EXISTS idx_sale_items_product ON sale_items(product_id);
+    `);
+    console.log('✅ Migrated sale_items: product_id is now nullable');
   }
 
   // ─── Phase 4: Sale Items ────────────────────────────────────
@@ -681,6 +716,234 @@ function initializeDatabase() {
     CREATE INDEX IF NOT EXISTS idx_expenses_date ON expenses(expense_date);
     CREATE INDEX IF NOT EXISTS idx_expenses_category ON expenses(category);
   `);
+
+  // ─── Phase 5: Customer Management ──────────────────────────
+  // Migrate: add customer fields to users table
+  const userCols = db.prepare("PRAGMA table_info(users)").all().map(c => c.name);
+  if (!userCols.includes('birthday')) {
+    db.exec("ALTER TABLE users ADD COLUMN birthday DATE DEFAULT NULL");
+  }
+  if (!userCols.includes('anniversary')) {
+    db.exec("ALTER TABLE users ADD COLUMN anniversary DATE DEFAULT NULL");
+  }
+  if (!userCols.includes('custom_dates')) {
+    db.exec("ALTER TABLE users ADD COLUMN custom_dates TEXT DEFAULT '[]'");
+  }
+  if (!userCols.includes('total_spent')) {
+    db.exec("ALTER TABLE users ADD COLUMN total_spent REAL DEFAULT 0");
+  }
+  if (!userCols.includes('credit_balance')) {
+    db.exec("ALTER TABLE users ADD COLUMN credit_balance REAL DEFAULT 0");
+  }
+  if (!userCols.includes('notes')) {
+    db.exec("ALTER TABLE users ADD COLUMN notes TEXT DEFAULT ''");
+  }
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS customer_addresses (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      customer_id INTEGER NOT NULL,
+      label TEXT NOT NULL DEFAULT 'Home',
+      address_line_1 TEXT NOT NULL,
+      address_line_2 TEXT DEFAULT '',
+      city TEXT DEFAULT '',
+      state TEXT DEFAULT '',
+      pincode TEXT DEFAULT '',
+      latitude REAL DEFAULT NULL,
+      longitude REAL DEFAULT NULL,
+      is_default INTEGER DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (customer_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_customer_addresses_customer ON customer_addresses(customer_id);
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS credit_payments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      customer_id INTEGER NOT NULL,
+      amount REAL NOT NULL,
+      method TEXT NOT NULL DEFAULT 'cash' CHECK(method IN ('cash', 'card', 'upi')),
+      received_by INTEGER NOT NULL,
+      notes TEXT DEFAULT '',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (customer_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (received_by) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_credit_payments_customer ON credit_payments(customer_id);
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS special_dates (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      customer_id INTEGER NOT NULL,
+      label TEXT NOT NULL,
+      date TEXT NOT NULL,
+      reminder_sent INTEGER DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (customer_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_special_dates_customer ON special_dates(customer_id);
+    CREATE INDEX IF NOT EXISTS idx_special_dates_date ON special_dates(date);
+  `);
+
+  // ─── Phase 5+ Migrations: Order lifecycle & production tracking ───
+  const salesColsP5 = db.pragma('table_info(sales)').map(c => c.name);
+  if (!salesColsP5.includes('stock_deducted')) {
+    db.exec("ALTER TABLE sales ADD COLUMN stock_deducted INTEGER DEFAULT 0");
+  }
+  // Expand status CHECK — SQLite doesn't allow ALTER CHECK, so we use a trigger approach
+  // We'll allow any status and validate in app code. Mark existing completed sales as stock_deducted.
+  db.exec("UPDATE sales SET stock_deducted = 1 WHERE status = 'completed' AND stock_deducted = 0");
+
+  // Fix sales.status CHECK constraint — old schema only allowed (draft, completed, cancelled)
+  // Production system needs: pending, preparing, ready
+  const salesTableSql = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='sales'").get();
+  if (salesTableSql && salesTableSql.sql && salesTableSql.sql.includes("'draft', 'completed', 'cancelled'")) {
+    const salesCols2 = db.pragma('table_info(sales)').map(c => c.name);
+    const colList = salesCols2.join(', ');
+    db.exec(`
+      CREATE TABLE sales_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        sale_number TEXT UNIQUE,
+        location_id INTEGER NOT NULL,
+        customer_id INTEGER DEFAULT NULL,
+        customer_name TEXT DEFAULT NULL,
+        customer_phone TEXT DEFAULT NULL,
+        subtotal REAL DEFAULT 0,
+        tax_total REAL DEFAULT 0,
+        discount_amount REAL DEFAULT 0,
+        discount_type TEXT DEFAULT NULL CHECK(discount_type IN ('fixed', 'percentage')),
+        discount_percentage REAL DEFAULT NULL,
+        discount_approved_by INTEGER DEFAULT NULL,
+        delivery_charges REAL DEFAULT 0,
+        delivery_address TEXT DEFAULT NULL,
+        scheduled_date DATE DEFAULT NULL,
+        scheduled_time TEXT DEFAULT NULL,
+        grand_total REAL DEFAULT 0,
+        payment_status TEXT NOT NULL DEFAULT 'pending' CHECK(payment_status IN ('paid', 'partial', 'pending', 'refunded')),
+        order_type TEXT NOT NULL DEFAULT 'walk_in' CHECK(order_type IN ('walk_in', 'pickup', 'delivery', 'pre_order')),
+        status TEXT NOT NULL DEFAULT 'completed' CHECK(status IN ('draft', 'pending', 'preparing', 'ready', 'completed', 'cancelled')),
+        special_instructions TEXT DEFAULT '',
+        customer_notes TEXT DEFAULT '',
+        stock_deducted INTEGER DEFAULT 0,
+        created_by INTEGER NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (location_id) REFERENCES locations(id) ON DELETE CASCADE,
+        FOREIGN KEY (customer_id) REFERENCES users(id) ON DELETE SET NULL,
+        FOREIGN KEY (discount_approved_by) REFERENCES users(id) ON DELETE SET NULL,
+        FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE
+      );
+      INSERT INTO sales_new (${colList}) SELECT ${colList} FROM sales;
+      DROP TABLE sales;
+      ALTER TABLE sales_new RENAME TO sales;
+      CREATE INDEX IF NOT EXISTS idx_sales_number ON sales(sale_number);
+      CREATE INDEX IF NOT EXISTS idx_sales_location ON sales(location_id);
+      CREATE INDEX IF NOT EXISTS idx_sales_customer ON sales(customer_id);
+      CREATE INDEX IF NOT EXISTS idx_sales_status ON sales(payment_status);
+      CREATE INDEX IF NOT EXISTS idx_sales_order_type ON sales(order_type);
+      CREATE INDEX IF NOT EXISTS idx_sales_created ON sales(created_at);
+    `);
+    console.log('✅ Migrated sales: status CHECK expanded to include pending/preparing/ready');
+  }
+
+  // Pre-orders: add status + delivery_address columns
+  const preOrderCols = db.pragma('table_info(pre_orders)').map(c => c.name);
+  if (!preOrderCols.includes('status')) {
+    db.exec("ALTER TABLE pre_orders ADD COLUMN status TEXT DEFAULT 'pending'");
+  }
+  if (!preOrderCols.includes('delivery_address')) {
+    db.exec("ALTER TABLE pre_orders ADD COLUMN delivery_address TEXT DEFAULT NULL");
+  }
+  if (!preOrderCols.includes('special_instructions')) {
+    db.exec("ALTER TABLE pre_orders ADD COLUMN special_instructions TEXT DEFAULT NULL");
+  }
+
+  // ─── Phase 6: Hybrid Product Stock & Production System ───────
+  // product_stock — real ready-product inventory per location
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS product_stock (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      product_id INTEGER NOT NULL,
+      location_id INTEGER NOT NULL,
+      quantity INTEGER NOT NULL DEFAULT 0,
+      min_stock_alert INTEGER DEFAULT 0,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
+      FOREIGN KEY (location_id) REFERENCES locations(id) ON DELETE CASCADE,
+      UNIQUE(product_id, location_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_product_stock_product ON product_stock(product_id);
+    CREATE INDEX IF NOT EXISTS idx_product_stock_location ON product_stock(location_id);
+  `);
+
+  // production_logs — tracks who made what, when, and how many (for incentive tracking)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS production_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      product_id INTEGER NOT NULL,
+      location_id INTEGER NOT NULL,
+      quantity INTEGER NOT NULL DEFAULT 1,
+      sale_id INTEGER DEFAULT NULL,
+      task_id INTEGER DEFAULT NULL,
+      produced_by INTEGER NOT NULL,
+      notes TEXT DEFAULT '',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
+      FOREIGN KEY (location_id) REFERENCES locations(id) ON DELETE CASCADE,
+      FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE SET NULL,
+      FOREIGN KEY (produced_by) REFERENCES users(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_production_logs_product ON production_logs(product_id);
+    CREATE INDEX IF NOT EXISTS idx_production_logs_producer ON production_logs(produced_by);
+    CREATE INDEX IF NOT EXISTS idx_production_logs_date ON production_logs(created_at);
+  `);
+
+  // production_tasks — order-driven tasks assigned to employees
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS production_tasks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      sale_id INTEGER NOT NULL,
+      sale_item_id INTEGER DEFAULT NULL,
+      product_id INTEGER NOT NULL,
+      location_id INTEGER NOT NULL,
+      quantity INTEGER NOT NULL DEFAULT 1,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','assigned','in_progress','completed','cancelled')),
+      assigned_to INTEGER DEFAULT NULL,
+      picked_by INTEGER DEFAULT NULL,
+      priority TEXT NOT NULL DEFAULT 'normal' CHECK(priority IN ('normal','urgent')),
+      notes TEXT DEFAULT '',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      completed_at DATETIME DEFAULT NULL,
+      FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE CASCADE,
+      FOREIGN KEY (sale_item_id) REFERENCES sale_items(id) ON DELETE CASCADE,
+      FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
+      FOREIGN KEY (location_id) REFERENCES locations(id) ON DELETE CASCADE,
+      FOREIGN KEY (assigned_to) REFERENCES users(id) ON DELETE SET NULL,
+      FOREIGN KEY (picked_by) REFERENCES users(id) ON DELETE SET NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_production_tasks_sale ON production_tasks(sale_id);
+    CREATE INDEX IF NOT EXISTS idx_production_tasks_status ON production_tasks(status);
+    CREATE INDEX IF NOT EXISTS idx_production_tasks_assigned ON production_tasks(assigned_to);
+    CREATE INDEX IF NOT EXISTS idx_production_tasks_location ON production_tasks(location_id);
+  `);
+
+  // Add materials_deducted flag to sale_items for per-item tracking
+  const saleItemColsP6 = db.pragma('table_info(sale_items)').map(c => c.name);
+  if (!saleItemColsP6.includes('materials_deducted')) {
+    db.exec("ALTER TABLE sale_items ADD COLUMN materials_deducted INTEGER DEFAULT 0");
+  }
+  if (!saleItemColsP6.includes('from_product_stock')) {
+    db.exec("ALTER TABLE sale_items ADD COLUMN from_product_stock INTEGER DEFAULT 0");
+  }
+  // Mark existing completed sale items
+  db.exec("UPDATE sale_items SET materials_deducted = 1 WHERE sale_id IN (SELECT id FROM sales WHERE stock_deducted = 1)");
 }
 
 function closeDb() {

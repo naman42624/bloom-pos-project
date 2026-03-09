@@ -12,6 +12,31 @@ import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 
 export default function POSScreen({ navigation, route }) {
   const { user } = useAuth();
+  const isManager = user?.role === 'owner' || user?.role === 'manager';
+
+  React.useLayoutEffect(() => {
+    navigation.setOptions({
+      headerRight: () => (
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, marginRight: Spacing.md }}>
+          <TouchableOpacity
+            style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}
+            onPress={() => navigation.navigate('ProduceProduct')}
+          >
+            <Ionicons name="hammer" size={18} color={Colors.success} />
+            <Text style={{ fontSize: FontSize.xs, color: Colors.success, fontWeight: '600' }}>Make</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}
+            onPress={() => navigation.navigate('ProductionQueue')}
+          >
+            <Ionicons name="list" size={18} color={Colors.primary} />
+            <Text style={{ fontSize: FontSize.xs, color: Colors.primary, fontWeight: '600' }}>Queue</Text>
+          </TouchableOpacity>
+        </View>
+      ),
+    });
+  }, [navigation]);
+
   const [products, setProducts] = useState([]);
   const [materials, setMaterials] = useState([]);
   const [search, setSearch] = useState('');
@@ -21,6 +46,16 @@ export default function POSScreen({ navigation, route }) {
   const [selectedLocation, setSelectedLocation] = useState(null);
   const [activeTab, setActiveTab] = useState('products'); // 'products' or 'materials'
   const [selectedCategory, setSelectedCategory] = useState(null); // null = all
+
+  // Order type selection (Step 1)
+  const [orderType, setOrderType] = useState('walk_in');
+
+  const ORDER_TYPES = [
+    { key: 'walk_in', label: 'Walk-in', icon: 'person', color: Colors.success },
+    { key: 'pickup', label: 'Pickup', icon: 'bag-handle', color: Colors.info || '#2196F3' },
+    { key: 'delivery', label: 'Delivery', icon: 'bicycle', color: Colors.warning || '#FF9800' },
+    { key: 'pre_order', label: 'Pre-Order', icon: 'calendar', color: Colors.primary },
+  ];
 
   const PRODUCT_CATEGORIES = [
     { key: null, label: 'All' },
@@ -263,7 +298,7 @@ export default function POSScreen({ navigation, route }) {
       Alert.alert('Location', 'Please select a location');
       return;
     }
-    navigation.navigate('Checkout', { cart, locationId: selectedLocation });
+    navigation.navigate('Checkout', { cart, locationId: selectedLocation, orderType });
   };
 
   const handleScanQR = () => {
@@ -280,12 +315,12 @@ export default function POSScreen({ navigation, route }) {
 
   const renderProduct = ({ item, index }) => {
     const inCart = cart.find((c) => c.product_id === item.id && !c.material_id);
-    const outOfStock = item.available_qty !== null && item.available_qty !== undefined && item.available_qty <= 0;
-    const isPopular = (item.sale_count || 0) > 0 && index < 5;
+    const readyQty = item.ready_qty || 0;
+    const canMakeQty = item.available_qty;
     return (
-      <TouchableOpacity style={[styles.productCard, outOfStock && styles.productCardDimmed]} onPress={() => addToCart(item)} activeOpacity={0.7}>
+      <TouchableOpacity style={[styles.productCard]} onPress={() => addToCart(item)} activeOpacity={0.7}>
         <View style={styles.productIconWrap}>
-          <Ionicons name="gift" size={24} color={Colors.primary} />
+          <Ionicons name="gift" size={28} color={Colors.primary} />
           {inCart && (
             <View style={styles.qtyBadge}>
               <Text style={styles.qtyBadgeText}>{inCart.quantity}</Text>
@@ -293,21 +328,20 @@ export default function POSScreen({ navigation, route }) {
           )}
         </View>
         <View style={styles.productInfo}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-            <Text style={styles.productName} numberOfLines={1}>{item.name}</Text>
-            {isPopular && (
-              <View style={styles.popularBadge}>
-                <Ionicons name="flame" size={10} color="#FF6D00" />
-                <Text style={styles.popularText}>Popular</Text>
+          <Text style={styles.productName} numberOfLines={1}>{item.name}</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 3 }}>
+            {readyQty > 0 && (
+              <View style={styles.readyBadge}>
+                <Text style={styles.readyBadgeText}>{readyQty} ready</Text>
               </View>
             )}
+            {canMakeQty !== null && canMakeQty !== undefined && canMakeQty > 0 && (
+              <Text style={styles.canMakeText}>+{canMakeQty} makeable</Text>
+            )}
+            {readyQty <= 0 && (canMakeQty === null || canMakeQty === undefined || canMakeQty <= 0) && (
+              <Text style={[styles.canMakeText, { color: Colors.error }]}>Out of Stock</Text>
+            )}
           </View>
-          <Text style={styles.productSku}>
-            {item.sku}
-            {item.available_qty !== null && item.available_qty !== undefined
-              ? (outOfStock ? '  •  Out of Stock' : `  •  Stock: ${item.available_qty}`)
-              : ''}
-          </Text>
         </View>
         <Text style={styles.productPrice}>₹{(item.selling_price || 0).toFixed(0)}</Text>
       </TouchableOpacity>
@@ -357,10 +391,24 @@ export default function POSScreen({ navigation, route }) {
         </ScrollView>
       )}
 
-      {/* Search & scan row */}
+      {/* Order type — big visible buttons */}
+      <View style={styles.orderTypeRow}>
+        {ORDER_TYPES.map((t) => (
+          <TouchableOpacity
+            key={t.key}
+            style={[styles.orderTypeBtn, orderType === t.key && { backgroundColor: t.color, borderColor: t.color }]}
+            onPress={() => setOrderType(t.key)}
+          >
+            <Ionicons name={t.icon} size={20} color={orderType === t.key ? Colors.white : t.color} />
+            <Text style={[styles.orderTypeBtnText, orderType === t.key && { color: Colors.white }]}>{t.label}</Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+
+      {/* Search row */}
       <View style={styles.searchRow}>
         <View style={styles.searchWrap}>
-          <Ionicons name="search" size={18} color={Colors.textLight} style={{ marginRight: 6 }} />
+          <Ionicons name="search" size={20} color={Colors.textLight} style={{ marginRight: 6 }} />
           <TextInput
             style={styles.searchInput}
             value={search}
@@ -370,16 +418,18 @@ export default function POSScreen({ navigation, route }) {
           />
           {search.length > 0 && (
             <TouchableOpacity onPress={() => handleSearch('')}>
-              <Ionicons name="close-circle" size={18} color={Colors.textLight} />
+              <Ionicons name="close-circle" size={20} color={Colors.textLight} />
             </TouchableOpacity>
           )}
         </View>
         <TouchableOpacity style={styles.scanBtn} onPress={handleScanQR}>
-          <Ionicons name="qr-code" size={22} color={Colors.white} />
+          <Ionicons name="qr-code" size={24} color={Colors.white} />
         </TouchableOpacity>
-        <TouchableOpacity style={[styles.scanBtn, { backgroundColor: Colors.success }]} onPress={openQuickAdd}>
-          <Ionicons name="add" size={22} color={Colors.white} />
-        </TouchableOpacity>
+        {isManager && (
+          <TouchableOpacity style={[styles.scanBtn, { backgroundColor: Colors.success }]} onPress={openQuickAdd}>
+            <Ionicons name="add" size={24} color={Colors.white} />
+          </TouchableOpacity>
+        )}
       </View>
 
       {/* Products / Materials toggle */}
@@ -388,14 +438,14 @@ export default function POSScreen({ navigation, route }) {
           style={[styles.tabBtn, activeTab === 'products' && styles.tabBtnActive]}
           onPress={() => { setActiveTab('products'); setSearch(''); }}
         >
-          <Ionicons name="gift" size={16} color={activeTab === 'products' ? Colors.white : Colors.textSecondary} />
+          <Ionicons name="gift" size={18} color={activeTab === 'products' ? Colors.white : Colors.textSecondary} />
           <Text style={[styles.tabBtnText, activeTab === 'products' && styles.tabBtnTextActive]}>Products</Text>
         </TouchableOpacity>
         <TouchableOpacity
           style={[styles.tabBtn, activeTab === 'materials' && styles.tabBtnActive]}
           onPress={() => { setActiveTab('materials'); setSearch(''); }}
         >
-          <Ionicons name="leaf" size={16} color={activeTab === 'materials' ? Colors.white : Colors.textSecondary} />
+          <Ionicons name="leaf" size={18} color={activeTab === 'materials' ? Colors.white : Colors.textSecondary} />
           <Text style={[styles.tabBtnText, activeTab === 'materials' && styles.tabBtnTextActive]}>Raw Materials</Text>
         </TouchableOpacity>
       </View>
@@ -448,8 +498,9 @@ export default function POSScreen({ navigation, route }) {
         <View style={styles.cartPanel}>
           <View style={styles.cartPanelHeader}>
             <Text style={styles.cartPanelTitle}>Cart ({itemCount} items)</Text>
-            <TouchableOpacity onPress={clearCart}>
-              <Text style={styles.clearText}>Clear All</Text>
+            <TouchableOpacity onPress={clearCart} style={styles.clearBtn}>
+              <Ionicons name="trash-outline" size={16} color={Colors.error} />
+              <Text style={styles.clearText}>Clear</Text>
             </TouchableOpacity>
           </View>
           <ScrollView style={styles.cartItemsList} nestedScrollEnabled>
@@ -459,45 +510,29 @@ export default function POSScreen({ navigation, route }) {
                   <Text style={styles.cartItemName} numberOfLines={1}>
                     {c.material_id ? '🌿 ' : ''}{c.product_name}
                   </Text>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                    <Text style={styles.cartItemPrice}>₹</Text>
-                    <TextInput
-                      style={styles.cartPriceInput}
-                      value={String(c.unit_price)}
-                      onChangeText={(v) => updateCartPrice(c, v)}
-                      keyboardType="numeric"
-                      selectTextOnFocus
-                    />
-                    <Text style={styles.cartItemPrice}> × {c.quantity} = ₹{(c.unit_price * c.quantity).toFixed(0)}</Text>
-                  </View>
+                  <Text style={styles.cartItemPrice}>₹{c.unit_price} × {c.quantity} = ₹{(c.unit_price * c.quantity).toFixed(0)}</Text>
                 </View>
                 <View style={styles.qtyControls}>
                   <TouchableOpacity style={styles.qtyBtn} onPress={() => updateCartQty(c, -1)}>
-                    <Ionicons name={c.quantity === 1 ? 'trash-outline' : 'remove'} size={16} color={c.quantity === 1 ? Colors.error : Colors.primary} />
+                    <Ionicons name={c.quantity === 1 ? 'trash-outline' : 'remove'} size={20} color={c.quantity === 1 ? Colors.error : Colors.primary} />
                   </TouchableOpacity>
                   <Text style={styles.qtyText}>{c.quantity}</Text>
                   <TouchableOpacity style={styles.qtyBtn} onPress={() => updateCartQty(c, 1)}>
-                    <Ionicons name="add" size={16} color={Colors.primary} />
+                    <Ionicons name="add" size={20} color={Colors.primary} />
                   </TouchableOpacity>
                 </View>
               </View>
             ))}
           </ScrollView>
           <View style={styles.cartTotals}>
-            {taxTotal > 0 && (
-              <View style={styles.cartTotalRow}>
-                <Text style={styles.cartTotalLabel}>Tax</Text>
-                <Text style={styles.cartTotalVal}>₹{taxTotal.toFixed(2)}</Text>
-              </View>
-            )}
             <View style={styles.cartTotalRow}>
               <Text style={styles.cartGrandLabel}>Total</Text>
-              <Text style={styles.cartGrandVal}>₹{grandTotal.toFixed(2)}</Text>
+              <Text style={styles.cartGrandVal}>₹{grandTotal.toFixed(0)}</Text>
             </View>
           </View>
           <TouchableOpacity style={styles.checkoutBtn} onPress={goToCheckout}>
-            <Text style={styles.checkoutBtnText}>Checkout</Text>
-            <Ionicons name="arrow-forward" size={18} color={Colors.white} />
+            <Ionicons name="cart" size={22} color={Colors.white} />
+            <Text style={styles.checkoutBtnText}>Checkout  ₹{grandTotal.toFixed(0)}</Text>
           </TouchableOpacity>
         </View>
       )}
@@ -631,49 +666,61 @@ export default function POSScreen({ navigation, route }) {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
-  locRow: { maxHeight: 44, backgroundColor: Colors.surface, borderBottomWidth: 1, borderBottomColor: Colors.border },
+  locRow: { maxHeight: 48, backgroundColor: Colors.surface, borderBottomWidth: 1, borderBottomColor: Colors.border },
   locChip: {
-    paddingHorizontal: Spacing.md, paddingVertical: Spacing.xs + 2,
+    paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm,
     borderRadius: BorderRadius.full, backgroundColor: Colors.background,
     borderWidth: 1, borderColor: Colors.border,
   },
   locChipActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
-  locChipText: { fontSize: FontSize.xs, color: Colors.textSecondary },
-  locChipTextActive: { color: Colors.white, fontWeight: '600' },
+  locChipText: { fontSize: FontSize.sm, color: Colors.textSecondary, fontWeight: '500' },
+  locChipTextActive: { color: Colors.white, fontWeight: '700' },
+
+  orderTypeRow: {
+    flexDirection: 'row', paddingHorizontal: Spacing.sm, paddingVertical: Spacing.sm,
+    gap: Spacing.xs, backgroundColor: Colors.surface,
+    borderBottomWidth: 1, borderBottomColor: Colors.border,
+  },
+  orderTypeBtn: {
+    flex: 1, alignItems: 'center', justifyContent: 'center', gap: 2,
+    paddingVertical: Spacing.sm, borderRadius: BorderRadius.md,
+    backgroundColor: Colors.background, borderWidth: 1.5, borderColor: Colors.border,
+  },
+  orderTypeBtnText: { fontSize: 11, fontWeight: '700', color: Colors.textSecondary },
 
   searchRow: {
     flexDirection: 'row', alignItems: 'center',
-    paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm,
-    gap: Spacing.sm, backgroundColor: Colors.surface,
+    paddingHorizontal: Spacing.sm, paddingVertical: Spacing.sm,
+    gap: Spacing.xs, backgroundColor: Colors.surface,
     borderBottomWidth: 1, borderBottomColor: Colors.border,
   },
   searchWrap: {
     flex: 1, flexDirection: 'row', alignItems: 'center',
     backgroundColor: Colors.background, borderRadius: BorderRadius.md,
-    paddingHorizontal: Spacing.sm, height: 40,
+    paddingHorizontal: Spacing.sm, height: 44,
     borderWidth: 1, borderColor: Colors.border,
   },
-  searchInput: { flex: 1, fontSize: FontSize.sm, color: Colors.text },
+  searchInput: { flex: 1, fontSize: FontSize.md, color: Colors.text },
   scanBtn: {
-    width: 40, height: 40, borderRadius: BorderRadius.md,
+    width: 44, height: 44, borderRadius: BorderRadius.md,
     backgroundColor: Colors.primary, justifyContent: 'center', alignItems: 'center',
   },
 
   tabRow: {
-    flexDirection: 'row', paddingHorizontal: Spacing.md, paddingVertical: Spacing.xs,
+    flexDirection: 'row', paddingHorizontal: Spacing.md, paddingVertical: 6,
     gap: Spacing.xs, backgroundColor: Colors.surface,
     borderBottomWidth: 1, borderBottomColor: Colors.border,
   },
   tabBtn: {
-    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4,
-    paddingVertical: Spacing.xs + 2, borderRadius: BorderRadius.md,
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    paddingVertical: Spacing.sm, borderRadius: BorderRadius.md,
     backgroundColor: Colors.background, borderWidth: 1, borderColor: Colors.border,
   },
   tabBtnActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
-  tabBtnText: { fontSize: FontSize.xs, color: Colors.textSecondary, fontWeight: '500' },
-  tabBtnTextActive: { color: Colors.white, fontWeight: '600' },
+  tabBtnText: { fontSize: FontSize.sm, color: Colors.textSecondary, fontWeight: '500' },
+  tabBtnTextActive: { color: Colors.white, fontWeight: '700' },
 
-  catFilterRow: { maxHeight: 36, backgroundColor: Colors.background, paddingVertical: Spacing.xs },
+  catFilterRow: { maxHeight: 40, backgroundColor: Colors.background, paddingVertical: 4 },
 
   listContent: { padding: Spacing.md, paddingBottom: 20 },
   productCard: {
@@ -681,76 +728,71 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.surface, borderRadius: BorderRadius.md,
     padding: Spacing.md, marginBottom: Spacing.sm,
     borderWidth: 1, borderColor: Colors.border,
+    minHeight: 64,
   },
   productCardDimmed: { opacity: 0.5 },
   productIconWrap: {
-    width: 44, height: 44, borderRadius: BorderRadius.md,
+    width: 50, height: 50, borderRadius: BorderRadius.md,
     backgroundColor: Colors.primary + '12', justifyContent: 'center', alignItems: 'center',
-    marginRight: Spacing.sm,
+    marginRight: Spacing.md,
   },
   productInfo: { flex: 1 },
-  productName: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.text },
+  productName: { fontSize: FontSize.md, fontWeight: '700', color: Colors.text },
   productSku: { fontSize: FontSize.xs, color: Colors.textLight, marginTop: 2 },
-  productPrice: { fontSize: FontSize.md, fontWeight: '700', color: Colors.success },
+  productPrice: { fontSize: FontSize.lg, fontWeight: '700', color: Colors.success },
 
-  popularBadge: {
-    flexDirection: 'row', alignItems: 'center', gap: 2,
-    backgroundColor: '#FFF3E0', paddingHorizontal: 6, paddingVertical: 1,
+  readyBadge: {
+    backgroundColor: Colors.success + '20', paddingHorizontal: 8, paddingVertical: 2,
     borderRadius: BorderRadius.sm,
   },
-  popularText: { fontSize: 9, fontWeight: '700', color: '#FF6D00' },
+  readyBadgeText: { fontSize: 11, fontWeight: '700', color: Colors.success },
+  canMakeText: { fontSize: 11, color: Colors.textLight, fontStyle: 'italic' },
 
   empty: { alignItems: 'center', paddingTop: 80 },
-  emptyText: { color: Colors.textLight, marginTop: Spacing.sm, fontSize: FontSize.sm },
+  emptyText: { color: Colors.textLight, marginTop: Spacing.sm, fontSize: FontSize.md },
 
   qtyBadge: {
     position: 'absolute', top: -6, right: -6,
-    width: 20, height: 20, borderRadius: 10,
+    width: 22, height: 22, borderRadius: 11,
     backgroundColor: Colors.primary, justifyContent: 'center', alignItems: 'center',
   },
-  qtyBadgeText: { color: Colors.white, fontSize: 10, fontWeight: '700' },
+  qtyBadgeText: { color: Colors.white, fontSize: 11, fontWeight: '700' },
 
   cartPanel: {
-    backgroundColor: Colors.surface, borderTopWidth: 1, borderTopColor: Colors.border,
+    backgroundColor: Colors.surface, borderTopWidth: 2, borderTopColor: Colors.primary,
     maxHeight: 320,
   },
   cartPanelHeader: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
     paddingHorizontal: Spacing.md, paddingTop: Spacing.sm, paddingBottom: Spacing.xs,
   },
-  cartPanelTitle: { fontSize: FontSize.sm, fontWeight: '700', color: Colors.text },
-  clearText: { fontSize: FontSize.xs, color: Colors.error, fontWeight: '600' },
+  cartPanelTitle: { fontSize: FontSize.md, fontWeight: '700', color: Colors.text },
+  clearBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, padding: 4 },
+  clearText: { fontSize: FontSize.sm, color: Colors.error, fontWeight: '600' },
   cartItemsList: { maxHeight: 140, paddingHorizontal: Spacing.md },
   cartItem: {
     flexDirection: 'row', alignItems: 'center',
-    paddingVertical: Spacing.xs, borderBottomWidth: 1, borderBottomColor: Colors.border,
+    paddingVertical: Spacing.sm, borderBottomWidth: 1, borderBottomColor: Colors.border,
   },
-  cartItemName: { fontSize: FontSize.xs, color: Colors.text, fontWeight: '500' },
-  cartItemPrice: { fontSize: FontSize.xs, color: Colors.textSecondary },
-  cartPriceInput: {
-    fontSize: FontSize.xs, color: Colors.primary, fontWeight: '600',
-    borderBottomWidth: 1, borderBottomColor: Colors.border,
-    paddingVertical: 0, paddingHorizontal: 2, minWidth: 36,
-  },
-  qtyControls: { flexDirection: 'row', alignItems: 'center', gap: 2 },
+  cartItemName: { fontSize: FontSize.sm, color: Colors.text, fontWeight: '600' },
+  cartItemPrice: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: 2 },
+  qtyControls: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   qtyBtn: {
-    width: 30, height: 30, borderRadius: BorderRadius.sm,
-    backgroundColor: Colors.background, borderWidth: 1, borderColor: Colors.border,
+    width: 38, height: 38, borderRadius: BorderRadius.md,
+    backgroundColor: Colors.background, borderWidth: 1.5, borderColor: Colors.border,
     justifyContent: 'center', alignItems: 'center',
   },
-  qtyText: { fontSize: FontSize.sm, fontWeight: '700', color: Colors.text, minWidth: 24, textAlign: 'center' },
+  qtyText: { fontSize: FontSize.lg, fontWeight: '700', color: Colors.text, minWidth: 28, textAlign: 'center' },
   cartTotals: { paddingHorizontal: Spacing.md, paddingVertical: Spacing.xs },
   cartTotalRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 2 },
-  cartTotalLabel: { fontSize: FontSize.xs, color: Colors.textSecondary },
-  cartTotalVal: { fontSize: FontSize.xs, color: Colors.text },
-  cartGrandLabel: { fontSize: FontSize.sm, fontWeight: '700', color: Colors.text },
-  cartGrandVal: { fontSize: FontSize.sm, fontWeight: '700', color: Colors.primary },
+  cartGrandLabel: { fontSize: FontSize.lg, fontWeight: '700', color: Colors.text },
+  cartGrandVal: { fontSize: FontSize.lg, fontWeight: '700', color: Colors.primary },
   checkoutBtn: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
     backgroundColor: Colors.primary, marginHorizontal: Spacing.md,
-    marginBottom: Spacing.sm, paddingVertical: Spacing.sm, borderRadius: BorderRadius.md,
+    marginBottom: Spacing.sm, paddingVertical: Spacing.md, borderRadius: BorderRadius.md,
   },
-  checkoutBtnText: { color: Colors.white, fontWeight: '600', fontSize: FontSize.sm },
+  checkoutBtnText: { color: Colors.white, fontWeight: '700', fontSize: FontSize.lg },
 
   // Quick-add modal
   modalOverlay: {

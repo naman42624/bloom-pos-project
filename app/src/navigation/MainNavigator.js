@@ -49,6 +49,15 @@ import RefundSaleScreen from '../screens/RefundSaleScreen';
 import AddPaymentScreen from '../screens/AddPaymentScreen';
 import ExpensesScreen from '../screens/ExpensesScreen';
 
+// Phase 5 — Customers
+import CustomersScreen from '../screens/CustomersScreen';
+import CustomerDetailScreen from '../screens/CustomerDetailScreen';
+import CustomerFormScreen from '../screens/CustomerFormScreen';
+
+// Production Queue
+import ProductionQueueScreen from '../screens/ProductionQueueScreen';
+import ProduceScreen from '../screens/ProduceScreen';
+
 import { Colors, FontSize } from '../constants/theme';
 
 const Tab = createBottomTabNavigator();
@@ -186,6 +195,22 @@ function InventoryStack() {
   );
 }
 
+// ─── Customers Stack (Owner/Manager) ────────────────────────
+function CustomersStack() {
+  return (
+    <Stack.Navigator screenOptions={stackScreenOptions}>
+      <Stack.Screen name="CustomersList" component={CustomersScreen} options={{ title: 'Customers' }} />
+      <Stack.Screen name="CustomerDetail" component={CustomerDetailScreen} options={{ title: 'Customer' }} />
+      <Stack.Screen
+        name="CustomerForm"
+        component={CustomerFormScreen}
+        options={({ route }) => ({ title: route.params?.customer ? 'Edit Customer' : 'New Customer', presentation: 'modal' })}
+      />
+      <Stack.Screen name="SaleDetail" component={SaleDetailScreen} options={{ title: 'Sale Details' }} />
+    </Stack.Navigator>
+  );
+}
+
 // ─── Profile Stack ──────────────────────────────────────────
 function ProfileStack() {
   return (
@@ -208,6 +233,8 @@ function POSStack() {
       <Stack.Screen name="QRScanner" component={QRScannerScreen} options={{ title: 'Scan QR' }} />
       <Stack.Screen name="CashRegister" component={CashRegisterScreen} options={{ title: 'Cash Register' }} />
       <Stack.Screen name="Expenses" component={ExpensesScreen} options={{ title: 'Expenses' }} />
+      <Stack.Screen name="ProductionQueue" component={ProductionQueueScreen} options={{ title: 'Production Queue' }} />
+      <Stack.Screen name="ProduceProduct" component={ProduceScreen} options={{ title: 'Produce Products' }} />
     </Stack.Navigator>
   );
 }
@@ -222,6 +249,8 @@ function SalesStack() {
       <Stack.Screen name="AddPayment" component={AddPaymentScreen} options={{ title: 'Record Payment' }} />
       <Stack.Screen name="CashRegister" component={CashRegisterScreen} options={{ title: 'Cash Register' }} />
       <Stack.Screen name="Expenses" component={ExpensesScreen} options={{ title: 'Expenses' }} />
+      <Stack.Screen name="ProductionQueue" component={ProductionQueueScreen} options={{ title: 'Production Queue' }} />
+      <Stack.Screen name="ProduceProduct" component={ProduceScreen} options={{ title: 'Produce Products' }} />
     </Stack.Navigator>
   );
 }
@@ -234,6 +263,7 @@ const TAB_ICONS = {
   Inventory: { active: 'leaf', inactive: 'leaf-outline' },
   Locations: { active: 'location', inactive: 'location-outline' },
   Staff: { active: 'people', inactive: 'people-outline' },
+  Customers: { active: 'people', inactive: 'people-outline' },
   Profile: { active: 'person-circle', inactive: 'person-circle-outline' },
 };
 
@@ -296,6 +326,15 @@ export default function MainNavigator() {
           name="Inventory"
           component={InventoryStack}
           options={{ tabBarLabel: 'Inventory' }}
+        />
+      )}
+
+      {/* Customers tab — Owner, Manager */}
+      {(role === 'owner' || role === 'manager') && (
+        <Tab.Screen
+          name="Customers"
+          component={CustomersStack}
+          options={{ tabBarLabel: 'Customers' }}
         />
       )}
 

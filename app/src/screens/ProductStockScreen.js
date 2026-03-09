@@ -12,6 +12,14 @@ const ADJUST_TYPES = [
   { key: 'adjustment', label: 'Correction', icon: 'build' },
   { key: 'wastage', label: 'Wastage', icon: 'trash' },
   { key: 'return', label: 'Return', icon: 'arrow-undo' },
+  { key: 'usage', label: 'Usage', icon: 'arrow-down' },
+];
+
+const PRODUCT_ADJUST_TYPES = [
+  { key: 'correction', label: 'Correction', icon: 'build' },
+  { key: 'wastage', label: 'Wastage', icon: 'trash' },
+  { key: 'damage', label: 'Damage', icon: 'close-circle' },
+  { key: 'count', label: 'Count', icon: 'calculator' },
 ];
 
 export default function ProductStockScreen({ navigation }) {
@@ -73,7 +81,7 @@ export default function ProductStockScreen({ navigation }) {
   const openAdjust = async (product) => {
     setAdjustProduct(product);
     setAdjustMode('product');
-    setAdjustType('adjustment');
+    setAdjustType('correction');
     setAdjustQty('');
     setAdjustNotes('');
     setAdjustMaterialId(null);
@@ -102,24 +110,17 @@ export default function ProductStockScreen({ navigation }) {
     if (qty <= 0) { Alert.alert('Invalid', 'Enter a valid quantity'); return; }
 
     if (adjustMode === 'product') {
-      // Set product quantity — adjust ALL BOM materials proportionally
-      if (adjustBom.length === 0) { Alert.alert('No BOM', 'Product has no materials to adjust'); return; }
+      // Adjust product_stock directly (finished product inventory)
       setSubmitting(true);
       try {
-        const currentAvail = adjustProduct?.available_qty || 0;
-        const diff = qty - currentAvail; // positive = add stock, negative = remove
-        for (const m of adjustBom) {
-          const matQty = Math.abs(diff) * m.quantity;
-          if (matQty <= 0) continue;
-          await api.adjustStock({
-            material_id: m.material_id || m.id,
-            location_id: selectedLocation,
-            type: diff >= 0 ? 'adjustment' : 'usage',
-            quantity: matQty,
-            notes: adjustNotes || `Set ${adjustProduct?.name} qty to ${qty} (was ${currentAvail})`,
-          });
-        }
-        Alert.alert('Done', `Product stock set to ${qty}`);
+        const isDeduction = adjustType === 'wastage' || adjustType === 'damage';
+        await api.adjustProductStock({
+          product_id: adjustProduct.id,
+          location_id: selectedLocation,
+          adjustment: isDeduction ? -qty : qty,
+          reason: adjustNotes || `${adjustType}: ${qty} ${adjustProduct?.name}`,
+        });
+        Alert.alert('Done', `Product stock ${isDeduction ? 'decreased' : 'increased'} by ${qty}`);
         setAdjustProduct(null);
         fetchProducts(search);
       } catch (err) {
@@ -151,10 +152,11 @@ export default function ProductStockScreen({ navigation }) {
   };
 
   const renderProduct = ({ item }) => {
+    const ready = item.ready_qty ?? 0;
     const avail = item.available_qty;
     const hasStock = avail !== null && avail !== undefined;
-    const outOfStock = hasStock && avail <= 0;
-    const lowStock = hasStock && avail > 0 && avail <= 5;
+    const outOfStock = ready <= 0 && hasStock && avail <= 0;
+    const lowStock = ready > 0 && ready <= 3;
 
     return (
       <TouchableOpacity style={styles.card} onPress={() => openAdjust(item)} activeOpacity={0.7}>
@@ -164,27 +166,27 @@ export default function ProductStockScreen({ navigation }) {
         <View style={styles.cardCenter}>
           <Text style={styles.cardName} numberOfLines={1}>{item.name}</Text>
           <Text style={styles.cardSku}>{item.sku} • {item.category || 'other'}</Text>
+          {hasStock && (
+            <Text style={styles.canMakeLabel}>Can make: {avail}</Text>
+          )}
         </View>
         <View style={styles.cardRight}>
-          {hasStock ? (
-            <View style={[
-              styles.stockBadge,
-              outOfStock && styles.stockBadgeOut,
-              lowStock && styles.stockBadgeLow,
-              !outOfStock && !lowStock && styles.stockBadgeOk,
+          <View style={[
+            styles.stockBadge,
+            outOfStock && styles.stockBadgeOut,
+            lowStock && styles.stockBadgeLow,
+            !outOfStock && !lowStock && styles.stockBadgeOk,
+          ]}>
+            <Text style={[
+              styles.stockBadgeText,
+              outOfStock && { color: Colors.error },
+              lowStock && { color: '#FF9800' },
+              !outOfStock && !lowStock && { color: Colors.success },
             ]}>
-              <Text style={[
-                styles.stockBadgeText,
-                outOfStock && { color: Colors.error },
-                lowStock && { color: '#FF9800' },
-                !outOfStock && !lowStock && { color: Colors.success },
-              ]}>
-                {outOfStock ? 'Out' : avail}
-              </Text>
-            </View>
-          ) : (
-            <Text style={styles.noStockText}>N/A</Text>
-          )}
+              {ready}
+            </Text>
+            <Text style={styles.stockBadgeLabel}>ready</Text>
+          </View>
           <Ionicons name="chevron-forward" size={16} color={Colors.textLight} />
         </View>
       </TouchableOpacity>
@@ -246,9 +248,9 @@ export default function ProductStockScreen({ navigation }) {
               </TouchableOpacity>
             </View>
 
-            {adjustBom.length === 0 ? (
+            {adjustBom.length === 0 && adjustMode !== 'product' ? (
               <Text style={styles.noBomText}>
-                This product has no Bill of Materials. Add materials to the product to enable stock tracking.
+                This product has no Bill of Materials. Add materials to the product to enable material-level stock tracking.
               </Text>
             ) : (
               <ScrollView style={{ maxHeight: 400 }}>
@@ -259,33 +261,56 @@ export default function ProductStockScreen({ navigation }) {
                     onPress={() => setAdjustMode('product')}
                   >
                     <Ionicons name="cube" size={14} color={adjustMode === 'product' ? Colors.white : Colors.textSecondary} />
-                    <Text style={[styles.chipText, adjustMode === 'product' && styles.chipTextActive]}>Set Product Qty</Text>
+                    <Text style={[styles.chipText, adjustMode === 'product' && styles.chipTextActive]}>Product Stock</Text>
                   </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[styles.chip, adjustMode === 'material' && styles.chipActive]}
-                    onPress={() => setAdjustMode('material')}
-                  >
-                    <Ionicons name="leaf" size={14} color={adjustMode === 'material' ? Colors.white : Colors.textSecondary} />
-                    <Text style={[styles.chipText, adjustMode === 'material' && styles.chipTextActive]}>Adjust Material</Text>
-                  </TouchableOpacity>
+                  {adjustBom.length > 0 && (
+                    <TouchableOpacity
+                      style={[styles.chip, adjustMode === 'material' && styles.chipActive]}
+                      onPress={() => setAdjustMode('material')}
+                    >
+                      <Ionicons name="leaf" size={14} color={adjustMode === 'material' ? Colors.white : Colors.textSecondary} />
+                      <Text style={[styles.chipText, adjustMode === 'material' && styles.chipTextActive]}>Materials</Text>
+                    </TouchableOpacity>
+                  )}
                 </View>
 
                 {adjustMode === 'product' ? (
                   <>
                     <Text style={styles.fieldLabel}>
-                      Current stock: {adjustProduct?.available_qty ?? 'N/A'}
+                      Ready stock: {adjustProduct?.ready_qty ?? 0} • Can make: {adjustProduct?.available_qty ?? 'N/A'}
                     </Text>
-                    <Text style={styles.fieldLabel}>New Product Quantity</Text>
+
+                    <Text style={styles.fieldLabel}>Reason</Text>
+                    <View style={styles.chipRow}>
+                      {PRODUCT_ADJUST_TYPES.map((t) => (
+                        <TouchableOpacity
+                          key={t.key}
+                          style={[styles.chip, adjustType === t.key && styles.chipActive]}
+                          onPress={() => setAdjustType(t.key)}
+                        >
+                          <Ionicons name={t.icon} size={14} color={adjustType === t.key ? Colors.white : Colors.textSecondary} />
+                          <Text style={[styles.chipText, adjustType === t.key && styles.chipTextActive]}>{t.label}</Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+
+                    <Text style={styles.fieldLabel}>
+                      {adjustType === 'wastage' || adjustType === 'damage'
+                        ? 'How many to remove from ready stock?'
+                        : 'How many to add/set in ready stock?'}
+                    </Text>
                     <TextInput
                       style={styles.input}
                       value={adjustQty}
                       onChangeText={setAdjustQty}
-                      placeholder={`e.g. ${(adjustProduct?.available_qty || 0) + 5}`}
+                      placeholder="e.g. 5"
                       placeholderTextColor={Colors.textLight}
                       keyboardType="numeric"
                     />
                     <Text style={[styles.bomStock, { marginTop: Spacing.xs }]}>
-                      Materials will be adjusted proportionally based on BOM
+                      {adjustType === 'wastage' || adjustType === 'damage'
+                        ? 'Ready product stock will be reduced'
+                        : 'Ready product stock will be adjusted'}
                     </Text>
                     {adjustBom.map((m) => (
                       <View key={m.material_id || m.id} style={styles.bomRow}>
@@ -408,6 +433,7 @@ const styles = StyleSheet.create({
   cardCenter: { flex: 1 },
   cardName: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.text },
   cardSku: { fontSize: FontSize.xs, color: Colors.textLight, marginTop: 2 },
+  canMakeLabel: { fontSize: FontSize.xs - 1, color: Colors.textSecondary, marginTop: 1 },
   cardRight: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs },
 
   stockBadge: {
@@ -418,6 +444,7 @@ const styles = StyleSheet.create({
   stockBadgeLow: { backgroundColor: '#FFF3E0' },
   stockBadgeOut: { backgroundColor: Colors.error + '18' },
   stockBadgeText: { fontSize: FontSize.xs, fontWeight: '700' },
+  stockBadgeLabel: { fontSize: 8, color: Colors.textSecondary, marginTop: -1 },
   noStockText: { fontSize: FontSize.xs, color: Colors.textLight },
 
   empty: { alignItems: 'center', paddingTop: 80 },

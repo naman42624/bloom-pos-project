@@ -8,7 +8,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import api from '../services/api';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 
-const STATUS_COLORS = { completed: Colors.success, cancelled: Colors.error, draft: Colors.warning };
+const STATUS_COLORS = { completed: Colors.success, cancelled: Colors.error, draft: Colors.warning, pending: Colors.warning, preparing: Colors.info, ready: Colors.success };
 const PAY_COLORS = { paid: Colors.success, partial: Colors.warning, pending: Colors.error, refunded: Colors.textLight };
 
 const FILTERS = [
@@ -31,13 +31,22 @@ export default function SalesScreen({ navigation }) {
   React.useLayoutEffect(() => {
     navigation.setOptions({
       headerRight: () => (
-        <TouchableOpacity
-          style={{ marginRight: Spacing.md, flexDirection: 'row', alignItems: 'center', gap: 4 }}
-          onPress={() => navigation.navigate('CashRegister')}
-        >
-          <Ionicons name="calculator" size={20} color={Colors.primary} />
-          <Text style={{ fontSize: FontSize.xs, color: Colors.primary, fontWeight: '600' }}>Register</Text>
-        </TouchableOpacity>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: Spacing.md, marginRight: Spacing.md }}>
+          <TouchableOpacity
+            style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}
+            onPress={() => navigation.navigate('ProductionQueue')}
+          >
+            <Ionicons name="list" size={20} color={Colors.primary} />
+            <Text style={{ fontSize: FontSize.xs, color: Colors.primary, fontWeight: '600' }}>Queue</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}
+            onPress={() => navigation.navigate('CashRegister')}
+          >
+            <Ionicons name="calculator" size={20} color={Colors.primary} />
+            <Text style={{ fontSize: FontSize.xs, color: Colors.primary, fontWeight: '600' }}>Register</Text>
+          </TouchableOpacity>
+        </View>
       ),
     });
   }, [navigation]);

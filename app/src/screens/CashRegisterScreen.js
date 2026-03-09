@@ -222,7 +222,7 @@ export default function CashRegisterScreen({ navigation }) {
       </View>
 
       {/* Open form */}
-      {!isOpen && (!register || register.closed_at === null || !register) && (
+      {!isOpen && (
         <View style={styles.formCard}>
           <Text style={styles.formTitle}>Open Register</Text>
           <Text style={styles.formLabel}>Opening Cash Balance</Text>

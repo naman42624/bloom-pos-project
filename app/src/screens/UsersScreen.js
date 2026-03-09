@@ -35,7 +35,6 @@ const FILTER_ROLES = [
   { key: 'manager', label: 'Managers' },
   { key: 'employee', label: 'Employees' },
   { key: 'delivery_partner', label: 'Delivery' },
-  { key: 'customer', label: 'Customers' },
 ];
 
 export default function UsersScreen({ navigation }) {
