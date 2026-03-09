@@ -4,6 +4,7 @@ import {
   TouchableOpacity, Alert, Platform, ActivityIndicator, KeyboardAvoidingView,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import DateTimePicker from '@react-native-community/datetimepicker';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
@@ -41,10 +42,16 @@ export default function CheckoutScreen({ route, navigation }) {
   // Scheduled date/time — for pickup, delivery, and pre-order
   const [scheduledDate, setScheduledDate] = useState('');
   const [scheduledTime, setScheduledTime] = useState('');
+  const [datePickerDate, setDatePickerDate] = useState(new Date());
+  const [showDatePicker, setShowDatePicker] = useState(false);
+  const [showTimePicker, setShowTimePicker] = useState(false);
   // Pre-order sub-type (pickup or delivery)
   const [preOrderType, setPreOrderType] = useState('pickup');
   const [advanceAmount, setAdvanceAmount] = useState('');
   const [deliveryAddress, setDeliveryAddress] = useState('');
+
+  // Payment mode: 'pay_now' (default), 'cod' (delivery), 'credit' (customer credit), 'partial' (advance + rest later)
+  const [paymentMode, setPaymentMode] = useState('pay_now');
 
   // Split payment — array of payment entries
   const [payments, setPayments] = useState([
@@ -65,6 +72,16 @@ export default function CheckoutScreen({ route, navigation }) {
   const grandTotal = Math.max(0, subtotal - discount) + taxTotal + delivery;
 
   const totalPaymentEntered = payments.reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
+
+  // Reset payment mode if switching away from delivery/pickup
+  React.useEffect(() => {
+    if (paymentMode === 'cod' && !needsDelivery) {
+      setPaymentMode('pay_now');
+    }
+    if (paymentMode === 'partial' && orderType === 'walk_in') {
+      setPaymentMode('pay_now');
+    }
+  }, [needsDelivery, orderType, paymentMode]);
 
   // Auto-fill customer name from phone
   React.useEffect(() => {
@@ -118,19 +135,49 @@ export default function CheckoutScreen({ route, navigation }) {
       return;
     }
 
+    // Credit requires customer
+    if (paymentMode === 'credit' && !customerId) {
+      Alert.alert('Required', 'Credit sales require a registered customer. Please enter customer phone.');
+      return;
+    }
+
     // Build payments array
     const advance = parseFloat(advanceAmount) || 0;
     const isPreOrderWithAdvance = orderType === 'pre_order' && advance > 0;
+    const isCodOrCredit = paymentMode === 'cod' || paymentMode === 'credit';
+    const isPartial = paymentMode === 'partial';
 
-    const paymentEntries = payments.map((p, idx) => ({
-      method: p.method,
-      amount: isPreOrderWithAdvance && idx === 0
-        ? advance
-        : (parseFloat(p.amount) || (payments.length === 1 ? grandTotal : 0)),
-      reference_number: p.reference || null,
-    })).filter(p => p.amount > 0);
+    // Partial requires advance amount
+    if (isPartial && advance <= 0) {
+      Alert.alert('Required', 'Please enter an advance payment amount');
+      return;
+    }
+    if (isPartial && advance >= grandTotal) {
+      Alert.alert('Invalid', 'Advance amount must be less than the total. Use "Pay Now" for full payment.');
+      return;
+    }
 
-    if (paymentEntries.length === 0 && !isPreOrderWithAdvance) {
+    let paymentEntries;
+    if (isCodOrCredit) {
+      paymentEntries = []; // No upfront payment for COD/Credit
+    } else if (isPartial) {
+      // Partial: use the first payment entry with the advance amount
+      paymentEntries = [{
+        method: payments[0].method,
+        amount: advance,
+        reference_number: payments[0].reference || null,
+      }];
+    } else {
+      paymentEntries = payments.map((p, idx) => ({
+        method: p.method,
+        amount: isPreOrderWithAdvance && idx === 0
+          ? advance
+          : (parseFloat(p.amount) || (payments.length === 1 ? grandTotal : 0)),
+        reference_number: p.reference || null,
+      })).filter(p => p.amount > 0);
+    }
+
+    if (paymentEntries.length === 0 && !isPreOrderWithAdvance && !isCodOrCredit && !isPartial) {
       Alert.alert('Payment', 'Please enter payment amount');
       return;
     }
@@ -255,9 +302,64 @@ export default function CheckoutScreen({ route, navigation }) {
               {orderType === 'pre_order' ? 'Scheduled Date & Time' : 'Scheduled For (optional)'}
             </Text>
             <View style={styles.row}>
-              <TextInput style={[styles.input, { flex: 1 }]} value={scheduledDate} onChangeText={setScheduledDate} placeholder="Date (YYYY-MM-DD)" placeholderTextColor={Colors.textLight} />
-              <TextInput style={[styles.input, { flex: 1 }]} value={scheduledTime} onChangeText={setScheduledTime} placeholder="Time (e.g. 14:00)" placeholderTextColor={Colors.textLight} />
+              <TouchableOpacity
+                style={[styles.pickerBtn, { flex: 1 }]}
+                onPress={() => setShowDatePicker(true)}
+              >
+                <Ionicons name="calendar-outline" size={18} color={scheduledDate ? Colors.primary : Colors.textLight} />
+                <Text style={[styles.pickerBtnText, scheduledDate && { color: Colors.text }]}>
+                  {scheduledDate || 'Select Date'}
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.pickerBtn, { flex: 1 }]}
+                onPress={() => setShowTimePicker(true)}
+              >
+                <Ionicons name="time-outline" size={18} color={scheduledTime ? Colors.primary : Colors.textLight} />
+                <Text style={[styles.pickerBtnText, scheduledTime && { color: Colors.text }]}>
+                  {scheduledTime || 'Select Time'}
+                </Text>
+              </TouchableOpacity>
             </View>
+            {(scheduledDate || scheduledTime) && (
+              <TouchableOpacity onPress={() => { setScheduledDate(''); setScheduledTime(''); }} style={{ marginTop: 4 }}>
+                <Text style={{ fontSize: FontSize.xs, color: Colors.error }}>Clear date/time</Text>
+              </TouchableOpacity>
+            )}
+            {showDatePicker && (
+              <DateTimePicker
+                value={datePickerDate}
+                mode="date"
+                display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                minimumDate={new Date()}
+                onChange={(event, selected) => {
+                  setShowDatePicker(Platform.OS === 'ios');
+                  if (selected) {
+                    setDatePickerDate(selected);
+                    const y = selected.getFullYear();
+                    const m = String(selected.getMonth() + 1).padStart(2, '0');
+                    const d = String(selected.getDate()).padStart(2, '0');
+                    setScheduledDate(`${y}-${m}-${d}`);
+                  }
+                }}
+              />
+            )}
+            {showTimePicker && (
+              <DateTimePicker
+                value={datePickerDate}
+                mode="time"
+                display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                minuteInterval={15}
+                onChange={(event, selected) => {
+                  setShowTimePicker(Platform.OS === 'ios');
+                  if (selected) {
+                    const h = String(selected.getHours()).padStart(2, '0');
+                    const min = String(selected.getMinutes()).padStart(2, '0');
+                    setScheduledTime(`${h}:${min}`);
+                  }
+                }}
+              />
+            )}
           </>
         )}
 
@@ -354,7 +456,104 @@ export default function CheckoutScreen({ route, navigation }) {
           </View>
         </View>
 
+        {/* Payment Mode */}
+        <Text style={styles.sectionTitle}>Payment Mode</Text>
+        <View style={styles.chipRow}>
+          <TouchableOpacity
+            style={[styles.chip, paymentMode === 'pay_now' && styles.chipActive]}
+            onPress={() => setPaymentMode('pay_now')}
+          >
+            <Ionicons name="cash" size={16} color={paymentMode === 'pay_now' ? Colors.white : Colors.textSecondary} />
+            <Text style={[styles.chipText, paymentMode === 'pay_now' && styles.chipTextActive]}>Pay Now</Text>
+          </TouchableOpacity>
+          {(needsDelivery || orderType === 'pickup') && (
+            <TouchableOpacity
+              style={[styles.chip, paymentMode === 'partial' && styles.chipActive]}
+              onPress={() => setPaymentMode('partial')}
+            >
+              <Ionicons name="wallet" size={16} color={paymentMode === 'partial' ? Colors.white : Colors.textSecondary} />
+              <Text style={[styles.chipText, paymentMode === 'partial' && styles.chipTextActive]}>Partial Pay</Text>
+            </TouchableOpacity>
+          )}
+          {needsDelivery && (
+            <TouchableOpacity
+              style={[styles.chip, paymentMode === 'cod' && styles.chipActive]}
+              onPress={() => setPaymentMode('cod')}
+            >
+              <Ionicons name="bicycle" size={16} color={paymentMode === 'cod' ? Colors.white : Colors.textSecondary} />
+              <Text style={[styles.chipText, paymentMode === 'cod' && styles.chipTextActive]}>Cash on Delivery</Text>
+            </TouchableOpacity>
+          )}
+          <TouchableOpacity
+            style={[styles.chip, paymentMode === 'credit' && styles.chipActive]}
+            onPress={() => setPaymentMode('credit')}
+          >
+            <Ionicons name="card" size={16} color={paymentMode === 'credit' ? Colors.white : Colors.textSecondary} />
+            <Text style={[styles.chipText, paymentMode === 'credit' && styles.chipTextActive]}>Credit</Text>
+          </TouchableOpacity>
+        </View>
+
+        {paymentMode === 'partial' && (
+          <View style={styles.codHint}>
+            <Ionicons name="information-circle" size={16} color={Colors.info} />
+            <Text style={[styles.codHintText, { color: Colors.info }]}>
+              Pay advance now, remaining ₹{(grandTotal - (parseFloat(advanceAmount) || 0)).toFixed(0)} {needsDelivery ? 'on delivery' : 'on pickup'}
+            </Text>
+          </View>
+        )}
+
+        {paymentMode === 'cod' && (
+          <View style={styles.codHint}>
+            <Ionicons name="information-circle" size={16} color={Colors.warning} />
+            <Text style={styles.codHintText}>₹{grandTotal.toFixed(0)} will be collected on delivery</Text>
+          </View>
+        )}
+        {paymentMode === 'credit' && (
+          <View style={styles.codHint}>
+            <Ionicons name="information-circle" size={16} color={Colors.warning} />
+            <Text style={styles.codHintText}>₹{grandTotal.toFixed(0)} will be added to customer credit{customerId ? '' : ' (select customer)'}</Text>
+          </View>
+        )}
+
+        {/* Advance Amount — for partial pay mode */}
+        {paymentMode === 'partial' && (
+          <View style={styles.paymentSection}>
+            <Text style={styles.sectionTitle}>Advance Payment</Text>
+            <View style={styles.chipRow}>
+              {PAYMENT_METHODS.map((m) => (
+                <TouchableOpacity
+                  key={m.key}
+                  style={[styles.chip, payments[0].method === m.key && styles.chipActive]}
+                  onPress={() => updatePayment(0, 'method', m.key)}
+                >
+                  <Ionicons name={m.icon} size={14} color={payments[0].method === m.key ? Colors.white : Colors.textSecondary} />
+                  <Text style={[styles.chipText, payments[0].method === m.key && styles.chipTextActive]}>{m.label}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            <TextInput style={styles.input} value={advanceAmount} onChangeText={setAdvanceAmount}
+              placeholder="₹ Advance amount" placeholderTextColor={Colors.textLight} keyboardType="numeric" />
+            {payments[0].method !== 'cash' && (
+              <TextInput style={styles.input} value={payments[0].reference}
+                onChangeText={(v) => updatePayment(0, 'reference', v)}
+                placeholder="Reference / Transaction ID" placeholderTextColor={Colors.textLight} />
+            )}
+            {parseFloat(advanceAmount) > 0 && (
+              <View style={styles.changeDueBox}>
+                <Ionicons name="time" size={18} color={Colors.warning} />
+                <Text style={[styles.changeDueLabel, { color: Colors.warning }]}>
+                  Remaining {needsDelivery ? 'COD' : 'on Pickup'}
+                </Text>
+                <Text style={[styles.changeDueAmount, { color: Colors.warning }]}>
+                  ₹{Math.max(0, grandTotal - (parseFloat(advanceAmount) || 0)).toFixed(2)}
+                </Text>
+              </View>
+            )}
+          </View>
+        )}
+
         {/* Payment — split payment support */}
+        {paymentMode === 'pay_now' && (
         <View style={styles.paymentSection}>
           <View style={styles.paymentHeader}>
             <Text style={styles.sectionTitle}>Payment</Text>
@@ -438,6 +637,7 @@ export default function CheckoutScreen({ route, navigation }) {
             return null;
           })()}
         </View>
+        )}
 
         {/* Submit */}
         <TouchableOpacity style={[styles.submitBtn, submitting && { opacity: 0.6 }]} onPress={handleSubmit} disabled={submitting}>
@@ -447,7 +647,7 @@ export default function CheckoutScreen({ route, navigation }) {
             <>
               <Ionicons name="checkmark-circle" size={20} color={Colors.white} />
               <Text style={styles.submitBtnText}>
-                {orderType === 'pre_order' ? 'Create Pre-order' : 'Complete Sale'} — ₹{grandTotal.toFixed(2)}
+                {orderType === 'pre_order' ? 'Create Pre-order' : paymentMode === 'cod' ? 'Create COD Order' : paymentMode === 'credit' ? 'Create Credit Sale' : paymentMode === 'partial' ? `Create Order — Advance ₹${(parseFloat(advanceAmount) || 0).toFixed(0)}` : 'Complete Sale'} — ₹{grandTotal.toFixed(2)}
               </Text>
             </>
           )}
@@ -545,4 +745,19 @@ const styles = StyleSheet.create({
   },
   changeDueLabel: { fontSize: FontSize.md, color: Colors.success, fontWeight: '600', flex: 1 },
   changeDueAmount: { fontSize: FontSize.lg, color: Colors.success, fontWeight: '700' },
+
+  codHint: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: Colors.warning + '12', borderRadius: BorderRadius.md,
+    paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm, marginTop: Spacing.sm,
+  },
+  codHintText: { fontSize: FontSize.sm, color: Colors.warning, fontWeight: '600', flex: 1 },
+
+  pickerBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: Colors.surface, borderRadius: BorderRadius.md,
+    borderWidth: 1, borderColor: Colors.border, paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.md, marginTop: Spacing.xs,
+  },
+  pickerBtnText: { fontSize: FontSize.md, color: Colors.textLight },
 });

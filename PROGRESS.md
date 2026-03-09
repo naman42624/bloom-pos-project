@@ -2,7 +2,7 @@
 
 **Project**: BloomCart POS  
 **Last Updated**: 9 March 2026  
-**Current Phase**: Phase 6 (Production & Hybrid Stock) In Progress
+**Current Phase**: Post-Phase 7 Enhancements Complete
 
 ---
 
@@ -441,53 +441,187 @@ Redesigned the product/stock system from pure BOM-based calculation to a **hybri
 
 ---
 
-## Phase 7 — Orders & Delivery
+## Post-Phase 6 — UI Overhaul, Dashboard & Queue Enhancements
 
-**Status**: ⬜ Not Started
+**Status**: ✅ Complete  
+**Completed**: 9 March 2026
 
-### Backend
+### UI Overhaul — Employee-Friendly POS
+
+All POS-related screens redesigned for non-technical staff (big buttons, large fonts, clear icons).
 
 | # | Task | Status | Notes |
 |---|------|--------|-------|
-| 7.1 | Database tables (deliveries, delivery_proofs, recurring_orders) | ⬜ | |
-| 7.2 | Order lifecycle routes (status transitions) | ⬜ | |
-| 7.3 | Delivery assignment routes | ⬜ | |
-| 7.4 | Delivery status update routes (with GPS + photo proof) | ⬜ | |
-| 7.5 | Delivery challan generation (shop + customer copies) | ⬜ | |
-| 7.6 | Delivery charges configuration | ⬜ | |
-| 7.7 | Recurring orders system | ⬜ | |
-| 7.8 | Order pickup flow (preferred time) | ⬜ | |
+| P6E.1 | POSScreen — 4 visible order type buttons (replacing cycling chip) | ✅ | Walk-in/Pickup/Delivery/Pre-order as big icon buttons |
+| P6E.2 | POSScreen — bigger product cards, large qty buttons (38px), clear totals | ✅ | Min height 64px cards, simplified cart |
+| P6E.3 | POSScreen — Products/Materials toggle restored for all staff | ✅ | Was manager-only, now all employees can sell raw materials |
+| P6E.4 | POSScreen — Make header link available to all staff | ✅ | Was manager-only, now employees can access ProduceScreen |
+| P6E.5 | ProduceScreen — bigger cards (48px icons), larger produce button | ✅ | 44px qty buttons, bigger custom make modal inputs |
+| P6E.6 | ProductionQueueScreen — large action buttons (min 44px), clear status badges | ✅ | Bigger Pick Up/Assign/Start/Done buttons |
+| P6E.7 | CheckoutScreen — bigger chips (44px min height), larger inputs (16px) | ✅ | Prominent submit button |
+
+### Queue & Assignment Enhancements
+
+| # | Task | Status | Notes |
+|---|------|--------|-------|
+| P6E.8 | Orders view — status filter chips (All/Pending/Preparing/Ready) | ✅ | Matches Tasks view filter UX |
+| P6E.9 | Orders view — search bar (by order # or customer name) | ✅ | Client-side filtering |
+| P6E.10 | Orders view — Assign button on pending orders | ✅ | Assigns all pending tasks for that order to one employee |
+| P6E.11 | Backend — `sale_id` filter on GET /production/tasks | ✅ | Supports fetching tasks by order |
+| P6E.12 | Manager queue scoping — backend + frontend | ✅ | Managers see only their assigned locations; owners get "All Locations" |
+
+### Dashboard Enhancements
+
+| # | Task | Status | Notes |
+|---|------|--------|-------|
+| P6E.13 | Orders Overview section (all staff) | ✅ | Color-coded cards: Pending / Preparing / Ready counts |
+| P6E.14 | Action Items section (manager/owner) | ✅ | Unassigned tasks, material shortages, active production tasks |
+| P6E.15 | Backend — GET /production/dashboard-summary endpoint | ✅ | Returns pending/preparing/ready orders, unassigned/pending tasks, material shortage count |
+| P6E.16 | API — `getDashboardSummary` method | ✅ | Added to api.js |
+
+### Bug Fixes
+
+| # | Bug | Status | Fix |
+|---|-----|--------|-----|
+| P6B.1 | Dashboard stats wrong API param (`produced_by` → `user_id`) | 🐛 Fixed | api.getProductionStats now uses `user_id` |
+| P6B.2 | Dashboard stats wrong response key (`employee_stats` → `byEmployee`) | 🐛 Fixed | Fixed key in DashboardScreen |
+| P6B.3 | Sales CHECK constraint rejected pending/preparing/ready | 🐛 Fixed | Expanded status CHECK to include all lifecycle values |
+| P6B.4 | sale_items NOT NULL constraint on product_id for materials | 🐛 Fixed | Changed to nullable |
+| P6B.5 | adjustProductStock wrong parameter naming | 🐛 Fixed | Fixed API method params |
+| P6B.6 | Assign modal shows empty employee list | 🐛 Fixed | `getUsers()` returns `{ users: [...] }`, not flat array — fixed to read `res.data.users` |
+
+---
+
+## Phase 7 — Orders & Delivery (COD, Credit, Pickup)
+
+**Status**: ✅ Complete  
+**Started**: 9 March 2026  
+**Completed**: 9 March 2026
+
+### Overview
+
+Full delivery lifecycle, COD (Cash on Delivery) collection & settlement, per-order credit tracking, and pickup order flow.
+
+- **Delivery lifecycle**: pending → assigned → picked_up → in_transit → delivered/failed/cancelled
+- **COD flow**: Order with COD → delivery partner collects → settlement created → manager verifies → added to cash register
+- **Credit per-order**: Credit payments linked to specific orders via `sale_id`, customer sees balance_due per order
+- **Pickup flow**: Order created → waiting → staff marks ready → customer picks up → completed
+
+### Database Changes
+
+| # | Task | Status | Notes |
+|---|------|--------|-------|
+| 7.1 | `deliveries` table (sale_id, partner_id, status, COD fields, timestamps) | ✅ | 7 status values, 5 COD status values |
+| 7.2 | `delivery_proofs` table (photo_url, latitude, longitude) | ✅ | Photo proof of delivery |
+| 7.3 | `delivery_collections` table (amount, method, reference) | ✅ | COD money collected by partner |
+| 7.4 | `delivery_settlements` table (partner settles with shop) | ✅ | Status: pending/verified |
+| 7.5 | `delivery_settlement_items` table (links settlements to deliveries) | ✅ | Many-to-many linking |
+| 7.6 | `credit_payments.sale_id` column migration | ✅ | Links credit payments to specific orders |
+| 7.7 | `sales.pickup_status` + `sales.picked_up_at` columns | ✅ | waiting/ready_for_pickup/picked_up lifecycle |
+
+### Backend Routes
+
+| # | Task | Status | Notes |
+|---|------|--------|-------|
+| 7.8 | server/routes/deliveries.js — 16 endpoints | ✅ | ~480 lines, full delivery + COD + settlement + pickup |
+| 7.9 | GET /deliveries — list with filters, role scoping | ✅ | Partner sees own; manager scoped to locations |
+| 7.10 | GET /deliveries/:id — full detail with items, payments, proofs | ✅ | Complete delivery information |
+| 7.11 | PUT /deliveries/:id/assign — manager assigns partner | ✅ | Validates role=delivery_partner |
+| 7.12 | PUT /deliveries/:id/pickup — partner picks up from shop | ✅ | Checks sale status=ready |
+| 7.13 | PUT /deliveries/:id/in-transit — partner en route | ✅ | Status transition |
+| 7.14 | PUT /deliveries/:id/deliver — mark delivered + COD collection | ✅ | Creates payment, recalculates payment_status, auto-completes sale |
+| 7.15 | PUT /deliveries/:id/fail — delivery failed | ✅ | Sets sale back to 'ready' for re-assignment |
+| 7.16 | POST /deliveries/:id/proof — upload photo (multer, 5MB) | ✅ | JPEG/PNG/WebP only |
+| 7.17 | GET/POST /deliveries/settlements — list & create settlements | ✅ | Transactional: validates all deliveries, links, marks settled |
+| 7.18 | PUT /deliveries/settlements/:id/verify — manager verifies | ✅ | Adds to cash register |
+| 7.19 | PUT /deliveries/pickup/:saleId/ready + picked-up | ✅ | Pickup lifecycle transitions |
+| 7.20 | GET /deliveries/customer/orders + dues | ✅ | Customer sees own orders with balance_due |
+| 7.21 | Sales createSale — auto-create delivery record | ✅ | When order_type='delivery' or pre_order with address |
+| 7.22 | Sales GET /:id — delivery info join | ✅ | Returns delivery status, partner name/phone |
+| 7.23 | Customers POST /:id/credits — per-order credit linking | ✅ | Accepts sale_id, creates payment on sale, recalculates status |
+| 7.24 | Customers GET /:id — per-order balance_due | ✅ | total_paid and balance_due per order |
+| 7.25 | Sales GET / — pickup_status filter added | ✅ | Supports filtering by pickup_status |
+| 7.26 | server.js — deliveries route wired | ✅ | `app.use('/api/deliveries', deliveriesRoutes)` |
 
 ### Frontend
 
 | # | Task | Status | Notes |
 |---|------|--------|-------|
-| 7.9 | API service — order & delivery methods | ⬜ | |
-| 7.10 | OrdersScreen (list with status tabs) | ⬜ | |
-| 7.11 | OrderDetailScreen (items, status, delivery info) | ⬜ | |
-| 7.12 | DeliveryAssignScreen (assign delivery partner) | ⬜ | |
-| 7.13 | DeliveryPartnerScreen (assigned deliveries, navigation, mark delivered) | ⬜ | |
-| 7.14 | DeliveryProofScreen (photo capture + GPS) | ⬜ | |
-| 7.15 | DeliveryChallanScreen (view + print) | ⬜ | |
-| 7.16 | RecurringOrderScreen (setup + manage) | ⬜ | |
-| 7.17 | Customer order tracking screens | ⬜ | |
+| 7.27 | API service — 16 new delivery/settlement/pickup/customer methods | ✅ | ~70 lines added to api.js |
+| 7.28 | DeliveriesScreen (list, status tabs, search, assign modal) | ✅ | Status color badges, inline partner assignment |
+| 7.29 | DeliveryDetailScreen (status stepper, items, COD form, actions) | ✅ | Progress indicator, COD cash/UPI collection, fail reason |
+| 7.30 | SettlementsScreen (unsettled COD, create/verify settlements) | ✅ | Partner picker, summary card, verify confirmation |
+| 7.31 | PickupOrdersScreen (Preparing/Ready/Picked Up tabs) | ✅ | Mark Ready + Customer Picked Up action buttons |
+| 7.32 | CustomerOrdersScreen (My Orders + My Dues tabs) | ✅ | Order history, outstanding dues summary |
+| 7.33 | MainNavigator — Orders tab (owner/manager) | ✅ | OrdersStack: Deliveries, Detail, Settlements, Pickups |
+| 7.34 | MainNavigator — Deliveries tab (delivery_partner) | ✅ | DeliveryPartnerStack: My Deliveries, Detail |
+| 7.35 | MainNavigator — My Orders tab (customer) | ✅ | CustomerOrdersStack: Orders + Dues |
+| 7.36 | SaleDetailScreen — delivery tracking section | ✅ | Delivery status badge, partner info, COD status, tap to navigate |
+| 7.37 | SaleDetailScreen — pickup status section | ✅ | Pickup status badge for pickup orders |
+| 7.38 | DeliveryDetail accessible from POS + Sales stacks | ✅ | Added to both POSStack and SalesStack |
+
+### Key Design Decisions & Mandatory Restrictions
+
+- **Delivery partner scoping** → Partners can only act on their own assigned deliveries
+- **Pickup requires ready status** → Can't pick up from shop unless sale status='ready'
+- **COD amount validation** → Collection can't exceed remaining COD amount
+- **Settlement integrity** → Validates all deliveries belong to the partner and aren't already settled
+- **Verified settlement** → Manager verification adds collected amount to cash register
+- **Auto-delivery record** → Created automatically when sale has delivery address
+- **Auto-complete sale** → Sale auto-completes when delivery is marked delivered
+- **Failed delivery recovery** → Sale goes back to 'ready' for re-assignment
 
 ### Phase 7 Testing
 
 | # | Test | Status | Notes |
 |---|------|--------|-------|
-| T7.1 | Order status transitions (full lifecycle) | ⬜ | |
-| T7.2 | Delivery assignment by manager | ⬜ | |
-| T7.3 | Delivery partner marks delivered with photo + GPS | ⬜ | |
-| T7.4 | Delivery challan PDF generation | ⬜ | |
-| T7.5 | Recurring order auto-creation | ⬜ | |
-| T7.6 | Pickup order with preferred time | ⬜ | |
-| T6.7 | Customer order tracking view | ⬜ | |
-| T6.8 | Full order → delivery end-to-end in app | ⬜ | |
+| T7.1 | Server starts with new tables (5 tables + 3 columns) | ✅ | All verified via PRAGMA checks |
+| T7.2 | Deliveries route authentication | ✅ | Returns 401 without token |
+| T7.3 | Delivery lifecycle (assign → pickup → transit → deliver) | ⬜ | Needs end-to-end testing |
+| T7.4 | COD collection + settlement + verification | ⬜ | Needs end-to-end testing |
+| T7.5 | Pickup order flow (waiting → ready → picked up) | ⬜ | Needs end-to-end testing |
+| T7.6 | Customer orders & dues view | ⬜ | Needs end-to-end testing |
+| T7.7 | Credit payment per-order linking | ⬜ | Needs end-to-end testing |
+| T7.8 | Full order → delivery end-to-end in app | ⬜ | Needs manual testing |
 
 ---
 
-## Phase 7 — Attendance & Location Tracking
+## Post-Phase 7 — Order Enhancements & Navigation Cleanup
+
+**Status**: ✅ Complete  
+**Completed**: 9 March 2026
+
+### Backend
+
+| # | Task | Status | Notes |
+|---|------|--------|-------|
+| P7E.1 | Lazy stock deduction — non-walk-in orders don't auto-deduct stock | ✅ | Walk-in deducts immediately; pickup/delivery/pre-order deduct on fulfillment |
+| P7E.2 | Fulfill-from-stock endpoint (`POST /sales/:id/fulfill-from-stock`) | ✅ | Deducts stock for confirmed orders, validates availability |
+| P7E.3 | Convert order type endpoint (`PUT /sales/:id/convert-type`) | ✅ | Pickup↔Delivery conversion with optional delivery charges, transaction-based |
+
+### Frontend
+
+| # | Task | Status | Notes |
+|---|------|--------|-------|
+| P7E.4 | Time-prominent DeliveriesScreen with countdown | ✅ | Sorted by scheduled time, countdown to delivery, overdue highlighting |
+| P7E.5 | Time-prominent PickupOrdersScreen with countdown | ✅ | Same approach for pickup orders, ready/waiting tabs |
+| P7E.6 | Smart countdown — completed orders show completion time | ✅ | Delivered/picked-up orders show green "Delivered [time]" instead of overdue |
+| P7E.7 | Convert order type UI in SaleDetailScreen | ✅ | Modal with address/charges fields, owner/manager only |
+| P7E.8 | Dedicated Pickups bottom tab | ✅ | Separate PickupsStack in bottom nav (was buried in OrdersStack) |
+| P7E.9 | Nav declutter — "More" hub screen | ✅ | Merged Locations, Staff, Customers, Settlements, Settings into More tab |
+| P7E.10 | Bottom tabs reduced from 9 → 7 (owner/manager) | ✅ | Dashboard, POS, Sales, Inventory, Deliveries, Pickups, More, Profile |
+| P7E.11 | `convertOrderType` API method | ✅ | PUT `/sales/:id/convert-type` |
+
+### Bug Fixes
+
+| # | Bug | Status | Fix |
+|---|-----|--------|-----|
+| P7B.1 | SalesScreen FlatList duplicate key warning | 🐛 Fixed | Added unique `keyExtractor` using sale id + index |
+| P7B.2 | DeliveriesScreen `delivered_at` field name mismatch | 🐛 Fixed | DB column is `delivered_time`, not `delivered_at` |
+
+---
+
+## Phase 8 — Attendance & Location Tracking
 
 **Status**: ⬜ Not Started
 
@@ -495,79 +629,41 @@ Redesigned the product/stock system from pure BOM-based calculation to a **hybri
 
 | # | Task | Status | Notes |
 |---|------|--------|-------|
-| 7.1 | Database tables (attendance, outdoor_duty_requests) | ⬜ | |
-| 7.2 | Geofence-based clock-in/out routes | ⬜ | |
-| 7.3 | Outdoor duty request/approval routes | ⬜ | |
-| 7.4 | Late/early flag calculation logic | ⬜ | |
-| 7.5 | Attendance report routes (daily, weekly, monthly) | ⬜ | |
-| 7.6 | Delivery partner live location tracking routes | ⬜ | |
+| 8.1 | Database tables (attendance, outdoor_duty_requests) | ⬜ | |
+| 8.2 | Geofence-based clock-in/out routes | ⬜ | |
+| 8.3 | Outdoor duty request/approval routes | ⬜ | |
+| 8.4 | Late/early flag calculation logic | ⬜ | |
+| 8.5 | Attendance report routes (daily, weekly, monthly) | ⬜ | |
+| 8.6 | Delivery partner live location tracking routes | ⬜ | |
+| 8.7 | Staff duty time tracking | ⬜ | |
+| 8.8 | Staff Salary / advance salary tracking | ⬜ | |
 
 ### Frontend
 
 | # | Task | Status | Notes |
 |---|------|--------|-------|
-| 7.7 | API service — attendance methods | ⬜ | |
-| 7.8 | AttendanceScreen (clock-in/out, status) | ⬜ | |
-| 7.9 | OutdoorDutyRequestScreen (request + approval) | ⬜ | |
-| 7.10 | AttendanceReportScreen (daily/weekly/monthly view) | ⬜ | |
-| 7.11 | LiveDeliveryMapScreen (manager/owner — all partners) | ⬜ | |
-| 7.12 | Geofence config per location (settings) | ⬜ | |
-
-### Phase 7 Testing
-
-| # | Test | Status | Notes |
-|---|------|--------|-------|
-| T7.1 | Geofence clock-in inside radius | ⬜ | |
-| T7.2 | Geofence block outside radius | ⬜ | |
-| T7.3 | Outdoor duty request → approval flow | ⬜ | |
-| T7.4 | Late/early flags calculated correctly | ⬜ | |
-| T7.5 | Attendance reports accuracy | ⬜ | |
-| T7.6 | Delivery partner live location on map | ⬜ | |
-| T7.7 | Full attendance flow end-to-end in app | ⬜ | |
-
----
-
-## Phase 8 — Reports & Dashboard
-
-**Status**: ⬜ Not Started
-
-### Backend
-
-| # | Task | Status | Notes |
-|---|------|--------|-------|
-| 8.1 | Daily sales summary routes (by location, date range) | ⬜ | |
-| 8.2 | Inventory status & wastage report routes | ⬜ | |
-| 8.3 | Customer insights routes (top customers, order frequency) | ⬜ | |
-| 8.4 | Employee performance report routes | ⬜ | |
-| 8.5 | Delivery metrics routes | ⬜ | Nice-to-have |
-| 8.6 | Profit margin analysis routes | ⬜ | Nice-to-have |
-
-### Frontend
-
-| # | Task | Status | Notes |
-|---|------|--------|-------|
-| 8.7 | API service — report methods | ⬜ | |
-| 8.8 | Enhanced DashboardScreen (live sales stats, charts) | ⬜ | |
-| 8.9 | SalesReportScreen (date range, location filter, export) | ⬜ | |
-| 8.10 | InventoryReportScreen (stock levels, wastage trends) | ⬜ | |
-| 8.11 | CustomerInsightsScreen (top customers, frequency) | ⬜ | |
-| 8.12 | EmployeePerformanceScreen | ⬜ | |
-| 8.13 | Chart components (bar, line, pie) | ⬜ | |
+| 8.7 | API service — attendance methods | ⬜ | |
+| 8.8 | AttendanceScreen (clock-in/out, status) | ⬜ | |
+| 8.9 | OutdoorDutyRequestScreen (request + approval) | ⬜ | |
+| 8.10 | AttendanceReportScreen (daily/weekly/monthly view) | ⬜ | |
+| 8.11 | LiveDeliveryMapScreen (manager/owner — all partners) | ⬜ | |
+| 8.12 | Geofence config per location (settings) | ⬜ | |
 
 ### Phase 8 Testing
 
 | # | Test | Status | Notes |
 |---|------|--------|-------|
-| T8.1 | Sales summary accuracy vs actual orders | ⬜ | |
-| T8.2 | Inventory report matches stock records | ⬜ | |
-| T8.3 | Customer insights data correctness | ⬜ | |
-| T8.4 | Date range filtering on all reports | ⬜ | |
-| T8.5 | Location-scoped reports (manager view) | ⬜ | |
-| T8.6 | Full reports dashboard end-to-end in app | ⬜ | |
+| T8.1 | Geofence clock-in inside radius | ⬜ | |
+| T8.2 | Geofence block outside radius | ⬜ | |
+| T8.3 | Outdoor duty request → approval flow | ⬜ | |
+| T8.4 | Late/early flags calculated correctly | ⬜ | |
+| T8.5 | Attendance reports accuracy | ⬜ | |
+| T8.6 | Delivery partner live location on map | ⬜ | |
+| T8.7 | Full attendance flow end-to-end in app | ⬜ | |
 
 ---
 
-## Phase 9 — Notifications & Polish
+## Phase 9 — Reports & Dashboard
 
 **Status**: ⬜ Not Started
 
@@ -575,35 +671,75 @@ Redesigned the product/stock system from pure BOM-based calculation to a **hybri
 
 | # | Task | Status | Notes |
 |---|------|--------|-------|
-| 9.1 | Push notification infrastructure (Expo push) | ⬜ | |
-| 9.2 | Notification trigger system (order status, low stock, attendance, etc.) | ⬜ | |
-| 9.3 | In-app notification routes (list, mark read) | ⬜ | |
+| 9.1 | Daily sales summary routes (by location, date range) | ⬜ | |
+| 9.2 | Inventory status & wastage report routes | ⬜ | |
+| 9.3 | Customer insights routes (top customers, order frequency) | ⬜ | |
+| 9.4 | Employee performance report routes | ⬜ | |
+| 9.5 | Delivery metrics routes | ⬜ | Nice-to-have |
+| 9.6 | Profit margin analysis routes | ⬜ | Nice-to-have |
 
 ### Frontend
 
 | # | Task | Status | Notes |
 |---|------|--------|-------|
-| 9.4 | Push notification registration + handling | ⬜ | |
-| 9.5 | NotificationCenterScreen (list, mark read, navigate) | ⬜ | |
-| 9.6 | Notification badge on tab bar | ⬜ | |
-
-### Future / Nice-to-Have
-
-| # | Task | Status | Notes |
-|---|------|--------|-------|
-| 9.7 | WhatsApp receipt sharing | ⬜ | Later phase |
-| 9.8 | Thermal printer integration (SEZNIK 58mm, ESC/POS, Bluetooth) | ⬜ | Later phase |
-| 9.9 | Offline support (local-first with sync) | ⬜ | Later phase |
-| 9.10 | Loyalty/rewards program | ⬜ | Later phase |
+| 9.7 | API service — report methods | ⬜ | |
+| 9.8 | Enhanced DashboardScreen (live sales stats, charts) | ⬜ | |
+| 9.9 | SalesReportScreen (date range, location filter, export) | ⬜ | |
+| 9.10 | InventoryReportScreen (stock levels, wastage trends) | ⬜ | |
+| 9.11 | CustomerInsightsScreen (top customers, frequency) | ⬜ | |
+| 9.12 | EmployeePerformanceScreen | ⬜ | |
+| 9.13 | Chart components (bar, line, pie) | ⬜ | |
 
 ### Phase 9 Testing
 
 | # | Test | Status | Notes |
 |---|------|--------|-------|
-| T9.1 | Push notification delivery (all trigger types) | ⬜ | |
-| T9.2 | In-app notification list + mark read | ⬜ | |
-| T9.3 | Notification badge updates in real-time | ⬜ | |
-| T9.4 | Full notification flow end-to-end in app | ⬜ | |
+| T9.1 | Sales summary accuracy vs actual orders | ⬜ | |
+| T9.2 | Inventory report matches stock records | ⬜ | |
+| T9.3 | Customer insights data correctness | ⬜ | |
+| T9.4 | Date range filtering on all reports | ⬜ | |
+| T9.5 | Location-scoped reports (manager view) | ⬜ | |
+| T9.6 | Full reports dashboard end-to-end in app | ⬜ | |
+
+---
+
+## Phase 10 — Notifications & Polish
+
+**Status**: ⬜ Not Started
+
+### Backend
+
+| # | Task | Status | Notes |
+|---|------|--------|-------|
+| 10.1 | Push notification infrastructure (Expo push) | ⬜ | |
+| 10.2 | Notification trigger system (order status, low stock, attendance, etc.) | ⬜ | |
+| 10.3 | In-app notification routes (list, mark read) | ⬜ | |
+
+### Frontend
+
+| # | Task | Status | Notes |
+|---|------|--------|-------|
+| 10.4 | Push notification registration + handling | ⬜ | |
+| 10.5 | NotificationCenterScreen (list, mark read, navigate) | ⬜ | |
+| 10.6 | Notification badge on tab bar | ⬜ | |
+
+### Future / Nice-to-Have
+
+| # | Task | Status | Notes |
+|---|------|--------|-------|
+| 10.7 | WhatsApp receipt sharing | ⬜ | Later phase |
+| 10.8 | Thermal printer integration (SEZNIK 58mm, ESC/POS, Bluetooth) | ⬜ | Later phase |
+| 10.9 | Offline support (local-first with sync) | ⬜ | Later phase |
+| 10.10 | Loyalty/rewards program | ⬜ | Later phase |
+
+### Phase 10 Testing
+
+| # | Test | Status | Notes |
+|---|------|--------|-------|
+| T10.1 | Push notification delivery (all trigger types) | ⬜ | |
+| T10.2 | In-app notification list + mark read | ⬜ | |
+| T10.3 | Notification badge updates in real-time | ⬜ | |
+| T10.4 | Full notification flow end-to-end in app | ⬜ | |
 
 ---
 
@@ -617,11 +753,13 @@ Redesigned the product/stock system from pure BOM-based calculation to a **hybri
 | 4 | POS & Sales | ✅ Complete | 19 | 19 | 0 |
 | 5 | Customer Management | ✅ Complete | 15 | 15 | 0 |
 | 6 | Production & Hybrid Stock | ✅ Complete | 34 | 34 | 1 |
-| 7 | Orders & Delivery | ⬜ Not Started | 17 | 0 | 0 |
+| 6+ | Post-Phase 6 UI/Queue/Dashboard | ✅ Complete | 16 | 16 | 6 |
+| 7 | Orders & Delivery (COD, Credit, Pickup) | ✅ Complete | 38 | 38 | 0 |
+| 7+ | Post-Phase 7 Order Enhancements & Nav | ✅ Complete | 13 | 13 | 2 |
 | 8 | Attendance & Location Tracking | ⬜ Not Started | 12 | 0 | 0 |
 | 9 | Reports & Dashboard | ⬜ Not Started | 13 | 0 | 0 |
 | 10 | Notifications & Polish | ⬜ Not Started | 10 | 0 | 0 |
-| **Total** | | | **184** | **132** | **9** |
+| **Total** | | | **234** | **199** | **17** |
 
 ---
 

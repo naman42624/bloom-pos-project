@@ -58,6 +58,16 @@ import CustomerFormScreen from '../screens/CustomerFormScreen';
 import ProductionQueueScreen from '../screens/ProductionQueueScreen';
 import ProduceScreen from '../screens/ProduceScreen';
 
+// Phase 7 — Orders & Delivery
+import DeliveriesScreen from '../screens/DeliveriesScreen';
+import DeliveryDetailScreen from '../screens/DeliveryDetailScreen';
+import SettlementsScreen from '../screens/SettlementsScreen';
+import PickupOrdersScreen from '../screens/PickupOrdersScreen';
+import CustomerOrdersScreen from '../screens/CustomerOrdersScreen';
+
+// More hub
+import MoreScreen from '../screens/MoreScreen';
+
 import { Colors, FontSize } from '../constants/theme';
 
 const Tab = createBottomTabNavigator();
@@ -235,6 +245,7 @@ function POSStack() {
       <Stack.Screen name="Expenses" component={ExpensesScreen} options={{ title: 'Expenses' }} />
       <Stack.Screen name="ProductionQueue" component={ProductionQueueScreen} options={{ title: 'Production Queue' }} />
       <Stack.Screen name="ProduceProduct" component={ProduceScreen} options={{ title: 'Produce Products' }} />
+      <Stack.Screen name="DeliveryDetail" component={DeliveryDetailScreen} options={{ title: 'Delivery' }} />
     </Stack.Navigator>
   );
 }
@@ -251,6 +262,91 @@ function SalesStack() {
       <Stack.Screen name="Expenses" component={ExpensesScreen} options={{ title: 'Expenses' }} />
       <Stack.Screen name="ProductionQueue" component={ProductionQueueScreen} options={{ title: 'Production Queue' }} />
       <Stack.Screen name="ProduceProduct" component={ProduceScreen} options={{ title: 'Produce Products' }} />
+      <Stack.Screen name="DeliveryDetail" component={DeliveryDetailScreen} options={{ title: 'Delivery' }} />
+    </Stack.Navigator>
+  );
+}
+
+// ─── Orders Stack (Manager — Deliveries, Pickups, Settlements) ──
+function OrdersStack() {
+  return (
+    <Stack.Navigator screenOptions={stackScreenOptions}>
+      <Stack.Screen name="DeliveriesList" component={DeliveriesScreen} options={{ title: 'Deliveries' }} />
+      <Stack.Screen name="DeliveryDetail" component={DeliveryDetailScreen} options={{ title: 'Delivery' }} />
+      <Stack.Screen name="Settlements" component={SettlementsScreen} options={{ title: 'Settlements' }} />
+      <Stack.Screen name="PickupOrders" component={PickupOrdersScreen} options={{ title: 'Pickup Orders' }} />
+      <Stack.Screen name="SaleDetail" component={SaleDetailScreen} options={{ title: 'Sale Details' }} />
+      <Stack.Screen name="RefundSale" component={RefundSaleScreen} options={{ title: 'Refund' }} />
+      <Stack.Screen name="AddPayment" component={AddPaymentScreen} options={{ title: 'Record Payment' }} />
+    </Stack.Navigator>
+  );
+}
+
+// ─── Pickups Stack (Owner/Manager) ──────────────────────
+function PickupsStack() {
+  return (
+    <Stack.Navigator screenOptions={stackScreenOptions}>
+      <Stack.Screen name="PickupOrdersList" component={PickupOrdersScreen} options={{ title: 'Pickup Orders' }} />
+      <Stack.Screen name="SaleDetail" component={SaleDetailScreen} options={{ title: 'Sale Details' }} />
+      <Stack.Screen name="RefundSale" component={RefundSaleScreen} options={{ title: 'Refund' }} />
+      <Stack.Screen name="AddPayment" component={AddPaymentScreen} options={{ title: 'Record Payment' }} />
+      <Stack.Screen name="DeliveryDetail" component={DeliveryDetailScreen} options={{ title: 'Delivery' }} />
+    </Stack.Navigator>
+  );
+}
+
+// ─── More Stack (Owner/Manager — Customers, Locations, Staff, Settings) ──
+function MoreStack() {
+  return (
+    <Stack.Navigator screenOptions={stackScreenOptions}>
+      <Stack.Screen name="MoreHome" component={MoreScreen} options={{ title: 'More' }} />
+      <Stack.Screen name="Customers" component={CustomersScreen} options={{ title: 'Customers' }} />
+      <Stack.Screen name="CustomerDetail" component={CustomerDetailScreen} options={{ title: 'Customer' }} />
+      <Stack.Screen
+        name="CustomerForm"
+        component={CustomerFormScreen}
+        options={({ route }) => ({ title: route.params?.customer ? 'Edit Customer' : 'New Customer', presentation: 'modal' })}
+      />
+      <Stack.Screen name="Locations" component={LocationsScreen} options={{ title: 'Locations' }} />
+      <Stack.Screen name="LocationDetail" component={LocationDetailScreen} options={{ title: 'Location Details' }} />
+      <Stack.Screen
+        name="LocationForm"
+        component={LocationFormScreen}
+        options={({ route }) => ({ title: route.params?.location ? 'Edit Location' : 'New Location', presentation: 'modal' })}
+      />
+      <Stack.Screen name="Staff" component={UsersScreen} options={{ title: 'Staff' }} />
+      <Stack.Screen
+        name="UserForm"
+        component={UserFormScreen}
+        options={({ route }) => ({ title: route.params?.user ? 'Edit Staff' : 'Add Staff', presentation: 'modal' })}
+      />
+      <Stack.Screen name="Settlements" component={SettlementsScreen} options={{ title: 'Settlements' }} />
+      <Stack.Screen name="CashRegister" component={CashRegisterScreen} options={{ title: 'Cash Register' }} />
+      <Stack.Screen name="Expenses" component={ExpensesScreen} options={{ title: 'Expenses' }} />
+      <Stack.Screen name="Settings" component={SettingsScreen} options={{ title: 'Settings' }} />
+      <Stack.Screen name="SaleDetail" component={SaleDetailScreen} options={{ title: 'Sale Details' }} />
+      <Stack.Screen name="RefundSale" component={RefundSaleScreen} options={{ title: 'Refund' }} />
+      <Stack.Screen name="AddPayment" component={AddPaymentScreen} options={{ title: 'Record Payment' }} />
+      <Stack.Screen name="DeliveryDetail" component={DeliveryDetailScreen} options={{ title: 'Delivery' }} />
+    </Stack.Navigator>
+  );
+}
+
+// ─── Delivery Partner Stack ─────────────────────────────────
+function DeliveryPartnerStack() {
+  return (
+    <Stack.Navigator screenOptions={stackScreenOptions}>
+      <Stack.Screen name="MyDeliveries" component={DeliveriesScreen} options={{ title: 'My Deliveries' }} />
+      <Stack.Screen name="DeliveryDetail" component={DeliveryDetailScreen} options={{ title: 'Delivery' }} />
+    </Stack.Navigator>
+  );
+}
+
+// ─── Customer Orders Stack ──────────────────────────────────
+function CustomerOrdersStack() {
+  return (
+    <Stack.Navigator screenOptions={stackScreenOptions}>
+      <Stack.Screen name="MyOrders" component={CustomerOrdersScreen} options={{ title: 'My Orders' }} />
     </Stack.Navigator>
   );
 }
@@ -261,9 +357,11 @@ const TAB_ICONS = {
   POS: { active: 'cart', inactive: 'cart-outline' },
   Sales: { active: 'receipt', inactive: 'receipt-outline' },
   Inventory: { active: 'leaf', inactive: 'leaf-outline' },
-  Locations: { active: 'location', inactive: 'location-outline' },
-  Staff: { active: 'people', inactive: 'people-outline' },
-  Customers: { active: 'people', inactive: 'people-outline' },
+  Deliveries: { active: 'bicycle', inactive: 'bicycle-outline' },
+  Pickups: { active: 'bag-handle', inactive: 'bag-handle-outline' },
+  Orders: { active: 'bicycle', inactive: 'bicycle-outline' },
+  MyOrders: { active: 'receipt', inactive: 'receipt-outline' },
+  More: { active: 'apps', inactive: 'apps-outline' },
   Profile: { active: 'person-circle', inactive: 'person-circle-outline' },
 };
 
@@ -332,26 +430,46 @@ export default function MainNavigator() {
       {/* Customers tab — Owner, Manager */}
       {(role === 'owner' || role === 'manager') && (
         <Tab.Screen
-          name="Customers"
-          component={CustomersStack}
-          options={{ tabBarLabel: 'Customers' }}
+          name="Deliveries"
+          component={OrdersStack}
+          options={{ tabBarLabel: 'Deliveries' }}
         />
       )}
 
-      {/* Owner and Manager see Locations and Staff tabs */}
+      {/* Pickups tab — Owner, Manager */}
       {(role === 'owner' || role === 'manager') && (
-        <>
-          <Tab.Screen
-            name="Locations"
-            component={LocationsStack}
-            options={{ tabBarLabel: 'Locations' }}
-          />
-          <Tab.Screen
-            name="Staff"
-            component={UsersStack}
-            options={{ tabBarLabel: 'Staff' }}
-          />
-        </>
+        <Tab.Screen
+          name="Pickups"
+          component={PickupsStack}
+          options={{ tabBarLabel: 'Pickups' }}
+        />
+      )}
+
+      {/* Deliveries tab — Delivery Partner */}
+      {role === 'delivery_partner' && (
+        <Tab.Screen
+          name="Deliveries"
+          component={DeliveryPartnerStack}
+          options={{ tabBarLabel: 'Deliveries' }}
+        />
+      )}
+
+      {/* My Orders tab — Customer */}
+      {role === 'customer' && (
+        <Tab.Screen
+          name="MyOrders"
+          component={CustomerOrdersStack}
+          options={{ tabBarLabel: 'My Orders' }}
+        />
+      )}
+
+      {/* Owner and Manager see More tab (Customers, Locations, Staff, Settings) */}
+      {(role === 'owner' || role === 'manager') && (
+        <Tab.Screen
+          name="More"
+          component={MoreStack}
+          options={{ tabBarLabel: 'More' }}
+        />
       )}
 
       <Tab.Screen

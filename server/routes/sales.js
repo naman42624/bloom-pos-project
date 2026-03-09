@@ -52,11 +52,12 @@ function recalcSaleTotals(db, saleId) {
 router.get('/', authenticate, (req, res, next) => {
   try {
     const db = getDb();
-    const { location_id, order_type, payment_status, status, date_from, date_to, search, limit: lim, offset: off } = req.query;
+    const { location_id, order_type, payment_status, status, pickup_status, date_from, date_to, search, limit: lim, offset: off } = req.query;
 
     let sql = `
       SELECT s.*, l.name as location_name, u.name as created_by_name,
-             c.name as customer_display_name, c.phone as customer_display_phone
+             c.name as customer_display_name, c.phone as customer_display_phone,
+             COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.sale_id = s.id), 0) as total_paid
       FROM sales s
       LEFT JOIN locations l ON s.location_id = l.id
       LEFT JOIN users u ON s.created_by = u.id
@@ -68,6 +69,7 @@ router.get('/', authenticate, (req, res, next) => {
     if (location_id) { sql += ' AND s.location_id = ?'; params.push(location_id); }
     if (order_type) { sql += ' AND s.order_type = ?'; params.push(order_type); }
     if (payment_status) { sql += ' AND s.payment_status = ?'; params.push(payment_status); }
+    if (pickup_status) { sql += ' AND s.pickup_status = ?'; params.push(pickup_status); }
     if (status) { sql += ' AND s.status = ?'; params.push(status); }
     else { sql += " AND s.status != 'cancelled'"; }
     if (date_from) { sql += ' AND DATE(s.created_at) >= ?'; params.push(date_from); }
@@ -434,6 +436,13 @@ router.get('/:id', authenticate, (req, res, next) => {
     // Refund if any
     sale.refund = db.prepare('SELECT * FROM refunds WHERE sale_id = ?').get(req.params.id);
 
+    // Delivery info if applicable
+    sale.delivery = db.prepare(`
+      SELECT d.*, u.name as partner_name, u.phone as partner_phone
+      FROM deliveries d LEFT JOIN users u ON d.delivery_partner_id = u.id
+      WHERE d.sale_id = ?
+    `).get(req.params.id);
+
     res.json({ success: true, data: sale });
   } catch (err) { next(err); }
 });
@@ -546,27 +555,24 @@ router.post(
         const saleNumber = generateSaleNumber(db, location_id);
 
         // ─── Hybrid Stock Logic ──────────────────────────
-        // Determine initial status based on order type + stock availability
-        // Walk-in: if all products in stock → completed immediately
-        //          if any product needs production → preparing (production tasks created)
-        // Other types: always pending with production tasks
+        // Walk-in: auto-deduct from product_stock if available → completed / preparing
+        // Non-walk-in (delivery/pickup/pre_order): LAZY deduction — always create
+        //   production tasks. Staff can later "fulfill from stock" manually.
         let initialStatus;
         let stockDeducted = 0;
         let needsProduction = false;
 
         if (order_type === 'walk_in') {
-          // Check if all product items can be fulfilled from product_stock
-          const getReadyStock = db.prepare('SELECT quantity FROM product_stock WHERE product_id = ? AND location_id = ?');
+          const getReadyStockCheck = db.prepare('SELECT quantity FROM product_stock WHERE product_id = ? AND location_id = ?');
           let allInStock = true;
           for (const item of processedItems) {
             if (item.product_id) {
-              const ready = getReadyStock.get(item.product_id, location_id);
+              const ready = getReadyStockCheck.get(item.product_id, location_id);
               if (!ready || ready.quantity < item.quantity) {
                 allInStock = false;
                 break;
               }
             }
-            // Raw materials are always fulfilled directly
           }
           if (allInStock) {
             initialStatus = 'completed';
@@ -576,6 +582,7 @@ router.post(
             needsProduction = true;
           }
         } else {
+          // delivery / pickup / pre_order — always pending, production tasks created
           initialStatus = 'pending';
           needsProduction = true;
         }
@@ -618,50 +625,46 @@ router.post(
            VALUES (?, ?, ?, ?, ?, ?, ?)`
         );
 
-        if (initialStatus === 'completed' && order_type === 'walk_in') {
-          // Walk-in with all in stock: deduct from product_stock + raw materials
+        if (stockDeducted && !needsProduction) {
+          // Walk-in, all products in stock: deduct from product_stock
           for (const item of saleItemIds) {
             if (item.material_id) {
-              // Raw material direct sale
               deductMaterialStock.run(item.quantity, item.material_id, location_id);
               logMaterialTx.run(item.material_id, location_id, item.quantity, saleId, `Sale ${saleNumber}`, req.user.id);
               db.prepare('UPDATE sale_items SET materials_deducted = 1 WHERE id = ?').run(item.sale_item_id);
             } else if (item.product_id) {
-              // Deduct from ready product stock
               deductProductStock.run(item.quantity, item.product_id, location_id);
               db.prepare('UPDATE sale_items SET from_product_stock = 1, materials_deducted = 1 WHERE id = ?').run(item.sale_item_id);
             }
           }
         } else if (needsProduction) {
-          // Create production tasks for product items
+          // Create production tasks — for walk-in, use partial ready stock; for others, always full production
           for (const item of saleItemIds) {
             if (item.material_id) {
-              // Raw materials: deduct immediately for all order types
               deductMaterialStock.run(item.quantity, item.material_id, location_id);
               logMaterialTx.run(item.material_id, location_id, item.quantity, saleId, `Sale ${saleNumber}`, req.user.id);
               db.prepare('UPDATE sale_items SET materials_deducted = 1 WHERE id = ?').run(item.sale_item_id);
             } else if (item.product_id) {
-              // Check how much is in product_stock
-              const ready = getReadyStock.get(item.product_id, location_id);
-              const readyQty = ready ? ready.quantity : 0;
-              let fromStock = 0;
               let toMake = item.quantity;
 
-              // For walk-in urgent orders, use whatever is in stock first
-              if (order_type === 'walk_in' && readyQty > 0) {
-                fromStock = Math.min(readyQty, item.quantity);
-                toMake = item.quantity - fromStock;
-                deductProductStock.run(fromStock, item.product_id, location_id);
+              // Walk-in: use partial ready stock to speed up
+              if (order_type === 'walk_in') {
+                const ready = getReadyStock.get(item.product_id, location_id);
+                const readyQty = ready ? ready.quantity : 0;
+                if (readyQty > 0) {
+                  const fromStock = Math.min(readyQty, item.quantity);
+                  toMake = item.quantity - fromStock;
+                  deductProductStock.run(fromStock, item.product_id, location_id);
+                  if (fromStock > 0) {
+                    db.prepare('UPDATE sale_items SET from_product_stock = 1 WHERE id = ?').run(item.sale_item_id);
+                  }
+                }
               }
+              // Non-walk-in: full quantity goes to production (lazy deduction)
 
-              // Create production task for remaining quantity
               if (toMake > 0) {
                 const priority = order_type === 'walk_in' ? 'urgent' : 'normal';
                 insertTask.run(saleId, item.sale_item_id, item.product_id, location_id, toMake, priority, '');
-              }
-
-              if (fromStock > 0) {
-                db.prepare('UPDATE sale_items SET from_product_stock = 1 WHERE id = ?').run(item.sale_item_id);
               }
             }
           }
@@ -699,6 +702,23 @@ router.post(
           db.prepare(
             'INSERT INTO pre_orders (sale_id, scheduled_date, scheduled_time, advance_payment, remaining_amount) VALUES (?, ?, ?, ?, ?)'
           ).run(saleId, scheduled_date, scheduled_time || null, advPmt, Math.max(0, remaining));
+        }
+
+        // Auto-create delivery record for delivery orders
+        const needsDeliveryRecord = order_type === 'delivery' || (order_type === 'pre_order' && delivery_address);
+        if (needsDeliveryRecord && delivery_address) {
+          const codAmount = Math.max(0, grandTotal - totalPaid);
+          db.prepare(`
+            INSERT INTO deliveries (sale_id, location_id, delivery_address, customer_name, customer_phone,
+              scheduled_date, scheduled_time, cod_amount, cod_status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `).run(saleId, location_id, delivery_address, customer_name || null, customer_phone || null,
+            scheduled_date || null, scheduled_time || null, codAmount, codAmount > 0 ? 'pending' : 'none');
+        }
+
+        // Auto-set pickup_status for pickup orders (always waiting — lazy stock)
+        if (order_type === 'pickup') {
+          db.prepare("UPDATE sales SET pickup_status = 'waiting' WHERE id = ?").run(saleId);
         }
 
         // Update customer total_spent and credit_balance
@@ -879,6 +899,181 @@ router.put(
 
       const updated = db.prepare('SELECT * FROM sales WHERE id = ?').get(sale.id);
       res.json({ success: true, data: updated });
+    } catch (err) { next(err); }
+  }
+);
+
+// ─── POST /api/sales/:id/fulfill-from-stock ──────────────────
+// Manually fulfill a sale item from product_stock (lazy deduction).
+// Deducts ready stock, marks item as from_product_stock, cancels/reduces production task.
+// If ALL items are fulfilled → sale status becomes 'ready'.
+router.post(
+  '/:id/fulfill-from-stock',
+  authenticate,
+  authorize('owner', 'manager', 'employee'),
+  [
+    body('sale_item_id').isInt({ min: 1 }).withMessage('sale_item_id is required'),
+  ],
+  (req, res, next) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) return res.status(400).json({ success: false, message: 'Validation failed', errors: errors.array() });
+
+      const db = getDb();
+      const sale = db.prepare('SELECT * FROM sales WHERE id = ?').get(req.params.id);
+      if (!sale) return res.status(404).json({ success: false, message: 'Sale not found' });
+      if (sale.status === 'cancelled' || sale.status === 'completed') {
+        return res.status(400).json({ success: false, message: `Cannot fulfill items for ${sale.status} orders` });
+      }
+
+      const { sale_item_id } = req.body;
+      const item = db.prepare('SELECT * FROM sale_items WHERE id = ? AND sale_id = ?').get(sale_item_id, sale.id);
+      if (!item) return res.status(404).json({ success: false, message: 'Sale item not found' });
+      if (!item.product_id) return res.status(400).json({ success: false, message: 'Only product items can be fulfilled from stock' });
+      if (item.from_product_stock) return res.status(400).json({ success: false, message: 'Item already fulfilled from stock' });
+
+      // Check available stock
+      const stock = db.prepare('SELECT quantity FROM product_stock WHERE product_id = ? AND location_id = ?').get(item.product_id, sale.location_id);
+      const available = stock ? stock.quantity : 0;
+      if (available < item.quantity) {
+        return res.status(400).json({
+          success: false,
+          message: `Insufficient stock. Available: ${available}, Required: ${item.quantity}`,
+        });
+      }
+
+      const fulfillTx = db.transaction(() => {
+        // Deduct from product_stock
+        db.prepare('UPDATE product_stock SET quantity = quantity - ?, updated_at = CURRENT_TIMESTAMP WHERE product_id = ? AND location_id = ?')
+          .run(item.quantity, item.product_id, sale.location_id);
+
+        // Mark item as fulfilled from stock
+        db.prepare('UPDATE sale_items SET from_product_stock = 1, materials_deducted = 1 WHERE id = ?').run(item.id);
+
+        // Cancel/complete the production task for this item
+        const task = db.prepare("SELECT id FROM production_tasks WHERE sale_item_id = ? AND status NOT IN ('completed', 'cancelled')").get(item.id);
+        if (task) {
+          db.prepare("UPDATE production_tasks SET status = 'cancelled', notes = 'Fulfilled from stock', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(task.id);
+        }
+
+        // Check if ALL product items are now fulfilled
+        const unfulfilled = db.prepare(
+          "SELECT COUNT(*) as cnt FROM sale_items WHERE sale_id = ? AND product_id IS NOT NULL AND from_product_stock = 0"
+        ).get(sale.id);
+
+        // Also check if there are remaining pending production tasks
+        const pendingTasks = db.prepare(
+          "SELECT COUNT(*) as cnt FROM production_tasks WHERE sale_id = ? AND status NOT IN ('completed', 'cancelled')"
+        ).get(sale.id);
+
+        if (unfulfilled.cnt === 0 && pendingTasks.cnt === 0) {
+          // All items fulfilled → mark as ready
+          db.prepare("UPDATE sales SET status = 'ready', stock_deducted = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(sale.id);
+          if (sale.order_type === 'pickup') {
+            db.prepare("UPDATE sales SET pickup_status = 'ready_for_pickup' WHERE id = ?").run(sale.id);
+          }
+        }
+      });
+      fulfillTx();
+
+      const updated = db.prepare('SELECT * FROM sales WHERE id = ?').get(sale.id);
+      updated.items = db.prepare('SELECT * FROM sale_items WHERE sale_id = ?').all(sale.id);
+      res.json({ success: true, message: 'Item fulfilled from stock', data: updated });
+    } catch (err) { next(err); }
+  }
+);
+
+// ─── PUT /api/sales/:id/convert-type ─────────────────────────
+// Convert between pickup ↔ delivery. Optionally add delivery charges & address.
+router.put(
+  '/:id/convert-type',
+  authenticate,
+  authorize('owner', 'manager'),
+  [
+    body('new_order_type').isIn(['pickup', 'delivery']).withMessage('Must be pickup or delivery'),
+    body('delivery_address').optional({ nullable: true }).trim(),
+    body('delivery_charges').optional().isFloat({ min: 0 }),
+  ],
+  (req, res, next) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) return res.status(400).json({ success: false, message: 'Validation failed', errors: errors.array() });
+
+      const db = getDb();
+      const sale = db.prepare('SELECT * FROM sales WHERE id = ?').get(req.params.id);
+      if (!sale) return res.status(404).json({ success: false, message: 'Sale not found' });
+      if (sale.status === 'cancelled') return res.status(400).json({ success: false, message: 'Cannot convert cancelled order' });
+      if (sale.order_type !== 'pickup' && sale.order_type !== 'delivery') {
+        return res.status(400).json({ success: false, message: 'Can only convert between pickup and delivery' });
+      }
+      if (sale.order_type === req.body.new_order_type) {
+        return res.status(400).json({ success: false, message: `Order is already ${sale.order_type}` });
+      }
+
+      const { new_order_type, delivery_address, delivery_charges } = req.body;
+
+      if (new_order_type === 'delivery' && !delivery_address && !sale.delivery_address) {
+        return res.status(400).json({ success: false, message: 'Delivery address is required when converting to delivery' });
+      }
+
+      const convertTx = db.transaction(() => {
+        const addr = delivery_address || sale.delivery_address || '';
+        const charges = delivery_charges != null ? delivery_charges : 0;
+
+        // Update order type
+        const newGrandTotal = sale.grand_total - (sale.delivery_charges || 0) + charges;
+        db.prepare(`
+          UPDATE sales SET order_type = ?, delivery_address = ?, delivery_charges = ?,
+          grand_total = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
+        `).run(new_order_type, new_order_type === 'delivery' ? addr : sale.delivery_address, charges, newGrandTotal, sale.id);
+
+        if (new_order_type === 'delivery') {
+          // Pickup → Delivery: clear pickup_status, create delivery record
+          db.prepare("UPDATE sales SET pickup_status = NULL, picked_up_at = NULL WHERE id = ?").run(sale.id);
+
+          // Check if delivery record already exists
+          const existingDelivery = db.prepare('SELECT id FROM deliveries WHERE sale_id = ?').get(sale.id);
+          if (!existingDelivery) {
+            const totalPaid = db.prepare('SELECT COALESCE(SUM(amount),0) as total FROM payments WHERE sale_id = ?').get(sale.id).total;
+            const codAmount = Math.max(0, newGrandTotal - totalPaid);
+            db.prepare(`
+              INSERT INTO deliveries (sale_id, location_id, delivery_address, customer_name, customer_phone,
+                scheduled_date, scheduled_time, cod_amount, cod_status)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `).run(sale.id, sale.location_id, addr,
+              sale.customer_name || null, sale.customer_phone || null,
+              sale.scheduled_date || null, sale.scheduled_time || null,
+              codAmount, codAmount > 0 ? 'pending' : 'none');
+          } else {
+            // Update existing delivery record
+            db.prepare('UPDATE deliveries SET delivery_address = ?, updated_at = CURRENT_TIMESTAMP WHERE sale_id = ?')
+              .run(addr, sale.id);
+          }
+        } else {
+          // Delivery → Pickup: set pickup_status, cancel pending delivery
+          let pickupStatus = 'waiting';
+          if (sale.status === 'ready') pickupStatus = 'ready_for_pickup';
+          else if (sale.status === 'completed') pickupStatus = 'picked_up';
+          db.prepare("UPDATE sales SET pickup_status = ? WHERE id = ?").run(pickupStatus, sale.id);
+
+          // Cancel any pending/assigned delivery
+          const delivery = db.prepare("SELECT id, status FROM deliveries WHERE sale_id = ?").get(sale.id);
+          if (delivery && !['delivered', 'cancelled'].includes(delivery.status)) {
+            db.prepare("UPDATE deliveries SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(delivery.id);
+          }
+        }
+      });
+      convertTx();
+
+      // Return updated sale with delivery/items
+      const updated = db.prepare(`
+        SELECT s.*, l.name as location_name FROM sales s
+        LEFT JOIN locations l ON s.location_id = l.id WHERE s.id = ?
+      `).get(sale.id);
+      updated.items = db.prepare('SELECT * FROM sale_items WHERE sale_id = ?').all(sale.id);
+      const delivery = db.prepare('SELECT * FROM deliveries WHERE sale_id = ?').get(sale.id);
+      if (delivery) updated.delivery = delivery;
+      res.json({ success: true, message: `Order converted to ${new_order_type}`, data: updated });
     } catch (err) { next(err); }
   }
 );

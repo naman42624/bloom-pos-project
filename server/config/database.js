@@ -944,6 +944,123 @@ function initializeDatabase() {
   }
   // Mark existing completed sale items
   db.exec("UPDATE sale_items SET materials_deducted = 1 WHERE sale_id IN (SELECT id FROM sales WHERE stock_deducted = 1)");
+
+  // ─── Phase 7: Deliveries ──────────────────────────────────
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS deliveries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      sale_id INTEGER NOT NULL,
+      delivery_partner_id INTEGER DEFAULT NULL,
+      location_id INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','assigned','picked_up','in_transit','delivered','failed','cancelled')),
+      delivery_address TEXT NOT NULL,
+      customer_name TEXT DEFAULT NULL,
+      customer_phone TEXT DEFAULT NULL,
+      scheduled_date DATE DEFAULT NULL,
+      scheduled_time TEXT DEFAULT NULL,
+      cod_amount REAL DEFAULT 0,
+      cod_collected REAL DEFAULT 0,
+      cod_status TEXT DEFAULT 'none' CHECK(cod_status IN ('none','pending','partial','collected','settled')),
+      pickup_time DATETIME DEFAULT NULL,
+      delivered_time DATETIME DEFAULT NULL,
+      delivery_notes TEXT DEFAULT '',
+      failure_reason TEXT DEFAULT '',
+      assigned_by INTEGER DEFAULT NULL,
+      assigned_at DATETIME DEFAULT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE CASCADE,
+      FOREIGN KEY (delivery_partner_id) REFERENCES users(id) ON DELETE SET NULL,
+      FOREIGN KEY (location_id) REFERENCES locations(id) ON DELETE CASCADE,
+      FOREIGN KEY (assigned_by) REFERENCES users(id) ON DELETE SET NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_deliveries_sale ON deliveries(sale_id);
+    CREATE INDEX IF NOT EXISTS idx_deliveries_partner ON deliveries(delivery_partner_id);
+    CREATE INDEX IF NOT EXISTS idx_deliveries_status ON deliveries(status);
+    CREATE INDEX IF NOT EXISTS idx_deliveries_location ON deliveries(location_id);
+  `);
+
+  // Delivery proof — photo + GPS at delivery
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS delivery_proofs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      delivery_id INTEGER NOT NULL,
+      photo_url TEXT DEFAULT NULL,
+      latitude REAL DEFAULT NULL,
+      longitude REAL DEFAULT NULL,
+      notes TEXT DEFAULT '',
+      created_by INTEGER NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (delivery_id) REFERENCES deliveries(id) ON DELETE CASCADE,
+      FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_delivery_proofs_delivery ON delivery_proofs(delivery_id);
+  `);
+
+  // COD collections — money collected by delivery partner on doorstep
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS delivery_collections (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      delivery_id INTEGER NOT NULL,
+      amount REAL NOT NULL,
+      method TEXT NOT NULL DEFAULT 'cash' CHECK(method IN ('cash', 'upi')),
+      reference_number TEXT DEFAULT NULL,
+      collected_by INTEGER NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (delivery_id) REFERENCES deliveries(id) ON DELETE CASCADE,
+      FOREIGN KEY (collected_by) REFERENCES users(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_delivery_collections_delivery ON delivery_collections(delivery_id);
+  `);
+
+  // Delivery settlements — partner hands over collected COD to shop
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS delivery_settlements (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      delivery_partner_id INTEGER NOT NULL,
+      location_id INTEGER NOT NULL,
+      total_amount REAL NOT NULL,
+      total_deliveries INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','verified')),
+      verified_by INTEGER DEFAULT NULL,
+      verified_at DATETIME DEFAULT NULL,
+      notes TEXT DEFAULT '',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (delivery_partner_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (location_id) REFERENCES locations(id) ON DELETE CASCADE,
+      FOREIGN KEY (verified_by) REFERENCES users(id) ON DELETE SET NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_delivery_settlements_partner ON delivery_settlements(delivery_partner_id);
+    CREATE INDEX IF NOT EXISTS idx_delivery_settlements_status ON delivery_settlements(status);
+  `);
+
+  // Link settlements to individual deliveries
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS delivery_settlement_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      settlement_id INTEGER NOT NULL,
+      delivery_id INTEGER NOT NULL,
+      amount REAL NOT NULL,
+      FOREIGN KEY (settlement_id) REFERENCES delivery_settlements(id) ON DELETE CASCADE,
+      FOREIGN KEY (delivery_id) REFERENCES deliveries(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_dsi_settlement ON delivery_settlement_items(settlement_id);
+  `);
+
+  // Migrate: add sale_id to credit_payments for per-order tracking
+  const cpCols = db.prepare("PRAGMA table_info(credit_payments)").all().map(c => c.name);
+  if (!cpCols.includes('sale_id')) {
+    db.exec("ALTER TABLE credit_payments ADD COLUMN sale_id INTEGER DEFAULT NULL REFERENCES sales(id) ON DELETE SET NULL");
+  }
+
+  // Migrate: add pickup fields to sales for pickup orders
+  const salesColsP7 = db.prepare("PRAGMA table_info(sales)").all().map(c => c.name);
+  if (!salesColsP7.includes('pickup_status')) {
+    db.exec("ALTER TABLE sales ADD COLUMN pickup_status TEXT DEFAULT NULL CHECK(pickup_status IN ('waiting','ready_for_pickup','picked_up'))");
+  }
+  if (!salesColsP7.includes('picked_up_at')) {
+    db.exec("ALTER TABLE sales ADD COLUMN picked_up_at DATETIME DEFAULT NULL");
+  }
 }
 
 function closeDb() {

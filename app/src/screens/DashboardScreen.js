@@ -61,6 +61,8 @@ export default function DashboardScreen({ navigation }) {
   const [prodStats, setProdStats] = useState(null);
   const [tasksLoading, setTasksLoading] = useState(false);
   const [dashSummary, setDashSummary] = useState(null);
+  const [urgentOrders, setUrgentOrders] = useState([]);
+  const [atRiskOrders, setAtRiskOrders] = useState([]);
 
   const role = user?.role;
   const isStaff = role === 'owner' || role === 'manager' || role === 'employee';
@@ -81,17 +83,26 @@ export default function DashboardScreen({ navigation }) {
           api.getMyTasks(),
           api.getProductionStats({ user_id: user?.id }),
           api.getDashboardSummary(),
+          api.getSales({ order_type: 'walk_in', status: 'preparing', limit: 10 }),
         ];
-        const [tasksRes, statsRes, summaryRes] = await Promise.all(promises);
+        if (isManagerOrOwner) {
+          promises.push(api.getAtRiskOrders(activeLocation ? { location_id: activeLocation.id } : {}).catch(() => ({ data: [] })));
+        }
+        const results = await Promise.all(promises);
+        const [tasksRes, statsRes, summaryRes, urgentRes] = results;
         setMyTasks((tasksRes.data || []).filter(t => t.status !== 'completed' && t.status !== 'cancelled'));
         setProdStats(statsRes.data || null);
         setDashSummary(summaryRes.data || null);
+        setUrgentOrders((urgentRes.data?.sales || []).slice(0, 5));
+        if (isManagerOrOwner && results[4]) {
+          setAtRiskOrders((results[4].data || []).slice(0, 5));
+        }
       } catch {}
       setTasksLoading(false);
     }
 
     setRefreshing(false);
-  }, [isStaff, user?.id]);
+  }, [isStaff, isManagerOrOwner, user?.id, activeLocation]);
 
   useFocusEffect(
     useCallback(() => {
@@ -166,13 +177,13 @@ export default function DashboardScreen({ navigation }) {
               icon="people"
               label="Staff"
               color={Colors.info}
-              onPress={() => navigation.navigate('Staff')}
+              onPress={() => navigation.navigate('More', { screen: 'Staff' })}
             />
             <QuickAction
               icon="location"
               label="Locations"
               color={Colors.secondary}
-              onPress={() => navigation.navigate('Locations')}
+              onPress={() => navigation.navigate('More', { screen: 'Locations' })}
             />
             <QuickAction
               icon="settings"
@@ -301,6 +312,83 @@ export default function DashboardScreen({ navigation }) {
               <Ionicons name="chevron-forward" size={20} color={Colors.textLight} />
             </TouchableOpacity>
           )}
+        </View>
+      )}
+
+      {/* At-Risk Orders — Manager/Owner: deliveries/pickups not ready near scheduled time */}
+      {isManagerOrOwner && atRiskOrders.length > 0 && (
+        <View style={styles.section}>
+          <View style={styles.sectionHeader}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <Ionicons name="warning" size={18} color="#FF6D00" />
+              <Text style={[styles.sectionTitle, { color: '#FF6D00' }]}>At Risk</Text>
+            </View>
+            <TouchableOpacity onPress={() => navigation.navigate('Deliveries')}>
+              <Text style={styles.seeAll}>View All</Text>
+            </TouchableOpacity>
+          </View>
+          {atRiskOrders.map((order) => (
+            <TouchableOpacity
+              key={`risk-${order.delivery_id || order.sale_id}`}
+              style={[styles.actionItemCard, { borderLeftWidth: 3, borderLeftColor: '#FF6D00' }]}
+              onPress={() => {
+                if (order.type === 'delivery' && order.delivery_id) {
+                  navigation.navigate('Deliveries', { screen: 'DeliveryDetail', params: { deliveryId: order.delivery_id } });
+                } else {
+                  navigation.navigate('Pickups', { screen: 'SaleDetail', params: { saleId: order.sale_id } });
+                }
+              }}
+            >
+              <View style={[styles.actionItemIcon, { backgroundColor: '#FFF3E0' }]}>
+                <Ionicons name={order.type === 'delivery' ? 'bicycle' : 'bag-handle'} size={20} color="#FF6D00" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.actionItemTitle}>{order.sale_number}</Text>
+                <Text style={styles.actionItemDesc}>
+                  {order.type === 'delivery' ? 'Delivery' : 'Pickup'} • Not ready • {order.scheduled_time || order.scheduled_date}
+                </Text>
+              </View>
+              <View style={[styles.lateChip]}>
+                <Text style={styles.lateChipText}>LATE</Text>
+              </View>
+            </TouchableOpacity>
+          ))}
+        </View>
+      )}
+
+      {/* Urgent Walk-in Orders — All Staff */}
+      {isStaff && urgentOrders.length > 0 && (
+        <View style={styles.section}>
+          <View style={styles.sectionHeader}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <Ionicons name="flash" size={18} color={Colors.primary} />
+              <Text style={styles.sectionTitle}>Urgent Walk-in Orders</Text>
+            </View>
+            <TouchableOpacity onPress={() => navigation.navigate('POS', { screen: 'ProductionQueue' })}>
+              <Text style={styles.seeAll}>View All</Text>
+            </TouchableOpacity>
+          </View>
+          {urgentOrders.map((order) => (
+            <TouchableOpacity
+              key={`urgent-${order.id}`}
+              style={[styles.taskCard, styles.taskUrgent]}
+              onPress={() => navigation.navigate('POS', { screen: 'SaleDetail', params: { saleId: order.id } })}
+            >
+              <View style={{ flex: 1 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <Text style={styles.taskProduct}>{order.sale_number}</Text>
+                  <View style={styles.urgentBadge}>
+                    <Ionicons name="flash" size={8} color="#FF6D00" />
+                    <Text style={{ fontSize: 7, fontWeight: '800', color: '#FF6D00' }}>WALK-IN</Text>
+                  </View>
+                </View>
+                <Text style={styles.taskMeta}>
+                  {order.customer_name || 'Walk-in'} • ₹{(order.grand_total || 0).toFixed(0)} • Preparing
+                </Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={Colors.textLight} />
+            </TouchableOpacity>
+          ))}
         </View>
       )}
 
@@ -488,4 +576,6 @@ const styles = StyleSheet.create({
   },
   actionItemTitle: { fontSize: FontSize.md, fontWeight: '700', color: Colors.text },
   actionItemDesc: { fontSize: FontSize.xs, color: Colors.textSecondary, marginTop: 2 },
+  lateChip: { backgroundColor: '#FFF3E0', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 },
+  lateChipText: { fontSize: 9, fontWeight: '800', color: '#FF6D00' },
 });

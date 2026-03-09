@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import {
-  View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, Platform, ActivityIndicator,
+  View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, Platform, ActivityIndicator, Modal, TextInput,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Print from 'expo-print';
@@ -32,6 +32,12 @@ export default function SaleDetailScreen({ route, navigation }) {
   const [loading, setLoading] = useState(true);
 
   const canManage = user?.role === 'owner' || user?.role === 'manager';
+
+  // Convert order type state
+  const [convertModalVisible, setConvertModalVisible] = useState(false);
+  const [convertAddress, setConvertAddress] = useState('');
+  const [convertCharges, setConvertCharges] = useState('');
+  const [convertTarget, setConvertTarget] = useState(null); // 'pickup' or 'delivery'
 
   useEffect(() => { fetchSale(); }, [saleId]);
 
@@ -81,6 +87,53 @@ export default function SaleDetailScreen({ route, navigation }) {
         },
       },
     ]);
+  };
+
+  const handleFulfillFromStock = (saleItemId, productName) => {
+    Alert.alert(
+      'Fulfill from Stock',
+      `Use ready stock for "${productName}"? This will deduct from product inventory.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Fulfill',
+          onPress: async () => {
+            try {
+              await api.fulfillFromStock(saleId, saleItemId);
+              fetchSale();
+              Alert.alert('Done', `"${productName}" fulfilled from stock`);
+            } catch (err) {
+              Alert.alert('Error', err.message || 'Failed to fulfill from stock');
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const openConvertModal = (target) => {
+    setConvertTarget(target);
+    setConvertAddress(sale?.delivery_address || '');
+    setConvertCharges(target === 'delivery' ? '' : '0');
+    setConvertModalVisible(true);
+  };
+
+  const handleConvert = async () => {
+    try {
+      const data = { new_order_type: convertTarget };
+      if (convertTarget === 'delivery') {
+        data.delivery_address = convertAddress;
+        data.delivery_charges = parseFloat(convertCharges) || 0;
+      } else {
+        data.delivery_charges = 0;
+      }
+      await api.convertOrderType(saleId, data);
+      setConvertModalVisible(false);
+      fetchSale();
+      Alert.alert('Done', `Order converted to ${convertTarget}`);
+    } catch (err) {
+      Alert.alert('Error', err.message || 'Failed to convert');
+    }
   };
 
   const generateReceipt = async () => {
@@ -184,6 +237,17 @@ export default function SaleDetailScreen({ route, navigation }) {
           <View style={[styles.typeBadge]}>
             <Text style={styles.typeText}>{(sale.order_type || '').replace('_', ' ').toUpperCase()}</Text>
           </View>
+          {canManage && sale.status !== 'cancelled' && (sale.order_type === 'pickup' || sale.order_type === 'delivery') && (
+            <TouchableOpacity
+              style={styles.convertBtn}
+              onPress={() => openConvertModal(sale.order_type === 'pickup' ? 'delivery' : 'pickup')}
+            >
+              <Ionicons name="swap-horizontal" size={14} color={Colors.primary} />
+              <Text style={styles.convertBtnText}>
+                {sale.order_type === 'pickup' ? 'Convert to Delivery' : 'Convert to Pickup'}
+              </Text>
+            </TouchableOpacity>
+          )}
           <View style={[styles.payBadge, { backgroundColor: (PAYMENT_STATUS_COLORS[sale.payment_status] || Colors.textLight) + '20' }]}>
             <Text style={[styles.payBadgeText, { color: PAYMENT_STATUS_COLORS[sale.payment_status] }]}>
               {(sale.payment_status || '').toUpperCase()}
@@ -214,24 +278,80 @@ export default function SaleDetailScreen({ route, navigation }) {
         </View>
       )}
 
+      {/* Delivery tracking info */}
+      {sale.delivery && (
+        <TouchableOpacity
+          style={[styles.section, { borderLeftWidth: 3, borderLeftColor: '#00BCD4' }]}
+          onPress={() => navigation.navigate('DeliveryDetail', { deliveryId: sale.delivery.id })}
+        >
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+            <Text style={styles.sectionTitle}>Delivery Status</Text>
+            <Ionicons name="chevron-forward" size={18} color={Colors.textLight} />
+          </View>
+          <View style={[styles.statusBadge, { backgroundColor: sale.delivery.status === 'delivered' ? Colors.successLight : Colors.infoLight, alignSelf: 'flex-start' }]}>
+            <Text style={{ fontSize: FontSize.xs, fontWeight: '700', color: sale.delivery.status === 'delivered' ? Colors.success : Colors.info }}>
+              {(sale.delivery.status || '').replace(/_/g, ' ').toUpperCase()}
+            </Text>
+          </View>
+          {sale.delivery.partner_name && (
+            <Text style={[styles.infoSubtext, { marginTop: 4 }]}>Partner: {sale.delivery.partner_name} {sale.delivery.partner_phone ? '• ' + sale.delivery.partner_phone : ''}</Text>
+          )}
+          {sale.delivery.cod_amount > 0 && (
+            <Text style={[styles.infoSubtext, { marginTop: 2 }]}>COD: ₹{sale.delivery.cod_amount} ({sale.delivery.cod_status || 'pending'})</Text>
+          )}
+        </TouchableOpacity>
+      )}
+
+      {/* Pickup status */}
+      {sale.order_type === 'pickup' && sale.pickup_status && (
+        <View style={[styles.section, { borderLeftWidth: 3, borderLeftColor: Colors.secondary }]}>
+          <Text style={styles.sectionTitle}>Pickup Status</Text>
+          <View style={[styles.statusBadge, { backgroundColor: sale.pickup_status === 'picked_up' ? Colors.successLight : Colors.warningLight, alignSelf: 'flex-start' }]}>
+            <Text style={{ fontSize: FontSize.xs, fontWeight: '700', color: sale.pickup_status === 'picked_up' ? Colors.success : Colors.warning }}>
+              {(sale.pickup_status || '').replace(/_/g, ' ').toUpperCase()}
+            </Text>
+          </View>
+        </View>
+      )}
+
       {/* Items */}
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>Items ({(sale.items || []).length})</Text>
-        {(sale.items || []).map((item, idx) => (
-          <View key={idx} style={styles.itemRow}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.itemName}>{item.product_name}</Text>
-              <Text style={styles.itemMeta}>
-                {item.quantity} × ₹{(item.unit_price || 0).toFixed(2)}
-                {item.tax_rate > 0 ? ` (${item.tax_rate}% tax)` : ''}
-              </Text>
+        {(sale.items || []).map((item, idx) => {
+          const canFulfill = sale.order_type !== 'walk_in'
+            && !['cancelled', 'completed'].includes(sale.status)
+            && item.product_id
+            && !item.from_product_stock;
+          return (
+            <View key={idx} style={styles.itemRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.itemName}>{item.product_name}</Text>
+                <Text style={styles.itemMeta}>
+                  {item.quantity} × ₹{(item.unit_price || 0).toFixed(2)}
+                  {item.tax_rate > 0 ? ` (${item.tax_rate}% tax)` : ''}
+                </Text>
+                {item.from_product_stock ? (
+                  <View style={styles.stockBadge}>
+                    <Ionicons name="checkmark-circle" size={12} color={Colors.success} />
+                    <Text style={styles.stockBadgeText}>From Stock</Text>
+                  </View>
+                ) : canFulfill ? (
+                  <TouchableOpacity
+                    style={styles.fulfillBtn}
+                    onPress={() => handleFulfillFromStock(item.id, item.product_name)}
+                  >
+                    <Ionicons name="cube-outline" size={14} color={Colors.primary} />
+                    <Text style={styles.fulfillBtnText}>Fulfill from Stock</Text>
+                  </TouchableOpacity>
+                ) : null}
+              </View>
+              <View style={{ alignItems: 'flex-end' }}>
+                <Text style={styles.itemTotal}>₹{(item.line_total || 0).toFixed(2)}</Text>
+                {item.tax_amount > 0 && <Text style={styles.itemTax}>incl. ₹{item.tax_amount.toFixed(2)} tax</Text>}
+              </View>
             </View>
-            <View style={{ alignItems: 'flex-end' }}>
-              <Text style={styles.itemTotal}>₹{(item.line_total || 0).toFixed(2)}</Text>
-              {item.tax_amount > 0 && <Text style={styles.itemTax}>incl. ₹{item.tax_amount.toFixed(2)} tax</Text>}
-            </View>
-          </View>
-        ))}
+          );
+        })}
       </View>
 
       {/* Totals */}
@@ -380,6 +500,57 @@ export default function SaleDetailScreen({ route, navigation }) {
       )}
 
       <View style={{ height: 40 }} />
+
+      {/* Convert Order Type Modal */}
+      <Modal visible={convertModalVisible} transparent animationType="slide">
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>
+                Convert to {convertTarget === 'delivery' ? 'Delivery' : 'Pickup'}
+              </Text>
+              <TouchableOpacity onPress={() => setConvertModalVisible(false)}>
+                <Ionicons name="close" size={24} color={Colors.text} />
+              </TouchableOpacity>
+            </View>
+
+            {convertTarget === 'delivery' && (
+              <>
+                <Text style={styles.fieldLabel}>Delivery Address *</Text>
+                <TextInput
+                  style={styles.modalInput}
+                  value={convertAddress}
+                  onChangeText={setConvertAddress}
+                  placeholder="Enter delivery address"
+                  placeholderTextColor={Colors.textLight}
+                  multiline
+                />
+
+                <Text style={styles.fieldLabel}>Delivery Charges (optional)</Text>
+                <TextInput
+                  style={styles.modalInput}
+                  value={convertCharges}
+                  onChangeText={setConvertCharges}
+                  placeholder="₹ 0"
+                  placeholderTextColor={Colors.textLight}
+                  keyboardType="numeric"
+                />
+              </>
+            )}
+
+            {convertTarget === 'pickup' && (
+              <Text style={styles.convertInfo}>
+                This will cancel the delivery assignment and switch to pickup mode. Delivery charges will be removed.
+              </Text>
+            )}
+
+            <TouchableOpacity style={styles.confirmBtn} onPress={handleConvert}>
+              <Ionicons name="swap-horizontal" size={20} color="#fff" />
+              <Text style={styles.confirmBtnText}>Convert Order</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </ScrollView>
   );
 }
@@ -425,6 +596,10 @@ const styles = StyleSheet.create({
   itemMeta: { fontSize: FontSize.xs, color: Colors.textLight, marginTop: 1 },
   itemTotal: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.text },
   itemTax: { fontSize: FontSize.xs, color: Colors.textLight },
+  stockBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 4 },
+  stockBadgeText: { fontSize: FontSize.xs, fontWeight: '600', color: Colors.success },
+  fulfillBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 4, backgroundColor: Colors.primary + '15', paddingHorizontal: 8, paddingVertical: 4, borderRadius: BorderRadius.sm, alignSelf: 'flex-start' },
+  fulfillBtnText: { fontSize: FontSize.xs, fontWeight: '700', color: Colors.primary },
 
   totalsBox: {
     backgroundColor: Colors.surface, borderRadius: BorderRadius.md,
@@ -454,4 +629,22 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.sm, borderRadius: BorderRadius.md,
   },
   actionBtnText: { color: Colors.white, fontWeight: '600', fontSize: FontSize.sm },
+
+  convertBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    backgroundColor: Colors.primary + '12', paddingHorizontal: 10, paddingVertical: 4,
+    borderRadius: BorderRadius.full,
+  },
+  convertBtnText: { fontSize: FontSize.xs, fontWeight: '600', color: Colors.primary },
+
+  // Modal
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
+  modalContent: { backgroundColor: Colors.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: Spacing.lg, maxHeight: '80%' },
+  modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: Spacing.md },
+  modalTitle: { fontSize: FontSize.lg, fontWeight: '700', color: Colors.text },
+  fieldLabel: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.textSecondary, marginTop: Spacing.md, marginBottom: Spacing.xs },
+  modalInput: { backgroundColor: Colors.background, borderRadius: BorderRadius.md, padding: Spacing.md, fontSize: FontSize.md, color: Colors.text, borderWidth: 1, borderColor: Colors.border },
+  convertInfo: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: Spacing.md, lineHeight: 20 },
+  confirmBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: Colors.primary, paddingVertical: 14, borderRadius: BorderRadius.md, marginTop: Spacing.lg },
+  confirmBtnText: { color: '#fff', fontSize: FontSize.md, fontWeight: '700' },
 });

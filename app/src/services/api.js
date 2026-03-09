@@ -471,6 +471,14 @@ class ApiService {
     return this.request(`/sales/${saleId}/status`, { method: 'PUT', body: JSON.stringify({ status }) });
   }
 
+  fulfillFromStock(saleId, saleItemId) {
+    return this.request(`/sales/${saleId}/fulfill-from-stock`, { method: 'POST', body: JSON.stringify({ sale_item_id: saleItemId }) });
+  }
+
+  convertOrderType(saleId, data) {
+    return this.request(`/sales/${saleId}/convert-type`, { method: 'PUT', body: JSON.stringify(data) });
+  }
+
   getProductionQueue(params = {}) {
     const query = new URLSearchParams(params).toString();
     return this.request(`/sales/production-queue${query ? `?${query}` : ''}`);
@@ -641,6 +649,90 @@ class ApiService {
   getProductionLogs(params = {}) {
     const q = new URLSearchParams(params).toString();
     return this.request(`/production/logs${q ? `?${q}` : ''}`);
+  }
+
+  // ─── Deliveries ───────────────────────────────────────────
+  getDeliveries(params = {}) {
+    const q = new URLSearchParams(params).toString();
+    return this.request(`/deliveries${q ? `?${q}` : ''}`);
+  }
+
+  getAtRiskOrders(params = {}) {
+    const q = new URLSearchParams(params).toString();
+    return this.request(`/deliveries/at-risk${q ? `?${q}` : ''}`);
+  }
+
+  getDelivery(id) {
+    return this.request(`/deliveries/${id}`);
+  }
+
+  assignDelivery(deliveryId, data) {
+    return this.request(`/deliveries/${deliveryId}/assign`, { method: 'PUT', body: JSON.stringify(data) });
+  }
+
+  pickupDelivery(deliveryId) {
+    return this.request(`/deliveries/${deliveryId}/pickup`, { method: 'PUT' });
+  }
+
+  markInTransit(deliveryId) {
+    return this.request(`/deliveries/${deliveryId}/in-transit`, { method: 'PUT' });
+  }
+
+  deliverOrder(deliveryId, data) {
+    return this.request(`/deliveries/${deliveryId}/deliver`, { method: 'PUT', body: JSON.stringify(data) });
+  }
+
+  failDelivery(deliveryId, data) {
+    return this.request(`/deliveries/${deliveryId}/fail`, { method: 'PUT', body: JSON.stringify(data) });
+  }
+
+  uploadDeliveryProof(deliveryId, formData) {
+    return this.request(`/deliveries/${deliveryId}/proof`, {
+      method: 'POST',
+      body: formData,
+      headers: {}, // Let browser set Content-Type for FormData
+    });
+  }
+
+  // ─── COD Settlements ─────────────────────────────────────
+  getUnsettledDeliveries(params = {}) {
+    const q = new URLSearchParams(params).toString();
+    return this.request(`/deliveries/settlements/unsettled${q ? `?${q}` : ''}`);
+  }
+
+  getSettlements(params = {}) {
+    const q = new URLSearchParams(params).toString();
+    return this.request(`/deliveries/settlements${q ? `?${q}` : ''}`);
+  }
+
+  createSettlement(data) {
+    return this.request('/deliveries/settlements', { method: 'POST', body: JSON.stringify(data) });
+  }
+
+  verifySettlement(settlementId) {
+    return this.request(`/deliveries/settlements/${settlementId}/verify`, { method: 'PUT' });
+  }
+
+  // ─── Pickup Orders ───────────────────────────────────────
+  markPickupReady(saleId) {
+    return this.request(`/deliveries/pickup/${saleId}/ready`, { method: 'PUT' });
+  }
+
+  markPickedUp(saleId, paymentData) {
+    return this.request(`/deliveries/pickup/${saleId}/picked-up`, {
+      method: 'PUT',
+      body: paymentData || undefined,
+    });
+  }
+
+  // ─── Customer Orders & Dues ───────────────────────────────
+  getCustomerOrders() {
+    return this.request('/deliveries/customer/orders');
+  }
+
+  getCustomerDues(params = {}) {
+    const q = new URLSearchParams(params).toString();
+    return this.request(`/deliveries/customer/dues${q ? `?${q}` : ''}`);
   }
 }
 

@@ -60,7 +60,8 @@ export default function SalesScreen({ navigation }) {
 
   const fetchSales = async (pg = 1, reset = false) => {
     try {
-      const params = { page: pg, limit: 20 };
+      const limit = 20;
+      const params = { limit, offset: (pg - 1) * limit };
       if (search) params.search = search;
       if (filter) params.order_type = filter;
       const res = await api.getSales(params);
@@ -70,7 +71,7 @@ export default function SalesScreen({ navigation }) {
       } else {
         setSales((prev) => [...prev, ...list]);
       }
-      setHasMore(list.length >= 20);
+      setHasMore(list.length >= limit);
       setPage(pg);
     } catch {} finally { setLoading(false); }
   };

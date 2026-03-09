@@ -175,11 +175,18 @@ router.get('/:id', authenticate, (req, res, next) => {
 
     // Order history (recent 20)
     const orders = db.prepare(`
-      SELECT s.id, s.sale_number, s.grand_total, s.order_type, s.status, s.created_at
+      SELECT s.id, s.sale_number, s.grand_total, s.order_type, s.status, s.payment_status, s.created_at,
+             COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.sale_id = s.id), 0) as total_paid
       FROM sales s
       WHERE s.customer_id = ? AND s.status != 'cancelled'
       ORDER BY s.created_at DESC LIMIT 20
     `).all(req.params.id);
+
+    // Calculate balance due per order
+    const ordersWithDues = orders.map(o => ({
+      ...o,
+      balance_due: Math.max(0, o.grand_total - o.total_paid),
+    }));
 
     // Credit payments
     const creditPayments = db.prepare(`
@@ -197,7 +204,7 @@ router.get('/:id', authenticate, (req, res, next) => {
 
     res.json({
       success: true,
-      data: { ...customer, addresses, orders, credit_payments: creditPayments, special_dates: specialDates },
+      data: { ...customer, addresses, orders: ordersWithDues, credit_payments: creditPayments, special_dates: specialDates },
     });
   } catch (err) { next(err); }
 });
@@ -407,6 +414,7 @@ router.post(
   [
     body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be positive'),
     body('method').isIn(['cash', 'card', 'upi']).withMessage('Invalid payment method'),
+    body('sale_id').optional({ nullable: true }).isInt(),
     body('notes').optional().trim(),
   ],
   (req, res, next) => {
@@ -420,25 +428,48 @@ router.post(
       const customer = db.prepare("SELECT id, credit_balance FROM users WHERE id = ? AND role = 'customer'").get(customerId);
       if (!customer) return res.status(404).json({ success: false, message: 'Customer not found' });
 
-      const { amount, method, notes } = req.body;
+      const { amount, method, notes, sale_id } = req.body;
 
       if (amount > customer.credit_balance) {
         return res.status(400).json({ success: false, message: `Payment amount (₹${amount}) exceeds outstanding balance (₹${customer.credit_balance})` });
       }
 
-      // Record payment
-      const result = db.prepare(
-        'INSERT INTO credit_payments (customer_id, amount, method, received_by, notes) VALUES (?, ?, ?, ?, ?)'
-      ).run(customerId, amount, method, req.user.id, notes || '');
+      const creditTx = db.transaction(() => {
+        // Record credit payment
+        const result = db.prepare(
+          'INSERT INTO credit_payments (customer_id, amount, method, received_by, notes, sale_id) VALUES (?, ?, ?, ?, ?, ?)'
+        ).run(customerId, amount, method, req.user.id, notes || '', sale_id || null);
 
-      // Reduce credit balance
-      db.prepare('UPDATE users SET credit_balance = credit_balance - ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(amount, customerId);
+        // Reduce customer credit balance
+        db.prepare('UPDATE users SET credit_balance = credit_balance - ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(amount, customerId);
+
+        // If linked to a sale, also add as a payment on that sale
+        if (sale_id) {
+          db.prepare(
+            'INSERT INTO payments (sale_id, method, amount, reference_number, received_by) VALUES (?, ?, ?, ?, ?)'
+          ).run(sale_id, method, amount, `Credit-${result.lastInsertRowid}`, req.user.id);
+
+          // Recalculate sale payment status
+          const sale = db.prepare('SELECT grand_total FROM sales WHERE id = ?').get(sale_id);
+          if (sale) {
+            const totalPaid = db.prepare('SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE sale_id = ?').get(sale_id).total;
+            let paymentStatus = 'pending';
+            if (totalPaid >= sale.grand_total) paymentStatus = 'paid';
+            else if (totalPaid > 0) paymentStatus = 'partial';
+            db.prepare('UPDATE sales SET payment_status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(paymentStatus, sale_id);
+          }
+        }
+
+        return result.lastInsertRowid;
+      });
+
+      const paymentId = creditTx();
 
       const payment = db.prepare(`
         SELECT cp.*, u.name as received_by_name
         FROM credit_payments cp LEFT JOIN users u ON cp.received_by = u.id
         WHERE cp.id = ?
-      `).get(result.lastInsertRowid);
+      `).get(paymentId);
 
       const updated = db.prepare('SELECT credit_balance FROM users WHERE id = ?').get(customerId);
 
