@@ -7,6 +7,8 @@ import {
   Platform,
   ScrollView,
   Alert,
+  TouchableOpacity,
+  ActivityIndicator,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import api from '../services/api';
@@ -24,8 +26,11 @@ export default function LocationFormScreen({ route, navigation }) {
   const [address, setAddress] = useState('');
   const [phone, setPhone] = useState('');
   const [gstNumber, setGstNumber] = useState('');
+  const [latitude, setLatitude] = useState('');
+  const [longitude, setLongitude] = useState('');
   const [geofenceRadius, setGeofenceRadius] = useState('50');
   const [loading, setLoading] = useState(false);
+  const [fetchingLocation, setFetchingLocation] = useState(false);
   const [errors, setErrors] = useState({});
 
   useEffect(() => {
@@ -35,6 +40,8 @@ export default function LocationFormScreen({ route, navigation }) {
       setAddress(existingLocation.address || '');
       setPhone(existingLocation.phone || '');
       setGstNumber(existingLocation.gst_number || '');
+      setLatitude(existingLocation.latitude != null ? String(existingLocation.latitude) : '');
+      setLongitude(existingLocation.longitude != null ? String(existingLocation.longitude) : '');
       setGeofenceRadius(String(existingLocation.geofence_radius || 50));
     }
   }, [existingLocation]);
@@ -43,8 +50,33 @@ export default function LocationFormScreen({ route, navigation }) {
     const newErrors = {};
     if (!name.trim()) newErrors.name = 'Location name is required';
     if (phone && !/^[6-9]\d{9}$/.test(phone.trim())) newErrors.phone = 'Enter a valid 10-digit number';
+    if (latitude && (isNaN(Number(latitude)) || Number(latitude) < -90 || Number(latitude) > 90))
+      newErrors.latitude = 'Must be between -90 and 90';
+    if (longitude && (isNaN(Number(longitude)) || Number(longitude) < -180 || Number(longitude) > 180))
+      newErrors.longitude = 'Must be between -180 and 180';
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
+  };
+
+  const useCurrentLocation = async () => {
+    setFetchingLocation(true);
+    try {
+      const loc = await import('expo-location');
+      const { status } = await loc.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission Denied', 'Location permission is required to use this feature.');
+        return;
+      }
+      const position = await loc.getCurrentPositionAsync({ accuracy: loc.Accuracy.High });
+      setLatitude(String(position.coords.latitude));
+      setLongitude(String(position.coords.longitude));
+      clearError('latitude');
+      clearError('longitude');
+    } catch (e) {
+      Alert.alert('Error', 'Could not get current location. Please enter coordinates manually.');
+    } finally {
+      setFetchingLocation(false);
+    }
   };
 
   const handleSubmit = async () => {
@@ -57,6 +89,8 @@ export default function LocationFormScreen({ route, navigation }) {
         address: address.trim() || undefined,
         phone: phone.trim() || undefined,
         gst_number: gstNumber.trim() || undefined,
+        latitude: latitude ? Number(latitude) : undefined,
+        longitude: longitude ? Number(longitude) : undefined,
         geofence_radius: parseInt(geofenceRadius, 10) || 50,
       };
 
@@ -147,6 +181,53 @@ export default function LocationFormScreen({ route, navigation }) {
           leftIcon={<Ionicons name="document-text-outline" size={20} color={Colors.textSecondary} />}
         />
 
+        {/* Geolocation Section */}
+        <Text style={styles.sectionTitle}>Geolocation</Text>
+        <Text style={styles.sectionDesc}>
+          Set coordinates for geofence-based auto attendance. Tap "Use Current Location" while at the location.
+        </Text>
+
+        <TouchableOpacity
+          style={styles.currentLocationBtn}
+          onPress={useCurrentLocation}
+          disabled={fetchingLocation}
+        >
+          {fetchingLocation ? (
+            <ActivityIndicator size="small" color={Colors.primary} />
+          ) : (
+            <Ionicons name="navigate" size={18} color={Colors.primary} />
+          )}
+          <Text style={styles.currentLocationText}>
+            {fetchingLocation ? 'Getting location...' : 'Use Current Location'}
+          </Text>
+        </TouchableOpacity>
+
+        <View style={styles.coordRow}>
+          <View style={{ flex: 1 }}>
+            <Input
+              label="Latitude"
+              value={latitude}
+              onChangeText={(t) => { setLatitude(t); clearError('latitude'); }}
+              placeholder="e.g. 28.6139"
+              keyboardType="numeric"
+              error={errors.latitude}
+              leftIcon={<Ionicons name="compass-outline" size={20} color={Colors.textSecondary} />}
+            />
+          </View>
+          <View style={{ width: Spacing.sm }} />
+          <View style={{ flex: 1 }}>
+            <Input
+              label="Longitude"
+              value={longitude}
+              onChangeText={(t) => { setLongitude(t); clearError('longitude'); }}
+              placeholder="e.g. 77.2090"
+              keyboardType="numeric"
+              error={errors.longitude}
+              leftIcon={<Ionicons name="compass-outline" size={20} color={Colors.textSecondary} />}
+            />
+          </View>
+        </View>
+
         <Input
           label="Geofence Radius (meters)"
           value={geofenceRadius}
@@ -186,5 +267,23 @@ const styles = StyleSheet.create({
   label: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.text, marginBottom: Spacing.xs + 2 },
   typeRow: { flexDirection: 'row', gap: Spacing.md, marginBottom: Spacing.lg },
   typeButton: { flex: 1 },
+  sectionTitle: {
+    fontSize: FontSize.md, fontWeight: '600', color: Colors.text,
+    marginTop: Spacing.md, marginBottom: Spacing.xs,
+  },
+  sectionDesc: {
+    fontSize: FontSize.sm, color: Colors.textSecondary,
+    marginBottom: Spacing.md, lineHeight: 18,
+  },
+  currentLocationBtn: {
+    flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-start',
+    paddingVertical: Spacing.sm, paddingHorizontal: Spacing.md,
+    borderRadius: BorderRadius.md, backgroundColor: Colors.primaryLight + '20',
+    marginBottom: Spacing.md, gap: Spacing.xs,
+  },
+  currentLocationText: {
+    fontSize: FontSize.sm, color: Colors.primary, fontWeight: '600',
+  },
+  coordRow: { flexDirection: 'row' },
   submitButton: { marginTop: Spacing.lg },
 });

@@ -115,6 +115,20 @@ export default function LocationDetailScreen({ route, navigation }) {
           </View>
         )}
 
+        {(location.latitude != null && location.longitude != null) ? (
+          <View style={styles.detailRow}>
+            <Ionicons name="navigate-outline" size={18} color={Colors.textSecondary} />
+            <Text style={styles.detailText}>
+              Coordinates: {Number(location.latitude).toFixed(6)}, {Number(location.longitude).toFixed(6)}
+            </Text>
+          </View>
+        ) : (
+          <View style={styles.detailRow}>
+            <Ionicons name="navigate-outline" size={18} color={Colors.warning} />
+            <Text style={[styles.detailText, { color: Colors.warning }]}>Coordinates not set (geofencing inactive)</Text>
+          </View>
+        )}
+
         {location.geofence_radius && (
           <View style={styles.detailRow}>
             <Ionicons name="locate-outline" size={18} color={Colors.textSecondary} />

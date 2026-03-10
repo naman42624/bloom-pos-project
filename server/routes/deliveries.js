@@ -172,7 +172,7 @@ router.get('/:id', authenticate, (req, res, next) => {
     const delivery = db.prepare(`
       SELECT d.*, s.sale_number, s.grand_total, s.payment_status, s.subtotal, s.tax_total,
              s.discount_amount, s.delivery_charges, s.order_type, s.special_instructions,
-             s.customer_notes,
+             s.customer_notes, s.sender_name, s.sender_phone, s.sender_message,
              u.name as partner_name, u.phone as partner_phone,
              l.name as location_name, l.address as location_address, l.phone as location_phone,
              ab.name as assigned_by_name

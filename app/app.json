@@ -13,13 +13,26 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.bloomcart.pos"
+      "bundleIdentifier": "com.bloomcart.pos",
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "BloomCart needs your location for attendance geofencing and delivery tracking.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "BloomCart needs background location access for automatic attendance clock-in/out via geofencing and delivery partner tracking.",
+        "NSLocationAlwaysUsageDescription": "BloomCart needs background location access for automatic attendance and delivery tracking.",
+        "UIBackgroundModes": ["location"]
+      }
     },
     "android": {
       "adaptiveIcon": {
         "backgroundColor": "#E91E63"
       },
-      "package": "com.bloomcart.pos"
+      "package": "com.bloomcart.pos",
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_BACKGROUND_LOCATION",
+        "FOREGROUND_SERVICE",
+        "FOREGROUND_SERVICE_LOCATION"
+      ]
     },
     "web": {
       "favicon": "./assets/favicon.png",
@@ -31,7 +44,17 @@
       "web"
     ],
     "plugins": [
-      "@react-native-community/datetimepicker"
+      "@react-native-community/datetimepicker",
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "BloomCart needs background location for automatic attendance and delivery tracking.",
+          "locationWhenInUsePermission": "BloomCart needs your location for attendance geofencing and delivery tracking.",
+          "isIosBackgroundLocationEnabled": true,
+          "isAndroidBackgroundLocationEnabled": true,
+          "isAndroidForegroundServiceEnabled": true
+        }
+      ]
     ]
   }
 }

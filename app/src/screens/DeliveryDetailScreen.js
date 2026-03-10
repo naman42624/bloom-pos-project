@@ -2,6 +2,8 @@ import React, { useState, useCallback, useRef } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Alert, Platform, TextInput, ActivityIndicator, Image } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
+import * as Print from 'expo-print';
+import * as Sharing from 'expo-sharing';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
@@ -129,6 +131,107 @@ export default function DeliveryDetailScreen({ route, navigation }) {
     );
   };
 
+  const generateChallan = async () => {
+    // Fetch shop settings for shop name / contact
+    let shopName = 'BloomPOS', shopContact = '';
+    try {
+      const settingsRes = await api.getSettings();
+      if (settingsRes.data) {
+        const map = {};
+        settingsRes.data.forEach(s => { map[s.key] = s.value; });
+        shopName = map.shop_name || shopName;
+      }
+    } catch {}
+
+    const locationName = delivery.location_name || '';
+    const locationAddress = delivery.location_address || '';
+    const locationPhone = delivery.location_phone || '';
+    const orderNo = delivery.sale_number || '';
+    const date = new Date(delivery.created_at).toLocaleDateString();
+    const customerName = delivery.customer_name || '';
+    const customerPhone = delivery.customer_phone || '';
+    const address = delivery.delivery_address || '';
+    const senderName = delivery.sender_name || '';
+    const senderPhone = delivery.sender_phone || '';
+    const senderMessage = delivery.sender_message || '';
+    const scheduledDate = delivery.scheduled_date || '';
+    const scheduledTime = delivery.scheduled_time || '';
+
+    const itemsHtml = (delivery.items || []).map(item => `
+      <tr>
+        <td style="padding:4px 6px;border-bottom:1px solid #ddd;">${item.product_name || ''}</td>
+        <td style="padding:4px 6px;border-bottom:1px solid #ddd;text-align:center;">${item.quantity}</td>
+        <td style="padding:4px 6px;border-bottom:1px solid #ddd;text-align:right;">₹${(item.line_total || 0).toFixed(0)}</td>
+      </tr>
+    `).join('');
+
+    const totalAmt = (delivery.grand_total || 0).toFixed(0);
+    const codAmt = (delivery.cod_amount || 0).toFixed(0);
+
+    const buildCopyHtml = (copyTitle, showInstructions) => `
+      <div style="border:2px solid #333;border-radius:6px;padding:12px 16px;height:48%;box-sizing:border-box;position:relative;overflow:hidden;">
+        <div style="position:absolute;top:6px;right:10px;font-size:10px;color:#999;font-weight:600;text-transform:uppercase;letter-spacing:1px;">${copyTitle}</div>
+        <div style="text-align:center;margin-bottom:6px;">
+          <div style="font-size:18px;font-weight:bold;color:#E91E63;">${shopName}</div>
+          ${locationName ? `<div style="font-size:11px;color:#555;">${locationName}</div>` : ''}
+          ${locationAddress ? `<div style="font-size:10px;color:#888;">${locationAddress}</div>` : ''}
+          ${locationPhone ? `<div style="font-size:10px;color:#888;">Ph: ${locationPhone}</div>` : ''}
+        </div>
+        <div style="border-top:1px dashed #999;margin:6px 0;"></div>
+        <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:4px;">
+          <span><strong>Order:</strong> ${orderNo}</span>
+          <span><strong>Date:</strong> ${date}</span>
+        </div>
+        ${scheduledDate ? `<div style="font-size:11px;margin-bottom:4px;"><strong>Scheduled:</strong> ${scheduledDate} ${scheduledTime || ''}</div>` : ''}
+        <div style="display:flex;gap:20px;font-size:11px;margin-bottom:2px;">
+          <div style="flex:1;"><strong>Customer:</strong> ${customerName}${customerPhone ? ' • ' + customerPhone : ''}</div>
+        </div>
+        <div style="font-size:11px;margin-bottom:4px;"><strong>Address:</strong> ${address}</div>
+        ${senderName || senderPhone ? `<div style="font-size:11px;margin-bottom:2px;"><strong>Sender:</strong> ${senderName}${senderPhone ? ' • ' + senderPhone : ''}</div>` : ''}
+        ${senderMessage ? `<div style="background:#FFF3E0;border-radius:4px;padding:4px 8px;margin:4px 0;font-size:11px;"><strong>Message:</strong> ${senderMessage}</div>` : ''}
+        <table style="width:100%;border-collapse:collapse;font-size:11px;margin-top:6px;">
+          <thead>
+            <tr style="background:#f5f5f5;">
+              <th style="padding:4px 6px;text-align:left;border-bottom:2px solid #ddd;">Item</th>
+              <th style="padding:4px 6px;text-align:center;border-bottom:2px solid #ddd;">Qty</th>
+              <th style="padding:4px 6px;text-align:right;border-bottom:2px solid #ddd;">Amount</th>
+            </tr>
+          </thead>
+          <tbody>${itemsHtml}</tbody>
+        </table>
+        <div style="border-top:1px dashed #999;margin:6px 0;"></div>
+        <div style="display:flex;justify-content:space-between;font-size:12px;font-weight:bold;">
+          <span>Total: ₹${totalAmt}</span>
+          ${parseFloat(codAmt) > 0 ? `<span style="color:#E91E63;">COD: ₹${codAmt}</span>` : '<span style="color:#4CAF50;">PREPAID</span>'}
+        </div>
+        ${showInstructions && delivery.special_instructions ? `<div style="font-size:10px;color:#666;margin-top:4px;"><strong>Instructions:</strong> ${delivery.special_instructions}</div>` : ''}
+      </div>
+    `;
+
+    const html = `
+      <html><head><meta charset="utf-8">
+      <style>
+        @page { size: A4; margin: 12mm; }
+        body { font-family: Arial, Helvetica, sans-serif; margin: 0; padding: 0; height: 100vh; display: flex; flex-direction: column; justify-content: space-between; gap: 12px; }
+      </style></head>
+      <body>
+        ${buildCopyHtml('Shop Copy', true)}
+        ${buildCopyHtml('Customer Copy', false)}
+      </body></html>
+    `;
+
+    try {
+      const { uri } = await Print.printToFileAsync({ html });
+      if (Platform.OS === 'web') {
+        await Print.printAsync({ html });
+      } else {
+        await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: `Challan ${orderNo}` });
+      }
+    } catch {
+      Alert.alert('Error', 'Could not generate delivery challan');
+    }
+  };
+
   if (loading) return <View style={styles.center}><ActivityIndicator size="large" color={Colors.primary} /></View>;
   if (!delivery) return <View style={styles.center}><Text>Delivery not found</Text></View>;
 
@@ -172,15 +275,21 @@ export default function DeliveryDetailScreen({ route, navigation }) {
         {delivery.partner_name && <InfoRow icon="bicycle-outline" label="Partner" value={`${delivery.partner_name} ${delivery.partner_phone ? '• ' + delivery.partner_phone : ''}`} />}
         {delivery.scheduled_date && <InfoRow icon="calendar-outline" label="Scheduled" value={`${delivery.scheduled_date} ${delivery.scheduled_time || ''}`} />}
         {delivery.delivery_notes && <InfoRow icon="chatbox-outline" label="Notes" value={delivery.delivery_notes} />}
-        {/* View Sale Details + Convert */}
+        {delivery.sender_name ? <InfoRow icon="gift-outline" label="Sender" value={`${delivery.sender_name}${delivery.sender_phone ? ' • ' + delivery.sender_phone : ''}`} /> : null}
+        {delivery.sender_message ? <InfoRow icon="mail-outline" label="Message" value={delivery.sender_message} /> : null}
+        {/* View Sale Details + Convert + Challan */}
         {isManager && (
-          <View style={{ flexDirection: 'row', marginTop: 12, gap: 10 }}>
+          <View style={{ flexDirection: 'row', marginTop: 12, gap: 10, flexWrap: 'wrap' }}>
             <TouchableOpacity
               style={styles.saleDetailBtn}
               onPress={() => navigation.navigate('SaleDetail', { saleId: delivery.sale_id })}
             >
               <Ionicons name="document-text-outline" size={16} color={Colors.primary} />
               <Text style={styles.saleDetailBtnText}>Sale Details</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.saleDetailBtn} onPress={generateChallan}>
+              <Ionicons name="print-outline" size={16} color={Colors.primary} />
+              <Text style={styles.saleDetailBtnText}>Delivery Challan</Text>
             </TouchableOpacity>
             {!isFinal && (
               <TouchableOpacity style={styles.convertPickupBtn} onPress={handleConvertToPickup} disabled={actionLoading}>
@@ -287,6 +396,12 @@ export default function DeliveryDetailScreen({ route, navigation }) {
       {!isFinal && (
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Actions</Text>
+
+          {/* Print challan — available to all roles */}
+          <TouchableOpacity style={[styles.actionBtn, { backgroundColor: Colors.primary, marginBottom: 8 }]} onPress={generateChallan}>
+            <Ionicons name="print" size={20} color="#fff" />
+            <Text style={styles.actionBtnText}>Print Delivery Challan</Text>
+          </TouchableOpacity>
 
           {isManager && delivery.status === 'pending' && (
             <TouchableOpacity style={[styles.actionBtn, { backgroundColor: '#2196F3' }]} onPress={() => navigation.navigate('Deliveries')} disabled={actionLoading}>

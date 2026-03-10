@@ -548,6 +548,14 @@ class ApiService {
     return this.request(`/customers/lookup?phone=${encodeURIComponent(phone)}`);
   }
 
+  customerSearch(query) {
+    return this.request(`/customers/search?q=${encodeURIComponent(query)}`);
+  }
+
+  getCustomerAddresses(customerId) {
+    return this.request(`/customers/${customerId}/addresses`);
+  }
+
   getUpcomingDates(days = 30) {
     return this.request(`/customers/upcoming-dates?days=${days}`);
   }
@@ -651,6 +659,28 @@ class ApiService {
     return this.request(`/production/logs${q ? `?${q}` : ''}`);
   }
 
+  // ─── Recurring Orders ──────────────────────────────────────
+  getRecurringOrders(params = {}) {
+    const q = new URLSearchParams(params).toString();
+    return this.request(`/recurring-orders${q ? `?${q}` : ''}`);
+  }
+
+  getRecurringOrder(id) {
+    return this.request(`/recurring-orders/${id}`);
+  }
+
+  createRecurringOrder(data) {
+    return this.request('/recurring-orders', { method: 'POST', body: JSON.stringify(data) });
+  }
+
+  updateRecurringOrder(id, data) {
+    return this.request(`/recurring-orders/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+  }
+
+  deleteRecurringOrder(id) {
+    return this.request(`/recurring-orders/${id}`, { method: 'DELETE' });
+  }
+
   // ─── Deliveries ───────────────────────────────────────────
   getDeliveries(params = {}) {
     const q = new URLSearchParams(params).toString();
@@ -733,6 +763,138 @@ class ApiService {
   getCustomerDues(params = {}) {
     const q = new URLSearchParams(params).toString();
     return this.request(`/deliveries/customer/dues${q ? `?${q}` : ''}`);
+  }
+
+  // ─── Customer Order Placement ─────────────────────────────
+  placeCustomerOrder(data) {
+    return this.request('/sales/customer-order', { method: 'POST', body: JSON.stringify(data) });
+  }
+
+  // ─── Attendance ───────────────────────────────────────────
+  clockIn(data) {
+    return this.request('/attendance/clock-in', { method: 'POST', body: JSON.stringify(data) });
+  }
+
+  clockOut(data) {
+    return this.request('/attendance/clock-out', { method: 'POST', body: JSON.stringify(data) });
+  }
+
+  getTodayAttendance() {
+    return this.request('/attendance/today');
+  }
+
+  getAttendanceHistory(params = {}) {
+    const q = new URLSearchParams(params).toString();
+    return this.request(`/attendance${q ? `?${q}` : ''}`);
+  }
+
+  getAttendanceReport(params = {}) {
+    const q = new URLSearchParams(params).toString();
+    return this.request(`/attendance/report${q ? `?${q}` : ''}`);
+  }
+
+  getStaffToday(params = {}) {
+    const q = new URLSearchParams(params).toString();
+    return this.request(`/attendance/staff-today${q ? `?${q}` : ''}`);
+  }
+
+  // ─── Outdoor Duty ─────────────────────────────────────────
+  requestOutdoorDuty(data) {
+    return this.request('/attendance/outdoor-duty', { method: 'POST', body: JSON.stringify(data) });
+  }
+
+  getOutdoorDutyRequests(params = {}) {
+    const q = new URLSearchParams(params).toString();
+    return this.request(`/attendance/outdoor-duty${q ? `?${q}` : ''}`);
+  }
+
+  approveOutdoorDuty(id) {
+    return this.request(`/attendance/outdoor-duty/${id}/approve`, { method: 'PUT' });
+  }
+
+  rejectOutdoorDuty(id) {
+    return this.request(`/attendance/outdoor-duty/${id}/reject`, { method: 'PUT' });
+  }
+
+  completeOutdoorDuty(id) {
+    return this.request(`/attendance/outdoor-duty/${id}/complete`, { method: 'PUT' });
+  }
+
+  // ─── Salary Advances ─────────────────────────────────────
+  requestSalaryAdvance(data) {
+    return this.request('/attendance/salary-advance', { method: 'POST', body: JSON.stringify(data) });
+  }
+
+  getSalaryAdvances(params = {}) {
+    const q = new URLSearchParams(params).toString();
+    return this.request(`/attendance/salary-advances${q ? `?${q}` : ''}`);
+  }
+
+  approveSalaryAdvance(id) {
+    return this.request(`/attendance/salary-advance/${id}/approve`, { method: 'PUT' });
+  }
+
+  rejectSalaryAdvance(id) {
+    return this.request(`/attendance/salary-advance/${id}/reject`, { method: 'PUT' });
+  }
+
+  repaySalaryAdvance(id, data) {
+    return this.request(`/attendance/salary-advance/${id}/repay`, { method: 'PUT', body: JSON.stringify(data) });
+  }
+
+  // ─── Shift Management ────────────────────────────────────
+  getShifts(params = {}) {
+    const q = new URLSearchParams(params).toString();
+    return this.request(`/staff/shifts${q ? `?${q}` : ''}`);
+  }
+
+  createShift(data) {
+    return this.request('/staff/shifts', { method: 'POST', body: JSON.stringify(data) });
+  }
+
+  deleteShift(id) {
+    return this.request(`/staff/shifts/${id}`, { method: 'DELETE' });
+  }
+
+  // ─── Salary Management ───────────────────────────────────
+  getSalaries(params = {}) {
+    const q = new URLSearchParams(params).toString();
+    return this.request(`/staff/salaries${q ? `?${q}` : ''}`);
+  }
+
+  setSalary(data) {
+    return this.request('/staff/salaries', { method: 'POST', body: JSON.stringify(data) });
+  }
+
+  getSalaryHistory(userId) {
+    return this.request(`/staff/salaries/${userId}/history`);
+  }
+
+  // ─── Geofence Events ─────────────────────────────────────
+  recordGeofenceEvent(data) {
+    return this.request('/staff/geofence-event', { method: 'POST', body: JSON.stringify(data) });
+  }
+
+  // ─── Delivery Tracking ───────────────────────────────────
+  recordDeliveryLocation(data) {
+    return this.request('/delivery-tracking/location', { method: 'POST', body: JSON.stringify(data) });
+  }
+
+  getActiveDeliveryPartners() {
+    return this.request('/delivery-tracking/active-partners');
+  }
+
+  getDeliveryRoute(deliveryId) {
+    return this.request(`/delivery-tracking/route/${deliveryId}`);
+  }
+
+  getDeliveryDailySummary(params = {}) {
+    const q = new URLSearchParams(params).toString();
+    return this.request(`/delivery-tracking/daily-summary${q ? `?${q}` : ''}`);
+  }
+
+  getPartnerLatestPosition(userId) {
+    return this.request(`/delivery-tracking/latest/${userId}`);
   }
 }
 

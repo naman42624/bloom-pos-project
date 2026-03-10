@@ -6,6 +6,7 @@ import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 
 const MENU_ITEMS = [
   { key: 'Customers', icon: 'people', label: 'Customers', roles: ['owner', 'manager'] },
+  { key: 'RecurringOrders', icon: 'repeat', label: 'Recurring Orders', roles: ['owner', 'manager'] },
   { key: 'Locations', icon: 'location', label: 'Locations', roles: ['owner', 'manager'] },
   { key: 'Staff', icon: 'person-add', label: 'Staff', roles: ['owner', 'manager'] },
   { key: 'Settlements', icon: 'wallet', label: 'Settlements', roles: ['owner', 'manager'] },

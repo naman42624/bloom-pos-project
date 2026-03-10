@@ -91,6 +91,50 @@ router.get('/lookup', authenticate, (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// ─── GET /api/customers/search ───────────────────────────────
+// Autocomplete search by partial phone or name (for checkout dropdown)
+router.get('/search', authenticate, (req, res, next) => {
+  try {
+    const db = getDb();
+    const { q } = req.query;
+    if (!q || q.length < 3) return res.json({ success: true, data: [] });
+
+    const term = `%${q}%`;
+
+    // Search registered customers
+    const registered = db.prepare(`
+      SELECT id, name, phone, credit_balance, total_spent
+      FROM users WHERE role = 'customer' AND is_active = 1
+        AND (phone LIKE ? OR name LIKE ?)
+      ORDER BY total_spent DESC LIMIT 10
+    `).all(term, term);
+
+    // Search unregistered customers from sales history
+    const unregistered = db.prepare(`
+      SELECT NULL as id, customer_name as name, customer_phone as phone,
+             0 as credit_balance, SUM(grand_total) as total_spent
+      FROM sales
+      WHERE status != 'cancelled' AND customer_phone IS NOT NULL
+        AND customer_id IS NULL
+        AND (customer_phone LIKE ? OR customer_name LIKE ?)
+      GROUP BY customer_phone
+      ORDER BY total_spent DESC LIMIT 5
+    `).all(term, term);
+
+    // Merge, deduplicate by phone
+    const seen = new Set();
+    const results = [];
+    for (const c of [...registered, ...unregistered]) {
+      if (c.phone && !seen.has(c.phone)) {
+        seen.add(c.phone);
+        results.push(c);
+      }
+    }
+
+    res.json({ success: true, data: results.slice(0, 10) });
+  } catch (err) { next(err); }
+});
+
 // ─── GET /api/customers/upcoming-dates ───────────────────────
 // Special dates coming up in the next N days
 router.get('/upcoming-dates', authenticate, authorize('owner', 'manager'), (req, res, next) => {
@@ -310,6 +354,17 @@ router.put(
     } catch (err) { next(err); }
   }
 );
+
+// ─── GET /api/customers/:id/addresses ────────────────────────
+router.get('/:id/addresses', authenticate, (req, res, next) => {
+  try {
+    const db = getDb();
+    const addresses = db.prepare(
+      'SELECT * FROM customer_addresses WHERE customer_id = ? ORDER BY is_default DESC, created_at DESC'
+    ).all(req.params.id);
+    res.json({ success: true, data: addresses });
+  } catch (err) { next(err); }
+});
 
 // ─── POST /api/customers/:id/addresses ───────────────────────
 router.post(

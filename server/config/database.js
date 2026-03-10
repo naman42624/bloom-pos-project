@@ -1061,6 +1061,245 @@ function initializeDatabase() {
   if (!salesColsP7.includes('picked_up_at')) {
     db.exec("ALTER TABLE sales ADD COLUMN picked_up_at DATETIME DEFAULT NULL");
   }
+
+  // ─── Recurring Orders ──────────────────────────────────────
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS recurring_orders (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      customer_id INTEGER NOT NULL,
+      location_id INTEGER NOT NULL,
+      order_type TEXT NOT NULL DEFAULT 'delivery' CHECK(order_type IN ('pickup', 'delivery')),
+      frequency TEXT NOT NULL DEFAULT 'daily' CHECK(frequency IN ('daily', 'weekly', 'monthly', 'custom')),
+      custom_days TEXT DEFAULT NULL,
+      delivery_address TEXT DEFAULT NULL,
+      scheduled_time TEXT DEFAULT NULL,
+      notes TEXT DEFAULT '',
+      sender_message TEXT DEFAULT '',
+      sender_name TEXT DEFAULT '',
+      sender_phone TEXT DEFAULT '',
+      items TEXT NOT NULL DEFAULT '[]',
+      is_active INTEGER DEFAULT 1,
+      last_generated_date DATE DEFAULT NULL,
+      next_run_date DATE NOT NULL,
+      created_by INTEGER NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (customer_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (location_id) REFERENCES locations(id) ON DELETE CASCADE,
+      FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_recurring_active ON recurring_orders(is_active, next_run_date);
+  `);
+
+  // ─── Sender info fields on sales ───────────────────────────
+  const salesColsSender = db.prepare("PRAGMA table_info(sales)").all().map(c => c.name);
+  if (!salesColsSender.includes('sender_message')) {
+    db.exec("ALTER TABLE sales ADD COLUMN sender_message TEXT DEFAULT ''");
+  }
+  if (!salesColsSender.includes('sender_name')) {
+    db.exec("ALTER TABLE sales ADD COLUMN sender_name TEXT DEFAULT ''");
+  }
+  if (!salesColsSender.includes('sender_phone')) {
+    db.exec("ALTER TABLE sales ADD COLUMN sender_phone TEXT DEFAULT ''");
+  }
+
+  // ─── Phase 8: Attendance ───────────────────────────────────
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS attendance (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      location_id INTEGER NOT NULL,
+      date DATE NOT NULL,
+      clock_in DATETIME DEFAULT NULL,
+      clock_in_method TEXT DEFAULT 'manual' CHECK(clock_in_method IN ('auto_geofence', 'manual')),
+      clock_in_latitude REAL DEFAULT NULL,
+      clock_in_longitude REAL DEFAULT NULL,
+      clock_out DATETIME DEFAULT NULL,
+      clock_out_method TEXT DEFAULT NULL CHECK(clock_out_method IN ('auto_geofence', 'manual', 'auto_timeout')),
+      clock_out_latitude REAL DEFAULT NULL,
+      clock_out_longitude REAL DEFAULT NULL,
+      total_hours REAL DEFAULT 0,
+      outdoor_hours REAL DEFAULT 0,
+      effective_hours REAL DEFAULT 0,
+      status TEXT DEFAULT 'present' CHECK(status IN ('present', 'absent', 'half_day', 'on_leave')),
+      late_arrival INTEGER DEFAULT 0,
+      early_departure INTEGER DEFAULT 0,
+      notes TEXT DEFAULT '',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (location_id) REFERENCES locations(id) ON DELETE CASCADE,
+      UNIQUE(user_id, date)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_attendance_user ON attendance(user_id);
+    CREATE INDEX IF NOT EXISTS idx_attendance_date ON attendance(date);
+    CREATE INDEX IF NOT EXISTS idx_attendance_location ON attendance(location_id);
+    CREATE INDEX IF NOT EXISTS idx_attendance_user_date ON attendance(user_id, date);
+  `);
+
+  // ─── Phase 8: Outdoor Duty Requests ────────────────────────
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS outdoor_duty_requests (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      attendance_id INTEGER DEFAULT NULL,
+      user_id INTEGER NOT NULL,
+      location_id INTEGER NOT NULL,
+      approved_by INTEGER DEFAULT NULL,
+      start_time DATETIME DEFAULT NULL,
+      end_time DATETIME DEFAULT NULL,
+      duration REAL DEFAULT 0,
+      reason TEXT NOT NULL,
+      status TEXT DEFAULT 'requested' CHECK(status IN ('requested', 'approved', 'rejected', 'completed')),
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (attendance_id) REFERENCES attendance(id) ON DELETE SET NULL,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (location_id) REFERENCES locations(id) ON DELETE CASCADE,
+      FOREIGN KEY (approved_by) REFERENCES users(id) ON DELETE SET NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_outdoor_duty_user ON outdoor_duty_requests(user_id);
+    CREATE INDEX IF NOT EXISTS idx_outdoor_duty_status ON outdoor_duty_requests(status);
+  `);
+
+  // ─── Phase 8: Salary Advances ──────────────────────────────
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS salary_advances (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      amount REAL NOT NULL,
+      reason TEXT DEFAULT '',
+      approved_by INTEGER DEFAULT NULL,
+      status TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'approved', 'rejected', 'repaid')),
+      repaid_amount REAL DEFAULT 0,
+      date DATE NOT NULL DEFAULT (DATE('now')),
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (approved_by) REFERENCES users(id) ON DELETE SET NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_salary_advances_user ON salary_advances(user_id);
+  `);
+
+  // ─── Phase 8: Employee Shifts / Schedules ──────────────────
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS employee_shifts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      location_id INTEGER NOT NULL,
+      shift_start TEXT NOT NULL DEFAULT '09:00',
+      shift_end TEXT NOT NULL DEFAULT '18:00',
+      days_of_week TEXT NOT NULL DEFAULT '["monday","tuesday","wednesday","thursday","friday","saturday"]',
+      geofence_timeout_minutes INTEGER DEFAULT 15,
+      is_active INTEGER DEFAULT 1,
+      created_by INTEGER NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (location_id) REFERENCES locations(id) ON DELETE CASCADE,
+      FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_employee_shifts_user ON employee_shifts(user_id);
+    CREATE INDEX IF NOT EXISTS idx_employee_shifts_location ON employee_shifts(location_id);
+  `);
+
+  // ─── Phase 8: Employee Salaries ────────────────────────────
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS employee_salaries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL UNIQUE,
+      monthly_salary REAL NOT NULL DEFAULT 0,
+      salary_type TEXT NOT NULL DEFAULT 'monthly' CHECK(salary_type IN ('monthly', 'daily', 'hourly')),
+      effective_from DATE NOT NULL DEFAULT (DATE('now')),
+      notes TEXT DEFAULT '',
+      updated_by INTEGER NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE SET NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_employee_salaries_user ON employee_salaries(user_id);
+  `);
+
+  // ─── Phase 8: Salary Change History ────────────────────────
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS salary_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      old_salary REAL DEFAULT 0,
+      new_salary REAL NOT NULL,
+      salary_type TEXT NOT NULL DEFAULT 'monthly',
+      reason TEXT DEFAULT '',
+      changed_by INTEGER NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (changed_by) REFERENCES users(id) ON DELETE SET NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_salary_history_user ON salary_history(user_id);
+  `);
+
+  // ─── Phase 8: Delivery Partner Location Tracking ───────────
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS delivery_locations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      delivery_id INTEGER DEFAULT NULL,
+      latitude REAL NOT NULL,
+      longitude REAL NOT NULL,
+      accuracy REAL DEFAULT NULL,
+      speed REAL DEFAULT NULL,
+      heading REAL DEFAULT NULL,
+      battery_level REAL DEFAULT NULL,
+      is_moving INTEGER DEFAULT 0,
+      recorded_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (delivery_id) REFERENCES deliveries(id) ON DELETE SET NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_delivery_locations_user ON delivery_locations(user_id);
+    CREATE INDEX IF NOT EXISTS idx_delivery_locations_delivery ON delivery_locations(delivery_id);
+    CREATE INDEX IF NOT EXISTS idx_delivery_locations_recorded ON delivery_locations(recorded_at);
+  `);
+
+  // ─── Phase 8: Geofence Events (for auto clock-in/out) ─────
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS geofence_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      location_id INTEGER NOT NULL,
+      event_type TEXT NOT NULL CHECK(event_type IN ('enter', 'exit')),
+      latitude REAL DEFAULT NULL,
+      longitude REAL DEFAULT NULL,
+      processed INTEGER DEFAULT 0,
+      auto_action TEXT DEFAULT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (location_id) REFERENCES locations(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_geofence_events_user ON geofence_events(user_id);
+    CREATE INDEX IF NOT EXISTS idx_geofence_events_processed ON geofence_events(processed);
+  `);
+
+  // ─── Phase 8: Delivery Partner Daily Summary ──────────────
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS delivery_partner_daily (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      date DATE NOT NULL,
+      total_deliveries INTEGER DEFAULT 0,
+      total_distance_km REAL DEFAULT 0,
+      total_active_minutes REAL DEFAULT 0,
+      total_idle_minutes REAL DEFAULT 0,
+      first_delivery_at DATETIME DEFAULT NULL,
+      last_delivery_at DATETIME DEFAULT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(user_id, date),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_delivery_partner_daily_user ON delivery_partner_daily(user_id);
+  `);
 }
 
 function closeDb() {

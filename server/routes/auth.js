@@ -165,7 +165,7 @@ router.post(
       // Get assigned locations
       const locations = db
         .prepare(
-          'SELECT l.id, l.name, l.type, ul.is_primary FROM locations l JOIN user_locations ul ON ul.location_id = l.id WHERE ul.user_id = ? AND l.is_active = 1'
+          'SELECT l.id, l.name, l.type, l.latitude, l.longitude, l.geofence_radius, ul.is_primary FROM locations l JOIN user_locations ul ON ul.location_id = l.id WHERE ul.user_id = ? AND l.is_active = 1'
         )
         .all(user.id);
 

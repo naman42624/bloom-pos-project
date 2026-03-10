@@ -1,7 +1,8 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useCallback, useRef } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TextInput,
   TouchableOpacity, Alert, Platform, ActivityIndicator, KeyboardAvoidingView,
+  FlatList, Modal,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
@@ -38,6 +39,13 @@ export default function CheckoutScreen({ route, navigation }) {
 
   // Customer lookup
   const [customerHistory, setCustomerHistory] = useState(null);
+  // Customer search dropdown
+  const [customerSuggestions, setCustomerSuggestions] = useState([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const searchTimer = useRef(null);
+  // Saved addresses
+  const [savedAddresses, setSavedAddresses] = useState([]);
+  const [showAddressPicker, setShowAddressPicker] = useState(false);
 
   // Scheduled date/time — for pickup, delivery, and pre-order
   const [scheduledDate, setScheduledDate] = useState('');
@@ -49,6 +57,10 @@ export default function CheckoutScreen({ route, navigation }) {
   const [preOrderType, setPreOrderType] = useState('pickup');
   const [advanceAmount, setAdvanceAmount] = useState('');
   const [deliveryAddress, setDeliveryAddress] = useState('');
+  // Sender info — for delivery orders
+  const [senderName, setSenderName] = useState('');
+  const [senderPhone, setSenderPhone] = useState('');
+  const [senderMessage, setSenderMessage] = useState('');
 
   // Payment mode: 'pay_now' (default), 'cod' (delivery), 'credit' (customer credit), 'partial' (advance + rest later)
   const [paymentMode, setPaymentMode] = useState('pay_now');
@@ -83,7 +95,39 @@ export default function CheckoutScreen({ route, navigation }) {
     }
   }, [needsDelivery, orderType, paymentMode]);
 
-  // Auto-fill customer name from phone
+  // Auto-fill customer name from phone + search dropdown
+  const handlePhoneChange = useCallback((text) => {
+    setCustomerPhone(text);
+    setShowSuggestions(false);
+
+    // Debounced search for autocomplete
+    if (searchTimer.current) clearTimeout(searchTimer.current);
+    if (text.length >= 3 && text.length < 10) {
+      searchTimer.current = setTimeout(async () => {
+        try {
+          const res = await api.customerSearch(text);
+          if (res.data && res.data.length > 0) {
+            setCustomerSuggestions(res.data);
+            setShowSuggestions(true);
+          } else {
+            setCustomerSuggestions([]);
+            setShowSuggestions(false);
+          }
+        } catch { /* ignore */ }
+      }, 300);
+    } else {
+      setCustomerSuggestions([]);
+    }
+  }, []);
+
+  const selectCustomer = useCallback((c) => {
+    setCustomerPhone(c.phone || '');
+    setCustomerName(c.name || '');
+    if (c.id) setCustomerId(c.id);
+    setShowSuggestions(false);
+    setCustomerSuggestions([]);
+  }, []);
+
   React.useEffect(() => {
     if (customerPhone.length >= 10) {
       (async () => {
@@ -109,6 +153,20 @@ export default function CheckoutScreen({ route, navigation }) {
       setCustomerId(null);
     }
   }, [customerPhone]);
+
+  // Load saved addresses when customer is identified
+  const loadSavedAddresses = useCallback(async () => {
+    if (!customerId) return;
+    try {
+      const res = await api.getCustomerAddresses(customerId);
+      if (res.data) setSavedAddresses(res.data);
+    } catch { /* ignore */ }
+  }, [customerId]);
+
+  React.useEffect(() => {
+    if (customerId) loadSavedAddresses();
+    else setSavedAddresses([]);
+  }, [customerId]);
 
   const addPaymentSplit = () => {
     setPayments([...payments, { method: 'card', amount: '', reference: '' }]);
@@ -195,6 +253,9 @@ export default function CheckoutScreen({ route, navigation }) {
       delivery_charges: delivery,
       notes: notes || null,
       delivery_address: needsDelivery ? deliveryAddress : null,
+      sender_name: needsDelivery ? (senderName || null) : null,
+      sender_phone: needsDelivery ? (senderPhone || null) : null,
+      sender_message: needsDelivery ? (senderMessage || null) : null,
       scheduled_date: scheduledDate || null,
       scheduled_time: scheduledTime || null,
       items: cart.map((c) => ({
@@ -283,8 +344,21 @@ export default function CheckoutScreen({ route, navigation }) {
         <Text style={styles.sectionTitle}>Customer (optional)</Text>
         <View style={styles.row}>
           <TextInput style={[styles.input, { flex: 1 }]} value={customerName} onChangeText={setCustomerName} placeholder="Name" placeholderTextColor={Colors.textLight} />
-          <TextInput style={[styles.input, { flex: 1 }]} value={customerPhone} onChangeText={setCustomerPhone} placeholder="Phone" placeholderTextColor={Colors.textLight} keyboardType="phone-pad" />
+          <TextInput style={[styles.input, { flex: 1 }]} value={customerPhone} onChangeText={handlePhoneChange} placeholder="Phone" placeholderTextColor={Colors.textLight} keyboardType="phone-pad" />
         </View>
+        {showSuggestions && customerSuggestions.length > 0 && (
+          <View style={styles.suggestionsBox}>
+            {customerSuggestions.map((c, idx) => (
+              <TouchableOpacity key={c.phone + idx} style={styles.suggestionItem} onPress={() => selectCustomer(c)}>
+                <Ionicons name={c.id ? 'person' : 'person-outline'} size={16} color={Colors.primary} />
+                <View style={{ flex: 1, marginLeft: 8 }}>
+                  <Text style={styles.suggestionName}>{c.name || 'Unknown'}</Text>
+                  <Text style={styles.suggestionPhone}>{c.phone}{c.total_spent > 0 ? ` • ₹${Math.round(c.total_spent)}` : ''}</Text>
+                </View>
+              </TouchableOpacity>
+            ))}
+          </View>
+        )}
         {customerHistory && (
           <View style={styles.customerHint}>
             <Ionicons name="person-circle" size={16} color={Colors.primary} />
@@ -366,8 +440,24 @@ export default function CheckoutScreen({ route, navigation }) {
         {/* Delivery address */}
         {needsDelivery && (
           <>
-            <Text style={styles.sectionTitle}>Delivery Address</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+              <Text style={styles.sectionTitle}>Delivery Address</Text>
+              {customerId && savedAddresses.length > 0 && (
+                <TouchableOpacity style={styles.savedAddrBtn} onPress={() => setShowAddressPicker(true)}>
+                  <Ionicons name="bookmark" size={14} color={Colors.primary} />
+                  <Text style={styles.savedAddrBtnText}>Saved ({savedAddresses.length})</Text>
+                </TouchableOpacity>
+              )}
+            </View>
             <TextInput style={styles.input} value={deliveryAddress} onChangeText={setDeliveryAddress} placeholder="Full address" placeholderTextColor={Colors.textLight} multiline />
+
+            {/* Sender Info */}
+            <Text style={[styles.sectionTitle, { marginTop: Spacing.md }]}>Sender Info (optional)</Text>
+            <View style={styles.row}>
+              <TextInput style={[styles.input, { flex: 1 }]} value={senderName} onChangeText={setSenderName} placeholder="Sender name" placeholderTextColor={Colors.textLight} />
+              <TextInput style={[styles.input, { flex: 1 }]} value={senderPhone} onChangeText={setSenderPhone} placeholder="Sender phone" placeholderTextColor={Colors.textLight} keyboardType="phone-pad" />
+            </View>
+            <TextInput style={[styles.input, { minHeight: 60 }]} value={senderMessage} onChangeText={setSenderMessage} placeholder="Message from sender..." placeholderTextColor={Colors.textLight} multiline />
           </>
         )}
 
@@ -404,6 +494,24 @@ export default function CheckoutScreen({ route, navigation }) {
           <TextInput style={[styles.input, { flex: 1 }]} value={discountValue} onChangeText={setDiscountValue}
             placeholder={discountType === 'percentage' ? 'Percentage' : 'Amount'} placeholderTextColor={Colors.textLight} keyboardType="numeric" />
         </View>
+        {(() => {
+          const pct = discountType === 'percentage'
+            ? (parseFloat(discountValue) || 0)
+            : (subtotal > 0 ? ((parseFloat(discountValue) || 0) / subtotal) * 100 : 0);
+          if (pct > 30 && user.role !== 'owner') return (
+            <View style={styles.codHint}>
+              <Ionicons name="alert-circle" size={16} color={Colors.error} />
+              <Text style={[styles.codHintText, { color: Colors.error }]}>Discount {pct.toFixed(0)}% exceeds owner threshold (30%). Only owner can apply.</Text>
+            </View>
+          );
+          if (pct > 20 && user.role === 'employee') return (
+            <View style={styles.codHint}>
+              <Ionicons name="alert-circle" size={16} color={Colors.warning} />
+              <Text style={styles.codHintText}>Discount {pct.toFixed(0)}% exceeds threshold (20%). A manager or owner must apply.</Text>
+            </View>
+          );
+          return null;
+        })()}
 
         {/* Delivery charges */}
         {needsDelivery && (
@@ -655,6 +763,45 @@ export default function CheckoutScreen({ route, navigation }) {
 
         <View style={{ height: 40 }} />
       </ScrollView>
+
+      {/* Saved Addresses Picker Modal */}
+      <Modal visible={showAddressPicker} transparent animationType="slide" onRequestClose={() => setShowAddressPicker(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Saved Addresses</Text>
+              <TouchableOpacity onPress={() => setShowAddressPicker(false)}>
+                <Ionicons name="close" size={24} color={Colors.text} />
+              </TouchableOpacity>
+            </View>
+            <FlatList
+              data={savedAddresses}
+              keyExtractor={(item) => String(item.id)}
+              renderItem={({ item }) => (
+                <TouchableOpacity
+                  style={styles.addressItem}
+                  onPress={() => {
+                    const parts = [item.address_line_1, item.address_line_2, item.city, item.state, item.pincode].filter(Boolean);
+                    setDeliveryAddress(parts.join(', '));
+                    setShowAddressPicker(false);
+                  }}
+                >
+                  <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 4 }}>
+                    <Ionicons name="location" size={16} color={Colors.primary} />
+                    <Text style={styles.addressLabel}>{item.label}{item.is_default ? ' ★' : ''}</Text>
+                  </View>
+                  <Text style={styles.addressText}>{item.address_line_1}</Text>
+                  {item.address_line_2 ? <Text style={styles.addressText}>{item.address_line_2}</Text> : null}
+                  {(item.city || item.pincode) && (
+                    <Text style={styles.addressTextSub}>{[item.city, item.state, item.pincode].filter(Boolean).join(', ')}</Text>
+                  )}
+                </TouchableOpacity>
+              )}
+              ListEmptyComponent={<Text style={{ textAlign: 'center', color: Colors.textLight, padding: 20 }}>No saved addresses</Text>}
+            />
+          </View>
+        </View>
+      </Modal>
     </KeyboardAvoidingView>
   );
 }
@@ -760,4 +907,46 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.md, marginTop: Spacing.xs,
   },
   pickerBtnText: { fontSize: FontSize.md, color: Colors.textLight },
+
+  // Customer search dropdown
+  suggestionsBox: {
+    backgroundColor: Colors.surface, borderRadius: BorderRadius.md,
+    borderWidth: 1, borderColor: Colors.primary + '40',
+    marginTop: 2, maxHeight: 200, overflow: 'hidden',
+  },
+  suggestionItem: {
+    flexDirection: 'row', alignItems: 'center',
+    paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm,
+    borderBottomWidth: 1, borderBottomColor: Colors.border,
+  },
+  suggestionName: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.text },
+  suggestionPhone: { fontSize: FontSize.xs, color: Colors.textSecondary },
+
+  // Saved addresses
+  savedAddrBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    paddingHorizontal: Spacing.sm, paddingVertical: 4,
+    borderRadius: BorderRadius.full, backgroundColor: Colors.primary + '12',
+  },
+  savedAddrBtnText: { fontSize: FontSize.xs, color: Colors.primary, fontWeight: '600' },
+
+  // Address picker modal
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
+  modalContent: {
+    backgroundColor: Colors.background, borderTopLeftRadius: 20, borderTopRightRadius: 20,
+    maxHeight: '60%', paddingBottom: 30,
+  },
+  modalHeader: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    paddingHorizontal: Spacing.lg, paddingVertical: Spacing.md,
+    borderBottomWidth: 1, borderBottomColor: Colors.border,
+  },
+  modalTitle: { fontSize: FontSize.lg, fontWeight: '700', color: Colors.text },
+  addressItem: {
+    paddingHorizontal: Spacing.lg, paddingVertical: Spacing.md,
+    borderBottomWidth: 1, borderBottomColor: Colors.border,
+  },
+  addressLabel: { fontSize: FontSize.sm, fontWeight: '700', color: Colors.primary, marginLeft: 6 },
+  addressText: { fontSize: FontSize.sm, color: Colors.text, marginLeft: 22 },
+  addressTextSub: { fontSize: FontSize.xs, color: Colors.textSecondary, marginLeft: 22, marginTop: 2 },
 });

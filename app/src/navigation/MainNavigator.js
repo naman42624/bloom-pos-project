@@ -3,6 +3,8 @@ import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../context/AuthContext';
+import useGeofence from '../hooks/useGeofence';
+import useDeliveryTracking from '../hooks/useDeliveryTracking';
 
 import DashboardScreen from '../screens/DashboardScreen';
 import LocationsScreen from '../screens/LocationsScreen';
@@ -67,6 +69,20 @@ import CustomerOrdersScreen from '../screens/CustomerOrdersScreen';
 
 // More hub
 import MoreScreen from '../screens/MoreScreen';
+
+// Recurring Orders
+import RecurringOrdersScreen from '../screens/RecurringOrdersScreen';
+import AddRecurringOrderScreen from '../screens/AddRecurringOrderScreen';
+import CustomerShopScreen from '../screens/CustomerShopScreen';
+
+// Phase 8 — Attendance
+import AttendanceScreen from '../screens/AttendanceScreen';
+import StaffAttendanceScreen from '../screens/StaffAttendanceScreen';
+import AttendanceReportScreen from '../screens/AttendanceReportScreen';
+import SalaryAdvancesScreen from '../screens/SalaryAdvancesScreen';
+import ShiftManagementScreen from '../screens/ShiftManagementScreen';
+import SalaryManagementScreen from '../screens/SalaryManagementScreen';
+import LiveDeliveryMapScreen from '../screens/LiveDeliveryMapScreen';
 
 import { Colors, FontSize } from '../constants/theme';
 
@@ -328,6 +344,24 @@ function MoreStack() {
       <Stack.Screen name="RefundSale" component={RefundSaleScreen} options={{ title: 'Refund' }} />
       <Stack.Screen name="AddPayment" component={AddPaymentScreen} options={{ title: 'Record Payment' }} />
       <Stack.Screen name="DeliveryDetail" component={DeliveryDetailScreen} options={{ title: 'Delivery' }} />
+      <Stack.Screen name="RecurringOrders" component={RecurringOrdersScreen} options={{ title: 'Recurring Orders' }} />
+      <Stack.Screen name="AddRecurringOrder" component={AddRecurringOrderScreen} options={{ title: 'New Recurring Order' }} />
+      <Stack.Screen name="RecurringOrderDetail" component={AddRecurringOrderScreen} options={{ title: 'Edit Recurring Order' }} />
+    </Stack.Navigator>
+  );
+}
+
+// ─── Attendance Stack ───────────────────────────────────────
+function AttendanceStack() {
+  return (
+    <Stack.Navigator screenOptions={stackScreenOptions}>
+      <Stack.Screen name="AttendanceHome" component={AttendanceScreen} options={{ title: 'Attendance' }} />
+      <Stack.Screen name="StaffAttendance" component={StaffAttendanceScreen} options={{ title: 'Staff Today' }} />
+      <Stack.Screen name="AttendanceReport" component={AttendanceReportScreen} options={{ title: 'Attendance Report' }} />
+      <Stack.Screen name="SalaryAdvances" component={SalaryAdvancesScreen} options={{ title: 'Salary Advances' }} />
+      <Stack.Screen name="ShiftManagement" component={ShiftManagementScreen} options={{ title: 'Shift Management' }} />
+      <Stack.Screen name="SalaryManagement" component={SalaryManagementScreen} options={{ title: 'Salary Management' }} />
+      <Stack.Screen name="LiveDeliveryMap" component={LiveDeliveryMapScreen} options={{ title: 'Live Tracking' }} />
     </Stack.Navigator>
   );
 }
@@ -347,6 +381,7 @@ function CustomerOrdersStack() {
   return (
     <Stack.Navigator screenOptions={stackScreenOptions}>
       <Stack.Screen name="MyOrders" component={CustomerOrdersScreen} options={{ title: 'My Orders' }} />
+      <Stack.Screen name="Shop" component={CustomerShopScreen} options={{ title: 'Shop' }} />
     </Stack.Navigator>
   );
 }
@@ -361,13 +396,28 @@ const TAB_ICONS = {
   Pickups: { active: 'bag-handle', inactive: 'bag-handle-outline' },
   Orders: { active: 'bicycle', inactive: 'bicycle-outline' },
   MyOrders: { active: 'receipt', inactive: 'receipt-outline' },
+  Shop: { active: 'storefront', inactive: 'storefront-outline' },
+  Attendance: { active: 'time', inactive: 'time-outline' },
   More: { active: 'apps', inactive: 'apps-outline' },
   Profile: { active: 'person-circle', inactive: 'person-circle-outline' },
 };
 
 export default function MainNavigator() {
-  const { user } = useAuth();
+  const { user, locations } = useAuth();
   const role = user?.role;
+
+  // Auto geofence for staff (not owner/customer)
+  useGeofence({
+    user,
+    locations: locations || [],
+    enabled: !!user && user.role !== 'owner' && user.role !== 'customer',
+  });
+
+  // Auto delivery tracking for delivery partners
+  useDeliveryTracking({
+    user,
+    enabled: !!user && user.role === 'delivery_partner',
+  });
 
   return (
     <Tab.Navigator
@@ -451,6 +501,24 @@ export default function MainNavigator() {
           name="Deliveries"
           component={DeliveryPartnerStack}
           options={{ tabBarLabel: 'Deliveries' }}
+        />
+      )}
+
+      {/* Attendance tab — All staff roles */}
+      {(role === 'owner' || role === 'manager' || role === 'employee' || role === 'delivery_partner') && (
+        <Tab.Screen
+          name="Attendance"
+          component={AttendanceStack}
+          options={{ tabBarLabel: 'Attendance' }}
+        />
+      )}
+
+      {/* My Orders tab — Customer */}
+      {role === 'customer' && (
+        <Tab.Screen
+          name="Shop"
+          component={CustomerShopScreen}
+          options={{ tabBarLabel: 'Shop' }}
         />
       )}
 

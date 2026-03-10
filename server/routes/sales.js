@@ -478,6 +478,9 @@ router.post(
     body('scheduled_date').optional({ nullable: true }).trim(),
     body('scheduled_time').optional({ nullable: true }).trim(),
     body('advance_amount').optional().isFloat({ min: 0 }),
+    body('sender_name').optional({ nullable: true }).trim(),
+    body('sender_phone').optional({ nullable: true }).trim(),
+    body('sender_message').optional({ nullable: true }).trim(),
   ],
   (req, res, next) => {
     try {
@@ -491,6 +494,7 @@ router.post(
         discount_type, discount_value,
         delivery_charges, delivery_address, notes, special_instructions, customer_notes,
         scheduled_date, scheduled_time, advance_amount,
+        sender_name, sender_phone, sender_message,
       } = req.body;
 
       const createSale = db.transaction(() => {
@@ -531,9 +535,10 @@ router.post(
           return { product_id: productId, material_id: materialId, product_name: name, quantity: qty, unit_price: unitPrice, tax_rate: taxRate, tax_amount: taxAmount, line_total: lineTotal };
         });
 
-        // Discount
+        // Discount — with threshold enforcement
         let discountAmount = 0;
         let discountPercentage = null;
+        let discountApprovedBy = null;
         if (discount_type && discount_value > 0) {
           if (discount_type === 'percentage') {
             discountPercentage = discount_value;
@@ -541,6 +546,29 @@ router.post(
           } else {
             discountAmount = discount_value;
             discountPercentage = subtotal > 0 ? (discount_value / subtotal) * 100 : 0;
+          }
+
+          // Enforce discount thresholds
+          const mgrThreshold = parseFloat(
+            (db.prepare("SELECT value FROM settings WHERE key = 'discount_manager_threshold'").get() || {}).value || '20'
+          );
+          const ownerThreshold = parseFloat(
+            (db.prepare("SELECT value FROM settings WHERE key = 'discount_owner_threshold'").get() || {}).value || '30'
+          );
+          const effectivePct = discountPercentage || 0;
+
+          if (effectivePct > ownerThreshold) {
+            // Only owner can approve
+            if (req.user.role !== 'owner') {
+              throw new Error(`Discount of ${effectivePct.toFixed(1)}% exceeds owner threshold (${ownerThreshold}%). Only an owner can apply this discount.`);
+            }
+            discountApprovedBy = req.user.id;
+          } else if (effectivePct > mgrThreshold) {
+            // Manager or owner can approve
+            if (req.user.role !== 'owner' && req.user.role !== 'manager') {
+              throw new Error(`Discount of ${effectivePct.toFixed(1)}% exceeds manager threshold (${mgrThreshold}%). A manager or owner must apply this discount.`);
+            }
+            discountApprovedBy = req.user.id;
           }
         }
 
@@ -590,17 +618,18 @@ router.post(
         // Insert sale
         const saleResult = db.prepare(`
           INSERT INTO sales (sale_number, location_id, customer_id, customer_name, customer_phone,
-            subtotal, tax_total, discount_amount, discount_type, discount_percentage,
+            subtotal, tax_total, discount_amount, discount_type, discount_percentage, discount_approved_by,
             delivery_charges, delivery_address, scheduled_date, scheduled_time,
             grand_total, payment_status, order_type, status, stock_deducted,
-            special_instructions, customer_notes, created_by)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            special_instructions, customer_notes, sender_name, sender_phone, sender_message, created_by)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           saleNumber, location_id, customer_id || null, customer_name || null, customer_phone || null,
-          subtotal, taxTotal, discountAmount, discount_type || null, discountPercentage,
+          subtotal, taxTotal, discountAmount, discount_type || null, discountPercentage, discountApprovedBy,
           delivery_charges || 0, delivery_address || null, scheduled_date || null, scheduled_time || null,
           grandTotal, paymentStatus, order_type, initialStatus, stockDeducted,
-          notes || special_instructions || '', customer_notes || '', req.user.id
+          notes || special_instructions || '', customer_notes || '',
+          sender_name || '', sender_phone || '', sender_message || '', req.user.id
         );
         const saleId = saleResult.lastInsertRowid;
 
@@ -714,6 +743,21 @@ router.post(
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
           `).run(saleId, location_id, delivery_address, customer_name || null, customer_phone || null,
             scheduled_date || null, scheduled_time || null, codAmount, codAmount > 0 ? 'pending' : 'none');
+        }
+
+        // Auto-save delivery address to customer's saved addresses
+        if (customer_id && delivery_address) {
+          const existingAddr = db.prepare(
+            "SELECT id FROM customer_addresses WHERE customer_id = ? AND address_line_1 = ?"
+          ).get(customer_id, delivery_address);
+          if (!existingAddr) {
+            const addrCount = db.prepare(
+              "SELECT COUNT(*) as cnt FROM customer_addresses WHERE customer_id = ?"
+            ).get(customer_id).cnt;
+            db.prepare(
+              "INSERT INTO customer_addresses (customer_id, label, address_line_1, is_default) VALUES (?, ?, ?, ?)"
+            ).run(customer_id, 'Delivery', delivery_address, addrCount === 0 ? 1 : 0);
+          }
         }
 
         // Auto-set pickup_status for pickup orders (always waiting — lazy stock)
@@ -1107,6 +1151,19 @@ router.post(
       const { amount, reason, refund_method } = req.body;
       if (amount > sale.grand_total) return res.status(400).json({ success: false, message: 'Refund amount cannot exceed sale total' });
 
+      // Enforce refund limit for managers
+      if (req.user.role === 'manager') {
+        const refundLimit = parseFloat(
+          (db.prepare("SELECT value FROM settings WHERE key = 'refund_manager_limit'").get() || {}).value || '10000'
+        );
+        if (amount > refundLimit) {
+          return res.status(403).json({
+            success: false,
+            message: `Refund of ₹${amount} exceeds manager limit (₹${refundLimit}). Only an owner can approve this refund.`,
+          });
+        }
+      }
+
       db.prepare(
         `INSERT INTO refunds (sale_id, amount, reason, status, requested_by, approved_by, refund_method)
          VALUES (?, ?, ?, 'processed', ?, ?, ?)`
@@ -1125,6 +1182,119 @@ router.post(
 
       const refund = db.prepare('SELECT * FROM refunds WHERE sale_id = ?').get(req.params.id);
       res.status(201).json({ success: true, data: refund });
+    } catch (err) { next(err); }
+  }
+);
+
+// ─── POST /api/sales/customer-order ──────────────────────────
+// Customer places an order from the customer app (delivery or pickup only)
+router.post(
+  '/customer-order',
+  authenticate,
+  [
+    body('location_id').isInt().withMessage('Location is required'),
+    body('order_type').isIn(['pickup', 'delivery']).withMessage('Order type must be pickup or delivery'),
+    body('items').isArray({ min: 1 }).withMessage('At least one item is required'),
+    body('items.*.product_id').isInt(),
+    body('items.*.quantity').isInt({ min: 1 }),
+    body('delivery_address').optional({ nullable: true }).trim(),
+    body('scheduled_date').optional({ nullable: true }).trim(),
+    body('scheduled_time').optional({ nullable: true }).trim(),
+    body('notes').optional({ nullable: true }).trim(),
+    body('sender_name').optional({ nullable: true }).trim(),
+    body('sender_phone').optional({ nullable: true }).trim(),
+    body('sender_message').optional({ nullable: true }).trim(),
+  ],
+  (req, res, next) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) return res.status(400).json({ success: false, message: 'Validation failed', errors: errors.array() });
+
+      const db = getDb();
+      const {
+        location_id, order_type, items, delivery_address,
+        scheduled_date, scheduled_time, notes,
+        sender_name, sender_phone, sender_message,
+      } = req.body;
+
+      if (order_type === 'delivery' && !delivery_address) {
+        return res.status(400).json({ success: false, message: 'Delivery address is required for delivery orders' });
+      }
+
+      const createOrder = db.transaction(() => {
+        let subtotal = 0;
+        let taxTotal = 0;
+        const processedItems = items.map((item) => {
+          const product = db.prepare('SELECT id, name, selling_price, tax_rate_id FROM products WHERE id = ? AND is_active = 1').get(item.product_id);
+          if (!product) throw new Error(`Product not found or inactive`);
+
+          const unitPrice = product.selling_price;
+          let taxRate = 0;
+          if (product.tax_rate_id) {
+            const tr = db.prepare('SELECT percentage FROM tax_rates WHERE id = ?').get(product.tax_rate_id);
+            if (tr) taxRate = tr.percentage;
+          }
+          const qty = item.quantity;
+          const taxAmount = (unitPrice * qty * taxRate) / 100;
+          const lineTotal = (unitPrice * qty) + taxAmount;
+          subtotal += unitPrice * qty;
+          taxTotal += taxAmount;
+          return { product_id: product.id, product_name: product.name, quantity: qty, unit_price: unitPrice, tax_rate: taxRate, tax_amount: taxAmount, line_total: lineTotal };
+        });
+
+        const grandTotal = subtotal + taxTotal;
+        const saleNumber = generateSaleNumber(db, location_id);
+
+        const saleResult = db.prepare(`
+          INSERT INTO sales (sale_number, location_id, customer_id, customer_name, customer_phone,
+            subtotal, tax_total, discount_amount, delivery_charges,
+            delivery_address, scheduled_date, scheduled_time,
+            grand_total, payment_status, order_type, status, stock_deducted,
+            special_instructions, customer_notes, sender_name, sender_phone, sender_message, created_by)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, 'pending', ?, 'pending', 0, '', ?, ?, ?, ?, ?)
+        `).run(
+          saleNumber, location_id, req.user.id, req.user.name, req.user.phone,
+          subtotal, taxTotal,
+          delivery_address || null, scheduled_date || null, scheduled_time || null,
+          grandTotal, order_type,
+          notes || '',
+          sender_name || '', sender_phone || '', sender_message || '', req.user.id
+        );
+        const saleId = saleResult.lastInsertRowid;
+
+        const insertItem = db.prepare(
+          'INSERT INTO sale_items (sale_id, product_id, material_id, product_name, quantity, unit_price, tax_rate, tax_amount, line_total, materials_deducted, from_product_stock) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, 0, 0)'
+        );
+        const insertTask = db.prepare(
+          `INSERT INTO production_tasks (sale_id, sale_item_id, product_id, location_id, quantity, priority, notes) VALUES (?, ?, ?, ?, ?, 'normal', '')`
+        );
+
+        for (const item of processedItems) {
+          const res = insertItem.run(saleId, item.product_id, item.product_name, item.quantity, item.unit_price, item.tax_rate, item.tax_amount, item.line_total);
+          if (item.product_id) {
+            insertTask.run(saleId, res.lastInsertRowid, item.product_id, location_id, item.quantity);
+          }
+        }
+
+        // Auto-create delivery record
+        if (order_type === 'delivery' && delivery_address) {
+          db.prepare(`
+            INSERT INTO deliveries (sale_id, location_id, delivery_address, customer_name, customer_phone,
+              scheduled_date, scheduled_time, cod_amount, cod_status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+          `).run(saleId, location_id, delivery_address, req.user.name, req.user.phone,
+            scheduled_date || null, scheduled_time || null, grandTotal);
+        }
+
+        // Update customer credit balance
+        db.prepare('UPDATE users SET credit_balance = credit_balance + ?, total_spent = total_spent + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+          .run(grandTotal, grandTotal, req.user.id);
+
+        return { id: saleId, sale_number: saleNumber, grand_total: grandTotal };
+      });
+
+      const result = createOrder();
+      res.status(201).json({ success: true, data: result });
     } catch (err) { next(err); }
   }
 );
