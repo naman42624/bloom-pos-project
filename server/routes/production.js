@@ -284,6 +284,7 @@ router.get('/tasks', authenticate, authorize('owner', 'manager', 'employee'), (r
     }
 
     sql += ` ORDER BY
+      CASE WHEN pt.status = 'completed' THEN 1 ELSE 0 END,
       CASE pt.priority WHEN 'urgent' THEN 0 ELSE 1 END,
       CASE pt.status WHEN 'in_progress' THEN 0 WHEN 'assigned' THEN 1 WHEN 'pending' THEN 2 ELSE 3 END,
       s.scheduled_date ASC NULLS LAST,

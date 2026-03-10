@@ -1,7 +1,7 @@
 import React, { useState, useCallback } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
-  RefreshControl, Alert, Modal, TextInput, ActivityIndicator, Platform,
+  RefreshControl, Alert, Modal, TextInput, ActivityIndicator, Platform, KeyboardAvoidingView,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
@@ -33,6 +33,8 @@ export default function ShiftManagementScreen() {
   const [shiftEnd, setShiftEnd] = useState('18:00');
   const [selectedDays, setSelectedDays] = useState([0, 1, 2, 3, 4, 5]); // Mon-Sat
   const [geofenceTimeout, setGeofenceTimeout] = useState('15');
+  const [shiftSegments, setShiftSegments] = useState([]); // [{start:'07:00',end:'12:00'}, ...]
+  const [isSplitShift, setIsSplitShift] = useState(false);
 
   const fetchData = useCallback(async () => {
     try {
@@ -64,6 +66,8 @@ export default function ShiftManagementScreen() {
     setShiftEnd('18:00');
     setSelectedDays([0, 1, 2, 3, 4, 5]);
     setGeofenceTimeout('15');
+    setShiftSegments([]);
+    setIsSplitShift(false);
     setModal(true);
   };
 
@@ -72,10 +76,29 @@ export default function ShiftManagementScreen() {
     setSelectedLocation({ id: shift.location_id, name: shift.location_name });
     setShiftStart(shift.shift_start || '09:00');
     setShiftEnd(shift.shift_end || '18:00');
-    const days = shift.days_of_week ? JSON.parse(shift.days_of_week) : [0, 1, 2, 3, 4, 5];
+    let days;
+    try { days = shift.days_of_week ? JSON.parse(shift.days_of_week) : [0, 1, 2, 3, 4, 5]; } catch { days = [0, 1, 2, 3, 4, 5]; }
+    if (!Array.isArray(days)) days = [0, 1, 2, 3, 4, 5];
     setSelectedDays(days);
     setGeofenceTimeout(String(shift.geofence_timeout_minutes || 15));
+    let segs;
+    try { segs = shift.shift_segments ? JSON.parse(shift.shift_segments) : []; } catch { segs = []; }
+    if (!Array.isArray(segs)) segs = [];
+    setShiftSegments(segs);
+    setIsSplitShift(segs.length > 0);
     setModal(true);
+  };
+
+  const addSegment = () => {
+    setShiftSegments(prev => [...prev, { start: '', end: '' }]);
+  };
+
+  const removeSegment = (idx) => {
+    setShiftSegments(prev => prev.filter((_, i) => i !== idx));
+  };
+
+  const updateSegment = (idx, field, value) => {
+    setShiftSegments(prev => prev.map((seg, i) => i === idx ? { ...seg, [field]: value } : seg));
   };
 
   const handleSave = async () => {
@@ -83,11 +106,22 @@ export default function ShiftManagementScreen() {
       Alert.alert('Error', 'Please select staff member and location.');
       return;
     }
-    const startMatch = /^\d{2}:\d{2}$/.test(shiftStart);
-    const endMatch = /^\d{2}:\d{2}$/.test(shiftEnd);
-    if (!startMatch || !endMatch) {
+    const timeRe = /^\d{2}:\d{2}$/;
+    if (!timeRe.test(shiftStart) || !timeRe.test(shiftEnd)) {
       Alert.alert('Error', 'Times must be in HH:MM format.');
       return;
+    }
+    if (isSplitShift) {
+      if (shiftSegments.length < 2) {
+        Alert.alert('Error', 'Split shift requires at least 2 segments.');
+        return;
+      }
+      for (const seg of shiftSegments) {
+        if (!timeRe.test(seg.start) || !timeRe.test(seg.end)) {
+          Alert.alert('Error', 'All segment times must be in HH:MM format.');
+          return;
+        }
+      }
     }
     setSaving(true);
     try {
@@ -98,6 +132,7 @@ export default function ShiftManagementScreen() {
         shift_end: shiftEnd,
         days_of_week: selectedDays,
         geofence_timeout_minutes: Number(geofenceTimeout) || 15,
+        shift_segments: isSplitShift && shiftSegments.length >= 2 ? JSON.stringify(shiftSegments) : null,
       });
       setModal(false);
       await fetchData();
@@ -148,20 +183,27 @@ export default function ShiftManagementScreen() {
         </View>
       ) : (
         shifts.map(s => {
-          const days = s.days_of_week ? JSON.parse(s.days_of_week) : [];
+          let days;
+          try { days = s.days_of_week ? JSON.parse(s.days_of_week) : []; } catch { days = []; }
+          if (!Array.isArray(days)) days = [];
           return (
             <View key={s.id} style={styles.card}>
               <View style={styles.cardHeader}>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.cardName}>{s.user_name}</Text>
-                  <Text style={styles.cardLocation}>{s.location_name}</Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2 }}>
+                    <View style={[styles.roleBadge, { backgroundColor: s.user_role === 'manager' ? '#9C27B0' : s.user_role === 'delivery_partner' ? '#FF5722' : Colors.primary }]}>
+                      <Text style={styles.roleBadgeText}>{s.user_role === 'delivery_partner' ? 'Delivery' : s.user_role}</Text>
+                    </View>
+                    <Text style={styles.cardLocation}>{s.location_name}</Text>
+                  </View>
                 </View>
                 <View style={styles.cardActions}>
                   <TouchableOpacity onPress={() => openEditModal(s)} style={styles.iconBtn}>
-                    <Ionicons name="create-outline" size={20} color={Colors.primary} />
+                    <Ionicons name="create-outline" size={22} color={Colors.primary} />
                   </TouchableOpacity>
                   <TouchableOpacity onPress={() => handleDelete(s)} style={styles.iconBtn}>
-                    <Ionicons name="trash-outline" size={20} color={Colors.error} />
+                    <Ionicons name="trash-outline" size={22} color={Colors.error} />
                   </TouchableOpacity>
                 </View>
               </View>
@@ -170,6 +212,21 @@ export default function ShiftManagementScreen() {
                   <Ionicons name="time-outline" size={16} color={Colors.textSecondary} />
                   <Text style={styles.timeText}>{s.shift_start} — {s.shift_end}</Text>
                 </View>
+                {s.shift_segments && (() => {
+                  let segs;
+                  try {
+                    segs = typeof s.shift_segments === 'string' ? JSON.parse(s.shift_segments) : s.shift_segments;
+                  } catch (e) { segs = []; }
+                  if (!Array.isArray(segs)) segs = [];
+                  return segs.length > 0 ? (
+                    <View style={styles.segmentsRow}>
+                      <Ionicons name="git-branch-outline" size={14} color={Colors.primary} />
+                      <Text style={styles.segmentsText}>
+                        Split: {segs.map(sg => `${sg.start}–${sg.end}`).join(' + ')}
+                      </Text>
+                    </View>
+                  ) : null;
+                })()}
                 <View style={styles.daysRow}>
                   {DAYS.map((d, i) => (
                     <View key={i} style={[styles.dayChip, days.includes(i) && styles.dayChipActive]}>
@@ -188,8 +245,8 @@ export default function ShiftManagementScreen() {
 
       {/* ─── Create/Edit Modal ──────────────────────────── */}
       <Modal visible={modal} transparent animationType="slide" onRequestClose={() => setModal(false)}>
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
+        <KeyboardAvoidingView style={styles.modalOverlay} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          <ScrollView style={styles.modalContent} bounces={false} keyboardShouldPersistTaps="handled">
             <Text style={styles.modalTitle}>{selectedUser ? 'Edit Shift' : 'Set Shift'}</Text>
 
             <Text style={styles.label}>Staff Member</Text>
@@ -258,6 +315,59 @@ export default function ShiftManagementScreen() {
               ))}
             </View>
 
+            {/* ── Split Shift Toggle ── */}
+            <TouchableOpacity
+              style={styles.splitToggle}
+              onPress={() => {
+                setIsSplitShift(prev => {
+                  if (!prev) {
+                    setShiftSegments(segs => segs.length >= 2 ? segs : [
+                      { start: shiftStart || '09:00', end: '13:00' },
+                      { start: '15:00', end: shiftEnd || '18:00' },
+                    ]);
+                  }
+                  return !prev;
+                });
+              }}
+            >
+              <Ionicons name={isSplitShift ? 'checkbox' : 'square-outline'} size={22} color={Colors.primary} />
+              <Text style={styles.splitToggleText}>Split Shift (multiple segments)</Text>
+            </TouchableOpacity>
+
+            {isSplitShift && (
+              <View style={styles.segmentsContainer}>
+                {shiftSegments.map((seg, idx) => (
+                  <View key={idx} style={styles.segmentInputRow}>
+                    <Text style={styles.segLabel}>Seg {idx + 1}</Text>
+                    <TextInput
+                      style={[styles.input, { flex: 1, marginHorizontal: Spacing.xs }]}
+                      value={seg.start}
+                      onChangeText={v => updateSegment(idx, 'start', v)}
+                      placeholder="09:00"
+                      placeholderTextColor={Colors.textLight}
+                    />
+                    <Text style={styles.segDash}>—</Text>
+                    <TextInput
+                      style={[styles.input, { flex: 1, marginHorizontal: Spacing.xs }]}
+                      value={seg.end}
+                      onChangeText={v => updateSegment(idx, 'end', v)}
+                      placeholder="13:00"
+                      placeholderTextColor={Colors.textLight}
+                    />
+                    {shiftSegments.length > 2 && (
+                      <TouchableOpacity onPress={() => removeSegment(idx)} style={{ padding: Spacing.xs }}>
+                        <Ionicons name="close-circle" size={22} color={Colors.error} />
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                ))}
+                <TouchableOpacity style={styles.addSegBtn} onPress={addSegment}>
+                  <Ionicons name="add-circle-outline" size={18} color={Colors.primary} />
+                  <Text style={styles.addSegText}>Add Segment</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
             <Text style={styles.label}>Geofence Timeout (minutes)</Text>
             <TextInput
               style={styles.input}
@@ -276,8 +386,8 @@ export default function ShiftManagementScreen() {
                 <Text style={styles.saveBtnText}>{saving ? 'Saving...' : 'Save'}</Text>
               </TouchableOpacity>
             </View>
-          </View>
-        </View>
+          </ScrollView>
+        </KeyboardAvoidingView>
       </Modal>
     </ScrollView>
   );
@@ -308,7 +418,9 @@ const styles = StyleSheet.create({
   cardName: { fontSize: FontSize.md, fontWeight: '600', color: Colors.text },
   cardLocation: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: 2 },
   cardActions: { flexDirection: 'row' },
-  iconBtn: { padding: Spacing.xs, marginLeft: Spacing.sm },
+  iconBtn: { padding: Spacing.sm, marginLeft: Spacing.xs },
+  roleBadge: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 },
+  roleBadgeText: { fontSize: FontSize.xs, color: '#fff', fontWeight: '600', textTransform: 'capitalize' },
   cardBody: { padding: Spacing.md },
   timeRow: { flexDirection: 'row', alignItems: 'center', marginBottom: Spacing.sm },
   timeText: { fontSize: FontSize.md, color: Colors.text, marginLeft: Spacing.sm, fontWeight: '500' },
@@ -322,6 +434,16 @@ const styles = StyleSheet.create({
   dayChipText: { fontSize: FontSize.xs, color: Colors.textSecondary },
   dayChipTextActive: { color: '#fff', fontWeight: '600' },
   timeoutText: { fontSize: FontSize.sm, color: Colors.textLight },
+  segmentsRow: { flexDirection: 'row', alignItems: 'center', marginBottom: Spacing.sm },
+  segmentsText: { fontSize: FontSize.sm, color: Colors.primary, marginLeft: Spacing.xs, fontWeight: '500' },
+  splitToggle: { flexDirection: 'row', alignItems: 'center', marginTop: Spacing.md, marginBottom: Spacing.xs },
+  splitToggleText: { fontSize: FontSize.sm, color: Colors.text, marginLeft: Spacing.sm, fontWeight: '500' },
+  segmentsContainer: { marginBottom: Spacing.sm, padding: Spacing.sm, backgroundColor: Colors.background, borderRadius: BorderRadius.md },
+  segmentInputRow: { flexDirection: 'row', alignItems: 'center', marginBottom: Spacing.xs },
+  segLabel: { fontSize: FontSize.xs, color: Colors.textSecondary, width: 36, fontWeight: '600' },
+  segDash: { fontSize: FontSize.md, color: Colors.textSecondary },
+  addSegBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: Spacing.sm },
+  addSegText: { fontSize: FontSize.sm, color: Colors.primary, marginLeft: Spacing.xs, fontWeight: '500' },
   // Modal
   modalOverlay: {
     flex: 1, backgroundColor: 'rgba(0,0,0,0.5)',
@@ -345,8 +467,8 @@ const styles = StyleSheet.create({
   timeInputRow: { flexDirection: 'row', marginTop: Spacing.xs },
   input: {
     borderWidth: 1, borderColor: Colors.border, borderRadius: BorderRadius.md,
-    padding: Spacing.sm, fontSize: FontSize.md, color: Colors.text,
-    backgroundColor: Colors.background,
+    padding: Spacing.md, fontSize: FontSize.md, color: Colors.text,
+    backgroundColor: Colors.background, minHeight: 48,
   },
   modalActions: { flexDirection: 'row', justifyContent: 'flex-end', marginTop: Spacing.lg },
   cancelBtn: {

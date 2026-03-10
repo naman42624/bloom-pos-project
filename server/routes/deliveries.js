@@ -165,6 +165,61 @@ router.get('/at-risk', authenticate, authorize('owner', 'manager', 'employee'), 
   } catch (err) { next(err); }
 });
 
+// ═══════════════════════════════════════════════════════════════
+// BATCH ASSIGN — assign multiple deliveries to one partner
+// ═══════════════════════════════════════════════════════════════
+router.post(
+  '/batch-assign',
+  authenticate,
+  authorize('owner', 'manager'),
+  (req, res, next) => {
+    try {
+      const db = getDb();
+      const { delivery_ids, delivery_partner_id } = req.body;
+
+      if (!Array.isArray(delivery_ids) || delivery_ids.length === 0) {
+        return res.status(400).json({ success: false, message: 'delivery_ids array required.' });
+      }
+      if (!delivery_partner_id) {
+        return res.status(400).json({ success: false, message: 'delivery_partner_id required.' });
+      }
+
+      const partner = db.prepare("SELECT id, name, role FROM users WHERE id = ? AND role = 'delivery_partner' AND is_active = 1").get(Number(delivery_partner_id));
+      if (!partner) {
+        return res.status(404).json({ success: false, message: 'Delivery partner not found or inactive.' });
+      }
+
+      const batchId = `BATCH-${Date.now()}-${req.user.id}`;
+      const now = new Date().toISOString();
+      let assigned = 0;
+      let skipped = 0;
+
+      const assignStmt = db.prepare(`
+        UPDATE deliveries 
+        SET delivery_partner_id = ?, status = 'assigned', assigned_by = ?, assigned_at = ?, 
+            batch_id = ?, failure_reason = NULL 
+        WHERE id = ? AND status IN ('pending', 'assigned', 'failed')
+      `);
+
+      const assignAll = db.transaction(() => {
+        for (const id of delivery_ids) {
+          const result = assignStmt.run(Number(delivery_partner_id), req.user.id, now, batchId, Number(id));
+          if (result.changes > 0) assigned++;
+          else skipped++;
+        }
+      });
+
+      assignAll();
+
+      res.json({
+        success: true,
+        message: `Assigned ${assigned} deliveries to ${partner.name}. ${skipped > 0 ? `${skipped} skipped (invalid status).` : ''}`,
+        data: { batch_id: batchId, assigned, skipped, partner_name: partner.name },
+      });
+    } catch (err) { next(err); }
+  }
+);
+
 // ─── GET /api/deliveries/:id ─────────────────────────────────
 router.get('/:id', authenticate, (req, res, next) => {
   try {

@@ -1,7 +1,7 @@
 import React, { useState, useCallback } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
-  RefreshControl, Alert, Modal, TextInput, Platform, Image,
+  RefreshControl, Alert, Modal, TextInput, Platform, Image, KeyboardAvoidingView,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
@@ -358,7 +358,7 @@ export default function ProductDetailScreen({ route, navigation }) {
 
       {/* Add Material Modal */}
       <Modal visible={showAddMaterial} transparent animationType="slide" onRequestClose={() => setShowAddMaterial(false)}>
-        <View style={styles.modalOverlay}>
+        <KeyboardAvoidingView style={styles.modalOverlay} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
           <View style={styles.modalContent}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Add Material</Text>
@@ -414,7 +414,7 @@ export default function ProductDetailScreen({ route, navigation }) {
               <Text style={styles.modalBtnText}>{addingMaterial ? 'Adding...' : 'Add Material'}</Text>
             </TouchableOpacity>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
     </View>
   );

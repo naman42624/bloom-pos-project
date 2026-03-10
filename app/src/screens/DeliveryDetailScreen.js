@@ -4,6 +4,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
+import * as ImagePicker from 'expo-image-picker';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
@@ -25,9 +26,44 @@ export default function DeliveryDetailScreen({ route, navigation }) {
   const [failReason, setFailReason] = useState('');
   const [showCodForm, setShowCodForm] = useState(false);
   const [showFailForm, setShowFailForm] = useState(false);
+  const [proofPhoto, setProofPhoto] = useState(null);
 
   const isPartner = user?.role === 'delivery_partner';
   const isManager = user?.role === 'owner' || user?.role === 'manager';
+
+  const takeProofPhoto = async () => {
+    try {
+      const { status } = await ImagePicker.requestCameraPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission Required', 'Camera permission is needed for proof of delivery.');
+        return;
+      }
+      const result = await ImagePicker.launchCameraAsync({
+        mediaTypes: ['images'],
+        quality: 0.6,
+        allowsEditing: false,
+      });
+      if (!result.canceled && result.assets?.[0]) {
+        setProofPhoto(result.assets[0]);
+      }
+    } catch (err) {
+      console.error('Camera error:', err);
+    }
+  };
+
+  const pickProofPhoto = async () => {
+    try {
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        quality: 0.6,
+      });
+      if (!result.canceled && result.assets?.[0]) {
+        setProofPhoto(result.assets[0]);
+      }
+    } catch (err) {
+      console.error('Image picker error:', err);
+    }
+  };
 
   const fetchDelivery = useCallback(async () => {
     try {
@@ -65,7 +101,7 @@ export default function DeliveryDetailScreen({ route, navigation }) {
     }
   };
 
-  const handleDeliver = () => {
+  const handleDeliver = async () => {
     const data = {};
     if (delivery.cod_amount > 0) {
       const amt = parseFloat(codAmount);
@@ -78,6 +114,22 @@ export default function DeliveryDetailScreen({ route, navigation }) {
       data.cod_method = codMethod;
       if (codMethod === 'upi' && codRef) data.cod_reference = codRef;
     }
+
+    // Upload proof photo if taken
+    if (proofPhoto) {
+      try {
+        const formData = new FormData();
+        formData.append('photo', {
+          uri: proofPhoto.uri,
+          type: 'image/jpeg',
+          name: `proof_${deliveryId}_${Date.now()}.jpg`,
+        });
+        await api.uploadDeliveryProof(deliveryId, formData);
+      } catch (err) {
+        console.warn('Proof upload error (continuing):', err);
+      }
+    }
+
     doAction('deliver', data);
   };
 
@@ -274,6 +326,48 @@ export default function DeliveryDetailScreen({ route, navigation }) {
         {delivery.customer_name && <InfoRow icon="person-outline" label="Customer" value={`${delivery.customer_name} ${delivery.customer_phone ? '• ' + delivery.customer_phone : ''}`} />}
         {delivery.partner_name && <InfoRow icon="bicycle-outline" label="Partner" value={`${delivery.partner_name} ${delivery.partner_phone ? '• ' + delivery.partner_phone : ''}`} />}
         {delivery.scheduled_date && <InfoRow icon="calendar-outline" label="Scheduled" value={`${delivery.scheduled_date} ${delivery.scheduled_time || ''}`} />}
+
+        {/* Delivery Timeline */}
+        {(delivery.assigned_at || delivery.pickup_time || delivery.delivered_time) && (
+          <View style={styles.timeline}>
+            <Text style={{ fontSize: FontSize.sm, fontWeight: '700', color: Colors.text, marginBottom: 6 }}>Timeline</Text>
+            {delivery.created_at && (
+              <View style={styles.timelineRow}>
+                <Ionicons name="add-circle" size={16} color="#FF9800" />
+                <Text style={styles.timelineText}>Created: {new Date(delivery.created_at).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}</Text>
+              </View>
+            )}
+            {delivery.assigned_at && (
+              <View style={styles.timelineRow}>
+                <Ionicons name="person-add" size={16} color="#2196F3" />
+                <Text style={styles.timelineText}>Assigned: {new Date(delivery.assigned_at).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}</Text>
+              </View>
+            )}
+            {delivery.pickup_time && (
+              <View style={styles.timelineRow}>
+                <Ionicons name="cube" size={16} color="#9C27B0" />
+                <Text style={styles.timelineText}>Picked Up: {new Date(delivery.pickup_time).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}</Text>
+              </View>
+            )}
+            {delivery.delivered_time && (
+              <View style={styles.timelineRow}>
+                <Ionicons name="checkmark-circle" size={16} color="#4CAF50" />
+                <Text style={styles.timelineText}>Delivered: {new Date(delivery.delivered_time).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}</Text>
+              </View>
+            )}
+            {delivery.pickup_time && delivery.delivered_time && (
+              <View style={[styles.timelineRow, { backgroundColor: '#E8F5E9', borderRadius: 6, padding: 6, marginTop: 4 }]}>
+                <Ionicons name="timer" size={16} color={Colors.success} />
+                <Text style={[styles.timelineText, { fontWeight: '700', color: Colors.success }]}>
+                  Delivery Time: {(() => {
+                    const mins = Math.round((new Date(delivery.delivered_time) - new Date(delivery.pickup_time)) / 60000);
+                    return mins >= 60 ? `${Math.floor(mins / 60)}h ${mins % 60}m` : `${mins}m`;
+                  })()}
+                </Text>
+              </View>
+            )}
+          </View>
+        )}
         {delivery.delivery_notes && <InfoRow icon="chatbox-outline" label="Notes" value={delivery.delivery_notes} />}
         {delivery.sender_name ? <InfoRow icon="gift-outline" label="Sender" value={`${delivery.sender_name}${delivery.sender_phone ? ' • ' + delivery.sender_phone : ''}`} /> : null}
         {delivery.sender_message ? <InfoRow icon="mail-outline" label="Message" value={delivery.sender_message} /> : null}
@@ -456,6 +550,27 @@ export default function DeliveryDetailScreen({ route, navigation }) {
                       )}
                     </>
                   )}
+                  {/* Proof of Delivery Photo */}
+                  <Text style={styles.formTitle}>Proof of Delivery (Photo)</Text>
+                  {proofPhoto ? (
+                    <View style={{ alignItems: 'center', marginBottom: 8 }}>
+                      <Image source={{ uri: proofPhoto.uri }} style={{ width: 200, height: 150, borderRadius: 8 }} />
+                      <TouchableOpacity onPress={() => setProofPhoto(null)} style={{ marginTop: 4 }}>
+                        <Text style={{ color: Colors.error, fontSize: FontSize.sm }}>Remove</Text>
+                      </TouchableOpacity>
+                    </View>
+                  ) : (
+                    <View style={{ flexDirection: 'row', gap: 8, marginBottom: 8 }}>
+                      <TouchableOpacity style={[styles.actionBtn, { backgroundColor: '#9C27B0', flex: 1 }]} onPress={takeProofPhoto}>
+                        <Ionicons name="camera" size={18} color="#fff" />
+                        <Text style={styles.actionBtnText}>Take Photo</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity style={[styles.actionBtn, { backgroundColor: Colors.textSecondary, flex: 1 }]} onPress={pickProofPhoto}>
+                        <Ionicons name="images" size={18} color="#fff" />
+                        <Text style={styles.actionBtnText}>Gallery</Text>
+                      </TouchableOpacity>
+                    </View>
+                  )}
                   <View style={styles.actionRow}>
                     <TouchableOpacity style={[styles.actionBtn, { backgroundColor: '#ccc', flex: 1 }]} onPress={() => setShowCodForm(false)}>
                       <Text style={[styles.actionBtnText, { color: '#333' }]}>Cancel</Text>
@@ -515,6 +630,9 @@ const styles = StyleSheet.create({
   center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   section: { backgroundColor: Colors.surface, borderRadius: BorderRadius.lg, margin: Spacing.md, marginBottom: 0, padding: Spacing.md, shadowColor: '#000', shadowOpacity: 0.04, shadowRadius: 4, elevation: 1 },
   sectionTitle: { fontSize: FontSize.md, fontWeight: '700', color: Colors.text, marginBottom: 10 },
+  timeline: { marginTop: 12, paddingTop: 10, borderTopWidth: 1, borderTopColor: Colors.border },
+  timelineRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 },
+  timelineText: { fontSize: FontSize.sm, color: Colors.text },
   progressRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 8 },
   stepItem: { alignItems: 'center', flex: 1, position: 'relative' },
   stepDot: { width: 32, height: 32, borderRadius: 16, borderWidth: 2, justifyContent: 'center', alignItems: 'center', zIndex: 1 },

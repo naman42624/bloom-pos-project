@@ -1,7 +1,7 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useMemo } from 'react';
 import {
-  View, Text, StyleSheet, FlatList, TouchableOpacity,
-  ActivityIndicator, RefreshControl, Alert, ScrollView, Modal, TextInput,
+  View, Text, StyleSheet, FlatList, SectionList, TouchableOpacity,
+  ActivityIndicator, RefreshControl, Alert, ScrollView, Modal, TextInput, Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
@@ -58,6 +58,50 @@ export default function ProductionQueueScreen({ navigation }) {
 
   const isOwner = user?.role === 'owner';
   const isManager = user?.role === 'owner' || user?.role === 'manager';
+
+  // Date filter for production tasks
+  const [selectedDate, setSelectedDate] = useState(null); // null = all dates
+  const [showDatePicker, setShowDatePicker] = useState(false);
+
+  // Helper: format date label
+  const formatDateLabel = (dateStr) => {
+    if (!dateStr) return 'No Date';
+    const today = new Date().toISOString().split('T')[0];
+    const tomorrow = new Date(Date.now() + 86400000).toISOString().split('T')[0];
+    if (dateStr === today) return 'Today';
+    if (dateStr === tomorrow) return 'Tomorrow';
+    return new Date(dateStr + 'T00:00:00').toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+  };
+
+  // Group tasks by scheduled_date into sections, today on top
+  const taskSections = useMemo(() => {
+    if (!tasks.length) return [];
+    const groups = {};
+    tasks.forEach(t => {
+      const date = t.scheduled_date || '9999-12-31'; // no date goes last
+      if (!groups[date]) groups[date] = [];
+      groups[date].push(t);
+    });
+    const today = new Date().toISOString().split('T')[0];
+    const dates = Object.keys(groups).sort((a, b) => {
+      // Today first, then ascending dates
+      if (a === today) return -1;
+      if (b === today) return 1;
+      return a.localeCompare(b);
+    });
+    return dates.map(date => ({
+      title: date === '9999-12-31' ? 'No Date' : formatDateLabel(date),
+      dateKey: date,
+      data: groups[date],
+    }));
+  }, [tasks]);
+
+  // Available dates for the date picker
+  const availableDates = useMemo(() => {
+    const dateSet = new Set();
+    tasks.forEach(t => { if (t.scheduled_date) dateSet.add(t.scheduled_date); });
+    return Array.from(dateSet).sort();
+  }, [tasks]);
 
   const fetchTasks = useCallback(async () => {
     try {
@@ -416,16 +460,40 @@ export default function ProductionQueueScreen({ navigation }) {
 
       {/* Status filter (for tasks view) */}
       {viewMode === 'tasks' && (
-        <ScrollView horizontal showsHorizontalScrollIndicator={false}
-          contentContainerStyle={{ paddingHorizontal: Spacing.md, gap: Spacing.xs, paddingVertical: Spacing.xs }}>
-          {TASK_STATUS_TABS.map((tab) => (
-            <TouchableOpacity key={tab.key}
-              style={[styles.chip, statusFilter === tab.key && styles.chipActive]}
-              onPress={() => setStatusFilter(tab.key)}>
-              <Text style={[styles.chipText, statusFilter === tab.key && styles.chipTextActive]}>{tab.label}</Text>
+        <View>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false}
+            contentContainerStyle={{ paddingHorizontal: Spacing.md, gap: Spacing.xs, paddingVertical: Spacing.xs }}>
+            {TASK_STATUS_TABS.map((tab) => (
+              <TouchableOpacity key={tab.key}
+                style={[styles.chip, statusFilter === tab.key && styles.chipActive]}
+                onPress={() => setStatusFilter(tab.key)}>
+                <Text style={[styles.chipText, statusFilter === tab.key && styles.chipTextActive]}>{tab.label}</Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+          {/* Date filter row */}
+          <ScrollView horizontal showsHorizontalScrollIndicator={false}
+            contentContainerStyle={{ paddingHorizontal: Spacing.md, gap: Spacing.xs, paddingBottom: Spacing.xs }}>
+            <TouchableOpacity
+              style={[styles.chip, selectedDate === null && styles.chipActive]}
+              onPress={() => setSelectedDate(null)}>
+              <Text style={[styles.chipText, selectedDate === null && styles.chipTextActive]}>All Dates</Text>
             </TouchableOpacity>
-          ))}
-        </ScrollView>
+            <TouchableOpacity
+              style={[styles.chip, selectedDate === new Date().toISOString().split('T')[0] && styles.chipActive]}
+              onPress={() => setSelectedDate(new Date().toISOString().split('T')[0])}>
+              <Ionicons name="today" size={14} color={selectedDate === new Date().toISOString().split('T')[0] ? Colors.white : Colors.textSecondary} />
+              <Text style={[styles.chipText, selectedDate === new Date().toISOString().split('T')[0] && styles.chipTextActive]}> Today</Text>
+            </TouchableOpacity>
+            {availableDates.filter(d => d !== new Date().toISOString().split('T')[0]).map(date => (
+              <TouchableOpacity key={date}
+                style={[styles.chip, selectedDate === date && styles.chipActive]}
+                onPress={() => setSelectedDate(date)}>
+                <Text style={[styles.chipText, selectedDate === date && styles.chipTextActive]}>{formatDateLabel(date)}</Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        </View>
       )}
 
       {/* Status filter + search (for orders view) */}
@@ -460,12 +528,22 @@ export default function ProductionQueueScreen({ navigation }) {
       )}
 
       {viewMode === 'tasks' ? (
-        <FlatList
-          data={tasks}
+        <SectionList
+          sections={selectedDate ? taskSections.filter(s => s.dateKey === selectedDate || (selectedDate && !s.dateKey)) : taskSections}
           keyExtractor={(item) => String(item.id)}
           renderItem={renderTask}
+          renderSectionHeader={({ section }) => (
+            <View style={styles.sectionHeader}>
+              <Ionicons name="calendar-outline" size={16} color={Colors.primary} />
+              <Text style={styles.sectionTitle}>{section.title}</Text>
+              <View style={styles.sectionBadge}>
+                <Text style={styles.sectionCount}>{section.data.length}</Text>
+              </View>
+            </View>
+          )}
           contentContainerStyle={styles.listContent}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[Colors.primary]} />}
+          stickySectionHeadersEnabled={true}
           ListEmptyComponent={
             <View style={styles.empty}>
               <Ionicons name="checkmark-done-circle-outline" size={48} color={Colors.textLight} />
@@ -571,6 +649,19 @@ const styles = StyleSheet.create({
   searchInput: { flex: 1, fontSize: FontSize.sm, color: Colors.text },
 
   listContent: { padding: Spacing.md, gap: Spacing.sm },
+  sectionHeader: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    paddingVertical: Spacing.sm, paddingHorizontal: Spacing.md,
+    backgroundColor: Colors.background,
+    borderBottomWidth: 1, borderBottomColor: Colors.border,
+    marginBottom: Spacing.xs,
+  },
+  sectionTitle: { fontSize: FontSize.md, fontWeight: '700', color: Colors.text, flex: 1 },
+  sectionBadge: {
+    backgroundColor: Colors.primary + '20', borderRadius: BorderRadius.full,
+    paddingHorizontal: 8, paddingVertical: 2,
+  },
+  sectionCount: { fontSize: FontSize.xs, fontWeight: '700', color: Colors.primary },
   card: {
     backgroundColor: Colors.surface, borderRadius: BorderRadius.md,
     padding: Spacing.md, borderWidth: 1, borderColor: Colors.border,

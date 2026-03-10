@@ -234,4 +234,93 @@ router.get('/latest/:userId', authorize('owner', 'manager'), (req, res) => {
   }
 });
 
+// ═══════════════════════════════════════════════════════════════
+// GET PARTNER PERFORMANCE METRICS
+// ═══════════════════════════════════════════════════════════════
+router.get('/performance/:userId', authorize('owner', 'manager'), (req, res) => {
+  try {
+    const db = getDb();
+    const userId = Number(req.params.userId);
+    const { days = 30 } = req.query;
+
+    const since = new Date();
+    since.setDate(since.getDate() - Number(days));
+    const sinceStr = since.toISOString();
+
+    // Delivery counts and avg time
+    const stats = db.prepare(`
+      SELECT 
+        COUNT(*) as total_assigned,
+        SUM(CASE WHEN status = 'delivered' THEN 1 ELSE 0 END) as total_delivered,
+        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as total_failed,
+        AVG(CASE 
+          WHEN status = 'delivered' AND pickup_time IS NOT NULL AND delivered_time IS NOT NULL 
+          THEN (julianday(delivered_time) - julianday(pickup_time)) * 24 * 60 
+          ELSE NULL 
+        END) as avg_delivery_minutes,
+        SUM(CASE 
+          WHEN status = 'delivered' AND scheduled_time IS NOT NULL AND delivered_time IS NOT NULL 
+            AND time(delivered_time) <= time(scheduled_time) 
+          THEN 1 ELSE 0 
+        END) as on_time_count,
+        SUM(CASE WHEN status = 'delivered' AND scheduled_time IS NOT NULL THEN 1 ELSE 0 END) as scheduled_count,
+        SUM(CASE WHEN status = 'delivered' THEN COALESCE(cod_collected, 0) ELSE 0 END) as total_cod_collected
+      FROM deliveries
+      WHERE delivery_partner_id = ? AND assigned_at >= ?
+    `).get(userId, sinceStr);
+
+    // Daily breakdown (last N days)
+    const dailyBreakdown = db.prepare(`
+      SELECT 
+        DATE(delivered_time) as date,
+        COUNT(*) as deliveries,
+        AVG((julianday(delivered_time) - julianday(pickup_time)) * 24 * 60) as avg_minutes
+      FROM deliveries
+      WHERE delivery_partner_id = ? AND status = 'delivered' AND delivered_time >= ?
+      GROUP BY DATE(delivered_time)
+      ORDER BY date DESC
+      LIMIT 14
+    `).all(userId, sinceStr);
+
+    // Distance and active time from daily summary
+    const distanceStats = db.prepare(`
+      SELECT 
+        SUM(total_distance_km) as total_distance_km,
+        SUM(total_active_minutes) as total_active_minutes,
+        SUM(total_idle_minutes) as total_idle_minutes,
+        AVG(total_deliveries) as avg_daily_deliveries
+      FROM delivery_partner_daily
+      WHERE user_id = ? AND date >= DATE(?)
+    `).get(userId, sinceStr);
+
+    const completionRate = stats.total_assigned > 0
+      ? Math.round((stats.total_delivered / stats.total_assigned) * 100)
+      : 0;
+    const onTimeRate = stats.scheduled_count > 0
+      ? Math.round((stats.on_time_count / stats.scheduled_count) * 100)
+      : null;
+
+    res.json({
+      success: true,
+      data: {
+        total_assigned: stats.total_assigned,
+        total_delivered: stats.total_delivered,
+        total_failed: stats.total_failed,
+        completion_rate: completionRate,
+        avg_delivery_minutes: stats.avg_delivery_minutes ? Math.round(stats.avg_delivery_minutes) : null,
+        on_time_rate: onTimeRate,
+        total_cod_collected: stats.total_cod_collected || 0,
+        total_distance_km: distanceStats?.total_distance_km || 0,
+        total_active_minutes: distanceStats?.total_active_minutes || 0,
+        total_idle_minutes: distanceStats?.total_idle_minutes || 0,
+        avg_daily_deliveries: distanceStats?.avg_daily_deliveries ? Number(distanceStats.avg_daily_deliveries.toFixed(1)) : 0,
+        daily_breakdown: dailyBreakdown,
+      },
+    });
+  } catch (error) {
+    console.error('Get partner performance error:', error);
+    res.status(500).json({ success: false, message: 'Failed to get performance data.' });
+  }
+});
+
 module.exports = router;

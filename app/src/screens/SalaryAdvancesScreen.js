@@ -1,7 +1,7 @@
 import React, { useState, useCallback } from 'react';
 import {
   View, Text, StyleSheet, FlatList, TouchableOpacity, ScrollView,
-  RefreshControl, Alert, Platform, Modal, TextInput, ActivityIndicator,
+  RefreshControl, Alert, Platform, Modal, TextInput, ActivityIndicator, KeyboardAvoidingView,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
@@ -254,7 +254,7 @@ export default function SalaryAdvancesScreen() {
 
       {/* Request Modal */}
       <Modal visible={requestModal} transparent animationType="fade" onRequestClose={() => setRequestModal(false)}>
-        <View style={styles.modalOverlay}>
+        <KeyboardAvoidingView style={styles.modalOverlay} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>Request Salary Advance</Text>
 
@@ -291,7 +291,7 @@ export default function SalaryAdvancesScreen() {
               </TouchableOpacity>
             </View>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
     </View>
   );

@@ -116,13 +116,14 @@ router.post('/clock-in', authorize('manager', 'employee', 'delivery_partner'), (
 
     if (existing && existing.clock_out) {
       // Re-clocking in after clock out (second shift same day)
+      // Preserve previous hours by keeping total_hours/outdoor_hours/effective_hours from first shift
       db.prepare(`
         UPDATE attendance
         SET clock_in = ?, clock_in_method = ?, clock_in_latitude = ?, clock_in_longitude = ?,
             clock_out = NULL, clock_out_method = NULL, clock_out_latitude = NULL, clock_out_longitude = NULL,
-            late_arrival = ?, status = 'present', updated_at = CURRENT_TIMESTAMP
+            status = 'present', updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
-      `).run(now, clockMethod, latitude || null, longitude || null, late, existing.id);
+      `).run(now, clockMethod, latitude || null, longitude || null, existing.id);
 
       const updated = db.prepare('SELECT * FROM attendance WHERE id = ?').get(existing.id);
       return res.json({ success: true, data: updated });
@@ -164,8 +165,12 @@ router.post('/clock-out', authorize('manager', 'employee', 'delivery_partner'), 
 
     const now = new Date().toISOString();
     const clockMethod = method || 'manual';
-    const total = hoursBetween(record.clock_in, now);
+    const currentShiftHours = hoursBetween(record.clock_in, now);
     const early = isEarlyDeparture(now, record.operating_hours, userId, record.location_id) ? 1 : 0;
+
+    // Accumulate previous shift hours (total_hours already has hours from prior clock-out)
+    const previousHours = record.total_hours || 0;
+    const total = previousHours + currentShiftHours;
 
     // Calculate outdoor hours for today
     const outdoorHrs = db.prepare(`

@@ -58,6 +58,9 @@ export default function AddRecurringOrderScreen({ route, navigation }) {
   const [customerSuggestions, setCustomerSuggestions] = useState([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
 
+  // Saved addresses
+  const [savedAddresses, setSavedAddresses] = useState([]);
+
   useEffect(() => {
     loadLocations();
     loadProducts();
@@ -67,8 +70,8 @@ export default function AddRecurringOrderScreen({ route, navigation }) {
   const loadLocations = async () => {
     try {
       const res = await api.getLocations();
-      const locs = (res.data || []).filter(l => l.is_active);
-      setLocations(locs);
+      const locs = (res.data?.locations || res.data || []).filter(l => l.is_active);
+      setLocations(Array.isArray(locs) ? locs : []);
       if (locs.length === 1 && !locationId) setLocationId(locs[0].id);
     } catch {}
   };
@@ -87,6 +90,12 @@ export default function AddRecurringOrderScreen({ route, navigation }) {
       setCustomerId(o.customer_id);
       setCustomerName(o.customer_name || '');
       setCustomerPhone(o.customer_phone || '');
+      // Fetch saved addresses for existing customer
+      if (o.customer_id) {
+        api.getCustomerAddresses(o.customer_id).then(res => {
+          setSavedAddresses(res.data || []);
+        }).catch(() => {});
+      }
       setLocationId(o.location_id);
       setOrderType(o.order_type);
       setFrequency(o.frequency);
@@ -135,7 +144,13 @@ export default function AddRecurringOrderScreen({ route, navigation }) {
   const selectCustomer = (c) => {
     setCustomerPhone(c.phone || '');
     setCustomerName(c.name || '');
-    if (c.id) setCustomerId(c.id);
+    if (c.id) {
+      setCustomerId(c.id);
+      // Fetch saved addresses for the selected customer
+      api.getCustomerAddresses(c.id).then(res => {
+        setSavedAddresses(res.data || []);
+      }).catch(() => {});
+    }
     setShowSuggestions(false);
   };
 
@@ -274,7 +289,29 @@ export default function AddRecurringOrderScreen({ route, navigation }) {
         {/* Delivery Address */}
         {orderType === 'delivery' && (
           <>
-            <Text style={styles.sectionTitle}>Delivery Address *</Text>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+              <Text style={styles.sectionTitle}>Delivery Address *</Text>
+              {savedAddresses.length > 0 && (
+                <Text style={{ fontSize: FontSize.xs, color: Colors.textLight }}>{savedAddresses.length} saved</Text>
+              )}
+            </View>
+            {savedAddresses.length > 0 && (
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 8 }}>
+                {savedAddresses.map(addr => (
+                  <TouchableOpacity
+                    key={addr.id}
+                    style={{ flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: Colors.background, borderWidth: 1, borderColor: Colors.border, borderRadius: BorderRadius.full, paddingHorizontal: 12, paddingVertical: 6, marginRight: 8 }}
+                    onPress={() => {
+                      const parts = [addr.address_line_1, addr.address_line_2, addr.city, addr.state, addr.pincode].filter(Boolean);
+                      setDeliveryAddress(parts.join(', '));
+                    }}
+                  >
+                    <Ionicons name="location" size={14} color={Colors.primary} />
+                    <Text style={{ fontSize: FontSize.xs, color: Colors.text }} numberOfLines={1}>{addr.label || addr.address_line_1}</Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            )}
             <TextInput style={styles.input} value={deliveryAddress} onChangeText={setDeliveryAddress}
               placeholder="Full address" placeholderTextColor={Colors.textLight} multiline />
           </>

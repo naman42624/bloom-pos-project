@@ -531,6 +531,30 @@ function initializeDatabase() {
     CREATE INDEX IF NOT EXISTS idx_sales_created ON sales(created_at);
   `);
 
+  // ─── Phase 4: Sale Items ────────────────────────────────────
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS sale_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      sale_id INTEGER NOT NULL,
+      product_id INTEGER DEFAULT NULL,
+      material_id INTEGER DEFAULT NULL,
+      product_name TEXT NOT NULL,
+      quantity INTEGER NOT NULL DEFAULT 1,
+      unit_price REAL NOT NULL,
+      tax_rate REAL NOT NULL DEFAULT 0,
+      tax_amount REAL NOT NULL DEFAULT 0,
+      discount_amount REAL DEFAULT 0,
+      line_total REAL NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE CASCADE,
+      FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
+      FOREIGN KEY (material_id) REFERENCES materials(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_sale_items_sale ON sale_items(sale_id);
+    CREATE INDEX IF NOT EXISTS idx_sale_items_product ON sale_items(product_id);
+  `);
+
   // Add missing columns for existing databases
   const salesCols = db.prepare("PRAGMA table_info(sales)").all().map(c => c.name);
   if (!salesCols.includes('delivery_address')) {
@@ -583,32 +607,6 @@ function initializeDatabase() {
     `);
     console.log('✅ Migrated sale_items: product_id is now nullable');
   }
-
-  // ─── Phase 4: Sale Items ────────────────────────────────────
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS sale_items (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      sale_id INTEGER NOT NULL,
-      product_id INTEGER DEFAULT NULL,
-      material_id INTEGER DEFAULT NULL,
-      product_name TEXT NOT NULL,
-      quantity INTEGER NOT NULL DEFAULT 1,
-      unit_price REAL NOT NULL,
-      tax_rate REAL NOT NULL DEFAULT 0,
-      tax_amount REAL NOT NULL DEFAULT 0,
-      discount_amount REAL DEFAULT 0,
-      line_total REAL NOT NULL,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE CASCADE,
-      FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
-      FOREIGN KEY (material_id) REFERENCES materials(id) ON DELETE CASCADE
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_sale_items_sale ON sale_items(sale_id);
-    CREATE INDEX IF NOT EXISTS idx_sale_items_product ON sale_items(product_id);
-  `);
-
-  // ─── Phase 4: Payments ──────────────────────────────────────
   db.exec(`
     CREATE TABLE IF NOT EXISTS payments (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1204,6 +1202,13 @@ function initializeDatabase() {
     CREATE INDEX IF NOT EXISTS idx_employee_shifts_location ON employee_shifts(location_id);
   `);
 
+  // Migration: Add shift_segments column for split shift support
+  try {
+    const shiftCols = db.prepare("PRAGMA table_info(employee_shifts)").all().map(c => c.name);
+    if (!shiftCols.includes('shift_segments')) {
+      db.exec("ALTER TABLE employee_shifts ADD COLUMN shift_segments TEXT DEFAULT NULL");
+    }
+  } catch (e) { console.warn('Shift segments migration:', e.message); }
   // ─── Phase 8: Employee Salaries ────────────────────────────
   db.exec(`
     CREATE TABLE IF NOT EXISTS employee_salaries (
@@ -1300,6 +1305,47 @@ function initializeDatabase() {
     );
     CREATE INDEX IF NOT EXISTS idx_delivery_partner_daily_user ON delivery_partner_daily(user_id);
   `);
+
+  // ─── Phase 8: Salary Payments (payroll disbursements) ─────
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS salary_payments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      period_start DATE NOT NULL,
+      period_end DATE NOT NULL,
+      base_salary REAL NOT NULL DEFAULT 0,
+      days_worked REAL DEFAULT 0,
+      days_in_period INTEGER DEFAULT 0,
+      hours_worked REAL DEFAULT 0,
+      late_days INTEGER DEFAULT 0,
+      absent_days INTEGER DEFAULT 0,
+      leaves_taken INTEGER DEFAULT 0,
+      deductions REAL DEFAULT 0,
+      advances_deducted REAL DEFAULT 0,
+      bonus REAL DEFAULT 0,
+      net_amount REAL NOT NULL DEFAULT 0,
+      payment_method TEXT DEFAULT 'cash' CHECK(payment_method IN ('cash', 'upi', 'bank_transfer')),
+      payment_reference TEXT DEFAULT '',
+      status TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'paid', 'cancelled')),
+      paid_at DATETIME DEFAULT NULL,
+      paid_by INTEGER DEFAULT NULL,
+      notes TEXT DEFAULT '',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (paid_by) REFERENCES users(id) ON DELETE SET NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_salary_payments_user ON salary_payments(user_id);
+    CREATE INDEX IF NOT EXISTS idx_salary_payments_period ON salary_payments(period_start, period_end);
+  `);
+
+  // Migration: Add batch_id column for multi-delivery batching
+  try {
+    const delCols = db.prepare("PRAGMA table_info(deliveries)").all().map(c => c.name);
+    if (!delCols.includes('batch_id')) {
+      db.exec("ALTER TABLE deliveries ADD COLUMN batch_id TEXT DEFAULT NULL");
+      db.exec("CREATE INDEX IF NOT EXISTS idx_deliveries_batch ON deliveries(batch_id)");
+    }
+  } catch (e) { console.warn('Batch ID migration:', e.message); }
 }
 
 function closeDb() {

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import {
-  View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, Platform, ActivityIndicator, Modal, TextInput,
+  View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, Platform, ActivityIndicator, Modal, TextInput, KeyboardAvoidingView,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Print from 'expo-print';
@@ -38,6 +38,7 @@ export default function SaleDetailScreen({ route, navigation }) {
   const [convertAddress, setConvertAddress] = useState('');
   const [convertCharges, setConvertCharges] = useState('');
   const [convertTarget, setConvertTarget] = useState(null); // 'pickup' or 'delivery'
+  const [convertSavedAddresses, setConvertSavedAddresses] = useState([]);
 
   useEffect(() => { fetchSale(); }, [saleId]);
 
@@ -115,6 +116,13 @@ export default function SaleDetailScreen({ route, navigation }) {
     setConvertTarget(target);
     setConvertAddress(sale?.delivery_address || '');
     setConvertCharges(target === 'delivery' ? '' : '0');
+    setConvertSavedAddresses([]);
+    // Fetch saved addresses for the customer
+    if (target === 'delivery' && sale?.customer_id) {
+      api.getCustomerAddresses(sale.customer_id).then(res => {
+        setConvertSavedAddresses(res.data || []);
+      }).catch(() => {});
+    }
     setConvertModalVisible(true);
   };
 
@@ -503,7 +511,7 @@ export default function SaleDetailScreen({ route, navigation }) {
 
       {/* Convert Order Type Modal */}
       <Modal visible={convertModalVisible} transparent animationType="slide">
-        <View style={styles.modalOverlay}>
+        <KeyboardAvoidingView style={styles.modalOverlay} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
           <View style={styles.modalContent}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>
@@ -517,6 +525,23 @@ export default function SaleDetailScreen({ route, navigation }) {
             {convertTarget === 'delivery' && (
               <>
                 <Text style={styles.fieldLabel}>Delivery Address *</Text>
+                {convertSavedAddresses.length > 0 && (
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 8 }}>
+                    {convertSavedAddresses.map(addr => (
+                      <TouchableOpacity
+                        key={addr.id}
+                        style={{ flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: Colors.background, borderWidth: 1, borderColor: Colors.border, borderRadius: BorderRadius.full, paddingHorizontal: 12, paddingVertical: 6, marginRight: 8 }}
+                        onPress={() => {
+                          const parts = [addr.address_line_1, addr.address_line_2, addr.city, addr.state, addr.pincode].filter(Boolean);
+                          setConvertAddress(parts.join(', '));
+                        }}
+                      >
+                        <Ionicons name="location" size={14} color={Colors.primary} />
+                        <Text style={{ fontSize: FontSize.xs, color: Colors.text }} numberOfLines={1}>{addr.label || addr.address_line_1}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </ScrollView>
+                )}
                 <TextInput
                   style={styles.modalInput}
                   value={convertAddress}
@@ -549,7 +574,7 @@ export default function SaleDetailScreen({ route, navigation }) {
               <Text style={styles.confirmBtnText}>Convert Order</Text>
             </TouchableOpacity>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
     </ScrollView>
   );

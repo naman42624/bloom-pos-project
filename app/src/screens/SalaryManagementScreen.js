@@ -1,7 +1,7 @@
 import React, { useState, useCallback } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
-  RefreshControl, Alert, Modal, TextInput, ActivityIndicator, Platform,
+  RefreshControl, Alert, Modal, TextInput, ActivityIndicator, Platform, KeyboardAvoidingView,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
@@ -37,6 +37,20 @@ export default function SalaryManagementScreen() {
   const [amount, setAmount] = useState('');
   const [salaryType, setSalaryType] = useState('monthly');
   const [notes, setNotes] = useState('');
+
+  // Payroll state
+  const [viewTab, setViewTab] = useState('salaries'); // 'salaries' | 'payroll'
+  const [payrollModal, setPayrollModal] = useState(false);
+  const [payrollCalc, setPayrollCalc] = useState(null);
+  const [payrollCalculating, setPayrollCalculating] = useState(false);
+  const [payrollUser, setPayrollUser] = useState(null);
+  const [periodStart, setPeriodStart] = useState('');
+  const [periodEnd, setPeriodEnd] = useState('');
+  const [paymentMethod, setPaymentMethod] = useState('cash');
+  const [paymentRef, setPaymentRef] = useState('');
+  const [bonusAmount, setBonusAmount] = useState('');
+  const [payrollHistory, setPayrollHistory] = useState([]);
+  const [payrollHistoryLoading, setPayrollHistoryLoading] = useState(false);
 
   const fetchData = useCallback(async () => {
     try {
@@ -94,6 +108,108 @@ export default function SalaryManagementScreen() {
     }
   };
 
+  // ─── Payroll functions ──────────────────────────────────
+  const getDefaultPeriod = () => {
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = now.getMonth(); // 0-indexed
+    const start = `${y}-${String(m + 1).padStart(2, '0')}-01`;
+    const lastDay = new Date(y, m + 1, 0).getDate();
+    const end = `${y}-${String(m + 1).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+    return { start, end };
+  };
+
+  const openPayrollModal = (sal) => {
+    setPayrollUser(sal);
+    const { start, end } = getDefaultPeriod();
+    setPeriodStart(start);
+    setPeriodEnd(end);
+    setPayrollCalc(null);
+    setPaymentMethod('cash');
+    setPaymentRef('');
+    setBonusAmount('');
+    setPayrollModal(true);
+  };
+
+  const handleCalculatePayroll = async () => {
+    if (!periodStart || !periodEnd) {
+      Alert.alert('Error', 'Please enter period dates.');
+      return;
+    }
+    setPayrollCalculating(true);
+    try {
+      const res = await api.calculatePayroll({
+        user_id: payrollUser.user_id || payrollUser.id,
+        period_start: periodStart,
+        period_end: periodEnd,
+      });
+      setPayrollCalc(res.data);
+    } catch (e) {
+      Alert.alert('Error', e.message || 'Failed to calculate.');
+    } finally {
+      setPayrollCalculating(false);
+    }
+  };
+
+  const handleDisburse = async () => {
+    if (!payrollCalc) return;
+    const bonus = Number(bonusAmount) || 0;
+    const advDeduct = payrollCalc.calculation.pending_advances;
+    const finalNet = payrollCalc.calculation.net_amount + bonus - advDeduct;
+
+    const doDisburse = async () => {
+      setSaving(true);
+      try {
+        await api.disburseSalary({
+          user_id: payrollUser.user_id || payrollUser.id,
+          period_start: periodStart,
+          period_end: periodEnd,
+          base_salary: payrollCalc.calculation.base_pay,
+          days_worked: payrollCalc.attendance_summary.days_worked,
+          days_in_period: payrollCalc.period.days,
+          hours_worked: payrollCalc.attendance_summary.total_hours,
+          late_days: payrollCalc.attendance_summary.late_days,
+          absent_days: payrollCalc.attendance_summary.absent_days,
+          leaves_taken: payrollCalc.attendance_summary.leave_days,
+          deductions: payrollCalc.calculation.deductions,
+          advances_deducted: advDeduct,
+          bonus,
+          net_amount: Math.max(0, finalNet),
+          payment_method: paymentMethod,
+          payment_reference: paymentRef,
+        });
+        setPayrollModal(false);
+        Alert.alert('Success', `Salary of ${formatCurrency(Math.max(0, finalNet))} disbursed.`);
+        fetchPayrollHistory();
+      } catch (e) {
+        Alert.alert('Error', e.message || 'Failed to disburse.');
+      } finally {
+        setSaving(false);
+      }
+    };
+
+    if (Platform.OS === 'web') {
+      if (window.confirm(`Disburse ${formatCurrency(Math.max(0, finalNet))} to ${payrollCalc.user.name}?`)) doDisburse();
+    } else {
+      Alert.alert('Confirm Payment', `Disburse ${formatCurrency(Math.max(0, finalNet))} to ${payrollCalc.user.name}?`, [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Pay', onPress: doDisburse },
+      ]);
+    }
+  };
+
+  const fetchPayrollHistory = async () => {
+    setPayrollHistoryLoading(true);
+    try {
+      const res = await api.getPayrollHistory();
+      setPayrollHistory(res.data?.payments || []);
+    } catch (e) {
+      console.error('Fetch payroll error:', e);
+    } finally {
+      setPayrollHistoryLoading(false);
+    }
+  };
+
   const roleBadge = (role) => {
     const colors = { manager: Colors.roleManager, employee: Colors.roleEmployee, delivery_partner: Colors.roleDelivery };
     const labels = { manager: 'Manager', employee: 'Employee', delivery_partner: 'Delivery' };
@@ -114,6 +230,27 @@ export default function SalaryManagementScreen() {
       contentContainerStyle={styles.content}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); fetchData(); }} colors={[Colors.primary]} />}
     >
+      {/* Tab Toggle */}
+      {user?.role === 'owner' && (
+        <View style={styles.tabRow}>
+          <TouchableOpacity
+            style={[styles.tabBtn, viewTab === 'salaries' && styles.tabBtnActive]}
+            onPress={() => setViewTab('salaries')}
+          >
+            <Ionicons name="wallet-outline" size={18} color={viewTab === 'salaries' ? '#fff' : Colors.textSecondary} />
+            <Text style={[styles.tabBtnText, viewTab === 'salaries' && styles.tabBtnTextActive]}>Salaries</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.tabBtn, viewTab === 'payroll' && styles.tabBtnActive]}
+            onPress={() => { setViewTab('payroll'); if (payrollHistory.length === 0) fetchPayrollHistory(); }}
+          >
+            <Ionicons name="cash-outline" size={18} color={viewTab === 'payroll' ? '#fff' : Colors.textSecondary} />
+            <Text style={[styles.tabBtnText, viewTab === 'payroll' && styles.tabBtnTextActive]}>Payroll</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {viewTab === 'salaries' && (<>
       {/* Staff without salaries */}
       {unsetStaff.length > 0 && (
         <View style={styles.section}>
@@ -181,10 +318,87 @@ export default function SalaryManagementScreen() {
           ))
         )}
       </View>
+      </>)}
+
+      {/* ─── Payroll Tab ─────────────────────────────────── */}
+      {viewTab === 'payroll' && (
+        <View>
+          {/* Pay Salary buttons for each staff */}
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Pay Salary</Text>
+            {salaries.length === 0 ? (
+              <Text style={{ color: Colors.textLight, textAlign: 'center', paddingVertical: Spacing.lg }}>
+                Set salaries first to use payroll.
+              </Text>
+            ) : (
+              salaries.map(s => (
+                <TouchableOpacity key={s.id} style={styles.card} onPress={() => openPayrollModal(s)}>
+                  <View style={styles.cardHeader}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.cardName}>{s.user_name}</Text>
+                      <View style={styles.metaRow}>
+                        {roleBadge(s.user_role)}
+                        <Text style={styles.metaText}>{formatCurrency(s.monthly_salary)}/{s.salary_type === 'monthly' ? 'mo' : s.salary_type === 'daily' ? 'day' : 'hr'}</Text>
+                      </View>
+                    </View>
+                    <View style={[styles.payBtn]}>
+                      <Ionicons name="cash" size={20} color={Colors.success} />
+                      <Text style={{ color: Colors.success, fontSize: FontSize.sm, fontWeight: '600' }}>Pay</Text>
+                    </View>
+                  </View>
+                </TouchableOpacity>
+              ))
+            )}
+          </View>
+
+          {/* Payment History */}
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Payment History</Text>
+            {payrollHistoryLoading ? (
+              <ActivityIndicator color={Colors.primary} style={{ paddingVertical: Spacing.lg }} />
+            ) : payrollHistory.length === 0 ? (
+              <Text style={{ color: Colors.textLight, textAlign: 'center', paddingVertical: Spacing.lg }}>
+                No payments yet.
+              </Text>
+            ) : (
+              payrollHistory.map(p => (
+                <View key={p.id} style={styles.card}>
+                  <View style={styles.cardHeader}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.cardName}>{p.user_name}</Text>
+                      <Text style={styles.metaText}>
+                        {p.period_start} to {p.period_end}
+                      </Text>
+                    </View>
+                    <View style={{ alignItems: 'flex-end' }}>
+                      <Text style={styles.salaryAmount}>{formatCurrency(p.net_amount)}</Text>
+                      <Text style={[styles.salaryType, { color: p.status === 'paid' ? Colors.success : Colors.warning }]}>
+                        {p.status === 'paid' ? 'Paid' : 'Pending'}
+                      </Text>
+                    </View>
+                  </View>
+                  <View style={{ paddingHorizontal: Spacing.md, paddingBottom: Spacing.sm }}>
+                    <Text style={{ fontSize: FontSize.xs, color: Colors.textLight }}>
+                      {p.days_worked} days worked • {p.late_days} late • {p.absent_days} absent
+                      {p.advances_deducted > 0 ? ` • Adv: -${formatCurrency(p.advances_deducted)}` : ''}
+                      {p.bonus > 0 ? ` • Bonus: +${formatCurrency(p.bonus)}` : ''}
+                    </Text>
+                    {p.paid_at && (
+                      <Text style={{ fontSize: FontSize.xs, color: Colors.textLight, marginTop: 2 }}>
+                        Paid on {new Date(p.paid_at).toLocaleDateString()} via {p.payment_method} • by {p.paid_by_name}
+                      </Text>
+                    )}
+                  </View>
+                </View>
+              ))
+            )}
+          </View>
+        </View>
+      )}
 
       {/* ─── Set/Update Salary Modal ─────────────────────── */}
       <Modal visible={modal} transparent animationType="slide" onRequestClose={() => setModal(false)}>
-        <View style={styles.modalOverlay}>
+        <KeyboardAvoidingView style={styles.modalOverlay} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>
               {editUser ? `Set Salary — ${editUser.name || editUser.user_name}` : 'Set Salary'}
@@ -234,12 +448,12 @@ export default function SalaryManagementScreen() {
               </TouchableOpacity>
             </View>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* ─── Salary History Modal ────────────────────────── */}
       <Modal visible={historyModal} transparent animationType="slide" onRequestClose={() => setHistoryModal(false)}>
-        <View style={styles.modalOverlay}>
+        <KeyboardAvoidingView style={styles.modalOverlay} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>
               Salary History — {historyUser?.user_name}
@@ -270,7 +484,137 @@ export default function SalaryManagementScreen() {
               <Text style={styles.saveBtnText}>Close</Text>
             </TouchableOpacity>
           </View>
-        </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      {/* ─── Payroll Calculation Modal ───────────────────── */}
+      <Modal visible={payrollModal} transparent animationType="slide" onRequestClose={() => setPayrollModal(false)}>
+        <KeyboardAvoidingView style={styles.modalOverlay} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          <ScrollView style={styles.modalContent} bounces={false} keyboardShouldPersistTaps="handled">
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: Spacing.md }}>
+              <Text style={styles.modalTitle}>Pay Salary — {payrollUser?.user_name || payrollUser?.name}</Text>
+              <TouchableOpacity onPress={() => setPayrollModal(false)}>
+                <Ionicons name="close" size={24} color={Colors.text} />
+              </TouchableOpacity>
+            </View>
+
+            {/* Period input */}
+            <View style={styles.timeInputRow}>
+              <View style={{ flex: 1, marginRight: Spacing.sm }}>
+                <Text style={styles.label}>Period Start</Text>
+                <TextInput style={styles.input} value={periodStart} onChangeText={setPeriodStart} placeholder="YYYY-MM-DD" placeholderTextColor={Colors.textLight} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.label}>Period End</Text>
+                <TextInput style={styles.input} value={periodEnd} onChangeText={setPeriodEnd} placeholder="YYYY-MM-DD" placeholderTextColor={Colors.textLight} />
+              </View>
+            </View>
+
+            <TouchableOpacity
+              style={[styles.saveBtn, { marginTop: Spacing.md, alignSelf: 'stretch', alignItems: 'center' }]}
+              onPress={handleCalculatePayroll}
+              disabled={payrollCalculating}
+            >
+              <Text style={styles.saveBtnText}>{payrollCalculating ? 'Calculating...' : 'Calculate'}</Text>
+            </TouchableOpacity>
+
+            {/* Calculation results */}
+            {payrollCalc && (
+              <View style={{ marginTop: Spacing.lg }}>
+                <Text style={[styles.sectionTitle, { marginBottom: Spacing.sm }]}>Attendance Summary</Text>
+                <View style={styles.summaryGrid}>
+                  <View style={styles.summaryItem}>
+                    <Text style={styles.summaryValue}>{payrollCalc.attendance_summary.days_worked}</Text>
+                    <Text style={styles.summaryLabel}>Days Worked</Text>
+                  </View>
+                  <View style={styles.summaryItem}>
+                    <Text style={styles.summaryValue}>{payrollCalc.attendance_summary.absent_days}</Text>
+                    <Text style={styles.summaryLabel}>Absent</Text>
+                  </View>
+                  <View style={styles.summaryItem}>
+                    <Text style={styles.summaryValue}>{payrollCalc.attendance_summary.late_days}</Text>
+                    <Text style={styles.summaryLabel}>Late</Text>
+                  </View>
+                  <View style={styles.summaryItem}>
+                    <Text style={styles.summaryValue}>{payrollCalc.attendance_summary.leave_days}</Text>
+                    <Text style={styles.summaryLabel}>Leaves</Text>
+                  </View>
+                  <View style={styles.summaryItem}>
+                    <Text style={styles.summaryValue}>{payrollCalc.attendance_summary.total_hours}h</Text>
+                    <Text style={styles.summaryLabel}>Hours</Text>
+                  </View>
+                  <View style={styles.summaryItem}>
+                    <Text style={styles.summaryValue}>{payrollCalc.period.days}</Text>
+                    <Text style={styles.summaryLabel}>Period Days</Text>
+                  </View>
+                </View>
+
+                <Text style={[styles.sectionTitle, { marginTop: Spacing.md, marginBottom: Spacing.sm }]}>Salary Breakdown</Text>
+                <View style={styles.breakdownRow}>
+                  <Text style={styles.breakdownLabel}>Base Pay</Text>
+                  <Text style={styles.breakdownValue}>{formatCurrency(payrollCalc.calculation.base_pay)}</Text>
+                </View>
+                {payrollCalc.calculation.deductions > 0 && (
+                  <View style={styles.breakdownRow}>
+                    <Text style={[styles.breakdownLabel, { color: Colors.error }]}>Deductions (absence)</Text>
+                    <Text style={[styles.breakdownValue, { color: Colors.error }]}>−{formatCurrency(payrollCalc.calculation.deductions)}</Text>
+                  </View>
+                )}
+                {payrollCalc.calculation.pending_advances > 0 && (
+                  <View style={styles.breakdownRow}>
+                    <Text style={[styles.breakdownLabel, { color: Colors.warning }]}>Advance Deduction</Text>
+                    <Text style={[styles.breakdownValue, { color: Colors.warning }]}>−{formatCurrency(payrollCalc.calculation.pending_advances)}</Text>
+                  </View>
+                )}
+
+                {/* Bonus */}
+                <Text style={styles.label}>Bonus (optional)</Text>
+                <TextInput
+                  style={styles.input}
+                  value={bonusAmount}
+                  onChangeText={setBonusAmount}
+                  keyboardType="numeric"
+                  placeholder="0"
+                  placeholderTextColor={Colors.textLight}
+                />
+
+                {/* Payment method */}
+                <Text style={styles.label}>Payment Method</Text>
+                <View style={styles.typeRow}>
+                  {[{ label: 'Cash', value: 'cash' }, { label: 'UPI', value: 'upi' }, { label: 'Bank', value: 'bank_transfer' }].map(t => (
+                    <TouchableOpacity key={t.value} style={[styles.typeChip, paymentMethod === t.value && styles.typeChipActive]} onPress={() => setPaymentMethod(t.value)}>
+                      <Text style={[styles.typeChipText, paymentMethod === t.value && styles.typeChipTextActive]}>{t.label}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+
+                {paymentMethod !== 'cash' && (
+                  <>
+                    <Text style={styles.label}>Reference / Transaction ID</Text>
+                    <TextInput style={styles.input} value={paymentRef} onChangeText={setPaymentRef} placeholder="UPI Ref / Bank Ref" placeholderTextColor={Colors.textLight} />
+                  </>
+                )}
+
+                {/* Net amount */}
+                <View style={[styles.breakdownRow, { marginTop: Spacing.md, paddingTop: Spacing.md, borderTopWidth: 2, borderTopColor: Colors.primary }]}>
+                  <Text style={[styles.breakdownLabel, { fontSize: FontSize.lg, fontWeight: '700' }]}>Net Payable</Text>
+                  <Text style={[styles.breakdownValue, { fontSize: FontSize.lg, fontWeight: '700', color: Colors.success }]}>
+                    {formatCurrency(Math.max(0, payrollCalc.calculation.net_amount + (Number(bonusAmount) || 0) - payrollCalc.calculation.pending_advances))}
+                  </Text>
+                </View>
+
+                <TouchableOpacity
+                  style={[styles.saveBtn, { marginTop: Spacing.lg, alignSelf: 'stretch', alignItems: 'center', backgroundColor: Colors.success }]}
+                  onPress={handleDisburse}
+                  disabled={saving}
+                >
+                  <Text style={styles.saveBtnText}>{saving ? 'Processing...' : 'Disburse Salary'}</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+            <View style={{ height: 40 }} />
+          </ScrollView>
+        </KeyboardAvoidingView>
       </Modal>
     </ScrollView>
   );
@@ -280,6 +624,18 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
   content: { padding: Spacing.md },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  tabRow: {
+    flexDirection: 'row', marginBottom: Spacing.md, gap: Spacing.xs,
+    backgroundColor: Colors.surface, borderRadius: BorderRadius.md,
+    padding: 4, borderWidth: 1, borderColor: Colors.border,
+  },
+  tabBtn: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    gap: 6, paddingVertical: Spacing.sm, borderRadius: BorderRadius.md,
+  },
+  tabBtnActive: { backgroundColor: Colors.primary },
+  tabBtnText: { fontSize: FontSize.sm, color: Colors.textSecondary, fontWeight: '500' },
+  tabBtnTextActive: { color: '#fff', fontWeight: '700' },
   section: { marginBottom: Spacing.lg },
   sectionTitle: { fontSize: FontSize.md, fontWeight: '700', color: Colors.text, marginBottom: Spacing.sm },
   empty: { alignItems: 'center', paddingVertical: Spacing.xl },
@@ -351,4 +707,22 @@ const styles = StyleSheet.create({
   historyChange: { fontSize: FontSize.md, fontWeight: '600', color: Colors.text },
   historyReason: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: 2 },
   historyMeta: { fontSize: FontSize.xs, color: Colors.textLight, marginTop: 4 },
+  // Payroll
+  payBtn: { alignItems: 'center', gap: 2, paddingHorizontal: Spacing.sm },
+  timeInputRow: { flexDirection: 'row', marginTop: Spacing.xs },
+  summaryGrid: {
+    flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm,
+  },
+  summaryItem: {
+    width: '30%', backgroundColor: Colors.surface, borderRadius: BorderRadius.md,
+    padding: Spacing.sm, alignItems: 'center', borderWidth: 1, borderColor: Colors.border,
+  },
+  summaryValue: { fontSize: FontSize.lg, fontWeight: '700', color: Colors.text },
+  summaryLabel: { fontSize: FontSize.xs, color: Colors.textLight, marginTop: 2, textAlign: 'center' },
+  breakdownRow: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    paddingVertical: Spacing.xs,
+  },
+  breakdownLabel: { fontSize: FontSize.md, color: Colors.text },
+  breakdownValue: { fontSize: FontSize.md, fontWeight: '600', color: Colors.text },
 });

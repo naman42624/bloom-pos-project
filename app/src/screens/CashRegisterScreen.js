@@ -170,6 +170,12 @@ export default function CashRegisterScreen({ navigation }) {
               <Text style={styles.detailLabel}>Opening Balance</Text>
               <Text style={styles.detailVal}>₹{(register.opening_balance || 0).toFixed(2)}</Text>
             </View>
+            {(register.total_expenses_cash || 0) > 0 && (
+              <View style={styles.detailRow}>
+                <Text style={styles.detailLabel}>Cash Expenses</Text>
+                <Text style={[styles.detailVal, { color: Colors.error }]}>-₹{(register.total_expenses_cash).toFixed(2)}</Text>
+              </View>
+            )}
             <View style={styles.detailRow}>
               <Text style={styles.detailLabel}>Opened By</Text>
               <Text style={styles.detailVal}>{register.opened_by_name}</Text>
@@ -199,6 +205,12 @@ export default function CashRegisterScreen({ navigation }) {
               <Text style={styles.detailLabel}>Refunds (Cash)</Text>
               <Text style={[styles.detailVal, { color: Colors.error }]}>-₹{(register.total_refunds_cash || 0).toFixed(2)}</Text>
             </View>
+            {(register.total_expenses_cash || 0) > 0 && (
+              <View style={styles.detailRow}>
+                <Text style={styles.detailLabel}>Expenses (Cash)</Text>
+                <Text style={[styles.detailVal, { color: Colors.error }]}>-₹{(register.total_expenses_cash).toFixed(2)}</Text>
+              </View>
+            )}
             <View style={styles.divider} />
             <View style={styles.detailRow}>
               <Text style={styles.detailLabel}>Expected Cash</Text>

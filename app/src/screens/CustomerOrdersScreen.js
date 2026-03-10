@@ -19,7 +19,8 @@ export default function CustomerOrdersScreen({ navigation }) {
         setOrders(res.data || []);
       } else {
         const res = await api.getCustomerDues();
-        setDues(res.data || []);
+        const duesData = res.data?.orders || res.data || [];
+        setDues(Array.isArray(duesData) ? duesData : []);
       }
     } catch (err) {
       console.error('Fetch customer data error:', err);
@@ -30,7 +31,7 @@ export default function CustomerOrdersScreen({ navigation }) {
 
   useFocusEffect(useCallback(() => { fetchData(); }, [fetchData]));
 
-  const totalDue = dues.reduce((sum, d) => sum + (d.balance_due || 0), 0);
+  const totalDue = (Array.isArray(dues) ? dues : []).reduce((sum, d) => sum + (d.balance_due || 0), 0);
 
   const statusColor = (status) => {
     switch (status) {

@@ -22,6 +22,7 @@ export const Colors = {
   borderFocus: '#E91E63',
 
   error: '#EF4444',
+  danger: '#EF4444',
   errorLight: '#FEE2E2',
   warning: '#F59E0B',
   warningLight: '#FEF3C7',

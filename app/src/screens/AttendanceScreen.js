@@ -1,7 +1,7 @@
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
-  RefreshControl, Alert, Platform, Modal, TextInput, ActivityIndicator,
+  RefreshControl, Alert, Platform, Modal, TextInput, ActivityIndicator, KeyboardAvoidingView,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
@@ -45,7 +45,7 @@ export default function AttendanceScreen({ navigation }) {
   const isOwner = role === 'owner';
   const isStaff = role === 'owner' || role === 'manager' || role === 'employee' || role === 'delivery_partner';
   const isManagerOrOwner = role === 'owner' || role === 'manager';
-  const canClockInOut = isStaff && !isOwner; // owner doesn't clock in/out
+  const canClockInOut = isStaff; // all staff (including owner) can clock in/out
 
   const fetchData = useCallback(async () => {
     try {
@@ -76,13 +76,15 @@ export default function AttendanceScreen({ navigation }) {
   useFocusEffect(useCallback(() => { fetchData(); }, [fetchData]));
 
   const handleClockIn = async () => {
-    if (!selectedLocation) {
+    // When re-clocking in after clock-out, use the same location
+    const locationId = selectedLocation?.id || attendance?.location_id;
+    if (!locationId) {
       Alert.alert('Select Location', 'Please select a location to clock in.');
       return;
     }
     setActionLoading(true);
     try {
-      await api.clockIn({ location_id: selectedLocation.id, method: 'manual' });
+      await api.clockIn({ location_id: locationId, method: 'manual' });
       await fetchData();
     } catch (e) {
       Alert.alert('Error', e.message || 'Failed to clock in.');
@@ -163,6 +165,23 @@ export default function AttendanceScreen({ navigation }) {
   const isClockedIn = attendance && attendance.clock_in && !attendance.clock_out;
   const isClockedOut = attendance && attendance.clock_out;
 
+  // Live elapsed time when clocked in
+  const [elapsedTime, setElapsedTime] = useState(null);
+  useEffect(() => {
+    if (!isClockedIn || !attendance?.clock_in) {
+      setElapsedTime(null);
+      return;
+    }
+    const update = () => {
+      const previousHours = attendance.total_hours || 0;
+      const currentShift = Math.max(0, (Date.now() - new Date(attendance.clock_in).getTime()) / (1000 * 60 * 60));
+      setElapsedTime(previousHours + currentShift);
+    };
+    update();
+    const interval = setInterval(update, 30000); // update every 30s
+    return () => clearInterval(interval);
+  }, [isClockedIn, attendance?.clock_in, attendance?.total_hours]);
+
   if (loading) {
     return (
       <View style={styles.center}>
@@ -214,7 +233,10 @@ export default function AttendanceScreen({ navigation }) {
             <View style={styles.timeDivider} />
             <View style={styles.timeBlock}>
               <Text style={styles.timeLabel}>Hours</Text>
-              <Text style={styles.timeValue}>{formatHours(attendance.effective_hours || 0)}</Text>
+              <Text style={styles.timeValue}>
+                {isClockedIn ? formatHours(elapsedTime || 0) : formatHours(attendance.effective_hours || 0)}
+              </Text>
+              {isClockedIn && <Text style={[styles.lateTag, { backgroundColor: '#E8F5E9', color: Colors.success || '#4CAF50' }]}>LIVE</Text>}
             </View>
           </View>
         )}
@@ -432,7 +454,7 @@ export default function AttendanceScreen({ navigation }) {
 
       {/* ─── Outdoor Duty Modal ──────────────────────────── */}
       <Modal visible={outdoorModal} transparent animationType="fade" onRequestClose={() => setOutdoorModal(false)}>
-        <View style={styles.modalOverlay}>
+        <KeyboardAvoidingView style={styles.modalOverlay} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>Request Outdoor Duty</Text>
             <TextInput
@@ -456,7 +478,7 @@ export default function AttendanceScreen({ navigation }) {
               </TouchableOpacity>
             </View>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
     </ScrollView>
   );

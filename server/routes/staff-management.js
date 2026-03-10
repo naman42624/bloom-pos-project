@@ -68,7 +68,7 @@ router.get('/shifts', authorize('owner', 'manager', 'employee', 'delivery_partne
 router.post('/shifts', authorize('owner', 'manager'), (req, res) => {
   try {
     const db = getDb();
-    const { user_id, location_id, shift_start, shift_end, days_of_week, geofence_timeout_minutes } = req.body;
+    const { user_id, location_id, shift_start, shift_end, days_of_week, geofence_timeout_minutes, shift_segments } = req.body;
 
     if (!user_id || !location_id) {
       return res.status(400).json({ success: false, message: 'user_id and location_id are required.' });
@@ -79,6 +79,9 @@ router.post('/shifts', authorize('owner', 'manager'), (req, res) => {
       return res.status(400).json({ success: false, message: 'Invalid staff member.' });
     }
 
+    // Validate shift_segments if provided
+    const segmentsJson = shift_segments ? JSON.stringify(shift_segments) : null;
+
     // Check existing shift for this user+location
     const existing = db.prepare('SELECT id FROM employee_shifts WHERE user_id = ? AND location_id = ? AND is_active = 1').get(user_id, location_id);
 
@@ -86,13 +89,14 @@ router.post('/shifts', authorize('owner', 'manager'), (req, res) => {
       // Update
       db.prepare(`
         UPDATE employee_shifts 
-        SET shift_start = ?, shift_end = ?, days_of_week = ?, geofence_timeout_minutes = ?, updated_at = CURRENT_TIMESTAMP
+        SET shift_start = ?, shift_end = ?, days_of_week = ?, geofence_timeout_minutes = ?, shift_segments = ?, updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
       `).run(
         shift_start || '09:00',
         shift_end || '18:00',
         JSON.stringify(days_of_week || [0,1,2,3,4,5]),
         geofence_timeout_minutes || 15,
+        segmentsJson,
         existing.id
       );
       const updated = db.prepare(`
@@ -105,14 +109,15 @@ router.post('/shifts', authorize('owner', 'manager'), (req, res) => {
 
     // Create
     const result = db.prepare(`
-      INSERT INTO employee_shifts (user_id, location_id, shift_start, shift_end, days_of_week, geofence_timeout_minutes, created_by)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO employee_shifts (user_id, location_id, shift_start, shift_end, days_of_week, geofence_timeout_minutes, shift_segments, created_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       user_id, location_id,
       shift_start || '09:00',
       shift_end || '18:00',
       JSON.stringify(days_of_week || [0,1,2,3,4,5]),
       geofence_timeout_minutes || 15,
+      segmentsJson,
       req.user.id
     );
 
@@ -332,6 +337,215 @@ router.post('/geofence-event', authorize('manager', 'employee', 'delivery_partne
   } catch (error) {
     console.error('Geofence event error:', error);
     res.status(500).json({ success: false, message: 'Failed to record geofence event.' });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════
+// PAYROLL — Calculate & Disburse Salary
+// ═══════════════════════════════════════════════════════════════
+
+// Calculate salary for a pay period (preview — does not save)
+router.post('/payroll/calculate', authorize('owner'), (req, res) => {
+  try {
+    const db = getDb();
+    const { user_id, period_start, period_end } = req.body;
+
+    if (!user_id || !period_start || !period_end) {
+      return res.status(400).json({ success: false, message: 'user_id, period_start and period_end are required.' });
+    }
+
+    const salary = db.prepare('SELECT * FROM employee_salaries WHERE user_id = ?').get(user_id);
+    if (!salary) {
+      return res.status(404).json({ success: false, message: 'No salary record found for this user.' });
+    }
+
+    const user = db.prepare('SELECT id, name, role, phone FROM users WHERE id = ?').get(user_id);
+
+    // Count days in period
+    const start = new Date(period_start + 'T00:00:00');
+    const end = new Date(period_end + 'T00:00:00');
+    const daysInPeriod = Math.round((end - start) / (1000 * 60 * 60 * 24)) + 1;
+
+    // Get attendance records for this period
+    const attendance = db.prepare(`
+      SELECT * FROM attendance
+      WHERE user_id = ? AND date >= ? AND date <= ?
+      ORDER BY date
+    `).all(user_id, period_start, period_end);
+
+    const daysWorked = attendance.filter(a => a.status === 'present' || a.status === 'half_day').length;
+    const halfDays = attendance.filter(a => a.status === 'half_day').length;
+    const lateDays = attendance.filter(a => a.late_arrival === 1).length;
+    const totalHours = attendance.reduce((sum, a) => sum + (a.effective_hours || 0), 0);
+    const absentDays = daysInPeriod - daysWorked;
+    const leaveDays = attendance.filter(a => a.status === 'on_leave').length;
+
+    // Calculate base pay
+    let basePay = 0;
+    if (salary.salary_type === 'monthly') {
+      basePay = salary.monthly_salary;
+    } else if (salary.salary_type === 'daily') {
+      basePay = salary.monthly_salary * (daysWorked - (halfDays * 0.5));
+    } else if (salary.salary_type === 'hourly') {
+      basePay = salary.monthly_salary * totalHours;
+    }
+
+    // Calculate deductions for absences (monthly salary)
+    let deductions = 0;
+    if (salary.salary_type === 'monthly' && absentDays > leaveDays) {
+      const perDayRate = salary.monthly_salary / 30;
+      deductions = perDayRate * (absentDays - leaveDays);
+    }
+
+    // Get pending advances to deduct
+    const advances = db.prepare(`
+      SELECT * FROM salary_advances
+      WHERE user_id = ? AND status = 'approved' AND repaid_amount < amount
+    `).all(user_id);
+    const pendingAdvances = advances.reduce((sum, a) => sum + (a.amount - a.repaid_amount), 0);
+
+    const netAmount = Math.max(0, basePay - deductions);
+
+    res.json({
+      success: true,
+      data: {
+        user,
+        salary_config: salary,
+        period: { start: period_start, end: period_end, days: daysInPeriod },
+        attendance_summary: {
+          days_worked: daysWorked,
+          half_days: halfDays,
+          absent_days: absentDays,
+          late_days: lateDays,
+          leave_days: leaveDays,
+          total_hours: Math.round(totalHours * 100) / 100,
+        },
+        calculation: {
+          base_pay: Math.round(basePay * 100) / 100,
+          deductions: Math.round(deductions * 100) / 100,
+          pending_advances: Math.round(pendingAdvances * 100) / 100,
+          net_amount: Math.round(netAmount * 100) / 100,
+        },
+      },
+    });
+  } catch (error) {
+    console.error('Calculate payroll error:', error);
+    res.status(500).json({ success: false, message: 'Failed to calculate payroll.' });
+  }
+});
+
+// Disburse salary (create payment record)
+router.post('/payroll/disburse', authorize('owner'), (req, res) => {
+  try {
+    const db = getDb();
+    const {
+      user_id, period_start, period_end,
+      base_salary, days_worked, days_in_period, hours_worked,
+      late_days, absent_days, leaves_taken,
+      deductions, advances_deducted, bonus, net_amount,
+      payment_method, payment_reference, notes,
+    } = req.body;
+
+    if (!user_id || !period_start || !period_end || net_amount === undefined) {
+      return res.status(400).json({ success: false, message: 'Missing required fields.' });
+    }
+
+    // Check for duplicate payment for same period
+    const existing = db.prepare(
+      'SELECT id FROM salary_payments WHERE user_id = ? AND period_start = ? AND period_end = ? AND status != ?'
+    ).get(user_id, period_start, period_end, 'cancelled');
+    if (existing) {
+      return res.status(400).json({ success: false, message: 'Payment already exists for this period.' });
+    }
+
+    const disburseTx = db.transaction(() => {
+      const result = db.prepare(`
+        INSERT INTO salary_payments (
+          user_id, period_start, period_end, base_salary, days_worked, days_in_period,
+          hours_worked, late_days, absent_days, leaves_taken, deductions,
+          advances_deducted, bonus, net_amount, payment_method, payment_reference,
+          status, paid_at, paid_by, notes
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'paid', CURRENT_TIMESTAMP, ?, ?)
+      `).run(
+        user_id, period_start, period_end,
+        base_salary || 0, days_worked || 0, days_in_period || 0,
+        hours_worked || 0, late_days || 0, absent_days || 0, leaves_taken || 0,
+        deductions || 0, advances_deducted || 0, bonus || 0, net_amount,
+        payment_method || 'cash', payment_reference || '',
+        req.user.id, notes || ''
+      );
+
+      // Deduct advances if specified
+      if (advances_deducted && advances_deducted > 0) {
+        let remaining = advances_deducted;
+        const advances = db.prepare(
+          'SELECT * FROM salary_advances WHERE user_id = ? AND status = ? AND repaid_amount < amount ORDER BY date'
+        ).all(user_id, 'approved');
+        for (const adv of advances) {
+          if (remaining <= 0) break;
+          const owed = adv.amount - adv.repaid_amount;
+          const toDeduct = Math.min(owed, remaining);
+          db.prepare('UPDATE salary_advances SET repaid_amount = repaid_amount + ?, status = CASE WHEN repaid_amount + ? >= amount THEN ? ELSE status END WHERE id = ?')
+            .run(toDeduct, toDeduct, 'repaid', adv.id);
+          remaining -= toDeduct;
+        }
+      }
+
+      return result.lastInsertRowid;
+    });
+
+    const paymentId = disburseTx();
+    const payment = db.prepare(`
+      SELECT sp.*, u.name as user_name, u.role as user_role, p.name as paid_by_name
+      FROM salary_payments sp
+      JOIN users u ON sp.user_id = u.id
+      LEFT JOIN users p ON sp.paid_by = p.id
+      WHERE sp.id = ?
+    `).get(paymentId);
+
+    res.status(201).json({ success: true, data: payment });
+  } catch (error) {
+    console.error('Disburse salary error:', error);
+    res.status(500).json({ success: false, message: 'Failed to disburse salary.' });
+  }
+});
+
+// Get payment history
+router.get('/payroll/history', authorize('owner', 'manager', 'employee', 'delivery_partner'), (req, res) => {
+  try {
+    const db = getDb();
+    const { user_id, page = 1, limit = 20 } = req.query;
+    const offset = (Number(page) - 1) * Number(limit);
+
+    let where = [];
+    const params = [];
+
+    if (req.user.role !== 'owner') {
+      where.push('sp.user_id = ?');
+      params.push(req.user.id);
+    } else if (user_id) {
+      where.push('sp.user_id = ?');
+      params.push(Number(user_id));
+    }
+
+    const whereClause = where.length ? 'WHERE ' + where.join(' AND ') : '';
+
+    const total = db.prepare(`SELECT COUNT(*) as count FROM salary_payments sp ${whereClause}`).get(...params).count;
+
+    const payments = db.prepare(`
+      SELECT sp.*, u.name as user_name, u.role as user_role, p.name as paid_by_name
+      FROM salary_payments sp
+      JOIN users u ON sp.user_id = u.id
+      LEFT JOIN users p ON sp.paid_by = p.id
+      ${whereClause}
+      ORDER BY sp.paid_at DESC
+      LIMIT ? OFFSET ?
+    `).all(...params, Number(limit), offset);
+
+    res.json({ success: true, data: { payments, total, page: Number(page), pages: Math.ceil(total / Number(limit)) } });
+  } catch (error) {
+    console.error('Get payroll history error:', error);
+    res.status(500).json({ success: false, message: 'Failed to get payroll history.' });
   }
 });
 

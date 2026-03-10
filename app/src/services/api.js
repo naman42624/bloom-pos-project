@@ -27,8 +27,9 @@ class ApiService {
 
   async request(endpoint, options = {}) {
     const url = `${API_BASE_URL}${endpoint}`;
+    const isFormData = options.body instanceof FormData;
     const headers = {
-      'Content-Type': 'application/json',
+      ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
       ...options.headers,
     };
 
@@ -700,6 +701,10 @@ class ApiService {
     return this.request(`/deliveries/${deliveryId}/assign`, { method: 'PUT', body: JSON.stringify(data) });
   }
 
+  batchAssignDeliveries(data) {
+    return this.request('/deliveries/batch-assign', { method: 'POST', body: JSON.stringify(data) });
+  }
+
   pickupDelivery(deliveryId) {
     return this.request(`/deliveries/${deliveryId}/pickup`, { method: 'PUT' });
   }
@@ -870,6 +875,20 @@ class ApiService {
     return this.request(`/staff/salaries/${userId}/history`);
   }
 
+  // ─── Payroll ─────────────────────────────────────────────
+  calculatePayroll(data) {
+    return this.request('/staff/payroll/calculate', { method: 'POST', body: JSON.stringify(data) });
+  }
+
+  disburseSalary(data) {
+    return this.request('/staff/payroll/disburse', { method: 'POST', body: JSON.stringify(data) });
+  }
+
+  getPayrollHistory(params = {}) {
+    const q = new URLSearchParams(params).toString();
+    return this.request(`/staff/payroll/history${q ? `?${q}` : ''}`);
+  }
+
   // ─── Geofence Events ─────────────────────────────────────
   recordGeofenceEvent(data) {
     return this.request('/staff/geofence-event', { method: 'POST', body: JSON.stringify(data) });
@@ -895,6 +914,10 @@ class ApiService {
 
   getPartnerLatestPosition(userId) {
     return this.request(`/delivery-tracking/latest/${userId}`);
+  }
+
+  getPartnerPerformance(userId, days = 30) {
+    return this.request(`/delivery-tracking/performance/${userId}?days=${days}`);
   }
 }
 

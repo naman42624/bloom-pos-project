@@ -41,6 +41,9 @@ export default function DeliveriesScreen({ navigation }) {
 
   const isManager = user?.role === 'owner' || user?.role === 'manager';
 
+  const [batchMode, setBatchMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState(new Set());
+
   // Tick every 60s to update countdowns
   useEffect(() => {
     tickRef.current = setInterval(() => setNow(new Date()), 60000);
@@ -91,13 +94,50 @@ export default function DeliveriesScreen({ navigation }) {
 
   const handleAssign = async (partnerId) => {
     try {
-      await api.assignDelivery(selectedDelivery.id, { delivery_partner_id: partnerId });
+      if (batchMode && selectedIds.size > 0) {
+        const res = await api.batchAssignDeliveries({
+          delivery_ids: Array.from(selectedIds),
+          delivery_partner_id: partnerId,
+        });
+        const msg = res.message || `Assigned ${selectedIds.size} deliveries`;
+        Platform.OS === 'web' ? window.alert(msg) : Alert.alert('Success', msg);
+        setSelectedIds(new Set());
+        setBatchMode(false);
+      } else {
+        await api.assignDelivery(selectedDelivery.id, { delivery_partner_id: partnerId });
+      }
       setAssignModalVisible(false);
       fetchDeliveries();
     } catch (err) {
       const msg = err.message || 'Failed to assign';
       Platform.OS === 'web' ? window.alert(msg) : Alert.alert('Error', msg);
     }
+  };
+
+  const toggleSelect = (id) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const openBatchAssignModal = async () => {
+    if (selectedIds.size === 0) {
+      const msg = 'Select at least one delivery';
+      Platform.OS === 'web' ? window.alert(msg) : Alert.alert('Info', msg);
+      return;
+    }
+    try {
+      const res = await api.getUsers({ role: 'delivery_partner', limit: 100 });
+      const users = res.data?.users || res.data || [];
+      setPartners(Array.isArray(users) ? users.filter(u => u.is_active) : []);
+    } catch (err) {
+      console.error('Fetch partners error:', err);
+      setPartners([]);
+    }
+    setAssignModalVisible(true);
   };
 
   const filteredDeliveries = search
@@ -188,11 +228,29 @@ export default function DeliveriesScreen({ navigation }) {
     const statusColor = STATUS_COLORS[item.status] || '#999';
     const isAtRisk = atRiskIds.has(item.id);
     const timeInfo = getTimeInfo(item);
+    const canSelect = batchMode && ['pending', 'assigned', 'failed'].includes(item.status);
+    const isSelected = selectedIds.has(item.id);
     return (
       <TouchableOpacity
-        style={[styles.card, isAtRisk && styles.cardAtRisk]}
-        onPress={() => navigation.navigate('DeliveryDetail', { deliveryId: item.id })}
+        style={[styles.card, isAtRisk && styles.cardAtRisk, isSelected && styles.cardSelected]}
+        onPress={() => {
+          if (canSelect) { toggleSelect(item.id); }
+          else navigation.navigate('DeliveryDetail', { deliveryId: item.id });
+        }}
+        onLongPress={() => {
+          if (isManager && ['pending', 'assigned', 'failed'].includes(item.status)) {
+            setBatchMode(true);
+            setSelectedIds(new Set([item.id]));
+          }
+        }}
       >
+        {/* Selection checkbox */}
+        {batchMode && canSelect && (
+          <View style={styles.selectCheck}>
+            <Ionicons name={isSelected ? 'checkbox' : 'square-outline'} size={22} color={isSelected ? Colors.primary : Colors.textLight} />
+          </View>
+        )}
+
         {/* Time header — prominent */}
         {timeInfo.label && (
           <View style={[styles.timeHeader, timeInfo.isOverdue && styles.timeHeaderOverdue, timeInfo.isDone && styles.timeHeaderDone]}>
@@ -297,6 +355,25 @@ export default function DeliveriesScreen({ navigation }) {
         ))}
       </ScrollView>
 
+      {/* Batch mode bar */}
+      {isManager && batchMode && (
+        <View style={styles.batchBar}>
+          <Text style={styles.batchBarText}>{selectedIds.size} selected</Text>
+          <View style={{ flexDirection: 'row', gap: Spacing.sm }}>
+            <TouchableOpacity style={styles.batchAssignBtn} onPress={openBatchAssignModal}>
+              <Ionicons name="people" size={16} color="#fff" />
+              <Text style={styles.batchAssignText}>Assign All</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.batchCancelBtn}
+              onPress={() => { setBatchMode(false); setSelectedIds(new Set()); }}
+            >
+              <Text style={styles.batchCancelText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
+
       {/* List — grouped by date */}
       <SectionList
         sections={sections}
@@ -330,9 +407,11 @@ export default function DeliveriesScreen({ navigation }) {
                 <Ionicons name="close" size={24} color={Colors.text} />
               </TouchableOpacity>
             </View>
-            {selectedDelivery && (
+            {batchMode ? (
+              <Text style={styles.modalSubtitle}>Assign {selectedIds.size} deliveries to a partner</Text>
+            ) : selectedDelivery ? (
               <Text style={styles.modalSubtitle}>{selectedDelivery.sale_number} — {selectedDelivery.customer_name || 'Customer'}</Text>
-            )}
+            ) : null}
             <ScrollView style={{ maxHeight: 300 }}>
               {partners.length === 0 ? (
                 <Text style={styles.emptyText}>No delivery partners found. Add staff with "delivery_partner" role.</Text>
@@ -406,4 +485,21 @@ const styles = StyleSheet.create({
   partnerItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: Colors.border },
   partnerName: { fontSize: FontSize.md, fontWeight: '600', color: Colors.text },
   partnerPhone: { fontSize: FontSize.sm, color: Colors.textLight },
+  // Batch mode
+  cardSelected: { borderWidth: 2, borderColor: Colors.primary, backgroundColor: Colors.primary + '08' },
+  selectCheck: { position: 'absolute', top: Spacing.sm, right: Spacing.sm, zIndex: 1 },
+  batchBar: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm,
+    backgroundColor: Colors.primary + '15', borderBottomWidth: 1, borderBottomColor: Colors.primary + '30',
+  },
+  batchBarText: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.primary },
+  batchAssignBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    backgroundColor: Colors.primary, paddingHorizontal: Spacing.md, paddingVertical: Spacing.xs,
+    borderRadius: BorderRadius.md,
+  },
+  batchAssignText: { color: '#fff', fontSize: FontSize.sm, fontWeight: '600' },
+  batchCancelBtn: { paddingHorizontal: Spacing.md, paddingVertical: Spacing.xs },
+  batchCancelText: { color: Colors.textSecondary, fontSize: FontSize.sm },
 });

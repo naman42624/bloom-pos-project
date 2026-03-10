@@ -48,8 +48,8 @@ export default function CustomerShopScreen({ navigation }) {
         api.getLocations(),
       ]);
       setProducts(prodRes.data || []);
-      const locs = locRes.data || [];
-      setLocations(locs);
+      const locs = locRes.data?.locations || locRes.data || [];
+      setLocations(Array.isArray(locs) ? locs : []);
       if (locs.length > 0 && !selectedLocation) setSelectedLocation(locs[0].id);
 
       // Load saved addresses
@@ -183,7 +183,7 @@ export default function CustomerShopScreen({ navigation }) {
   return (
     <View style={styles.container}>
       {/* Location picker */}
-      {locations.length > 1 && (
+      {locations.length > 0 && (
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.locRow} contentContainerStyle={{ paddingHorizontal: Spacing.md, gap: 8 }}>
           {locations.map(loc => (
             <TouchableOpacity

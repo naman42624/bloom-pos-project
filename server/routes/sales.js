@@ -195,6 +195,16 @@ router.get('/register/status', authenticate, (req, res, next) => {
       WHERE cr.location_id = ? AND cr.date = ?
     `).get(location_id, today);
 
+    // Add today's cash expenses to the response
+    if (register) {
+      const expenseTotal = db.prepare(`
+        SELECT COALESCE(SUM(amount), 0) as total
+        FROM expenses
+        WHERE location_id = ? AND expense_date = ? AND payment_method = 'cash'
+      `).get(location_id, today).total;
+      register.total_expenses_cash = expenseTotal;
+    }
+
     res.json({ success: true, data: register || null, isOpen: !!register && !register.closed_at });
   } catch (err) { next(err); }
 });
@@ -222,13 +232,15 @@ router.post(
         return res.status(409).json({ success: false, message: 'Register is already open for today' });
       }
       if (existing && existing.closed_at) {
-        // Reopen: clear closing data, keep the original opening balance
+        // Reopen: update opening balance to the new value and recalculate expected_cash
         db.prepare(`
           UPDATE cash_registers SET
+            opened_by = ?, opening_balance = ?,
+            expected_cash = ? + total_cash_sales - total_refunds_cash,
             closed_at = NULL, closed_by = NULL, closing_notes = NULL,
             actual_cash = NULL, discrepancy = NULL
           WHERE id = ?
-        `).run(existing.id);
+        `).run(req.user.id, opening_balance, opening_balance, existing.id);
       } else {
         db.prepare(
           'INSERT INTO cash_registers (location_id, date, opened_by, opening_balance, expected_cash) VALUES (?, ?, ?, ?, ?)'
@@ -287,7 +299,14 @@ router.put(
         WHERE s.location_id = ? AND DATE(r.created_at) = ? AND r.refund_method = 'cash' AND r.status = 'processed'
       `).get(location_id, today).total;
 
-      const expectedCash = register.opening_balance + paymentTotals.cash_total - refundTotal;
+      // Cash expenses for the day
+      const expenseTotal = db.prepare(`
+        SELECT COALESCE(SUM(amount), 0) as total
+        FROM expenses
+        WHERE location_id = ? AND expense_date = ? AND payment_method = 'cash'
+      `).get(location_id, today).total;
+
+      const expectedCash = register.opening_balance + paymentTotals.cash_total - refundTotal - expenseTotal;
       const discrepancy = expectedCash - actual_cash;
 
       db.prepare(`

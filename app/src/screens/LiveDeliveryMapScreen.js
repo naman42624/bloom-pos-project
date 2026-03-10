@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, ActivityIndicator,
-  ScrollView, RefreshControl, Platform, Dimensions,
+  ScrollView, RefreshControl, Platform, Dimensions, Modal,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
@@ -21,12 +21,31 @@ function timeSince(dateStr) {
   return `${hours}h ${minutes % 60}m ago`;
 }
 
+function batteryIcon(level) {
+  if (level == null) return 'battery-dead-outline';
+  if (level > 75) return 'battery-full';
+  if (level > 50) return 'battery-half';
+  if (level > 20) return 'battery-half';
+  return 'battery-dead';
+}
+
+function batteryColor(level) {
+  if (level == null) return Colors.textLight;
+  if (level > 50) return Colors.secondary;
+  if (level > 20) return Colors.warning;
+  return Colors.error;
+}
+
 export default function LiveDeliveryMapScreen() {
   const [loading, setLoading] = useState(true);
   const [partners, setPartners] = useState([]);
   const [selectedPartner, setSelectedPartner] = useState(null);
   const [dailySummary, setDailySummary] = useState([]);
   const [viewMode, setViewMode] = useState('map'); // 'map' or 'list'
+  const [perfModal, setPerfModal] = useState(false);
+  const [perfData, setPerfData] = useState(null);
+  const [perfLoading, setPerfLoading] = useState(false);
+  const [perfPartner, setPerfPartner] = useState(null);
   const mapRef = useRef(null);
   const refreshInterval = useRef(null);
 
@@ -69,6 +88,20 @@ export default function LiveDeliveryMapScreen() {
 
   const activePartners = partners.filter(p => p.latitude && p.longitude);
   const noLocationPartners = partners.filter(p => !p.latitude || !p.longitude);
+
+  const openPerformance = async (partner) => {
+    setPerfPartner(partner);
+    setPerfModal(true);
+    setPerfLoading(true);
+    try {
+      const res = await api.getPartnerPerformance(partner.user_id);
+      setPerfData(res.data);
+    } catch (e) {
+      console.error('Fetch performance error:', e);
+    } finally {
+      setPerfLoading(false);
+    }
+  };
 
   if (loading) {
     return <View style={styles.center}><ActivityIndicator size="large" color={Colors.primary} /></View>;
@@ -146,7 +179,7 @@ export default function LiveDeliveryMapScreen() {
           {activePartners.map(p => {
             const summary = dailySummary.find(s => s.user_id === p.user_id);
             return (
-              <View key={p.user_id} style={styles.card}>
+              <TouchableOpacity key={p.user_id} style={styles.card} onPress={() => openPerformance(p)} activeOpacity={0.7}>
                 <View style={styles.cardHeader}>
                   <View style={[styles.statusDot, p.is_moving ? styles.dotMoving : styles.dotIdle]} />
                   <View style={{ flex: 1, marginLeft: Spacing.sm }}>
@@ -155,11 +188,19 @@ export default function LiveDeliveryMapScreen() {
                       {p.is_moving ? 'Moving' : 'Idle'} • Last seen {timeSince(p.recorded_at)}
                     </Text>
                   </View>
-                  {p.speed > 0 && (
-                    <View style={styles.speedBadge}>
-                      <Text style={styles.speedText}>{Math.round(p.speed * 3.6)} km/h</Text>
-                    </View>
-                  )}
+                  <View style={styles.cardBadges}>
+                    {p.battery_level != null && (
+                      <View style={styles.batteryBadge}>
+                        <Ionicons name={batteryIcon(p.battery_level)} size={14} color={batteryColor(p.battery_level)} />
+                        <Text style={[styles.batteryText, { color: batteryColor(p.battery_level) }]}>{Math.round(p.battery_level)}%</Text>
+                      </View>
+                    )}
+                    {p.speed > 0 && (
+                      <View style={styles.speedBadge}>
+                        <Text style={styles.speedText}>{Math.round(p.speed * 3.6)} km/h</Text>
+                      </View>
+                    )}
+                  </View>
                 </View>
                 {summary && (
                   <View style={styles.cardStats}>
@@ -189,7 +230,11 @@ export default function LiveDeliveryMapScreen() {
                     </Text>
                   </View>
                 )}
-              </View>
+                <View style={styles.tapHint}>
+                  <Ionicons name="chevron-forward" size={14} color={Colors.textLight} />
+                  <Text style={styles.tapHintText}>Tap for performance</Text>
+                </View>
+              </TouchableOpacity>
             );
           })}
 
@@ -230,11 +275,114 @@ export default function LiveDeliveryMapScreen() {
           <Text style={styles.bottomMeta}>
             {selectedPartner.is_moving ? 'Moving' : 'Idle'} • {timeSince(selectedPartner.recorded_at)}
           </Text>
-          {selectedPartner.speed > 0 && (
-            <Text style={styles.bottomSpeed}>{Math.round(selectedPartner.speed * 3.6)} km/h</Text>
-          )}
+          <View style={styles.bottomRow}>
+            {selectedPartner.speed > 0 && (
+              <Text style={styles.bottomSpeed}>{Math.round(selectedPartner.speed * 3.6)} km/h</Text>
+            )}
+            {selectedPartner.battery_level != null && (
+              <View style={styles.bottomBattery}>
+                <Ionicons name={batteryIcon(selectedPartner.battery_level)} size={14} color={batteryColor(selectedPartner.battery_level)} />
+                <Text style={[styles.batteryText, { color: batteryColor(selectedPartner.battery_level) }]}>{Math.round(selectedPartner.battery_level)}%</Text>
+              </View>
+            )}
+          </View>
+          <TouchableOpacity style={styles.perfBtn} onPress={() => openPerformance(selectedPartner)}>
+            <Ionicons name="stats-chart" size={16} color="#fff" />
+            <Text style={styles.perfBtnText}>View Performance</Text>
+          </TouchableOpacity>
         </View>
       )}
+
+      {/* ─── Partner Performance Modal ──────────────────── */}
+      <Modal visible={perfModal} transparent animationType="slide" onRequestClose={() => setPerfModal(false)}>
+        <View style={styles.perfOverlay}>
+          <View style={styles.perfContent}>
+            <View style={styles.perfHeader}>
+              <Text style={styles.perfTitle}>{perfPartner?.user_name} — Performance</Text>
+              <TouchableOpacity onPress={() => { setPerfModal(false); setPerfData(null); }}>
+                <Ionicons name="close-circle" size={28} color={Colors.textSecondary} />
+              </TouchableOpacity>
+            </View>
+            {perfLoading ? (
+              <ActivityIndicator size="large" color={Colors.primary} style={{ marginTop: Spacing.xl }} />
+            ) : perfData ? (
+              <ScrollView showsVerticalScrollIndicator={false}>
+                {/* Key Metrics */}
+                <View style={styles.metricsGrid}>
+                  <View style={styles.metricCard}>
+                    <Text style={styles.metricValue}>{perfData.total_delivered}</Text>
+                    <Text style={styles.metricLabel}>Delivered</Text>
+                  </View>
+                  <View style={styles.metricCard}>
+                    <Text style={[styles.metricValue, { color: perfData.completion_rate >= 90 ? Colors.secondary : Colors.warning }]}>
+                      {perfData.completion_rate}%
+                    </Text>
+                    <Text style={styles.metricLabel}>Completion</Text>
+                  </View>
+                  <View style={styles.metricCard}>
+                    <Text style={styles.metricValue}>
+                      {perfData.avg_delivery_minutes ? `${perfData.avg_delivery_minutes}m` : '—'}
+                    </Text>
+                    <Text style={styles.metricLabel}>Avg Time</Text>
+                  </View>
+                  <View style={styles.metricCard}>
+                    <Text style={[styles.metricValue, { color: (perfData.on_time_rate || 0) >= 80 ? Colors.secondary : Colors.warning }]}>
+                      {perfData.on_time_rate != null ? `${perfData.on_time_rate}%` : '—'}
+                    </Text>
+                    <Text style={styles.metricLabel}>On-Time</Text>
+                  </View>
+                </View>
+
+                {/* Details */}
+                <View style={styles.detailSection}>
+                  <Text style={styles.detailSectionTitle}>30-Day Summary</Text>
+                  <View style={styles.detailRow}>
+                    <Text style={styles.detailLabel}>Total Assigned</Text>
+                    <Text style={styles.detailValue}>{perfData.total_assigned}</Text>
+                  </View>
+                  <View style={styles.detailRow}>
+                    <Text style={styles.detailLabel}>Failed</Text>
+                    <Text style={[styles.detailValue, { color: Colors.error }]}>{perfData.total_failed}</Text>
+                  </View>
+                  <View style={styles.detailRow}>
+                    <Text style={styles.detailLabel}>Avg Daily Deliveries</Text>
+                    <Text style={styles.detailValue}>{perfData.avg_daily_deliveries}</Text>
+                  </View>
+                  <View style={styles.detailRow}>
+                    <Text style={styles.detailLabel}>Total Distance</Text>
+                    <Text style={styles.detailValue}>{(perfData.total_distance_km || 0).toFixed(1)} km</Text>
+                  </View>
+                  <View style={styles.detailRow}>
+                    <Text style={styles.detailLabel}>Active Time</Text>
+                    <Text style={styles.detailValue}>{Math.round(perfData.total_active_minutes || 0)} min</Text>
+                  </View>
+                  <View style={styles.detailRow}>
+                    <Text style={styles.detailLabel}>COD Collected</Text>
+                    <Text style={styles.detailValue}>₹{(perfData.total_cod_collected || 0).toFixed(0)}</Text>
+                  </View>
+                </View>
+
+                {/* Daily Breakdown */}
+                {perfData.daily_breakdown?.length > 0 && (
+                  <View style={styles.detailSection}>
+                    <Text style={styles.detailSectionTitle}>Recent Days</Text>
+                    {perfData.daily_breakdown.map((d, idx) => (
+                      <View key={idx} style={styles.detailRow}>
+                        <Text style={styles.detailLabel}>{d.date}</Text>
+                        <Text style={styles.detailValue}>
+                          {d.deliveries} deliveries{d.avg_minutes ? ` • ${Math.round(d.avg_minutes)}m avg` : ''}
+                        </Text>
+                      </View>
+                    ))}
+                  </View>
+                )}
+              </ScrollView>
+            ) : (
+              <Text style={styles.noData}>No performance data available</Text>
+            )}
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -325,4 +473,44 @@ const styles = StyleSheet.create({
   bottomName: { fontSize: FontSize.lg, fontWeight: '700', color: Colors.text },
   bottomMeta: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: 4 },
   bottomSpeed: { fontSize: FontSize.sm, color: Colors.info, marginTop: 4, fontWeight: '600' },
+  bottomRow: { flexDirection: 'row', alignItems: 'center', marginTop: 4, gap: Spacing.md },
+  bottomBattery: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  perfBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    backgroundColor: Colors.primary, borderRadius: BorderRadius.md,
+    paddingVertical: Spacing.sm, marginTop: Spacing.md,
+  },
+  perfBtnText: { color: '#fff', fontSize: FontSize.sm, fontWeight: '600' },
+  cardBadges: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs },
+  batteryBadge: { flexDirection: 'row', alignItems: 'center', gap: 3 },
+  batteryText: { fontSize: FontSize.xs, fontWeight: '600' },
+  tapHint: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end',
+    paddingHorizontal: Spacing.md, paddingBottom: Spacing.sm, gap: 2,
+  },
+  tapHintText: { fontSize: FontSize.xs, color: Colors.textLight },
+  // Performance modal
+  perfOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
+  perfContent: {
+    backgroundColor: Colors.surface, borderTopLeftRadius: BorderRadius.lg, borderTopRightRadius: BorderRadius.lg,
+    padding: Spacing.lg, maxHeight: '85%',
+  },
+  perfHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: Spacing.md },
+  perfTitle: { fontSize: FontSize.lg, fontWeight: '700', color: Colors.text, flex: 1 },
+  metricsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm, marginBottom: Spacing.md },
+  metricCard: {
+    flex: 1, minWidth: '45%', backgroundColor: Colors.background, borderRadius: BorderRadius.md,
+    padding: Spacing.md, alignItems: 'center',
+  },
+  metricValue: { fontSize: FontSize.xl || 22, fontWeight: '800', color: Colors.text },
+  metricLabel: { fontSize: FontSize.xs, color: Colors.textSecondary, marginTop: 4 },
+  detailSection: { marginTop: Spacing.md, marginBottom: Spacing.sm },
+  detailSectionTitle: { fontSize: FontSize.md, fontWeight: '700', color: Colors.text, marginBottom: Spacing.sm },
+  detailRow: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    paddingVertical: Spacing.xs, borderBottomWidth: 1, borderBottomColor: Colors.border,
+  },
+  detailLabel: { fontSize: FontSize.sm, color: Colors.textSecondary },
+  detailValue: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.text },
+  noData: { fontSize: FontSize.md, color: Colors.textSecondary, textAlign: 'center', marginTop: Spacing.xl },
 });
