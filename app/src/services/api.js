@@ -2,12 +2,21 @@
  * BloomCart POS — API Service
  */
 import { Platform } from 'react-native';
+import Constants from 'expo-constants';
 
-const LAN_IP = '192.168.29.160';
+const DEV_LAN_IP = '192.168.29.160';
 
 function getBaseUrl() {
+  // 1. EAS build env var (production / preview)
+  if (process.env.EXPO_PUBLIC_API_URL) {
+    return process.env.EXPO_PUBLIC_API_URL;
+  }
+  // 2. Expo config extra (app.config.js)
+  const configUrl = Constants.expoConfig?.extra?.apiUrl;
+  if (configUrl) return configUrl;
+  // 3. Fallback for local dev
   if (Platform.OS === 'web') return 'http://localhost:3001/api';
-  return `http://${LAN_IP}:3001/api`;
+  return `http://${DEV_LAN_IP}:3001/api`;
 }
 
 const API_BASE_URL = getBaseUrl();

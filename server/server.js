@@ -4,6 +4,7 @@ const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
+const compression = require('compression');
 const path = require('path');
 
 const authRoutes = require('./routes/auth');
@@ -23,6 +24,7 @@ const productionRoutes = require('./routes/production');
 const deliveriesRoutes = require('./routes/deliveries');
 const recurringOrdersRoutes = require('./routes/recurring-orders');
 const { processRecurringOrders } = require('./routes/recurring-orders');
+const { generalLimiter, authLimiter } = require('./middleware/rateLimiter');
 const attendanceRoutes = require('./routes/attendance');
 const staffManagementRoutes = require('./routes/staff-management');
 const deliveryTrackingRoutes = require('./routes/delivery-tracking');
@@ -39,10 +41,24 @@ const PORT = process.env.PORT || 3001;
 
 // ─── Middleware ───────────────────────────────────────────────
 app.use(helmet());
-app.use(cors({ origin: '*' })); // Allow all origins in dev; restrict in production
-app.use(morgan('dev'));
+app.use(compression());
+
+// CORS: restrict origins in production
+const allowedOrigins = process.env.ALLOWED_ORIGINS
+  ? process.env.ALLOWED_ORIGINS.split(',')
+  : ['*'];
+app.use(cors({
+  origin: allowedOrigins.includes('*') ? '*' : allowedOrigins,
+  credentials: true,
+}));
+
+app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
+
+// Rate limiting
+app.use('/api/', generalLimiter);
+app.use('/api/auth', authLimiter);
 
 // Serve uploaded files
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
@@ -159,88 +175,88 @@ const server = httpServer.listen(PORT, () => {
   console.log(`🔌 Socket.io: enabled for live delivery tracking`);
   console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}\n`);
 
-  // Process recurring orders on startup and every 30 minutes
-  processRecurringOrders();
-  setInterval(processRecurringOrders, 30 * 60 * 1000);
+  // ─── Background Jobs ─────────────────────────────────────────
+  if (process.env.REDIS_URL) {
+    // Production: use Bull queues backed by Redis
+    const { scheduleJobs } = require('./jobs/queue');
+    const recurringOrdersWorker = require('./jobs/recurringOrders');
+    const geofenceWorker = require('./jobs/geofenceTimeout');
+    recurringOrdersWorker.register();
+    geofenceWorker.register();
+    scheduleJobs();
+  } else {
+    // Development: use in-process timers (no Redis needed)
+    processRecurringOrders();
+    setInterval(processRecurringOrders, 30 * 60 * 1000);
 
-  // ─── Geofence timeout auto clock-out (check every 60 seconds) ──
-  setInterval(() => {
-    try {
-      const db = getDb();
-      const n = new Date();
-      const today = `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}-${String(n.getDate()).padStart(2,'0')}`;
+    setInterval(() => {
+      try {
+        const db = getDb();
+        const n = new Date();
+        const today = `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}-${String(n.getDate()).padStart(2,'0')}`;
+        const exitEvents = db.prepare(`
+          SELECT ge.*, es.geofence_timeout_minutes,
+                 a.id as attendance_id, a.clock_in, a.clock_out
+          FROM geofence_events ge
+          JOIN employee_shifts es ON ge.user_id = es.user_id AND ge.location_id = es.location_id AND es.is_active = 1
+          LEFT JOIN attendance a ON a.user_id = ge.user_id AND a.date = ?
+          WHERE ge.event_type = 'exit' AND ge.processed = 0
+          AND datetime(ge.created_at, '+' || es.geofence_timeout_minutes || ' minutes') <= datetime('now')
+          AND a.clock_in IS NOT NULL AND a.clock_out IS NULL
+        `).all(today);
 
-      // Find unprocessed exit events older than the employee's timeout
-      const exitEvents = db.prepare(`
-        SELECT ge.*, es.geofence_timeout_minutes,
-               a.id as attendance_id, a.clock_in, a.clock_out
-        FROM geofence_events ge
-        JOIN employee_shifts es ON ge.user_id = es.user_id AND ge.location_id = es.location_id AND es.is_active = 1
-        LEFT JOIN attendance a ON a.user_id = ge.user_id AND a.date = ?
-        WHERE ge.event_type = 'exit' AND ge.processed = 0
-        AND datetime(ge.created_at, '+' || es.geofence_timeout_minutes || ' minutes') <= datetime('now')
-        AND a.clock_in IS NOT NULL AND a.clock_out IS NULL
-      `).all(today);
-
-      for (const event of exitEvents) {
-        // Check if there's a more recent enter event
-        const reenter = db.prepare(`
-          SELECT id FROM geofence_events
-          WHERE user_id = ? AND location_id = ? AND event_type = 'enter'
-          AND created_at > ?
-          LIMIT 1
-        `).get(event.user_id, event.location_id, event.created_at);
-
-        if (reenter) {
-          // Employee returned, mark exit as processed
-          db.prepare('UPDATE geofence_events SET processed = 1, auto_action = ? WHERE id = ?').run('cancelled_returned', event.id);
-          continue;
+        for (const event of exitEvents) {
+          const reenter = db.prepare(`
+            SELECT id FROM geofence_events
+            WHERE user_id = ? AND location_id = ? AND event_type = 'enter'
+            AND created_at > ? LIMIT 1
+          `).get(event.user_id, event.location_id, event.created_at);
+          if (reenter) {
+            db.prepare('UPDATE geofence_events SET processed = 1, auto_action = ? WHERE id = ?').run('cancelled_returned', event.id);
+            continue;
+          }
+          const activeOutdoor = db.prepare(`
+            SELECT id FROM outdoor_duty_requests
+            WHERE user_id = ? AND attendance_id = ? AND status IN ('approved', 'requested')
+          `).get(event.user_id, event.attendance_id);
+          if (activeOutdoor) continue;
+          const now = new Date().toISOString();
+          const clockIn = event.clock_in;
+          const totalHours = clockIn ? Math.max(0, (new Date(now) - new Date(clockIn)) / (1000 * 60 * 60)) : 0;
+          const roundedHours = Math.round(totalHours * 100) / 100;
+          db.prepare(`
+            UPDATE attendance SET clock_out = ?, clock_out_method = 'auto_timeout',
+            total_hours = ?, effective_hours = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
+          `).run(now, roundedHours, roundedHours, event.attendance_id);
+          db.prepare('UPDATE geofence_events SET processed = 1, auto_action = ? WHERE id = ?').run('auto_clock_out', event.id);
+          console.log(`⏰ Auto clock-out: user ${event.user_id} after ${event.geofence_timeout_minutes}min timeout`);
         }
-
-        // Check for active outdoor duty (pauses geofence timeout)
-        const activeOutdoor = db.prepare(`
-          SELECT id FROM outdoor_duty_requests
-          WHERE user_id = ? AND attendance_id = ? AND status IN ('approved', 'requested')
-        `).get(event.user_id, event.attendance_id);
-
-        if (activeOutdoor) {
-          continue; // Skip — outdoor duty is active
-        }
-
-        // Auto clock-out
-        const now = new Date().toISOString();
-        const clockIn = event.clock_in;
-        const totalHours = clockIn ? Math.max(0, (new Date(now) - new Date(clockIn)) / (1000 * 60 * 60)) : 0;
-
-        db.prepare(`
-          UPDATE attendance SET clock_out = ?, clock_out_method = 'auto_timeout',
-          total_hours = ?, effective_hours = ?, updated_at = CURRENT_TIMESTAMP
-          WHERE id = ?
-        `).run(now, Math.round(totalHours * 100) / 100, Math.round(totalHours * 100) / 100, event.attendance_id);
-
-        db.prepare('UPDATE geofence_events SET processed = 1, auto_action = ? WHERE id = ?').run('auto_clock_out', event.id);
-
-        console.log(`⏰ Auto clock-out: user ${event.user_id} after ${event.geofence_timeout_minutes}min timeout`);
+      } catch (e) {
+        // Silent — don't crash the server for cron errors
       }
-    } catch (e) {
-      // Silent — don't crash the server for cron errors
-    }
-  }, 60 * 1000);
+    }, 60 * 1000);
+  }
 });
 
 // Graceful shutdown
-process.on('SIGINT', () => {
-  console.log('\n🔄 Shutting down gracefully...');
+async function shutdown(signal) {
+  console.log(`\n🔄 Shutting down (${signal})...`);
   closeDb();
+  if (process.env.REDIS_URL) {
+    try {
+      const { recurringOrdersQueue, geofenceQueue, notificationQueue } = require('./jobs/queue');
+      await recurringOrdersQueue.close();
+      await geofenceQueue.close();
+      await notificationQueue.close();
+    } catch (_) { /* ignore */ }
+  }
   server.close(() => {
     console.log('✅ Server closed');
     process.exit(0);
   });
-});
+}
 
-process.on('SIGTERM', () => {
-  closeDb();
-  server.close(() => process.exit(0));
-});
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));
 
 module.exports = app;

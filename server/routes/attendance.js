@@ -102,13 +102,10 @@ router.post('/clock-in', authorize('manager', 'employee', 'delivery_partner'), (
 
     const today = todayStr();
 
-    // Check if there's already a record today
-    const existing = db.prepare('SELECT * FROM attendance WHERE user_id = ? AND date = ? ORDER BY id DESC LIMIT 1').get(userId, today);
-    if (existing) {
-      if (!existing.clock_out) {
-        return res.status(400).json({ success: false, message: 'Already clocked in.' });
-      }
-      return res.status(400).json({ success: false, message: 'Already clocked in and out today.' });
+    // Check if there's an unclosed record today (still clocked in)
+    const unclosed = db.prepare('SELECT * FROM attendance WHERE user_id = ? AND date = ? AND clock_out IS NULL ORDER BY id DESC LIMIT 1').get(userId, today);
+    if (unclosed) {
+      return res.status(400).json({ success: false, message: 'Already clocked in. Please clock out first.' });
     }
 
     const now = nowLocal();

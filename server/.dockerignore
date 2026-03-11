@@ -1,0 +1,17 @@
+node_modules
+npm-debug.log
+.env
+.env.*
+database.sqlite
+database.sqlite-wal
+database.sqlite-shm
+uploads/
+.git
+.gitignore
+*.test.js
+test-api.py
+TEST-REPORT.md
+PRODUCTION-GUIDE.md
+PROGRESS.md
+README.md
+scripts/migrate-sqlite-to-pg.js

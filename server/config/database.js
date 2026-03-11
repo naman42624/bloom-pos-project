@@ -1186,6 +1186,48 @@ function initializeDatabase() {
     CREATE INDEX IF NOT EXISTS idx_attendance_user_date ON attendance(user_id, date);
   `);
 
+  // Migration: Remove UNIQUE(user_id, date) to allow multiple clock-in/out per day
+  try {
+    const attTableSql = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='attendance'").get();
+    if (attTableSql && attTableSql.sql && attTableSql.sql.includes('UNIQUE(user_id, date)')) {
+      db.exec(`
+        CREATE TABLE attendance_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id INTEGER NOT NULL,
+          location_id INTEGER NOT NULL,
+          date DATE NOT NULL,
+          clock_in DATETIME DEFAULT NULL,
+          clock_in_method TEXT DEFAULT 'manual' CHECK(clock_in_method IN ('auto_geofence', 'manual')),
+          clock_in_latitude REAL DEFAULT NULL,
+          clock_in_longitude REAL DEFAULT NULL,
+          clock_out DATETIME DEFAULT NULL,
+          clock_out_method TEXT DEFAULT NULL CHECK(clock_out_method IN ('auto_geofence', 'manual', 'auto_timeout')),
+          clock_out_latitude REAL DEFAULT NULL,
+          clock_out_longitude REAL DEFAULT NULL,
+          total_hours REAL DEFAULT 0,
+          outdoor_hours REAL DEFAULT 0,
+          effective_hours REAL DEFAULT 0,
+          status TEXT DEFAULT 'present' CHECK(status IN ('present', 'absent', 'half_day', 'on_leave')),
+          late_arrival INTEGER DEFAULT 0,
+          early_departure INTEGER DEFAULT 0,
+          notes TEXT DEFAULT '',
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+          FOREIGN KEY (location_id) REFERENCES locations(id) ON DELETE CASCADE
+        );
+        INSERT INTO attendance_new SELECT * FROM attendance;
+        DROP TABLE attendance;
+        ALTER TABLE attendance_new RENAME TO attendance;
+        CREATE INDEX IF NOT EXISTS idx_attendance_user ON attendance(user_id);
+        CREATE INDEX IF NOT EXISTS idx_attendance_date ON attendance(date);
+        CREATE INDEX IF NOT EXISTS idx_attendance_location ON attendance(location_id);
+        CREATE INDEX IF NOT EXISTS idx_attendance_user_date ON attendance(user_id, date);
+      `);
+      console.log('✅ Migrated attendance: removed UNIQUE(user_id, date) — multiple clock-in/out per day now allowed');
+    }
+  } catch (e) { console.warn('Attendance migration:', e.message); }
+
   // ─── Phase 8: Outdoor Duty Requests ────────────────────────
   db.exec(`
     CREATE TABLE IF NOT EXISTS outdoor_duty_requests (

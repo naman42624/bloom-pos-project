@@ -71,15 +71,19 @@ export default function usePushNotifications(navigationRef) {
     responseListener.current = Notifications.addNotificationResponseReceivedListener(
       (response) => {
         const data = response.notification.request.content.data || {};
-        if (navigationRef?.current) {
+        const nav = navigationRef?.current;
+        if (nav) {
+          // Navigate into Dashboard tab's stack for all notification-driven screens
           if (data.screen === 'SaleDetail' && data.saleId) {
-            navigationRef.current.navigate('SaleDetail', { saleId: data.saleId });
+            nav.navigate('Dashboard', { screen: 'SaleDetail', params: { saleId: data.saleId } });
           } else if (data.screen === 'DeliveryDetail' && data.deliveryId) {
-            navigationRef.current.navigate('DeliveryDetail', { deliveryId: data.deliveryId });
+            nav.navigate('Dashboard', { screen: 'DeliveryDetail', params: { deliveryId: data.deliveryId } });
           } else if (data.screen === 'ProductionQueue') {
-            navigationRef.current.navigate('ProductionQueue');
+            nav.navigate('Dashboard', { screen: 'ProductionQueue' });
           } else if (data.screen === 'CustomerOrderDetail' && data.saleId) {
-            navigationRef.current.navigate('CustomerOrderDetail', { saleId: data.saleId });
+            nav.navigate('MyOrders', { screen: 'CustomerOrderDetail', params: { saleId: data.saleId } });
+          } else if (data.screen === 'MaterialDetail' && data.materialId) {
+            nav.navigate('Dashboard', { screen: 'MaterialDetail', params: { materialId: data.materialId } });
           }
         }
       }
