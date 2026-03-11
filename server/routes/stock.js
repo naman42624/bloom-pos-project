@@ -2,13 +2,9 @@ const express = require('express');
 const { body, validationResult } = require('express-validator');
 const { getDb } = require('../config/database');
 const { authenticate, authorize } = require('../middleware/auth');
+const { todayStr: localToday } = require('../utils/time');
 
 const router = express.Router();
-
-function localToday() {
-  const n = new Date();
-  return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}-${String(n.getDate()).padStart(2,'0')}`;
-}
 
 // ─── GET /api/stock?location_id=&material_id= ───────────────
 // Get stock levels

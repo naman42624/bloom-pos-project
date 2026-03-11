@@ -245,6 +245,11 @@ export default function SaleDetailScreen({ route, navigation }) {
           <View style={[styles.typeBadge]}>
             <Text style={styles.typeText}>{(sale.order_type || '').replace('_', ' ').toUpperCase()}</Text>
           </View>
+          {sale.source === 'recurring' && (
+            <View style={[styles.typeBadge, { backgroundColor: '#9C27B0' + '15' }]}>
+              <Text style={[styles.typeText, { color: '#9C27B0' }]}>RECURRING</Text>
+            </View>
+          )}
           {canManage && sale.status !== 'cancelled' && (sale.order_type === 'pickup' || sale.order_type === 'delivery') && (
             <TouchableOpacity
               style={styles.convertBtn}
@@ -429,10 +434,10 @@ export default function SaleDetailScreen({ route, navigation }) {
       )}
 
       {/* Notes */}
-      {sale.notes && (
+      {(sale.notes || sale.special_instructions) && (
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Notes</Text>
-          <Text style={styles.infoText}>{sale.notes}</Text>
+          <Text style={styles.infoText}>{sale.notes || sale.special_instructions}</Text>
         </View>
       )}
 

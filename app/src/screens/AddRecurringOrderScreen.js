@@ -5,7 +5,7 @@ import {
   FlatList, KeyboardAvoidingView,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import DateTimePicker from '@react-native-community/datetimepicker';
+import DateTimePickerModal from '../components/DateTimePickerModal';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
@@ -374,45 +374,38 @@ export default function AddRecurringOrderScreen({ route, navigation }) {
           </Text>
         </TouchableOpacity>
 
-        {showDatePicker && (
-          <DateTimePicker
-            value={datePickerDate}
-            mode="date"
-            display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-            minimumDate={new Date()}
-            onChange={(event, selected) => {
-              setShowDatePicker(Platform.OS === 'ios');
-              if (selected) {
-                setDatePickerDate(selected);
-                const y = selected.getFullYear();
-                const m = String(selected.getMonth() + 1).padStart(2, '0');
-                const d = String(selected.getDate()).padStart(2, '0');
-                const dateStr = `${y}-${m}-${d}`;
-                if (datePickerMode === 'start') {
-                  setStartDate(dateStr);
-                } else {
-                  if (!customDates.includes(dateStr)) setCustomDates([...customDates, dateStr].sort());
-                }
-              }
-            }}
-          />
-        )}
-        {showTimePicker && (
-          <DateTimePicker
-            value={datePickerDate}
-            mode="time"
-            display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-            minuteInterval={15}
-            onChange={(event, selected) => {
-              setShowTimePicker(Platform.OS === 'ios');
-              if (selected) {
-                const h = String(selected.getHours()).padStart(2, '0');
-                const min = String(selected.getMinutes()).padStart(2, '0');
-                setScheduledTime(`${h}:${min}`);
-              }
-            }}
-          />
-        )}
+        <DateTimePickerModal
+          visible={showDatePicker}
+          mode="date"
+          value={datePickerDate}
+          minimumDate={new Date()}
+          onCancel={() => setShowDatePicker(false)}
+          onConfirm={(selected) => {
+            setShowDatePicker(false);
+            setDatePickerDate(selected);
+            const y = selected.getFullYear();
+            const m = String(selected.getMonth() + 1).padStart(2, '0');
+            const d = String(selected.getDate()).padStart(2, '0');
+            const dateStr = `${y}-${m}-${d}`;
+            if (datePickerMode === 'start') {
+              setStartDate(dateStr);
+            } else {
+              if (!customDates.includes(dateStr)) setCustomDates([...customDates, dateStr].sort());
+            }
+          }}
+        />
+        <DateTimePickerModal
+          visible={showTimePicker}
+          mode="time"
+          value={datePickerDate}
+          onCancel={() => setShowTimePicker(false)}
+          onConfirm={(selected) => {
+            setShowTimePicker(false);
+            const h = String(selected.getHours()).padStart(2, '0');
+            const min = String(selected.getMinutes()).padStart(2, '0');
+            setScheduledTime(`${h}:${min}`);
+          }}
+        />
 
         {/* Sender Info */}
         <Text style={styles.sectionTitle}>Sender Info (optional)</Text>

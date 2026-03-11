@@ -255,8 +255,8 @@ function processRecurringOrders() {
         INSERT INTO sales (sale_number, location_id, customer_id, customer_name, customer_phone,
           subtotal, tax_total, discount_amount, delivery_charges, delivery_address,
           scheduled_date, scheduled_time, grand_total, payment_status, order_type, status,
-          special_instructions, customer_notes, sender_message, sender_name, sender_phone, created_by)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, 'pending', ?, 'pending', ?, ?, ?, ?, ?, ?)
+          special_instructions, customer_notes, sender_message, sender_name, sender_phone, created_by, source)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, 'pending', ?, 'pending', ?, ?, ?, ?, ?, ?, 'recurring')
       `).run(
         saleNumber, ro.location_id, customer.id, customer.name, customer.phone,
         subtotal, taxTotal, ro.delivery_address || null,

@@ -2,17 +2,11 @@ const express = require('express');
 const { body, query, validationResult } = require('express-validator');
 const { getDb } = require('../config/database');
 const { authenticate, authorize } = require('../middleware/auth');
+const { notifyByRole, createNotification } = require('./notifications');
+const { todayStr: localToday, nowLocal } = require('../utils/time');
 
 const router = express.Router();
 
-// ─── Helper: Get local date string ───────────────────────────
-function localToday() {
-  const now = new Date();
-  const y = now.getFullYear();
-  const m = String(now.getMonth() + 1).padStart(2, '0');
-  const d = String(now.getDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
-}
 
 // ─── Helper: Generate sale number ────────────────────────────
 function generateSaleNumber(db, locationId) {
@@ -664,7 +658,9 @@ router.post(
         `).run(
           saleNumber, location_id, customer_id || null, customer_name || null, customer_phone || null,
           subtotal, taxTotal, discountAmount, discount_type || null, discountPercentage, discountApprovedBy,
-          delivery_charges || 0, delivery_address || null, scheduled_date || null, scheduled_time || null,
+          delivery_charges || 0, delivery_address || null,
+          scheduled_date || (order_type === 'walk_in' ? localToday() : null),
+          scheduled_time || null,
           grandTotal, paymentStatus, order_type, initialStatus, stockDeducted,
           notes || special_instructions || '', customer_notes || '',
           sender_name || '', sender_phone || '', sender_message || '', req.user.id
@@ -832,6 +828,27 @@ router.post(
       }
 
       res.status(201).json({ success: true, data: sale });
+
+      // Fire notifications (non-blocking)
+      if (sale.order_type !== 'walk_in') {
+        notifyByRole({
+          roles: ['owner', 'manager'],
+          locationId: sale.location_id,
+          title: 'New Order',
+          body: `${sale.sale_number} — ${(sale.order_type || '').replace('_', ' ')} • ₹${(sale.grand_total || 0).toFixed(0)}${sale.customer_name ? ' from ' + sale.customer_name : ''}`,
+          type: 'new_order',
+          data: { saleId: sale.id, screen: 'SaleDetail' },
+        });
+      }
+      if (sale.customer_id) {
+        createNotification({
+          userIds: sale.customer_id,
+          title: 'Order Placed',
+          body: `Your order ${sale.sale_number} has been placed successfully! Total: ₹${(sale.grand_total || 0).toFixed(0)}`,
+          type: 'order_status',
+          data: { saleId: sale.id, screen: 'CustomerOrderDetail' },
+        });
+      }
     } catch (err) { next(err); }
   }
 );
@@ -981,6 +998,18 @@ router.put(
 
       const updated = db.prepare('SELECT * FROM sales WHERE id = ?').get(sale.id);
       res.json({ success: true, data: updated });
+
+      // Notify customer on status change
+      if (sale.customer_id && (status === 'ready' || status === 'completed')) {
+        const statusLabel = status === 'ready' ? 'Ready' : 'Completed';
+        createNotification({
+          userIds: sale.customer_id,
+          title: `Order ${statusLabel}`,
+          body: `Your order ${sale.sale_number} is now ${statusLabel.toLowerCase()}${status === 'ready' && sale.order_type === 'pickup' ? '. You can pick it up now!' : '.'}`,
+          type: 'order_status',
+          data: { saleId: sale.id, screen: 'CustomerOrderDetail' },
+        });
+      }
     } catch (err) { next(err); }
   }
 );

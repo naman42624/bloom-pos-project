@@ -945,6 +945,32 @@ class ApiService {
     const q = new URLSearchParams(params).toString();
     return this.request(`/reports/employee-performance${q ? `?${q}` : ''}`);
   }
+
+  // ─── Notifications ─────────────────────────────────────────
+  registerPushToken(token, platform = 'expo') {
+    return this.request('/notifications/register-token', { method: 'POST', body: JSON.stringify({ token, platform }) });
+  }
+
+  unregisterPushToken(token) {
+    return this.request('/notifications/unregister-token', { method: 'DELETE', body: JSON.stringify({ token }) });
+  }
+
+  getNotifications(params = {}) {
+    const q = new URLSearchParams(params).toString();
+    return this.request(`/notifications${q ? `?${q}` : ''}`);
+  }
+
+  getUnreadCount() {
+    return this.request('/notifications/unread-count');
+  }
+
+  markNotificationRead(id) {
+    return this.request(`/notifications/${id}/read`, { method: 'PUT' });
+  }
+
+  markAllNotificationsRead() {
+    return this.request('/notifications/read-all', { method: 'PUT' });
+  }
 }
 
 export default new ApiService();

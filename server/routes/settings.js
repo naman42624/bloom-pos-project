@@ -2,6 +2,7 @@ const express = require('express');
 const { body, validationResult } = require('express-validator');
 const { getDb } = require('../config/database');
 const { authenticate, authorize } = require('../middleware/auth');
+const { clearTimezoneCache } = require('../utils/time');
 
 const router = express.Router();
 router.use(authenticate);
@@ -62,6 +63,11 @@ router.put(
         }
       });
       tx();
+
+      // Clear timezone cache if timezone was updated
+      if ('timezone' in settings) {
+        clearTimezoneCache();
+      }
 
       // Return updated settings
       const allSettings = db.prepare('SELECT * FROM settings ORDER BY key').all();

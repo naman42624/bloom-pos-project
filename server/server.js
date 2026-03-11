@@ -27,6 +27,7 @@ const attendanceRoutes = require('./routes/attendance');
 const staffManagementRoutes = require('./routes/staff-management');
 const deliveryTrackingRoutes = require('./routes/delivery-tracking');
 const reportsRoutes = require('./routes/reports');
+const notificationsRoutes = require('./routes/notifications');
 const { errorHandler, notFound } = require('./middleware/errorHandler');
 const { getDb, closeDb } = require('./config/database');
 const http = require('http');
@@ -77,6 +78,7 @@ app.use('/api/attendance', attendanceRoutes);
 app.use('/api/staff', staffManagementRoutes);
 app.use('/api/delivery-tracking', deliveryTrackingRoutes);
 app.use('/api/reports', reportsRoutes);
+app.use('/api/notifications', notificationsRoutes);
 
 // ─── Error Handling ──────────────────────────────────────────
 app.use(notFound);

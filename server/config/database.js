@@ -119,6 +119,7 @@ function initializeDatabase() {
       ['special_date_reminder_days', '7,3,1', 'Days before special date to send reminders'],
       ['default_tax_rate_id', '', 'Default tax rate ID for new products'],
       ['supplier_manager_fields', 'name,phone,materials', 'Comma-separated supplier fields visible to managers (name,phone,email,address,gst_number,notes,materials,pricing)'],
+      ['timezone', 'Asia/Kolkata', 'Shop timezone for all date/time operations (IANA timezone name)'],
     ];
     const seedTx = db.transaction(() => {
       for (const [key, value, description] of defaults) {
@@ -1137,6 +1138,19 @@ function initializeDatabase() {
     db.exec("ALTER TABLE sales ADD COLUMN sender_phone TEXT DEFAULT ''");
   }
 
+  // Add source column for tracking order origin (manual, recurring, etc.)
+  const salesColsSource = db.prepare("PRAGMA table_info(sales)").all().map(c => c.name);
+  if (!salesColsSource.includes('source')) {
+    db.exec("ALTER TABLE sales ADD COLUMN source TEXT DEFAULT 'manual'");
+  }
+
+  // Add timezone setting for existing databases
+  const tzExists = db.prepare("SELECT id FROM settings WHERE key = 'timezone'").get();
+  if (!tzExists) {
+    db.prepare("INSERT OR IGNORE INTO settings (key, value, description) VALUES (?, ?, ?)")
+      .run('timezone', 'Asia/Kolkata', 'Shop timezone for all date/time operations (IANA timezone name)');
+  }
+
   // ─── Phase 8: Attendance ───────────────────────────────────
   db.exec(`
     CREATE TABLE IF NOT EXISTS attendance (
@@ -1381,6 +1395,35 @@ function initializeDatabase() {
       db.exec("CREATE INDEX IF NOT EXISTS idx_deliveries_batch ON deliveries(batch_id)");
     }
   } catch (e) { console.warn('Batch ID migration:', e.message); }
+
+  // ─── Phase 10: Notifications ───────────────────────────────
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS push_tokens (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      token TEXT NOT NULL,
+      platform TEXT DEFAULT 'expo',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      UNIQUE(user_id, token)
+    );
+    CREATE INDEX IF NOT EXISTS idx_push_tokens_user ON push_tokens(user_id);
+
+    CREATE TABLE IF NOT EXISTS notifications (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      title TEXT NOT NULL,
+      body TEXT NOT NULL,
+      type TEXT NOT NULL DEFAULT 'general',
+      data TEXT DEFAULT '{}',
+      is_read INTEGER DEFAULT 0,
+      push_sent INTEGER DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id);
+    CREATE INDEX IF NOT EXISTS idx_notifications_unread ON notifications(user_id, is_read);
+  `);
 }
 
 function closeDb() {

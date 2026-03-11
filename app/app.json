@@ -46,6 +46,13 @@
     "plugins": [
       "@react-native-community/datetimepicker",
       [
+        "expo-notifications",
+        {
+          "icon": "./assets/icon.png",
+          "color": "#E91E63"
+        }
+      ],
+      [
         "expo-location",
         {
           "locationAlwaysAndWhenInUsePermission": "BloomCart needs background location for automatic attendance and delivery tracking.",

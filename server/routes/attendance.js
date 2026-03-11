@@ -2,18 +2,11 @@ const express = require('express');
 const router = express.Router();
 const { getDb } = require('../config/database');
 const { authenticate, authorize } = require('../middleware/auth');
+const { todayStr, nowLocal } = require('../utils/time');
 
 // All attendance routes require auth
 router.use(authenticate);
 
-// ─── Helper: Get today's date string (local timezone) ────────
-function todayStr() {
-  const now = new Date();
-  const y = now.getFullYear();
-  const m = String(now.getMonth() + 1).padStart(2, '0');
-  const d = String(now.getDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
-}
 
 // ─── Helper: Calculate hours between two ISO timestamps ──────
 function hoursBetween(start, end) {
@@ -109,13 +102,16 @@ router.post('/clock-in', authorize('manager', 'employee', 'delivery_partner'), (
 
     const today = todayStr();
 
-    // Check if there's already an unclosed record today
-    const unclosed = db.prepare('SELECT * FROM attendance WHERE user_id = ? AND date = ? AND clock_out IS NULL ORDER BY id DESC LIMIT 1').get(userId, today);
-    if (unclosed) {
-      return res.status(400).json({ success: false, message: 'Already clocked in.' });
+    // Check if there's already a record today
+    const existing = db.prepare('SELECT * FROM attendance WHERE user_id = ? AND date = ? ORDER BY id DESC LIMIT 1').get(userId, today);
+    if (existing) {
+      if (!existing.clock_out) {
+        return res.status(400).json({ success: false, message: 'Already clocked in.' });
+      }
+      return res.status(400).json({ success: false, message: 'Already clocked in and out today.' });
     }
 
-    const now = new Date().toISOString();
+    const now = nowLocal();
     const clockMethod = method || 'manual';
     const late = isLateArrival(now, location.operating_hours, userId, location_id) ? 1 : 0;
 
@@ -155,7 +151,7 @@ router.post('/clock-out', authorize('manager', 'employee', 'delivery_partner'), 
       return res.status(400).json({ success: false, message: 'No active clock-in found. Please clock in first.' });
     }
 
-    const now = new Date().toISOString();
+    const now = nowLocal();
     const clockMethod = method || 'manual';
     const shiftHours = hoursBetween(record.clock_in, now);
     const early = isEarlyDeparture(now, record.operating_hours, userId, record.location_id) ? 1 : 0;
@@ -423,7 +419,7 @@ router.post('/outdoor-duty', authorize('owner', 'manager', 'employee', 'delivery
     }
 
     const locId = location_id || db.prepare('SELECT location_id FROM attendance WHERE id = ?').get(attendance.id).location_id;
-    const now = new Date().toISOString();
+    const now = nowLocal();
 
     const result = db.prepare(`
       INSERT INTO outdoor_duty_requests (attendance_id, user_id, location_id, reason, start_time, status)
@@ -518,7 +514,7 @@ router.put('/outdoor-duty/:id/complete', authorize('owner', 'manager', 'employee
       return res.status(403).json({ success: false, message: 'Not authorized.' });
     }
 
-    const now = new Date().toISOString();
+    const now = nowLocal();
     const duration = hoursBetween(request.start_time, now);
 
     db.prepare(`

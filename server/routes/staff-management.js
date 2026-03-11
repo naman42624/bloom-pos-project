@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { getDb } = require('../config/database');
 const { authenticate, authorize } = require('../middleware/auth');
+const { nowLocal } = require('../utils/time');
 
 router.use(authenticate);
 
@@ -302,7 +303,7 @@ router.post('/geofence-event', authorize('manager', 'employee', 'delivery_partne
 
       if (!existing || (existing.clock_out && !existing.clock_in)) {
         // Auto clock-in
-        const now = new Date().toISOString();
+        const now = nowLocal();
         const shift = db.prepare('SELECT * FROM employee_shifts WHERE user_id = ? AND location_id = ? AND is_active = 1').get(req.user.id, location_id);
         let late = 0;
         if (shift) {

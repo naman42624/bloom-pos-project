@@ -58,10 +58,29 @@ router.post(
 
       // Check if phone already exists
       const existing = db
-        .prepare('SELECT id FROM users WHERE phone = ?')
+        .prepare('SELECT id, role, created_by FROM users WHERE phone = ?')
         .get(phone);
 
       if (existing) {
+        // Allow customers created by admin (created_by IS NOT NULL) to claim their account
+        if (existing.role === 'customer' && existing.created_by != null) {
+          const salt = await bcrypt.genSalt(12);
+          const hashedPassword = await bcrypt.hash(password, salt);
+          db.prepare(
+            'UPDATE users SET name = ?, password = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'
+          ).run(name, hashedPassword, existing.id);
+
+          const user = db
+            .prepare('SELECT ' + USER_SELECT_FIELDS + ' FROM users WHERE id = ?')
+            .get(existing.id);
+          const token = generateToken(user);
+          return res.status(200).json({
+            success: true,
+            message: 'Account claimed successfully',
+            data: { user, token },
+          });
+        }
+
         return res.status(409).json({
           success: false,
           message: 'An account with this phone number already exists',

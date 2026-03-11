@@ -2,11 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { getDb } = require('../config/database');
 const { authenticate, authorize } = require('../middleware/auth');
-
-function localToday() {
-  const n = new Date();
-  return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}-${String(n.getDate()).padStart(2,'0')}`;
-}
+const { todayStr: localToday } = require('../utils/time');
 
 function localDateStr(d) {
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;

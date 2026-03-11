@@ -91,6 +91,9 @@ import SalaryAdvancesScreen from '../screens/SalaryAdvancesScreen';
 import ShiftManagementScreen from '../screens/ShiftManagementScreen';
 import SalaryManagementScreen from '../screens/SalaryManagementScreen';
 import LiveDeliveryMapScreen from '../screens/LiveDeliveryMapScreen';
+import NotificationCenterScreen from '../screens/NotificationCenterScreen';
+import NotificationBell from '../components/NotificationBell';
+import usePushNotifications from '../hooks/usePushNotifications';
 
 import { Colors, FontSize } from '../constants/theme';
 
@@ -111,8 +114,16 @@ function DashboardStack() {
       <Stack.Screen
         name="DashboardHome"
         component={DashboardScreen}
-        options={{ title: 'Dashboard' }}
+        options={({ navigation }) => ({
+          title: 'Dashboard',
+          headerRight: () => <NotificationBell navigation={navigation} />,
+        })}
       />
+      <Stack.Screen name="Notifications" component={NotificationCenterScreen} options={{ title: 'Notifications' }} />
+      <Stack.Screen name="SaleDetail" component={SaleDetailScreen} options={{ title: 'Sale Details' }} />
+      <Stack.Screen name="DeliveryDetail" component={DeliveryDetailScreen} options={{ title: 'Delivery' }} />
+      <Stack.Screen name="ProductionQueue" component={ProductionQueueScreen} options={{ title: 'Production Queue' }} />
+      <Stack.Screen name="MaterialDetail" component={MaterialDetailScreen} options={{ title: 'Material Details' }} />
     </Stack.Navigator>
   );
 }
@@ -249,8 +260,16 @@ function CustomersStack() {
 function ProfileStack() {
   return (
     <Stack.Navigator screenOptions={stackScreenOptions}>
-      <Stack.Screen name="ProfileHome" component={ProfileScreen} options={{ title: 'Profile' }} />
+      <Stack.Screen
+        name="ProfileHome"
+        component={ProfileScreen}
+        options={({ navigation }) => ({
+          title: 'Profile',
+          headerRight: () => <NotificationBell navigation={navigation} />,
+        })}
+      />
       <Stack.Screen name="Settings" component={SettingsScreen} options={{ title: 'Settings' }} />
+      <Stack.Screen name="Notifications" component={NotificationCenterScreen} options={{ title: 'Notifications' }} />
     </Stack.Navigator>
   );
 }
@@ -304,6 +323,8 @@ function OrdersStack() {
       <Stack.Screen name="SaleDetail" component={SaleDetailScreen} options={{ title: 'Sale Details' }} />
       <Stack.Screen name="RefundSale" component={RefundSaleScreen} options={{ title: 'Refund' }} />
       <Stack.Screen name="AddPayment" component={AddPaymentScreen} options={{ title: 'Record Payment' }} />
+      <Stack.Screen name="CashRegister" component={CashRegisterScreen} options={{ title: 'Cash Register' }} />
+      <Stack.Screen name="Expenses" component={ExpensesScreen} options={{ title: 'Expenses' }} />
       <Stack.Screen name="ProductionQueue" component={ProductionQueueScreen} options={{ title: 'Production Queue' }} />
       <Stack.Screen name="ProduceProduct" component={ProduceScreen} options={{ title: 'Produce Products' }} />
     </Stack.Navigator>
@@ -398,8 +419,16 @@ function AttendanceStack() {
 function DeliveryPartnerStack() {
   return (
     <Stack.Navigator screenOptions={stackScreenOptions}>
-      <Stack.Screen name="MyDeliveries" component={DeliveriesScreen} options={{ title: 'My Deliveries' }} />
+      <Stack.Screen
+        name="MyDeliveries"
+        component={DeliveriesScreen}
+        options={({ navigation }) => ({
+          title: 'My Deliveries',
+          headerRight: () => <NotificationBell navigation={navigation} />,
+        })}
+      />
       <Stack.Screen name="DeliveryDetail" component={DeliveryDetailScreen} options={{ title: 'Delivery' }} />
+      <Stack.Screen name="Notifications" component={NotificationCenterScreen} options={{ title: 'Notifications' }} />
     </Stack.Navigator>
   );
 }
@@ -408,8 +437,17 @@ function DeliveryPartnerStack() {
 function CustomerOrdersStack() {
   return (
     <Stack.Navigator screenOptions={stackScreenOptions}>
-      <Stack.Screen name="MyOrders" component={CustomerOrdersScreen} options={{ title: 'My Orders' }} />
+      <Stack.Screen
+        name="MyOrders"
+        component={CustomerOrdersScreen}
+        options={({ navigation }) => ({
+          title: 'My Orders',
+          headerRight: () => <NotificationBell navigation={navigation} />,
+        })}
+      />
       <Stack.Screen name="Shop" component={CustomerShopScreen} options={{ title: 'Shop' }} />
+      <Stack.Screen name="Notifications" component={NotificationCenterScreen} options={{ title: 'Notifications' }} />
+      <Stack.Screen name="CustomerOrderDetail" component={SaleDetailScreen} options={{ title: 'Order Details' }} />
     </Stack.Navigator>
   );
 }
@@ -444,6 +482,9 @@ export default function MainNavigator() {
     user,
     enabled: !!user && user.role === 'delivery_partner',
   });
+
+  // Push notifications
+  usePushNotifications();
 
   return (
     <Tab.Navigator
@@ -482,6 +523,11 @@ export default function MainNavigator() {
           name="POS"
           component={POSStack}
           options={{ tabBarLabel: 'POS' }}
+          listeners={({ navigation }) => ({
+            tabPress: () => {
+              navigation.navigate('POS', { screen: 'POSHome' });
+            },
+          })}
         />
       )}
 
@@ -491,6 +537,11 @@ export default function MainNavigator() {
           name="Orders"
           component={OrdersStack}
           options={{ tabBarLabel: 'Orders' }}
+          listeners={({ navigation }) => ({
+            tabPress: () => {
+              navigation.navigate('Orders', { screen: 'OrdersHub' });
+            },
+          })}
         />
       )}
 
@@ -500,6 +551,11 @@ export default function MainNavigator() {
           name="Inventory"
           component={InventoryStack}
           options={{ tabBarLabel: 'Inventory' }}
+          listeners={({ navigation }) => ({
+            tabPress: () => {
+              navigation.navigate('Inventory', { screen: 'StockOverview' });
+            },
+          })}
         />
       )}
 
@@ -545,6 +601,11 @@ export default function MainNavigator() {
           name="More"
           component={MoreStack}
           options={{ tabBarLabel: 'More' }}
+          listeners={({ navigation }) => ({
+            tabPress: () => {
+              navigation.navigate('More', { screen: 'MoreHome' });
+            },
+          })}
         />
       )}
 

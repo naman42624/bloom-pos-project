@@ -2,6 +2,8 @@ const express = require('express');
 const { body, validationResult } = require('express-validator');
 const { getDb } = require('../config/database');
 const { authenticate, authorize } = require('../middleware/auth');
+const { createNotification, notifyByRole } = require('./notifications');
+const { nowLocal } = require('../utils/time');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
@@ -195,7 +197,7 @@ router.post(
       }
 
       const batchId = `BATCH-${Date.now()}-${req.user.id}`;
-      const now = new Date().toISOString();
+      const now = nowLocal();
       let assigned = 0;
       let skipped = 0;
 
@@ -316,6 +318,15 @@ router.put(
       `).get(delivery.id);
 
       res.json({ success: true, data: updated });
+
+      // Notify delivery partner about new assignment
+      createNotification({
+        userIds: delivery_partner_id,
+        title: 'New Delivery Assigned',
+        body: `You have a new delivery to ${delivery.delivery_address || 'customer'}`,
+        type: 'delivery',
+        data: { deliveryId: delivery.id, screen: 'DeliveryDetail' },
+      });
     } catch (err) { next(err); }
   }
 );
@@ -476,6 +487,18 @@ router.put(
       `).get(delivery.id);
 
       res.json({ success: true, data: updated });
+
+      // Notify customer about delivery completion
+      const sale = db.prepare('SELECT customer_id, sale_number FROM sales WHERE id = ?').get(delivery.sale_id);
+      if (sale?.customer_id) {
+        createNotification({
+          userIds: sale.customer_id,
+          title: 'Order Delivered',
+          body: `Your order ${sale.sale_number} has been delivered successfully!`,
+          type: 'order_status',
+          data: { saleId: delivery.sale_id, screen: 'CustomerOrderDetail' },
+        });
+      }
     } catch (err) {
       if (err.message.includes('COD collection exceeds')) {
         return res.status(400).json({ success: false, message: err.message });
@@ -761,6 +784,28 @@ router.put(
       const db = getDb();
       const sale = db.prepare("SELECT * FROM sales WHERE id = ? AND order_type = 'pickup'").get(req.params.saleId);
       if (!sale) return res.status(404).json({ success: false, message: 'Pickup order not found' });
+
+      // Validate: sale must be ready before pickup
+      if (sale.status !== 'ready' && sale.status !== 'completed') {
+        // Check if all production tasks are done
+        const incompleteTasks = db.prepare(
+          "SELECT COUNT(*) as cnt FROM production_tasks WHERE sale_id = ? AND status != 'completed'"
+        ).get(sale.id);
+        if (incompleteTasks.cnt > 0) {
+          return res.status(400).json({
+            success: false,
+            message: `Cannot complete pickup: ${incompleteTasks.cnt} production task(s) still pending. Complete production first.`,
+          });
+        }
+      }
+
+      // Validate: stock must be deducted
+      if (!sale.stock_deducted) {
+        return res.status(400).json({
+          success: false,
+          message: 'Cannot complete pickup: inventory has not been deducted. Please fulfill stock from production queue first.',
+        });
+      }
 
       const { payment_method, payment_amount, payment_reference } = req.body || {};
 

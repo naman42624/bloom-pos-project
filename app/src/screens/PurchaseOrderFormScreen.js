@@ -1,7 +1,7 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View, Text, StyleSheet, KeyboardAvoidingView, Platform,
-  ScrollView, Alert, TouchableOpacity, Modal, TextInput,
+  ScrollView, Alert, TouchableOpacity, TextInput,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import api from '../services/api';
@@ -10,11 +10,7 @@ import Button from '../components/Button';
 import DismissKeyboard from '../components/DismissKeyboard';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 
-// Only import DateTimePicker on native platforms
-let DateTimePicker = null;
-if (Platform.OS !== 'web') {
-  DateTimePicker = require('@react-native-community/datetimepicker').default;
-}
+import DateTimePickerModal from '../components/DateTimePickerModal';
 
 export default function PurchaseOrderFormScreen({ route, navigation }) {
   const existingOrder = route.params?.order;
@@ -30,12 +26,10 @@ export default function PurchaseOrderFormScreen({ route, navigation }) {
     existingOrder?.expected_date ? new Date(existingOrder.expected_date) : null
   );
   const [showDatePicker, setShowDatePicker] = useState(false);
-  const [tempDate, setTempDate] = useState(new Date());
   const [notes, setNotes] = useState(existingOrder?.notes || '');
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(false);
   const [errors, setErrors] = useState({});
-  const webDateRef = useRef(null);
 
   useEffect(() => {
     fetchData();
@@ -145,42 +139,12 @@ export default function PurchaseOrderFormScreen({ route, navigation }) {
 
   // ─── Date Picker Helpers ───
   const openDatePicker = () => {
-    if (Platform.OS === 'web') {
-      // On web, trigger the hidden HTML date input
-      webDateRef.current?.click?.();
-      webDateRef.current?.showPicker?.();
-      return;
-    }
-    setTempDate(expectedDate || new Date());
     setShowDatePicker(true);
-  };
-
-  const onDateChangeAndroid = (event, selectedDate) => {
-    setShowDatePicker(false);
-    if (event.type === 'set' && selectedDate) {
-      setExpectedDate(selectedDate);
-    }
-  };
-
-  const handleWebDateChange = (e) => {
-    const val = e.target.value;
-    if (val) {
-      const parts = val.split('-');
-      setExpectedDate(new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2])));
-    }
   };
 
   const formatDate = (date) => {
     if (!date) return '';
     return date.toLocaleDateString('en-IN', { year: 'numeric', month: 'short', day: 'numeric' });
-  };
-
-  const formatDateForInput = (date) => {
-    if (!date) return '';
-    const y = date.getFullYear();
-    const m = String(date.getMonth() + 1).padStart(2, '0');
-    const d = String(date.getDate()).padStart(2, '0');
-    return `${y}-${m}-${d}`;
   };
 
   return (
@@ -229,27 +193,20 @@ export default function PurchaseOrderFormScreen({ route, navigation }) {
           </TouchableOpacity>
 
           {/* Hidden web date input */}
-          {Platform.OS === 'web' && (
-            <input
-              ref={webDateRef}
-              type="date"
-              value={formatDateForInput(expectedDate)}
-              onChange={handleWebDateChange}
-              min={formatDateForInput(new Date())}
-              style={{ position: 'absolute', opacity: 0, width: 0, height: 0, pointerEvents: 'none' }}
-            />
-          )}
 
-          {/* Android date picker (native dialog) */}
-          {showDatePicker && Platform.OS === 'android' && DateTimePicker && (
-            <DateTimePicker
-              value={tempDate}
-              mode="date"
-              display="default"
-              minimumDate={new Date()}
-              onChange={onDateChangeAndroid}
-            />
-          )}
+          {/* Date picker modal */}
+          <DateTimePickerModal
+            visible={showDatePicker}
+            mode="date"
+            value={expectedDate}
+            minimumDate={new Date()}
+            title="Expected Date"
+            onCancel={() => setShowDatePicker(false)}
+            onConfirm={(selected) => {
+              setShowDatePicker(false);
+              setExpectedDate(selected);
+            }}
+          />
 
           <Input label="Notes (optional)" value={notes} onChangeText={setNotes} placeholder="Any notes" multiline />
 
@@ -355,33 +312,7 @@ export default function PurchaseOrderFormScreen({ route, navigation }) {
         </ScrollView>
       </KeyboardAvoidingView>
 
-      {/* iOS Date Picker Modal */}
-      {Platform.OS === 'ios' && DateTimePicker && (
-        <Modal visible={showDatePicker} transparent animationType="slide">
-          <View style={styles.modalOverlay}>
-            <TouchableOpacity style={styles.modalBackdrop} activeOpacity={1} onPress={() => setShowDatePicker(false)} />
-            <View style={styles.modalContent}>
-              <View style={styles.modalHeader}>
-                <TouchableOpacity onPress={() => setShowDatePicker(false)}>
-                  <Text style={styles.modalCancel}>Cancel</Text>
-                </TouchableOpacity>
-                <Text style={styles.modalTitle}>Expected Date</Text>
-                <TouchableOpacity onPress={() => { setExpectedDate(tempDate); setShowDatePicker(false); }}>
-                  <Text style={styles.modalDone}>Done</Text>
-                </TouchableOpacity>
-              </View>
-              <DateTimePicker
-                value={tempDate}
-                mode="date"
-                display="spinner"
-                minimumDate={new Date()}
-                onChange={(event, date) => { if (date) setTempDate(date); }}
-                style={{ height: 200 }}
-              />
-            </View>
-          </View>
-        </Modal>
-      )}
+
     </DismissKeyboard>
   );
 }
@@ -433,24 +364,4 @@ const styles = StyleSheet.create({
   row: { flexDirection: 'row', gap: Spacing.md },
   halfInput: { flex: 1 },
   actions: { marginTop: Spacing.xl },
-  /* iOS date picker modal */
-  modalOverlay: {
-    flex: 1, justifyContent: 'flex-end',
-  },
-  modalBackdrop: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.4)',
-  },
-  modalContent: {
-    backgroundColor: Colors.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20,
-    paddingBottom: 30,
-  },
-  modalHeader: {
-    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    paddingHorizontal: Spacing.md, paddingVertical: Spacing.md,
-    borderBottomWidth: 1, borderBottomColor: Colors.border,
-  },
-  modalCancel: { fontSize: FontSize.md, color: Colors.error },
-  modalTitle: { fontSize: FontSize.md, fontWeight: '600', color: Colors.text },
-  modalDone: { fontSize: FontSize.md, fontWeight: '600', color: Colors.primary },
 });

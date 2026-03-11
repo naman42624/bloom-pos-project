@@ -159,7 +159,7 @@ export default function DashboardScreen({ navigation }) {
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
             <Text style={styles.sectionTitle}>Today's Revenue</Text>
-            <TouchableOpacity onPress={() => navigation.navigate('More', { screen: 'Reports' })}>
+            <TouchableOpacity onPress={() => navigation.navigate('More', { screen: 'Reports', initial: false })}>
               <Text style={styles.seeAll}>Full Reports</Text>
             </TouchableOpacity>
           </View>
@@ -221,19 +221,19 @@ export default function DashboardScreen({ navigation }) {
               icon="people"
               label="Staff"
               color={Colors.info}
-              onPress={() => navigation.navigate('More', { screen: 'Staff' })}
+              onPress={() => navigation.navigate('More', { screen: 'Staff', initial: false })}
             />
             <QuickAction
               icon="location"
               label="Locations"
               color={Colors.secondary}
-              onPress={() => navigation.navigate('More', { screen: 'Locations' })}
+              onPress={() => navigation.navigate('More', { screen: 'Locations', initial: false })}
             />
             <QuickAction
               icon="settings"
               label="Settings"
               color={Colors.warning}
-              onPress={() => navigation.navigate('More', { screen: 'Settings' })}
+              onPress={() => navigation.navigate('More', { screen: 'Settings', initial: false })}
             />
           </View>
         </View>
@@ -260,13 +260,13 @@ export default function DashboardScreen({ navigation }) {
               icon="construct"
               label="Produce"
               color="#9C27B0"
-              onPress={() => navigation.navigate('POS', { screen: 'ProduceProduct' })}
+              onPress={() => navigation.navigate('POS', { initial: false, screen: 'ProduceProduct' })}
             />
             <QuickAction
               icon="list"
               label="My Tasks"
               color={Colors.info}
-              onPress={() => navigation.navigate('POS', { screen: 'ProductionQueue' })}
+              onPress={() => navigation.navigate('POS', { initial: false, screen: 'ProductionQueue' })}
             />
           </View>
         </View>
@@ -277,28 +277,28 @@ export default function DashboardScreen({ navigation }) {
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
             <Text style={styles.sectionTitle}>Orders Overview</Text>
-            <TouchableOpacity onPress={() => navigation.navigate('POS', { screen: 'ProductionQueue' })}>
+            <TouchableOpacity onPress={() => navigation.navigate('POS', { initial: false, screen: 'ProductionQueue' })}>
               <Text style={styles.seeAll}>View All</Text>
             </TouchableOpacity>
           </View>
           <View style={styles.orderSummaryRow}>
             <TouchableOpacity
               style={[styles.orderSummaryCard, { borderLeftColor: Colors.warning || '#FF9800' }]}
-              onPress={() => navigation.navigate('POS', { screen: 'ProductionQueue' })}
+              onPress={() => navigation.navigate('POS', { initial: false, screen: 'ProductionQueue' })}
             >
               <Text style={[styles.orderSummaryCount, { color: Colors.warning || '#FF9800' }]}>{dashSummary.pending_orders}</Text>
               <Text style={styles.orderSummaryLabel}>Pending</Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={[styles.orderSummaryCard, { borderLeftColor: '#2196F3' }]}
-              onPress={() => navigation.navigate('POS', { screen: 'ProductionQueue' })}
+              onPress={() => navigation.navigate('POS', { initial: false, screen: 'ProductionQueue' })}
             >
               <Text style={[styles.orderSummaryCount, { color: '#2196F3' }]}>{dashSummary.preparing_orders}</Text>
               <Text style={styles.orderSummaryLabel}>Preparing</Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={[styles.orderSummaryCard, { borderLeftColor: Colors.success }]}
-              onPress={() => navigation.navigate('POS', { screen: 'ProductionQueue' })}
+              onPress={() => navigation.navigate('POS', { initial: false, screen: 'ProductionQueue' })}
             >
               <Text style={[styles.orderSummaryCount, { color: Colors.success }]}>{dashSummary.ready_orders}</Text>
               <Text style={styles.orderSummaryLabel}>Ready</Text>
@@ -314,7 +314,7 @@ export default function DashboardScreen({ navigation }) {
           {dashSummary.unassigned_tasks > 0 && (
             <TouchableOpacity
               style={styles.actionItemCard}
-              onPress={() => navigation.navigate('POS', { screen: 'ProductionQueue' })}
+              onPress={() => navigation.navigate('POS', { initial: false, screen: 'ProductionQueue' })}
             >
               <View style={[styles.actionItemIcon, { backgroundColor: '#FF980020' }]}>
                 <Ionicons name="people-outline" size={22} color={Colors.warning || '#FF9800'} />
@@ -344,7 +344,7 @@ export default function DashboardScreen({ navigation }) {
           {dashSummary.pending_tasks > 0 && (
             <TouchableOpacity
               style={styles.actionItemCard}
-              onPress={() => navigation.navigate('POS', { screen: 'ProductionQueue' })}
+              onPress={() => navigation.navigate('POS', { initial: false, screen: 'ProductionQueue' })}
             >
               <View style={[styles.actionItemIcon, { backgroundColor: Colors.primary + '20' }]}>
                 <Ionicons name="construct-outline" size={22} color={Colors.primary} />
@@ -367,7 +367,7 @@ export default function DashboardScreen({ navigation }) {
               <Ionicons name="warning" size={18} color="#FF6D00" />
               <Text style={[styles.sectionTitle, { color: '#FF6D00' }]}>At Risk</Text>
             </View>
-            <TouchableOpacity onPress={() => navigation.navigate('Orders', { screen: 'DeliveriesList' })}>
+            <TouchableOpacity onPress={() => navigation.navigate('Orders', { initial: false, screen: 'DeliveriesList' })}>
               <Text style={styles.seeAll}>View All</Text>
             </TouchableOpacity>
           </View>
@@ -377,9 +377,9 @@ export default function DashboardScreen({ navigation }) {
               style={[styles.actionItemCard, { borderLeftWidth: 3, borderLeftColor: '#FF6D00' }]}
               onPress={() => {
                 if (order.type === 'delivery' && order.delivery_id) {
-                  navigation.navigate('Orders', { screen: 'DeliveryDetail', params: { deliveryId: order.delivery_id } });
+                  navigation.navigate('Orders', { initial: false, screen: 'DeliveryDetail', params: { deliveryId: order.delivery_id } });
                 } else {
-                  navigation.navigate('Orders', { screen: 'SaleDetail', params: { saleId: order.sale_id } });
+                  navigation.navigate('Orders', { initial: false, screen: 'SaleDetail', params: { saleId: order.sale_id } });
                 }
               }}
             >
@@ -408,7 +408,7 @@ export default function DashboardScreen({ navigation }) {
               <Ionicons name="flash" size={18} color={Colors.primary} />
               <Text style={styles.sectionTitle}>Urgent Walk-in Orders</Text>
             </View>
-            <TouchableOpacity onPress={() => navigation.navigate('POS', { screen: 'ProductionQueue' })}>
+            <TouchableOpacity onPress={() => navigation.navigate('POS', { initial: false, screen: 'ProductionQueue' })}>
               <Text style={styles.seeAll}>View All</Text>
             </TouchableOpacity>
           </View>
@@ -416,7 +416,7 @@ export default function DashboardScreen({ navigation }) {
             <TouchableOpacity
               key={`urgent-${order.id}`}
               style={[styles.taskCard, styles.taskUrgent]}
-              onPress={() => navigation.navigate('POS', { screen: 'SaleDetail', params: { saleId: order.id } })}
+              onPress={() => navigation.navigate('POS', { initial: false, screen: 'SaleDetail', params: { saleId: order.id } })}
             >
               <View style={{ flex: 1 }}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
@@ -441,7 +441,7 @@ export default function DashboardScreen({ navigation }) {
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
             <Text style={styles.sectionTitle}>Your Tasks</Text>
-            <TouchableOpacity onPress={() => navigation.navigate('POS', { screen: 'ProductionQueue' })}>
+            <TouchableOpacity onPress={() => navigation.navigate('POS', { initial: false, screen: 'ProductionQueue' })}>
               <Text style={styles.seeAll}>View Queue</Text>
             </TouchableOpacity>
           </View>

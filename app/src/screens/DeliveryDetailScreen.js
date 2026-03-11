@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useRef } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Alert, Platform, TextInput, ActivityIndicator, Image } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Alert, Platform, TextInput, ActivityIndicator, Image, Modal, FlatList } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import * as Print from 'expo-print';
@@ -27,6 +27,9 @@ export default function DeliveryDetailScreen({ route, navigation }) {
   const [showCodForm, setShowCodForm] = useState(false);
   const [showFailForm, setShowFailForm] = useState(false);
   const [proofPhoto, setProofPhoto] = useState(null);
+  const [assignModalVisible, setAssignModalVisible] = useState(false);
+  const [partners, setPartners] = useState([]);
+  const [assignLoading, setAssignLoading] = useState(false);
 
   const isPartner = user?.role === 'delivery_partner';
   const isManager = user?.role === 'owner' || user?.role === 'manager';
@@ -98,6 +101,30 @@ export default function DeliveryDetailScreen({ route, navigation }) {
       Platform.OS === 'web' ? window.alert(msg) : Alert.alert('Error', msg);
     } finally {
       setActionLoading(false);
+    }
+  };
+
+  const openAssignModal = async () => {
+    try {
+      const res = await api.getUsers({ role: 'delivery_partner', limit: 100 });
+      const users = res.data?.users || res.data || [];
+      setPartners(Array.isArray(users) ? users.filter(u => u.is_active) : []);
+    } catch {
+      setPartners([]);
+    }
+    setAssignModalVisible(true);
+  };
+
+  const handleAssign = async (partnerId) => {
+    try {
+      setAssignLoading(true);
+      await api.assignDelivery(deliveryId, { delivery_partner_id: partnerId });
+      setAssignModalVisible(false);
+      fetchDelivery();
+    } catch (err) {
+      Alert.alert('Error', err.message || 'Failed to assign partner');
+    } finally {
+      setAssignLoading(false);
     }
   };
 
@@ -291,6 +318,7 @@ export default function DeliveryDetailScreen({ route, navigation }) {
   const isFinal = ['delivered', 'failed', 'cancelled'].includes(delivery.status);
 
   return (
+    <>
     <ScrollView style={styles.container} contentContainerStyle={{ paddingBottom: 100 }}>
       {/* Status Progress */}
       <View style={styles.section}>
@@ -498,7 +526,7 @@ export default function DeliveryDetailScreen({ route, navigation }) {
           </TouchableOpacity>
 
           {isManager && delivery.status === 'pending' && (
-            <TouchableOpacity style={[styles.actionBtn, { backgroundColor: '#2196F3' }]} onPress={() => navigation.goBack()} disabled={actionLoading}>
+            <TouchableOpacity style={[styles.actionBtn, { backgroundColor: '#2196F3' }]} onPress={openAssignModal} disabled={actionLoading}>
               <Ionicons name="person-add" size={20} color="#fff" />
               <Text style={styles.actionBtnText}>Assign Partner</Text>
             </TouchableOpacity>
@@ -612,6 +640,43 @@ export default function DeliveryDetailScreen({ route, navigation }) {
         </View>
       )}
     </ScrollView>
+
+    {/* Assign Partner Modal */}
+    <Modal visible={assignModalVisible} animationType="slide" transparent onRequestClose={() => setAssignModalVisible(false)}>
+      <View style={styles.modalOverlay}>
+        <View style={styles.assignModal}>
+          <View style={styles.assignModalHeader}>
+            <Text style={styles.assignModalTitle}>Assign Delivery Partner</Text>
+            <TouchableOpacity onPress={() => setAssignModalVisible(false)}>
+              <Ionicons name="close" size={24} color={Colors.text} />
+            </TouchableOpacity>
+          </View>
+          {partners.length === 0 ? (
+            <Text style={{ textAlign: 'center', color: Colors.textSecondary, padding: 20 }}>No delivery partners found</Text>
+          ) : (
+            <FlatList
+              data={partners}
+              keyExtractor={item => String(item.id)}
+              renderItem={({ item: p }) => (
+                <TouchableOpacity
+                  style={styles.partnerItem}
+                  onPress={() => handleAssign(p.id)}
+                  disabled={assignLoading}
+                >
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.partnerName}>{p.name}</Text>
+                    <Text style={styles.partnerPhone}>{p.phone}</Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={20} color={Colors.textLight} />
+                </TouchableOpacity>
+              )}
+            />
+          )}
+          {assignLoading && <ActivityIndicator style={{ padding: 10 }} color={Colors.primary} />}
+        </View>
+      </View>
+    </Modal>
+    </>
   );
 }
 
@@ -672,4 +737,11 @@ const styles = StyleSheet.create({
   methodBtnActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
   methodText: { fontSize: FontSize.sm, color: Colors.textLight, fontWeight: '600' },
   methodTextActive: { color: '#fff' },
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
+  assignModal: { backgroundColor: Colors.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, maxHeight: '60%', paddingBottom: 30 },
+  assignModalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: Spacing.md, borderBottomWidth: 1, borderBottomColor: Colors.border },
+  assignModalTitle: { fontSize: FontSize.lg, fontWeight: '700', color: Colors.text },
+  partnerItem: { flexDirection: 'row', alignItems: 'center', padding: Spacing.md, borderBottomWidth: 1, borderBottomColor: Colors.border },
+  partnerName: { fontSize: FontSize.md, fontWeight: '600', color: Colors.text },
+  partnerPhone: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: 2 },
 });

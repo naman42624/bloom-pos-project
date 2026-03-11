@@ -13,9 +13,9 @@ router.get('/', (req, res, next) => {
     const db = getDb();
     let locations;
 
-    if (req.user.role === 'owner') {
+    if (req.user.role === 'owner' || req.user.role === 'customer') {
       locations = db
-        .prepare('SELECT * FROM locations ORDER BY type, name')
+        .prepare('SELECT * FROM locations WHERE is_active = 1 ORDER BY type, name')
         .all();
     } else {
       locations = db

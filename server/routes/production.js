@@ -2,13 +2,10 @@ const express = require('express');
 const { body, query, validationResult } = require('express-validator');
 const { getDb } = require('../config/database');
 const { authenticate, authorize } = require('../middleware/auth');
+const { createNotification, notifyByRole } = require('./notifications');
+const { todayStr: localToday } = require('../utils/time');
 
 const router = express.Router();
-
-function localToday() {
-  const n = new Date();
-  return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}-${String(n.getDate()).padStart(2,'0')}`;
-}
 
 // ═══════════════════════════════════════════════════════════════
 // PRODUCE — Staff makes products for display (not tied to an order)
@@ -357,6 +354,15 @@ router.put(
       `).get(task.id);
 
       res.json({ success: true, data: updated });
+
+      // Notify assigned employee
+      createNotification({
+        userIds: assigned_to,
+        title: 'Task Assigned',
+        body: `You've been assigned: ${task.quantity || ''}x ${updated.product_name || 'product'}`,
+        type: 'production',
+        data: { taskId: task.id, screen: 'ProductionQueue' },
+      });
     } catch (err) { next(err); }
   }
 );
@@ -487,6 +493,47 @@ router.put(
 
       completeTx();
       res.json({ success: true, message: 'Task completed' });
+
+      // Check for low stock alerts after material deduction
+      try {
+        const db2 = getDb();
+        const bom = db2.prepare('SELECT material_id, quantity as qty_per FROM product_materials WHERE product_id = ?').all(task.product_id);
+        for (const b of bom) {
+          const lowStock = db2.prepare(`
+            SELECT ms.quantity, m.min_stock_alert, m.name
+            FROM material_stock ms JOIN materials m ON ms.material_id = m.id
+            WHERE ms.material_id = ? AND ms.location_id = ? AND ms.quantity <= m.min_stock_alert AND m.min_stock_alert > 0
+          `).get(b.material_id, task.location_id);
+          if (lowStock) {
+            notifyByRole({
+              roles: ['owner', 'manager'],
+              locationId: task.location_id,
+              title: 'Low Stock Alert',
+              body: `${lowStock.name} is low: ${lowStock.quantity} remaining (alert threshold: ${lowStock.min_stock_alert})`,
+              type: 'low_stock',
+              data: { materialId: b.material_id, screen: 'MaterialDetail' },
+            });
+          }
+        }
+      } catch (e) { console.error('Low stock check error:', e.message); }
+
+      // Notify if all tasks done → sale is ready
+      try {
+        const db2 = getDb();
+        const remaining = db2.prepare("SELECT COUNT(*) as cnt FROM production_tasks WHERE sale_id = ? AND status NOT IN ('completed','cancelled')").get(task.sale_id);
+        if (remaining.cnt === 0) {
+          const sale = db2.prepare('SELECT customer_id, sale_number, order_type FROM sales WHERE id = ?').get(task.sale_id);
+          if (sale?.customer_id) {
+            createNotification({
+              userIds: sale.customer_id,
+              title: 'Order Ready',
+              body: `Your order ${sale.sale_number} is ready${sale.order_type === 'pickup' ? ' for pickup!' : '!'}`,
+              type: 'order_status',
+              data: { saleId: task.sale_id, screen: 'CustomerOrderDetail' },
+            });
+          }
+        }
+      } catch (e) { console.error('Ready notification error:', e.message); }
     } catch (err) { next(err); }
   }
 );

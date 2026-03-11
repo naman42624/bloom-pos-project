@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { getDb } = require('../config/database');
 const { authenticate, authorize } = require('../middleware/auth');
+const { todayStr, nowLocal } = require('../utils/time');
 
 router.use(authenticate);
 
@@ -16,14 +17,6 @@ function haversineKm(lat1, lon1, lat2, lon2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-// ─── Helper: Today string (local) ───────────────────────────
-function todayStr() {
-  const n = new Date();
-  const y = n.getFullYear();
-  const m = String(n.getMonth() + 1).padStart(2, '0');
-  const d = String(n.getDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
-}
 
 // ═══════════════════════════════════════════════════════════════
 // RECORD LOCATION (delivery partner sends GPS breadcrumb)
@@ -38,7 +31,7 @@ router.post('/location', authorize('delivery_partner'), (req, res) => {
     }
 
     const isMoving = (speed && speed > 0.5) ? 1 : 0;
-    const now = new Date().toISOString();
+    const now = nowLocal();
 
     db.prepare(`
       INSERT INTO delivery_locations (user_id, delivery_id, latitude, longitude, accuracy, speed, heading, battery_level, is_moving, recorded_at)

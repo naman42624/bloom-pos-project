@@ -100,6 +100,11 @@ export default function SalesScreen({ navigation }) {
       <TouchableOpacity style={styles.card} onPress={() => navigation.navigate('SaleDetail', { saleId: item.id })} activeOpacity={0.7}>
         <View style={styles.cardHeader}>
           <Text style={styles.saleNo}>{item.sale_number}</Text>
+          {item.source === 'recurring' && (
+            <View style={[styles.badge, { backgroundColor: '#9C27B0' + '20', marginRight: 4 }]}>
+              <Text style={[styles.badgeText, { color: '#9C27B0' }]}>RECURRING</Text>
+            </View>
+          )}
           <View style={[styles.badge, { backgroundColor: statusColor + '20' }]}>
             <Text style={[styles.badgeText, { color: statusColor }]}>{item.status?.toUpperCase()}</Text>
           </View>
