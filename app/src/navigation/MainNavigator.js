@@ -69,6 +69,7 @@ import CustomerOrdersScreen from '../screens/CustomerOrdersScreen';
 
 // More hub
 import MoreScreen from '../screens/MoreScreen';
+import OrdersHubScreen from '../screens/OrdersHubScreen';
 
 // Recurring Orders
 import RecurringOrdersScreen from '../screens/RecurringOrdersScreen';
@@ -77,6 +78,13 @@ import CustomerShopScreen from '../screens/CustomerShopScreen';
 
 // Phase 8 — Attendance
 import AttendanceScreen from '../screens/AttendanceScreen';
+
+// Phase 9 — Reports
+import ReportsHubScreen from '../screens/ReportsHubScreen';
+import SalesReportScreen from '../screens/SalesReportScreen';
+import InventoryReportScreen from '../screens/InventoryReportScreen';
+import CustomerInsightsScreen from '../screens/CustomerInsightsScreen';
+import EmployeePerformanceScreen from '../screens/EmployeePerformanceScreen';
 import StaffAttendanceScreen from '../screens/StaffAttendanceScreen';
 import AttendanceReportScreen from '../screens/AttendanceReportScreen';
 import SalaryAdvancesScreen from '../screens/SalaryAdvancesScreen';
@@ -283,17 +291,21 @@ function SalesStack() {
   );
 }
 
-// ─── Orders Stack (Manager — Deliveries, Pickups, Settlements) ──
+// ─── Orders Stack (Manager — Sales, Deliveries, Pickups, Settlements) ──
 function OrdersStack() {
   return (
     <Stack.Navigator screenOptions={stackScreenOptions}>
+      <Stack.Screen name="OrdersHub" component={OrdersHubScreen} options={{ title: 'Orders' }} />
+      <Stack.Screen name="SalesList" component={SalesScreen} options={{ title: 'Sales' }} />
       <Stack.Screen name="DeliveriesList" component={DeliveriesScreen} options={{ title: 'Deliveries' }} />
       <Stack.Screen name="DeliveryDetail" component={DeliveryDetailScreen} options={{ title: 'Delivery' }} />
-      <Stack.Screen name="Settlements" component={SettlementsScreen} options={{ title: 'Settlements' }} />
       <Stack.Screen name="PickupOrders" component={PickupOrdersScreen} options={{ title: 'Pickup Orders' }} />
+      <Stack.Screen name="Settlements" component={SettlementsScreen} options={{ title: 'Settlements' }} />
       <Stack.Screen name="SaleDetail" component={SaleDetailScreen} options={{ title: 'Sale Details' }} />
       <Stack.Screen name="RefundSale" component={RefundSaleScreen} options={{ title: 'Refund' }} />
       <Stack.Screen name="AddPayment" component={AddPaymentScreen} options={{ title: 'Record Payment' }} />
+      <Stack.Screen name="ProductionQueue" component={ProductionQueueScreen} options={{ title: 'Production Queue' }} />
+      <Stack.Screen name="ProduceProduct" component={ProduceScreen} options={{ title: 'Produce Products' }} />
     </Stack.Navigator>
   );
 }
@@ -347,6 +359,22 @@ function MoreStack() {
       <Stack.Screen name="RecurringOrders" component={RecurringOrdersScreen} options={{ title: 'Recurring Orders' }} />
       <Stack.Screen name="AddRecurringOrder" component={AddRecurringOrderScreen} options={{ title: 'New Recurring Order' }} />
       <Stack.Screen name="RecurringOrderDetail" component={AddRecurringOrderScreen} options={{ title: 'Edit Recurring Order' }} />
+      {/* Attendance sub-screens */}
+      <Stack.Screen name="Attendance" component={AttendanceScreen} options={{ title: 'Attendance' }} />
+      <Stack.Screen name="StaffAttendance" component={StaffAttendanceScreen} options={{ title: 'Staff Today' }} />
+      <Stack.Screen name="AttendanceReport" component={AttendanceReportScreen} options={{ title: 'Attendance Report' }} />
+      <Stack.Screen name="SalaryAdvances" component={SalaryAdvancesScreen} options={{ title: 'Salary Advances' }} />
+      <Stack.Screen name="ShiftManagement" component={ShiftManagementScreen} options={{ title: 'Shift Management' }} />
+      <Stack.Screen name="SalaryManagement" component={SalaryManagementScreen} options={{ title: 'Salary Management' }} />
+      <Stack.Screen name="LiveDeliveryMap" component={LiveDeliveryMapScreen} options={{ title: 'Live Tracking' }} />
+      {/* Reports */}
+      <Stack.Screen name="Reports" component={ReportsHubScreen} options={{ title: 'Reports' }} />
+      <Stack.Screen name="SalesReport" component={SalesReportScreen} options={{ title: 'Sales Report' }} />
+      <Stack.Screen name="InventoryReport" component={InventoryReportScreen} options={{ title: 'Inventory Report' }} />
+      <Stack.Screen name="CustomerInsights" component={CustomerInsightsScreen} options={{ title: 'Customer Insights' }} />
+      <Stack.Screen name="EmployeePerformance" component={EmployeePerformanceScreen} options={{ title: 'Employee Performance' }} />
+      {/* Profile */}
+      <Stack.Screen name="Profile" component={ProfileScreen} options={{ title: 'Profile' }} />
     </Stack.Navigator>
   );
 }
@@ -390,11 +418,9 @@ function CustomerOrdersStack() {
 const TAB_ICONS = {
   Dashboard: { active: 'grid', inactive: 'grid-outline' },
   POS: { active: 'cart', inactive: 'cart-outline' },
-  Sales: { active: 'receipt', inactive: 'receipt-outline' },
+  Orders: { active: 'clipboard', inactive: 'clipboard-outline' },
   Inventory: { active: 'leaf', inactive: 'leaf-outline' },
   Deliveries: { active: 'bicycle', inactive: 'bicycle-outline' },
-  Pickups: { active: 'bag-handle', inactive: 'bag-handle-outline' },
-  Orders: { active: 'bicycle', inactive: 'bicycle-outline' },
   MyOrders: { active: 'receipt', inactive: 'receipt-outline' },
   Shop: { active: 'storefront', inactive: 'storefront-outline' },
   Attendance: { active: 'time', inactive: 'time-outline' },
@@ -459,12 +485,12 @@ export default function MainNavigator() {
         />
       )}
 
-      {/* Sales tab — Owner, Manager */}
+      {/* Orders tab — Owner, Manager (combines Sales, Deliveries, Pickups) */}
       {(role === 'owner' || role === 'manager') && (
         <Tab.Screen
-          name="Sales"
-          component={SalesStack}
-          options={{ tabBarLabel: 'Sales' }}
+          name="Orders"
+          component={OrdersStack}
+          options={{ tabBarLabel: 'Orders' }}
         />
       )}
 
@@ -477,24 +503,6 @@ export default function MainNavigator() {
         />
       )}
 
-      {/* Customers tab — Owner, Manager */}
-      {(role === 'owner' || role === 'manager') && (
-        <Tab.Screen
-          name="Deliveries"
-          component={OrdersStack}
-          options={{ tabBarLabel: 'Deliveries' }}
-        />
-      )}
-
-      {/* Pickups tab — Owner, Manager */}
-      {(role === 'owner' || role === 'manager') && (
-        <Tab.Screen
-          name="Pickups"
-          component={PickupsStack}
-          options={{ tabBarLabel: 'Pickups' }}
-        />
-      )}
-
       {/* Deliveries tab — Delivery Partner */}
       {role === 'delivery_partner' && (
         <Tab.Screen
@@ -504,8 +512,8 @@ export default function MainNavigator() {
         />
       )}
 
-      {/* Attendance tab — All staff roles */}
-      {(role === 'owner' || role === 'manager' || role === 'employee' || role === 'delivery_partner') && (
+      {/* Attendance tab — Employee & Delivery Partner only (owner/manager access from More) */}
+      {(role === 'employee' || role === 'delivery_partner') && (
         <Tab.Screen
           name="Attendance"
           component={AttendanceStack}
@@ -513,7 +521,7 @@ export default function MainNavigator() {
         />
       )}
 
-      {/* My Orders tab — Customer */}
+      {/* Shop tab — Customer */}
       {role === 'customer' && (
         <Tab.Screen
           name="Shop"
@@ -531,7 +539,7 @@ export default function MainNavigator() {
         />
       )}
 
-      {/* Owner and Manager see More tab (Customers, Locations, Staff, Settings) */}
+      {/* More tab — Owner and Manager (includes Attendance, Customers, Staff, etc.) */}
       {(role === 'owner' || role === 'manager') && (
         <Tab.Screen
           name="More"
@@ -540,11 +548,14 @@ export default function MainNavigator() {
         />
       )}
 
-      <Tab.Screen
-        name="Profile"
-        component={ProfileStack}
-        options={{ tabBarLabel: 'Profile' }}
-      />
+      {/* Profile tab — only for roles that don't have it in More */}
+      {(role !== 'owner' && role !== 'manager') && (
+        <Tab.Screen
+          name="Profile"
+          component={ProfileStack}
+          options={{ tabBarLabel: 'Profile' }}
+        />
+      )}
     </Tab.Navigator>
   );
 }

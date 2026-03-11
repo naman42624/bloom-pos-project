@@ -80,7 +80,9 @@ router.post('/shifts', authorize('owner', 'manager'), (req, res) => {
     }
 
     // Validate shift_segments if provided
-    const segmentsJson = shift_segments ? JSON.stringify(shift_segments) : null;
+    const segmentsJson = shift_segments
+      ? (typeof shift_segments === 'string' ? shift_segments : JSON.stringify(shift_segments))
+      : null;
 
     // Check existing shift for this user+location
     const existing = db.prepare('SELECT id FROM employee_shifts WHERE user_id = ? AND location_id = ? AND is_active = 1').get(user_id, location_id);
@@ -294,7 +296,8 @@ router.post('/geofence-event', authorize('manager', 'employee', 'delivery_partne
 
     // If enter event → auto clock-in
     if (event_type === 'enter') {
-      const today = new Date().toISOString().split('T')[0];
+      const n = new Date();
+      const today = `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}-${String(n.getDate()).padStart(2,'0')}`;
       const existing = db.prepare('SELECT * FROM attendance WHERE user_id = ? AND date = ?').get(req.user.id, today);
 
       if (!existing || (existing.clock_out && !existing.clock_in)) {

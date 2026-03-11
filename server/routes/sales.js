@@ -5,11 +5,20 @@ const { authenticate, authorize } = require('../middleware/auth');
 
 const router = express.Router();
 
+// ─── Helper: Get local date string ───────────────────────────
+function localToday() {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
 // ─── Helper: Generate sale number ────────────────────────────
 function generateSaleNumber(db, locationId) {
   const loc = db.prepare('SELECT name FROM locations WHERE id = ?').get(locationId);
   const locCode = loc ? loc.name.replace(/[^A-Za-z]/g, '').substring(0, 4).toUpperCase() : 'XX';
-  const today = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  const today = localToday().replace(/-/g, '');
   const prefix = `INV-${locCode}-${today}`;
 
   const last = db.prepare(
@@ -139,7 +148,7 @@ router.get('/today-summary', authenticate, (req, res, next) => {
   try {
     const db = getDb();
     const { location_id } = req.query;
-    const today = new Date().toISOString().slice(0, 10);
+    const today = localToday();
 
     let locFilter = '';
     const params = [today];
@@ -186,13 +195,15 @@ router.get('/register/status', authenticate, (req, res, next) => {
     const { location_id } = req.query;
     if (!location_id) return res.status(400).json({ success: false, message: 'location_id is required' });
 
-    const today = new Date().toISOString().slice(0, 10);
+    const today = localToday();
+    // Get the most recent register session for this location today
     const register = db.prepare(`
       SELECT cr.*, u1.name as opened_by_name, u2.name as closed_by_name
       FROM cash_registers cr
       LEFT JOIN users u1 ON cr.opened_by = u1.id
       LEFT JOIN users u2 ON cr.closed_by = u2.id
       WHERE cr.location_id = ? AND cr.date = ?
+      ORDER BY cr.id DESC LIMIT 1
     `).get(location_id, today);
 
     // Add today's cash expenses to the response
@@ -205,7 +216,22 @@ router.get('/register/status', authenticate, (req, res, next) => {
       register.total_expenses_cash = expenseTotal;
     }
 
-    res.json({ success: true, data: register || null, isOpen: !!register && !register.closed_at });
+    // Get all sessions for today (for the log view)
+    const todaySessions = db.prepare(`
+      SELECT cr.*, u1.name as opened_by_name, u2.name as closed_by_name
+      FROM cash_registers cr
+      LEFT JOIN users u1 ON cr.opened_by = u1.id
+      LEFT JOIN users u2 ON cr.closed_by = u2.id
+      WHERE cr.location_id = ? AND cr.date = ?
+      ORDER BY cr.id DESC
+    `).all(location_id, today);
+
+    res.json({
+      success: true,
+      data: register || null,
+      isOpen: !!register && !register.closed_at,
+      todaySessions,
+    });
   } catch (err) { next(err); }
 });
 
@@ -225,33 +251,25 @@ router.post(
 
       const db = getDb();
       const { location_id, opening_balance } = req.body;
-      const today = new Date().toISOString().slice(0, 10);
+      const today = localToday();
 
-      const existing = db.prepare('SELECT id, closed_at, opening_balance FROM cash_registers WHERE location_id = ? AND date = ?').get(location_id, today);
-      if (existing && !existing.closed_at) {
-        return res.status(409).json({ success: false, message: 'Register is already open for today' });
+      // Check if there's already an open (unclosed) register for this location
+      const openRegister = db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1').get(location_id);
+      if (openRegister) {
+        return res.status(409).json({ success: false, message: 'Register is already open. Please close it first.' });
       }
-      if (existing && existing.closed_at) {
-        // Reopen: update opening balance to the new value and recalculate expected_cash
-        db.prepare(`
-          UPDATE cash_registers SET
-            opened_by = ?, opening_balance = ?,
-            expected_cash = ? + total_cash_sales - total_refunds_cash,
-            closed_at = NULL, closed_by = NULL, closing_notes = NULL,
-            actual_cash = NULL, discrepancy = NULL
-          WHERE id = ?
-        `).run(req.user.id, opening_balance, opening_balance, existing.id);
-      } else {
-        db.prepare(
-          'INSERT INTO cash_registers (location_id, date, opened_by, opening_balance, expected_cash) VALUES (?, ?, ?, ?, ?)'
-        ).run(location_id, today, req.user.id, opening_balance, opening_balance);
-      }
+
+      // Always create a new register session (allows multiple per day)
+      db.prepare(
+        'INSERT INTO cash_registers (location_id, date, opened_by, opening_balance, expected_cash) VALUES (?, ?, ?, ?, ?)'
+      ).run(location_id, today, req.user.id, opening_balance, opening_balance);
 
       const register = db.prepare(`
         SELECT cr.*, u.name as opened_by_name
         FROM cash_registers cr LEFT JOIN users u ON cr.opened_by = u.id
-        WHERE cr.location_id = ? AND cr.date = ?
-      `).get(location_id, today);
+        WHERE cr.location_id = ? AND cr.closed_at IS NULL
+        ORDER BY cr.id DESC LIMIT 1
+      `).get(location_id);
 
       res.status(201).json({ success: true, data: register });
     } catch (err) { next(err); }
@@ -275,13 +293,14 @@ router.put(
 
       const db = getDb();
       const { location_id, actual_cash, closing_notes } = req.body;
-      const today = new Date().toISOString().slice(0, 10);
+      const today = localToday();
 
-      const register = db.prepare('SELECT * FROM cash_registers WHERE location_id = ? AND date = ?').get(location_id, today);
-      if (!register) return res.status(404).json({ success: false, message: 'No register open for today' });
-      if (register.closed_at) return res.status(400).json({ success: false, message: 'Register already closed' });
+      // Find the most recent unclosed register for this location
+      const register = db.prepare('SELECT * FROM cash_registers WHERE location_id = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1').get(location_id);
+      if (!register) return res.status(404).json({ success: false, message: 'No open register found for this location' });
 
-      // Recalculate totals from actual payment records
+      // Recalculate totals from actual payment records during this session
+      const sessionStart = register.opened_at;
       const paymentTotals = db.prepare(`
         SELECT
           COALESCE(SUM(CASE WHEN p.method = 'cash' THEN p.amount ELSE 0 END), 0) as cash_total,
@@ -289,22 +308,22 @@ router.put(
           COALESCE(SUM(CASE WHEN p.method = 'upi' THEN p.amount ELSE 0 END), 0) as upi_total
         FROM payments p
         JOIN sales s ON p.sale_id = s.id
-        WHERE s.location_id = ? AND DATE(s.created_at) = ? AND s.status = 'completed'
-      `).get(location_id, today);
+        WHERE s.location_id = ? AND p.created_at >= ? AND s.status = 'completed'
+      `).get(location_id, sessionStart);
 
       const refundTotal = db.prepare(`
         SELECT COALESCE(SUM(r.amount), 0) as total
         FROM refunds r
         JOIN sales s ON r.sale_id = s.id
-        WHERE s.location_id = ? AND DATE(r.created_at) = ? AND r.refund_method = 'cash' AND r.status = 'processed'
-      `).get(location_id, today).total;
+        WHERE s.location_id = ? AND r.created_at >= ? AND r.refund_method = 'cash' AND r.status = 'processed'
+      `).get(location_id, sessionStart).total;
 
-      // Cash expenses for the day
+      // Cash expenses during this session
       const expenseTotal = db.prepare(`
         SELECT COALESCE(SUM(amount), 0) as total
         FROM expenses
-        WHERE location_id = ? AND expense_date = ? AND payment_method = 'cash'
-      `).get(location_id, today).total;
+        WHERE location_id = ? AND created_at >= ? AND payment_method = 'cash'
+      `).get(location_id, sessionStart).total;
 
       const expectedCash = register.opening_balance + paymentTotals.cash_total - refundTotal - expenseTotal;
       const discrepancy = expectedCash - actual_cash;
@@ -728,7 +747,7 @@ router.post(
           }
 
           // Update cash register for today
-          const today = new Date().toISOString().slice(0, 10);
+          const today = localToday();
           const register = db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND date = ?').get(location_id, today);
           if (register) {
             for (const pmt of payments) {
@@ -851,7 +870,7 @@ router.post(
       db.prepare('UPDATE sales SET payment_status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(paymentStatus, sale.id);
 
       // Update cash register
-      const today = new Date().toISOString().slice(0, 10);
+      const today = localToday();
       const register = db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND date = ?').get(sale.location_id, today);
       if (register) {
         if (method === 'cash') {
@@ -1192,7 +1211,7 @@ router.post(
 
       // Update cash register if cash refund
       if (refund_method === 'cash') {
-        const today = new Date().toISOString().slice(0, 10);
+        const today = localToday();
         const register = db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND date = ?').get(sale.location_id, today);
         if (register) {
           db.prepare('UPDATE cash_registers SET total_refunds_cash = total_refunds_cash + ?, expected_cash = opening_balance + total_cash_sales - total_refunds_cash - ? WHERE id = ?').run(amount, amount, register.id);

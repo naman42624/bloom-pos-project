@@ -919,6 +919,32 @@ class ApiService {
   getPartnerPerformance(userId, days = 30) {
     return this.request(`/delivery-tracking/performance/${userId}?days=${days}`);
   }
+
+  // ─── Reports ─────────────────────────────────────────────
+  getReportsDashboard(params = {}) {
+    const q = new URLSearchParams(params).toString();
+    return this.request(`/reports/dashboard${q ? `?${q}` : ''}`);
+  }
+
+  getSalesSummary(params = {}) {
+    const q = new URLSearchParams(params).toString();
+    return this.request(`/reports/sales-summary${q ? `?${q}` : ''}`);
+  }
+
+  getInventoryReport(params = {}) {
+    const q = new URLSearchParams(params).toString();
+    return this.request(`/reports/inventory${q ? `?${q}` : ''}`);
+  }
+
+  getCustomerInsights(params = {}) {
+    const q = new URLSearchParams(params).toString();
+    return this.request(`/reports/customer-insights${q ? `?${q}` : ''}`);
+  }
+
+  getEmployeePerformance(params = {}) {
+    const q = new URLSearchParams(params).toString();
+    return this.request(`/reports/employee-performance${q ? `?${q}` : ''}`);
+  }
 }
 
 export default new ApiService();

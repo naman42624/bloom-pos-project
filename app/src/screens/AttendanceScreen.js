@@ -32,6 +32,8 @@ export default function AttendanceScreen({ navigation }) {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [attendance, setAttendance] = useState(null);
+  const [todayLogs, setTodayLogs] = useState([]);
+  const [totalHoursToday, setTotalHoursToday] = useState(0);
   const [activeOutdoor, setActiveOutdoor] = useState(null);
   const [locations, setLocations] = useState([]);
   const [selectedLocation, setSelectedLocation] = useState(null);
@@ -45,7 +47,7 @@ export default function AttendanceScreen({ navigation }) {
   const isOwner = role === 'owner';
   const isStaff = role === 'owner' || role === 'manager' || role === 'employee' || role === 'delivery_partner';
   const isManagerOrOwner = role === 'owner' || role === 'manager';
-  const canClockInOut = isStaff; // all staff (including owner) can clock in/out
+  const canClockInOut = isStaff && !isOwner; // owners don't clock in/out
 
   const fetchData = useCallback(async () => {
     try {
@@ -56,6 +58,8 @@ export default function AttendanceScreen({ navigation }) {
         isManagerOrOwner ? api.getOutdoorDutyRequests({ status: 'requested' }) : Promise.resolve({ data: [] }),
       ]);
       setAttendance(todayRes.data?.attendance || null);
+      setTodayLogs(todayRes.data?.logs || []);
+      setTotalHoursToday(todayRes.data?.totalEffectiveToday || 0);
       setActiveOutdoor(todayRes.data?.activeOutdoor || null);
       const locs = (locsRes.data?.locations || []).filter(l => l.type === 'shop' && l.is_active);
       setLocations(locs);
@@ -76,8 +80,7 @@ export default function AttendanceScreen({ navigation }) {
   useFocusEffect(useCallback(() => { fetchData(); }, [fetchData]));
 
   const handleClockIn = async () => {
-    // When re-clocking in after clock-out, use the same location
-    const locationId = selectedLocation?.id || attendance?.location_id;
+    const locationId = selectedLocation?.id;
     if (!locationId) {
       Alert.alert('Select Location', 'Please select a location to clock in.');
       return;
@@ -173,14 +176,17 @@ export default function AttendanceScreen({ navigation }) {
       return;
     }
     const update = () => {
-      const previousHours = attendance.total_hours || 0;
+      // Sum up hours from all completed logs today
+      const completedHours = todayLogs
+        .filter(l => l.clock_out && l.id !== attendance.id)
+        .reduce((sum, l) => sum + (l.total_hours || 0), 0);
       const currentShift = Math.max(0, (Date.now() - new Date(attendance.clock_in).getTime()) / (1000 * 60 * 60));
-      setElapsedTime(previousHours + currentShift);
+      setElapsedTime(completedHours + currentShift);
     };
     update();
     const interval = setInterval(update, 30000); // update every 30s
     return () => clearInterval(interval);
-  }, [isClockedIn, attendance?.clock_in, attendance?.total_hours]);
+  }, [isClockedIn, attendance?.clock_in, todayLogs]);
 
   if (loading) {
     return (
@@ -241,8 +247,8 @@ export default function AttendanceScreen({ navigation }) {
           </View>
         )}
 
-        {/* Location Selector — shown when not clocked in */}
-        {!isClockedIn && !isClockedOut && locations.length > 0 && (
+        {/* Location Selector — shown when not actively clocked in */}
+        {!isClockedIn && locations.length > 0 && (
           <View style={styles.locRow}>
             <Text style={styles.locLabel}>Select Location:</Text>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.locChips}>
@@ -330,6 +336,39 @@ export default function AttendanceScreen({ navigation }) {
               </Text>
               <Text style={styles.outdoorBannerReason}>{activeOutdoor.reason}</Text>
             </View>
+          </View>
+        )}
+
+        {/* Today's Log Timeline */}
+        {todayLogs.length > 0 && (
+          <View style={styles.todayLogSection}>
+            <Text style={styles.todayLogTitle}>Today's Log</Text>
+            <Text style={styles.todayLogTotal}>Total: {formatHours(totalHoursToday)}</Text>
+            {todayLogs.map((log, idx) => (
+              <View key={log.id} style={styles.logEntry}>
+                <View style={styles.logTimeline}>
+                  <View style={[styles.logDot, { backgroundColor: log.clock_out ? Colors.secondary : Colors.warning }]} />
+                  {idx < todayLogs.length - 1 && <View style={styles.logLine} />}
+                </View>
+                <View style={styles.logContent}>
+                  <View style={styles.logTimeRow}>
+                    <Text style={styles.logTimeIn}>{formatTime(log.clock_in)}</Text>
+                    <Ionicons name="arrow-forward" size={14} color={Colors.textLight} />
+                    <Text style={[styles.logTimeOut, !log.clock_out && { color: Colors.warning }]}>
+                      {log.clock_out ? formatTime(log.clock_out) : 'Active'}
+                    </Text>
+                    <Text style={styles.logHours}>
+                      {log.clock_out ? formatHours(log.total_hours) : '...'}
+                    </Text>
+                  </View>
+                  <View style={styles.logFlags}>
+                    {log.late_arrival === 1 && <Text style={styles.lateTag}>LATE</Text>}
+                    {log.early_departure === 1 && <Text style={styles.earlyTag}>EARLY</Text>}
+                    {log.location_name && <Text style={styles.logLocation}>{log.location_name}</Text>}
+                  </View>
+                </View>
+              </View>
+            ))}
           </View>
         )}
       </View>
@@ -559,12 +598,13 @@ const styles = StyleSheet.create({
   },
 
   quickLinks: {
-    flexDirection: 'row', gap: Spacing.sm, marginBottom: Spacing.md,
+    flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm, marginBottom: Spacing.md,
   },
   quickLink: {
-    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    gap: 6, backgroundColor: Colors.surface, padding: Spacing.md,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    gap: 6, backgroundColor: Colors.surface, paddingVertical: Spacing.sm, paddingHorizontal: Spacing.md,
     borderRadius: BorderRadius.md, shadowColor: '#000', shadowOpacity: 0.04, shadowRadius: 4, elevation: 1,
+    minWidth: '30%',
   },
   quickLinkText: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.text },
 
@@ -604,4 +644,20 @@ const styles = StyleSheet.create({
     borderRadius: BorderRadius.md,
   },
   modalSubmitText: { fontSize: FontSize.md, fontWeight: '700', color: '#fff' },
+
+  // Today's Log Timeline
+  todayLogSection: { marginTop: Spacing.md, borderTopWidth: 1, borderColor: Colors.border, paddingTop: Spacing.md },
+  todayLogTitle: { fontSize: FontSize.sm, fontWeight: '700', color: Colors.text },
+  todayLogTotal: { fontSize: FontSize.xs, color: Colors.primary, fontWeight: '600', marginBottom: Spacing.sm },
+  logEntry: { flexDirection: 'row', minHeight: 44 },
+  logTimeline: { width: 24, alignItems: 'center' },
+  logDot: { width: 10, height: 10, borderRadius: 5, marginTop: 6 },
+  logLine: { width: 2, flex: 1, backgroundColor: Colors.border, marginVertical: 2 },
+  logContent: { flex: 1, marginLeft: Spacing.sm, paddingBottom: Spacing.sm },
+  logTimeRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  logTimeIn: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.secondary },
+  logTimeOut: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.text },
+  logHours: { fontSize: FontSize.xs, color: Colors.primary, fontWeight: '600', marginLeft: 'auto' },
+  logFlags: { flexDirection: 'row', gap: 4, marginTop: 2, flexWrap: 'wrap' },
+  logLocation: { fontSize: FontSize.xs, color: Colors.textLight },
 });

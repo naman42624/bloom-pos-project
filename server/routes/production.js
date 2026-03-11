@@ -5,6 +5,11 @@ const { authenticate, authorize } = require('../middleware/auth');
 
 const router = express.Router();
 
+function localToday() {
+  const n = new Date();
+  return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}-${String(n.getDate()).padStart(2,'0')}`;
+}
+
 // ═══════════════════════════════════════════════════════════════
 // PRODUCE — Staff makes products for display (not tied to an order)
 // ═══════════════════════════════════════════════════════════════
@@ -597,7 +602,7 @@ router.get('/stats', authenticate, (req, res, next) => {
     const db = getDb();
     const { location_id, date_from, date_to, user_id } = req.query;
 
-    const today = new Date().toISOString().slice(0, 10);
+    const today = localToday();
     const from = date_from || today;
     const to = date_to || today;
 

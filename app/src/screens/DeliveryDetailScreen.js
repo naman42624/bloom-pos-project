@@ -498,7 +498,7 @@ export default function DeliveryDetailScreen({ route, navigation }) {
           </TouchableOpacity>
 
           {isManager && delivery.status === 'pending' && (
-            <TouchableOpacity style={[styles.actionBtn, { backgroundColor: '#2196F3' }]} onPress={() => navigation.navigate('Deliveries')} disabled={actionLoading}>
+            <TouchableOpacity style={[styles.actionBtn, { backgroundColor: '#2196F3' }]} onPress={() => navigation.goBack()} disabled={actionLoading}>
               <Ionicons name="person-add" size={20} color="#fff" />
               <Text style={styles.actionBtnText}>Assign Partner</Text>
             </TouchableOpacity>

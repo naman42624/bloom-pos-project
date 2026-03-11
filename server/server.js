@@ -26,6 +26,7 @@ const { processRecurringOrders } = require('./routes/recurring-orders');
 const attendanceRoutes = require('./routes/attendance');
 const staffManagementRoutes = require('./routes/staff-management');
 const deliveryTrackingRoutes = require('./routes/delivery-tracking');
+const reportsRoutes = require('./routes/reports');
 const { errorHandler, notFound } = require('./middleware/errorHandler');
 const { getDb, closeDb } = require('./config/database');
 const http = require('http');
@@ -75,6 +76,7 @@ app.use('/api/recurring-orders', recurringOrdersRoutes);
 app.use('/api/attendance', attendanceRoutes);
 app.use('/api/staff', staffManagementRoutes);
 app.use('/api/delivery-tracking', deliveryTrackingRoutes);
+app.use('/api/reports', reportsRoutes);
 
 // ─── Error Handling ──────────────────────────────────────────
 app.use(notFound);
@@ -163,7 +165,8 @@ const server = httpServer.listen(PORT, () => {
   setInterval(() => {
     try {
       const db = getDb();
-      const today = new Date().toISOString().split('T')[0];
+      const n = new Date();
+      const today = `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}-${String(n.getDate()).padStart(2,'0')}`;
 
       // Find unprocessed exit events older than the employee's timeout
       const exitEvents = db.prepare(`

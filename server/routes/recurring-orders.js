@@ -1,5 +1,10 @@
 const express = require('express');
 const router = express.Router();
+
+function localDateStr(dt) {
+  const d = dt || new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
 const { body, validationResult } = require('express-validator');
 const { getDb } = require('../config/database');
 const { authenticate, authorize } = require('../middleware/auth');
@@ -184,11 +189,15 @@ router.delete(
 function processRecurringOrders() {
   try {
     const db = getDb();
-    const today = new Date().toISOString().slice(0, 10);
+    // Generate orders 1 day before the scheduled pickup/delivery date
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const tomorrowStr = localDateStr(tomorrow);
+    const today = localDateStr();
 
     const dueOrders = db.prepare(
       "SELECT * FROM recurring_orders WHERE is_active = 1 AND next_run_date <= ?"
-    ).all(today);
+    ).all(tomorrowStr);
 
     if (dueOrders.length === 0) return;
 
@@ -196,7 +205,7 @@ function processRecurringOrders() {
     function generateSaleNumber(locationId) {
       const loc = db.prepare('SELECT name FROM locations WHERE id = ?').get(locationId);
       const locCode = loc ? loc.name.replace(/[^A-Za-z]/g, '').substring(0, 4).toUpperCase() : 'XX';
-      const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+      const dateStr = localDateStr().replace(/-/g, '');
       const prefix = `INV-${locCode}-${dateStr}`;
       const last = db.prepare("SELECT sale_number FROM sales WHERE sale_number LIKE ? ORDER BY id DESC LIMIT 1").get(`${prefix}-%`);
       let seq = 1;
@@ -238,6 +247,10 @@ function processRecurringOrders() {
       const grandTotal = subtotal + taxTotal;
       const saleNumber = generateSaleNumber(ro.location_id);
 
+      // Use the recurring order's next_run_date as the scheduled date
+      // (the actual pickup/delivery date, not the generation date)
+      const scheduledDate = ro.next_run_date;
+
       const saleResult = db.prepare(`
         INSERT INTO sales (sale_number, location_id, customer_id, customer_name, customer_phone,
           subtotal, tax_total, discount_amount, delivery_charges, delivery_address,
@@ -247,7 +260,7 @@ function processRecurringOrders() {
       `).run(
         saleNumber, ro.location_id, customer.id, customer.name, customer.phone,
         subtotal, taxTotal, ro.delivery_address || null,
-        today, ro.scheduled_time || null, grandTotal, ro.order_type,
+        scheduledDate, ro.scheduled_time || null, grandTotal, ro.order_type,
         ro.notes || '', '', ro.sender_message || '', ro.sender_name || '', ro.sender_phone || '',
         ro.created_by
       );
@@ -279,7 +292,7 @@ function processRecurringOrders() {
             scheduled_date, scheduled_time, cod_amount, cod_status)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')
         `).run(saleId, ro.location_id, ro.delivery_address, customer.name, customer.phone,
-          today, ro.scheduled_time || null, grandTotal);
+          scheduledDate, ro.scheduled_time || null, grandTotal);
       }
 
       // Set pickup status if pickup
@@ -296,12 +309,12 @@ function processRecurringOrders() {
     for (const ro of dueOrders) {
       const saleId = createSaleForRecurring(ro);
       if (saleId) {
-        // Calculate next run date
-        const nextDate = calculateNextRunDate(ro.frequency, ro.custom_days, today);
+        // Calculate next run date from the current next_run_date
+        const nextDate = calculateNextRunDate(ro.frequency, ro.custom_days, ro.next_run_date);
         db.prepare(
           'UPDATE recurring_orders SET last_generated_date = ?, next_run_date = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'
         ).run(today, nextDate, ro.id);
-        console.log(`📦 Recurring order #${ro.id} → Sale #${saleId} generated for ${today}`);
+        console.log(`📦 Recurring order #${ro.id} → Sale #${saleId} generated (scheduled for ${ro.next_run_date})`);
       }
     }
   } catch (err) {
@@ -343,7 +356,7 @@ function calculateNextRunDate(frequency, customDaysJson, fromDate) {
         const check = new Date(date);
         check.setDate(check.getDate() + i);
         if (customDays.includes(check.getDay())) {
-          return check.toISOString().slice(0, 10);
+          return localDateStr(check);
         }
       }
       date.setDate(date.getDate() + 1);
@@ -353,7 +366,7 @@ function calculateNextRunDate(frequency, customDaysJson, fromDate) {
       date.setDate(date.getDate() + 1);
   }
 
-  return date.toISOString().slice(0, 10);
+  return localDateStr(date);
 }
 
 module.exports = router;

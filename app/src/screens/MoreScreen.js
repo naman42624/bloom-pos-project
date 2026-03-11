@@ -5,13 +5,16 @@ import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 
 const MENU_ITEMS = [
+  { key: 'Attendance', icon: 'time', label: 'Attendance', roles: ['owner', 'manager'] },
+  { key: 'Reports', icon: 'bar-chart', label: 'Reports', roles: ['owner', 'manager'] },
   { key: 'Customers', icon: 'people', label: 'Customers', roles: ['owner', 'manager'] },
   { key: 'RecurringOrders', icon: 'repeat', label: 'Recurring Orders', roles: ['owner', 'manager'] },
-  { key: 'Locations', icon: 'location', label: 'Locations', roles: ['owner', 'manager'] },
   { key: 'Staff', icon: 'person-add', label: 'Staff', roles: ['owner', 'manager'] },
+  { key: 'Locations', icon: 'location', label: 'Locations', roles: ['owner', 'manager'] },
   { key: 'Settlements', icon: 'wallet', label: 'Settlements', roles: ['owner', 'manager'] },
   { key: 'CashRegister', icon: 'calculator', label: 'Cash Register', roles: ['owner', 'manager', 'employee'] },
   { key: 'Expenses', icon: 'receipt', label: 'Expenses', roles: ['owner', 'manager'] },
+  { key: 'Profile', icon: 'person-circle', label: 'Profile', roles: ['owner', 'manager'] },
   { key: 'Settings', icon: 'settings', label: 'Settings', roles: ['owner'] },
 ];
 

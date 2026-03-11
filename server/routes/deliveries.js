@@ -8,6 +8,11 @@ const fs = require('fs');
 
 const router = express.Router();
 
+function localDateStr(dt) {
+  const d = dt || new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+
 // ─── Photo upload config ────────────────────────────────────
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => {
@@ -108,7 +113,7 @@ router.get('/at-risk', authenticate, authorize('owner', 'manager', 'employee'), 
     const { location_id } = req.query;
 
     const now = new Date();
-    const today = now.toISOString().slice(0, 10);
+    const today = localDateStr(now);
     const in30Min = new Date(now.getTime() + 30 * 60 * 1000);
     const threshold = in30Min.toTimeString().slice(0, 5);
 
@@ -672,7 +677,7 @@ router.put(
         `).run(req.user.id, settlement.id);
 
         // Add the settled cash to the cash register
-        const today = new Date().toISOString().slice(0, 10);
+        const today = localDateStr();
         const register = db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND date = ?').get(settlement.location_id, today);
         if (register) {
           db.prepare('UPDATE cash_registers SET total_cash_sales = total_cash_sales + ?, expected_cash = opening_balance + total_cash_sales + ? - total_refunds_cash WHERE id = ?')
@@ -779,7 +784,7 @@ router.put(
           ).run(sale.id, payment_method || 'cash', paidNow, payment_reference ? `PICKUP-${payment_reference}` : 'PICKUP', req.user.id);
 
           // Update cash register
-          const today = new Date().toISOString().slice(0, 10);
+          const today = localDateStr();
           const register = db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND date = ?').get(sale.location_id, today);
           if (register) {
             if ((payment_method || 'cash') === 'cash') {

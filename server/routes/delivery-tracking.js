@@ -16,9 +16,13 @@ function haversineKm(lat1, lon1, lat2, lon2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-// ─── Helper: Today string ───────────────────────────────────
+// ─── Helper: Today string (local) ───────────────────────────
 function todayStr() {
-  return new Date().toISOString().split('T')[0];
+  const n = new Date();
+  const y = n.getFullYear();
+  const m = String(n.getMonth() + 1).padStart(2, '0');
+  const d = String(n.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
 }
 
 // ═══════════════════════════════════════════════════════════════

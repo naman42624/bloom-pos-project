@@ -27,6 +27,7 @@ export default function CashRegisterScreen({ navigation }) {
   // History
   const [history, setHistory] = useState([]);
   const [showHistory, setShowHistory] = useState(false);
+  const [todaySessions, setTodaySessions] = useState([]);
 
   const [submitting, setSubmitting] = useState(false);
 
@@ -54,6 +55,7 @@ export default function CashRegisterScreen({ navigation }) {
       const res = await api.getRegisterStatus(locId);
       setRegister(res.data);
       setIsOpen(res.isOpen);
+      setTodaySessions(res.todaySessions || []);
     } catch {}
   };
 
@@ -287,6 +289,44 @@ export default function CashRegisterScreen({ navigation }) {
               </>
             )}
           </TouchableOpacity>
+        </View>
+      )}
+
+      {/* Today's Sessions Log */}
+      {todaySessions.length > 1 && (
+        <View style={styles.historySection}>
+          <Text style={styles.formTitle}>Today's Sessions ({todaySessions.length})</Text>
+          {todaySessions.map((s, idx) => (
+            <View key={s.id} style={styles.histCard}>
+              <View style={styles.histHeader}>
+                <Text style={styles.histDate}>Session {todaySessions.length - idx}</Text>
+                <Text style={[styles.histLoc, { color: s.closed_at ? Colors.textLight : Colors.success, fontWeight: s.closed_at ? '400' : '700' }]}>
+                  {s.closed_at ? 'Closed' : 'Open'}
+                </Text>
+              </View>
+              <View style={styles.detailRow}>
+                <Text style={styles.detailLabel}>Opening</Text>
+                <Text style={styles.detailVal}>₹{(s.opening_balance || 0).toFixed(2)}</Text>
+              </View>
+              {s.closed_at && (
+                <>
+                  <View style={styles.detailRow}>
+                    <Text style={styles.detailLabel}>Cash / Card / UPI</Text>
+                    <Text style={styles.detailVal}>₹{(s.total_cash_sales || 0).toFixed(0)} / ₹{(s.total_card_sales || 0).toFixed(0)} / ₹{(s.total_upi_sales || 0).toFixed(0)}</Text>
+                  </View>
+                  <View style={styles.detailRow}>
+                    <Text style={styles.detailLabel}>Discrepancy</Text>
+                    <Text style={[styles.detailVal, { color: Math.abs(s.discrepancy || 0) < 1 ? Colors.success : Colors.error }]}>
+                      ₹{(s.discrepancy || 0).toFixed(2)}
+                    </Text>
+                  </View>
+                </>
+              )}
+              <Text style={styles.histMeta}>
+                Opened: {s.opened_by_name}{s.closed_by_name ? ` • Closed: ${s.closed_by_name}` : ''}
+              </Text>
+            </View>
+          ))}
         </View>
       )}
 

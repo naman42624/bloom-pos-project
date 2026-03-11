@@ -63,7 +63,7 @@ export default function DashboardScreen({ navigation }) {
   const [dashSummary, setDashSummary] = useState(null);
   const [urgentOrders, setUrgentOrders] = useState([]);
   const [atRiskOrders, setAtRiskOrders] = useState([]);
-
+  const [reportKPIs, setReportKPIs] = useState(null);
   const role = user?.role;
   const isStaff = role === 'owner' || role === 'manager' || role === 'employee';
   const isManagerOrOwner = role === 'owner' || role === 'manager';
@@ -87,6 +87,7 @@ export default function DashboardScreen({ navigation }) {
         ];
         if (isManagerOrOwner) {
           promises.push(api.getAtRiskOrders(activeLocation ? { location_id: activeLocation.id } : {}).catch(() => ({ data: [] })));
+          promises.push(api.getReportsDashboard().catch(() => ({ data: null })));
         }
         const results = await Promise.all(promises);
         const [tasksRes, statsRes, summaryRes, urgentRes] = results;
@@ -96,6 +97,9 @@ export default function DashboardScreen({ navigation }) {
         setUrgentOrders((urgentRes.data?.sales || []).slice(0, 5));
         if (isManagerOrOwner && results[4]) {
           setAtRiskOrders((results[4].data || []).slice(0, 5));
+        }
+        if (isManagerOrOwner && results[5]) {
+          setReportKPIs(results[5].data || null);
         }
       } catch {}
       setTasksLoading(false);
@@ -150,6 +154,46 @@ export default function DashboardScreen({ navigation }) {
         )}
       </View>
 
+      {/* Revenue KPIs — Owner/Manager */}
+      {isManagerOrOwner && reportKPIs && (
+        <View style={styles.section}>
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>Today's Revenue</Text>
+            <TouchableOpacity onPress={() => navigation.navigate('More', { screen: 'Reports' })}>
+              <Text style={styles.seeAll}>Full Reports</Text>
+            </TouchableOpacity>
+          </View>
+          <View style={styles.statsRow}>
+            <StatCard
+              title="Today"
+              value={`₹${Math.round(reportKPIs.today?.revenue || 0).toLocaleString()}`}
+              icon="trending-up"
+              color={Colors.success}
+            />
+            <StatCard
+              title="Orders"
+              value={reportKPIs.today?.orders || 0}
+              icon="receipt"
+              color={Colors.primary}
+            />
+          </View>
+          <View style={[styles.statsRow, { marginTop: Spacing.sm }]}>
+            <StatCard
+              title="Yesterday"
+              value={`₹${Math.round(reportKPIs.yesterday?.revenue || 0).toLocaleString()}`}
+              icon="time"
+              color={Colors.info}
+            />
+            <StatCard
+              title="This Week"
+              value={`₹${Math.round(reportKPIs.week?.revenue || 0).toLocaleString()}`}
+              icon="calendar"
+              color="#9C27B0"
+            />
+          </View>
+        </View>
+      )}
+
       {/* Owner/Manager Quick Actions */}
       {(role === 'owner' || role === 'manager') && (
         <View style={styles.section}>
@@ -189,7 +233,7 @@ export default function DashboardScreen({ navigation }) {
               icon="settings"
               label="Settings"
               color={Colors.warning}
-              onPress={() => navigation.navigate('Profile', { screen: 'Settings' })}
+              onPress={() => navigation.navigate('More', { screen: 'Settings' })}
             />
           </View>
         </View>
@@ -323,7 +367,7 @@ export default function DashboardScreen({ navigation }) {
               <Ionicons name="warning" size={18} color="#FF6D00" />
               <Text style={[styles.sectionTitle, { color: '#FF6D00' }]}>At Risk</Text>
             </View>
-            <TouchableOpacity onPress={() => navigation.navigate('Deliveries')}>
+            <TouchableOpacity onPress={() => navigation.navigate('Orders', { screen: 'DeliveriesList' })}>
               <Text style={styles.seeAll}>View All</Text>
             </TouchableOpacity>
           </View>
@@ -333,9 +377,9 @@ export default function DashboardScreen({ navigation }) {
               style={[styles.actionItemCard, { borderLeftWidth: 3, borderLeftColor: '#FF6D00' }]}
               onPress={() => {
                 if (order.type === 'delivery' && order.delivery_id) {
-                  navigation.navigate('Deliveries', { screen: 'DeliveryDetail', params: { deliveryId: order.delivery_id } });
+                  navigation.navigate('Orders', { screen: 'DeliveryDetail', params: { deliveryId: order.delivery_id } });
                 } else {
-                  navigation.navigate('Pickups', { screen: 'SaleDetail', params: { saleId: order.sale_id } });
+                  navigation.navigate('Orders', { screen: 'SaleDetail', params: { saleId: order.sale_id } });
                 }
               }}
             >
@@ -462,14 +506,16 @@ export default function DashboardScreen({ navigation }) {
         </View>
       )}
 
-      {/* Stats placeholder */}
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Overview</Text>
-        <View style={styles.statsRow}>
-          <StatCard title="Locations" value={locationCount} icon="storefront" color={Colors.secondary} />
-          <StatCard title="Role" value={ROLE_LABELS[role]} icon="shield" color={Colors.info} />
+      {/* Overview — Non-owner sees location count & role */}
+      {!isManagerOrOwner && (
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Overview</Text>
+          <View style={styles.statsRow}>
+            <StatCard title="Locations" value={locationCount} icon="storefront" color={Colors.secondary} />
+            <StatCard title="Role" value={ROLE_LABELS[role]} icon="shield" color={Colors.info} />
+          </View>
         </View>
-      </View>
+      )}
     </ScrollView>
   );
 }

@@ -5,6 +5,11 @@ const { authenticate, authorize } = require('../middleware/auth');
 
 const router = express.Router();
 
+function localToday() {
+  const n = new Date();
+  return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}-${String(n.getDate()).padStart(2,'0')}`;
+}
+
 // ─── GET /api/stock?location_id=&material_id= ───────────────
 // Get stock levels
 router.get('/', authenticate, (req, res, next) => {
@@ -200,7 +205,7 @@ router.post(
 
       const { location_id, entries } = req.body;
       const db = getDb();
-      const today = new Date().toISOString().split('T')[0];
+      const today = localToday();
 
       const reconcile = db.transaction(() => {
         for (const entry of entries) {
@@ -276,7 +281,7 @@ router.get('/reconcile', authenticate, (req, res, next) => {
   try {
     const db = getDb();
     const { location_id, date } = req.query;
-    const targetDate = date || new Date().toISOString().split('T')[0];
+    const targetDate = date || localToday();
 
     if (!location_id) {
       return res.status(400).json({ success: false, message: 'location_id is required' });

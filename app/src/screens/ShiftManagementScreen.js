@@ -132,7 +132,7 @@ export default function ShiftManagementScreen() {
         shift_end: shiftEnd,
         days_of_week: selectedDays,
         geofence_timeout_minutes: Number(geofenceTimeout) || 15,
-        shift_segments: isSplitShift && shiftSegments.length >= 2 ? JSON.stringify(shiftSegments) : null,
+        shift_segments: isSplitShift && shiftSegments.length >= 2 ? shiftSegments : null,
       });
       setModal(false);
       await fetchData();

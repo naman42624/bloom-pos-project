@@ -6,9 +6,13 @@ const { authenticate, authorize } = require('../middleware/auth');
 // All attendance routes require auth
 router.use(authenticate);
 
-// ─── Helper: Get today's date string ─────────────────────────
+// ─── Helper: Get today's date string (local timezone) ────────
 function todayStr() {
-  return new Date().toISOString().split('T')[0];
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
 }
 
 // ─── Helper: Calculate hours between two ISO timestamps ──────
@@ -104,9 +108,10 @@ router.post('/clock-in', authorize('manager', 'employee', 'delivery_partner'), (
     }
 
     const today = todayStr();
-    const existing = db.prepare('SELECT * FROM attendance WHERE user_id = ? AND date = ?').get(userId, today);
 
-    if (existing && existing.clock_in && !existing.clock_out) {
+    // Check if there's already an unclosed record today
+    const unclosed = db.prepare('SELECT * FROM attendance WHERE user_id = ? AND date = ? AND clock_out IS NULL ORDER BY id DESC LIMIT 1').get(userId, today);
+    if (unclosed) {
       return res.status(400).json({ success: false, message: 'Already clocked in.' });
     }
 
@@ -114,22 +119,7 @@ router.post('/clock-in', authorize('manager', 'employee', 'delivery_partner'), (
     const clockMethod = method || 'manual';
     const late = isLateArrival(now, location.operating_hours, userId, location_id) ? 1 : 0;
 
-    if (existing && existing.clock_out) {
-      // Re-clocking in after clock out (second shift same day)
-      // Preserve previous hours by keeping total_hours/outdoor_hours/effective_hours from first shift
-      db.prepare(`
-        UPDATE attendance
-        SET clock_in = ?, clock_in_method = ?, clock_in_latitude = ?, clock_in_longitude = ?,
-            clock_out = NULL, clock_out_method = NULL, clock_out_latitude = NULL, clock_out_longitude = NULL,
-            status = 'present', updated_at = CURRENT_TIMESTAMP
-        WHERE id = ?
-      `).run(now, clockMethod, latitude || null, longitude || null, existing.id);
-
-      const updated = db.prepare('SELECT * FROM attendance WHERE id = ?').get(existing.id);
-      return res.json({ success: true, data: updated });
-    }
-
-    // New attendance record
+    // Always create a new attendance record (each clock-in/out is a separate log)
     const result = db.prepare(`
       INSERT INTO attendance (user_id, location_id, date, clock_in, clock_in_method, clock_in_latitude, clock_in_longitude, late_arrival, status)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'present')
@@ -153,26 +143,24 @@ router.post('/clock-out', authorize('manager', 'employee', 'delivery_partner'), 
     const { latitude, longitude, method } = req.body;
 
     const today = todayStr();
-    const record = db.prepare('SELECT a.*, l.operating_hours FROM attendance a JOIN locations l ON a.location_id = l.id WHERE a.user_id = ? AND a.date = ?').get(userId, today);
+    // Find the most recent unclosed record for today
+    const record = db.prepare(`
+      SELECT a.*, l.operating_hours FROM attendance a
+      JOIN locations l ON a.location_id = l.id
+      WHERE a.user_id = ? AND a.date = ? AND a.clock_out IS NULL
+      ORDER BY a.id DESC LIMIT 1
+    `).get(userId, today);
 
     if (!record) {
-      return res.status(400).json({ success: false, message: 'No clock-in record found for today.' });
-    }
-
-    if (record.clock_out) {
-      return res.status(400).json({ success: false, message: 'Already clocked out.' });
+      return res.status(400).json({ success: false, message: 'No active clock-in found. Please clock in first.' });
     }
 
     const now = new Date().toISOString();
     const clockMethod = method || 'manual';
-    const currentShiftHours = hoursBetween(record.clock_in, now);
+    const shiftHours = hoursBetween(record.clock_in, now);
     const early = isEarlyDeparture(now, record.operating_hours, userId, record.location_id) ? 1 : 0;
 
-    // Accumulate previous shift hours (total_hours already has hours from prior clock-out)
-    const previousHours = record.total_hours || 0;
-    const total = previousHours + currentShiftHours;
-
-    // Calculate outdoor hours for today
+    // Calculate outdoor hours for this specific attendance record
     const outdoorHrs = db.prepare(`
       SELECT COALESCE(SUM(duration), 0) as total
       FROM outdoor_duty_requests
@@ -180,7 +168,7 @@ router.post('/clock-out', authorize('manager', 'employee', 'delivery_partner'), 
     `).get(userId, record.id);
 
     const outdoor = outdoorHrs.total || 0;
-    const effective = total + outdoor;
+    const effective = shiftHours + outdoor;
 
     db.prepare(`
       UPDATE attendance
@@ -189,7 +177,7 @@ router.post('/clock-out', authorize('manager', 'employee', 'delivery_partner'), 
           updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
     `).run(now, clockMethod, latitude || null, longitude || null,
-      Math.round(total * 100) / 100, Math.round(outdoor * 100) / 100,
+      Math.round(shiftHours * 100) / 100, Math.round(outdoor * 100) / 100,
       Math.round(effective * 100) / 100, early, record.id);
 
     const updated = db.prepare('SELECT * FROM attendance WHERE id = ?').get(record.id);
@@ -207,24 +195,48 @@ router.get('/today', authorize('owner', 'manager', 'employee', 'delivery_partner
   try {
     const db = getDb();
     const today = todayStr();
-    const record = db.prepare(`
+
+    // Get ALL attendance records for today (supports split shifts)
+    const records = db.prepare(`
       SELECT a.*, l.name as location_name
       FROM attendance a
       JOIN locations l ON a.location_id = l.id
       WHERE a.user_id = ? AND a.date = ?
-    `).get(req.user.id, today);
+      ORDER BY a.id ASC
+    `).all(req.user.id, today);
 
-    // Also get active outdoor duty
+    // The latest record is the "current" one for status display
+    const current = records.length > 0 ? records[records.length - 1] : null;
+
+    // Also get active outdoor duty from the current unclosed record
     let activeOutdoor = null;
-    if (record) {
+    if (current && !current.clock_out) {
       activeOutdoor = db.prepare(`
         SELECT * FROM outdoor_duty_requests
         WHERE user_id = ? AND attendance_id = ? AND status IN ('approved', 'requested')
         ORDER BY created_at DESC LIMIT 1
-      `).get(req.user.id, record.id);
+      `).get(req.user.id, current.id);
     }
 
-    res.json({ success: true, data: { attendance: record || null, activeOutdoor } });
+    // Calculate total hours across all records today
+    let totalHoursToday = 0;
+    let totalOutdoorToday = 0;
+    for (const r of records) {
+      totalHoursToday += r.total_hours || 0;
+      totalOutdoorToday += r.outdoor_hours || 0;
+    }
+
+    res.json({
+      success: true,
+      data: {
+        attendance: current,
+        logs: records,
+        totalHoursToday: Math.round(totalHoursToday * 100) / 100,
+        totalOutdoorToday: Math.round(totalOutdoorToday * 100) / 100,
+        totalEffectiveToday: Math.round((totalHoursToday + totalOutdoorToday) * 100) / 100,
+        activeOutdoor,
+      },
+    });
   } catch (error) {
     console.error('Get today attendance error:', error);
     res.status(500).json({ success: false, message: 'Failed to get attendance status.' });
@@ -393,7 +405,8 @@ router.post('/outdoor-duty', authorize('owner', 'manager', 'employee', 'delivery
     }
 
     const today = todayStr();
-    const attendance = db.prepare('SELECT id FROM attendance WHERE user_id = ? AND date = ?').get(userId, today);
+    // Find the most recent unclosed attendance record for today
+    const attendance = db.prepare('SELECT id FROM attendance WHERE user_id = ? AND date = ? AND clock_out IS NULL ORDER BY id DESC LIMIT 1').get(userId, today);
 
     if (!attendance) {
       return res.status(400).json({ success: false, message: 'You must clock in first.' });

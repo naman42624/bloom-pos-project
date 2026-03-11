@@ -5,6 +5,11 @@ const { authenticate, authorize } = require('../middleware/auth');
 
 const router = express.Router();
 
+function localToday() {
+  const n = new Date();
+  return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}-${String(n.getDate()).padStart(2,'0')}`;
+}
+
 // ─── GET /api/expenses ───────────────────────────────────────
 router.get('/', authenticate, (req, res, next) => {
   try {
@@ -66,7 +71,7 @@ router.post(
 
       // If cash expense, deduct from cash register expected_cash
       if (payment_method === 'cash') {
-        const today = new Date().toISOString().slice(0, 10);
+        const today = localToday();
         const register = db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND date = ?').get(location_id, today);
         if (register) {
           db.prepare('UPDATE cash_registers SET expected_cash = expected_cash - ? WHERE id = ?').run(amount, register.id);

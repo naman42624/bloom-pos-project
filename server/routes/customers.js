@@ -1,5 +1,9 @@
 const express = require('express');
 const router = express.Router();
+
+function localDateStr(dt) {
+  return `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
+}
 const { body, validationResult } = require('express-validator');
 const { getDb } = require('../config/database');
 const { authenticate, authorize } = require('../middleware/auth');
@@ -161,7 +165,7 @@ router.get('/upcoming-dates', authenticate, authorize('owner', 'manager'), (req,
         if (thisYear < today) thisYear.setFullYear(thisYear.getFullYear() + 1);
         const diff = Math.ceil((thisYear - today) / (1000 * 60 * 60 * 24));
         if (diff <= parseInt(days)) {
-          upcoming.push({ customer_id: c.id, customer_name: c.name, phone: c.phone, label: 'Birthday', date: thisYear.toISOString().slice(0, 10), days_away: diff });
+          upcoming.push({ customer_id: c.id, customer_name: c.name, phone: c.phone, label: 'Birthday', date: localDateStr(thisYear), days_away: diff });
         }
       }
       // Check anniversary
@@ -171,7 +175,7 @@ router.get('/upcoming-dates', authenticate, authorize('owner', 'manager'), (req,
         if (thisYear < today) thisYear.setFullYear(thisYear.getFullYear() + 1);
         const diff = Math.ceil((thisYear - today) / (1000 * 60 * 60 * 24));
         if (diff <= parseInt(days)) {
-          upcoming.push({ customer_id: c.id, customer_name: c.name, phone: c.phone, label: 'Anniversary', date: thisYear.toISOString().slice(0, 10), days_away: diff });
+          upcoming.push({ customer_id: c.id, customer_name: c.name, phone: c.phone, label: 'Anniversary', date: localDateStr(thisYear), days_away: diff });
         }
       }
       // Check custom dates
@@ -185,7 +189,7 @@ router.get('/upcoming-dates', authenticate, authorize('owner', 'manager'), (req,
               if (thisYear < today) thisYear.setFullYear(thisYear.getFullYear() + 1);
               const diff = Math.ceil((thisYear - today) / (1000 * 60 * 60 * 24));
               if (diff <= parseInt(days)) {
-                upcoming.push({ customer_id: c.id, customer_name: c.name, phone: c.phone, label: cd.label || 'Special Date', date: thisYear.toISOString().slice(0, 10), days_away: diff });
+                upcoming.push({ customer_id: c.id, customer_name: c.name, phone: c.phone, label: cd.label || 'Special Date', date: localDateStr(thisYear), days_away: diff });
               }
             }
           }

@@ -668,12 +668,47 @@ function initializeDatabase() {
       closed_at DATETIME DEFAULT NULL,
       FOREIGN KEY (location_id) REFERENCES locations(id) ON DELETE CASCADE,
       FOREIGN KEY (opened_by) REFERENCES users(id) ON DELETE CASCADE,
-      FOREIGN KEY (closed_by) REFERENCES users(id) ON DELETE SET NULL,
-      UNIQUE(location_id, date)
+      FOREIGN KEY (closed_by) REFERENCES users(id) ON DELETE SET NULL
     );
 
     CREATE INDEX IF NOT EXISTS idx_cr_location_date ON cash_registers(location_id, date);
   `);
+
+  // Migration: remove UNIQUE(location_id, date) to allow multiple register sessions per day
+  try {
+    const crIdxs = db.prepare("PRAGMA index_list('cash_registers')").all();
+    const hasUnique = crIdxs.some(idx => idx.unique === 1 && idx.name.startsWith('sqlite_autoindex'));
+    if (hasUnique) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS cash_registers_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          location_id INTEGER NOT NULL,
+          date DATE NOT NULL,
+          opened_by INTEGER NOT NULL,
+          opening_balance REAL NOT NULL DEFAULT 0,
+          total_cash_sales REAL DEFAULT 0,
+          total_card_sales REAL DEFAULT 0,
+          total_upi_sales REAL DEFAULT 0,
+          total_refunds_cash REAL DEFAULT 0,
+          expected_cash REAL DEFAULT 0,
+          actual_cash REAL DEFAULT NULL,
+          discrepancy REAL DEFAULT NULL,
+          closed_by INTEGER DEFAULT NULL,
+          closing_notes TEXT DEFAULT '',
+          opened_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          closed_at DATETIME DEFAULT NULL,
+          FOREIGN KEY (location_id) REFERENCES locations(id) ON DELETE CASCADE,
+          FOREIGN KEY (opened_by) REFERENCES users(id) ON DELETE CASCADE,
+          FOREIGN KEY (closed_by) REFERENCES users(id) ON DELETE SET NULL
+        );
+        INSERT INTO cash_registers_new SELECT * FROM cash_registers;
+        DROP TABLE cash_registers;
+        ALTER TABLE cash_registers_new RENAME TO cash_registers;
+        CREATE INDEX IF NOT EXISTS idx_cr_location_date ON cash_registers(location_id, date);
+      `);
+      console.log('✅ Migrated cash_registers: removed UNIQUE(location_id, date) constraint');
+    }
+  } catch (e) { console.warn('Cash register migration:', e.message); }
 
   // ─── Phase 4: Pre-Orders ───────────────────────────────────
   db.exec(`
