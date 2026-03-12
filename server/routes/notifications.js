@@ -67,10 +67,7 @@ async function createNotification({ userIds, title, body, type = 'general', data
       // Fire and forget — don't await in hot path
       sendExpoPush(pushTokens, title, body, data).then((result) => {
         if (result?.data) {
-          // Mark as push_sent for successfully sent notifications
-          db.prepare(
-            'UPDATE notifications SET push_sent = 1 WHERE user_id IN (' + ids.map(() => '?').join(',') + ') AND title = ? AND push_sent = 0 ORDER BY id DESC LIMIT ?'
-          ).run(...ids, title, ids.length);
+          // Push delivery receipt acknowledged; no DB write required.
         }
       });
     }

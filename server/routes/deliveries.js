@@ -248,7 +248,7 @@ router.post(
 );
 
 // ─── GET /api/deliveries/:id ─────────────────────────────────
-router.get('/:id', authenticate, (req, res, next) => {
+router.get('/:id(\\d+)', authenticate, (req, res, next) => {
   try {
     const db = getDb();
     const delivery = db.prepare(`
@@ -303,7 +303,7 @@ router.get('/:id', authenticate, (req, res, next) => {
 // ─── PUT /api/deliveries/:id/assign ──────────────────────────
 // Manager/owner assigns a delivery partner
 router.put(
-  '/:id/assign',
+  '/:id(\\d+)/assign',
   authenticate,
   authorize('owner', 'manager'),
   [body('delivery_partner_id').isInt().withMessage('Delivery partner ID required')],
@@ -354,7 +354,7 @@ router.put(
 // ─── PUT /api/deliveries/:id/pickup ──────────────────────────
 // Delivery partner picks up order from shop
 router.put(
-  '/:id/pickup',
+  '/:id(\\d+)/pickup',
   authenticate,
   authorize('delivery_partner'),
   (req, res, next) => {
@@ -389,7 +389,7 @@ router.put(
 // ─── PUT /api/deliveries/:id/in-transit ──────────────────────
 // Delivery partner marks they're on the way
 router.put(
-  '/:id/in-transit',
+  '/:id(\\d+)/in-transit',
   authenticate,
   authorize('delivery_partner'),
   (req, res, next) => {
@@ -415,7 +415,7 @@ router.put(
 // ─── PUT /api/deliveries/:id/deliver ─────────────────────────
 // Mark as delivered — optionally with proof + COD collection
 router.put(
-  '/:id/deliver',
+  '/:id(\\d+)/deliver',
   authenticate,
   authorize('delivery_partner'),
   [
@@ -531,7 +531,7 @@ router.put(
 // ─── PUT /api/deliveries/:id/fail ────────────────────────────
 // Delivery failed (customer not home, refused, wrong address, etc.)
 router.put(
-  '/:id/fail',
+  '/:id(\\d+)/fail',
   authenticate,
   authorize('delivery_partner'),
   [body('failure_reason').trim().notEmpty().withMessage('Reason required')],
@@ -567,7 +567,7 @@ router.put(
 // ─── POST /api/deliveries/:id/proof ──────────────────────────
 // Upload delivery proof photo
 router.post(
-  '/:id/proof',
+  '/:id(\\d+)/proof',
   authenticate,
   authorize('delivery_partner'),
   upload.single('photo'),
@@ -717,7 +717,7 @@ router.post(
 // ─── PUT /api/deliveries/settlements/:id/verify ──────────────
 // Manager/owner verifies the settlement (confirms money received)
 router.put(
-  '/settlements/:id/verify',
+  '/settlements/:id(\\d+)/verify',
   authenticate,
   authorize('owner', 'manager'),
   (req, res, next) => {

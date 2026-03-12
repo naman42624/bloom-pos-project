@@ -100,7 +100,7 @@ router.get('/sales-summary', authenticate, authorize('owner', 'manager'), (req, 
       FROM sales s
       JOIN locations l ON s.location_id = l.id
       ${where}
-      GROUP BY s.location_id
+      GROUP BY s.location_id, l.name
       ORDER BY revenue DESC
     `).all(...params);
 
@@ -159,7 +159,7 @@ router.get('/inventory', authenticate, authorize('owner', 'manager'), (req, res,
       LEFT JOIN material_stock ms ON m.id = ms.material_id
       LEFT JOIN locations l ON ms.location_id = l.id
       ${stockWhere}
-      GROUP BY m.id, ms.location_id
+      GROUP BY m.id, m.name, m.min_stock_alert, ms.location_id, l.name, ms.quantity
       ORDER BY m.name
     `).all(...stockParams);
 
@@ -169,10 +169,10 @@ router.get('/inventory', authenticate, authorize('owner', 'manager'), (req, res,
         COALESCE(SUM(ms.quantity), 0) as total_stock
       FROM materials m
       LEFT JOIN material_stock ms ON m.id = ms.material_id
-      ${location_id ? 'AND ms.location_id = ?' : ''}
+      ${location_id ? 'WHERE ms.location_id = ?' : ''}
       Group BY m.id
-      HAVING total_stock <= m.min_stock_alert AND m.min_stock_alert > 0
-      ORDER BY (total_stock * 1.0 / MAX(m.min_stock_alert, 1)) ASC
+      HAVING COALESCE(SUM(ms.quantity), 0) <= m.min_stock_alert AND m.min_stock_alert > 0
+      ORDER BY (COALESCE(SUM(ms.quantity), 0) * 1.0 / GREATEST(m.min_stock_alert, 1)) ASC
     `).all(...(location_id ? [location_id] : []));
 
     // Product stock
@@ -205,8 +205,8 @@ router.get('/inventory', authenticate, authorize('owner', 'manager'), (req, res,
         COUNT(*) as incidents
       FROM material_transactions mt
       JOIN materials m ON mt.material_id = m.id
-      WHERE mt.type = 'wastage' AND date(mt.created_at) >= date('now', '-30 days')
-      GROUP BY mt.material_id
+      WHERE mt.type = 'wastage' AND date(mt.created_at) >= (CURRENT_DATE - INTERVAL '30 days')
+      GROUP BY mt.material_id, m.name
       ORDER BY wasted_qty DESC
       LIMIT 10
     `).all();
@@ -248,7 +248,7 @@ router.get('/customer-insights', authenticate, authorize('owner', 'manager'), (r
         MAX(date(s.created_at)) as last_order_date
       FROM sales s
       WHERE date(s.created_at) BETWEEN ? AND ? AND s.status != 'cancelled' AND s.customer_name IS NOT NULL AND s.customer_name != ''
-      GROUP BY COALESCE(s.customer_id, s.customer_phone)
+      GROUP BY COALESCE(s.customer_id::text, s.customer_phone), s.customer_id, s.customer_name, s.customer_phone
       ORDER BY total_spent DESC
       LIMIT ?
     `).all(dateFrom, dateTo, topLimit);
@@ -262,7 +262,7 @@ router.get('/customer-insights', authenticate, authorize('owner', 'manager'), (r
         MAX(date(s.created_at)) as last_order_date
       FROM sales s
       WHERE date(s.created_at) BETWEEN ? AND ? AND s.status != 'cancelled' AND s.customer_name IS NOT NULL AND s.customer_name != ''
-      GROUP BY COALESCE(s.customer_id, s.customer_phone)
+      GROUP BY COALESCE(s.customer_id::text, s.customer_phone), s.customer_id, s.customer_name, s.customer_phone
       ORDER BY order_count DESC
       LIMIT ?
     `).all(dateFrom, dateTo, topLimit);
@@ -271,14 +271,14 @@ router.get('/customer-insights', authenticate, authorize('owner', 'manager'), (r
     const newVsReturning = db.prepare(`
       SELECT
         CASE WHEN prev.cnt > 0 THEN 'returning' ELSE 'new' END as type,
-        COUNT(DISTINCT COALESCE(s.customer_id, s.customer_phone)) as customers,
+        COUNT(DISTINCT COALESCE(s.customer_id::text, s.customer_phone)) as customers,
         COALESCE(SUM(s.grand_total), 0) as revenue
       FROM sales s
       LEFT JOIN (
-        SELECT COALESCE(customer_id, customer_phone) as ckey, COUNT(*) as cnt
+        SELECT COALESCE(customer_id::text, customer_phone) as ckey, COUNT(*) as cnt
         FROM sales WHERE date(created_at) < ? AND status != 'cancelled'
         GROUP BY ckey
-      ) prev ON COALESCE(s.customer_id, s.customer_phone) = prev.ckey
+      ) prev ON COALESCE(s.customer_id::text, s.customer_phone) = prev.ckey
       WHERE date(s.created_at) BETWEEN ? AND ? AND s.status != 'cancelled' AND s.customer_name IS NOT NULL AND s.customer_name != ''
       GROUP BY type
     `).all(dateFrom, dateFrom, dateTo);
@@ -387,7 +387,7 @@ router.get('/employee-performance', authenticate, authorize('owner', 'manager'),
         COUNT(CASE WHEN d.status = 'failed' THEN 1 END) as failed,
         COALESCE(AVG(
           CASE WHEN d.delivered_time IS NOT NULL AND d.pickup_time IS NOT NULL
-          THEN (julianday(d.delivered_time) - julianday(d.pickup_time)) * 24 * 60
+          THEN EXTRACT(EPOCH FROM (d.delivered_time::timestamp - d.pickup_time::timestamp)) / 60
           END
         ), 0) as avg_delivery_minutes
       FROM users u
@@ -482,7 +482,7 @@ router.get('/dashboard', authenticate, authorize('owner', 'manager'), (req, res,
     // Hourly sales today (for chart)
     const hourlySales = db.prepare(`
       SELECT
-        CAST(strftime('%H', s.created_at) AS INTEGER) as hour,
+        EXTRACT(HOUR FROM s.created_at::timestamp)::INTEGER as hour,
         COUNT(*) as orders,
         COALESCE(SUM(s.grand_total), 0) as revenue
       FROM sales s
@@ -498,7 +498,7 @@ router.get('/dashboard', authenticate, authorize('owner', 'manager'), (req, res,
         COUNT(*) as orders,
         COALESCE(SUM(s.grand_total), 0) as revenue
       FROM sales s
-      WHERE date(s.created_at) >= date(?, '-6 days') AND s.status != 'cancelled' ${locFilter}
+      WHERE date(s.created_at) >= (?::date - INTERVAL '6 days') AND s.status != 'cancelled' ${locFilter}
       GROUP BY day
       ORDER BY day
     `).all(today, ...locParams);

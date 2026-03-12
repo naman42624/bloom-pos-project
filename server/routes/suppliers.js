@@ -259,14 +259,20 @@ router.post(
         return res.status(400).json({ success: false, message: 'Invalid material' });
       }
 
-      // Upsert
-      db.prepare(`
-        INSERT INTO supplier_materials (supplier_id, material_id, default_price_per_unit)
-        VALUES (?, ?, ?)
-        ON CONFLICT(supplier_id, material_id) DO UPDATE SET
-          default_price_per_unit = excluded.default_price_per_unit,
-          updated_at = CURRENT_TIMESTAMP
-      `).run(req.params.id, material_id, default_price_per_unit);
+      // Upsert without relying on a DB-level unique constraint
+      const existingLink = db.prepare(
+        'SELECT id FROM supplier_materials WHERE supplier_id = ? AND material_id = ? ORDER BY id ASC LIMIT 1'
+      ).get(req.params.id, material_id);
+
+      if (existingLink) {
+        db.prepare(
+          'UPDATE supplier_materials SET default_price_per_unit = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'
+        ).run(default_price_per_unit, existingLink.id);
+      } else {
+        db.prepare(
+          'INSERT INTO supplier_materials (supplier_id, material_id, default_price_per_unit) VALUES (?, ?, ?)'
+        ).run(req.params.id, material_id, default_price_per_unit);
+      }
 
       res.json({ success: true, message: 'Material linked to supplier' });
     } catch (err) {

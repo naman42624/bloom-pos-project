@@ -452,7 +452,7 @@ router.put(
       const completeTx = db.transaction(() => {
         // 1. Deduct materials via BOM
         if (bom.length > 0) {
-          const deductStock = db.prepare('UPDATE material_stock SET quantity = MAX(0, quantity - ?), updated_at = CURRENT_TIMESTAMP WHERE material_id = ? AND location_id = ?');
+          const deductStock = db.prepare('UPDATE material_stock SET quantity = GREATEST(0, quantity - ?), updated_at = CURRENT_TIMESTAMP WHERE material_id = ? AND location_id = ?');
           const logMaterialTx = db.prepare(
             `INSERT INTO material_transactions (material_id, location_id, type, quantity, reference_type, reference_id, notes, created_by)
              VALUES (?, ?, 'usage', ?, 'sale', ?, ?, ?)`
@@ -671,7 +671,7 @@ router.get('/stats', authenticate, (req, res, next) => {
       WHERE DATE(pl.created_at) >= ? AND DATE(pl.created_at) <= ?
         AND pl.notes NOT LIKE 'Adjustment:%'
         ${userFilter}${locFilter}
-      GROUP BY pl.produced_by
+      GROUP BY pl.produced_by, u.name
       ORDER BY total_produced DESC
     `).all(...params);
 
@@ -688,7 +688,7 @@ router.get('/stats', authenticate, (req, res, next) => {
       WHERE DATE(pl.created_at) >= ? AND DATE(pl.created_at) <= ?
         AND pl.notes NOT LIKE 'Adjustment:%'
         ${userFilter}${locFilter}
-      GROUP BY pl.product_id
+      GROUP BY pl.product_id, p.name
       ORDER BY total_produced DESC
     `).all(...params2);
 

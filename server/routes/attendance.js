@@ -360,7 +360,7 @@ router.get('/report', authorize('owner', 'manager'), (req, res) => {
       FROM attendance a
       JOIN users u ON a.user_id = u.id
       WHERE ${whereClause}
-      GROUP BY a.user_id
+      GROUP BY a.user_id, u.name, u.role
       ORDER BY u.name
     `).all(...params);
 

@@ -1,1476 +1,253 @@
-const Database = require('better-sqlite3');
-const path = require('path');
+const { spawnSync } = require('child_process');
 
-const DB_PATH = path.join(__dirname, '..', 'database.sqlite');
+const DATABASE_URL = process.env.DATABASE_URL;
 
-let db;
-
-function getDb() {
-  if (!db) {
-    db = new Database(DB_PATH);
-    db.pragma('journal_mode = WAL');
-    db.pragma('foreign_keys = ON');
-    initializeDatabase();
-  }
-  return db;
+if (!DATABASE_URL) {
+  throw new Error('DATABASE_URL is required in .env');
 }
 
-function initializeDatabase() {
-  // ─── Users & Auth ──────────────────────────────────────────
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS users (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      phone TEXT UNIQUE NOT NULL,
-      email TEXT UNIQUE,
-      password TEXT NOT NULL,
-      name TEXT NOT NULL,
-      role TEXT NOT NULL DEFAULT 'customer' CHECK(role IN ('owner', 'manager', 'employee', 'delivery_partner', 'customer')),
-      avatar TEXT DEFAULT NULL,
-      bio TEXT DEFAULT '',
-      is_active INTEGER DEFAULT 1,
-      created_by INTEGER DEFAULT NULL,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
-    );
+let initialized = false;
 
-    CREATE INDEX IF NOT EXISTS idx_users_phone ON users(phone);
-    CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
-    CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
+function ensureTableTimestampColumns(tableName, columns, setDefaultColumns = []) {
+  const cols = runSelect(`
+    SELECT column_name, data_type
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = '${tableName}'
+      AND column_name IN (${columns.map((c) => `'${c}'`).join(', ')})
   `);
 
-  // ─── Locations (Shops & Warehouses) ────────────────────────
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS locations (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL,
-      type TEXT NOT NULL DEFAULT 'shop' CHECK(type IN ('shop', 'warehouse')),
-      address TEXT,
-      city TEXT,
-      state TEXT,
-      pincode TEXT,
-      latitude REAL,
-      longitude REAL,
-      geofence_radius INTEGER DEFAULT 50,
-      phone TEXT,
-      email TEXT,
-      gst_number TEXT,
-      operating_hours TEXT DEFAULT NULL,
-      is_active INTEGER DEFAULT 1,
-      created_by INTEGER NOT NULL,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE
-    );
-  `);
+  for (const col of cols) {
+    const column = col.column_name;
+    const type = String(col.data_type || '').toLowerCase();
+    const shouldSetDefault = setDefaultColumns.includes(column);
 
-  // ─── User-Location Assignments ─────────────────────────────
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS user_locations (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id INTEGER NOT NULL,
-      location_id INTEGER NOT NULL,
-      is_primary INTEGER DEFAULT 0,
-      assigned_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-      FOREIGN KEY (location_id) REFERENCES locations(id) ON DELETE CASCADE,
-      UNIQUE(user_id, location_id)
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_user_locations_user ON user_locations(user_id);
-    CREATE INDEX IF NOT EXISTS idx_user_locations_location ON user_locations(location_id);
-  `);
-
-  // ─── App Settings (Key-Value, Owner-configurable) ──────────
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS settings (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      key TEXT UNIQUE NOT NULL,
-      value TEXT NOT NULL,
-      description TEXT DEFAULT '',
-      updated_by INTEGER,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE SET NULL
-    );
-  `);
-
-  // Seed default settings if table is empty
-  const settingsCount = db.prepare('SELECT COUNT(*) as count FROM settings').get();
-  if (settingsCount.count === 0) {
-    const seedSettings = db.prepare(
-      'INSERT OR IGNORE INTO settings (key, value, description) VALUES (?, ?, ?)'
-    );
-    const defaults = [
-      ['shop_name', 'BloomPOS', 'Business name displayed on receipts'],
-      ['currency', '₹', 'Currency symbol'],
-      ['gst_number', '', 'GST registration number'],
-      ['receipt_footer', 'Thank you for your purchase!', 'Custom text on receipts'],
-      ['return_policy_text', '', 'Return policy displayed on receipts'],
-      ['discount_manager_threshold', '20', 'Discount % requiring Manager approval'],
-      ['discount_owner_threshold', '30', 'Discount % requiring Owner approval'],
-      ['refund_manager_limit', '10000', 'Max refund amount (₹) a Manager can approve'],
-      ['default_geofence_radius', '50', 'Default geofence radius in meters'],
-      ['default_geofence_timeout', '15', 'Default geofence timeout in minutes'],
-      ['wastage_alert_percentage', '10', 'Wastage % threshold for alerts'],
-      ['default_bundle_size', '20', 'Default flower bundle size (stems)'],
-      ['default_foam_box_size', '24', 'Default floral foam blocks per box'],
-      ['delivery_location_interval', '30', 'Delivery partner location update interval (seconds)'],
-      ['pre_order_reminder_days', '2,1,0', 'Days before pre-order to send reminders'],
-      ['special_date_reminder_days', '7,3,1', 'Days before special date to send reminders'],
-      ['default_tax_rate_id', '', 'Default tax rate ID for new products'],
-      ['supplier_manager_fields', 'name,phone,materials', 'Comma-separated supplier fields visible to managers (name,phone,email,address,gst_number,notes,materials,pricing)'],
-      ['timezone', 'Asia/Kolkata', 'Shop timezone for all date/time operations (IANA timezone name)'],
-    ];
-    const seedTx = db.transaction(() => {
-      for (const [key, value, description] of defaults) {
-        seedSettings.run(key, value, description);
+    if (type === 'date') {
+      runPsql(`ALTER TABLE ${tableName} ALTER COLUMN ${column} TYPE TIMESTAMP USING ${column}::timestamp`);
+      if (shouldSetDefault) {
+        runPsql(`ALTER TABLE ${tableName} ALTER COLUMN ${column} SET DEFAULT CURRENT_TIMESTAMP`);
       }
-    });
-    seedTx();
-  }
+      continue;
+    }
 
-  // ─── Notifications ────────────────────────────────────────
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS notifications (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id INTEGER NOT NULL,
-      type TEXT NOT NULL,
-      title TEXT NOT NULL,
-      body TEXT DEFAULT '',
-      data TEXT DEFAULT '{}',
-      is_read INTEGER DEFAULT 0,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id);
-    CREATE INDEX IF NOT EXISTS idx_notifications_read ON notifications(user_id, is_read);
-  `);
-
-  // ─── Tax Rates ─────────────────────────────────────────────
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS tax_rates (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL,
-      percentage REAL NOT NULL,
-      is_default INTEGER DEFAULT 0,
-      is_active INTEGER DEFAULT 1,
-      effective_from DATETIME DEFAULT CURRENT_TIMESTAMP,
-      created_by INTEGER,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
-    );
-  `);
-
-  // Seed default tax rates if table is empty
-  const taxCount = db.prepare('SELECT COUNT(*) as count FROM tax_rates').get();
-  if (taxCount.count === 0) {
-    const seedTax = db.prepare(
-      'INSERT INTO tax_rates (name, percentage, is_default) VALUES (?, ?, ?)'
-    );
-    const taxDefaults = [
-      ['No Tax', 0, 0],
-      ['GST 5%', 5, 0],
-      ['GST 12%', 12, 1],
-      ['GST 18%', 18, 0],
-      ['GST 28%', 28, 0],
-    ];
-    const taxTx = db.transaction(() => {
-      for (const [name, pct, def] of taxDefaults) {
-        seedTax.run(name, pct, def);
-      }
-    });
-    taxTx();
-  }
-
-  // ─── Phase 2: Material Categories ──────────────────────────
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS material_categories (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL,
-      unit TEXT NOT NULL DEFAULT 'pieces',
-      has_bundle INTEGER DEFAULT 0,
-      default_bundle_size INTEGER DEFAULT 1,
-      is_perishable INTEGER DEFAULT 0,
-      default_storage TEXT DEFAULT 'shop' CHECK(default_storage IN ('shop', 'warehouse')),
-      is_active INTEGER DEFAULT 1,
-      created_by INTEGER,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
-    );
-  `);
-
-  // Seed default material categories if empty
-  const catCount = db.prepare('SELECT COUNT(*) as count FROM material_categories').get();
-  if (catCount.count === 0) {
-    const seedCat = db.prepare(
-      'INSERT INTO material_categories (name, unit, has_bundle, default_bundle_size, is_perishable, default_storage) VALUES (?, ?, ?, ?, ?, ?)'
-    );
-    const catDefaults = [
-      ['Flowers', 'stems', 1, 20, 1, 'shop'],
-      ['Ribbons', 'pieces', 0, 1, 0, 'shop'],
-      ['Vases', 'pieces', 0, 1, 0, 'warehouse'],
-      ['Wrapping Paper', 'sheets', 0, 1, 0, 'shop'],
-      ['Floral Foam', 'blocks', 1, 24, 0, 'warehouse'],
-      ['Baskets', 'pieces', 0, 1, 0, 'warehouse'],
-      ['Decorative Items', 'pieces', 0, 1, 0, 'shop'],
-    ];
-    const catTx = db.transaction(() => {
-      for (const [name, unit, hasBundle, bundleSize, perishable, storage] of catDefaults) {
-        seedCat.run(name, unit, hasBundle, bundleSize, perishable, storage);
-      }
-    });
-    catTx();
-  }
-
-  // ─── Phase 2: Material Varieties ───────────────────────────
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS materials (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      category_id INTEGER NOT NULL,
-      name TEXT NOT NULL,
-      sku TEXT UNIQUE,
-      bundle_size_override INTEGER DEFAULT NULL,
-      image_url TEXT DEFAULT NULL,
-      min_stock_alert INTEGER DEFAULT 10,
-      is_active INTEGER DEFAULT 1,
-      created_by INTEGER,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (category_id) REFERENCES material_categories(id) ON DELETE CASCADE,
-      FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_materials_category ON materials(category_id);
-    CREATE INDEX IF NOT EXISTS idx_materials_sku ON materials(sku);
-  `);
-
-  // Migrate: add selling_price column if missing
-  const matCols = db.prepare("PRAGMA table_info(materials)").all().map(c => c.name);
-  if (!matCols.includes('selling_price')) {
-    db.exec("ALTER TABLE materials ADD COLUMN selling_price REAL DEFAULT 0");
-  }
-
-  // ─── Phase 2: Material Stock (per location) ────────────────
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS material_stock (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      material_id INTEGER NOT NULL,
-      location_id INTEGER NOT NULL,
-      quantity REAL DEFAULT 0,
-      last_counted_at DATETIME DEFAULT NULL,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (material_id) REFERENCES materials(id) ON DELETE CASCADE,
-      FOREIGN KEY (location_id) REFERENCES locations(id) ON DELETE CASCADE,
-      UNIQUE(material_id, location_id)
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_material_stock_material ON material_stock(material_id);
-    CREATE INDEX IF NOT EXISTS idx_material_stock_location ON material_stock(location_id);
-  `);
-
-  // ─── Phase 2: Suppliers ────────────────────────────────────
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS suppliers (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL,
-      phone TEXT,
-      email TEXT,
-      address TEXT,
-      gst_number TEXT,
-      notes TEXT DEFAULT '',
-      is_active INTEGER DEFAULT 1,
-      created_by INTEGER,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
-    );
-  `);
-
-  // ─── Phase 2: Supplier-Material link (default prices) ──────
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS supplier_materials (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      supplier_id INTEGER NOT NULL,
-      material_id INTEGER NOT NULL,
-      default_price_per_unit REAL DEFAULT 0,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (supplier_id) REFERENCES suppliers(id) ON DELETE CASCADE,
-      FOREIGN KEY (material_id) REFERENCES materials(id) ON DELETE CASCADE,
-      UNIQUE(supplier_id, material_id)
-    );
-  `);
-
-  // ─── Phase 2: Purchase Orders ──────────────────────────────
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS purchase_orders (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      po_number TEXT UNIQUE,
-      supplier_id INTEGER NOT NULL,
-      location_id INTEGER NOT NULL,
-      expected_date DATE,
-      expected_time TEXT,
-      status TEXT DEFAULT 'expected' CHECK(status IN ('expected', 'partially_received', 'received', 'cancelled')),
-      notes TEXT DEFAULT '',
-      total_amount REAL DEFAULT 0,
-      created_by INTEGER NOT NULL,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (supplier_id) REFERENCES suppliers(id) ON DELETE CASCADE,
-      FOREIGN KEY (location_id) REFERENCES locations(id) ON DELETE CASCADE,
-      FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_po_supplier ON purchase_orders(supplier_id);
-    CREATE INDEX IF NOT EXISTS idx_po_location ON purchase_orders(location_id);
-    CREATE INDEX IF NOT EXISTS idx_po_status ON purchase_orders(status);
-  `);
-
-  // ─── Phase 2: Purchase Order Items ─────────────────────────
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS purchase_order_items (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      purchase_order_id INTEGER NOT NULL,
-      material_id INTEGER NOT NULL,
-      expected_quantity REAL NOT NULL,
-      expected_unit TEXT DEFAULT 'pieces',
-      expected_price_per_unit REAL DEFAULT 0,
-      received_quantity REAL DEFAULT 0,
-      received_quality TEXT DEFAULT NULL CHECK(received_quality IS NULL OR received_quality IN ('good', 'average', 'poor')),
-      actual_price_per_unit REAL DEFAULT 0,
-      received_by INTEGER DEFAULT NULL,
-      received_at DATETIME DEFAULT NULL,
-      FOREIGN KEY (purchase_order_id) REFERENCES purchase_orders(id) ON DELETE CASCADE,
-      FOREIGN KEY (material_id) REFERENCES materials(id) ON DELETE CASCADE,
-      FOREIGN KEY (received_by) REFERENCES users(id) ON DELETE SET NULL
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_poi_po ON purchase_order_items(purchase_order_id);
-  `);
-
-  // ─── Phase 2: Material Transactions (stock ledger) ─────────
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS material_transactions (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      material_id INTEGER NOT NULL,
-      location_id INTEGER NOT NULL,
-      type TEXT NOT NULL CHECK(type IN ('purchase', 'usage', 'wastage', 'transfer_in', 'transfer_out', 'adjustment', 'return')),
-      quantity REAL NOT NULL,
-      unit TEXT DEFAULT 'pieces',
-      reference_type TEXT DEFAULT NULL,
-      reference_id INTEGER DEFAULT NULL,
-      notes TEXT DEFAULT '',
-      created_by INTEGER,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (material_id) REFERENCES materials(id) ON DELETE CASCADE,
-      FOREIGN KEY (location_id) REFERENCES locations(id) ON DELETE CASCADE,
-      FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_mt_material ON material_transactions(material_id);
-    CREATE INDEX IF NOT EXISTS idx_mt_location ON material_transactions(location_id);
-    CREATE INDEX IF NOT EXISTS idx_mt_type ON material_transactions(type);
-    CREATE INDEX IF NOT EXISTS idx_mt_created ON material_transactions(created_at);
-  `);
-
-  // ─── Phase 2: Daily Stock Reconciliation ───────────────────
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS daily_stock_logs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      location_id INTEGER NOT NULL,
-      material_id INTEGER NOT NULL,
-      date DATE NOT NULL,
-      opening_stock REAL DEFAULT 0,
-      received_stock REAL DEFAULT 0,
-      used_in_products REAL DEFAULT 0,
-      closing_stock REAL DEFAULT 0,
-      wastage REAL DEFAULT 0,
-      wastage_reason TEXT DEFAULT '',
-      counted_by INTEGER,
-      verified_by INTEGER DEFAULT NULL,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (location_id) REFERENCES locations(id) ON DELETE CASCADE,
-      FOREIGN KEY (material_id) REFERENCES materials(id) ON DELETE CASCADE,
-      FOREIGN KEY (counted_by) REFERENCES users(id) ON DELETE SET NULL,
-      FOREIGN KEY (verified_by) REFERENCES users(id) ON DELETE SET NULL,
-      UNIQUE(location_id, material_id, date)
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_dsl_location_date ON daily_stock_logs(location_id, date);
-  `);
-
-  // ─── Phase 2: Stock Transfers ──────────────────────────────
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS stock_transfers (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      from_location_id INTEGER NOT NULL,
-      to_location_id INTEGER NOT NULL,
-      material_id INTEGER NOT NULL,
-      quantity REAL NOT NULL,
-      unit TEXT DEFAULT 'pieces',
-      status TEXT DEFAULT 'initiated' CHECK(status IN ('initiated', 'in_transit', 'received', 'cancelled')),
-      initiated_by INTEGER NOT NULL,
-      received_by INTEGER DEFAULT NULL,
-      notes TEXT DEFAULT '',
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (from_location_id) REFERENCES locations(id) ON DELETE CASCADE,
-      FOREIGN KEY (to_location_id) REFERENCES locations(id) ON DELETE CASCADE,
-      FOREIGN KEY (material_id) REFERENCES materials(id) ON DELETE CASCADE,
-      FOREIGN KEY (initiated_by) REFERENCES users(id) ON DELETE CASCADE,
-      FOREIGN KEY (received_by) REFERENCES users(id) ON DELETE SET NULL
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_st_from ON stock_transfers(from_location_id);
-    CREATE INDEX IF NOT EXISTS idx_st_to ON stock_transfers(to_location_id);
-    CREATE INDEX IF NOT EXISTS idx_st_status ON stock_transfers(status);
-  `);
-
-  // ─── Phase 3: Products ─────────────────────────────────────
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS products (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL,
-      sku TEXT UNIQUE,
-      description TEXT DEFAULT '',
-      type TEXT DEFAULT 'standard' CHECK(type IN ('standard', 'custom', 'made_to_order')),
-      category TEXT DEFAULT NULL CHECK(category IN ('bouquet', 'arrangement', 'basket', 'single_stem', 'gift_combo', 'other')),
-      selling_price REAL DEFAULT 0,
-      estimated_cost REAL DEFAULT 0,
-      tax_rate_id INTEGER DEFAULT NULL,
-      location_id INTEGER DEFAULT NULL,
-      image_url TEXT DEFAULT NULL,
-      is_active INTEGER DEFAULT 1,
-      created_by INTEGER,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (tax_rate_id) REFERENCES tax_rates(id) ON DELETE SET NULL,
-      FOREIGN KEY (location_id) REFERENCES locations(id) ON DELETE SET NULL,
-      FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_products_sku ON products(sku);
-    CREATE INDEX IF NOT EXISTS idx_products_type ON products(type);
-    CREATE INDEX IF NOT EXISTS idx_products_category ON products(category);
-    CREATE INDEX IF NOT EXISTS idx_products_active ON products(is_active);
-  `);
-
-  // ─── Phase 3: Product Materials (Bill of Materials) ────────
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS product_materials (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      product_id INTEGER NOT NULL,
-      material_id INTEGER NOT NULL,
-      quantity REAL NOT NULL DEFAULT 1,
-      cost_per_unit REAL DEFAULT 0,
-      notes TEXT DEFAULT '',
-      FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
-      FOREIGN KEY (material_id) REFERENCES materials(id) ON DELETE CASCADE,
-      UNIQUE(product_id, material_id)
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_pm_product ON product_materials(product_id);
-    CREATE INDEX IF NOT EXISTS idx_pm_material ON product_materials(material_id);
-  `);
-
-  // ─── Phase 3: Product Images ───────────────────────────────
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS product_images (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      product_id INTEGER NOT NULL,
-      image_url TEXT NOT NULL,
-      is_primary INTEGER DEFAULT 0,
-      sort_order INTEGER DEFAULT 0,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_pi_product ON product_images(product_id);
-  `);
-
-  // ─── Phase 4: Sales ─────────────────────────────────────────
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS sales (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      sale_number TEXT UNIQUE,
-      location_id INTEGER NOT NULL,
-      customer_id INTEGER DEFAULT NULL,
-      customer_name TEXT DEFAULT NULL,
-      customer_phone TEXT DEFAULT NULL,
-      subtotal REAL DEFAULT 0,
-      tax_total REAL DEFAULT 0,
-      discount_amount REAL DEFAULT 0,
-      discount_type TEXT DEFAULT NULL CHECK(discount_type IN ('fixed', 'percentage')),
-      discount_percentage REAL DEFAULT NULL,
-      discount_approved_by INTEGER DEFAULT NULL,
-      delivery_charges REAL DEFAULT 0,
-      delivery_address TEXT DEFAULT NULL,
-      scheduled_date DATE DEFAULT NULL,
-      scheduled_time TEXT DEFAULT NULL,
-      grand_total REAL DEFAULT 0,
-      payment_status TEXT NOT NULL DEFAULT 'pending' CHECK(payment_status IN ('paid', 'partial', 'pending', 'refunded')),
-      order_type TEXT NOT NULL DEFAULT 'walk_in' CHECK(order_type IN ('walk_in', 'pickup', 'delivery', 'pre_order')),
-      status TEXT NOT NULL DEFAULT 'completed' CHECK(status IN ('draft', 'pending', 'preparing', 'ready', 'completed', 'cancelled')),
-      special_instructions TEXT DEFAULT '',
-      customer_notes TEXT DEFAULT '',
-      created_by INTEGER NOT NULL,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (location_id) REFERENCES locations(id) ON DELETE CASCADE,
-      FOREIGN KEY (customer_id) REFERENCES users(id) ON DELETE SET NULL,
-      FOREIGN KEY (discount_approved_by) REFERENCES users(id) ON DELETE SET NULL,
-      FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_sales_number ON sales(sale_number);
-    CREATE INDEX IF NOT EXISTS idx_sales_location ON sales(location_id);
-    CREATE INDEX IF NOT EXISTS idx_sales_customer ON sales(customer_id);
-    CREATE INDEX IF NOT EXISTS idx_sales_status ON sales(payment_status);
-    CREATE INDEX IF NOT EXISTS idx_sales_order_type ON sales(order_type);
-    CREATE INDEX IF NOT EXISTS idx_sales_created ON sales(created_at);
-  `);
-
-  // ─── Phase 4: Sale Items ────────────────────────────────────
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS sale_items (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      sale_id INTEGER NOT NULL,
-      product_id INTEGER DEFAULT NULL,
-      material_id INTEGER DEFAULT NULL,
-      product_name TEXT NOT NULL,
-      quantity INTEGER NOT NULL DEFAULT 1,
-      unit_price REAL NOT NULL,
-      tax_rate REAL NOT NULL DEFAULT 0,
-      tax_amount REAL NOT NULL DEFAULT 0,
-      discount_amount REAL DEFAULT 0,
-      line_total REAL NOT NULL,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE CASCADE,
-      FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
-      FOREIGN KEY (material_id) REFERENCES materials(id) ON DELETE CASCADE
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_sale_items_sale ON sale_items(sale_id);
-    CREATE INDEX IF NOT EXISTS idx_sale_items_product ON sale_items(product_id);
-  `);
-
-  // Add missing columns for existing databases
-  const salesCols = db.prepare("PRAGMA table_info(sales)").all().map(c => c.name);
-  if (!salesCols.includes('delivery_address')) {
-    db.exec("ALTER TABLE sales ADD COLUMN delivery_address TEXT DEFAULT NULL");
-  }
-  if (!salesCols.includes('scheduled_date')) {
-    db.exec("ALTER TABLE sales ADD COLUMN scheduled_date DATE DEFAULT NULL");
-  }
-  if (!salesCols.includes('scheduled_time')) {
-    db.exec("ALTER TABLE sales ADD COLUMN scheduled_time TEXT DEFAULT NULL");
-  }
-
-  // Migrate sale_items: add material_id if missing
-  const saleItemCols = db.prepare("PRAGMA table_info(sale_items)").all().map(c => c.name);
-  if (!saleItemCols.includes('material_id')) {
-    db.exec("ALTER TABLE sale_items ADD COLUMN material_id INTEGER DEFAULT NULL REFERENCES materials(id) ON DELETE CASCADE");
-  }
-
-  // Fix sale_items.product_id NOT NULL constraint (may exist from older schema)
-  const saleItemColInfo = db.prepare("PRAGMA table_info(sale_items)").all();
-  const productIdCol = saleItemColInfo.find(c => c.name === 'product_id');
-  if (productIdCol && productIdCol.notnull === 1) {
-    // Rebuild table to make product_id nullable
-    db.exec(`
-      CREATE TABLE sale_items_new (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        sale_id INTEGER NOT NULL,
-        product_id INTEGER DEFAULT NULL,
-        material_id INTEGER DEFAULT NULL,
-        product_name TEXT NOT NULL,
-        quantity INTEGER NOT NULL DEFAULT 1,
-        unit_price REAL NOT NULL,
-        tax_rate REAL NOT NULL DEFAULT 0,
-        tax_amount REAL NOT NULL DEFAULT 0,
-        discount_amount REAL DEFAULT 0,
-        line_total REAL NOT NULL,
-        materials_deducted INTEGER DEFAULT 0,
-        from_product_stock INTEGER DEFAULT 0,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE CASCADE,
-        FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
-        FOREIGN KEY (material_id) REFERENCES materials(id) ON DELETE CASCADE
-      );
-      INSERT INTO sale_items_new SELECT id, sale_id, product_id, material_id, product_name, quantity, unit_price, tax_rate, tax_amount, discount_amount, line_total,
-        COALESCE(materials_deducted, 0), COALESCE(from_product_stock, 0), created_at FROM sale_items;
-      DROP TABLE sale_items;
-      ALTER TABLE sale_items_new RENAME TO sale_items;
-      CREATE INDEX IF NOT EXISTS idx_sale_items_sale ON sale_items(sale_id);
-      CREATE INDEX IF NOT EXISTS idx_sale_items_product ON sale_items(product_id);
-    `);
-    console.log('✅ Migrated sale_items: product_id is now nullable');
-  }
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS payments (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      sale_id INTEGER NOT NULL,
-      method TEXT NOT NULL CHECK(method IN ('cash', 'card', 'upi')),
-      amount REAL NOT NULL,
-      reference_number TEXT DEFAULT NULL,
-      received_by INTEGER NOT NULL,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE CASCADE,
-      FOREIGN KEY (received_by) REFERENCES users(id) ON DELETE CASCADE
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_payments_sale ON payments(sale_id);
-    CREATE INDEX IF NOT EXISTS idx_payments_method ON payments(method);
-  `);
-
-  // ─── Phase 4: Refunds ──────────────────────────────────────
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS refunds (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      sale_id INTEGER NOT NULL,
-      amount REAL NOT NULL,
-      reason TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT 'requested' CHECK(status IN ('requested', 'approved', 'rejected', 'processed')),
-      requested_by INTEGER NOT NULL,
-      approved_by INTEGER DEFAULT NULL,
-      refund_method TEXT NOT NULL CHECK(refund_method IN ('cash', 'card', 'upi', 'store_credit')),
-      notes TEXT DEFAULT '',
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE CASCADE,
-      FOREIGN KEY (requested_by) REFERENCES users(id) ON DELETE CASCADE,
-      FOREIGN KEY (approved_by) REFERENCES users(id) ON DELETE SET NULL
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_refunds_sale ON refunds(sale_id);
-    CREATE INDEX IF NOT EXISTS idx_refunds_status ON refunds(status);
-  `);
-
-  // ─── Phase 4: Cash Registers ────────────────────────────────
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS cash_registers (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      location_id INTEGER NOT NULL,
-      date DATE NOT NULL,
-      opened_by INTEGER NOT NULL,
-      opening_balance REAL NOT NULL DEFAULT 0,
-      total_cash_sales REAL DEFAULT 0,
-      total_card_sales REAL DEFAULT 0,
-      total_upi_sales REAL DEFAULT 0,
-      total_refunds_cash REAL DEFAULT 0,
-      expected_cash REAL DEFAULT 0,
-      actual_cash REAL DEFAULT NULL,
-      discrepancy REAL DEFAULT NULL,
-      closed_by INTEGER DEFAULT NULL,
-      closing_notes TEXT DEFAULT '',
-      opened_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      closed_at DATETIME DEFAULT NULL,
-      FOREIGN KEY (location_id) REFERENCES locations(id) ON DELETE CASCADE,
-      FOREIGN KEY (opened_by) REFERENCES users(id) ON DELETE CASCADE,
-      FOREIGN KEY (closed_by) REFERENCES users(id) ON DELETE SET NULL
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_cr_location_date ON cash_registers(location_id, date);
-  `);
-
-  // Migration: remove UNIQUE(location_id, date) to allow multiple register sessions per day
-  try {
-    const crIdxs = db.prepare("PRAGMA index_list('cash_registers')").all();
-    const hasUnique = crIdxs.some(idx => idx.unique === 1 && idx.name.startsWith('sqlite_autoindex'));
-    if (hasUnique) {
-      db.exec(`
-        CREATE TABLE IF NOT EXISTS cash_registers_new (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          location_id INTEGER NOT NULL,
-          date DATE NOT NULL,
-          opened_by INTEGER NOT NULL,
-          opening_balance REAL NOT NULL DEFAULT 0,
-          total_cash_sales REAL DEFAULT 0,
-          total_card_sales REAL DEFAULT 0,
-          total_upi_sales REAL DEFAULT 0,
-          total_refunds_cash REAL DEFAULT 0,
-          expected_cash REAL DEFAULT 0,
-          actual_cash REAL DEFAULT NULL,
-          discrepancy REAL DEFAULT NULL,
-          closed_by INTEGER DEFAULT NULL,
-          closing_notes TEXT DEFAULT '',
-          opened_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-          closed_at DATETIME DEFAULT NULL,
-          FOREIGN KEY (location_id) REFERENCES locations(id) ON DELETE CASCADE,
-          FOREIGN KEY (opened_by) REFERENCES users(id) ON DELETE CASCADE,
-          FOREIGN KEY (closed_by) REFERENCES users(id) ON DELETE SET NULL
-        );
-        INSERT INTO cash_registers_new SELECT * FROM cash_registers;
-        DROP TABLE cash_registers;
-        ALTER TABLE cash_registers_new RENAME TO cash_registers;
-        CREATE INDEX IF NOT EXISTS idx_cr_location_date ON cash_registers(location_id, date);
+    if (type === 'text' || type === 'character varying') {
+      runPsql(`
+        ALTER TABLE ${tableName}
+        ALTER COLUMN ${column} TYPE TIMESTAMP
+        USING (
+          CASE
+            WHEN ${column} IS NULL OR ${column} = '' THEN NULL
+            ELSE ${column}::timestamp
+          END
+        )
       `);
-      console.log('✅ Migrated cash_registers: removed UNIQUE(location_id, date) constraint');
+      if (shouldSetDefault) {
+        runPsql(`ALTER TABLE ${tableName} ALTER COLUMN ${column} SET DEFAULT CURRENT_TIMESTAMP`);
+      }
     }
-  } catch (e) { console.warn('Cash register migration:', e.message); }
-
-  // ─── Phase 4: Pre-Orders ───────────────────────────────────
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS pre_orders (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      sale_id INTEGER NOT NULL UNIQUE,
-      scheduled_date DATE NOT NULL,
-      scheduled_time TEXT DEFAULT NULL,
-      advance_payment REAL NOT NULL DEFAULT 0,
-      remaining_amount REAL NOT NULL DEFAULT 0,
-      reminder_sent INTEGER DEFAULT 0,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE CASCADE
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_pre_orders_scheduled ON pre_orders(scheduled_date);
-  `);
-
-  // ─── Expenses ───────────────────────────────────────────────
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS expenses (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      location_id INTEGER NOT NULL,
-      category TEXT NOT NULL DEFAULT 'other' CHECK(category IN ('supplies', 'petty_cash', 'maintenance', 'transport', 'food', 'utilities', 'salary', 'other')),
-      amount REAL NOT NULL,
-      description TEXT DEFAULT '',
-      payment_method TEXT NOT NULL DEFAULT 'cash' CHECK(payment_method IN ('cash', 'card', 'upi')),
-      expense_date DATE NOT NULL,
-      created_by INTEGER NOT NULL,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (location_id) REFERENCES locations(id) ON DELETE CASCADE,
-      FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_expenses_location ON expenses(location_id);
-    CREATE INDEX IF NOT EXISTS idx_expenses_date ON expenses(expense_date);
-    CREATE INDEX IF NOT EXISTS idx_expenses_category ON expenses(category);
-  `);
-
-  // ─── Phase 5: Customer Management ──────────────────────────
-  // Migrate: add customer fields to users table
-  const userCols = db.prepare("PRAGMA table_info(users)").all().map(c => c.name);
-  if (!userCols.includes('birthday')) {
-    db.exec("ALTER TABLE users ADD COLUMN birthday DATE DEFAULT NULL");
   }
-  if (!userCols.includes('anniversary')) {
-    db.exec("ALTER TABLE users ADD COLUMN anniversary DATE DEFAULT NULL");
-  }
-  if (!userCols.includes('custom_dates')) {
-    db.exec("ALTER TABLE users ADD COLUMN custom_dates TEXT DEFAULT '[]'");
-  }
-  if (!userCols.includes('total_spent')) {
-    db.exec("ALTER TABLE users ADD COLUMN total_spent REAL DEFAULT 0");
-  }
-  if (!userCols.includes('credit_balance')) {
-    db.exec("ALTER TABLE users ADD COLUMN credit_balance REAL DEFAULT 0");
-  }
-  if (!userCols.includes('notes')) {
-    db.exec("ALTER TABLE users ADD COLUMN notes TEXT DEFAULT ''");
-  }
+}
 
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS customer_addresses (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      customer_id INTEGER NOT NULL,
-      label TEXT NOT NULL DEFAULT 'Home',
-      address_line_1 TEXT NOT NULL,
-      address_line_2 TEXT DEFAULT '',
-      city TEXT DEFAULT '',
-      state TEXT DEFAULT '',
-      pincode TEXT DEFAULT '',
-      latitude REAL DEFAULT NULL,
-      longitude REAL DEFAULT NULL,
-      is_default INTEGER DEFAULT 0,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (customer_id) REFERENCES users(id) ON DELETE CASCADE
-    );
+function ensureCriticalTimestampColumns() {
+  ensureTableTimestampColumns('sales', ['created_at', 'updated_at'], ['created_at', 'updated_at']);
+  ensureTableTimestampColumns('payments', ['created_at'], ['created_at']);
+  ensureTableTimestampColumns('deliveries', ['created_at', 'updated_at', 'assigned_at', 'pickup_time', 'delivered_time'], ['created_at', 'updated_at']);
+  ensureTableTimestampColumns('production_logs', ['created_at'], ['created_at']);
+}
 
-    CREATE INDEX IF NOT EXISTS idx_customer_addresses_customer ON customer_addresses(customer_id);
-  `);
+function normalizeSql(sql) {
+  let normalized = String(sql || '').trim();
+  if (normalized.endsWith(';')) normalized = normalized.slice(0, -1);
 
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS credit_payments (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      customer_id INTEGER NOT NULL,
-      amount REAL NOT NULL,
-      method TEXT NOT NULL DEFAULT 'cash' CHECK(method IN ('cash', 'card', 'upi')),
-      received_by INTEGER NOT NULL,
-      notes TEXT DEFAULT '',
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (customer_id) REFERENCES users(id) ON DELETE CASCADE,
-      FOREIGN KEY (received_by) REFERENCES users(id) ON DELETE CASCADE
-    );
+  normalized = normalized
+    .replace(/datetime\('now'\)/gi, 'CURRENT_TIMESTAMP')
+    .replace(/date\('now'\)/gi, 'CURRENT_DATE');
 
-    CREATE INDEX IF NOT EXISTS idx_credit_payments_customer ON credit_payments(customer_id);
-  `);
+  return normalized;
+}
 
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS special_dates (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      customer_id INTEGER NOT NULL,
-      label TEXT NOT NULL,
-      date TEXT NOT NULL,
-      reminder_sent INTEGER DEFAULT 0,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (customer_id) REFERENCES users(id) ON DELETE CASCADE
-    );
+function quoteLiteral(value) {
+  if (value === null || value === undefined) return 'NULL';
+  if (typeof value === 'number') return Number.isFinite(value) ? String(value) : 'NULL';
+  if (typeof value === 'boolean') return value ? 'TRUE' : 'FALSE';
+  if (value instanceof Date) return `'${value.toISOString().replace(/'/g, "''")}'`;
+  if (typeof value === 'object') return `'${JSON.stringify(value).replace(/'/g, "''")}'`;
+  return `'${String(value).replace(/'/g, "''")}'`;
+}
 
-    CREATE INDEX IF NOT EXISTS idx_special_dates_customer ON special_dates(customer_id);
-    CREATE INDEX IF NOT EXISTS idx_special_dates_date ON special_dates(date);
-  `);
+function bindParams(sql, params = []) {
+  if (!params || params.length === 0) return sql;
 
-  // ─── Phase 5+ Migrations: Order lifecycle & production tracking ───
-  const salesColsP5 = db.pragma('table_info(sales)').map(c => c.name);
-  if (!salesColsP5.includes('stock_deducted')) {
-    db.exec("ALTER TABLE sales ADD COLUMN stock_deducted INTEGER DEFAULT 0");
-  }
-  // Expand status CHECK — SQLite doesn't allow ALTER CHECK, so we use a trigger approach
-  // We'll allow any status and validate in app code. Mark existing completed sales as stock_deducted.
-  db.exec("UPDATE sales SET stock_deducted = 1 WHERE status = 'completed' AND stock_deducted = 0");
+  let paramIndex = 0;
+  let inString = false;
+  let result = '';
 
-  // Fix sales.status CHECK constraint — old schema only allowed (draft, completed, cancelled)
-  // Production system needs: pending, preparing, ready
-  const salesTableSql = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='sales'").get();
-  if (salesTableSql && salesTableSql.sql && salesTableSql.sql.includes("'draft', 'completed', 'cancelled'")) {
-    const salesCols2 = db.pragma('table_info(sales)').map(c => c.name);
-    const colList = salesCols2.join(', ');
-    db.exec(`
-      CREATE TABLE sales_new (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        sale_number TEXT UNIQUE,
-        location_id INTEGER NOT NULL,
-        customer_id INTEGER DEFAULT NULL,
-        customer_name TEXT DEFAULT NULL,
-        customer_phone TEXT DEFAULT NULL,
-        subtotal REAL DEFAULT 0,
-        tax_total REAL DEFAULT 0,
-        discount_amount REAL DEFAULT 0,
-        discount_type TEXT DEFAULT NULL CHECK(discount_type IN ('fixed', 'percentage')),
-        discount_percentage REAL DEFAULT NULL,
-        discount_approved_by INTEGER DEFAULT NULL,
-        delivery_charges REAL DEFAULT 0,
-        delivery_address TEXT DEFAULT NULL,
-        scheduled_date DATE DEFAULT NULL,
-        scheduled_time TEXT DEFAULT NULL,
-        grand_total REAL DEFAULT 0,
-        payment_status TEXT NOT NULL DEFAULT 'pending' CHECK(payment_status IN ('paid', 'partial', 'pending', 'refunded')),
-        order_type TEXT NOT NULL DEFAULT 'walk_in' CHECK(order_type IN ('walk_in', 'pickup', 'delivery', 'pre_order')),
-        status TEXT NOT NULL DEFAULT 'completed' CHECK(status IN ('draft', 'pending', 'preparing', 'ready', 'completed', 'cancelled')),
-        special_instructions TEXT DEFAULT '',
-        customer_notes TEXT DEFAULT '',
-        stock_deducted INTEGER DEFAULT 0,
-        created_by INTEGER NOT NULL,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (location_id) REFERENCES locations(id) ON DELETE CASCADE,
-        FOREIGN KEY (customer_id) REFERENCES users(id) ON DELETE SET NULL,
-        FOREIGN KEY (discount_approved_by) REFERENCES users(id) ON DELETE SET NULL,
-        FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE
-      );
-      INSERT INTO sales_new (${colList}) SELECT ${colList} FROM sales;
-      DROP TABLE sales;
-      ALTER TABLE sales_new RENAME TO sales;
-      CREATE INDEX IF NOT EXISTS idx_sales_number ON sales(sale_number);
-      CREATE INDEX IF NOT EXISTS idx_sales_location ON sales(location_id);
-      CREATE INDEX IF NOT EXISTS idx_sales_customer ON sales(customer_id);
-      CREATE INDEX IF NOT EXISTS idx_sales_status ON sales(payment_status);
-      CREATE INDEX IF NOT EXISTS idx_sales_order_type ON sales(order_type);
-      CREATE INDEX IF NOT EXISTS idx_sales_created ON sales(created_at);
-    `);
-    console.log('✅ Migrated sales: status CHECK expanded to include pending/preparing/ready');
+  for (let i = 0; i < sql.length; i += 1) {
+    const ch = sql[i];
+
+    if (ch === "'") {
+      if (inString && sql[i + 1] === "'") {
+        result += "''";
+        i += 1;
+        continue;
+      }
+      inString = !inString;
+      result += ch;
+      continue;
+    }
+
+    if (!inString && ch === '?') {
+      if (paramIndex >= params.length) {
+        throw new Error('Insufficient SQL parameters supplied');
+      }
+      result += quoteLiteral(params[paramIndex]);
+      paramIndex += 1;
+      continue;
+    }
+
+    result += ch;
   }
 
-  // Pre-orders: add status + delivery_address columns
-  const preOrderCols = db.pragma('table_info(pre_orders)').map(c => c.name);
-  if (!preOrderCols.includes('status')) {
-    db.exec("ALTER TABLE pre_orders ADD COLUMN status TEXT DEFAULT 'pending'");
-  }
-  if (!preOrderCols.includes('delivery_address')) {
-    db.exec("ALTER TABLE pre_orders ADD COLUMN delivery_address TEXT DEFAULT NULL");
-  }
-  if (!preOrderCols.includes('special_instructions')) {
-    db.exec("ALTER TABLE pre_orders ADD COLUMN special_instructions TEXT DEFAULT NULL");
+  if (paramIndex < params.length) {
+    throw new Error('Too many SQL parameters supplied');
   }
 
-  // ─── Phase 6: Hybrid Product Stock & Production System ───────
-  // product_stock — real ready-product inventory per location
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS product_stock (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      product_id INTEGER NOT NULL,
-      location_id INTEGER NOT NULL,
-      quantity INTEGER NOT NULL DEFAULT 0,
-      min_stock_alert INTEGER DEFAULT 0,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
-      FOREIGN KEY (location_id) REFERENCES locations(id) ON DELETE CASCADE,
-      UNIQUE(product_id, location_id)
-    );
-    CREATE INDEX IF NOT EXISTS idx_product_stock_product ON product_stock(product_id);
-    CREATE INDEX IF NOT EXISTS idx_product_stock_location ON product_stock(location_id);
-  `);
+  return result;
+}
 
-  // production_logs — tracks who made what, when, and how many (for incentive tracking)
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS production_logs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      product_id INTEGER NOT NULL,
-      location_id INTEGER NOT NULL,
-      quantity INTEGER NOT NULL DEFAULT 1,
-      sale_id INTEGER DEFAULT NULL,
-      task_id INTEGER DEFAULT NULL,
-      produced_by INTEGER NOT NULL,
-      notes TEXT DEFAULT '',
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
-      FOREIGN KEY (location_id) REFERENCES locations(id) ON DELETE CASCADE,
-      FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE SET NULL,
-      FOREIGN KEY (produced_by) REFERENCES users(id) ON DELETE CASCADE
-    );
-    CREATE INDEX IF NOT EXISTS idx_production_logs_product ON production_logs(product_id);
-    CREATE INDEX IF NOT EXISTS idx_production_logs_producer ON production_logs(produced_by);
-    CREATE INDEX IF NOT EXISTS idx_production_logs_date ON production_logs(created_at);
-  `);
+function runPsql(sql) {
+  const proc = spawnSync('psql', [DATABASE_URL, '-X', '-q', '-t', '-A', '-c', sql], {
+    encoding: 'utf8',
+  });
 
-  // production_tasks — order-driven tasks assigned to employees
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS production_tasks (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      sale_id INTEGER NOT NULL,
-      sale_item_id INTEGER DEFAULT NULL,
-      product_id INTEGER NOT NULL,
-      location_id INTEGER NOT NULL,
-      quantity INTEGER NOT NULL DEFAULT 1,
-      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','assigned','in_progress','completed','cancelled')),
-      assigned_to INTEGER DEFAULT NULL,
-      picked_by INTEGER DEFAULT NULL,
-      priority TEXT NOT NULL DEFAULT 'normal' CHECK(priority IN ('normal','urgent')),
-      notes TEXT DEFAULT '',
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      completed_at DATETIME DEFAULT NULL,
-      FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE CASCADE,
-      FOREIGN KEY (sale_item_id) REFERENCES sale_items(id) ON DELETE CASCADE,
-      FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
-      FOREIGN KEY (location_id) REFERENCES locations(id) ON DELETE CASCADE,
-      FOREIGN KEY (assigned_to) REFERENCES users(id) ON DELETE SET NULL,
-      FOREIGN KEY (picked_by) REFERENCES users(id) ON DELETE SET NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_production_tasks_sale ON production_tasks(sale_id);
-    CREATE INDEX IF NOT EXISTS idx_production_tasks_status ON production_tasks(status);
-    CREATE INDEX IF NOT EXISTS idx_production_tasks_assigned ON production_tasks(assigned_to);
-    CREATE INDEX IF NOT EXISTS idx_production_tasks_location ON production_tasks(location_id);
-  `);
-
-  // Add materials_deducted flag to sale_items for per-item tracking
-  const saleItemColsP6 = db.pragma('table_info(sale_items)').map(c => c.name);
-  if (!saleItemColsP6.includes('materials_deducted')) {
-    db.exec("ALTER TABLE sale_items ADD COLUMN materials_deducted INTEGER DEFAULT 0");
-  }
-  if (!saleItemColsP6.includes('from_product_stock')) {
-    db.exec("ALTER TABLE sale_items ADD COLUMN from_product_stock INTEGER DEFAULT 0");
-  }
-  // Mark existing completed sale items
-  db.exec("UPDATE sale_items SET materials_deducted = 1 WHERE sale_id IN (SELECT id FROM sales WHERE stock_deducted = 1)");
-
-  // ─── Phase 7: Deliveries ──────────────────────────────────
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS deliveries (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      sale_id INTEGER NOT NULL,
-      delivery_partner_id INTEGER DEFAULT NULL,
-      location_id INTEGER NOT NULL,
-      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','assigned','picked_up','in_transit','delivered','failed','cancelled')),
-      delivery_address TEXT NOT NULL,
-      customer_name TEXT DEFAULT NULL,
-      customer_phone TEXT DEFAULT NULL,
-      scheduled_date DATE DEFAULT NULL,
-      scheduled_time TEXT DEFAULT NULL,
-      cod_amount REAL DEFAULT 0,
-      cod_collected REAL DEFAULT 0,
-      cod_status TEXT DEFAULT 'none' CHECK(cod_status IN ('none','pending','partial','collected','settled')),
-      pickup_time DATETIME DEFAULT NULL,
-      delivered_time DATETIME DEFAULT NULL,
-      delivery_notes TEXT DEFAULT '',
-      failure_reason TEXT DEFAULT '',
-      assigned_by INTEGER DEFAULT NULL,
-      assigned_at DATETIME DEFAULT NULL,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE CASCADE,
-      FOREIGN KEY (delivery_partner_id) REFERENCES users(id) ON DELETE SET NULL,
-      FOREIGN KEY (location_id) REFERENCES locations(id) ON DELETE CASCADE,
-      FOREIGN KEY (assigned_by) REFERENCES users(id) ON DELETE SET NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_deliveries_sale ON deliveries(sale_id);
-    CREATE INDEX IF NOT EXISTS idx_deliveries_partner ON deliveries(delivery_partner_id);
-    CREATE INDEX IF NOT EXISTS idx_deliveries_status ON deliveries(status);
-    CREATE INDEX IF NOT EXISTS idx_deliveries_location ON deliveries(location_id);
-  `);
-
-  // Delivery proof — photo + GPS at delivery
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS delivery_proofs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      delivery_id INTEGER NOT NULL,
-      photo_url TEXT DEFAULT NULL,
-      latitude REAL DEFAULT NULL,
-      longitude REAL DEFAULT NULL,
-      notes TEXT DEFAULT '',
-      created_by INTEGER NOT NULL,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (delivery_id) REFERENCES deliveries(id) ON DELETE CASCADE,
-      FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE
-    );
-    CREATE INDEX IF NOT EXISTS idx_delivery_proofs_delivery ON delivery_proofs(delivery_id);
-  `);
-
-  // COD collections — money collected by delivery partner on doorstep
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS delivery_collections (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      delivery_id INTEGER NOT NULL,
-      amount REAL NOT NULL,
-      method TEXT NOT NULL DEFAULT 'cash' CHECK(method IN ('cash', 'upi')),
-      reference_number TEXT DEFAULT NULL,
-      collected_by INTEGER NOT NULL,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (delivery_id) REFERENCES deliveries(id) ON DELETE CASCADE,
-      FOREIGN KEY (collected_by) REFERENCES users(id) ON DELETE CASCADE
-    );
-    CREATE INDEX IF NOT EXISTS idx_delivery_collections_delivery ON delivery_collections(delivery_id);
-  `);
-
-  // Delivery settlements — partner hands over collected COD to shop
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS delivery_settlements (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      delivery_partner_id INTEGER NOT NULL,
-      location_id INTEGER NOT NULL,
-      total_amount REAL NOT NULL,
-      total_deliveries INTEGER NOT NULL DEFAULT 0,
-      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','verified')),
-      verified_by INTEGER DEFAULT NULL,
-      verified_at DATETIME DEFAULT NULL,
-      notes TEXT DEFAULT '',
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (delivery_partner_id) REFERENCES users(id) ON DELETE CASCADE,
-      FOREIGN KEY (location_id) REFERENCES locations(id) ON DELETE CASCADE,
-      FOREIGN KEY (verified_by) REFERENCES users(id) ON DELETE SET NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_delivery_settlements_partner ON delivery_settlements(delivery_partner_id);
-    CREATE INDEX IF NOT EXISTS idx_delivery_settlements_status ON delivery_settlements(status);
-  `);
-
-  // Link settlements to individual deliveries
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS delivery_settlement_items (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      settlement_id INTEGER NOT NULL,
-      delivery_id INTEGER NOT NULL,
-      amount REAL NOT NULL,
-      FOREIGN KEY (settlement_id) REFERENCES delivery_settlements(id) ON DELETE CASCADE,
-      FOREIGN KEY (delivery_id) REFERENCES deliveries(id) ON DELETE CASCADE
-    );
-    CREATE INDEX IF NOT EXISTS idx_dsi_settlement ON delivery_settlement_items(settlement_id);
-  `);
-
-  // ──── Migration: Settlement Fields for Revenue Tracking ────
-  // Add settlement number, commission tracking, and period fields
-  const dsettlementCols = db.prepare("PRAGMA table_info(delivery_settlements)").all().map(c => c.name);
-  
-  if (!dsettlementCols.includes('settlement_number')) {
-    db.exec("ALTER TABLE delivery_settlements ADD COLUMN settlement_number VARCHAR(100) DEFAULT NULL");
-    // Create index (faster than UNIQUE for querying, no constraint violation risk)
-    db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_settlement_number ON delivery_settlements(settlement_number) WHERE settlement_number IS NOT NULL");
-  }
-  if (!dsettlementCols.includes('settlement_date')) {
-    db.exec("ALTER TABLE delivery_settlements ADD COLUMN settlement_date DATE DEFAULT NULL");
-  }
-  if (!dsettlementCols.includes('period_start')) {
-    db.exec("ALTER TABLE delivery_settlements ADD COLUMN period_start DATE DEFAULT NULL");
-  }
-  if (!dsettlementCols.includes('period_end')) {
-    db.exec("ALTER TABLE delivery_settlements ADD COLUMN period_end DATE DEFAULT NULL");
-  }
-  if (!dsettlementCols.includes('commission_percentage')) {
-    db.exec("ALTER TABLE delivery_settlements ADD COLUMN commission_percentage REAL DEFAULT 5.0");
-  }
-  if (!dsettlementCols.includes('commission_amount')) {
-    db.exec("ALTER TABLE delivery_settlements ADD COLUMN commission_amount REAL DEFAULT 0.0");
-  }
-  if (!dsettlementCols.includes('net_amount')) {
-    db.exec("ALTER TABLE delivery_settlements ADD COLUMN net_amount REAL DEFAULT 0.0");
-  }
-  if (!dsettlementCols.includes('successful_deliveries')) {
-    db.exec("ALTER TABLE delivery_settlements ADD COLUMN successful_deliveries INTEGER DEFAULT 0");
-  }
-  if (!dsettlementCols.includes('failed_deliveries')) {
-    db.exec("ALTER TABLE delivery_settlements ADD COLUMN failed_deliveries INTEGER DEFAULT 0");
+  if (proc.status !== 0) {
+    const stderr = (proc.stderr || '').trim();
+    const stdout = (proc.stdout || '').trim();
+    throw new Error(stderr || stdout || 'PostgreSQL query failed');
   }
 
-  // Migrate: add sale_id to credit_payments for per-order tracking
-  const cpCols = db.prepare("PRAGMA table_info(credit_payments)").all().map(c => c.name);
-  if (!cpCols.includes('sale_id')) {
-    db.exec("ALTER TABLE credit_payments ADD COLUMN sale_id INTEGER DEFAULT NULL REFERENCES sales(id) ON DELETE SET NULL");
-  }
+  return (proc.stdout || '').trim();
+}
 
-  // Migrate: add pickup fields to sales for pickup orders
-  const salesColsP7 = db.prepare("PRAGMA table_info(sales)").all().map(c => c.name);
-  if (!salesColsP7.includes('pickup_status')) {
-    db.exec("ALTER TABLE sales ADD COLUMN pickup_status TEXT DEFAULT NULL CHECK(pickup_status IN ('waiting','ready_for_pickup','picked_up'))");
-  }
-  if (!salesColsP7.includes('picked_up_at')) {
-    db.exec("ALTER TABLE sales ADD COLUMN picked_up_at DATETIME DEFAULT NULL");
-  }
+function runSelect(sql) {
+  const wrapped = `SELECT COALESCE(json_agg(t), '[]'::json)::text FROM (${sql}) t`;
+  const output = runPsql(wrapped);
 
-  // ─── Recurring Orders ──────────────────────────────────────
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS recurring_orders (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      customer_id INTEGER NOT NULL,
-      location_id INTEGER NOT NULL,
-      order_type TEXT NOT NULL DEFAULT 'delivery' CHECK(order_type IN ('pickup', 'delivery')),
-      frequency TEXT NOT NULL DEFAULT 'daily' CHECK(frequency IN ('daily', 'weekly', 'monthly', 'custom')),
-      custom_days TEXT DEFAULT NULL,
-      delivery_address TEXT DEFAULT NULL,
-      scheduled_time TEXT DEFAULT NULL,
-      notes TEXT DEFAULT '',
-      sender_message TEXT DEFAULT '',
-      sender_name TEXT DEFAULT '',
-      sender_phone TEXT DEFAULT '',
-      items TEXT NOT NULL DEFAULT '[]',
-      is_active INTEGER DEFAULT 1,
-      last_generated_date DATE DEFAULT NULL,
-      next_run_date DATE NOT NULL,
-      created_by INTEGER NOT NULL,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (customer_id) REFERENCES users(id) ON DELETE CASCADE,
-      FOREIGN KEY (location_id) REFERENCES locations(id) ON DELETE CASCADE,
-      FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE
-    );
+  if (!output) return [];
 
-    CREATE INDEX IF NOT EXISTS idx_recurring_active ON recurring_orders(is_active, next_run_date);
-  `);
-
-  // Migrate: add label/tag to recurring orders for task manager identification
-  const roColsLabel = db.prepare("PRAGMA table_info(recurring_orders)").all().map(c => c.name);
-  if (!roColsLabel.includes('label')) {
-    db.exec("ALTER TABLE recurring_orders ADD COLUMN label TEXT DEFAULT 'task-manager'");
-  }
-
-  // ─── Sender info fields on sales ───────────────────────────
-  const salesColsSender = db.prepare("PRAGMA table_info(sales)").all().map(c => c.name);
-  if (!salesColsSender.includes('sender_message')) {
-    db.exec("ALTER TABLE sales ADD COLUMN sender_message TEXT DEFAULT ''");
-  }
-  if (!salesColsSender.includes('sender_name')) {
-    db.exec("ALTER TABLE sales ADD COLUMN sender_name TEXT DEFAULT ''");
-  }
-  if (!salesColsSender.includes('sender_phone')) {
-    db.exec("ALTER TABLE sales ADD COLUMN sender_phone TEXT DEFAULT ''");
-  }
-
-  // Add source column for tracking order origin (manual, recurring, etc.)
-  const salesColsSource = db.prepare("PRAGMA table_info(sales)").all().map(c => c.name);
-  if (!salesColsSource.includes('source')) {
-    db.exec("ALTER TABLE sales ADD COLUMN source TEXT DEFAULT 'manual'");
-  }
-
-  // Add timezone setting for existing databases
-  const tzExists = db.prepare("SELECT id FROM settings WHERE key = 'timezone'").get();
-  if (!tzExists) {
-    db.prepare("INSERT OR IGNORE INTO settings (key, value, description) VALUES (?, ?, ?)")
-      .run('timezone', 'Asia/Kolkata', 'Shop timezone for all date/time operations (IANA timezone name)');
-  }
-
-  // ─── Phase 8: Attendance ───────────────────────────────────
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS attendance (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id INTEGER NOT NULL,
-      location_id INTEGER NOT NULL,
-      date DATE NOT NULL,
-      clock_in DATETIME DEFAULT NULL,
-      clock_in_method TEXT DEFAULT 'manual' CHECK(clock_in_method IN ('auto_geofence', 'manual')),
-      clock_in_latitude REAL DEFAULT NULL,
-      clock_in_longitude REAL DEFAULT NULL,
-      clock_out DATETIME DEFAULT NULL,
-      clock_out_method TEXT DEFAULT NULL CHECK(clock_out_method IN ('auto_geofence', 'manual', 'auto_timeout')),
-      clock_out_latitude REAL DEFAULT NULL,
-      clock_out_longitude REAL DEFAULT NULL,
-      total_hours REAL DEFAULT 0,
-      outdoor_hours REAL DEFAULT 0,
-      effective_hours REAL DEFAULT 0,
-      status TEXT DEFAULT 'present' CHECK(status IN ('present', 'absent', 'half_day', 'on_leave')),
-      late_arrival INTEGER DEFAULT 0,
-      early_departure INTEGER DEFAULT 0,
-      notes TEXT DEFAULT '',
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-      FOREIGN KEY (location_id) REFERENCES locations(id) ON DELETE CASCADE,
-      UNIQUE(user_id, date)
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_attendance_user ON attendance(user_id);
-    CREATE INDEX IF NOT EXISTS idx_attendance_date ON attendance(date);
-    CREATE INDEX IF NOT EXISTS idx_attendance_location ON attendance(location_id);
-    CREATE INDEX IF NOT EXISTS idx_attendance_user_date ON attendance(user_id, date);
-  `);
-
-  // ─── Phase 8: Outdoor Duty Requests ────────────────────────
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS outdoor_duty_requests (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      attendance_id INTEGER DEFAULT NULL,
-      user_id INTEGER NOT NULL,
-      location_id INTEGER NOT NULL,
-      approved_by INTEGER DEFAULT NULL,
-      start_time DATETIME DEFAULT NULL,
-      end_time DATETIME DEFAULT NULL,
-      duration REAL DEFAULT 0,
-      reason TEXT NOT NULL,
-      status TEXT DEFAULT 'requested' CHECK(status IN ('requested', 'approved', 'rejected', 'completed')),
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (attendance_id) REFERENCES attendance(id) ON DELETE SET NULL,
-      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-      FOREIGN KEY (location_id) REFERENCES locations(id) ON DELETE CASCADE,
-      FOREIGN KEY (approved_by) REFERENCES users(id) ON DELETE SET NULL
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_outdoor_duty_user ON outdoor_duty_requests(user_id);
-    CREATE INDEX IF NOT EXISTS idx_outdoor_duty_status ON outdoor_duty_requests(status);
-  `);
-
-  // ─── Phase 8: Salary Advances ──────────────────────────────
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS salary_advances (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id INTEGER NOT NULL,
-      amount REAL NOT NULL,
-      reason TEXT DEFAULT '',
-      approved_by INTEGER DEFAULT NULL,
-      status TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'approved', 'rejected', 'repaid')),
-      repaid_amount REAL DEFAULT 0,
-      date DATE NOT NULL DEFAULT (DATE('now')),
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-      FOREIGN KEY (approved_by) REFERENCES users(id) ON DELETE SET NULL
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_salary_advances_user ON salary_advances(user_id);
-  `);
-
-  // ─── Phase 8: Employee Shifts / Schedules ──────────────────
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS employee_shifts (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id INTEGER NOT NULL,
-      location_id INTEGER NOT NULL,
-      shift_start TEXT NOT NULL DEFAULT '09:00',
-      shift_end TEXT NOT NULL DEFAULT '18:00',
-      days_of_week TEXT NOT NULL DEFAULT '["monday","tuesday","wednesday","thursday","friday","saturday"]',
-      geofence_timeout_minutes INTEGER DEFAULT 15,
-      is_active INTEGER DEFAULT 1,
-      created_by INTEGER NOT NULL,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-      FOREIGN KEY (location_id) REFERENCES locations(id) ON DELETE CASCADE,
-      FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_employee_shifts_user ON employee_shifts(user_id);
-    CREATE INDEX IF NOT EXISTS idx_employee_shifts_location ON employee_shifts(location_id);
-  `);
-
-  // Migration: Add shift_segments column for split shift support
+  const payload = output
+    .split('\n')
+    .filter((line) => line.trim().length > 0)
+    .join('\n') || '[]';
   try {
-    const shiftCols = db.prepare("PRAGMA table_info(employee_shifts)").all().map(c => c.name);
-    if (!shiftCols.includes('shift_segments')) {
-      db.exec("ALTER TABLE employee_shifts ADD COLUMN shift_segments TEXT DEFAULT NULL");
+    return JSON.parse(payload);
+  } catch {
+    return [];
+  }
+}
+
+function runMutation(sql, mode) {
+  const output = runPsql(sql);
+  const lines = output
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+
+  if (mode === 'insert') {
+    const first = lines[0];
+    const parsed = first != null && first !== '' && !Number.isNaN(Number(first))
+      ? Number(first)
+      : first || null;
+    return {
+      changes: lines.length,
+      lastInsertRowid: parsed,
+    };
+  }
+
+  return {
+    changes: lines.length,
+    lastInsertRowid: null,
+  };
+}
+
+function toRunStatement(sql) {
+  const normalized = normalizeSql(sql);
+  const upper = normalized.toUpperCase();
+  const isInsertIgnore = /^\s*INSERT\s+OR\s+IGNORE\s+INTO\s+/i.test(normalized);
+
+  let statement = normalized.replace(/^\s*INSERT\s+OR\s+IGNORE\s+INTO\s+/i, 'INSERT INTO ');
+
+  if (isInsertIgnore) {
+    statement += ' ON CONFLICT DO NOTHING';
+  }
+
+  if (upper.startsWith('INSERT')) {
+    if (!/\bRETURNING\b/i.test(statement)) {
+      statement += ' RETURNING id';
     }
-  } catch (e) { console.warn('Shift segments migration:', e.message); }
-  // ─── Phase 8: Employee Salaries ────────────────────────────
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS employee_salaries (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id INTEGER NOT NULL UNIQUE,
-      monthly_salary REAL NOT NULL DEFAULT 0,
-      salary_type TEXT NOT NULL DEFAULT 'monthly' CHECK(salary_type IN ('monthly', 'daily', 'hourly')),
-      effective_from DATE NOT NULL DEFAULT (DATE('now')),
-      notes TEXT DEFAULT '',
-      updated_by INTEGER NOT NULL,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-      FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE SET NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_employee_salaries_user ON employee_salaries(user_id);
-  `);
+    return { statement, mode: 'insert' };
+  }
 
-  // ─── Phase 8: Salary Change History ────────────────────────
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS salary_history (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id INTEGER NOT NULL,
-      old_salary REAL DEFAULT 0,
-      new_salary REAL NOT NULL,
-      salary_type TEXT NOT NULL DEFAULT 'monthly',
-      reason TEXT DEFAULT '',
-      changed_by INTEGER NOT NULL,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-      FOREIGN KEY (changed_by) REFERENCES users(id) ON DELETE SET NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_salary_history_user ON salary_history(user_id);
-  `);
-
-  // ─── Phase 8: Delivery Partner Location Tracking ───────────
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS delivery_locations (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id INTEGER NOT NULL,
-      delivery_id INTEGER DEFAULT NULL,
-      latitude REAL NOT NULL,
-      longitude REAL NOT NULL,
-      accuracy REAL DEFAULT NULL,
-      speed REAL DEFAULT NULL,
-      heading REAL DEFAULT NULL,
-      battery_level REAL DEFAULT NULL,
-      is_moving INTEGER DEFAULT 0,
-      recorded_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-      FOREIGN KEY (delivery_id) REFERENCES deliveries(id) ON DELETE SET NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_delivery_locations_user ON delivery_locations(user_id);
-    CREATE INDEX IF NOT EXISTS idx_delivery_locations_delivery ON delivery_locations(delivery_id);
-    CREATE INDEX IF NOT EXISTS idx_delivery_locations_recorded ON delivery_locations(recorded_at);
-  `);
-
-  // ─── Phase 8: Geofence Events (for auto clock-in/out) ─────
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS geofence_events (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id INTEGER NOT NULL,
-      location_id INTEGER NOT NULL,
-      event_type TEXT NOT NULL CHECK(event_type IN ('enter', 'exit')),
-      latitude REAL DEFAULT NULL,
-      longitude REAL DEFAULT NULL,
-      processed INTEGER DEFAULT 0,
-      auto_action TEXT DEFAULT NULL,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-      FOREIGN KEY (location_id) REFERENCES locations(id) ON DELETE CASCADE
-    );
-    CREATE INDEX IF NOT EXISTS idx_geofence_events_user ON geofence_events(user_id);
-    CREATE INDEX IF NOT EXISTS idx_geofence_events_processed ON geofence_events(processed);
-  `);
-
-  // ─── Phase 8: Delivery Partner Daily Summary ──────────────
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS delivery_partner_daily (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id INTEGER NOT NULL,
-      date DATE NOT NULL,
-      total_deliveries INTEGER DEFAULT 0,
-      total_distance_km REAL DEFAULT 0,
-      total_active_minutes REAL DEFAULT 0,
-      total_idle_minutes REAL DEFAULT 0,
-      first_delivery_at DATETIME DEFAULT NULL,
-      last_delivery_at DATETIME DEFAULT NULL,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      UNIQUE(user_id, date),
-      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-    );
-    CREATE INDEX IF NOT EXISTS idx_delivery_partner_daily_user ON delivery_partner_daily(user_id);
-  `);
-
-  // ─── Phase 8: Salary Payments (payroll disbursements) ─────
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS salary_payments (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id INTEGER NOT NULL,
-      period_start DATE NOT NULL,
-      period_end DATE NOT NULL,
-      base_salary REAL NOT NULL DEFAULT 0,
-      days_worked REAL DEFAULT 0,
-      days_in_period INTEGER DEFAULT 0,
-      hours_worked REAL DEFAULT 0,
-      late_days INTEGER DEFAULT 0,
-      absent_days INTEGER DEFAULT 0,
-      leaves_taken INTEGER DEFAULT 0,
-      deductions REAL DEFAULT 0,
-      advances_deducted REAL DEFAULT 0,
-      bonus REAL DEFAULT 0,
-      net_amount REAL NOT NULL DEFAULT 0,
-      payment_method TEXT DEFAULT 'cash' CHECK(payment_method IN ('cash', 'upi', 'bank_transfer')),
-      payment_reference TEXT DEFAULT '',
-      status TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'paid', 'cancelled')),
-      paid_at DATETIME DEFAULT NULL,
-      paid_by INTEGER DEFAULT NULL,
-      notes TEXT DEFAULT '',
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-      FOREIGN KEY (paid_by) REFERENCES users(id) ON DELETE SET NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_salary_payments_user ON salary_payments(user_id);
-    CREATE INDEX IF NOT EXISTS idx_salary_payments_period ON salary_payments(period_start, period_end);
-  `);
-
-  // Migration: Add batch_id column for multi-delivery batching
-  try {
-    const delCols = db.prepare("PRAGMA table_info(deliveries)").all().map(c => c.name);
-    if (!delCols.includes('batch_id')) {
-      db.exec("ALTER TABLE deliveries ADD COLUMN batch_id TEXT DEFAULT NULL");
-      db.exec("CREATE INDEX IF NOT EXISTS idx_deliveries_batch ON deliveries(batch_id)");
+  if (upper.startsWith('UPDATE') || upper.startsWith('DELETE')) {
+    if (!/\bRETURNING\b/i.test(statement)) {
+      statement += ' RETURNING 1 as _affected';
     }
-  } catch (e) { console.warn('Batch ID migration:', e.message); }
+    return { statement, mode: 'mutate' };
+  }
 
-  // ─── Phase 10: Notifications ───────────────────────────────
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS push_tokens (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id INTEGER NOT NULL,
-      token TEXT NOT NULL,
-      platform TEXT DEFAULT 'expo',
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-      UNIQUE(user_id, token)
-    );
-    CREATE INDEX IF NOT EXISTS idx_push_tokens_user ON push_tokens(user_id);
+  return { statement, mode: 'other' };
+}
 
-    CREATE TABLE IF NOT EXISTS notifications (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id INTEGER NOT NULL,
-      title TEXT NOT NULL,
-      body TEXT NOT NULL,
-      type TEXT NOT NULL DEFAULT 'general',
-      data TEXT DEFAULT '{}',
-      is_read INTEGER DEFAULT 0,
-      push_sent INTEGER DEFAULT 0,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-    );
-    CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id);
-    CREATE INDEX IF NOT EXISTS idx_notifications_unread ON notifications(user_id, is_read);
-  `);
+function createPrepared(sql) {
+  const rawSql = String(sql || '');
+
+  return {
+    get(...params) {
+      const statement = bindParams(normalizeSql(rawSql), params);
+      const rows = runSelect(statement);
+      return rows[0] || undefined;
+    },
+    all(...params) {
+      const statement = bindParams(normalizeSql(rawSql), params);
+      return runSelect(statement);
+    },
+    run(...params) {
+      const { statement: base, mode } = toRunStatement(rawSql);
+      const statement = bindParams(base, params);
+
+      if (mode === 'insert' || mode === 'mutate') {
+        return runMutation(statement, mode);
+      }
+
+      runPsql(statement);
+      return { changes: 0, lastInsertRowid: null };
+    },
+  };
+}
+
+function getDb() {
+  if (!initialized) {
+    runPsql('SELECT 1');
+    ensureCriticalTimestampColumns();
+    initialized = true;
+    console.log('✅ Connected to PostgreSQL');
+  }
+
+  return {
+    prepare(sql) {
+      return createPrepared(sql);
+    },
+    exec(sql) {
+      runPsql(normalizeSql(sql));
+    },
+    transaction(fn) {
+      return (...args) => fn(...args);
+    },
+  };
 }
 
 function closeDb() {
-  if (db) {
-    db.close();
-    db = null;
-  }
+  initialized = false;
 }
 
 module.exports = { getDb, closeDb };

@@ -384,13 +384,19 @@ router.post(
           WHERE id = ? AND purchase_order_id = ?
         `);
 
-        const upsertStock = db.prepare(`
+        const getStockRow = db.prepare(
+          'SELECT id FROM material_stock WHERE material_id = ? AND location_id = ? LIMIT 1'
+        );
+        const addStock = db.prepare(`
+          UPDATE material_stock
+          SET quantity = quantity + ?,
+              last_counted_at = CURRENT_TIMESTAMP,
+              updated_at = CURRENT_TIMESTAMP
+          WHERE id = ?
+        `);
+        const insertStock = db.prepare(`
           INSERT INTO material_stock (material_id, location_id, quantity, last_counted_at)
           VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-          ON CONFLICT(material_id, location_id) DO UPDATE SET
-            quantity = quantity + excluded.quantity,
-            last_counted_at = CURRENT_TIMESTAMP,
-            updated_at = CURRENT_TIMESTAMP
         `);
 
         const insertTransaction = db.prepare(`
@@ -430,7 +436,12 @@ router.post(
               const matInfo = getBundleSize.get(poItem.material_id);
               stockQty = actualReceiveQty * (matInfo ? matInfo.default_bundle_size : 1);
             }
-            upsertStock.run(poItem.material_id, order.location_id, stockQty);
+            const stockRow = getStockRow.get(poItem.material_id, order.location_id);
+            if (stockRow) {
+              addStock.run(stockQty, stockRow.id);
+            } else {
+              insertStock.run(poItem.material_id, order.location_id, stockQty);
+            }
             insertTransaction.run(
               poItem.material_id,
               order.location_id,

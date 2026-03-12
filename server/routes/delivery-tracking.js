@@ -102,7 +102,7 @@ router.get('/active-partners', authorize('owner', 'manager'), (req, res) => {
       INNER JOIN (
         SELECT user_id, MAX(id) as max_id
         FROM delivery_locations
-        WHERE recorded_at >= datetime('now', '-30 minutes')
+        WHERE recorded_at >= (CURRENT_TIMESTAMP - INTERVAL '30 minutes')
         GROUP BY user_id
       ) latest ON dl.id = latest.max_id
     `).all();
@@ -252,7 +252,7 @@ router.get('/performance/:userId', authorize('owner', 'manager'), (req, res) => 
         SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as total_failed,
         AVG(CASE 
           WHEN status = 'delivered' AND pickup_time IS NOT NULL AND delivered_time IS NOT NULL 
-          THEN (julianday(delivered_time) - julianday(pickup_time)) * 24 * 60 
+          THEN EXTRACT(EPOCH FROM (delivered_time::timestamp - pickup_time::timestamp)) / 60
           ELSE NULL 
         END) as avg_delivery_minutes,
         SUM(CASE 
@@ -271,7 +271,7 @@ router.get('/performance/:userId', authorize('owner', 'manager'), (req, res) => 
       SELECT 
         DATE(delivered_time) as date,
         COUNT(*) as deliveries,
-        AVG((julianday(delivered_time) - julianday(pickup_time)) * 24 * 60) as avg_minutes
+        AVG(EXTRACT(EPOCH FROM (delivered_time::timestamp - pickup_time::timestamp)) / 60) as avg_minutes
       FROM deliveries
       WHERE delivery_partner_id = ? AND status = 'delivered' AND delivered_time >= ?
       GROUP BY DATE(delivered_time)

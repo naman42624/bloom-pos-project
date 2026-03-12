@@ -75,8 +75,8 @@ router.get('/', authenticate, (req, res, next) => {
     if (pickup_status) { sql += ' AND s.pickup_status = ?'; params.push(pickup_status); }
     if (status) { sql += ' AND s.status = ?'; params.push(status); }
     else { sql += " AND s.status != 'cancelled'"; }
-    if (date_from) { sql += ' AND DATE(s.created_at) >= ?'; params.push(date_from); }
-    if (date_to) { sql += ' AND DATE(s.created_at) <= ?'; params.push(date_to); }
+    if (date_from) { sql += ' AND s.created_at >= (?::date)'; params.push(date_from); }
+    if (date_to) { sql += " AND s.created_at < (?::date + INTERVAL '1 day')"; params.push(date_to); }
     if (search) {
       sql += ' AND (s.sale_number LIKE ? OR s.customer_name LIKE ? OR s.customer_phone LIKE ?)';
       const s = `%${search}%`;
@@ -109,6 +109,8 @@ router.get('/', authenticate, (req, res, next) => {
     if (payment_status) { countSql += ' AND s.payment_status = ?'; countParams.push(payment_status); }
     if (status) { countSql += ' AND s.status = ?'; countParams.push(status); }
     else { countSql += " AND s.status != 'cancelled'"; }
+    if (date_from) { countSql += ' AND s.created_at >= (?::date)'; countParams.push(date_from); }
+    if (date_to) { countSql += " AND s.created_at < (?::date + INTERVAL '1 day')"; countParams.push(date_to); }
     const { total } = db.prepare(countSql).get(...countParams);
 
     res.json({ success: true, data: { sales, total, limit, offset } });
@@ -145,7 +147,7 @@ router.get('/today-summary', authenticate, (req, res, next) => {
     const today = localToday();
 
     let locFilter = '';
-    const params = [today];
+    const params = [today, today];
     if (location_id) {
       locFilter = ' AND s.location_id = ?';
       params.push(location_id);
@@ -162,7 +164,9 @@ router.get('/today-summary', authenticate, (req, res, next) => {
         COALESCE(SUM(CASE WHEN s.order_type = 'delivery' THEN 1 ELSE 0 END), 0) as delivery_count,
         COALESCE(SUM(CASE WHEN s.order_type = 'pre_order' THEN 1 ELSE 0 END), 0) as pre_order_count
       FROM sales s
-      WHERE DATE(s.created_at) = ? AND s.status = 'completed'${locFilter}
+      WHERE s.created_at >= (?::date)
+        AND s.created_at < (?::date + INTERVAL '1 day')
+        AND s.status != 'cancelled'${locFilter}
     `).get(...params);
 
     // Payment method breakdown
@@ -170,7 +174,9 @@ router.get('/today-summary', authenticate, (req, res, next) => {
       SELECT p.method, COALESCE(SUM(p.amount), 0) as total
       FROM payments p
       JOIN sales s ON p.sale_id = s.id
-      WHERE DATE(s.created_at) = ? AND s.status = 'completed'${locFilter}
+      WHERE s.created_at >= (?::date)
+        AND s.created_at < (?::date + INTERVAL '1 day')
+        AND s.status != 'cancelled'${locFilter}
       GROUP BY p.method
     `).all(...params);
 
@@ -678,8 +684,8 @@ router.post(
         }
 
         // ─── Stock deduction & production task creation ───
-        const deductProductStock = db.prepare('UPDATE product_stock SET quantity = MAX(0, quantity - ?), updated_at = CURRENT_TIMESTAMP WHERE product_id = ? AND location_id = ?');
-        const deductMaterialStock = db.prepare('UPDATE material_stock SET quantity = MAX(0, quantity - ?), updated_at = CURRENT_TIMESTAMP WHERE material_id = ? AND location_id = ?');
+        const deductProductStock = db.prepare('UPDATE product_stock SET quantity = GREATEST(0, quantity - ?), updated_at = CURRENT_TIMESTAMP WHERE product_id = ? AND location_id = ?');
+        const deductMaterialStock = db.prepare('UPDATE material_stock SET quantity = GREATEST(0, quantity - ?), updated_at = CURRENT_TIMESTAMP WHERE material_id = ? AND location_id = ?');
         const logMaterialTx = db.prepare(`INSERT INTO material_transactions (material_id, location_id, type, quantity, reference_type, reference_id, notes, created_by) VALUES (?, ?, 'usage', ?, 'sale', ?, ?, ?)`);
         const getBOM = db.prepare('SELECT material_id, quantity FROM product_materials WHERE product_id = ?');
         const getReadyStock = db.prepare('SELECT quantity FROM product_stock WHERE product_id = ? AND location_id = ?');
