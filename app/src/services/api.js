@@ -3,7 +3,7 @@
  */
 import { Platform } from 'react-native';
 
-const LAN_IP = '192.168.29.160';
+const LAN_IP = '159.89.173.40';
 
 function getBaseUrl() {
   if (Platform.OS === 'web') return 'http://localhost:3001/api';
