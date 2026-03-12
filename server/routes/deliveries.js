@@ -15,6 +15,26 @@ function localDateStr(dt) {
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 }
 
+// Generate unique settlement number: SETL-DDMMYY-{seq}
+function generateSettlementNumber(db, locationId) {
+  const db2 = db;
+  const today = new Date();
+  const dd = String(today.getDate()).padStart(2, '0');
+  const mm = String(today.getMonth() + 1).padStart(2, '0');
+  const yy = String(today.getFullYear()).slice(-2);
+  const dateCode = `${dd}${mm}${yy}`;
+  
+  // Get max sequence number for today
+  const maxSeq = db2.prepare(
+    `SELECT MAX(CAST(SUBSTR(settlement_number, -3) AS INTEGER)) as max_seq
+     FROM delivery_settlements
+     WHERE location_id = ? AND settlement_date = ?`
+  ).get(locationId, localDateStr());
+  
+  const nextSeq = (maxSeq?.max_seq || 0) + 1;
+  return `SETL-${dateCode}-${String(nextSeq).padStart(3, '0')}`;
+}
+
 // ─── Photo upload config ────────────────────────────────────
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => {
@@ -641,11 +661,25 @@ router.post(
           totalAmount += d.cod_collected;
         }
 
-        // Create settlement
+        // Generate settlement number and calculate commission/net
+        const settlementNumber = generateSettlementNumber(db, location_id);
+        const commissionPercentage = 5.0; // 5% standard commission
+        const commissionAmount = totalAmount * (commissionPercentage / 100);
+        const netAmount = totalAmount - commissionAmount;
+        const today = localDateStr();
+
+        // Create settlement with new fields
         const result = db.prepare(
-          `INSERT INTO delivery_settlements (delivery_partner_id, location_id, total_amount, total_deliveries, status, notes)
-           VALUES (?, ?, ?, ?, 'pending', ?)`
-        ).run(delivery_partner_id, location_id, totalAmount, delivery_ids.length, notes || '');
+          `INSERT INTO delivery_settlements 
+           (delivery_partner_id, location_id, total_amount, total_deliveries, status, notes, 
+            settlement_number, settlement_date, period_start, period_end, 
+            commission_percentage, commission_amount, net_amount)
+           VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)`
+        ).run(
+          delivery_partner_id, location_id, totalAmount, delivery_ids.length, notes || '',
+          settlementNumber, today, today, today,
+          commissionPercentage, commissionAmount, netAmount
+        );
 
         const settlementId = result.lastInsertRowid;
 
@@ -694,17 +728,38 @@ router.put(
       if (settlement.status === 'verified') return res.status(400).json({ success: false, message: 'Already verified' });
 
       const verifyTx = db.transaction(() => {
+        // Count successful and failed deliveries in this settlement
+        const deliveryStats = db.prepare(`
+          SELECT 
+            COUNT(*) as total,
+            SUM(CASE WHEN d.status = 'delivered' THEN 1 ELSE 0 END) as successful,
+            SUM(CASE WHEN d.status IN ('cancelled', 'failed', 'returned') THEN 1 ELSE 0 END) as failed
+          FROM delivery_settlement_items dsi
+          JOIN deliveries d ON dsi.delivery_id = d.id
+          WHERE dsi.settlement_id = ?
+        `).get(settlement.id);
+
         db.prepare(`
-          UPDATE delivery_settlements SET status = 'verified', verified_by = ?, verified_at = CURRENT_TIMESTAMP
+          UPDATE delivery_settlements 
+          SET status = 'verified', 
+              verified_by = ?, 
+              verified_at = CURRENT_TIMESTAMP,
+              successful_deliveries = ?,
+              failed_deliveries = ?
           WHERE id = ?
-        `).run(req.user.id, settlement.id);
+        `).run(
+          req.user.id, 
+          deliveryStats?.successful || 0,
+          deliveryStats?.failed || 0,
+          settlement.id
+        );
 
         // Add the settled cash to the cash register
         const today = localDateStr();
         const register = db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND date = ?').get(settlement.location_id, today);
         if (register) {
           db.prepare('UPDATE cash_registers SET total_cash_sales = total_cash_sales + ?, expected_cash = opening_balance + total_cash_sales + ? - total_refunds_cash WHERE id = ?')
-            .run(settlement.total_amount, settlement.total_amount, register.id);
+            .run(settlement.net_amount, settlement.net_amount, register.id);
         }
       });
 

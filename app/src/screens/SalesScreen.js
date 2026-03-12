@@ -1,6 +1,6 @@
 import React, { useState, useCallback } from 'react';
 import {
-  View, Text, StyleSheet, FlatList, TextInput,
+  View, Text, StyleSheet, SectionList, TextInput,
   TouchableOpacity, ActivityIndicator,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
@@ -18,6 +18,33 @@ const FILTERS = [
   { key: 'delivery', label: 'Delivery' },
   { key: 'pre_order', label: 'Pre-order' },
 ];
+
+// Helper: Group sales by date (newest first)
+function groupSalesByDate(salesList) {
+  if (!salesList.length) return [];
+
+  // Sort by created_at (newest first)
+  const sorted = [...salesList].sort((a, b) => 
+    new Date(b.created_at) - new Date(a.created_at)
+  );
+
+  const grouped = {};
+  sorted.forEach(sale => {
+    const date = new Date(sale.created_at).toLocaleDateString('en-IN', { 
+      weekday: 'short', 
+      year: 'numeric', 
+      month: 'short', 
+      day: 'numeric' 
+    });
+    if (!grouped[date]) grouped[date] = [];
+    grouped[date].push(sale);
+  });
+
+  return Object.entries(grouped).map(([date, items]) => ({
+    title: date,
+    data: items,
+  }));
+}
 
 export default function SalesScreen({ navigation }) {
   const [sales, setSales] = useState([]);
@@ -115,7 +142,7 @@ export default function SalesScreen({ navigation }) {
               {(item.order_type || '').replace('_', ' ')} • {item.location_name || 'N/A'}
             </Text>
             {item.customer_name && <Text style={styles.cardCustomer}>{item.customer_name}</Text>}
-            <Text style={styles.cardDate}>{new Date(item.created_at).toLocaleString()}</Text>
+            <Text style={styles.cardDate}>{new Date(item.created_at).toLocaleTimeString('en-IN', { timeStyle: 'short' })}</Text>
           </View>
           <View style={{ alignItems: 'flex-end' }}>
             <Text style={styles.cardTotal}>₹{(item.grand_total || 0).toFixed(0)}</Text>
@@ -127,6 +154,12 @@ export default function SalesScreen({ navigation }) {
       </TouchableOpacity>
     );
   };
+
+  const renderSectionHeader = ({ section: { title } }) => (
+    <View style={styles.sectionHeader}>
+      <Text style={styles.sectionTitle}>{title}</Text>
+    </View>
+  );
 
   return (
     <View style={styles.container}>
@@ -176,10 +209,11 @@ export default function SalesScreen({ navigation }) {
       </View>
 
       {/* List */}
-      <FlatList
-        data={sales}
+      <SectionList
+        sections={groupSalesByDate(sales)}
         keyExtractor={(item) => String(item.id)}
-        renderItem={renderSale}
+        renderItem={({ item }) => renderSale({ item })}
+        renderSectionHeader={renderSectionHeader}
         contentContainerStyle={styles.listContent}
         onEndReached={loadMore}
         onEndReachedThreshold={0.3}
@@ -242,6 +276,21 @@ const styles = StyleSheet.create({
   cardCustomer: { fontSize: FontSize.xs, color: Colors.text, marginTop: 2 },
   cardDate: { fontSize: FontSize.xs, color: Colors.textLight, marginTop: 2 },
   cardTotal: { fontSize: FontSize.md, fontWeight: '700', color: Colors.text },
+
+  sectionHeader: {
+    backgroundColor: Colors.primary + '15',
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
+    marginTop: Spacing.md,
+    marginBottom: Spacing.sm,
+    borderLeftWidth: 3,
+    borderLeftColor: Colors.primary,
+  },
+  sectionTitle: {
+    fontSize: FontSize.sm,
+    fontWeight: '700',
+    color: Colors.primary,
+  },
 
   empty: { alignItems: 'center', paddingTop: 80 },
   emptyText: { color: Colors.textLight, marginTop: Spacing.sm, fontSize: FontSize.sm },

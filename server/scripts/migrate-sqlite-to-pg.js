@@ -1,211 +1,169 @@
-#!/usr/bin/env node
 /**
- * SQLite → PostgreSQL Data Migration Script
- *
- * Migrates all data from the existing SQLite database to PostgreSQL.
- *
- * Prerequisites:
- *   1. PostgreSQL database created and schema.sql applied:
- *      psql $DATABASE_URL < config/schema.sql
- *   2. Environment variables set:
- *      DATABASE_URL=postgresql://user:pass@host:5432/bloomcart
- *
- * Usage:
- *   node scripts/migrate-sqlite-to-pg.js
- *
- * The script:
- *   - Reads all data from SQLite
- *   - Transforms types (INTEGER booleans → BOOLEAN, TEXT JSON → JSONB)
- *   - Inserts into PostgreSQL in correct foreign-key order
- *   - Resets sequences to max(id) + 1
+ * SQLite to PostgreSQL Migration Script
+ * 
+ * Exports all data from SQLite database.sqlite and imports into PostgreSQL
+ * Usage: node scripts/migrate-sqlite-to-pg.js
  */
 
 require('dotenv').config();
-
-const Database = require('better-sqlite3');
-const { Pool } = require('pg');
+const fs = require('fs');
 const path = require('path');
+const sqlite3 = require('better-sqlite3');
+const { Pool } = require('pg');
 
-const SQLITE_PATH = path.join(__dirname, '..', 'database.sqlite');
+const SQLITE_DB = path.join(__dirname, '..', 'database.sqlite');
+const DB_URL = process.env.DATABASE_URL;
 
-// Tables in dependency order (parents before children)
-const TABLES = [
-  'users',
-  'locations',
-  'user_locations',
-  'settings',
-  'tax_rates',
-  'material_categories',
-  'materials',
-  'material_stock',
-  'suppliers',
-  'supplier_materials',
-  'purchase_orders',
-  'purchase_order_items',
-  'material_transactions',
-  'daily_stock_logs',
-  'stock_transfers',
-  'products',
-  'product_materials',
-  'product_images',
-  'product_stock',
-  'sales',
-  'sale_items',
-  'payments',
-  'refunds',
-  'cash_registers',
-  'pre_orders',
-  'expenses',
-  'customer_addresses',
-  'credit_payments',
-  'special_dates',
-  'production_logs',
-  'production_tasks',
-  'deliveries',
-  'delivery_proofs',
-  'delivery_collections',
-  'delivery_settlements',
-  'delivery_settlement_items',
-  'attendance',
-  'employee_shifts',
-  'outdoor_duty_requests',
-  'geofence_events',
-  'salary_advances',
-  'employee_salaries',
-  'salary_history',
-  'salary_payments',
-  'delivery_locations',
-  'delivery_partner_daily',
-  'recurring_orders',
-  'push_tokens',
-  'notifications',
-];
+if (!DB_URL) {
+  console.error('❌ DATABASE_URL not set in .env');
+  process.exit(1);
+}
 
-// Columns that are BOOLEAN in PG but INTEGER in SQLite
-const BOOLEAN_COLUMNS = new Set([
-  'is_active', 'is_primary', 'is_default', 'has_bundle', 'is_perishable',
-  'is_read', 'push_sent', 'stock_deducted', 'materials_deducted',
-  'from_product_stock', 'late_arrival', 'early_departure', 'processed',
-  'is_moving',
-]);
+const sqlite = new sqlite3(SQLITE_DB);
+const pool = new Pool({ connectionString: DB_URL });
 
-// Columns that are JSONB in PG but TEXT in SQLite
-const JSONB_COLUMNS = new Set([
-  'operating_hours', 'custom_dates', 'data', 'days_of_week',
-  'shift_segments', 'custom_days', 'items',
-]);
-
-function transformValue(column, value) {
+/**
+ * Convert SQLite value to PostgreSQL format
+ */
+function convertValue(value, columnType) {
   if (value === null || value === undefined) return null;
-
-  if (BOOLEAN_COLUMNS.has(column)) {
-    return value === 1 || value === true;
+  if (columnType?.includes('JSONB')) {
+    return typeof value === 'string' ? value : JSON.stringify(value);
   }
-
-  if (JSONB_COLUMNS.has(column)) {
-    if (typeof value === 'string') {
-      try {
-        JSON.parse(value); // Validate it's valid JSON
-        return value;
-      } catch {
-        return '{}';
-      }
-    }
-    return value;
+  if (columnType?.includes('BOOLEAN')) {
+    return value ? 1 : 0;
   }
-
+  if (columnType?.includes('DATE')) {
+    return value ? value.split(' ')[0] : null;
+  }
+  if (columnType?.includes('TIMESTAMP')) {
+    return value ? new Date(value).toISOString() : null;
+  }
   return value;
 }
 
-async function migrate() {
-  console.log('🔄 Starting SQLite → PostgreSQL migration...\n');
-
-  // Connect to both databases
-  const sqlite = new Database(SQLITE_PATH, { readonly: true });
-  sqlite.pragma('foreign_keys = OFF');
-
-  const pg = new Pool({
-    connectionString: process.env.DATABASE_URL,
-    ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
-  });
-
-  const client = await pg.connect();
-
+/**
+ * Migrate a single table
+ */
+async function migrateTable(tableName, columns) {
+  console.log(`📋 Migrating ${tableName}...`);
+  
   try {
-    // Disable triggers during import
-    await client.query('SET session_replication_role = replica');
+    // Fetch all rows from SQLite
+    const rows = sqlite.prepare(`SELECT * FROM ${tableName}`).all();
+    
+    if (rows.length === 0) {
+      console.log(`   ✓ ${tableName}: 0 rows`);
+      return;
+    }
 
-    let totalRows = 0;
+    // Get column names
+    const columnNames = Object.keys(rows[0]);
+    const placeholders = columnNames.map((_, i) => `$${i + 1}`).join(',');
+    const columnList = columnNames.map(c => `"${c}"`).join(',');
+    const query = `INSERT INTO ${tableName} (${columnList}) VALUES (${placeholders}) ON CONFLICT DO NOTHING`;
 
-    for (const table of TABLES) {
-      // Check if table exists in SQLite
-      const tableExists = sqlite.prepare(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name=?"
-      ).get(table);
-
-      if (!tableExists) {
-        console.log(`⏭️  ${table} — not in SQLite, skipping`);
-        continue;
-      }
-
-      // Get all rows
-      const rows = sqlite.prepare(`SELECT * FROM ${table}`).all();
-      if (rows.length === 0) {
-        console.log(`📭 ${table} — empty, skipping`);
-        continue;
-      }
-
-      // Get column names from first row
-      const columns = Object.keys(rows[0]);
-
-      // Build INSERT statement
-      const placeholders = columns.map((_, i) => `$${i + 1}`).join(', ');
-      const insertSQL = `INSERT INTO ${table} (${columns.join(', ')}) VALUES (${placeholders}) ON CONFLICT DO NOTHING`;
-
-      // Insert all rows
-      let inserted = 0;
-      for (const row of rows) {
-        const values = columns.map(col => transformValue(col, row[col]));
-        try {
-          const result = await client.query(insertSQL, values);
-          inserted += result.rowCount;
-        } catch (err) {
-          console.error(`  ❌ Error inserting into ${table}:`, err.message);
-          console.error('  Row:', JSON.stringify(row).substring(0, 200));
-        }
-      }
-
-      console.log(`✅ ${table} — ${inserted}/${rows.length} rows migrated`);
-      totalRows += inserted;
-
-      // Reset sequence to max ID
-      if (columns.includes('id')) {
-        try {
-          await client.query(`SELECT setval(pg_get_serial_sequence('${table}', 'id'), COALESCE((SELECT MAX(id) FROM ${table}), 1))`);
-        } catch {
-          // Not all tables have sequences
-        }
+    // Insert rows into PostgreSQL
+    let inserted = 0;
+    for (const row of rows) {
+      const values = columnNames.map(col => convertValue(row[col], columns[col]));
+      try {
+        await pool.query(query, values);
+        inserted++;
+      } catch (err) {
+        console.warn(`   ⚠ Row insert failed in ${tableName}:`, err.message.split('\n')[0]);
       }
     }
 
-    // Re-enable triggers
-    await client.query('SET session_replication_role = DEFAULT');
-
-    console.log(`\n✅ Migration complete! ${totalRows} total rows migrated.`);
-    console.log('⚠️  Please verify data integrity manually.');
-
+    console.log(`   ✓ ${tableName}: ${inserted}/${rows.length} rows`);
   } catch (err) {
-    console.error('\n❌ Migration failed:', err.message);
-    throw err;
-  } finally {
-    client.release();
-    await pg.end();
-    sqlite.close();
+    console.error(`   ✗ ${tableName} failed:`, err.message);
   }
 }
 
-// Run
-migrate().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+/**
+ * Get column types from PostgreSQL schema
+ */
+async function getColumnTypes() {
+  const result = await pool.query(`
+    SELECT table_name, column_name, data_type
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+    ORDER BY table_name, ordinal_position
+  `);
+
+  const types = {};
+  for (const row of result.rows) {
+    if (!types[row.table_name]) types[row.table_name] = {};
+    types[row.table_name][row.column_name] = row.data_type;
+  }
+  return types;
+}
+
+/**
+ * Reset all sequences
+ */
+async function resetSequences() {
+  console.log('\n🔄 Resetting sequences...');
+  
+  const result = await pool.query(`
+    SELECT table_name, column_name
+    FROM information_schema.columns
+    WHERE table_schema = 'public' AND data_type = 'integer' AND column_default LIKE 'nextval%'
+  `);
+
+  for (const row of result.rows) {
+    // Get max ID from table
+    const tableResult = await pool.query(`SELECT MAX("${row.column_name}") as max_id FROM "${row.table_name}"`);
+    const maxId = tableResult.rows[0].max_id || 0;
+    
+    // Reset sequence
+    const sequenceName = `${row.table_name}_${row.column_name}_seq`;
+    await pool.query(`SELECT setval('${sequenceName}', ${maxId + 1})`);
+  }
+  
+  console.log('   ✓ Sequences reset');
+}
+
+/**
+ * Main migration function
+ */
+async function migrate() {
+  console.log('🚀 Starting SQLite → PostgreSQL Migration\n');
+
+  try {
+    // Get column types
+    const columnTypes = await getColumnTypes();
+
+    // Get all table names from SQLite
+    const tables = sqlite.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite%' ORDER BY name"
+    ).all();
+
+    console.log(`Found ${tables.length} tables to migrate\n`);
+
+    // Migrate each table
+    for (const table of tables) {
+      const tableName = table.name;
+      await migrateTable(tableName, columnTypes[tableName] || {});
+    }
+
+    // Reset sequences
+    await resetSequences();
+
+    console.log('\n✅ Migration complete!');
+    console.log('\n📊 Next steps:');
+    console.log('   1. Verify data: psql postgresql://bloomcart:bloomcart_local_2026@localhost:5432/bloomcart');
+    console.log('   2. Run: SELECT COUNT(*) FROM users;');
+    console.log('   3. Restart server: npm run dev');
+
+  } catch (err) {
+    console.error('\n❌ Migration failed:', err.message);
+    process.exit(1);
+  } finally {
+    sqlite.close();
+    await pool.end();
+  }
+}
+
+migrate();

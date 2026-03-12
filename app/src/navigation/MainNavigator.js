@@ -466,7 +466,7 @@ const TAB_ICONS = {
   Profile: { active: 'person-circle', inactive: 'person-circle-outline' },
 };
 
-export default function MainNavigator({ navigationRef }) {
+export default function MainNavigator() {
   const { user, locations } = useAuth();
   const role = user?.role;
 
@@ -484,7 +484,7 @@ export default function MainNavigator({ navigationRef }) {
   });
 
   // Push notifications
-  usePushNotifications(navigationRef);
+  usePushNotifications();
 
   return (
     <Tab.Navigator

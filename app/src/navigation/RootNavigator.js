@@ -1,4 +1,4 @@
-import React, { useRef } from 'react';
+import React from 'react';
 import { NavigationContainer } from '@react-navigation/native';
 import { useAuth } from '../context/AuthContext';
 import AuthNavigator from './AuthNavigator';
@@ -7,16 +7,15 @@ import LoadingScreen from '../components/LoadingScreen';
 
 export default function RootNavigator() {
   const { isAuthenticated, isLoading, isSetupComplete } = useAuth();
-  const navigationRef = useRef(null);
 
   if (isLoading) {
     return <LoadingScreen message="Starting BloomCart..." />;
   }
 
   return (
-    <NavigationContainer ref={navigationRef}>
+    <NavigationContainer>
       {isAuthenticated ? (
-        <MainNavigator navigationRef={navigationRef} />
+        <MainNavigator />
       ) : (
         <AuthNavigator showSetup={isSetupComplete === false} />
       )}

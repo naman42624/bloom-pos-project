@@ -1081,40 +1081,6 @@ function initializeDatabase() {
     CREATE INDEX IF NOT EXISTS idx_dsi_settlement ON delivery_settlement_items(settlement_id);
   `);
 
-  // ──── Migration: Settlement Fields for Revenue Tracking ────
-  // Add settlement number, commission tracking, and period fields
-  const dsettlementCols = db.prepare("PRAGMA table_info(delivery_settlements)").all().map(c => c.name);
-  
-  if (!dsettlementCols.includes('settlement_number')) {
-    db.exec("ALTER TABLE delivery_settlements ADD COLUMN settlement_number VARCHAR(100) DEFAULT NULL");
-    // Create index (faster than UNIQUE for querying, no constraint violation risk)
-    db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_settlement_number ON delivery_settlements(settlement_number) WHERE settlement_number IS NOT NULL");
-  }
-  if (!dsettlementCols.includes('settlement_date')) {
-    db.exec("ALTER TABLE delivery_settlements ADD COLUMN settlement_date DATE DEFAULT NULL");
-  }
-  if (!dsettlementCols.includes('period_start')) {
-    db.exec("ALTER TABLE delivery_settlements ADD COLUMN period_start DATE DEFAULT NULL");
-  }
-  if (!dsettlementCols.includes('period_end')) {
-    db.exec("ALTER TABLE delivery_settlements ADD COLUMN period_end DATE DEFAULT NULL");
-  }
-  if (!dsettlementCols.includes('commission_percentage')) {
-    db.exec("ALTER TABLE delivery_settlements ADD COLUMN commission_percentage REAL DEFAULT 5.0");
-  }
-  if (!dsettlementCols.includes('commission_amount')) {
-    db.exec("ALTER TABLE delivery_settlements ADD COLUMN commission_amount REAL DEFAULT 0.0");
-  }
-  if (!dsettlementCols.includes('net_amount')) {
-    db.exec("ALTER TABLE delivery_settlements ADD COLUMN net_amount REAL DEFAULT 0.0");
-  }
-  if (!dsettlementCols.includes('successful_deliveries')) {
-    db.exec("ALTER TABLE delivery_settlements ADD COLUMN successful_deliveries INTEGER DEFAULT 0");
-  }
-  if (!dsettlementCols.includes('failed_deliveries')) {
-    db.exec("ALTER TABLE delivery_settlements ADD COLUMN failed_deliveries INTEGER DEFAULT 0");
-  }
-
   // Migrate: add sale_id to credit_payments for per-order tracking
   const cpCols = db.prepare("PRAGMA table_info(credit_payments)").all().map(c => c.name);
   if (!cpCols.includes('sale_id')) {
