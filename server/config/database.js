@@ -221,6 +221,44 @@ function ensureCoreTables() {
     )
   `);
   runPsql('CREATE INDEX IF NOT EXISTS idx_salary_payments_user_period ON salary_payments(user_id, period_start, period_end)');
+
+  // Purchase order line items (separate table instead of JSONB column in purchase_orders)
+  runPsql(`
+    CREATE TABLE IF NOT EXISTS purchase_order_items (
+      id SERIAL PRIMARY KEY,
+      purchase_order_id INTEGER NOT NULL REFERENCES purchase_orders(id) ON DELETE CASCADE,
+      material_id INTEGER NOT NULL REFERENCES materials(id) ON DELETE CASCADE,
+      expected_quantity DECIMAL(10,2) DEFAULT 0,
+      expected_unit VARCHAR(50) DEFAULT 'pieces',
+      expected_price_per_unit DECIMAL(10,2) DEFAULT 0,
+      received_quantity DECIMAL(10,2) DEFAULT 0,
+      received_unit VARCHAR(50),
+      actual_price_per_unit DECIMAL(10,2) DEFAULT 0,
+      quality VARCHAR(100),
+      received_at TIMESTAMP,
+      received_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      notes TEXT
+    )
+  `);
+  runPsql('CREATE INDEX IF NOT EXISTS idx_po_items_order ON purchase_order_items(purchase_order_id)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_po_items_material ON purchase_order_items(material_id)');
+
+  // Seed default material categories if table is empty
+  const catCount = runPsql("SELECT COUNT(*) FROM material_categories");
+  if (catCount.trim() === '0') {
+    const defaultCategories = [
+      ['Flowers', 'stems', 1, 20, 1, 'room_temp'],
+      ['Ribbons', 'pieces', 0, 1, 0, 'shop'],
+      ['Vases', 'pieces', 0, 1, 0, 'warehouse'],
+      ['Wrapping Paper', 'sheets', 0, 1, 0, 'shop'],
+      ['Floral Foam', 'blocks', 1, 24, 0, 'shop'],
+      ['Baskets', 'pieces', 0, 1, 0, 'warehouse'],
+      ['Decorative Items', 'pieces', 0, 1, 0, 'shop'],
+    ];
+    for (const [name, unit, has_bundle, bundle_size, is_perishable, storage] of defaultCategories) {
+      runPsql(`INSERT INTO material_categories (name, unit, has_bundle, default_bundle_size, is_perishable, default_storage) VALUES ('${name}', '${unit}', ${has_bundle}, ${bundle_size}, ${is_perishable}, '${storage}') ON CONFLICT (name) DO NOTHING`);
+    }
+  }
 }
 
 function ensureCompatibilityColumns() {
@@ -232,6 +270,48 @@ function ensureCompatibilityColumns() {
   ensureColumn('user_locations', 'is_primary', 'INTEGER DEFAULT 0');
   ensureColumn('production_tasks', 'picked_by', 'INTEGER REFERENCES users(id) ON DELETE SET NULL');
   ensureColumn('materials', 'min_stock_alert', 'INTEGER DEFAULT 10');
+    // Materials: add columns expected by routes but missing from schema.sql
+    ensureColumn('materials', 'bundle_size_override', 'DECIMAL(10,2)');
+    ensureColumn('materials', 'image_url', 'TEXT');
+    ensureColumn('materials', 'created_by', 'INTEGER REFERENCES users(id) ON DELETE SET NULL');
+
+    // Suppliers: add columns expected by routes but missing from schema.sql
+    ensureColumn('suppliers', 'gst_number', 'VARCHAR(50)');
+    ensureColumn('suppliers', 'notes', "TEXT DEFAULT ''");
+    ensureColumn('suppliers', 'created_by', 'INTEGER REFERENCES users(id) ON DELETE SET NULL');
+
+    // Purchase orders: add columns expected by routes
+    ensureColumn('purchase_orders', 'expected_date', 'DATE');
+    ensureColumn('purchase_orders', 'expected_time', 'TIME');
+
+    // material_stock: if cost_per_unit NOT NULL exists (from schema.sql), make it nullable
+    if (hasColumn('material_stock', 'cost_per_unit')) {
+      try { runPsql('ALTER TABLE material_stock ALTER COLUMN cost_per_unit SET DEFAULT 0'); } catch (_) {}
+      try { runPsql('ALTER TABLE material_stock ALTER COLUMN cost_per_unit DROP NOT NULL'); } catch (_) {}
+    }
+
+    // Fix wrong FK on materials.category_id: schema.sql mistakenly references categories(id)
+    // instead of material_categories(id). Drop the wrong constraint so material creation works.
+    const wrongMatFk = runSelect(`
+      SELECT tc.constraint_name
+      FROM information_schema.table_constraints tc
+      JOIN information_schema.key_column_usage kcu
+        ON tc.constraint_name = kcu.constraint_name AND kcu.table_schema = 'public'
+      JOIN information_schema.constraint_column_usage ccu
+        ON tc.constraint_name = ccu.constraint_name AND ccu.table_schema = 'public'
+      WHERE tc.constraint_type = 'FOREIGN KEY'
+        AND tc.table_schema = 'public'
+        AND tc.table_name = 'materials'
+        AND kcu.column_name = 'category_id'
+        AND ccu.table_name = 'categories'
+    `);
+    for (const row of wrongMatFk) {
+      try { runPsql(`ALTER TABLE materials DROP CONSTRAINT "${row.constraint_name}"`); } catch (_) {}
+    }
+
+    // Drop over-restrictive CHECK constraint on purchase_orders.status
+    // (schema.sql only allows 'pending','received','partial','cancelled' but routes use 'expected','partially_received')
+    try { runPsql('ALTER TABLE purchase_orders DROP CONSTRAINT IF EXISTS purchase_orders_status_check'); } catch (_) {}
   ensureColumn('products', 'tax_rate_id', 'INTEGER REFERENCES tax_rates(id) ON DELETE SET NULL');
   ensureColumn('products', 'type', "VARCHAR(50) DEFAULT 'standard'");
   ensureColumn('products', 'category', 'VARCHAR(100)');

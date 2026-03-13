@@ -116,6 +116,30 @@ export default function UserFormScreen({ route, navigation }) {
   };
 
   const handleResetPassword = async () => {
+      const handleToggleActive = async () => {
+        const isActive = existingUser.is_active;
+        const action = isActive ? 'Deactivate' : 'Reactivate';
+        const doToggle = async () => {
+          setLoading(true);
+          try {
+            await api.updateUser(existingUser.id, { is_active: isActive ? 0 : 1 });
+            Alert.alert('Success', `Staff member ${action.toLowerCase()}d`);
+            navigation.goBack();
+          } catch (err) {
+            Alert.alert('Error', err.message || `Failed to ${action.toLowerCase()} staff`);
+          } finally {
+            setLoading(false);
+          }
+        };
+        if (Platform.OS === 'web') {
+          if (window.confirm(`${action} this staff member?`)) doToggle();
+        } else {
+          Alert.alert(action, `${action} ${existingUser.name}?`, [
+            { text: 'Cancel', style: 'cancel' },
+            { text: action, style: isActive ? 'destructive' : 'default', onPress: doToggle },
+          ]);
+        }
+      };
     if (!password || password.length < 6) {
       Alert.alert('Error', 'Enter a new password (min 6 characters)');
       return;
@@ -241,6 +265,22 @@ export default function UserFormScreen({ route, navigation }) {
           loading={loading}
           style={styles.submitButton}
         />
+        {isEditing && currentUser?.role === 'owner' && (
+          <TouchableOpacity
+            style={[styles.deactivateBtn, !existingUser.is_active && styles.reactivateBtn]}
+            onPress={handleToggleActive}
+            disabled={loading}
+          >
+            <Ionicons
+              name={existingUser.is_active ? 'person-remove-outline' : 'person-add-outline'}
+              size={18}
+              color={existingUser.is_active ? Colors.error : Colors.success}
+            />
+            <Text style={[styles.deactivateBtnText, !existingUser.is_active && { color: Colors.success }]}>
+              {existingUser.is_active ? 'Deactivate Staff' : 'Reactivate Staff'}
+            </Text>
+          </TouchableOpacity>
+        )}
       </ScrollView>
     </KeyboardAvoidingView>
     </DismissKeyboard>
@@ -287,4 +327,12 @@ const styles = StyleSheet.create({
   locationType: { fontSize: FontSize.xs, color: Colors.textSecondary, textTransform: 'capitalize' },
 
   submitButton: { marginTop: Spacing.xl },
+  deactivateBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    gap: Spacing.sm, marginTop: Spacing.md, paddingVertical: Spacing.md,
+    borderRadius: BorderRadius.md, borderWidth: 1.5, borderColor: Colors.error,
+    backgroundColor: Colors.error + '08',
+  },
+  reactivateBtn: { borderColor: Colors.success, backgroundColor: Colors.success + '08' },
+  deactivateBtnText: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.error },
 });

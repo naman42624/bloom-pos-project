@@ -79,6 +79,12 @@ export default function UsersScreen({ navigation }) {
         <View style={styles.cardInfo}>
           <Text style={styles.cardName}>{item.name}</Text>
           <Text style={styles.cardPhone}>{item.phone}</Text>
+          {item.primary_location_name ? (
+            <View style={styles.locationRow}>
+              <Ionicons name="location-outline" size={11} color={Colors.textSecondary} />
+              <Text style={styles.locationText}>{item.primary_location_name}</Text>
+            </View>
+          ) : null}
         </View>
         <View style={styles.cardRight}>
           <View style={[styles.roleBadge, { backgroundColor: (ROLE_COLORS[item.role] || Colors.textLight) + '15' }]}>
@@ -184,6 +190,8 @@ const styles = StyleSheet.create({
   cardInfo: { flex: 1 },
   cardName: { fontSize: FontSize.md, fontWeight: '500', color: Colors.text },
   cardPhone: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: 2 },
+    locationRow: { flexDirection: 'row', alignItems: 'center', gap: 2, marginTop: 2 },
+    locationText: { fontSize: FontSize.xs, color: Colors.textSecondary },
   cardRight: { alignItems: 'flex-end' },
   roleBadge: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: BorderRadius.full },
   roleLabel: { fontSize: FontSize.xs, fontWeight: '600' },

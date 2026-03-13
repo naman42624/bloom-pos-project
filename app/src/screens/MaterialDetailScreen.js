@@ -37,6 +37,24 @@ export default function MaterialDetailScreen({ route, navigation }) {
 
   const canManage = user?.role === 'owner' || user?.role === 'manager';
   const [uploadingImage, setUploadingImage] = useState(false);
+  const confirmDelete = () => {
+    const doDelete = async () => {
+      try {
+        await api.deleteMaterial(materialId);
+        navigation.goBack();
+      } catch (err) {
+        Alert.alert('Error', err.message || 'Failed to delete material');
+      }
+    };
+    if (Platform.OS === 'web') {
+      if (window.confirm('Deactivate this material?')) doDelete();
+    } else {
+      Alert.alert('Confirm', 'Deactivate this material?', [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Deactivate', style: 'destructive', onPress: doDelete },
+      ]);
+    }
+  };
 
   const fetchData = useCallback(async () => {
     try {
@@ -204,13 +222,21 @@ export default function MaterialDetailScreen({ route, navigation }) {
                 </View>
               </View>
               {canManage && (
-                <TouchableOpacity
-                  style={styles.editBtn}
-                  onPress={() => navigation.navigate('MaterialForm', { material })}
-                >
-                  <Ionicons name="pencil" size={16} color={Colors.primary} />
-                  <Text style={styles.editText}>Edit Material</Text>
-                </TouchableOpacity>
+                <View style={styles.actionRow}>
+                  <TouchableOpacity
+                    style={styles.editBtn}
+                    onPress={() => navigation.navigate('MaterialForm', { material })}
+                  >
+                    <Ionicons name="pencil" size={16} color={Colors.primary} />
+                    <Text style={styles.editText}>Edit</Text>
+                  </TouchableOpacity>
+                  {user?.role === 'owner' && (
+                    <TouchableOpacity style={styles.deleteBtn} onPress={confirmDelete}>
+                      <Ionicons name="trash-outline" size={16} color={Colors.error} />
+                      <Text style={styles.deleteText}>Delete</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
               )}
             </View>
 
@@ -383,6 +409,9 @@ const styles = StyleSheet.create({
   metaValue: { fontSize: FontSize.md, fontWeight: '600', color: Colors.text, marginTop: 2 },
   editBtn: { flexDirection: 'row', alignItems: 'center', marginTop: Spacing.md, gap: 4 },
   editText: { color: Colors.primary, fontWeight: '600', fontSize: FontSize.sm },
+    actionRow: { flexDirection: 'row', alignItems: 'center', marginTop: Spacing.md, gap: Spacing.lg },
+    deleteBtn: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+    deleteText: { color: Colors.error, fontWeight: '600', fontSize: FontSize.sm },
   sectionTitle: { fontSize: FontSize.lg, fontWeight: '600', color: Colors.text, marginBottom: Spacing.sm, marginTop: Spacing.md },
   sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: Spacing.md, marginBottom: Spacing.sm },
   sectionTitleInline: { fontSize: FontSize.lg, fontWeight: '600', color: Colors.text },

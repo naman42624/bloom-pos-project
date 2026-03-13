@@ -80,8 +80,12 @@ router.get(
 
       const users = db
         .prepare(
-          `SELECT DISTINCT u.${USER_SELECT_FIELDS.split(', ').join(', u.')} 
-           FROM users u ${joinClause} ${whereClause} 
+          `SELECT DISTINCT u.${USER_SELECT_FIELDS.split(', ').join(', u.')},
+             (SELECT l.name FROM user_locations ul2
+              JOIN locations l ON l.id = ul2.location_id
+              WHERE ul2.user_id = u.id AND l.is_active = 1
+              ORDER BY ul2.is_primary DESC, ul2.id ASC LIMIT 1) as primary_location_name
+           FROM users u ${joinClause} ${whereClause}
            ORDER BY u.created_at DESC LIMIT ? OFFSET ?`
         )
         .all(...params, limit, offset);

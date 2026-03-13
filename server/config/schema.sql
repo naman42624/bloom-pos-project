@@ -113,16 +113,15 @@ CREATE TABLE IF NOT EXISTS categories (
 CREATE TABLE IF NOT EXISTS materials (
   id SERIAL PRIMARY KEY,
   name VARCHAR(255) NOT NULL,
-  category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL,
+  category_id INTEGER REFERENCES material_categories(id) ON DELETE SET NULL,
   sku VARCHAR(100) UNIQUE,
-  unit VARCHAR(50) DEFAULT 'pcs',
-  unit_cost DECIMAL(10,2) NOT NULL DEFAULT 0,
+  bundle_size_override DECIMAL(10,2),
+  image_url TEXT,
   selling_price DECIMAL(10,2) DEFAULT 0,
-  quantity INTEGER DEFAULT 0,
   min_stock_alert INTEGER DEFAULT 10,
   warning_stock INTEGER DEFAULT 10,
-  supplier_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
   is_active INTEGER DEFAULT 1,
+  created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -135,11 +134,8 @@ CREATE TABLE IF NOT EXISTS material_stock (
   id SERIAL PRIMARY KEY,
   material_id INTEGER NOT NULL REFERENCES materials(id) ON DELETE CASCADE,
   location_id INTEGER NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
-  quantity INTEGER DEFAULT 0,
-  reserved INTEGER DEFAULT 0,
-  available INTEGER GENERATED ALWAYS AS (quantity - reserved) STORED,
-  cost_per_unit DECIMAL(10,2) NOT NULL,
-  value DECIMAL(12,2) GENERATED ALWAYS AS (quantity * cost_per_unit) STORED,
+  quantity DECIMAL(10,2) DEFAULT 0,
+  last_counted_at TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   UNIQUE(material_id, location_id)
 );
@@ -150,15 +146,13 @@ CREATE INDEX IF NOT EXISTS idx_material_stock_location ON material_stock(locatio
 CREATE TABLE IF NOT EXISTS suppliers (
   id SERIAL PRIMARY KEY,
   name VARCHAR(255) NOT NULL,
-  contact_person VARCHAR(255),
   phone VARCHAR(20),
   email VARCHAR(255),
   address TEXT,
-  city VARCHAR(100),
-  state VARCHAR(100),
-  pincode VARCHAR(10),
-  payment_terms TEXT,
+  gst_number VARCHAR(50),
+  notes TEXT DEFAULT '',
   is_active INTEGER DEFAULT 1,
+  created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -169,11 +163,10 @@ CREATE TABLE IF NOT EXISTS purchase_orders (
   po_number VARCHAR(100) UNIQUE NOT NULL,
   supplier_id INTEGER REFERENCES suppliers(id) ON DELETE SET NULL,
   location_id INTEGER REFERENCES locations(id) ON DELETE SET NULL,
-  items JSONB NOT NULL DEFAULT '[]'::jsonb,
-  subtotal DECIMAL(10,2) DEFAULT 0,
-  tax_amount DECIMAL(10,2) DEFAULT 0,
+  expected_date DATE,
+  expected_time TIME,
   total_amount DECIMAL(10,2) DEFAULT 0,
-  status VARCHAR(50) DEFAULT 'pending' CHECK(status IN ('pending', 'received', 'partial', 'cancelled')),
+  status VARCHAR(50) DEFAULT 'expected',
   received_date DATE,
   notes TEXT,
   created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
@@ -183,6 +176,25 @@ CREATE TABLE IF NOT EXISTS purchase_orders (
 
 CREATE INDEX IF NOT EXISTS idx_purchase_orders_supplier ON purchase_orders(supplier_id);
 CREATE INDEX IF NOT EXISTS idx_purchase_orders_status ON purchase_orders(status);
+
+CREATE TABLE IF NOT EXISTS purchase_order_items (
+  id SERIAL PRIMARY KEY,
+  purchase_order_id INTEGER NOT NULL REFERENCES purchase_orders(id) ON DELETE CASCADE,
+  material_id INTEGER NOT NULL REFERENCES materials(id) ON DELETE CASCADE,
+  expected_quantity DECIMAL(10,2) DEFAULT 0,
+  expected_unit VARCHAR(50) DEFAULT 'pieces',
+  expected_price_per_unit DECIMAL(10,2) DEFAULT 0,
+  received_quantity DECIMAL(10,2) DEFAULT 0,
+  received_unit VARCHAR(50),
+  actual_price_per_unit DECIMAL(10,2) DEFAULT 0,
+  quality VARCHAR(100),
+  received_at TIMESTAMP,
+  received_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  notes TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_po_items_order ON purchase_order_items(purchase_order_id);
+CREATE INDEX IF NOT EXISTS idx_po_items_material ON purchase_order_items(material_id);
 
 -- ─── Products (Finished Bouquets, Arrangements) ───────────
 CREATE TABLE IF NOT EXISTS products (

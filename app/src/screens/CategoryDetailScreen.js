@@ -8,6 +8,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
+import { Platform } from 'react-native';
 
 export default function CategoryDetailScreen({ route, navigation }) {
   const { user } = useAuth();
@@ -18,6 +19,24 @@ export default function CategoryDetailScreen({ route, navigation }) {
   const [refreshing, setRefreshing] = useState(false);
 
   const fetchData = useCallback(async () => {
+      const confirmDelete = () => {
+        const doDelete = async () => {
+          try {
+            await api.deleteCategory(categoryId);
+            navigation.goBack();
+          } catch (err) {
+            Alert.alert('Error', err.message || 'Failed to delete category');
+          }
+        };
+        if (Platform.OS === 'web') {
+          if (window.confirm('Deactivate this category?')) doDelete();
+        } else {
+          Alert.alert('Confirm', 'Deactivate this category?', [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Deactivate', style: 'destructive', onPress: doDelete },
+          ]);
+        }
+      };
     try {
       const [catRes, matRes] = await Promise.all([
         api.getCategory(categoryId),
@@ -77,13 +96,21 @@ export default function CategoryDetailScreen({ route, navigation }) {
               </View>
             </View>
             {(user?.role === 'owner' || user?.role === 'manager') && (
-              <TouchableOpacity
-                style={styles.editBtn}
-                onPress={() => navigation.navigate('CategoryForm', { category })}
-              >
-                <Ionicons name="pencil" size={16} color={Colors.primary} />
-                <Text style={styles.editText}>Edit Category</Text>
-              </TouchableOpacity>
+              <View style={styles.actionRow}>
+                <TouchableOpacity
+                  style={styles.editBtn}
+                  onPress={() => navigation.navigate('CategoryForm', { category })}
+                >
+                  <Ionicons name="pencil" size={16} color={Colors.primary} />
+                  <Text style={styles.editText}>Edit</Text>
+                </TouchableOpacity>
+                {user?.role === 'owner' && (
+                  <TouchableOpacity style={styles.deleteBtn} onPress={confirmDelete}>
+                    <Ionicons name="trash-outline" size={16} color={Colors.error} />
+                    <Text style={styles.deleteText}>Delete</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
             )}
           </View>
 
@@ -130,6 +157,9 @@ const styles = StyleSheet.create({
   metaValue: { fontSize: FontSize.md, fontWeight: '600', color: Colors.text, marginTop: 2 },
   editBtn: { flexDirection: 'row', alignItems: 'center', marginTop: Spacing.md, gap: 4 },
   editText: { color: Colors.primary, fontWeight: '600', fontSize: FontSize.sm },
+    actionRow: { flexDirection: 'row', alignItems: 'center', marginTop: Spacing.md, gap: Spacing.lg },
+    deleteBtn: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+    deleteText: { color: Colors.error, fontWeight: '600', fontSize: FontSize.sm },
   sectionTitle: { fontSize: FontSize.lg, fontWeight: '600', color: Colors.text, marginBottom: Spacing.sm, marginTop: Spacing.sm },
   emptySection: { padding: Spacing.lg, alignItems: 'center' },
   emptyText: { color: Colors.textLight },
