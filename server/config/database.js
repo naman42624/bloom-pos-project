@@ -55,6 +55,20 @@ function ensureCriticalTimestampColumns() {
   ensureTableTimestampColumns('production_logs', ['created_at'], ['created_at']);
 }
 
+function ensureSettingsColumns() {
+  const cols = runSelect(`
+    SELECT column_name
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = 'settings'
+      AND column_name = 'updated_by'
+  `);
+
+  if (!cols.length) {
+    runPsql('ALTER TABLE settings ADD COLUMN updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL');
+  }
+}
+
 function normalizeSql(sql) {
   let normalized = String(sql || '').trim();
   if (normalized.endsWith(';')) normalized = normalized.slice(0, -1);
@@ -229,6 +243,7 @@ function getDb() {
   if (!initialized) {
     runPsql('SELECT 1');
     ensureCriticalTimestampColumns();
+    ensureSettingsColumns();
     initialized = true;
     console.log('✅ Connected to PostgreSQL');
   }
