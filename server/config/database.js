@@ -55,18 +55,35 @@ function ensureCriticalTimestampColumns() {
   ensureTableTimestampColumns('production_logs', ['created_at'], ['created_at']);
 }
 
-function ensureSettingsColumns() {
+function hasColumn(tableName, columnName) {
   const cols = runSelect(`
     SELECT column_name
     FROM information_schema.columns
     WHERE table_schema = 'public'
-      AND table_name = 'settings'
-      AND column_name = 'updated_by'
+      AND table_name = '${tableName}'
+      AND column_name = '${columnName}'
   `);
 
-  if (!cols.length) {
-    runPsql('ALTER TABLE settings ADD COLUMN updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL');
+  return cols.length > 0;
+}
+
+function ensureColumn(tableName, columnName, definitionSql) {
+  if (!hasColumn(tableName, columnName)) {
+    runPsql(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definitionSql}`);
   }
+}
+
+function ensureCompatibilityColumns() {
+  ensureColumn('settings', 'updated_by', 'INTEGER REFERENCES users(id) ON DELETE SET NULL');
+  ensureColumn('locations', 'gst_number', 'VARCHAR(50)');
+  ensureColumn('locations', 'geofence_radius', 'INTEGER DEFAULT 500');
+  ensureColumn('user_locations', 'is_primary', 'INTEGER DEFAULT 0');
+
+  if (hasColumn('locations', 'geofence_radius_meters')) {
+    runPsql('UPDATE locations SET geofence_radius = COALESCE(geofence_radius, geofence_radius_meters, 500)');
+  }
+
+  runPsql('ALTER TABLE locations ALTER COLUMN geofence_radius SET DEFAULT 500');
 }
 
 function normalizeSql(sql) {
@@ -243,7 +260,7 @@ function getDb() {
   if (!initialized) {
     runPsql('SELECT 1');
     ensureCriticalTimestampColumns();
-    ensureSettingsColumns();
+    ensureCompatibilityColumns();
     initialized = true;
     console.log('✅ Connected to PostgreSQL');
   }
