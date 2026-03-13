@@ -141,6 +141,86 @@ function ensureCoreTables() {
 
   runPsql('CREATE INDEX IF NOT EXISTS idx_production_logs_created_at ON production_logs(created_at)');
   runPsql('CREATE INDEX IF NOT EXISTS idx_production_logs_produced_by ON production_logs(produced_by)');
+
+  runPsql(`
+    CREATE TABLE IF NOT EXISTS refunds (
+      id SERIAL PRIMARY KEY,
+      sale_id INTEGER NOT NULL REFERENCES sales(id) ON DELETE CASCADE,
+      amount DECIMAL(10,2) NOT NULL DEFAULT 0,
+      reason TEXT,
+      refunded_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  runPsql('CREATE INDEX IF NOT EXISTS idx_refunds_sale ON refunds(sale_id)');
+
+  runPsql(`
+    CREATE TABLE IF NOT EXISTS product_stock (
+      id SERIAL PRIMARY KEY,
+      product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+      location_id INTEGER NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
+      quantity DECIMAL(10,2) DEFAULT 0,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(product_id, location_id)
+    )
+  `);
+  runPsql('CREATE INDEX IF NOT EXISTS idx_product_stock_location ON product_stock(location_id)');
+
+  runPsql(`
+    CREATE TABLE IF NOT EXISTS employee_salaries (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+      monthly_salary DECIMAL(10,2) NOT NULL DEFAULT 0,
+      salary_type VARCHAR(50) DEFAULT 'monthly',
+      notes TEXT,
+      effective_from DATE DEFAULT CURRENT_DATE,
+      updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  runPsql(`
+    CREATE TABLE IF NOT EXISTS salary_history (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      old_salary DECIMAL(10,2) DEFAULT 0,
+      new_salary DECIMAL(10,2) DEFAULT 0,
+      salary_type VARCHAR(50) DEFAULT 'monthly',
+      reason TEXT,
+      changed_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  runPsql('CREATE INDEX IF NOT EXISTS idx_salary_history_user ON salary_history(user_id)');
+
+  runPsql(`
+    CREATE TABLE IF NOT EXISTS salary_payments (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      period_start DATE NOT NULL,
+      period_end DATE NOT NULL,
+      base_salary DECIMAL(10,2) DEFAULT 0,
+      days_worked DECIMAL(10,2) DEFAULT 0,
+      days_in_period DECIMAL(10,2) DEFAULT 0,
+      hours_worked DECIMAL(10,2) DEFAULT 0,
+      late_days INTEGER DEFAULT 0,
+      absent_days INTEGER DEFAULT 0,
+      leaves_taken INTEGER DEFAULT 0,
+      deductions DECIMAL(10,2) DEFAULT 0,
+      advances_deducted DECIMAL(10,2) DEFAULT 0,
+      bonus DECIMAL(10,2) DEFAULT 0,
+      net_amount DECIMAL(10,2) DEFAULT 0,
+      payment_method VARCHAR(50) DEFAULT 'cash',
+      payment_reference VARCHAR(255),
+      status VARCHAR(50) DEFAULT 'paid',
+      paid_at TIMESTAMP,
+      paid_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      notes TEXT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  runPsql('CREATE INDEX IF NOT EXISTS idx_salary_payments_user_period ON salary_payments(user_id, period_start, period_end)');
 }
 
 function ensureCompatibilityColumns() {
@@ -167,6 +247,19 @@ function ensureCompatibilityColumns() {
   ensureColumn('production_logs', 'sale_id', 'INTEGER REFERENCES sales(id) ON DELETE SET NULL');
   ensureColumn('production_logs', 'task_id', 'INTEGER REFERENCES production_tasks(id) ON DELETE SET NULL');
   ensureColumn('production_logs', 'created_at', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP');
+
+  ensureColumn('deliveries', 'delivery_partner_id', 'INTEGER REFERENCES users(id) ON DELETE SET NULL');
+  ensureColumn('delivery_settlements', 'delivery_partner_id', 'INTEGER REFERENCES users(id) ON DELETE SET NULL');
+  ensureColumn('employee_shifts', 'days_of_week', "JSONB DEFAULT '[0,1,2,3,4,5]'::jsonb");
+  ensureColumn('employee_shifts', 'shift_segments', 'JSONB');
+  ensureColumn('employee_shifts', 'created_by', 'INTEGER REFERENCES users(id) ON DELETE SET NULL');
+
+  if (hasColumn('deliveries', 'partner_id')) {
+    runPsql('UPDATE deliveries SET delivery_partner_id = COALESCE(delivery_partner_id, partner_id)');
+  }
+  if (hasColumn('delivery_settlements', 'partner_id')) {
+    runPsql('UPDATE delivery_settlements SET delivery_partner_id = COALESCE(delivery_partner_id, partner_id)');
+  }
 
   if (hasColumn('locations', 'geofence_radius_meters')) {
     runPsql('UPDATE locations SET geofence_radius = COALESCE(geofence_radius, geofence_radius_meters, 500)');

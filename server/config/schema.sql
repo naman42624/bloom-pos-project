@@ -302,6 +302,18 @@ CREATE INDEX IF NOT EXISTS idx_payments_sale ON payments(sale_id);
 CREATE INDEX IF NOT EXISTS idx_payments_method ON payments(method);
 CREATE INDEX IF NOT EXISTS idx_sale_items_product ON sale_items(product_id);
 
+-- ─── Refunds ───────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS refunds (
+  id SERIAL PRIMARY KEY,
+  sale_id INTEGER NOT NULL REFERENCES sales(id) ON DELETE CASCADE,
+  amount DECIMAL(10,2) NOT NULL DEFAULT 0,
+  reason TEXT,
+  refunded_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_refunds_sale ON refunds(sale_id);
+
 -- ─── Deliveries ────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS deliveries (
   id SERIAL PRIMARY KEY,
@@ -316,6 +328,7 @@ CREATE TABLE IF NOT EXISTS deliveries (
   cod_status VARCHAR(50) DEFAULT 'pending' CHECK(cod_status IN ('pending', 'collected', 'failed')),
   status VARCHAR(50) DEFAULT 'pending' CHECK(status IN ('pending', 'assigned', 'picked_up', 'in_transit', 'delivered', 'failed', 'cancelled')),
   partner_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  delivery_partner_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
   partner_name VARCHAR(255),
   assigned_at TIMESTAMP,
   picked_up_at TIMESTAMP,
@@ -330,6 +343,7 @@ CREATE TABLE IF NOT EXISTS deliveries (
 
 CREATE INDEX IF NOT EXISTS idx_deliveries_location ON deliveries(location_id);
 CREATE INDEX IF NOT EXISTS idx_deliveries_partner ON deliveries(partner_id);
+CREATE INDEX IF NOT EXISTS idx_deliveries_partner_new ON deliveries(delivery_partner_id);
 CREATE INDEX IF NOT EXISTS idx_deliveries_status ON deliveries(status);
 CREATE INDEX IF NOT EXISTS idx_deliveries_date ON deliveries(scheduled_date);
 
@@ -371,6 +385,18 @@ CREATE TABLE IF NOT EXISTS production_logs (
 
 CREATE INDEX IF NOT EXISTS idx_production_logs_created_at ON production_logs(created_at);
 CREATE INDEX IF NOT EXISTS idx_production_logs_produced_by ON production_logs(produced_by);
+
+-- ─── Product Stock ─────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS product_stock (
+  id SERIAL PRIMARY KEY,
+  product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+  location_id INTEGER NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
+  quantity DECIMAL(10,2) DEFAULT 0,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(product_id, location_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_product_stock_location ON product_stock(location_id);
 
 -- ─── Stock Transfers ───────────────────────────────────────
 CREATE TABLE IF NOT EXISTS stock_transfers (
@@ -545,6 +571,59 @@ CREATE TABLE IF NOT EXISTS outdoor_duty_requests (
 CREATE INDEX IF NOT EXISTS idx_outdoor_duty_requests_user ON outdoor_duty_requests(user_id);
 CREATE INDEX IF NOT EXISTS idx_outdoor_duty_requests_status ON outdoor_duty_requests(status);
 
+-- ─── Employee Salaries ────────────────────────────────────
+CREATE TABLE IF NOT EXISTS employee_salaries (
+  id SERIAL PRIMARY KEY,
+  user_id INTEGER NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+  monthly_salary DECIMAL(10,2) NOT NULL DEFAULT 0,
+  salary_type VARCHAR(50) DEFAULT 'monthly',
+  notes TEXT,
+  effective_from DATE DEFAULT CURRENT_DATE,
+  updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS salary_history (
+  id SERIAL PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  old_salary DECIMAL(10,2) DEFAULT 0,
+  new_salary DECIMAL(10,2) DEFAULT 0,
+  salary_type VARCHAR(50) DEFAULT 'monthly',
+  reason TEXT,
+  changed_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_salary_history_user ON salary_history(user_id);
+
+CREATE TABLE IF NOT EXISTS salary_payments (
+  id SERIAL PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  period_start DATE NOT NULL,
+  period_end DATE NOT NULL,
+  base_salary DECIMAL(10,2) DEFAULT 0,
+  days_worked DECIMAL(10,2) DEFAULT 0,
+  days_in_period DECIMAL(10,2) DEFAULT 0,
+  hours_worked DECIMAL(10,2) DEFAULT 0,
+  late_days INTEGER DEFAULT 0,
+  absent_days INTEGER DEFAULT 0,
+  leaves_taken INTEGER DEFAULT 0,
+  deductions DECIMAL(10,2) DEFAULT 0,
+  advances_deducted DECIMAL(10,2) DEFAULT 0,
+  bonus DECIMAL(10,2) DEFAULT 0,
+  net_amount DECIMAL(10,2) DEFAULT 0,
+  payment_method VARCHAR(50) DEFAULT 'cash',
+  payment_reference VARCHAR(255),
+  status VARCHAR(50) DEFAULT 'paid',
+  paid_at TIMESTAMP,
+  paid_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  notes TEXT,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_salary_payments_user_period ON salary_payments(user_id, period_start, period_end);
+
 -- ─── Salary & Payments ────────────────────────────────────
 CREATE TABLE IF NOT EXISTS salary_advances (
   id SERIAL PRIMARY KEY,
@@ -593,6 +672,7 @@ CREATE TABLE IF NOT EXISTS delivery_settlements (
   id SERIAL PRIMARY KEY,
   settlement_number VARCHAR(100) UNIQUE NOT NULL,
   partner_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  delivery_partner_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
   location_id INTEGER NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
   settlement_date DATE NOT NULL,
   period_start DATE NOT NULL,

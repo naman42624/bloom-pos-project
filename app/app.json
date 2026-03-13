@@ -8,6 +8,7 @@
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "splash": {
+      "image": "./assets/splash-icon.png",
       "backgroundColor": "#E91E63",
       "resizeMode": "contain"
     },
@@ -18,7 +19,9 @@
         "NSLocationWhenInUseUsageDescription": "BloomCart needs your location for attendance geofencing and delivery tracking.",
         "NSLocationAlwaysAndWhenInUseUsageDescription": "BloomCart needs background location access for automatic attendance clock-in/out via geofencing and delivery partner tracking.",
         "NSLocationAlwaysUsageDescription": "BloomCart needs background location access for automatic attendance and delivery tracking.",
-        "UIBackgroundModes": ["location"]
+        "UIBackgroundModes": [
+          "location"
+        ]
       }
     },
     "android": {
@@ -31,7 +34,12 @@
         "ACCESS_COARSE_LOCATION",
         "ACCESS_BACKGROUND_LOCATION",
         "FOREGROUND_SERVICE",
-        "FOREGROUND_SERVICE_LOCATION"
+        "FOREGROUND_SERVICE_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_BACKGROUND_LOCATION",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_LOCATION"
       ]
     },
     "web": {
@@ -62,6 +70,11 @@
           "isAndroidForegroundServiceEnabled": true
         }
       ]
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "270e2d3e-8125-4b13-a7cc-10d2cdc98840"
+      }
+    }
   }
 }
