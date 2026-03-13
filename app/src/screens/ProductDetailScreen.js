@@ -340,7 +340,7 @@ export default function ProductDetailScreen({ route, navigation }) {
               {product.images.map((img) => (
                 <TouchableOpacity key={img.id} style={styles.imageThumb} onLongPress={() => canManage && confirmDeleteImage(img.id)} activeOpacity={0.8}>
                   <Image
-                    source={{ uri: `${Platform.OS === 'web' ? 'http://localhost:3001' : 'http://192.168.29.160:3001'}${img.image_url}` }}
+                    source={{ uri: `${Platform.OS === 'web' ? 'http://localhost:3001' : 'https://api.gifttojalandhar.com'}${img.image_url}` }}
                     style={styles.thumbImg}
                     resizeMode="cover"
                   />

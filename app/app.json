@@ -52,6 +52,7 @@
       "web"
     ],
     "plugins": [
+      "./plugins/withAndroidCleartext",
       "@react-native-community/datetimepicker",
       [
         "expo-notifications",

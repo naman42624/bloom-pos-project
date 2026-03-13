@@ -149,7 +149,7 @@ export default function MaterialDetailScreen({ route, navigation }) {
     }
   };
 
-  const BASE_URL = Platform.OS === 'web' ? 'http://localhost:3001' : 'http://192.168.29.160:3001';
+  const BASE_URL = Platform.OS === 'web' ? 'http://localhost:3001' : 'https://api.gifttojalandhar.com';
 
   return (
     <>

@@ -3,11 +3,11 @@
  */
 import { Platform } from 'react-native';
 
-const LAN_IP = '159.89.173.40';
+// const LAN_IP = '159.89.173.40';
 
 function getBaseUrl() {
   if (Platform.OS === 'web') return 'http://localhost:3001/api';
-  return `http://${LAN_IP}/api`;
+  return `https://api.gifttojalandhar.com/api`;
 }
 
 const API_BASE_URL = getBaseUrl();
