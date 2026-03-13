@@ -73,17 +73,115 @@ function ensureColumn(tableName, columnName, definitionSql) {
   }
 }
 
+function ensureCoreTables() {
+  runPsql(`
+    CREATE TABLE IF NOT EXISTS material_categories (
+      id SERIAL PRIMARY KEY,
+      name VARCHAR(255) NOT NULL UNIQUE,
+      unit VARCHAR(50) DEFAULT 'pcs',
+      has_bundle INTEGER DEFAULT 0,
+      default_bundle_size DECIMAL(10,2) DEFAULT 1,
+      is_perishable INTEGER DEFAULT 1,
+      default_storage VARCHAR(100) DEFAULT 'room_temp',
+      is_active INTEGER DEFAULT 1,
+      created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  runPsql(`
+    CREATE TABLE IF NOT EXISTS stock_transfers (
+      id SERIAL PRIMARY KEY,
+      from_location_id INTEGER NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
+      to_location_id INTEGER NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
+      material_id INTEGER NOT NULL REFERENCES materials(id) ON DELETE CASCADE,
+      quantity DECIMAL(10,2) NOT NULL,
+      unit VARCHAR(50) DEFAULT 'pcs',
+      status VARCHAR(50) DEFAULT 'initiated',
+      notes TEXT,
+      initiated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      received_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  runPsql(`
+    CREATE TABLE IF NOT EXISTS payments (
+      id SERIAL PRIMARY KEY,
+      sale_id INTEGER NOT NULL REFERENCES sales(id) ON DELETE CASCADE,
+      method VARCHAR(50) DEFAULT 'cash',
+      amount DECIMAL(10,2) NOT NULL,
+      reference_number VARCHAR(255),
+      received_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  runPsql('CREATE INDEX IF NOT EXISTS idx_payments_sale ON payments(sale_id)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_payments_method ON payments(method)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_stock_transfers_from ON stock_transfers(from_location_id)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_stock_transfers_to ON stock_transfers(to_location_id)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_stock_transfers_status ON stock_transfers(status)');
+
+  runPsql(`
+    CREATE TABLE IF NOT EXISTS production_logs (
+      id SERIAL PRIMARY KEY,
+      product_id INTEGER REFERENCES products(id) ON DELETE SET NULL,
+      location_id INTEGER REFERENCES locations(id) ON DELETE SET NULL,
+      quantity DECIMAL(10,2) NOT NULL DEFAULT 0,
+      sale_id INTEGER REFERENCES sales(id) ON DELETE SET NULL,
+      task_id INTEGER REFERENCES production_tasks(id) ON DELETE SET NULL,
+      produced_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      notes TEXT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  runPsql('CREATE INDEX IF NOT EXISTS idx_production_logs_created_at ON production_logs(created_at)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_production_logs_produced_by ON production_logs(produced_by)');
+}
+
 function ensureCompatibilityColumns() {
+  ensureCoreTables();
+
   ensureColumn('settings', 'updated_by', 'INTEGER REFERENCES users(id) ON DELETE SET NULL');
   ensureColumn('locations', 'gst_number', 'VARCHAR(50)');
   ensureColumn('locations', 'geofence_radius', 'INTEGER DEFAULT 500');
   ensureColumn('user_locations', 'is_primary', 'INTEGER DEFAULT 0');
+  ensureColumn('production_tasks', 'picked_by', 'INTEGER REFERENCES users(id) ON DELETE SET NULL');
+  ensureColumn('materials', 'min_stock_alert', 'INTEGER DEFAULT 10');
+  ensureColumn('products', 'tax_rate_id', 'INTEGER REFERENCES tax_rates(id) ON DELETE SET NULL');
+  ensureColumn('products', 'type', "VARCHAR(50) DEFAULT 'standard'");
+  ensureColumn('products', 'category', 'VARCHAR(100)');
+  ensureColumn('products', 'location_id', 'INTEGER REFERENCES locations(id) ON DELETE SET NULL');
+  ensureColumn('products', 'estimated_cost', 'DECIMAL(10,2) DEFAULT 0');
+  ensureColumn('products', 'created_by', 'INTEGER REFERENCES users(id) ON DELETE SET NULL');
+  ensureColumn('tax_rates', 'percentage', 'DECIMAL(5,2) DEFAULT 0');
+
+  ensureColumn('payments', 'reference_number', 'VARCHAR(255)');
+  ensureColumn('payments', 'received_by', 'INTEGER REFERENCES users(id) ON DELETE SET NULL');
+  ensureColumn('payments', 'created_at', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP');
+
+  ensureColumn('production_logs', 'sale_id', 'INTEGER REFERENCES sales(id) ON DELETE SET NULL');
+  ensureColumn('production_logs', 'task_id', 'INTEGER REFERENCES production_tasks(id) ON DELETE SET NULL');
+  ensureColumn('production_logs', 'created_at', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP');
 
   if (hasColumn('locations', 'geofence_radius_meters')) {
     runPsql('UPDATE locations SET geofence_radius = COALESCE(geofence_radius, geofence_radius_meters, 500)');
   }
 
+  if (hasColumn('materials', 'warning_stock')) {
+    runPsql('UPDATE materials SET min_stock_alert = COALESCE(min_stock_alert, warning_stock, 10)');
+  }
+
+  if (hasColumn('tax_rates', 'rate')) {
+    runPsql('UPDATE tax_rates SET percentage = COALESCE(percentage, rate, 0)');
+  }
+
   runPsql('ALTER TABLE locations ALTER COLUMN geofence_radius SET DEFAULT 500');
+  runPsql('ALTER TABLE materials ALTER COLUMN min_stock_alert SET DEFAULT 10');
 }
 
 function normalizeSql(sql) {

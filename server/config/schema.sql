@@ -32,6 +32,21 @@ CREATE INDEX IF NOT EXISTS idx_users_phone ON users(phone);
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
 
+-- ─── Material Categories ───────────────────────────────────
+CREATE TABLE IF NOT EXISTS material_categories (
+  id SERIAL PRIMARY KEY,
+  name VARCHAR(255) NOT NULL UNIQUE,
+  unit VARCHAR(50) DEFAULT 'pcs',
+  has_bundle INTEGER DEFAULT 0,
+  default_bundle_size DECIMAL(10,2) DEFAULT 1,
+  is_perishable INTEGER DEFAULT 1,
+  default_storage VARCHAR(100) DEFAULT 'room_temp',
+  is_active INTEGER DEFAULT 1,
+  created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 -- ─── Locations (Shops & Warehouses) ────────────────────────
 CREATE TABLE IF NOT EXISTS locations (
   id SERIAL PRIMARY KEY,
@@ -104,6 +119,7 @@ CREATE TABLE IF NOT EXISTS materials (
   unit_cost DECIMAL(10,2) NOT NULL DEFAULT 0,
   selling_price DECIMAL(10,2) DEFAULT 0,
   quantity INTEGER DEFAULT 0,
+  min_stock_alert INTEGER DEFAULT 10,
   warning_stock INTEGER DEFAULT 10,
   supplier_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
   is_active INTEGER DEFAULT 1,
@@ -174,14 +190,20 @@ CREATE TABLE IF NOT EXISTS products (
   sku VARCHAR(100) UNIQUE,
   name VARCHAR(255) NOT NULL,
   description TEXT,
+  type VARCHAR(50) DEFAULT 'standard',
+  category VARCHAR(100),
   category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL,
   base_cost DECIMAL(10,2) DEFAULT 0,
+  estimated_cost DECIMAL(10,2) DEFAULT 0,
   selling_price DECIMAL(10,2) NOT NULL DEFAULT 0,
+  tax_rate_id INTEGER REFERENCES tax_rates(id) ON DELETE SET NULL,
+  location_id INTEGER REFERENCES locations(id) ON DELETE SET NULL,
   materials_composition JSONB,
   quantity_in_stock INTEGER DEFAULT 0,
   low_stock_alert INTEGER DEFAULT 5,
   is_active INTEGER DEFAULT 1,
   image_url TEXT,
+  created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -194,6 +216,7 @@ CREATE INDEX IF NOT EXISTS idx_products_active ON products(is_active);
 CREATE TABLE IF NOT EXISTS tax_rates (
   id SERIAL PRIMARY KEY,
   name VARCHAR(100) NOT NULL,
+  percentage DECIMAL(5,2) DEFAULT 0,
   rate DECIMAL(5,2) NOT NULL,
   is_active INTEGER DEFAULT 1,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -263,6 +286,20 @@ CREATE TABLE IF NOT EXISTS sale_items (
 );
 
 CREATE INDEX IF NOT EXISTS idx_sale_items_sale ON sale_items(sale_id);
+
+-- ─── Payments ──────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS payments (
+  id SERIAL PRIMARY KEY,
+  sale_id INTEGER NOT NULL REFERENCES sales(id) ON DELETE CASCADE,
+  method VARCHAR(50) DEFAULT 'cash',
+  amount DECIMAL(10,2) NOT NULL,
+  reference_number VARCHAR(255),
+  received_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_payments_sale ON payments(sale_id);
+CREATE INDEX IF NOT EXISTS idx_payments_method ON payments(method);
 CREATE INDEX IF NOT EXISTS idx_sale_items_product ON sale_items(product_id);
 
 -- ─── Deliveries ────────────────────────────────────────────
@@ -308,6 +345,7 @@ CREATE TABLE IF NOT EXISTS production_tasks (
   status VARCHAR(50) DEFAULT 'pending' CHECK(status IN ('pending', 'in_progress', 'completed', 'cancelled')),
   notes TEXT,
   assigned_to INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  picked_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
   started_at TIMESTAMP,
   completed_at TIMESTAMP,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -317,6 +355,42 @@ CREATE TABLE IF NOT EXISTS production_tasks (
 CREATE INDEX IF NOT EXISTS idx_production_tasks_location ON production_tasks(location_id);
 CREATE INDEX IF NOT EXISTS idx_production_tasks_status ON production_tasks(status);
 CREATE INDEX IF NOT EXISTS idx_production_tasks_priority ON production_tasks(priority);
+
+-- ─── Production Logs ───────────────────────────────────────
+CREATE TABLE IF NOT EXISTS production_logs (
+  id SERIAL PRIMARY KEY,
+  product_id INTEGER REFERENCES products(id) ON DELETE SET NULL,
+  location_id INTEGER REFERENCES locations(id) ON DELETE SET NULL,
+  quantity DECIMAL(10,2) NOT NULL DEFAULT 0,
+  sale_id INTEGER REFERENCES sales(id) ON DELETE SET NULL,
+  task_id INTEGER REFERENCES production_tasks(id) ON DELETE SET NULL,
+  produced_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  notes TEXT,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_production_logs_created_at ON production_logs(created_at);
+CREATE INDEX IF NOT EXISTS idx_production_logs_produced_by ON production_logs(produced_by);
+
+-- ─── Stock Transfers ───────────────────────────────────────
+CREATE TABLE IF NOT EXISTS stock_transfers (
+  id SERIAL PRIMARY KEY,
+  from_location_id INTEGER NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
+  to_location_id INTEGER NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
+  material_id INTEGER NOT NULL REFERENCES materials(id) ON DELETE CASCADE,
+  quantity DECIMAL(10,2) NOT NULL,
+  unit VARCHAR(50) DEFAULT 'pcs',
+  status VARCHAR(50) DEFAULT 'initiated',
+  notes TEXT,
+  initiated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  received_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_stock_transfers_from ON stock_transfers(from_location_id);
+CREATE INDEX IF NOT EXISTS idx_stock_transfers_to ON stock_transfers(to_location_id);
+CREATE INDEX IF NOT EXISTS idx_stock_transfers_status ON stock_transfers(status);
 
 -- ─── Expenses ──────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS expenses (
