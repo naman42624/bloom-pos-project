@@ -143,6 +143,125 @@ function ensureCoreTables() {
   runPsql('CREATE INDEX IF NOT EXISTS idx_daily_stock_logs_date ON daily_stock_logs(date)');
 
   runPsql(`
+    CREATE TABLE IF NOT EXISTS product_materials (
+      id SERIAL PRIMARY KEY,
+      product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+      material_id INTEGER NOT NULL REFERENCES materials(id) ON DELETE CASCADE,
+      quantity DECIMAL(10,2) NOT NULL DEFAULT 1,
+      cost_per_unit DECIMAL(10,2) DEFAULT 0,
+      notes TEXT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(product_id, material_id)
+    )
+  `);
+  runPsql('CREATE INDEX IF NOT EXISTS idx_product_materials_product ON product_materials(product_id)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_product_materials_material ON product_materials(material_id)');
+
+  runPsql(`
+    CREATE TABLE IF NOT EXISTS product_images (
+      id SERIAL PRIMARY KEY,
+      product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+      image_url TEXT NOT NULL,
+      is_primary INTEGER DEFAULT 0,
+      sort_order INTEGER DEFAULT 0,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  runPsql('CREATE INDEX IF NOT EXISTS idx_product_images_product ON product_images(product_id)');
+
+  runPsql(`
+    CREATE TABLE IF NOT EXISTS delivery_proofs (
+      id SERIAL PRIMARY KEY,
+      delivery_id INTEGER NOT NULL REFERENCES deliveries(id) ON DELETE CASCADE,
+      photo_url TEXT,
+      latitude DECIMAL(10,7),
+      longitude DECIMAL(10,7),
+      notes TEXT,
+      created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  runPsql(`
+    CREATE TABLE IF NOT EXISTS delivery_collections (
+      id SERIAL PRIMARY KEY,
+      delivery_id INTEGER NOT NULL REFERENCES deliveries(id) ON DELETE CASCADE,
+      amount DECIMAL(10,2) NOT NULL DEFAULT 0,
+      method VARCHAR(50) DEFAULT 'cash',
+      reference_number VARCHAR(255),
+      collected_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  runPsql(`
+    CREATE TABLE IF NOT EXISTS delivery_settlements (
+      id SERIAL PRIMARY KEY,
+      delivery_partner_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      location_id INTEGER REFERENCES locations(id) ON DELETE SET NULL,
+      total_amount DECIMAL(10,2) DEFAULT 0,
+      total_deliveries INTEGER DEFAULT 0,
+      status VARCHAR(50) DEFAULT 'pending',
+      notes TEXT,
+      settlement_number VARCHAR(100),
+      settlement_date DATE,
+      period_start DATE,
+      period_end DATE,
+      successful_deliveries INTEGER DEFAULT 0,
+      failed_deliveries INTEGER DEFAULT 0,
+      commission_percentage DECIMAL(5,2) DEFAULT 0,
+      commission_amount DECIMAL(10,2) DEFAULT 0,
+      incentives DECIMAL(10,2) DEFAULT 0,
+      deductions DECIMAL(10,2) DEFAULT 0,
+      net_amount DECIMAL(10,2) DEFAULT 0,
+      payment_status VARCHAR(50) DEFAULT 'pending',
+      payment_method VARCHAR(50),
+      payment_date DATE,
+      verified_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      verified_at TIMESTAMP,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  runPsql(`
+    CREATE TABLE IF NOT EXISTS delivery_settlement_items (
+      id SERIAL PRIMARY KEY,
+      settlement_id INTEGER NOT NULL REFERENCES delivery_settlements(id) ON DELETE CASCADE,
+      delivery_id INTEGER NOT NULL REFERENCES deliveries(id) ON DELETE CASCADE,
+      sale_id INTEGER REFERENCES sales(id) ON DELETE SET NULL,
+      amount DECIMAL(10,2) NOT NULL DEFAULT 0,
+      commission DECIMAL(10,2) DEFAULT 0,
+      status VARCHAR(50) DEFAULT 'completed',
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  runPsql('CREATE INDEX IF NOT EXISTS idx_delivery_settlement_items_settlement ON delivery_settlement_items(settlement_id)');
+
+  runPsql(`
+    CREATE TABLE IF NOT EXISTS cash_registers (
+      id SERIAL PRIMARY KEY,
+      location_id INTEGER NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
+      date DATE NOT NULL,
+      opened_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      closed_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      opening_balance DECIMAL(10,2) DEFAULT 0,
+      closing_balance DECIMAL(10,2) DEFAULT 0,
+      expected_cash DECIMAL(10,2) DEFAULT 0,
+      variance DECIMAL(10,2) DEFAULT 0,
+      total_cash_sales DECIMAL(10,2) DEFAULT 0,
+      total_card_sales DECIMAL(10,2) DEFAULT 0,
+      total_upi_sales DECIMAL(10,2) DEFAULT 0,
+      total_refunds_cash DECIMAL(10,2) DEFAULT 0,
+      notes TEXT,
+      opened_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      closed_at TIMESTAMP,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  runPsql(`
     CREATE TABLE IF NOT EXISTS stock_transfers (
       id SERIAL PRIMARY KEY,
       from_location_id INTEGER NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
@@ -381,7 +500,53 @@ function ensureCompatibilityColumns() {
   ensureColumn('production_logs', 'created_at', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP');
 
   ensureColumn('deliveries', 'delivery_partner_id', 'INTEGER REFERENCES users(id) ON DELETE SET NULL');
+  ensureColumn('deliveries', 'assigned_by', 'INTEGER REFERENCES users(id) ON DELETE SET NULL');
+  ensureColumn('deliveries', 'batch_id', 'VARCHAR(100)');
+  ensureColumn('deliveries', 'delivery_notes', 'TEXT');
+  ensureColumn('deliveries', 'cod_collected', 'DECIMAL(10,2) DEFAULT 0');
+  ensureColumn('deliveries', 'cod_status', "VARCHAR(50) DEFAULT 'pending'");
+  ensureColumn('deliveries', 'assigned_at', 'TIMESTAMP');
+  ensureColumn('deliveries', 'pickup_time', 'TIMESTAMP');
+  ensureColumn('deliveries', 'delivered_time', 'TIMESTAMP');
+
   ensureColumn('delivery_settlements', 'delivery_partner_id', 'INTEGER REFERENCES users(id) ON DELETE SET NULL');
+  ensureColumn('delivery_settlements', 'verified_by', 'INTEGER REFERENCES users(id) ON DELETE SET NULL');
+  ensureColumn('delivery_settlements', 'verified_at', 'TIMESTAMP');
+  ensureColumn('delivery_settlements', 'settlement_number', 'VARCHAR(100)');
+  ensureColumn('delivery_settlements', 'settlement_date', 'DATE');
+  ensureColumn('delivery_settlements', 'period_start', 'DATE');
+  ensureColumn('delivery_settlements', 'period_end', 'DATE');
+  ensureColumn('delivery_settlements', 'successful_deliveries', 'INTEGER DEFAULT 0');
+  ensureColumn('delivery_settlements', 'failed_deliveries', 'INTEGER DEFAULT 0');
+  ensureColumn('delivery_settlements', 'commission_percentage', 'DECIMAL(5,2) DEFAULT 0');
+  ensureColumn('delivery_settlements', 'commission_amount', 'DECIMAL(10,2) DEFAULT 0');
+  ensureColumn('delivery_settlements', 'incentives', 'DECIMAL(10,2) DEFAULT 0');
+  ensureColumn('delivery_settlements', 'deductions', 'DECIMAL(10,2) DEFAULT 0');
+  ensureColumn('delivery_settlements', 'net_amount', 'DECIMAL(10,2) DEFAULT 0');
+  ensureColumn('delivery_settlements', 'payment_status', "VARCHAR(50) DEFAULT 'pending'");
+  ensureColumn('delivery_settlements', 'payment_method', 'VARCHAR(50)');
+  ensureColumn('delivery_settlements', 'payment_date', 'DATE');
+
+  ensureColumn('cash_registers', 'date', 'DATE');
+  ensureColumn('cash_registers', 'total_cash_sales', 'DECIMAL(10,2) DEFAULT 0');
+  ensureColumn('cash_registers', 'total_card_sales', 'DECIMAL(10,2) DEFAULT 0');
+  ensureColumn('cash_registers', 'total_upi_sales', 'DECIMAL(10,2) DEFAULT 0');
+  ensureColumn('cash_registers', 'total_refunds_cash', 'DECIMAL(10,2) DEFAULT 0');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_cash_registers_location_date ON cash_registers(location_id, date)');
+
+  ensureColumn('salary_advances', 'repaid_amount', 'DECIMAL(10,2) DEFAULT 0');
+  ensureColumn('salary_advances', 'date', 'DATE DEFAULT CURRENT_DATE');
+
+  ensureColumn('product_materials', 'notes', 'TEXT');
+  ensureColumn('product_materials', 'created_at', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP');
+  ensureColumn('product_images', 'sort_order', 'INTEGER DEFAULT 0');
+
+  if (hasColumn('deliveries', 'cod_amount') && hasColumn('deliveries', 'cod_collected')) {
+    runPsql("UPDATE deliveries SET cod_collected = COALESCE(cod_collected, 0)");
+  }
+  if (hasColumn('salary_advances', 'amount') && hasColumn('salary_advances', 'repaid_amount')) {
+    runPsql("UPDATE salary_advances SET repaid_amount = COALESCE(repaid_amount, 0)");
+  }
   ensureColumn('employee_shifts', 'days_of_week', "JSONB DEFAULT '[0,1,2,3,4,5]'::jsonb");
   ensureColumn('employee_shifts', 'shift_segments', 'JSONB');
   ensureColumn('employee_shifts', 'created_by', 'INTEGER REFERENCES users(id) ON DELETE SET NULL');
