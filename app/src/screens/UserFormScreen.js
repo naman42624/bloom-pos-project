@@ -115,31 +115,32 @@ export default function UserFormScreen({ route, navigation }) {
     }
   };
 
+  const handleToggleActive = async () => {
+    const isActive = existingUser.is_active;
+    const action = isActive ? 'Deactivate' : 'Reactivate';
+    const doToggle = async () => {
+      setLoading(true);
+      try {
+        await api.updateUser(existingUser.id, { is_active: isActive ? 0 : 1 });
+        Alert.alert('Success', `Staff member ${action.toLowerCase()}d`);
+        navigation.goBack();
+      } catch (err) {
+        Alert.alert('Error', err.message || `Failed to ${action.toLowerCase()} staff`);
+      } finally {
+        setLoading(false);
+      }
+    };
+    if (Platform.OS === 'web') {
+      if (window.confirm(`${action} this staff member?`)) doToggle();
+    } else {
+      Alert.alert(action, `${action} ${existingUser.name}?`, [
+        { text: 'Cancel', style: 'cancel' },
+        { text: action, style: isActive ? 'destructive' : 'default', onPress: doToggle },
+      ]);
+    }
+  };
+
   const handleResetPassword = async () => {
-      const handleToggleActive = async () => {
-        const isActive = existingUser.is_active;
-        const action = isActive ? 'Deactivate' : 'Reactivate';
-        const doToggle = async () => {
-          setLoading(true);
-          try {
-            await api.updateUser(existingUser.id, { is_active: isActive ? 0 : 1 });
-            Alert.alert('Success', `Staff member ${action.toLowerCase()}d`);
-            navigation.goBack();
-          } catch (err) {
-            Alert.alert('Error', err.message || `Failed to ${action.toLowerCase()} staff`);
-          } finally {
-            setLoading(false);
-          }
-        };
-        if (Platform.OS === 'web') {
-          if (window.confirm(`${action} this staff member?`)) doToggle();
-        } else {
-          Alert.alert(action, `${action} ${existingUser.name}?`, [
-            { text: 'Cancel', style: 'cancel' },
-            { text: action, style: isActive ? 'destructive' : 'default', onPress: doToggle },
-          ]);
-        }
-      };
     if (!password || password.length < 6) {
       Alert.alert('Error', 'Enter a new password (min 6 characters)');
       return;

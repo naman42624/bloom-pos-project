@@ -69,7 +69,17 @@ router.get('/', authenticate, (req, res, next) => {
     }
     sql += ' ORDER BY mc.name ASC, m.name ASC';
 
-    let materials = db.prepare(sql).all(...params);
+    let materials;
+    try {
+      materials = db.prepare(sql).all(...params);
+    } catch (queryErr) {
+      const msg = String(queryErr?.message || '').toLowerCase();
+      if (!msg.includes('supplier_materials')) throw queryErr;
+
+      const fallbackSql = sql
+        .replace(/,\s*COALESCE\([\s\S]*?\)\s*as avg_cost\s*/i, ', 0 as avg_cost ');
+      materials = db.prepare(fallbackSql).all(...params);
+    }
 
     // If location_id is specified, attach stock info
     if (location_id) {

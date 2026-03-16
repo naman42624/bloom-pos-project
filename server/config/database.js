@@ -91,6 +91,58 @@ function ensureCoreTables() {
   `);
 
   runPsql(`
+    CREATE TABLE IF NOT EXISTS supplier_materials (
+      id SERIAL PRIMARY KEY,
+      supplier_id INTEGER NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
+      material_id INTEGER NOT NULL REFERENCES materials(id) ON DELETE CASCADE,
+      default_price_per_unit DECIMAL(10,2) DEFAULT 0,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(supplier_id, material_id)
+    )
+  `);
+  runPsql('CREATE INDEX IF NOT EXISTS idx_supplier_materials_supplier ON supplier_materials(supplier_id)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_supplier_materials_material ON supplier_materials(material_id)');
+
+  runPsql(`
+    CREATE TABLE IF NOT EXISTS material_transactions (
+      id SERIAL PRIMARY KEY,
+      material_id INTEGER NOT NULL REFERENCES materials(id) ON DELETE CASCADE,
+      location_id INTEGER NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
+      type VARCHAR(50) NOT NULL,
+      quantity DECIMAL(10,2) NOT NULL,
+      unit VARCHAR(50),
+      reference_type VARCHAR(50),
+      reference_id INTEGER,
+      notes TEXT,
+      created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  runPsql('CREATE INDEX IF NOT EXISTS idx_material_txn_material ON material_transactions(material_id)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_material_txn_location ON material_transactions(location_id)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_material_txn_created_at ON material_transactions(created_at)');
+
+  runPsql(`
+    CREATE TABLE IF NOT EXISTS daily_stock_logs (
+      id SERIAL PRIMARY KEY,
+      material_id INTEGER NOT NULL REFERENCES materials(id) ON DELETE CASCADE,
+      location_id INTEGER NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
+      date DATE NOT NULL,
+      opening_stock DECIMAL(10,2) DEFAULT 0,
+      stock_in DECIMAL(10,2) DEFAULT 0,
+      stock_out DECIMAL(10,2) DEFAULT 0,
+      closing_stock DECIMAL(10,2) DEFAULT 0,
+      expected_closing DECIMAL(10,2) DEFAULT 0,
+      wastage DECIMAL(10,2) DEFAULT 0,
+      notes TEXT,
+      counted_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(material_id, location_id, date)
+    )
+  `);
+  runPsql('CREATE INDEX IF NOT EXISTS idx_daily_stock_logs_date ON daily_stock_logs(date)');
+
+  runPsql(`
     CREATE TABLE IF NOT EXISTS stock_transfers (
       id SERIAL PRIMARY KEY,
       from_location_id INTEGER NOT NULL REFERENCES locations(id) ON DELETE CASCADE,

@@ -27,11 +27,18 @@ router.get('/', authenticate, (req, res, next) => {
     const suppliers = db.prepare(sql).all(...params);
 
     // Attach material count
-    const countStmt = db.prepare('SELECT COUNT(*) as count FROM supplier_materials WHERE supplier_id = ?');
-    let result = suppliers.map((s) => ({
-      ...s,
-      material_count: countStmt.get(s.id).count,
-    }));
+    let result;
+    try {
+      const countStmt = db.prepare('SELECT COUNT(*) as count FROM supplier_materials WHERE supplier_id = ?');
+      result = suppliers.map((s) => ({
+        ...s,
+        material_count: countStmt.get(s.id).count,
+      }));
+    } catch (countErr) {
+      const msg = String(countErr?.message || '').toLowerCase();
+      if (!msg.includes('supplier_materials')) throw countErr;
+      result = suppliers.map((s) => ({ ...s, material_count: 0 }));
+    }
 
     // Filter fields for non-owner roles
     if (req.user.role !== 'owner') {
