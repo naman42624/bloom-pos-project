@@ -483,6 +483,20 @@ function ensureCompatibilityColumns() {
     // Drop over-restrictive CHECK constraint on purchase_orders.status
     // (schema.sql only allows 'pending','received','partial','cancelled' but routes use 'expected','partially_received')
     try { runPsql('ALTER TABLE purchase_orders DROP CONSTRAINT IF EXISTS purchase_orders_status_check'); } catch (_) {}
+
+    // Production tasks: align status/priority checks with route usage
+    // Routes use status: pending|assigned|in_progress|completed|cancelled
+    // Routes use priority: normal|urgent (plus legacy low|medium|high)
+    try { runPsql('ALTER TABLE production_tasks DROP CONSTRAINT IF EXISTS production_tasks_status_check'); } catch (_) {}
+    try { runPsql('ALTER TABLE production_tasks DROP CONSTRAINT IF EXISTS production_tasks_priority_check'); } catch (_) {}
+    if (hasColumn('production_tasks', 'status')) {
+      runPsql("UPDATE production_tasks SET status = 'pending' WHERE status IS NULL OR status NOT IN ('pending','assigned','in_progress','completed','cancelled')");
+    }
+    if (hasColumn('production_tasks', 'priority')) {
+      runPsql("UPDATE production_tasks SET priority = 'normal' WHERE priority IS NULL OR priority NOT IN ('low','medium','high','normal','urgent')");
+    }
+    try { runPsql("ALTER TABLE production_tasks ADD CONSTRAINT production_tasks_status_check CHECK(status IN ('pending','assigned','in_progress','completed','cancelled'))"); } catch (_) {}
+    try { runPsql("ALTER TABLE production_tasks ADD CONSTRAINT production_tasks_priority_check CHECK(priority IN ('low','medium','high','normal','urgent'))"); } catch (_) {}
   ensureColumn('products', 'tax_rate_id', 'INTEGER REFERENCES tax_rates(id) ON DELETE SET NULL');
   ensureColumn('products', 'type', "VARCHAR(50) DEFAULT 'standard'");
   ensureColumn('products', 'category', 'VARCHAR(100)');

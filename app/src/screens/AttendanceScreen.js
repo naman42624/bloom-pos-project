@@ -61,13 +61,16 @@ export default function AttendanceScreen({ navigation }) {
       setTodayLogs(todayRes.data?.logs || []);
       setTotalHoursToday(todayRes.data?.totalEffectiveToday || 0);
       setActiveOutdoor(todayRes.data?.activeOutdoor || null);
+      const allLocations = locsRes.data?.locations || locsRes.data || [];
       const allowedIds = new Set((assignedLocations || []).map((l) => l.id));
-      const locs = (locsRes.data?.locations || [])
+      const locs = allLocations
         .filter(l => (l.type === 'shop' || l.type == null) && l.is_active)
-        .filter(l => isOwner || allowedIds.has(l.id));
+        .filter(l => isOwner || allowedIds.size === 0 || allowedIds.has(l.id));
       setLocations(locs);
       if (!selectedLocation && locs.length > 0) {
-        const primary = activeLocation || locs[0];
+        const primary = activeLocation && locs.some((l) => l.id === activeLocation.id)
+          ? activeLocation
+          : locs[0];
         setSelectedLocation(primary);
       }
       setHistory(histRes.data?.attendance || []);
