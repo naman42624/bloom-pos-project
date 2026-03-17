@@ -10,7 +10,9 @@ import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 
 const STATUS_CONFIG = {
+  pending: { color: Colors.warning, icon: 'time-outline' },
   expected: { color: Colors.info, icon: 'time-outline' },
+  partial: { color: Colors.warning, icon: 'checkmark-circle-outline' },
   partially_received: { color: Colors.warning, icon: 'checkmark-circle-outline' },
   received: { color: Colors.success, icon: 'checkmark-done-circle' },
   cancelled: { color: Colors.error, icon: 'close-circle-outline' },
@@ -38,7 +40,9 @@ export default function PurchaseOrdersScreen({ navigation }) {
 
   const statusFilters = [
     { key: null, label: 'All' },
+    { key: 'pending', label: 'Pending' },
     { key: 'expected', label: 'Expected' },
+    { key: 'partial', label: 'Partial' },
     { key: 'partially_received', label: 'Partial' },
     { key: 'received', label: 'Received' },
     { key: 'cancelled', label: 'Cancelled' },

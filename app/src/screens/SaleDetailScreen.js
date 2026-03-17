@@ -169,7 +169,7 @@ export default function SaleDetailScreen({ route, navigation }) {
         <div class="line"></div>
         ${(sale.items || []).map(item => `
           <div>
-            <p>${item.product_name}</p>
+            <p>${item.product_name || item.display_name || 'Item'}</p>
             <div class="row">
               <span>${item.quantity} x ₹${(item.unit_price || 0).toFixed(2)}</span>
               <span>₹${(item.line_total || 0).toFixed(2)}</span>
@@ -331,6 +331,8 @@ export default function SaleDetailScreen({ route, navigation }) {
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>Items ({(sale.items || []).length})</Text>
         {(sale.items || []).map((item, idx) => {
+          const itemName = item.product_name || item.display_name || 'Item';
+          const itemTotal = item.line_total ?? ((Number(item.quantity) || 0) * (Number(item.unit_price) || 0) + (Number(item.tax_amount) || 0));
           const canFulfill = sale.order_type !== 'walk_in'
             && !['cancelled', 'completed'].includes(sale.status)
             && item.product_id
@@ -338,7 +340,7 @@ export default function SaleDetailScreen({ route, navigation }) {
           return (
             <View key={idx} style={styles.itemRow}>
               <View style={{ flex: 1 }}>
-                <Text style={styles.itemName}>{item.product_name}</Text>
+                <Text style={styles.itemName}>{itemName}</Text>
                 <Text style={styles.itemMeta}>
                   {item.quantity} × ₹{(item.unit_price || 0).toFixed(2)}
                   {item.tax_rate > 0 ? ` (${item.tax_rate}% tax)` : ''}
@@ -351,7 +353,7 @@ export default function SaleDetailScreen({ route, navigation }) {
                 ) : canFulfill ? (
                   <TouchableOpacity
                     style={styles.fulfillBtn}
-                    onPress={() => handleFulfillFromStock(item.id, item.product_name)}
+                    onPress={() => handleFulfillFromStock(item.id, itemName)}
                   >
                     <Ionicons name="cube-outline" size={14} color={Colors.primary} />
                     <Text style={styles.fulfillBtnText}>Fulfill from Stock</Text>
@@ -359,7 +361,7 @@ export default function SaleDetailScreen({ route, navigation }) {
                 ) : null}
               </View>
               <View style={{ alignItems: 'flex-end' }}>
-                <Text style={styles.itemTotal}>₹{(item.line_total || 0).toFixed(2)}</Text>
+                <Text style={styles.itemTotal}>₹{Number(itemTotal || 0).toFixed(2)}</Text>
                 {item.tax_amount > 0 && <Text style={styles.itemTax}>incl. ₹{item.tax_amount.toFixed(2)} tax</Text>}
               </View>
             </View>

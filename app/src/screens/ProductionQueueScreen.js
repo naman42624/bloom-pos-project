@@ -278,7 +278,7 @@ export default function ProductionQueueScreen({ navigation }) {
   };
 
   const renderTask = ({ item }) => {
-    const config = TASK_STATUS_CONFIG[item.status] || {};
+    const config = TASK_STATUS_CONFIG[item.status] || { color: Colors.textLight, icon: 'ellipse', label: item.status || 'Unknown' };
     const isMyTask = item.assigned_to === user?.id;
     const canPick = item.status === 'pending';
     const canStart = item.status === 'assigned' && (isMyTask || isManager);
@@ -365,7 +365,7 @@ export default function ProductionQueueScreen({ navigation }) {
       preparing: { color: '#2196F3', label: 'Preparing', next: 'ready', nextLabel: 'Mark Ready', icon: 'construct-outline' },
       ready: { color: Colors.success, label: 'Ready', next: 'completed', nextLabel: 'Complete', icon: 'checkmark-circle-outline' },
     };
-    const config = statusConfig[item.status] || {};
+    const config = statusConfig[item.status] || { color: Colors.textLight, icon: 'ellipse', label: item.status || 'Unknown' };
 
     return (
       <TouchableOpacity

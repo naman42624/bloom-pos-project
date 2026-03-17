@@ -8,7 +8,9 @@ const LOCATION_TASK = 'BLOOMCART_DELIVERY_LOCATION_TASK';
 const LOCATION_INTERVAL = 30000; // 30 seconds
 
 // Register background location task at module level
-TaskManager.defineTask(LOCATION_TASK, async ({ data, error }) => {
+try {
+  if (!TaskManager.isTaskDefined || !TaskManager.isTaskDefined(LOCATION_TASK)) {
+    TaskManager.defineTask(LOCATION_TASK, async ({ data, error }) => {
   if (error) {
     console.error('Location task error:', error);
     return;
@@ -29,7 +31,11 @@ TaskManager.defineTask(LOCATION_TASK, async ({ data, error }) => {
   } catch (e) {
     console.error('Failed to record delivery location:', e);
   }
-});
+    });
+  }
+} catch (e) {
+  console.warn('Delivery location task registration skipped:', e?.message || e);
+}
 
 export default function useDeliveryTracking({ user, enabled = false, socketRef }) {
   const isTracking = useRef(false);

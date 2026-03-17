@@ -589,10 +589,18 @@ function ensureCompatibilityColumns() {
   ensureColumn('cash_registers', 'opened_at', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP');
   ensureColumn('cash_registers', 'opening_balance', 'DECIMAL(10,2) DEFAULT 0');
   ensureColumn('cash_registers', 'closing_balance', 'DECIMAL(10,2) DEFAULT 0');
+  ensureColumn('cash_registers', 'opening_amount', 'DECIMAL(10,2) DEFAULT 0');
+  ensureColumn('cash_registers', 'closing_amount', 'DECIMAL(10,2)');
+  ensureColumn('cash_registers', 'opening_time', 'TIMESTAMP');
+  ensureColumn('cash_registers', 'closing_time', 'TIMESTAMP');
+  ensureColumn('cash_registers', 'status', "VARCHAR(50) DEFAULT 'open'");
   ensureColumn('cash_registers', 'expected_cash', 'DECIMAL(10,2) DEFAULT 0');
   ensureColumn('cash_registers', 'actual_cash', 'DECIMAL(10,2)');
   ensureColumn('cash_registers', 'discrepancy', 'DECIMAL(10,2) DEFAULT 0');
   ensureColumn('cash_registers', 'closing_notes', 'TEXT');
+  try { runPsql('ALTER TABLE cash_registers ALTER COLUMN opening_time DROP NOT NULL'); } catch (_) {}
+  try { runPsql('ALTER TABLE cash_registers ALTER COLUMN opening_amount SET DEFAULT 0'); } catch (_) {}
+  try { runPsql("ALTER TABLE cash_registers ALTER COLUMN status SET DEFAULT 'open'"); } catch (_) {}
   // Backfill cash_registers from old column names
   if (hasColumn('cash_registers', 'opening_time')) {
     runPsql('UPDATE cash_registers SET opened_at = COALESCE(opened_at, opening_time) WHERE opened_at IS NULL');
@@ -603,6 +611,13 @@ function ensureCompatibilityColumns() {
   }
   if (hasColumn('cash_registers', 'opening_amount')) {
     runPsql('UPDATE cash_registers SET opening_balance = COALESCE(NULLIF(opening_balance, 0), opening_amount, 0)');
+    runPsql('UPDATE cash_registers SET opening_amount = COALESCE(opening_amount, opening_balance, 0)');
+  }
+  if (hasColumn('cash_registers', 'opened_at') && hasColumn('cash_registers', 'opening_time')) {
+    runPsql('UPDATE cash_registers SET opening_time = COALESCE(opening_time, opened_at, created_at, CURRENT_TIMESTAMP)');
+  }
+  if (hasColumn('cash_registers', 'closed_at') && hasColumn('cash_registers', 'closing_time')) {
+    runPsql('UPDATE cash_registers SET closing_time = COALESCE(closing_time, closed_at) WHERE closing_time IS NULL');
   }
 
   // ─── locations ───────────────────────────────────────────

@@ -7,20 +7,25 @@ import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 
 // Configure how notifications appear when app is in foreground
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowAlert: true,
-    shouldPlaySound: true,
-    shouldSetBadge: true,
-  }),
-});
+try {
+  Notifications.setNotificationHandler({
+    handleNotification: async () => ({
+      shouldShowAlert: true,
+      shouldPlaySound: true,
+      shouldSetBadge: true,
+    }),
+  });
+} catch (e) {
+  console.warn('Notification handler setup skipped:', e?.message || e);
+}
 
-export default function usePushNotifications(navigationRef) {
+export default function usePushNotifications(isExpoGo = false, navigationRef) {
   const { user } = useAuth();
   const tokenRef = useRef(null);
   const responseListener = useRef();
 
   useEffect(() => {
+    if (isExpoGo) return;
     if (!user) return;
 
     const register = async () => {
@@ -110,7 +115,7 @@ export default function usePushNotifications(navigationRef) {
         responseListener.current.remove();
       }
     };
-  }, [user?.id]);
+  }, [isExpoGo, user?.id]);
 
   return { token: tokenRef.current };
 }

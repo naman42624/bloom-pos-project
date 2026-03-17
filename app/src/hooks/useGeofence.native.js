@@ -7,7 +7,9 @@ import api from '../services/api';
 const GEOFENCE_TASK = 'BLOOMCART_GEOFENCE_TASK';
 
 // Register geofence task at module level (required by expo-task-manager)
-TaskManager.defineTask(GEOFENCE_TASK, async ({ data, error }) => {
+try {
+  if (!TaskManager.isTaskDefined || !TaskManager.isTaskDefined(GEOFENCE_TASK)) {
+    TaskManager.defineTask(GEOFENCE_TASK, async ({ data, error }) => {
     if (error) {
       console.error('Geofence task error:', error);
       return;
@@ -30,7 +32,11 @@ TaskManager.defineTask(GEOFENCE_TASK, async ({ data, error }) => {
     } catch (e) {
       console.error('Geofence event recording failed:', e);
     }
-});
+    });
+  }
+} catch (e) {
+  console.warn('Geofence task registration skipped:', e?.message || e);
+}
 
 export default function useGeofence({ user, locations, enabled = true }) {
   const isMonitoring = useRef(false);

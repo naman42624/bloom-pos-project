@@ -131,10 +131,10 @@ export default function PurchaseOrderDetailScreen({ route, navigation }) {
   }
 
   const cfg = order ? (STATUS_CONFIG[order.status] || { color: Colors.textLight, label: order.status || 'Unknown' }) : STATUS_CONFIG.expected;
-  const canReceive = order && (order.status === 'expected' || order.status === 'partially_received')
+  const canReceive = order && ['pending', 'expected', 'partial', 'partially_received'].includes(order.status)
     && (user?.role === 'owner' || user?.role === 'manager' || (locations || []).some((l) => l.id === order.location_id));
-  const canEdit = order && order.status === 'expected';
-  const canCancel = order && (order.status === 'expected' || order.status === 'partially_received');
+  const canEdit = order && ['pending', 'expected'].includes(order.status);
+  const canCancel = order && ['pending', 'expected', 'partial', 'partially_received'].includes(order.status);
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}

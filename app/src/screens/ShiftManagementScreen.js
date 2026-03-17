@@ -44,7 +44,7 @@ export default function ShiftManagementScreen() {
         api.getUsers ? api.getUsers() : Promise.resolve({ data: { users: [] } }),
       ]);
       setShifts(shiftsRes.data || []);
-      setLocations((locsRes.data?.locations || []).filter(l => l.type === 'shop' && l.is_active));
+      setLocations((locsRes.data?.locations || []).filter(l => (l.type === 'shop' || l.type == null) && l.is_active));
       const staff = (usersRes.data?.users || []).filter(
         u => ['manager', 'employee', 'delivery_partner'].includes(u.role) && u.is_active
       );

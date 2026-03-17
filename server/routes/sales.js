@@ -261,8 +261,12 @@ router.post(
 
       // Always create a new register session (allows multiple per day)
       db.prepare(
-        'INSERT INTO cash_registers (location_id, date, opened_by, opening_balance, expected_cash) VALUES (?, ?, ?, ?, ?)'
-      ).run(location_id, today, req.user.id, opening_balance, opening_balance);
+        `INSERT INTO cash_registers (
+          location_id, date, opened_by,
+          opening_balance, opening_amount,
+          expected_cash, opened_at, opening_time, status
+        ) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'open')`
+      ).run(location_id, today, req.user.id, opening_balance, opening_balance, opening_balance);
 
       const register = db.prepare(`
         SELECT cr.*, u.name as opened_by_name
@@ -333,12 +337,16 @@ router.put(
           total_cash_sales = ?, total_card_sales = ?, total_upi_sales = ?,
           total_refunds_cash = ?, expected_cash = ?,
           actual_cash = ?, discrepancy = ?,
-          closed_by = ?, closing_notes = ?, closed_at = CURRENT_TIMESTAMP
+          closing_balance = ?, closing_amount = ?,
+          closed_by = ?, closing_notes = ?,
+          closed_at = CURRENT_TIMESTAMP, closing_time = CURRENT_TIMESTAMP,
+          status = 'closed'
         WHERE id = ?
       `).run(
         paymentTotals.cash_total, paymentTotals.card_total, paymentTotals.upi_total,
         refundTotal, expectedCash,
         actual_cash, discrepancy,
+        actual_cash, actual_cash,
         req.user.id, closing_notes || '', register.id
       );
 
@@ -451,9 +459,11 @@ router.get('/:id', authenticate, (req, res, next) => {
     if (!sale) return res.status(404).json({ success: false, message: 'Sale not found' });
 
     sale.items = db.prepare(`
-      SELECT si.*, p.sku as product_sku, p.image_url as product_image
+      SELECT si.*, p.sku as product_sku, p.image_url as product_image,
+             COALESCE(si.product_name, p.name, m.name, 'Item') as display_name
       FROM sale_items si
       LEFT JOIN products p ON si.product_id = p.id
+      LEFT JOIN materials m ON si.material_id = m.id
       WHERE si.sale_id = ?
       ORDER BY si.id ASC
     `).all(req.params.id);
@@ -675,11 +685,11 @@ router.post(
 
         // Insert items
         const insertItem = db.prepare(
-          'INSERT INTO sale_items (sale_id, product_id, material_id, product_name, quantity, unit_price, tax_rate, tax_amount, line_total, materials_deducted, from_product_stock) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+          'INSERT INTO sale_items (sale_id, product_id, material_id, product_name, quantity, unit_price, tax_rate, tax_amount, materials_deducted, from_product_stock) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
         );
         const saleItemIds = [];
         for (const item of processedItems) {
-          const res = insertItem.run(saleId, item.product_id, item.material_id, item.product_name, item.quantity, item.unit_price, item.tax_rate, item.tax_amount, item.line_total, 0, 0);
+          const res = insertItem.run(saleId, item.product_id, item.material_id, item.product_name, item.quantity, item.unit_price, item.tax_rate, item.tax_amount, 0, 0);
           saleItemIds.push({ ...item, sale_item_id: res.lastInsertRowid });
         }
 
@@ -1336,14 +1346,14 @@ router.post(
         const saleId = saleResult.lastInsertRowid;
 
         const insertItem = db.prepare(
-          'INSERT INTO sale_items (sale_id, product_id, material_id, product_name, quantity, unit_price, tax_rate, tax_amount, line_total, materials_deducted, from_product_stock) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, 0, 0)'
+          'INSERT INTO sale_items (sale_id, product_id, material_id, product_name, quantity, unit_price, tax_rate, tax_amount, materials_deducted, from_product_stock) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, 0, 0)'
         );
         const insertTask = db.prepare(
           `INSERT INTO production_tasks (sale_id, sale_item_id, product_id, location_id, quantity, priority, notes) VALUES (?, ?, ?, ?, ?, 'normal', '')`
         );
 
         for (const item of processedItems) {
-          const res = insertItem.run(saleId, item.product_id, item.product_name, item.quantity, item.unit_price, item.tax_rate, item.tax_amount, item.line_total);
+          const res = insertItem.run(saleId, item.product_id, item.product_name, item.quantity, item.unit_price, item.tax_rate, item.tax_amount);
           if (item.product_id) {
             insertTask.run(saleId, res.lastInsertRowid, item.product_id, location_id, item.quantity);
           }

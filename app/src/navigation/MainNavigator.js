@@ -2,6 +2,7 @@ import React from 'react';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
+import Constants from 'expo-constants';
 import { useAuth } from '../context/AuthContext';
 import useGeofence from '../hooks/useGeofence';
 import useDeliveryTracking from '../hooks/useDeliveryTracking';
@@ -469,22 +470,23 @@ const TAB_ICONS = {
 export default function MainNavigator() {
   const { user, locations } = useAuth();
   const role = user?.role;
+  const isExpoGo = Constants.appOwnership === 'expo';
 
   // Auto geofence for staff (not owner/customer)
   useGeofence({
     user,
     locations: locations || [],
-    enabled: !!user && user.role !== 'owner' && user.role !== 'customer',
+    enabled: !isExpoGo && !!user && user.role !== 'owner' && user.role !== 'customer',
   });
 
   // Auto delivery tracking for delivery partners
   useDeliveryTracking({
     user,
-    enabled: !!user && user.role === 'delivery_partner',
+    enabled: !isExpoGo && !!user && user.role === 'delivery_partner',
   });
 
   // Push notifications
-  usePushNotifications();
+  usePushNotifications(isExpoGo);
 
   return (
     <Tab.Navigator
