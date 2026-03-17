@@ -28,7 +28,7 @@ function formatHours(h) {
 }
 
 export default function AttendanceScreen({ navigation }) {
-  const { user, activeLocation } = useAuth();
+  const { user, activeLocation, locations: assignedLocations } = useAuth();
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [attendance, setAttendance] = useState(null);
@@ -61,7 +61,10 @@ export default function AttendanceScreen({ navigation }) {
       setTodayLogs(todayRes.data?.logs || []);
       setTotalHoursToday(todayRes.data?.totalEffectiveToday || 0);
       setActiveOutdoor(todayRes.data?.activeOutdoor || null);
-      const locs = (locsRes.data?.locations || []).filter(l => (l.type === 'shop' || l.type == null) && l.is_active);
+      const allowedIds = new Set((assignedLocations || []).map((l) => l.id));
+      const locs = (locsRes.data?.locations || [])
+        .filter(l => (l.type === 'shop' || l.type == null) && l.is_active)
+        .filter(l => isOwner || allowedIds.has(l.id));
       setLocations(locs);
       if (!selectedLocation && locs.length > 0) {
         const primary = activeLocation || locs[0];

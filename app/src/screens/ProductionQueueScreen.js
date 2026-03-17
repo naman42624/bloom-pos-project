@@ -38,7 +38,7 @@ const ORDER_STATUS_TABS = [
 ];
 
 export default function ProductionQueueScreen({ navigation }) {
-  const { user } = useAuth();
+  const { user, activeLocation } = useAuth();
   const [viewMode, setViewMode] = useState('tasks');
   const [tasks, setTasks] = useState([]);
   const [orders, setOrders] = useState([]);
@@ -143,14 +143,17 @@ export default function ProductionQueueScreen({ navigation }) {
   const fetchLocations = useCallback(async () => {
     try {
       const res = await api.getLocations();
-      const locs = res.data?.locations || res.data || [];
+      const locs = (res.data?.locations || res.data || []).filter((l) => (l.type === 'shop' || l.type == null) && l.is_active);
       setLocations(locs);
       if (locs.length > 0 && selectedLocation === null && !isOwner) {
-        setSelectedLocation(locs[0].id);
+        const defaultLoc = activeLocation && locs.some((l) => l.id === activeLocation.id)
+          ? activeLocation.id
+          : locs[0].id;
+        setSelectedLocation(defaultLoc);
       }
       // Only owners default to all locations (selectedLocation stays null)
     } catch {}
-  }, []);
+  }, [activeLocation, isOwner, selectedLocation]);
 
   useFocusEffect(
     useCallback(() => { fetchLocations(); }, [])

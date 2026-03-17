@@ -541,6 +541,26 @@ function ensureCompatibilityColumns() {
   ensureColumn('product_materials', 'created_at', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP');
   ensureColumn('product_images', 'sort_order', 'INTEGER DEFAULT 0');
 
+  // ─── purchase_order_items ───────────────────────────────
+  ensureColumn('purchase_order_items', 'actual_price_per_unit', 'DECIMAL(10,2) DEFAULT 0');
+  ensureColumn('purchase_order_items', 'received_by', 'INTEGER REFERENCES users(id) ON DELETE SET NULL');
+  ensureColumn('purchase_order_items', 'received_at', 'TIMESTAMP');
+  ensureColumn('purchase_order_items', 'received_quality', 'VARCHAR(100)');
+  if (hasColumn('purchase_order_items', 'quality') && hasColumn('purchase_order_items', 'received_quality')) {
+    runPsql('UPDATE purchase_order_items SET received_quality = COALESCE(received_quality, quality)');
+  }
+
+  // ─── refunds ────────────────────────────────────────────
+  ensureColumn('refunds', 'refund_method', 'VARCHAR(50)');
+  ensureColumn('refunds', 'status', "VARCHAR(50) DEFAULT 'processed'");
+  ensureColumn('refunds', 'processed_at', 'TIMESTAMP');
+  if (hasColumn('refunds', 'created_at') && hasColumn('refunds', 'processed_at')) {
+    runPsql('UPDATE refunds SET processed_at = COALESCE(processed_at, created_at) WHERE processed_at IS NULL');
+  }
+  if (hasColumn('refunds', 'status')) {
+    runPsql("UPDATE refunds SET status = COALESCE(status, 'processed')");
+  }
+
   if (hasColumn('deliveries', 'cod_amount') && hasColumn('deliveries', 'cod_collected')) {
     runPsql("UPDATE deliveries SET cod_collected = COALESCE(cod_collected, 0)");
   }
