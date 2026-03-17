@@ -6,6 +6,24 @@ const { todayStr: localToday } = require('../utils/time');
 
 const router = express.Router();
 
+function generateExpenseNumber(db, locationId) {
+  const loc = db.prepare('SELECT name FROM locations WHERE id = ?').get(locationId);
+  const locCode = loc ? loc.name.replace(/[^A-Za-z]/g, '').substring(0, 4).toUpperCase() : 'EXP';
+  const today = localToday().replace(/-/g, '');
+  const prefix = `EXP-${locCode}-${today}`;
+
+  const last = db.prepare(
+    "SELECT expense_number FROM expenses WHERE expense_number LIKE ? ORDER BY id DESC LIMIT 1"
+  ).get(`${prefix}-%`);
+
+  let seq = 1;
+  if (last && last.expense_number) {
+    const lastNum = parseInt(last.expense_number.split('-').pop(), 10);
+    if (!isNaN(lastNum)) seq = lastNum + 1;
+  }
+  return `${prefix}-${String(seq).padStart(3, '0')}`;
+}
+
 // ─── GET /api/expenses ───────────────────────────────────────
 router.get('/', authenticate, (req, res, next) => {
   try {
@@ -60,10 +78,12 @@ router.post(
       const db = getDb();
       const { location_id, category, amount, description, payment_method, expense_date } = req.body;
 
+      const expense_number = generateExpenseNumber(db, location_id);
+
       const result = db.prepare(
-        `INSERT INTO expenses (location_id, category, amount, description, payment_method, expense_date, created_by)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`
-      ).run(location_id, category, amount, description || '', payment_method, expense_date, req.user.id);
+        `INSERT INTO expenses (expense_number, location_id, category, amount, description, payment_method, expense_date, created_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(expense_number, location_id, category, amount, description || '', payment_method, expense_date, req.user.id);
 
       // If cash expense, deduct from cash register expected_cash
       if (payment_method === 'cash') {

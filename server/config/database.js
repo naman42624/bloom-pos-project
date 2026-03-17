@@ -572,6 +572,49 @@ function ensureCompatibilityColumns() {
 
   runPsql('ALTER TABLE locations ALTER COLUMN geofence_radius SET DEFAULT 500');
   runPsql('ALTER TABLE materials ALTER COLUMN min_stock_alert SET DEFAULT 10');
+
+  // ─── material_stock ───────────────────────────────────────
+  ensureColumn('material_stock', 'last_counted_at', 'TIMESTAMP');
+
+  // ─── sales ───────────────────────────────────────────────
+  ensureColumn('sales', 'discount_type', 'VARCHAR(50)');
+  ensureColumn('sales', 'discount_approved_by', 'INTEGER REFERENCES users(id) ON DELETE SET NULL');
+  // Drop over-restrictive status check (routes use 'preparing', 'completing' etc.)
+  try { runPsql('ALTER TABLE sales DROP CONSTRAINT IF EXISTS sales_status_check'); } catch (_) {}
+
+  // ─── cash_registers ──────────────────────────────────────
+  // VPS table was created from schema.sql which uses different column names:
+  // opening_amount→opening_balance, opening_time→opened_at, closing_time→closed_at etc.
+  ensureColumn('cash_registers', 'closed_at', 'TIMESTAMP');
+  ensureColumn('cash_registers', 'opened_at', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP');
+  ensureColumn('cash_registers', 'opening_balance', 'DECIMAL(10,2) DEFAULT 0');
+  ensureColumn('cash_registers', 'closing_balance', 'DECIMAL(10,2) DEFAULT 0');
+  ensureColumn('cash_registers', 'expected_cash', 'DECIMAL(10,2) DEFAULT 0');
+  ensureColumn('cash_registers', 'actual_cash', 'DECIMAL(10,2)');
+  ensureColumn('cash_registers', 'discrepancy', 'DECIMAL(10,2) DEFAULT 0');
+  ensureColumn('cash_registers', 'closing_notes', 'TEXT');
+  // Backfill cash_registers from old column names
+  if (hasColumn('cash_registers', 'opening_time')) {
+    runPsql('UPDATE cash_registers SET opened_at = COALESCE(opened_at, opening_time) WHERE opened_at IS NULL');
+    runPsql('UPDATE cash_registers SET date = COALESCE(date, DATE(opening_time)) WHERE date IS NULL');
+  }
+  if (hasColumn('cash_registers', 'closing_time')) {
+    runPsql('UPDATE cash_registers SET closed_at = COALESCE(closed_at, closing_time) WHERE closed_at IS NULL');
+  }
+  if (hasColumn('cash_registers', 'opening_amount')) {
+    runPsql('UPDATE cash_registers SET opening_balance = COALESCE(NULLIF(opening_balance, 0), opening_amount, 0)');
+  }
+
+  // ─── locations ───────────────────────────────────────────
+  ensureColumn('locations', 'type', "VARCHAR(50) DEFAULT 'shop'");
+  runPsql("UPDATE locations SET type = 'shop' WHERE type IS NULL");
+
+  // ─── delivery_settlements ─────────────────────────────────
+  ensureColumn('delivery_settlements', 'status', "VARCHAR(50) DEFAULT 'pending'");
+
+  // ─── expenses ─────────────────────────────────────────────
+  // Make expense_number nullable so routes that don't generate it don't fail
+  try { runPsql('ALTER TABLE expenses ALTER COLUMN expense_number DROP NOT NULL'); } catch (_) {}
 }
 
 function normalizeSql(sql) {

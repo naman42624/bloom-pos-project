@@ -10,7 +10,9 @@ import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 
 const STATUS_CONFIG = {
+  pending: { color: Colors.warning, label: 'Pending' },
   expected: { color: Colors.info, label: 'Expected' },
+  partial: { color: Colors.warning, label: 'Partial' },
   partially_received: { color: Colors.warning, label: 'Partially Received' },
   received: { color: Colors.success, label: 'Received' },
   cancelled: { color: Colors.error, label: 'Cancelled' },
@@ -128,7 +130,7 @@ export default function PurchaseOrderDetailScreen({ route, navigation }) {
     return <View style={styles.container}><Text style={styles.errorText}>Order not found</Text></View>;
   }
 
-  const cfg = order ? STATUS_CONFIG[order.status] : STATUS_CONFIG.expected;
+  const cfg = order ? (STATUS_CONFIG[order.status] || { color: Colors.textLight, label: order.status || 'Unknown' }) : STATUS_CONFIG.expected;
   const canReceive = order && (order.status === 'expected' || order.status === 'partially_received')
     && (user?.role === 'owner' || user?.role === 'manager' || (locations || []).some((l) => l.id === order.location_id));
   const canEdit = order && order.status === 'expected';
