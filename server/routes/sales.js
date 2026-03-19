@@ -315,12 +315,24 @@ router.put(
         WHERE s.location_id = ? AND p.created_at >= ? AND s.status = 'completed'
       `).get(location_id, sessionStart);
 
-      const refundTotal = db.prepare(`
-        SELECT COALESCE(SUM(r.amount), 0) as total
-        FROM refunds r
-        JOIN sales s ON r.sale_id = s.id
-        WHERE s.location_id = ? AND r.created_at >= ? AND r.refund_method = 'cash' AND r.status = 'processed'
-      `).get(location_id, sessionStart).total;
+      let refundTotal = 0;
+      try {
+        refundTotal = db.prepare(`
+          SELECT COALESCE(SUM(r.amount), 0) as total
+          FROM refunds r
+          JOIN sales s ON r.sale_id = s.id
+          WHERE s.location_id = ? AND r.created_at >= ? AND r.refund_method = 'cash' AND COALESCE(r.status, 'processed') = 'processed'
+        `).get(location_id, sessionStart).total;
+      } catch (err) {
+        const msg = String(err?.message || '').toLowerCase();
+        if (!msg.includes('refund_method')) throw err;
+        refundTotal = db.prepare(`
+          SELECT COALESCE(SUM(r.amount), 0) as total
+          FROM refunds r
+          JOIN sales s ON r.sale_id = s.id
+          WHERE s.location_id = ? AND r.created_at >= ?
+        `).get(location_id, sessionStart).total;
+      }
 
       // Cash expenses during this session
       const expenseTotal = db.prepare(`
@@ -684,12 +696,46 @@ router.post(
         const saleId = saleResult.lastInsertRowid;
 
         // Insert items
-        const insertItem = db.prepare(
+        const insertItemWithLineTotal = db.prepare(
+          'INSERT INTO sale_items (sale_id, product_id, material_id, product_name, quantity, unit_price, tax_rate, tax_amount, line_total, materials_deducted, from_product_stock) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        );
+        const insertItemCompat = db.prepare(
           'INSERT INTO sale_items (sale_id, product_id, material_id, product_name, quantity, unit_price, tax_rate, tax_amount, materials_deducted, from_product_stock) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
         );
         const saleItemIds = [];
         for (const item of processedItems) {
-          const res = insertItem.run(saleId, item.product_id, item.material_id, item.product_name, item.quantity, item.unit_price, item.tax_rate, item.tax_amount, 0, 0);
+          let res;
+          const lineTotal = (Number(item.unit_price || 0) * Number(item.quantity || 0)) + Number(item.tax_amount || 0);
+          try {
+            res = insertItemWithLineTotal.run(
+              saleId,
+              item.product_id,
+              item.material_id,
+              item.product_name,
+              item.quantity,
+              item.unit_price,
+              item.tax_rate,
+              item.tax_amount,
+              lineTotal,
+              0,
+              0
+            );
+          } catch (err) {
+            const msg = String(err?.message || '').toLowerCase();
+            if (!msg.includes('generated') && !msg.includes('line_total')) throw err;
+            res = insertItemCompat.run(
+              saleId,
+              item.product_id,
+              item.material_id,
+              item.product_name,
+              item.quantity,
+              item.unit_price,
+              item.tax_rate,
+              item.tax_amount,
+              0,
+              0
+            );
+          }
           saleItemIds.push({ ...item, sale_item_id: res.lastInsertRowid });
         }
 
@@ -1345,7 +1391,10 @@ router.post(
         );
         const saleId = saleResult.lastInsertRowid;
 
-        const insertItem = db.prepare(
+        const insertItemWithLineTotal = db.prepare(
+          'INSERT INTO sale_items (sale_id, product_id, material_id, product_name, quantity, unit_price, tax_rate, tax_amount, line_total, materials_deducted, from_product_stock) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, 0, 0)'
+        );
+        const insertItemCompat = db.prepare(
           'INSERT INTO sale_items (sale_id, product_id, material_id, product_name, quantity, unit_price, tax_rate, tax_amount, materials_deducted, from_product_stock) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, 0, 0)'
         );
         const insertTask = db.prepare(
@@ -1353,7 +1402,23 @@ router.post(
         );
 
         for (const item of processedItems) {
-          const res = insertItem.run(saleId, item.product_id, item.product_name, item.quantity, item.unit_price, item.tax_rate, item.tax_amount);
+          let res;
+          try {
+            res = insertItemWithLineTotal.run(
+              saleId,
+              item.product_id,
+              item.product_name,
+              item.quantity,
+              item.unit_price,
+              item.tax_rate,
+              item.tax_amount,
+              item.line_total
+            );
+          } catch (err) {
+            const msg = String(err?.message || '').toLowerCase();
+            if (!msg.includes('generated') && !msg.includes('line_total')) throw err;
+            res = insertItemCompat.run(saleId, item.product_id, item.product_name, item.quantity, item.unit_price, item.tax_rate, item.tax_amount);
+          }
           if (item.product_id) {
             insertTask.run(saleId, res.lastInsertRowid, item.product_id, location_id, item.quantity);
           }

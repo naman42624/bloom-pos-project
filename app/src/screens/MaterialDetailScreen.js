@@ -167,8 +167,6 @@ export default function MaterialDetailScreen({ route, navigation }) {
     }
   };
 
-  const BASE_URL = Platform.OS === 'web' ? 'http://localhost:3001' : 'https://api.gifttojalandhar.com';
-
   return (
     <>
       <ScrollView
@@ -186,7 +184,7 @@ export default function MaterialDetailScreen({ route, navigation }) {
               >
                 {material.image_url ? (
                   <Image
-                    source={{ uri: `${BASE_URL}${material.image_url}` }}
+                    source={{ uri: api.getMediaUrl(material.image_url) }}
                     style={styles.materialImage}
                     resizeMode="cover"
                   />

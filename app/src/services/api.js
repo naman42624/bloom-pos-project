@@ -12,6 +12,14 @@ function getBaseUrl() {
 
 const API_BASE_URL = getBaseUrl();
 
+function getApiOrigin() {
+  try {
+    return new URL(API_BASE_URL).origin;
+  } catch (e) {
+    return API_BASE_URL.replace(/\/api\/?$/, '');
+  }
+}
+
 class ApiService {
   constructor() {
     this.token = null;
@@ -23,6 +31,13 @@ class ApiService {
 
   clearToken() {
     this.token = null;
+  }
+
+  getMediaUrl(path) {
+    if (!path) return null;
+    if (/^https?:\/\//i.test(path)) return path;
+    const normalized = String(path).startsWith('/') ? String(path) : `/${String(path)}`;
+    return `${getApiOrigin()}${normalized}`;
   }
 
   async request(endpoint, options = {}) {

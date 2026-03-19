@@ -648,7 +648,11 @@ function ensureCompatibilityColumns() {
     runPsql('UPDATE cash_registers SET opening_amount = COALESCE(opening_amount, opening_balance, 0)');
   }
   if (hasColumn('cash_registers', 'opened_at') && hasColumn('cash_registers', 'opening_time')) {
-    runPsql('UPDATE cash_registers SET opening_time = COALESCE(opening_time, opened_at, created_at, CURRENT_TIMESTAMP)');
+    if (hasColumn('cash_registers', 'created_at')) {
+      runPsql('UPDATE cash_registers SET opening_time = COALESCE(opening_time, opened_at, created_at, CURRENT_TIMESTAMP)');
+    } else {
+      runPsql('UPDATE cash_registers SET opening_time = COALESCE(opening_time, opened_at, CURRENT_TIMESTAMP)');
+    }
   }
   if (hasColumn('cash_registers', 'closed_at') && hasColumn('cash_registers', 'closing_time')) {
     runPsql('UPDATE cash_registers SET closing_time = COALESCE(closing_time, closed_at) WHERE closing_time IS NULL');

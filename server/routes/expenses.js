@@ -6,22 +6,43 @@ const { todayStr: localToday } = require('../utils/time');
 
 const router = express.Router();
 
-function generateExpenseNumber(db, locationId) {
-  const loc = db.prepare('SELECT name FROM locations WHERE id = ?').get(locationId);
-  const locCode = loc ? loc.name.replace(/[^A-Za-z]/g, '').substring(0, 4).toUpperCase() : 'EXP';
-  const today = localToday().replace(/-/g, '');
-  const prefix = `EXP-${locCode}-${today}`;
-
-  const last = db.prepare(
-    "SELECT expense_number FROM expenses WHERE expense_number LIKE ? ORDER BY id DESC LIMIT 1"
-  ).get(`${prefix}-%`);
-
-  let seq = 1;
-  if (last && last.expense_number) {
-    const lastNum = parseInt(last.expense_number.split('-').pop(), 10);
-    if (!isNaN(lastNum)) seq = lastNum + 1;
+function hasExpenseNumberColumn(db) {
+  try {
+    const row = db.prepare(`
+      SELECT 1 as exists
+      FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND table_name = 'expenses'
+        AND column_name = 'expense_number'
+      LIMIT 1
+    `).get();
+    return !!row;
+  } catch (_) {
+    return false;
   }
-  return `${prefix}-${String(seq).padStart(3, '0')}`;
+}
+
+function generateExpenseNumber(db, locationId) {
+  if (!hasExpenseNumberColumn(db)) return null;
+  try {
+    const loc = db.prepare('SELECT name FROM locations WHERE id = ?').get(locationId);
+    const locCode = loc ? loc.name.replace(/[^A-Za-z]/g, '').substring(0, 4).toUpperCase() : 'EXP';
+    const today = localToday().replace(/-/g, '');
+    const prefix = `EXP-${locCode}-${today}`;
+
+    const last = db.prepare(
+      "SELECT expense_number FROM expenses WHERE expense_number LIKE ? ORDER BY id DESC LIMIT 1"
+    ).get(`${prefix}-%`);
+
+    let seq = 1;
+    if (last && last.expense_number) {
+      const lastNum = parseInt(last.expense_number.split('-').pop(), 10);
+      if (!isNaN(lastNum)) seq = lastNum + 1;
+    }
+    return `${prefix}-${String(seq).padStart(3, '0')}`;
+  } catch (_) {
+    return null;
+  }
 }
 
 // ─── GET /api/expenses ───────────────────────────────────────
@@ -80,10 +101,27 @@ router.post(
 
       const expense_number = generateExpenseNumber(db, location_id);
 
-      const result = db.prepare(
-        `INSERT INTO expenses (expense_number, location_id, category, amount, description, payment_method, expense_date, created_by)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-      ).run(expense_number, location_id, category, amount, description || '', payment_method, expense_date, req.user.id);
+      let result;
+      try {
+        if (expense_number) {
+          result = db.prepare(
+            `INSERT INTO expenses (expense_number, location_id, category, amount, description, payment_method, expense_date, created_by)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+          ).run(expense_number, location_id, category, amount, description || '', payment_method, expense_date, req.user.id);
+        } else {
+          result = db.prepare(
+            `INSERT INTO expenses (location_id, category, amount, description, payment_method, expense_date, created_by)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`
+          ).run(location_id, category, amount, description || '', payment_method, expense_date, req.user.id);
+        }
+      } catch (err) {
+        const msg = String(err?.message || '').toLowerCase();
+        if (!msg.includes('expense_number')) throw err;
+        result = db.prepare(
+          `INSERT INTO expenses (location_id, category, amount, description, payment_method, expense_date, created_by)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`
+        ).run(location_id, category, amount, description || '', payment_method, expense_date, req.user.id);
+      }
 
       // If cash expense, deduct from cash register expected_cash
       if (payment_method === 'cash') {

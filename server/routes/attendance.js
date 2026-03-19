@@ -93,9 +93,11 @@ router.post('/clock-in', authorize('manager', 'employee', 'delivery_partner'), (
     }
 
     // Check if user is assigned to this location (except owners)
+    // Legacy fallback: if user has no assignments at all, allow clock-in.
     if (req.user.role !== 'owner') {
+      const assignmentCount = db.prepare('SELECT COUNT(*) as count FROM user_locations WHERE user_id = ?').get(userId).count;
       const assignment = db.prepare('SELECT id FROM user_locations WHERE user_id = ? AND location_id = ?').get(userId, location_id);
-      if (!assignment) {
+      if (assignmentCount > 0 && !assignment) {
         return res.status(403).json({ success: false, message: 'You are not assigned to this location.' });
       }
     }

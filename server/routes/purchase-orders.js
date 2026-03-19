@@ -383,6 +383,12 @@ router.post(
               received_by = ?, received_at = CURRENT_TIMESTAMP
           WHERE id = ? AND purchase_order_id = ?
         `);
+        const updateItemLegacy = db.prepare(`
+          UPDATE purchase_order_items
+          SET received_quantity = received_quantity + ?, quality = ?, actual_price_per_unit = ?,
+              received_by = ?, received_at = CURRENT_TIMESTAMP
+          WHERE id = ? AND purchase_order_id = ?
+        `);
 
         const getStockRow = db.prepare(
           'SELECT id FROM material_stock WHERE material_id = ? AND location_id = ? LIMIT 1'
@@ -420,14 +426,27 @@ router.post(
           const actualReceiveQty = Math.min(item.received_quantity, maxReceivable);
           if (actualReceiveQty <= 0) continue;
 
-          updateItem.run(
-            actualReceiveQty,
-            item.received_quality || 'good',
-            item.actual_price_per_unit ?? poItem.expected_price_per_unit,
-            req.user.id,
-            item.item_id,
-            req.params.id
-          );
+          try {
+            updateItem.run(
+              actualReceiveQty,
+              item.received_quality || 'good',
+              item.actual_price_per_unit ?? poItem.expected_price_per_unit,
+              req.user.id,
+              item.item_id,
+              req.params.id
+            );
+          } catch (err) {
+            const msg = String(err?.message || '').toLowerCase();
+            if (!msg.includes('received_quality')) throw err;
+            updateItemLegacy.run(
+              actualReceiveQty,
+              item.received_quality || 'good',
+              item.actual_price_per_unit ?? poItem.expected_price_per_unit,
+              req.user.id,
+              item.item_id,
+              req.params.id
+            );
+          }
 
           // Update stock — convert bundles to base units
           if (actualReceiveQty > 0) {
