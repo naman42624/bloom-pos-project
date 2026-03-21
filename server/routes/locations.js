@@ -265,7 +265,7 @@ router.put(
         return res.status(400).json({ success: false, message: 'No fields to update' });
       }
 
-      updates.push("updated_at = datetime('now')");
+      updates.push("updated_at = CURRENT_TIMESTAMP");
       values.push(parseInt(req.params.id));
 
       db.prepare(`UPDATE locations SET ${updates.join(', ')} WHERE id = ?`).run(

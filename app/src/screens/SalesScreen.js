@@ -7,6 +7,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import api from '../services/api';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
+import { parseServerDate, formatDate, formatTime } from '../utils/datetime';
 
 const STATUS_COLORS = { completed: Colors.success, cancelled: Colors.error, draft: Colors.warning, pending: Colors.warning, preparing: Colors.info, ready: Colors.success };
 const PAY_COLORS = { paid: Colors.success, partial: Colors.warning, pending: Colors.error, refunded: Colors.textLight };
@@ -25,12 +26,12 @@ function groupSalesByDate(salesList) {
 
   // Sort by created_at (newest first)
   const sorted = [...salesList].sort((a, b) => 
-    new Date(b.created_at) - new Date(a.created_at)
+    parseServerDate(b.created_at) - parseServerDate(a.created_at)
   );
 
   const grouped = {};
   sorted.forEach(sale => {
-    const date = new Date(sale.created_at).toLocaleDateString('en-IN', { 
+    const date = formatDate(sale.created_at, 'en-IN', {
       weekday: 'short', 
       year: 'numeric', 
       month: 'short', 
@@ -142,7 +143,7 @@ export default function SalesScreen({ navigation }) {
               {(item.order_type || '').replace('_', ' ')} • {item.location_name || 'N/A'}
             </Text>
             {item.customer_name && <Text style={styles.cardCustomer}>{item.customer_name}</Text>}
-            <Text style={styles.cardDate}>{new Date(item.created_at).toLocaleTimeString('en-IN', { timeStyle: 'short' })}</Text>
+            <Text style={styles.cardDate}>{formatTime(item.created_at, 'en-IN', { hour: '2-digit', minute: '2-digit', hour12: true })}</Text>
           </View>
           <View style={{ alignItems: 'flex-end' }}>
             <Text style={styles.cardTotal}>₹{(item.grand_total || 0).toFixed(0)}</Text>

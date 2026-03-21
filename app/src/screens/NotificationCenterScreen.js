@@ -7,6 +7,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import api from '../services/api';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
+import { parseServerDate, formatDate } from '../utils/datetime';
 
 const TYPE_ICONS = {
   new_order: { name: 'cart', color: Colors.primary },
@@ -73,7 +74,9 @@ export default function NotificationCenterScreen({ navigation }) {
   };
 
   const timeAgo = (dateStr) => {
-    const diff = Date.now() - new Date(dateStr).getTime();
+    const d = parseServerDate(dateStr);
+    if (!d) return '';
+    const diff = Date.now() - d.getTime();
     const mins = Math.floor(diff / 60000);
     if (mins < 1) return 'Just now';
     if (mins < 60) return `${mins}m ago`;
@@ -81,7 +84,7 @@ export default function NotificationCenterScreen({ navigation }) {
     if (hrs < 24) return `${hrs}h ago`;
     const days = Math.floor(hrs / 24);
     if (days < 7) return `${days}d ago`;
-    return new Date(dateStr).toLocaleDateString();
+    return formatDate(dateStr);
   };
 
   const unreadCount = notifications.filter(n => !n.is_read).length;

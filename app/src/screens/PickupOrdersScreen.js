@@ -5,6 +5,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
+import { formatDateTime } from '../utils/datetime';
 
 const PICKUP_TABS = [
   { key: 'waiting', label: 'Preparing', icon: 'hourglass-outline' },
@@ -123,8 +124,12 @@ export default function PickupOrdersScreen({ navigation }) {
   const getTimeInfo = (item) => {
     // For picked up orders, show pickup time instead of countdown
     if (tab === 'picked_up' && item.picked_up_at) {
-      const d = new Date(item.picked_up_at);
-      return { label: 'Picked up ' + d.toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hour12: true }), countdown: null, isOverdue: false, isDone: true };
+      return {
+        label: 'Picked up ' + formatDateTime(item.picked_up_at, 'en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hour12: true }),
+        countdown: null,
+        isOverdue: false,
+        isDone: true,
+      };
     }
 
     if (!item.scheduled_date) return { label: null, countdown: null, isOverdue: false };

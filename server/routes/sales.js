@@ -480,6 +480,61 @@ router.get('/:id', authenticate, (req, res, next) => {
       ORDER BY si.id ASC
     `).all(req.params.id);
 
+    // Attach material composition (BOM) and production task for each item
+    const getBOM = db.prepare(`
+      SELECT pm.material_id, pm.quantity as qty_per_unit,
+             mat.name as material_name, mat.sku as material_sku,
+             mat.image_url as material_image,
+             mc.name as category_name, mc.unit
+      FROM product_materials pm
+      JOIN materials mat ON pm.material_id = mat.id
+      JOIN material_categories mc ON mat.category_id = mc.id
+      WHERE pm.product_id = ?
+      ORDER BY mc.name, mat.name
+    `);
+    const getTask = db.prepare(`
+      SELECT pt.id, pt.status, pt.quantity, pt.priority, pt.assigned_to, pt.picked_by,
+             pt.completed_at, pt.notes,
+             a.name as assigned_to_name, pk.name as picked_by_name
+      FROM production_tasks pt
+      LEFT JOIN users a ON pt.assigned_to = a.id
+      LEFT JOIN users pk ON pt.picked_by = pk.id
+      WHERE pt.sale_item_id = ? AND pt.status != 'cancelled'
+      ORDER BY pt.id DESC LIMIT 1
+    `);
+
+    for (const item of sale.items) {
+      if (item.product_id) {
+        item.materials = getBOM.all(item.product_id);
+        item.production_task = getTask.get(item.id) || null;
+      } else {
+        item.materials = [];
+        item.production_task = null;
+      }
+    }
+
+    // Production task summary for the entire sale
+    sale.production_summary = {
+      total_tasks: 0,
+      pending: 0,
+      assigned: 0,
+      in_progress: 0,
+      completed: 0,
+      cancelled: 0,
+    };
+    const taskCounts = db.prepare(`
+      SELECT status, COUNT(*) as cnt FROM production_tasks WHERE sale_id = ? GROUP BY status
+    `).all(req.params.id);
+    for (const tc of taskCounts) {
+      sale.production_summary.total_tasks += tc.cnt;
+      if (sale.production_summary[tc.status] !== undefined) {
+        sale.production_summary[tc.status] = tc.cnt;
+      }
+    }
+    sale.production_summary.all_done = sale.production_summary.pending === 0 &&
+      sale.production_summary.assigned === 0 &&
+      sale.production_summary.in_progress === 0;
+
     sale.payments = db.prepare(`
       SELECT p.*, u.name as received_by_name
       FROM payments p
@@ -810,7 +865,7 @@ router.post(
           if (register) {
             for (const pmt of payments) {
               if (pmt.method === 'cash') {
-                db.prepare('UPDATE cash_registers SET total_cash_sales = total_cash_sales + ?, expected_cash = opening_balance + total_cash_sales + ? - total_refunds_cash WHERE id = ?').run(pmt.amount, pmt.amount, register.id);
+                db.prepare('UPDATE cash_registers SET total_cash_sales = total_cash_sales + ?, expected_cash = expected_cash + ? WHERE id = ?').run(pmt.amount, pmt.amount, register.id);
               } else if (pmt.method === 'card') {
                 db.prepare('UPDATE cash_registers SET total_card_sales = total_card_sales + ? WHERE id = ?').run(pmt.amount, register.id);
               } else if (pmt.method === 'upi') {
@@ -953,7 +1008,7 @@ router.post(
       const register = db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND date = ?').get(sale.location_id, today);
       if (register) {
         if (method === 'cash') {
-          db.prepare('UPDATE cash_registers SET total_cash_sales = total_cash_sales + ?, expected_cash = opening_balance + total_cash_sales + ? - total_refunds_cash WHERE id = ?').run(amount, amount, register.id);
+          db.prepare('UPDATE cash_registers SET total_cash_sales = total_cash_sales + ?, expected_cash = expected_cash + ? WHERE id = ?').run(amount, amount, register.id);
         } else if (method === 'card') {
           db.prepare('UPDATE cash_registers SET total_card_sales = total_card_sales + ? WHERE id = ?').run(amount, register.id);
         } else if (method === 'upi') {
@@ -1025,7 +1080,8 @@ router.put(
 
 // ─── PUT /api/sales/:id/status ───────────────────────────────
 // Order lifecycle: pending → preparing → ready → completed
-// Materials are now deducted via production tasks, not at status transition
+// 'ready' is only allowed when ALL production tasks for this sale are completed/cancelled.
+// 'completed' is only allowed when status is 'ready'.
 router.put(
   '/:id/status',
   authenticate,
@@ -1056,7 +1112,34 @@ router.put(
         return res.status(400).json({ success: false, message: `Cannot transition from ${sale.status} to ${status}` });
       }
 
+      // ── Enforce production task completion before marking 'ready' ──
+      if (status === 'ready') {
+        const pendingTasks = db.prepare(
+          "SELECT COUNT(*) as cnt FROM production_tasks WHERE sale_id = ? AND status NOT IN ('completed', 'cancelled')"
+        ).get(sale.id);
+        if (pendingTasks.cnt > 0) {
+          return res.status(400).json({
+            success: false,
+            message: `Cannot mark as ready — ${pendingTasks.cnt} production task(s) still pending. Complete all tasks first.`,
+          });
+        }
+      }
+
       db.prepare('UPDATE sales SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(status, sale.id);
+
+      // If marking ready, also update stock_deducted flag
+      if (status === 'ready') {
+        db.prepare('UPDATE sales SET stock_deducted = 1 WHERE id = ?').run(sale.id);
+        // Update pickup_status for pickup orders
+        if (sale.order_type === 'pickup') {
+          db.prepare("UPDATE sales SET pickup_status = 'ready_for_pickup' WHERE id = ?").run(sale.id);
+        }
+      }
+
+      // If marking completed for pickup orders, update pickup_status
+      if (status === 'completed' && sale.order_type === 'pickup') {
+        db.prepare("UPDATE sales SET pickup_status = 'picked_up' WHERE id = ?").run(sale.id);
+      }
 
       const updated = db.prepare('SELECT * FROM sales WHERE id = ?').get(sale.id);
       res.json({ success: true, data: updated });
@@ -1305,7 +1388,7 @@ router.post(
         const today = localToday();
         const register = db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND date = ?').get(sale.location_id, today);
         if (register) {
-          db.prepare('UPDATE cash_registers SET total_refunds_cash = total_refunds_cash + ?, expected_cash = opening_balance + total_cash_sales - total_refunds_cash - ? WHERE id = ?').run(amount, amount, register.id);
+          db.prepare('UPDATE cash_registers SET total_refunds_cash = total_refunds_cash + ?, expected_cash = expected_cash - ? WHERE id = ?').run(amount, amount, register.id);
         }
       }
 
@@ -1442,6 +1525,112 @@ router.post(
       });
 
       const result = createOrder();
+      res.status(201).json({ success: true, data: result });
+    } catch (err) { next(err); }
+  }
+);
+
+// ─── POST /api/sales/custom-item ─────────────────────────────
+// Create a customized product variant during sale (add/remove materials, custom charges).
+// Returns the product_id and adjusted price for the POS to add to the cart.
+router.post(
+  '/custom-item',
+  authenticate,
+  authorize('owner', 'manager', 'employee'),
+  [
+    body('base_product_id').optional({ nullable: true }).isInt(),
+    body('name').trim().notEmpty().withMessage('Name is required'),
+    body('base_price').isFloat({ min: 0 }).withMessage('Base price is required'),
+    body('custom_charge').optional().isFloat(),
+    body('location_id').isInt().withMessage('Location is required'),
+    body('materials').optional().isArray(),
+    body('materials.*.material_id').optional().isInt(),
+    body('materials.*.quantity').optional().isFloat({ min: 0.01 }),
+    body('add_materials').optional().isArray(),
+    body('add_materials.*.material_id').optional().isInt(),
+    body('add_materials.*.quantity').optional().isFloat({ min: 0.01 }),
+    body('remove_material_ids').optional().isArray(),
+    body('notes').optional().trim(),
+  ],
+  (req, res, next) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) return res.status(400).json({ success: false, message: 'Validation failed', errors: errors.array() });
+
+      const db = getDb();
+      const {
+        base_product_id, name, base_price, custom_charge,
+        location_id, materials, add_materials, remove_material_ids, notes,
+      } = req.body;
+
+      const loc = db.prepare('SELECT id FROM locations WHERE id = ?').get(location_id);
+      if (!loc) return res.status(404).json({ success: false, message: 'Location not found' });
+
+      const createCustom = db.transaction(() => {
+        // 1. Create custom product variant
+        const sku = 'CUST-' + Date.now().toString(36).toUpperCase();
+        const finalPrice = (base_price || 0) + (custom_charge || 0);
+
+        const prodResult = db.prepare(
+          `INSERT INTO products (name, sku, category, type, selling_price, is_active, created_by)
+           VALUES (?, ?, 'other', 'custom', ?, 1, ?)`
+        ).run(name, sku, finalPrice, req.user.id);
+        const productId = prodResult.lastInsertRowid;
+
+        // 2. Build BOM from base product + modifications
+        let finalMaterials = [];
+
+        if (base_product_id) {
+          // Start with base product's BOM
+          const baseBOM = db.prepare(
+            'SELECT material_id, quantity FROM product_materials WHERE product_id = ?'
+          ).all(base_product_id);
+          finalMaterials = baseBOM.map(b => ({ material_id: b.material_id, quantity: b.quantity }));
+
+          // Remove specified materials
+          if (remove_material_ids && remove_material_ids.length > 0) {
+            finalMaterials = finalMaterials.filter(m => !remove_material_ids.includes(m.material_id));
+          }
+
+          // Add new materials
+          if (add_materials && add_materials.length > 0) {
+            for (const am of add_materials) {
+              const existing = finalMaterials.find(m => m.material_id === am.material_id);
+              if (existing) {
+                existing.quantity += am.quantity;
+              } else {
+                finalMaterials.push({ material_id: am.material_id, quantity: am.quantity });
+              }
+            }
+          }
+        } else if (materials && materials.length > 0) {
+          // Fully custom — use provided materials directly
+          finalMaterials = materials;
+        }
+
+        // 3. Insert BOM for custom product
+        const insertBom = db.prepare(
+          'INSERT INTO product_materials (product_id, material_id, quantity) VALUES (?, ?, ?)'
+        );
+        for (const m of finalMaterials) {
+          if (m.material_id && m.quantity > 0) {
+            insertBom.run(productId, m.material_id, m.quantity);
+          }
+        }
+
+        return {
+          product_id: productId,
+          sku,
+          name,
+          selling_price: finalPrice,
+          base_price,
+          custom_charge: custom_charge || 0,
+          materials: finalMaterials,
+          type: 'custom',
+        };
+      });
+
+      const result = createCustom();
       res.status(201).json({ success: true, data: result });
     } catch (err) { next(err); }
   }

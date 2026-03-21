@@ -5,6 +5,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
+import { formatDateTime } from '../utils/datetime';
 
 const STATUS_TABS = [
   { key: 'all', label: 'All' },
@@ -182,8 +183,12 @@ export default function DeliveriesScreen({ navigation }) {
   const getTimeInfo = (item) => {
     // For delivered/failed orders, show completion time instead of countdown
     if (item.status === 'delivered' && item.delivered_time) {
-      const d = new Date(item.delivered_time);
-      return { label: 'Delivered ' + d.toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hour12: true }), countdown: null, isOverdue: false, isDone: true };
+      return {
+        label: 'Delivered ' + formatDateTime(item.delivered_time, 'en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hour12: true }),
+        countdown: null,
+        isOverdue: false,
+        isDone: true,
+      };
     }
     if (item.status === 'failed') {
       return { label: 'Failed', countdown: null, isOverdue: false, isDone: true };

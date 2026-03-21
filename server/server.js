@@ -179,7 +179,7 @@ const server = httpServer.listen(PORT, () => {
         JOIN employee_shifts es ON ge.user_id = es.user_id AND ge.location_id = es.location_id AND es.is_active = 1
         LEFT JOIN attendance a ON a.user_id = ge.user_id AND a.date = ?
         WHERE ge.event_type = 'exit' AND ge.processed = 0
-        AND datetime(ge.created_at, '+' || es.geofence_timeout_minutes || ' minutes') <= datetime('now')
+        AND ge.created_at + (es.geofence_timeout_minutes * INTERVAL '1 minute') <= NOW()
         AND a.clock_in IS NOT NULL AND a.clock_out IS NULL
       `).all(today);
 

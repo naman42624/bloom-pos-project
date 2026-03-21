@@ -293,6 +293,37 @@ router.get('/tasks', authenticate, authorize('owner', 'manager', 'employee'), (r
       pt.created_at ASC`;
 
     const tasks = db.prepare(sql).all(...params);
+
+    // Attach BOM (material composition) for each task
+    const getBOM = db.prepare(`
+      SELECT pm.material_id, pm.quantity as qty_per_unit,
+             mat.name as material_name, mat.sku as material_sku,
+             mat.image_url as material_image,
+             mc.name as category_name, mc.unit
+      FROM product_materials pm
+      JOIN materials mat ON pm.material_id = mat.id
+      JOIN material_categories mc ON mat.category_id = mc.id
+      WHERE pm.product_id = ?
+      ORDER BY mc.name, mat.name
+    `);
+    const getStock = db.prepare(
+      'SELECT quantity FROM material_stock WHERE material_id = ? AND location_id = ?'
+    );
+
+    for (const task of tasks) {
+      const bom = getBOM.all(task.product_id);
+      task.materials = bom.map(b => {
+        const stock = getStock.get(b.material_id, task.location_id);
+        const needed = b.qty_per_unit * task.quantity;
+        return {
+          ...b,
+          total_needed: needed,
+          in_stock: stock ? stock.quantity : 0,
+          sufficient: stock ? stock.quantity >= needed : false,
+        };
+      });
+    }
+
     res.json({ success: true, data: tasks });
   } catch (err) { next(err); }
 });

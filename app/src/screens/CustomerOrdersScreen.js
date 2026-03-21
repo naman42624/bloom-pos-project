@@ -4,6 +4,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import api from '../services/api';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
+import { formatDate } from '../utils/datetime';
 
 export default function CustomerOrdersScreen({ navigation }) {
   const [tab, setTab] = useState('orders'); // orders | dues
@@ -15,7 +16,7 @@ export default function CustomerOrdersScreen({ navigation }) {
     try {
       setLoading(true);
       if (tab === 'orders') {
-        const res = await api.getCustomerOrders();
+        const res = await api.getMyOrders();
         setOrders(res.data || []);
       } else {
         const res = await api.getCustomerDues();
@@ -48,7 +49,7 @@ export default function CustomerOrdersScreen({ navigation }) {
       <View style={styles.cardRow}>
         <View style={{ flex: 1 }}>
           <Text style={styles.orderNum}>{item.sale_number}</Text>
-          <Text style={styles.cardDate}>{new Date(item.created_at).toLocaleDateString()}</Text>
+          <Text style={styles.cardDate}>{formatDate(item.created_at)}</Text>
         </View>
         <View style={{ alignItems: 'flex-end' }}>
           <Text style={styles.amount}>₹{(item.grand_total || 0).toFixed(0)}</Text>
@@ -107,7 +108,7 @@ export default function CustomerOrdersScreen({ navigation }) {
       <View style={styles.cardRow}>
         <View style={{ flex: 1 }}>
           <Text style={styles.orderNum}>{item.sale_number}</Text>
-          <Text style={styles.cardDate}>{new Date(item.created_at).toLocaleDateString()}</Text>
+          <Text style={styles.cardDate}>{formatDate(item.created_at)}</Text>
         </View>
         <View style={{ alignItems: 'flex-end' }}>
           <Text style={styles.totalLabel}>Due</Text>

@@ -8,6 +8,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
+import { formatTime as formatServerTime, parseServerDate } from '../utils/datetime';
 
 const confirm = (title, msg, onOk) => {
   if (Platform.OS === 'web') { if (window.confirm(`${title}\n${msg}`)) onOk(); }
@@ -15,9 +16,7 @@ const confirm = (title, msg, onOk) => {
 };
 
 function formatTime(iso) {
-  if (!iso) return '--:--';
-  const d = new Date(iso);
-  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return formatServerTime(iso, 'en-IN', { hour: '2-digit', minute: '2-digit' });
 }
 
 function formatHours(h) {
@@ -64,7 +63,7 @@ export default function AttendanceScreen({ navigation }) {
       const allLocations = locsRes.data?.locations || locsRes.data || [];
       const allowedIds = new Set((assignedLocations || []).map((l) => l.id));
       const locs = allLocations
-        .filter(l => (l.type === 'shop' || l.type == null) && l.is_active)
+        .filter(l => (l.type === 'shop' || l.type == null) && l.is_active !== 0)
         .filter(l => isOwner || allowedIds.size === 0 || allowedIds.has(l.id));
       setLocations(locs);
       if (!selectedLocation && locs.length > 0) {
@@ -86,7 +85,7 @@ export default function AttendanceScreen({ navigation }) {
   useFocusEffect(useCallback(() => { fetchData(); }, [fetchData]));
 
   const handleClockIn = async () => {
-    const locationId = selectedLocation?.id;
+    const locationId = selectedLocation?.id || activeLocation?.id || locations[0]?.id;
     if (!locationId) {
       Alert.alert('Select Location', 'Please select a location to clock in.');
       return;
@@ -186,7 +185,10 @@ export default function AttendanceScreen({ navigation }) {
       const completedHours = todayLogs
         .filter(l => l.clock_out && l.id !== attendance.id)
         .reduce((sum, l) => sum + (l.total_hours || 0), 0);
-      const currentShift = Math.max(0, (Date.now() - new Date(attendance.clock_in).getTime()) / (1000 * 60 * 60));
+      const inTime = parseServerDate(attendance.clock_in);
+      const currentShift = inTime
+        ? Math.max(0, (Date.now() - inTime.getTime()) / (1000 * 60 * 60))
+        : 0;
       setElapsedTime(completedHours + currentShift);
     };
     update();

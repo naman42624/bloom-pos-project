@@ -221,38 +221,38 @@ router.post(
 
           const usedInProducts = openingStock + purchased.total - entry.closing_stock - (entry.wastage || 0);
 
-          // Upsert daily log
-          db.prepare(`
-            INSERT INTO daily_stock_logs (location_id, material_id, date, opening_stock, received_stock, used_in_products, closing_stock, wastage, wastage_reason, counted_by)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(location_id, material_id, date) DO UPDATE SET
-              closing_stock = excluded.closing_stock,
-              wastage = excluded.wastage,
-              wastage_reason = excluded.wastage_reason,
-              used_in_products = excluded.used_in_products,
-              counted_by = excluded.counted_by
-          `).run(
-            location_id,
-            entry.material_id,
-            today,
-            openingStock,
-            purchased.total,
-            Math.max(usedInProducts, 0),
-            entry.closing_stock,
-            entry.wastage || 0,
-            entry.wastage_reason || '',
-            req.user.id
-          );
+          // Upsert daily log — using column names from database.js schema: stock_in, stock_out, notes
+          // Upsert daily log — explicit SELECT+INSERT/UPDATE for psql shim compatibility
+          const existingLog = db.prepare(
+            'SELECT id FROM daily_stock_logs WHERE location_id = ? AND material_id = ? AND date = ?'
+          ).get(location_id, entry.material_id, today);
 
-          // Update actual stock to match closing count
-          db.prepare(`
-            INSERT INTO material_stock (material_id, location_id, quantity, last_counted_at)
-            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(material_id, location_id) DO UPDATE SET
-              quantity = excluded.quantity,
-              last_counted_at = CURRENT_TIMESTAMP,
-              updated_at = CURRENT_TIMESTAMP
-          `).run(entry.material_id, location_id, entry.closing_stock);
+          if (existingLog) {
+            db.prepare(`
+              UPDATE daily_stock_logs SET closing_stock = ?, wastage = ?, notes = ?, stock_out = ?, counted_by = ?
+              WHERE id = ?
+            `).run(entry.closing_stock, entry.wastage || 0, entry.wastage_reason || '', Math.max(usedInProducts, 0), req.user.id, existingLog.id);
+          } else {
+            db.prepare(`
+              INSERT INTO daily_stock_logs (location_id, material_id, date, opening_stock, stock_in, stock_out, closing_stock, wastage, notes, counted_by)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `).run(location_id, entry.material_id, today, openingStock, purchased.total, Math.max(usedInProducts, 0), entry.closing_stock, entry.wastage || 0, entry.wastage_reason || '', req.user.id);
+          }
+
+          // Update actual stock to match closing count — explicit SELECT+INSERT/UPDATE
+          const existingMaterialStock = db.prepare(
+            'SELECT id FROM material_stock WHERE material_id = ? AND location_id = ?'
+          ).get(entry.material_id, location_id);
+
+          if (existingMaterialStock) {
+            db.prepare(
+              'UPDATE material_stock SET quantity = ?, last_counted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?'
+            ).run(entry.closing_stock, existingMaterialStock.id);
+          } else {
+            db.prepare(
+              'INSERT INTO material_stock (material_id, location_id, quantity, last_counted_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)'
+            ).run(entry.material_id, location_id, entry.closing_stock);
+          }
 
           // Record wastage transaction if any
           if (entry.wastage > 0) {
@@ -285,12 +285,11 @@ router.get('/reconcile', authenticate, (req, res, next) => {
 
     const logs = db.prepare(`
       SELECT dsl.*, m.name as material_name, m.sku, mc.name as category_name,
-             u1.name as counted_by_name, u2.name as verified_by_name
+             u1.name as counted_by_name
       FROM daily_stock_logs dsl
       JOIN materials m ON dsl.material_id = m.id
       JOIN material_categories mc ON m.category_id = mc.id
       LEFT JOIN users u1 ON dsl.counted_by = u1.id
-      LEFT JOIN users u2 ON dsl.verified_by = u2.id
       WHERE dsl.location_id = ? AND dsl.date = ?
       ORDER BY mc.name ASC, m.name ASC
     `).all(location_id, targetDate);
@@ -446,14 +445,20 @@ router.put(
           'UPDATE stock_transfers SET status = ?, received_by = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'
         ).run('received', req.user.id, req.params.id);
 
-        // Add stock to destination
-        db.prepare(`
-          INSERT INTO material_stock (material_id, location_id, quantity)
-          VALUES (?, ?, ?)
-          ON CONFLICT(material_id, location_id) DO UPDATE SET
-            quantity = quantity + excluded.quantity,
-            updated_at = CURRENT_TIMESTAMP
-        `).run(transfer.material_id, transfer.to_location_id, transfer.quantity);
+        // Add stock to destination — explicit SELECT then INSERT/UPDATE to avoid ON CONFLICT issues with psql shim
+        const existingStock = db.prepare(
+          'SELECT id, quantity FROM material_stock WHERE material_id = ? AND location_id = ?'
+        ).get(transfer.material_id, transfer.to_location_id);
+
+        if (existingStock) {
+          db.prepare(
+            'UPDATE material_stock SET quantity = quantity + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'
+          ).run(transfer.quantity, existingStock.id);
+        } else {
+          db.prepare(
+            'INSERT INTO material_stock (material_id, location_id, quantity) VALUES (?, ?, ?)'
+          ).run(transfer.material_id, transfer.to_location_id, transfer.quantity);
+        }
 
         // Record transaction
         db.prepare(

@@ -292,7 +292,7 @@ router.put(
         });
       }
 
-      updates.push("updated_at = datetime('now')");
+      updates.push("updated_at = CURRENT_TIMESTAMP");
       values.push(req.user.id);
 
       db.prepare('UPDATE users SET ' + updates.join(', ') + ' WHERE id = ?').run(
@@ -352,7 +352,7 @@ router.put(
       const hashedPassword = await bcrypt.hash(newPassword, salt);
 
       db.prepare(
-        "UPDATE users SET password = ?, updated_at = datetime('now') WHERE id = ?"
+        "UPDATE users SET password = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
       ).run(hashedPassword, req.user.id);
 
       res.json({
@@ -438,7 +438,7 @@ router.post(
 
       if (shopName) {
         db.prepare(
-          "UPDATE settings SET value = ?, updated_by = ?, updated_at = datetime('now') WHERE key = 'shop_name'"
+          "UPDATE settings SET value = ?, updated_by = ?, updated_at = CURRENT_TIMESTAMP WHERE key = 'shop_name'"
         ).run(shopName, user.id);
       }
 

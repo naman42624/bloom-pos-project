@@ -292,6 +292,11 @@ export default function ProductionQueueScreen({ navigation }) {
         <View style={styles.cardHeader}>
           <View style={{ flex: 1 }}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+              {item.product_image && (
+                <View style={{ width: 40, height: 40, borderRadius: 8, overflow: 'hidden', backgroundColor: Colors.background }}>
+                  <View style={{ width: 40, height: 40 }}><Text style={{ fontSize: 24, textAlign: 'center', lineHeight: 40 }}>📦</Text></View>
+                </View>
+              )}
               <Text style={styles.taskProduct}>{item.quantity}x {item.product_name}</Text>
               {item.priority === 'urgent' && (
                 <View style={styles.urgentBadge}>
@@ -326,6 +331,23 @@ export default function ProductionQueueScreen({ navigation }) {
           <View style={styles.assignedRow}>
             <Ionicons name="calendar" size={14} color={Colors.primary} />
             <Text style={styles.assignedText}>{item.scheduled_date} {item.scheduled_time || ''}</Text>
+          </View>
+        )}
+
+        {/* Material composition (BOM) */}
+        {item.materials && item.materials.length > 0 && (
+          <View style={styles.bomSection}>
+            <Text style={styles.bomSectionTitle}>Materials Needed:</Text>
+            {item.materials.map((mat, mIdx) => (
+              <View key={mIdx} style={styles.bomMaterialRow}>
+                <View style={[styles.stockDot, { backgroundColor: mat.sufficient ? Colors.success : Colors.error }]} />
+                <Text style={styles.bomMatName} numberOfLines={1}>{mat.material_name}</Text>
+                <Text style={styles.bomMatQty}>{mat.total_needed} {mat.unit}</Text>
+                <Text style={[styles.bomMatStock, { color: mat.sufficient ? Colors.success : Colors.error }]}>
+                  ({mat.in_stock} avail)
+                </Text>
+              </View>
+            ))}
           </View>
         )}
 
@@ -727,4 +749,16 @@ const styles = StyleSheet.create({
   },
   empName: { fontSize: FontSize.md, fontWeight: '600', color: Colors.text },
   empRole: { fontSize: FontSize.sm, color: Colors.textLight, textTransform: 'capitalize' },
+
+  // BOM / Material composition styles
+  bomSection: {
+    backgroundColor: Colors.background, borderRadius: 8, padding: 8, marginTop: 8,
+    borderWidth: 1, borderColor: Colors.border,
+  },
+  bomSectionTitle: { fontSize: FontSize.xs, fontWeight: '700', color: Colors.textSecondary, marginBottom: 4 },
+  bomMaterialRow: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 2 },
+  stockDot: { width: 6, height: 6, borderRadius: 3 },
+  bomMatName: { flex: 1, fontSize: FontSize.xs, color: Colors.text },
+  bomMatQty: { fontSize: FontSize.xs, fontWeight: '600', color: Colors.textSecondary, minWidth: 50, textAlign: 'right' },
+  bomMatStock: { fontSize: FontSize.xs, fontWeight: '600', minWidth: 60, textAlign: 'right' },
 });

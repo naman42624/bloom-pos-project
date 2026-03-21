@@ -302,13 +302,26 @@ router.put(
           values.push(totalAmount);
         }
 
-        if (updates.length === 0) {
+        if (updates.length === 0 && !req.body.items) {
           return;
         }
 
-        updates.push('updated_at = CURRENT_TIMESTAMP');
-        values.push(req.params.id);
-        db.prepare(`UPDATE purchase_orders SET ${updates.join(', ')} WHERE id = ?`).run(...values);
+        if (updates.length > 0) {
+          updates.push('updated_at = CURRENT_TIMESTAMP');
+          values.push(req.params.id);
+          db.prepare(`UPDATE purchase_orders SET ${updates.join(', ')} WHERE id = ?`).run(...values);
+        }
+
+        // If items changed but no meta fields, still update total_amount and timestamp
+        if (req.body.items && req.body.items.length > 0 && updates.length === 0) {
+          // total_amount was pushed into updates above during item processing, but since updates was empty
+          // we need to compute it here
+          let totalAmount = 0;
+          for (const item of req.body.items) {
+            totalAmount += (item.expected_quantity || 0) * (item.expected_price_per_unit || 0);
+          }
+          db.prepare('UPDATE purchase_orders SET total_amount = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(totalAmount, req.params.id);
+        }
       });
 
       updateOrder();

@@ -821,10 +821,88 @@ router.put(
       const sale = db.prepare("SELECT * FROM sales WHERE id = ? AND order_type = 'pickup'").get(req.params.saleId);
       if (!sale) return res.status(404).json({ success: false, message: 'Pickup order not found' });
 
-      db.prepare("UPDATE sales SET pickup_status = 'ready_for_pickup', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(sale.id);
+      const markReadyTx = db.transaction(() => {
+        const items = db.prepare('SELECT * FROM sale_items WHERE sale_id = ?').all(sale.id);
+        const getMaterialStock = db.prepare('SELECT quantity FROM material_stock WHERE material_id = ? AND location_id = ?');
+        const deductMaterialStock = db.prepare('UPDATE material_stock SET quantity = quantity - ?, updated_at = CURRENT_TIMESTAMP WHERE material_id = ? AND location_id = ?');
+        const getProductStock = db.prepare('SELECT quantity FROM product_stock WHERE product_id = ? AND location_id = ?');
+        const deductProductStock = db.prepare('UPDATE product_stock SET quantity = quantity - ?, updated_at = CURRENT_TIMESTAMP WHERE product_id = ? AND location_id = ?');
+        const getBom = db.prepare('SELECT material_id, quantity FROM product_materials WHERE product_id = ?');
+        const markDeducted = db.prepare('UPDATE sale_items SET materials_deducted = 1 WHERE id = ?');
+        const markFromStock = db.prepare('UPDATE sale_items SET from_product_stock = 1, materials_deducted = 1 WHERE id = ?');
+        const logMaterialTx = db.prepare(`
+          INSERT INTO material_transactions
+          (material_id, location_id, type, quantity, reference_type, reference_id, notes, created_by)
+          VALUES (?, ?, 'usage', ?, 'sale', ?, ?, ?)
+        `);
+
+        for (const item of items) {
+          if (item.materials_deducted) continue;
+
+          if (item.material_id) {
+            const stock = getMaterialStock.get(item.material_id, sale.location_id);
+            const available = stock ? Number(stock.quantity || 0) : 0;
+            const required = Number(item.quantity || 0);
+            if (available < required) {
+              throw new Error(`Insufficient material stock for ${item.product_name || 'item'}. Available ${available}, required ${required}`);
+            }
+            deductMaterialStock.run(required, item.material_id, sale.location_id);
+            logMaterialTx.run(item.material_id, sale.location_id, required, sale.id, `Pickup ready ${sale.sale_number}`, req.user.id);
+            markDeducted.run(item.id);
+            continue;
+          }
+
+          if (item.product_id) {
+            const required = Number(item.quantity || 0);
+            const readyStock = getProductStock.get(item.product_id, sale.location_id);
+            const availableProduct = readyStock ? Number(readyStock.quantity || 0) : 0;
+
+            if (availableProduct >= required) {
+              deductProductStock.run(required, item.product_id, sale.location_id);
+              markFromStock.run(item.id);
+              continue;
+            }
+
+            const bom = getBom.all(item.product_id);
+            if (!bom.length) {
+              throw new Error(`Insufficient product stock for ${item.product_name || 'item'} and no BOM configured`);
+            }
+
+            for (const bomItem of bom) {
+              const reqQty = Number(bomItem.quantity || 0) * required;
+              const mStock = getMaterialStock.get(bomItem.material_id, sale.location_id);
+              const mAvailable = mStock ? Number(mStock.quantity || 0) : 0;
+              if (mAvailable < reqQty) {
+                throw new Error(`Insufficient BOM stock for ${item.product_name || 'item'}. Required ${reqQty}, available ${mAvailable}`);
+              }
+            }
+
+            for (const bomItem of bom) {
+              const reqQty = Number(bomItem.quantity || 0) * required;
+              deductMaterialStock.run(reqQty, bomItem.material_id, sale.location_id);
+              logMaterialTx.run(bomItem.material_id, sale.location_id, reqQty, sale.id, `Pickup ready ${sale.sale_number}`, req.user.id);
+            }
+            markDeducted.run(item.id);
+          }
+        }
+
+        db.prepare(`
+          UPDATE sales
+          SET pickup_status = 'ready_for_pickup', status = 'ready', stock_deducted = 1, updated_at = CURRENT_TIMESTAMP
+          WHERE id = ?
+        `).run(sale.id);
+      });
+
+      markReadyTx();
 
       res.json({ success: true, message: 'Order marked as ready for pickup' });
-    } catch (err) { next(err); }
+    } catch (err) {
+      const msg = String(err?.message || '');
+      if (msg.toLowerCase().includes('insufficient')) {
+        return res.status(400).json({ success: false, message: msg });
+      }
+      next(err);
+    }
   }
 );
 

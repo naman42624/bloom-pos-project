@@ -51,7 +51,7 @@ router.put(
       const { settings } = req.body;
 
       const update = db.prepare(
-        "UPDATE settings SET value = ?, updated_by = ?, updated_at = datetime('now') WHERE key = ?"
+        "UPDATE settings SET value = ?, updated_by = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?"
       );
 
       const tx = db.transaction(() => {
@@ -192,7 +192,7 @@ router.put(
         if (is_active !== undefined) { updates.push('is_active = ?'); values.push(is_active ? 1 : 0); }
 
         if (updates.length > 0) {
-          updates.push("updated_at = datetime('now')");
+          updates.push("updated_at = CURRENT_TIMESTAMP");
           values.push(parseInt(req.params.id));
           db.prepare(`UPDATE tax_rates SET ${updates.join(', ')} WHERE id = ?`).run(...values);
         }

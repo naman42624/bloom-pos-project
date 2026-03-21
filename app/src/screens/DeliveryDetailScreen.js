@@ -8,6 +8,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
+import { parseServerDate, formatDate, formatDateTime } from '../utils/datetime';
 
 const STATUS_STEPS = ['pending', 'assigned', 'picked_up', 'in_transit', 'delivered'];
 const STATUS_LABELS = { pending: 'Pending', assigned: 'Assigned', picked_up: 'Picked Up', in_transit: 'In Transit', delivered: 'Delivered', failed: 'Failed', cancelled: 'Cancelled' };
@@ -226,7 +227,7 @@ export default function DeliveryDetailScreen({ route, navigation }) {
     const locationAddress = delivery.location_address || '';
     const locationPhone = delivery.location_phone || '';
     const orderNo = delivery.sale_number || '';
-    const date = new Date(delivery.created_at).toLocaleDateString();
+    const date = formatDate(delivery.created_at);
     const customerName = delivery.customer_name || '';
     const customerPhone = delivery.customer_phone || '';
     const address = delivery.delivery_address || '';
@@ -362,25 +363,25 @@ export default function DeliveryDetailScreen({ route, navigation }) {
             {delivery.created_at && (
               <View style={styles.timelineRow}>
                 <Ionicons name="add-circle" size={16} color="#FF9800" />
-                <Text style={styles.timelineText}>Created: {new Date(delivery.created_at).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}</Text>
+                <Text style={styles.timelineText}>Created: {formatDateTime(delivery.created_at)}</Text>
               </View>
             )}
             {delivery.assigned_at && (
               <View style={styles.timelineRow}>
                 <Ionicons name="person-add" size={16} color="#2196F3" />
-                <Text style={styles.timelineText}>Assigned: {new Date(delivery.assigned_at).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}</Text>
+                <Text style={styles.timelineText}>Assigned: {formatDateTime(delivery.assigned_at)}</Text>
               </View>
             )}
             {delivery.pickup_time && (
               <View style={styles.timelineRow}>
                 <Ionicons name="cube" size={16} color="#9C27B0" />
-                <Text style={styles.timelineText}>Picked Up: {new Date(delivery.pickup_time).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}</Text>
+                <Text style={styles.timelineText}>Picked Up: {formatDateTime(delivery.pickup_time)}</Text>
               </View>
             )}
             {delivery.delivered_time && (
               <View style={styles.timelineRow}>
                 <Ionicons name="checkmark-circle" size={16} color="#4CAF50" />
-                <Text style={styles.timelineText}>Delivered: {new Date(delivery.delivered_time).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}</Text>
+                <Text style={styles.timelineText}>Delivered: {formatDateTime(delivery.delivered_time)}</Text>
               </View>
             )}
             {delivery.pickup_time && delivery.delivered_time && (
@@ -388,7 +389,9 @@ export default function DeliveryDetailScreen({ route, navigation }) {
                 <Ionicons name="timer" size={16} color={Colors.success} />
                 <Text style={[styles.timelineText, { fontWeight: '700', color: Colors.success }]}>
                   Delivery Time: {(() => {
-                    const mins = Math.round((new Date(delivery.delivered_time) - new Date(delivery.pickup_time)) / 60000);
+                    const deliveredAt = parseServerDate(delivery.delivered_time);
+                    const pickupAt = parseServerDate(delivery.pickup_time);
+                    const mins = deliveredAt && pickupAt ? Math.round((deliveredAt - pickupAt) / 60000) : 0;
                     return mins >= 60 ? `${Math.floor(mins / 60)}h ${mins % 60}m` : `${mins}m`;
                   })()}
                 </Text>
@@ -495,7 +498,7 @@ export default function DeliveryDetailScreen({ route, navigation }) {
               <View key={i} style={styles.paymentRow}>
                 <Text style={styles.cardText}>{p.method?.toUpperCase()}</Text>
                 <Text style={styles.cardText}>₹{p.amount.toFixed(0)}</Text>
-                <Text style={[styles.cardText, { fontSize: FontSize.xs }]}>{new Date(p.created_at).toLocaleDateString()}</Text>
+                <Text style={[styles.cardText, { fontSize: FontSize.xs }]}>{formatDate(p.created_at)}</Text>
               </View>
             ))}
           </View>

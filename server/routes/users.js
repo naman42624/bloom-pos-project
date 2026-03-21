@@ -336,7 +336,7 @@ router.put(
         }
 
         if (updates.length > 0) {
-          updates.push("updated_at = datetime('now')");
+          updates.push("updated_at = CURRENT_TIMESTAMP");
           values.push(parseInt(req.params.id));
           db.prepare(`UPDATE users SET ${updates.join(', ')} WHERE id = ?`).run(...values);
         }
@@ -418,7 +418,7 @@ router.put(
       const salt = await bcrypt.genSalt(12);
       const hashedPassword = await bcrypt.hash(req.body.newPassword, salt);
 
-      db.prepare("UPDATE users SET password = ?, updated_at = datetime('now') WHERE id = ?").run(
+      db.prepare("UPDATE users SET password = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(
         hashedPassword,
         parseInt(req.params.id)
       );

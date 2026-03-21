@@ -8,6 +8,8 @@ import * as Sharing from 'expo-sharing';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
+import { formatDateTime } from '../utils/datetime';
+import { Image } from 'react-native';
 
 const STATUS_COLORS = {
   completed: Colors.success,
@@ -25,11 +27,20 @@ const PAYMENT_STATUS_COLORS = {
   refunded: Colors.textLight,
 };
 
+const TASK_STATUS_COLORS = {
+  pending: '#FF9800',
+  assigned: '#2196F3',
+  in_progress: '#00BCD4',
+  completed: '#4CAF50',
+  cancelled: '#9E9E9E',
+};
+
 export default function SaleDetailScreen({ route, navigation }) {
   const { saleId } = route.params;
   const { user } = useAuth();
   const [sale, setSale] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [expandedItems, setExpandedItems] = useState({});
 
   const canManage = user?.role === 'owner' || user?.role === 'manager';
 
@@ -112,6 +123,22 @@ export default function SaleDetailScreen({ route, navigation }) {
     );
   };
 
+  // Production task actions
+  const handleTaskAction = async (taskId, action, label) => {
+    try {
+      if (action === 'pick') await api.pickTask(taskId);
+      else if (action === 'start') await api.startTask(taskId);
+      else if (action === 'complete') await api.completeTask(taskId);
+      fetchSale();
+    } catch (err) {
+      Alert.alert('Error', err.message || `Failed to ${label}`);
+    }
+  };
+
+  const toggleItemExpand = (idx) => {
+    setExpandedItems(prev => ({ ...prev, [idx]: !prev[idx] }));
+  };
+
   const openConvertModal = (target) => {
     setConvertTarget(target);
     setConvertAddress(sale?.delivery_address || '');
@@ -162,7 +189,7 @@ export default function SaleDetailScreen({ route, navigation }) {
           <h2>BloomCart POS</h2>
           <p>${sale.location_name || ''}</p>
           <p>Invoice: <strong>${sale.sale_number}</strong></p>
-          <p>${new Date(sale.created_at).toLocaleString()}</p>
+          <p>${formatDateTime(sale.created_at)}</p>
         </div>
         ${sale.customer_name ? `<p>Customer: ${sale.customer_name}</p>` : ''}
         ${sale.customer_phone ? `<p>Phone: ${sale.customer_phone}</p>` : ''}
@@ -221,7 +248,7 @@ export default function SaleDetailScreen({ route, navigation }) {
         <View style={styles.headerRow}>
           <View>
             <Text style={styles.saleNumber}>{sale.sale_number}</Text>
-            <Text style={styles.saleDate}>{new Date(sale.created_at).toLocaleString()}</Text>
+            <Text style={styles.saleDate}>{formatDateTime(sale.created_at)}</Text>
           </View>
           <View style={[styles.statusBadge, { backgroundColor: (STATUS_COLORS[sale.status] || Colors.textLight) + '20' }]}>
             <Text style={[styles.statusText, { color: STATUS_COLORS[sale.status] || Colors.textLight }]}>
@@ -337,14 +364,80 @@ export default function SaleDetailScreen({ route, navigation }) {
             && !['cancelled', 'completed'].includes(sale.status)
             && item.product_id
             && !item.from_product_stock;
+          const task = item.production_task;
+          const hasMaterials = item.materials && item.materials.length > 0;
+          const isExpanded = expandedItems[idx];
           return (
             <View key={idx} style={styles.itemRow}>
               <View style={{ flex: 1 }}>
-                <Text style={styles.itemName}>{itemName}</Text>
-                <Text style={styles.itemMeta}>
-                  {item.quantity} × ₹{(item.unit_price || 0).toFixed(2)}
-                  {item.tax_rate > 0 ? ` (${item.tax_rate}% tax)` : ''}
-                </Text>
+                <TouchableOpacity onPress={() => hasMaterials && toggleItemExpand(idx)} style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                  {item.product_image && (
+                    <Image source={{ uri: item.product_image }} style={{ width: 36, height: 36, borderRadius: 6, marginRight: 6 }} />
+                  )}
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.itemName}>{itemName}</Text>
+                    <Text style={styles.itemMeta}>
+                      {item.quantity} × ₹{(item.unit_price || 0).toFixed(2)}
+                      {item.tax_rate > 0 ? ` (${item.tax_rate}% tax)` : ''}
+                    </Text>
+                  </View>
+                  {hasMaterials && (
+                    <Ionicons name={isExpanded ? 'chevron-up' : 'chevron-down'} size={16} color={Colors.textLight} />
+                  )}
+                </TouchableOpacity>
+
+                {/* Production task status & actions */}
+                {task && (
+                  <View style={styles.taskRow}>
+                    <View style={[styles.taskBadge, { backgroundColor: (TASK_STATUS_COLORS[task.status] || '#999') + '20' }]}>
+                      <Text style={[styles.taskBadgeText, { color: TASK_STATUS_COLORS[task.status] || '#999' }]}>
+                        {(task.status || '').replace(/_/g, ' ').toUpperCase()}
+                      </Text>
+                    </View>
+                    {task.assigned_to_name && <Text style={styles.taskAssignee}>👤 {task.assigned_to_name}</Text>}
+                    {task.picked_by_name && <Text style={styles.taskAssignee}>🤲 {task.picked_by_name}</Text>}
+                    {/* Action buttons based on task status */}
+                    {!['completed', 'cancelled'].includes(sale.status) && (
+                      <View style={styles.taskActions}>
+                        {task.status === 'pending' && (
+                          <TouchableOpacity style={styles.taskActionBtn} onPress={() => handleTaskAction(task.id, 'pick', 'pick up')}>
+                            <Ionicons name="hand-left-outline" size={14} color={Colors.info} />
+                            <Text style={[styles.taskActionText, { color: Colors.info }]}>Pick</Text>
+                          </TouchableOpacity>
+                        )}
+                        {(task.status === 'pending' || task.status === 'assigned') && (
+                          <TouchableOpacity style={styles.taskActionBtn} onPress={() => handleTaskAction(task.id, 'start', 'start')}>
+                            <Ionicons name="play-outline" size={14} color="#00BCD4" />
+                            <Text style={[styles.taskActionText, { color: '#00BCD4' }]}>Start</Text>
+                          </TouchableOpacity>
+                        )}
+                        {task.status === 'in_progress' && (
+                          <TouchableOpacity style={[styles.taskActionBtn, { backgroundColor: Colors.success + '15' }]} onPress={() => handleTaskAction(task.id, 'complete', 'complete')}>
+                            <Ionicons name="checkmark-circle" size={14} color={Colors.success} />
+                            <Text style={[styles.taskActionText, { color: Colors.success }]}>Complete</Text>
+                          </TouchableOpacity>
+                        )}
+                      </View>
+                    )}
+                  </View>
+                )}
+
+                {/* Expandable material composition */}
+                {isExpanded && hasMaterials && (
+                  <View style={styles.bomContainer}>
+                    <Text style={styles.bomTitle}>Materials Required:</Text>
+                    {item.materials.map((mat, mIdx) => (
+                      <View key={mIdx} style={styles.bomRow}>
+                        {mat.material_image && (
+                          <Image source={{ uri: mat.material_image }} style={{ width: 20, height: 20, borderRadius: 4, marginRight: 4 }} />
+                        )}
+                        <Text style={styles.bomName}>{mat.material_name}</Text>
+                        <Text style={styles.bomQty}>{mat.qty_per_unit * item.quantity} {mat.unit}</Text>
+                      </View>
+                    ))}
+                  </View>
+                )}
+
                 {item.from_product_stock ? (
                   <View style={styles.stockBadge}>
                     <Ionicons name="checkmark-circle" size={12} color={Colors.success} />
@@ -368,6 +461,38 @@ export default function SaleDetailScreen({ route, navigation }) {
           );
         })}
       </View>
+
+      {/* Production Summary */}
+      {sale.production_summary && sale.production_summary.total_tasks > 0 && (
+        <View style={[styles.section, { borderLeftWidth: 3, borderLeftColor: sale.production_summary.all_done ? Colors.success : Colors.warning }]}>
+          <Text style={styles.sectionTitle}>Production Progress</Text>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+            {sale.production_summary.completed > 0 && (
+              <View style={[styles.taskBadge, { backgroundColor: Colors.success + '20' }]}>
+                <Text style={[styles.taskBadgeText, { color: Colors.success }]}>✅ {sale.production_summary.completed} Done</Text>
+              </View>
+            )}
+            {sale.production_summary.in_progress > 0 && (
+              <View style={[styles.taskBadge, { backgroundColor: '#00BCD4' + '20' }]}>
+                <Text style={[styles.taskBadgeText, { color: '#00BCD4' }]}>🔄 {sale.production_summary.in_progress} In Progress</Text>
+              </View>
+            )}
+            {sale.production_summary.pending > 0 && (
+              <View style={[styles.taskBadge, { backgroundColor: Colors.warning + '20' }]}>
+                <Text style={[styles.taskBadgeText, { color: Colors.warning }]}>⏳ {sale.production_summary.pending} Pending</Text>
+              </View>
+            )}
+            {sale.production_summary.assigned > 0 && (
+              <View style={[styles.taskBadge, { backgroundColor: Colors.info + '20' }]}>
+                <Text style={[styles.taskBadgeText, { color: Colors.info }]}>👤 {sale.production_summary.assigned} Assigned</Text>
+              </View>
+            )}
+          </View>
+          {sale.production_summary.all_done && (
+            <Text style={{ color: Colors.success, fontSize: FontSize.xs, fontWeight: '600', marginTop: 6 }}>All production tasks complete — order can be marked ready</Text>
+          )}
+        </View>
+      )}
 
       {/* Totals */}
       <View style={styles.totalsBox}>
@@ -466,10 +591,17 @@ export default function SaleDetailScreen({ route, navigation }) {
       )}
       {sale.status === 'preparing' && (
         <View style={styles.actions}>
-          <TouchableOpacity style={[styles.actionBtn, { backgroundColor: Colors.success, flex: 1 }]} onPress={() => handleStatusTransition('ready', 'Mark Ready')}>
-            <Ionicons name="checkmark-circle-outline" size={18} color={Colors.white} />
-            <Text style={styles.actionBtnText}>Mark Ready</Text>
-          </TouchableOpacity>
+          {sale.production_summary?.all_done ? (
+            <TouchableOpacity style={[styles.actionBtn, { backgroundColor: Colors.success, flex: 1 }]} onPress={() => handleStatusTransition('ready', 'Mark Ready')}>
+              <Ionicons name="checkmark-circle-outline" size={18} color={Colors.white} />
+              <Text style={styles.actionBtnText}>Mark Ready</Text>
+            </TouchableOpacity>
+          ) : (
+            <View style={[styles.actionBtn, { backgroundColor: Colors.textLight, flex: 1, opacity: 0.6 }]}>
+              <Ionicons name="time-outline" size={18} color={Colors.white} />
+              <Text style={styles.actionBtnText}>Waiting for Production ({sale.production_summary?.completed || 0}/{sale.production_summary?.total_tasks || 0})</Text>
+            </View>
+          )}
           {canManage && (
             <TouchableOpacity style={[styles.actionBtn, { backgroundColor: Colors.error }]} onPress={handleCancel}>
               <Ionicons name="close-circle" size={18} color={Colors.white} />
@@ -632,6 +764,22 @@ const styles = StyleSheet.create({
   stockBadgeText: { fontSize: FontSize.xs, fontWeight: '600', color: Colors.success },
   fulfillBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 4, backgroundColor: Colors.primary + '15', paddingHorizontal: 8, paddingVertical: 4, borderRadius: BorderRadius.sm, alignSelf: 'flex-start' },
   fulfillBtnText: { fontSize: FontSize.xs, fontWeight: '700', color: Colors.primary },
+
+  // Production task styles
+  taskRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 6, marginTop: 6 },
+  taskBadge: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 12 },
+  taskBadgeText: { fontSize: FontSize.xs, fontWeight: '700' },
+  taskAssignee: { fontSize: FontSize.xs, color: Colors.textSecondary },
+  taskActions: { flexDirection: 'row', gap: 6, marginTop: 2 },
+  taskActionBtn: { flexDirection: 'row', alignItems: 'center', gap: 3, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8, backgroundColor: Colors.background, borderWidth: 1, borderColor: Colors.border },
+  taskActionText: { fontSize: FontSize.xs, fontWeight: '700' },
+
+  // BOM / Material composition styles
+  bomContainer: { backgroundColor: Colors.background, borderRadius: 8, padding: 8, marginTop: 6, borderWidth: 1, borderColor: Colors.border },
+  bomTitle: { fontSize: FontSize.xs, fontWeight: '700', color: Colors.textSecondary, marginBottom: 4 },
+  bomRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 2 },
+  bomName: { flex: 1, fontSize: FontSize.xs, color: Colors.text },
+  bomQty: { fontSize: FontSize.xs, fontWeight: '600', color: Colors.textSecondary },
 
   totalsBox: {
     backgroundColor: Colors.surface, borderRadius: BorderRadius.md,

@@ -495,6 +495,10 @@ class ApiService {
     return this.request(`/sales/${saleId}/convert-type`, { method: 'PUT', body: JSON.stringify(data) });
   }
 
+  createCustomItem(data) {
+    return this.request('/sales/custom-item', { method: 'POST', body: JSON.stringify(data) });
+  }
+
   getProductionQueue(params = {}) {
     const query = new URLSearchParams(params).toString();
     return this.request(`/sales/production-queue${query ? `?${query}` : ''}`);
@@ -776,7 +780,7 @@ class ApiService {
   }
 
   // ─── Customer Orders & Dues ───────────────────────────────
-  getCustomerOrders() {
+  getMyOrders() {
     return this.request('/deliveries/customer/orders');
   }
 
