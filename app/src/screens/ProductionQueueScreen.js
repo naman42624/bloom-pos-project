@@ -1,13 +1,15 @@
 import React, { useState, useCallback, useMemo } from 'react';
 import {
   View, Text, StyleSheet, FlatList, SectionList, TouchableOpacity,
-  ActivityIndicator, RefreshControl, Alert, ScrollView, Modal, TextInput, Platform,
+  ActivityIndicator, RefreshControl, Alert, ScrollView, Modal, TextInput, Platform, Image,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
+import ImageModal from '../components/ImageModal';
+
 
 const TASK_STATUS_TABS = [
   { key: '', label: 'All' },
@@ -55,6 +57,7 @@ export default function ProductionQueueScreen({ navigation }) {
   const [assignTask, setAssignTask] = useState(null);
   const [assignOrderTasks, setAssignOrderTasks] = useState([]); // tasks for an order
   const [employees, setEmployees] = useState([]);
+  const [viewedImage, setViewedImage] = useState(null);
 
   const isOwner = user?.role === 'owner';
   const isManager = user?.role === 'owner' || user?.role === 'manager';
@@ -292,11 +295,13 @@ export default function ProductionQueueScreen({ navigation }) {
         <View style={styles.cardHeader}>
           <View style={{ flex: 1 }}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-              {item.product_image && (
-                <View style={{ width: 40, height: 40, borderRadius: 8, overflow: 'hidden', backgroundColor: Colors.background }}>
-                  <View style={{ width: 40, height: 40 }}><Text style={{ fontSize: 24, textAlign: 'center', lineHeight: 40 }}>📦</Text></View>
-                </View>
-              )}
+              <TouchableOpacity onPress={(e) => { e.stopPropagation(); if (item.product_image) setViewedImage(api.getMediaUrl(item.product_image)); }}>
+                {item.product_image ? (
+                  <Image source={{ uri: api.getMediaUrl(item.product_image) }} style={{ width: 40, height: 40, borderRadius: 8 }} />
+                ) : (
+                  <Ionicons name="cube-outline" size={24} color={Colors.primary} />
+                )}
+              </TouchableOpacity>
               <Text style={styles.taskProduct}>{item.quantity}x {item.product_name}</Text>
               {item.priority === 'urgent' && (
                 <View style={styles.urgentBadge}>
@@ -334,6 +339,13 @@ export default function ProductionQueueScreen({ navigation }) {
           </View>
         )}
 
+        {item.special_instructions && (
+          <View style={styles.assignedRow}>
+            <Ionicons name="information-circle" size={14} color={Colors.warning} />
+            <Text style={[styles.assignedText, { color: Colors.warning, fontWeight: '600' }]}>Note: {item.special_instructions}</Text>
+          </View>
+        )}
+
         {/* Material composition (BOM) */}
         {item.materials && item.materials.length > 0 && (
           <View style={styles.bomSection}>
@@ -341,6 +353,11 @@ export default function ProductionQueueScreen({ navigation }) {
             {item.materials.map((mat, mIdx) => (
               <View key={mIdx} style={styles.bomMaterialRow}>
                 <View style={[styles.stockDot, { backgroundColor: mat.sufficient ? Colors.success : Colors.error }]} />
+                {mat.material_image && (
+                  <TouchableOpacity onPress={(e) => { e.stopPropagation(); setViewedImage(api.getMediaUrl(mat.material_image)); }}>
+                    <Image source={{ uri: api.getMediaUrl(mat.material_image) }} style={{ width: 20, height: 20, borderRadius: 4, marginRight: 4 }} />
+                  </TouchableOpacity>
+                )}
                 <Text style={styles.bomMatName} numberOfLines={1}>{mat.material_name}</Text>
                 <Text style={styles.bomMatQty}>{mat.total_needed} {mat.unit}</Text>
                 <Text style={[styles.bomMatStock, { color: mat.sufficient ? Colors.success : Colors.error }]}>
@@ -633,6 +650,12 @@ export default function ProductionQueueScreen({ navigation }) {
           </View>
         </View>
       </Modal>
+
+      <ImageModal 
+        visible={!!viewedImage} 
+        imageUrl={viewedImage} 
+        onClose={() => setViewedImage(null)} 
+      />
     </View>
   );
 }
@@ -688,15 +711,17 @@ const styles = StyleSheet.create({
   },
   sectionCount: { fontSize: FontSize.xs, fontWeight: '700', color: Colors.primary },
   card: {
-    backgroundColor: Colors.surface, borderRadius: BorderRadius.md,
-    padding: Spacing.md, borderWidth: 1, borderColor: Colors.border,
+    backgroundColor: Colors.surface, borderRadius: BorderRadius.lg,
+    padding: Spacing.lg, borderWidth: 1, borderColor: Colors.border,
+    marginBottom: Spacing.md,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.08, shadowRadius: 8, elevation: 4,
   },
   urgentCard: { borderColor: '#FF6D00', borderWidth: 2 },
   cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
-  taskProduct: { fontSize: FontSize.lg, fontWeight: '700', color: Colors.text },
-  orderNumber: { fontSize: FontSize.lg, fontWeight: '700', color: Colors.text },
-  taskMeta: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: 3 },
-  taskCustomer: { fontSize: FontSize.sm, color: Colors.textSecondary },
+  taskProduct: { fontSize: FontSize.xl, fontWeight: '700', color: Colors.text },
+  orderNumber: { fontSize: FontSize.xl, fontWeight: '700', color: Colors.text },
+  taskMeta: { fontSize: FontSize.md, color: Colors.textSecondary, marginTop: 4 },
+  taskCustomer: { fontSize: FontSize.md, color: Colors.textSecondary },
 
   urgentBadge: {
     flexDirection: 'row', alignItems: 'center', gap: 3,
@@ -707,28 +732,28 @@ const styles = StyleSheet.create({
 
   statusBadge: {
     flexDirection: 'row', alignItems: 'center', gap: 4,
-    paddingHorizontal: Spacing.sm + 2, paddingVertical: 4,
+    paddingHorizontal: Spacing.md, paddingVertical: 6,
     borderRadius: BorderRadius.full,
   },
-  statusText: { fontSize: FontSize.xs, fontWeight: '700' },
+  statusText: { fontSize: FontSize.sm, fontWeight: '700' },
 
   assignedRow: {
-    flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 6,
+    flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 8,
   },
-  assignedText: { fontSize: FontSize.sm, color: Colors.primary, fontWeight: '500' },
+  assignedText: { fontSize: FontSize.md, color: Colors.primary, fontWeight: '600' },
 
-  itemsList: { marginTop: Spacing.xs, gap: 3 },
-  itemText: { fontSize: FontSize.md, color: Colors.text },
+  itemsList: { marginTop: Spacing.sm, gap: 4 },
+  itemText: { fontSize: FontSize.lg, color: Colors.text },
 
   taskActions: {
-    flexDirection: 'row', gap: Spacing.sm, marginTop: Spacing.md, flexWrap: 'wrap',
+    flexDirection: 'row', gap: Spacing.md, marginTop: Spacing.lg, flexWrap: 'wrap',
   },
   actionBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    gap: 6, paddingVertical: 12, paddingHorizontal: Spacing.lg,
-    borderRadius: BorderRadius.md, minHeight: 44,
+    gap: 6, paddingVertical: 16, paddingHorizontal: Spacing.lg,
+    borderRadius: BorderRadius.md, minHeight: 54, flex: 1,
   },
-  actionBtnText: { color: Colors.white, fontSize: FontSize.sm, fontWeight: '700' },
+  actionBtnText: { color: Colors.white, fontSize: FontSize.md, fontWeight: '700' },
 
   empty: { alignItems: 'center', marginTop: 80 },
   emptyText: { fontSize: FontSize.md, color: Colors.textLight, marginTop: Spacing.sm },

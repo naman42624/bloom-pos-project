@@ -9,6 +9,8 @@ import DateTimePickerModal from '../components/DateTimePickerModal';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
+import { Image } from 'react-native';
+import ImageModal from '../components/ImageModal';
 
 const ORDER_TYPES = [
   { key: 'walk_in', label: 'Walk-in', icon: 'walk' },
@@ -24,9 +26,10 @@ const PAYMENT_METHODS = [
 ];
 
 export default function CheckoutScreen({ route, navigation }) {
-  const { cart, locationId, orderType: initialOrderType } = route.params;
+  const { cart: initialCart, locationId, orderType: initialOrderType } = route.params;
   const { user } = useAuth();
 
+  const [cart, setCart] = useState(initialCart || []);
   const [orderType, setOrderType] = useState(initialOrderType || 'walk_in');
   const [customerName, setCustomerName] = useState('');
   const [customerPhone, setCustomerPhone] = useState('');
@@ -69,6 +72,64 @@ export default function CheckoutScreen({ route, navigation }) {
   const [payments, setPayments] = useState([
     { method: 'cash', amount: '', reference: '' },
   ]);
+
+  // Customize Component States
+  const [showCustomize, setShowCustomize] = useState(false);
+  const [customProduct, setCustomProduct] = useState(null); // The cart item to customize
+  const [customCartIndex, setCustomCartIndex] = useState(-1);
+  const [customCharge, setCustomCharge] = useState('');
+  const [customMaterials, setCustomMaterials] = useState([]);
+  const [customSubmitting, setCustomSubmitting] = useState(false);
+  const [allMaterialsList, setAllMaterialsList] = useState([]);
+  const [viewedImage, setViewedImage] = useState(null);
+
+  const openCustomize = async (item, index) => {
+    setCustomProduct(item);
+    setCustomCartIndex(index);
+    setCustomCharge('');
+    setCustomMaterials([]);
+    setShowCustomize(true);
+    if (allMaterialsList.length === 0) {
+      try {
+        const res = await api.getMaterials();
+        setAllMaterialsList(res.data.filter(m => m.is_active !== 0));
+      } catch {}
+    }
+  };
+
+  const handleCustomize = async () => {
+    const charge = parseFloat(customCharge) || 0;
+    const mats = customMaterials.filter(m => m.material_id && parseFloat(m.qty) > 0).map(m => ({
+      material_id: m.material_id, qty_per_unit: parseFloat(m.qty)
+    }));
+    setCustomSubmitting(true);
+    try {
+      const res = await api.createCustomItem({
+        base_product_id: customProduct.product_id,
+        additional_charge: charge,
+        custom_materials: mats
+      });
+      if (res.success) {
+        const newCart = [...cart];
+        newCart[customCartIndex] = {
+           ...newCart[customCartIndex],
+           product_id: res.data.id,
+           product_name: res.data.name,
+           unit_price: res.data.selling_price,
+           tax_rate: res.data.tax_rate,
+           image_url: res.data.image_url
+        };
+        setCart(newCart);
+        setShowCustomize(false);
+      } else {
+        Alert.alert('Error', res.message || 'Failed to customize');
+      }
+    } catch (err) {
+      Alert.alert('Error', err.message || 'Something went wrong');
+    } finally {
+      setCustomSubmitting(false);
+    }
+  };
 
   const subtotal = cart.reduce((s, c) => s + (c.unit_price * c.quantity), 0);
   const taxTotal = cart.reduce((s, c) => s + ((c.unit_price * c.quantity * c.tax_rate) / 100), 0);
@@ -524,8 +585,15 @@ export default function CheckoutScreen({ route, navigation }) {
         <View style={styles.summaryBox}>
           <Text style={styles.summaryTitle}>Order Summary</Text>
           {cart.map((c, idx) => (
-            <View key={c.material_id ? `mat_${c.material_id}` : `prod_${c.product_id}`} style={styles.summaryRow}>
-              <Text style={styles.summaryItemName} numberOfLines={1}>{c.material_id ? '🌿 ' : ''}{c.product_name} x {c.quantity}</Text>
+            <View key={c.material_id ? `mat_${c.material_id}_${idx}` : `prod_${c.product_id}_${idx}`} style={styles.summaryRow}>
+              <View style={{ flex: 1, paddingRight: 8 }}>
+                <Text style={styles.summaryItemName} numberOfLines={1}>{c.material_id ? '🌿 ' : ''}{c.product_name} x {c.quantity}</Text>
+                {c.product_id && (
+                  <TouchableOpacity onPress={() => openCustomize(c, idx)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                    <Text style={{ fontSize: FontSize.xs, color: Colors.primary, fontWeight: '600', marginTop: 2 }}>+ Customize</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
               <Text style={styles.summaryItemPrice}>₹{(c.unit_price * c.quantity).toFixed(2)}</Text>
             </View>
           ))}
@@ -795,6 +863,109 @@ export default function CheckoutScreen({ route, navigation }) {
           </View>
         </View>
       </Modal>
+
+      {/* Customize Product Modal */}
+      <Modal visible={showCustomize} transparent animationType="slide">
+        <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          <View style={styles.cModalOverlay}>
+            <View style={styles.cModalCard}>
+              <View style={styles.modalHeader}>
+                <Text style={styles.modalTitle}>✨ Customize Product</Text>
+                <TouchableOpacity onPress={() => setShowCustomize(false)}>
+                  <Ionicons name="close" size={24} color={Colors.text} />
+                </TouchableOpacity>
+              </View>
+              {customProduct && (
+                <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: Spacing.md }}>
+                    <TouchableOpacity 
+                      style={[styles.productIconWrap, { width: 56, height: 56 }]}
+                      onPress={(e) => { e.stopPropagation(); if (customProduct?.image_url) setViewedImage(api.getMediaUrl(customProduct.image_url)); }}
+                    >
+                      {customProduct.image_url ? (
+                        <Image source={{ uri: api.getMediaUrl(customProduct.image_url) }} style={{ width: 56, height: 56, borderRadius: BorderRadius.md }} />
+                      ) : (
+                        <Ionicons name="gift" size={28} color={Colors.primary} />
+                      )}
+                    </TouchableOpacity>
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ fontSize: FontSize.lg, fontWeight: '700', color: Colors.text }}>{customProduct.product_name}</Text>
+                      <Text style={{ fontSize: FontSize.sm, color: Colors.textSecondary }}>Base Price: ₹{(customProduct.unit_price || 0).toFixed(0)}</Text>
+                    </View>
+                  </View>
+
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <Text style={styles.fieldLabel}>Materials</Text>
+                    <TouchableOpacity onPress={() => setCustomMaterials([...customMaterials, { material_id: null, name: '', qty: '1' }])} style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                      <Ionicons name="add-circle" size={18} color={Colors.primary} />
+                      <Text style={{ fontSize: FontSize.xs, color: Colors.primary, fontWeight: '600' }}>Add</Text>
+                    </TouchableOpacity>
+                  </View>
+                  {customMaterials.map((m, idx) => (
+                    <View key={idx} style={{ flexDirection: 'row', gap: Spacing.xs, alignItems: 'center', marginBottom: Spacing.xs }}>
+                      <TouchableOpacity
+                        style={[styles.modalInput, { flex: 2, justifyContent: 'center', paddingVertical: Spacing.xs + 4 }]}
+                        onPress={() => {
+                          const filtered = allMaterialsList.filter(mat => !customMaterials.some((qm, qi) => qi !== idx && qm.material_id === mat.id));
+                          if (filtered.length === 0) { Alert.alert('All added'); return; }
+                          Alert.alert('Select Material', '', filtered.map(mat => ({
+                            text: mat.name,
+                            onPress: () => setCustomMaterials(customMaterials.map((cm, ci) => ci === idx ? { ...cm, material_id: mat.id, name: mat.name } : cm)),
+                          })).concat([{ text: 'Cancel', style: 'cancel' }]));
+                        }}
+                      >
+                        <Text style={{ color: m.material_id ? Colors.text : Colors.textLight, fontSize: FontSize.sm }}>{m.name || 'Select material...'}</Text>
+                      </TouchableOpacity>
+                      <TextInput
+                        style={[styles.modalInput, { flex: 1 }]}
+                        value={m.qty}
+                        onChangeText={(v) => setCustomMaterials(customMaterials.map((cm, ci) => ci === idx ? { ...cm, qty: v } : cm))}
+                        placeholder="Qty"
+                        placeholderTextColor={Colors.textLight}
+                        keyboardType="numeric"
+                      />
+                      <TouchableOpacity onPress={() => setCustomMaterials(customMaterials.filter((_, ci) => ci !== idx))}>
+                        <Ionicons name="close-circle" size={22} color={Colors.error} />
+                      </TouchableOpacity>
+                    </View>
+                  ))}
+
+                  <Text style={[styles.fieldLabel, { marginTop: Spacing.sm }]}>Additional Charge (₹)</Text>
+                  <TextInput
+                    style={styles.modalInput}
+                    value={customCharge}
+                    onChangeText={setCustomCharge}
+                    placeholder="0"
+                    placeholderTextColor={Colors.textLight}
+                    keyboardType="numeric"
+                  />
+
+                  <TouchableOpacity
+                    style={[styles.qaSubmitBtn, customSubmitting && { opacity: 0.6 }]}
+                    onPress={handleCustomize}
+                    disabled={customSubmitting}
+                  >
+                    {customSubmitting ? (
+                      <ActivityIndicator color={Colors.white} />
+                    ) : (
+                      <>
+                        <Ionicons name="sparkles" size={18} color={Colors.white} />
+                        <Text style={styles.qaSubmitText}>Update Cart Item</Text>
+                      </>
+                    )}
+                  </TouchableOpacity>
+                </ScrollView>
+              )}
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      <ImageModal 
+        visible={!!viewedImage} 
+        imageUrl={viewedImage} 
+        onClose={() => setViewedImage(null)} 
+      />
     </KeyboardAvoidingView>
   );
 }
@@ -942,4 +1113,23 @@ const styles = StyleSheet.create({
   addressLabel: { fontSize: FontSize.sm, fontWeight: '700', color: Colors.primary, marginLeft: 6 },
   addressText: { fontSize: FontSize.sm, color: Colors.text, marginLeft: 22 },
   addressTextSub: { fontSize: FontSize.xs, color: Colors.textSecondary, marginLeft: 22, marginTop: 2 },
+
+  // Customize Modal
+  cModalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', padding: Spacing.sm },
+  cModalCard: { backgroundColor: Colors.surface, borderRadius: BorderRadius.lg, padding: Spacing.lg },
+  modalInput: {
+    backgroundColor: Colors.surfaceAlt, borderRadius: BorderRadius.md,
+    paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm, fontSize: FontSize.md, color: Colors.text,
+  },
+  qaSubmitBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    backgroundColor: Colors.primary, borderRadius: BorderRadius.md,
+    paddingVertical: Spacing.md, marginTop: Spacing.lg,
+  },
+  qaSubmitText: { color: Colors.white, fontSize: FontSize.lg, fontWeight: '700' },
+  fieldLabel: { fontSize: FontSize.sm, fontWeight: '700', color: Colors.textSecondary, marginBottom: 4 },
+  productIconWrap: {
+    backgroundColor: Colors.primary + '10', justifyContent: 'center', alignItems: 'center',
+    borderRadius: BorderRadius.md,
+  },
 });

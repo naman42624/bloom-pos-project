@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
-  View, Text, StyleSheet, FlatList, TextInput,
+  View, Text, StyleSheet, FlatList, TextInput, Image,
   TouchableOpacity, Alert, Platform, ScrollView, Modal, ActivityIndicator,
   KeyboardAvoidingView,
 } from 'react-native';
@@ -9,6 +9,8 @@ import { useFocusEffect } from '@react-navigation/native';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
+import ImageModal from '../components/ImageModal';
+
 
 export default function POSScreen({ navigation, route }) {
   const { user } = useAuth();
@@ -18,6 +20,13 @@ export default function POSScreen({ navigation, route }) {
     navigation.setOptions({
       headerRight: () => (
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, marginRight: Spacing.md }}>
+          <TouchableOpacity
+            style={{ flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: Colors.warning + '15', paddingHorizontal: 8, paddingVertical: 4, borderRadius: BorderRadius.sm }}
+            onPress={() => navigation.navigate('QuickCheckout')}
+          >
+            <Ionicons name="flash" size={18} color={Colors.warning} />
+            <Text style={{ fontSize: FontSize.xs, color: Colors.warning, fontWeight: '700' }}>Quick Sale</Text>
+          </TouchableOpacity>
           <TouchableOpacity
             style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}
             onPress={() => navigation.navigate('ProduceProduct')}
@@ -46,6 +55,7 @@ export default function POSScreen({ navigation, route }) {
   const [selectedLocation, setSelectedLocation] = useState(null);
   const [activeTab, setActiveTab] = useState('products'); // 'products' or 'materials'
   const [selectedCategory, setSelectedCategory] = useState(null); // null = all
+  const [viewedImage, setViewedImage] = useState(null);
 
   // Order type selection (Step 1)
   const [orderType, setOrderType] = useState('walk_in');
@@ -319,14 +329,21 @@ export default function POSScreen({ navigation, route }) {
     const canMakeQty = item.available_qty;
     return (
       <TouchableOpacity style={[styles.productCard]} onPress={() => addToCart(item)} activeOpacity={0.7}>
-        <View style={styles.productIconWrap}>
-          <Ionicons name="gift" size={28} color={Colors.primary} />
+        <TouchableOpacity 
+          style={styles.productIconWrap}
+          onPress={(e) => { e.stopPropagation(); if (item.image_url) setViewedImage(api.getMediaUrl(item.image_url)); }}
+        >
+          {item.image_url ? (
+            <Image source={{ uri: api.getMediaUrl(item.image_url) }} style={styles.productImg} />
+          ) : (
+            <Ionicons name="gift" size={28} color={Colors.primary} />
+          )}
           {inCart && (
             <View style={styles.qtyBadge}>
               <Text style={styles.qtyBadgeText}>{inCart.quantity}</Text>
             </View>
           )}
-        </View>
+        </TouchableOpacity>
         <View style={styles.productInfo}>
           <Text style={styles.productName} numberOfLines={1}>{item.name}</Text>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 3 }}>
@@ -354,14 +371,21 @@ export default function POSScreen({ navigation, route }) {
     const outOfStock = stockQty !== null && stockQty <= 0;
     return (
       <TouchableOpacity style={[styles.productCard, outOfStock && styles.productCardDimmed]} onPress={() => addMaterialToCart(item)} activeOpacity={0.7}>
-        <View style={[styles.productIconWrap, { backgroundColor: Colors.success + '12' }]}>
-          <Ionicons name="leaf" size={24} color={Colors.success} />
+        <TouchableOpacity 
+          style={[styles.productIconWrap, { backgroundColor: Colors.success + '12' }]}
+          onPress={(e) => { e.stopPropagation(); if (item.image_url) setViewedImage(api.getMediaUrl(item.image_url)); }}
+        >
+          {item.image_url ? (
+            <Image source={{ uri: api.getMediaUrl(item.image_url) }} style={styles.productImg} />
+          ) : (
+            <Ionicons name="leaf" size={24} color={Colors.success} />
+          )}
           {inCart && (
             <View style={styles.qtyBadge}>
               <Text style={styles.qtyBadgeText}>{inCart.quantity}</Text>
             </View>
           )}
-        </View>
+        </TouchableOpacity>
         <View style={styles.productInfo}>
           <Text style={styles.productName} numberOfLines={1}>{item.name}</Text>
           <Text style={styles.productSku}>
@@ -660,6 +684,12 @@ export default function POSScreen({ navigation, route }) {
           </View>
         </KeyboardAvoidingView>
       </Modal>
+
+      <ImageModal 
+        visible={!!viewedImage} 
+        imageUrl={viewedImage} 
+        onClose={() => setViewedImage(null)} 
+      />
     </View>
   );
 }
@@ -690,34 +720,33 @@ const styles = StyleSheet.create({
 
   searchRow: {
     flexDirection: 'row', alignItems: 'center',
-    paddingHorizontal: Spacing.sm, paddingVertical: Spacing.sm,
-    gap: Spacing.xs, backgroundColor: Colors.surface,
-    borderBottomWidth: 1, borderBottomColor: Colors.border,
+    paddingHorizontal: Spacing.md, paddingVertical: Spacing.md,
+    gap: Spacing.sm, backgroundColor: Colors.surface,
   },
   searchWrap: {
     flex: 1, flexDirection: 'row', alignItems: 'center',
-    backgroundColor: Colors.background, borderRadius: BorderRadius.md,
-    paddingHorizontal: Spacing.sm, height: 44,
-    borderWidth: 1, borderColor: Colors.border,
+    backgroundColor: Colors.surfaceAlt, borderRadius: BorderRadius.full,
+    paddingHorizontal: Spacing.md, height: 48,
   },
   searchInput: { flex: 1, fontSize: FontSize.md, color: Colors.text },
   scanBtn: {
-    width: 44, height: 44, borderRadius: BorderRadius.md,
+    width: 48, height: 48, borderRadius: 24,
     backgroundColor: Colors.primary, justifyContent: 'center', alignItems: 'center',
+    shadowColor: Colors.primary, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.2, shadowRadius: 8, elevation: 4,
   },
 
   tabRow: {
-    flexDirection: 'row', paddingHorizontal: Spacing.md, paddingVertical: 6,
-    gap: Spacing.xs, backgroundColor: Colors.surface,
+    flexDirection: 'row', paddingHorizontal: Spacing.lg, paddingVertical: Spacing.sm,
+    gap: Spacing.sm, backgroundColor: Colors.surface,
     borderBottomWidth: 1, borderBottomColor: Colors.border,
   },
   tabBtn: {
     flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
-    paddingVertical: Spacing.sm, borderRadius: BorderRadius.md,
-    backgroundColor: Colors.background, borderWidth: 1, borderColor: Colors.border,
+    paddingVertical: Spacing.sm, borderRadius: BorderRadius.full,
+    backgroundColor: Colors.surfaceAlt,
   },
-  tabBtnActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
-  tabBtnText: { fontSize: FontSize.sm, color: Colors.textSecondary, fontWeight: '500' },
+  tabBtnActive: { backgroundColor: Colors.primary, shadowColor: Colors.primary, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 4, elevation: 2 },
+  tabBtnText: { fontSize: FontSize.sm, color: Colors.textSecondary, fontWeight: '600' },
   tabBtnTextActive: { color: Colors.white, fontWeight: '700' },
 
   catFilterRow: { maxHeight: 40, backgroundColor: Colors.background, paddingVertical: 4 },
@@ -725,21 +754,22 @@ const styles = StyleSheet.create({
   listContent: { padding: Spacing.md, paddingBottom: 20 },
   productCard: {
     flexDirection: 'row', alignItems: 'center',
-    backgroundColor: Colors.surface, borderRadius: BorderRadius.md,
-    padding: Spacing.md, marginBottom: Spacing.sm,
-    borderWidth: 1, borderColor: Colors.border,
-    minHeight: 64,
+    backgroundColor: Colors.surface, borderRadius: BorderRadius.lg,
+    padding: Spacing.md, marginBottom: Spacing.md,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.04, shadowRadius: 8, elevation: 2,
+    minHeight: 80,
   },
   productCardDimmed: { opacity: 0.5 },
   productIconWrap: {
-    width: 50, height: 50, borderRadius: BorderRadius.md,
+    width: 80, height: 80, borderRadius: BorderRadius.md,
     backgroundColor: Colors.primary + '12', justifyContent: 'center', alignItems: 'center',
     marginRight: Spacing.md,
   },
   productInfo: { flex: 1 },
-  productName: { fontSize: FontSize.md, fontWeight: '700', color: Colors.text },
-  productSku: { fontSize: FontSize.xs, color: Colors.textLight, marginTop: 2 },
-  productPrice: { fontSize: FontSize.lg, fontWeight: '700', color: Colors.success },
+  productName: { fontSize: FontSize.lg, fontWeight: '700', color: Colors.text },
+  productSku: { fontSize: FontSize.sm, color: Colors.textLight, marginTop: 2 },
+  productPrice: { fontSize: FontSize.xl, fontWeight: '700', color: Colors.success },
+  productImg: { width: 80, height: 80, borderRadius: BorderRadius.md },
 
   readyBadge: {
     backgroundColor: Colors.success + '20', paddingHorizontal: 8, paddingVertical: 2,
@@ -759,40 +789,43 @@ const styles = StyleSheet.create({
   qtyBadgeText: { color: Colors.white, fontSize: 11, fontWeight: '700' },
 
   cartPanel: {
-    backgroundColor: Colors.surface, borderTopWidth: 2, borderTopColor: Colors.primary,
-    maxHeight: 320,
+    backgroundColor: Colors.surface, 
+    borderTopLeftRadius: BorderRadius.xl, borderTopRightRadius: BorderRadius.xl,
+    shadowColor: '#000', shadowOffset: { width: 0, height: -4 }, shadowOpacity: 0.05, shadowRadius: 12, elevation: 12,
+    maxHeight: 360, paddingBottom: Spacing.sm,
   },
   cartPanelHeader: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
     paddingHorizontal: Spacing.md, paddingTop: Spacing.sm, paddingBottom: Spacing.xs,
   },
-  cartPanelTitle: { fontSize: FontSize.md, fontWeight: '700', color: Colors.text },
-  clearBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, padding: 4 },
-  clearText: { fontSize: FontSize.sm, color: Colors.error, fontWeight: '600' },
-  cartItemsList: { maxHeight: 140, paddingHorizontal: Spacing.md },
+  cartPanelTitle: { fontSize: FontSize.lg, fontWeight: '700', color: Colors.text },
+  clearBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, padding: 8, backgroundColor: Colors.errorLight, borderRadius: BorderRadius.sm },
+  clearText: { fontSize: FontSize.sm, color: Colors.error, fontWeight: '700' },
+  cartItemsList: { maxHeight: 160, paddingHorizontal: Spacing.md },
   cartItem: {
     flexDirection: 'row', alignItems: 'center',
     paddingVertical: Spacing.sm, borderBottomWidth: 1, borderBottomColor: Colors.border,
   },
-  cartItemName: { fontSize: FontSize.sm, color: Colors.text, fontWeight: '600' },
-  cartItemPrice: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: 2 },
-  qtyControls: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  cartItemName: { fontSize: FontSize.md, color: Colors.text, fontWeight: '700' },
+  cartItemPrice: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: 4 },
+  qtyControls: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   qtyBtn: {
-    width: 38, height: 38, borderRadius: BorderRadius.md,
-    backgroundColor: Colors.background, borderWidth: 1.5, borderColor: Colors.border,
+    width: 40, height: 40, borderRadius: 20,
+    backgroundColor: Colors.surfaceAlt, 
     justifyContent: 'center', alignItems: 'center',
   },
-  qtyText: { fontSize: FontSize.lg, fontWeight: '700', color: Colors.text, minWidth: 28, textAlign: 'center' },
+  qtyText: { fontSize: FontSize.lg, fontWeight: '700', color: Colors.text, minWidth: 32, textAlign: 'center' },
   cartTotals: { paddingHorizontal: Spacing.md, paddingVertical: Spacing.xs },
-  cartTotalRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 2 },
-  cartGrandLabel: { fontSize: FontSize.lg, fontWeight: '700', color: Colors.text },
-  cartGrandVal: { fontSize: FontSize.lg, fontWeight: '700', color: Colors.primary },
+  cartTotalRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 },
+  cartGrandLabel: { fontSize: FontSize.xl, fontWeight: '700', color: Colors.text },
+  cartGrandVal: { fontSize: FontSize.xl, fontWeight: '700', color: Colors.primary },
   checkoutBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
-    backgroundColor: Colors.primary, marginHorizontal: Spacing.md,
-    marginBottom: Spacing.sm, paddingVertical: Spacing.md, borderRadius: BorderRadius.md,
+    backgroundColor: Colors.primary, marginHorizontal: Spacing.lg,
+    marginBottom: Spacing.sm, paddingVertical: Spacing.md, borderRadius: BorderRadius.full,
+    shadowColor: Colors.primary, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.25, shadowRadius: 8, elevation: 6,
   },
-  checkoutBtnText: { color: Colors.white, fontWeight: '700', fontSize: FontSize.lg },
+  checkoutBtnText: { color: Colors.white, fontWeight: '800', fontSize: FontSize.lg },
 
   // Quick-add modal
   modalOverlay: {

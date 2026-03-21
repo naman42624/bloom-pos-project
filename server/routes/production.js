@@ -257,7 +257,7 @@ router.get('/tasks', authenticate, authorize('owner', 'manager', 'employee'), (r
     let sql = `
       SELECT pt.*,
              p.name as product_name, p.sku as product_sku, p.image_url as product_image,
-             s.sale_number, s.order_type, s.customer_name, s.scheduled_date, s.scheduled_time,
+             s.sale_number, s.order_type, s.customer_name, s.scheduled_date, s.scheduled_time, s.special_instructions,
              l.name as location_name,
              a.name as assigned_to_name,
              pk.name as picked_by_name
@@ -335,7 +335,7 @@ router.get('/my-tasks', authenticate, (req, res, next) => {
     const tasks = db.prepare(`
       SELECT pt.*,
              p.name as product_name, p.sku as product_sku, p.image_url as product_image,
-             s.sale_number, s.order_type, s.customer_name, s.scheduled_date, s.scheduled_time,
+             s.sale_number, s.order_type, s.customer_name, s.scheduled_date, s.scheduled_time, s.special_instructions,
              l.name as location_name
       FROM production_tasks pt
       JOIN products p ON pt.product_id = p.id

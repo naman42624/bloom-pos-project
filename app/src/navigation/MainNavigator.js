@@ -44,6 +44,7 @@ import QRLabelScreen from '../screens/QRLabelScreen';
 
 // Phase 4 — POS & Sales
 import POSScreen from '../screens/POSScreen';
+import QuickCheckoutScreen from '../screens/QuickCheckoutScreen';
 import CheckoutScreen from '../screens/CheckoutScreen';
 import SaleDetailScreen from '../screens/SaleDetailScreen';
 import SalesScreen from '../screens/SalesScreen';
@@ -95,6 +96,7 @@ import LiveDeliveryMapScreen from '../screens/LiveDeliveryMapScreen';
 import NotificationCenterScreen from '../screens/NotificationCenterScreen';
 import NotificationBell from '../components/NotificationBell';
 import usePushNotifications from '../hooks/usePushNotifications';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Colors, FontSize } from '../constants/theme';
 
@@ -280,6 +282,7 @@ function POSStack() {
   return (
     <Stack.Navigator screenOptions={stackScreenOptions}>
       <Stack.Screen name="POSHome" component={POSScreen} options={{ title: 'Point of Sale' }} />
+      <Stack.Screen name="QuickCheckout" component={QuickCheckoutScreen} options={{ title: 'Quick Checkout' }} />
       <Stack.Screen name="Checkout" component={CheckoutScreen} options={{ title: 'Checkout' }} />
       <Stack.Screen name="SaleDetail" component={SaleDetailScreen} options={{ title: 'Sale Details' }} />
       <Stack.Screen name="RefundSale" component={RefundSaleScreen} options={{ title: 'Refund' }} />
@@ -471,6 +474,7 @@ export default function MainNavigator() {
   const { user, locations } = useAuth();
   const role = user?.role;
   const isExpoGo = Constants.appOwnership === 'expo';
+  const insets = useSafeAreaInsets();
 
   // Auto geofence for staff (not owner/customer)
   useGeofence({
@@ -503,12 +507,16 @@ export default function MainNavigator() {
         },
         tabBarActiveTintColor: Colors.primary,
         tabBarInactiveTintColor: Colors.textLight,
-        tabBarLabelStyle: { fontSize: FontSize.xs, fontWeight: '500' },
+        tabBarLabelStyle: { fontSize: FontSize.sm, fontWeight: '700' },
         tabBarStyle: {
           backgroundColor: Colors.surface,
           borderTopColor: Colors.border,
-          paddingBottom: 4,
-          height: 60,
+          borderTopWidth: 1,
+          paddingBottom: insets.bottom > 0 ? insets.bottom + 4 : 8,
+          paddingTop: 8,
+          height: insets.bottom > 0 ? 60 + insets.bottom : 70,
+          elevation: 0, // premium flat look
+          shadowOpacity: 0,
         },
         headerShown: false,
       })}

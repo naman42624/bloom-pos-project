@@ -10,6 +10,7 @@ import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import { formatDateTime } from '../utils/datetime';
 import { Image } from 'react-native';
+import ImageModal from '../components/ImageModal';
 
 const STATUS_COLORS = {
   completed: Colors.success,
@@ -41,6 +42,7 @@ export default function SaleDetailScreen({ route, navigation }) {
   const [sale, setSale] = useState(null);
   const [loading, setLoading] = useState(true);
   const [expandedItems, setExpandedItems] = useState({});
+  const [viewedImage, setViewedImage] = useState(null);
 
   const canManage = user?.role === 'owner' || user?.role === 'manager';
 
@@ -370,9 +372,11 @@ export default function SaleDetailScreen({ route, navigation }) {
           return (
             <View key={idx} style={styles.itemRow}>
               <View style={{ flex: 1 }}>
-                <TouchableOpacity onPress={() => hasMaterials && toggleItemExpand(idx)} style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                <TouchableOpacity onPress={() => hasMaterials && toggleItemExpand(idx)} style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                   {item.product_image && (
-                    <Image source={{ uri: item.product_image }} style={{ width: 36, height: 36, borderRadius: 6, marginRight: 6 }} />
+                    <TouchableOpacity onPress={(e) => { e.stopPropagation(); setViewedImage(api.getMediaUrl(item.product_image)); }}>
+                      <Image source={{ uri: api.getMediaUrl(item.product_image) }} style={{ width: 48, height: 48, borderRadius: 8, marginRight: 6 }} />
+                    </TouchableOpacity>
                   )}
                   <View style={{ flex: 1 }}>
                     <Text style={styles.itemName}>{itemName}</Text>
@@ -429,7 +433,9 @@ export default function SaleDetailScreen({ route, navigation }) {
                     {item.materials.map((mat, mIdx) => (
                       <View key={mIdx} style={styles.bomRow}>
                         {mat.material_image && (
-                          <Image source={{ uri: mat.material_image }} style={{ width: 20, height: 20, borderRadius: 4, marginRight: 4 }} />
+                          <TouchableOpacity onPress={(e) => { e.stopPropagation(); setViewedImage(api.getMediaUrl(mat.material_image)); }}>
+                            <Image source={{ uri: api.getMediaUrl(mat.material_image) }} style={{ width: 20, height: 20, borderRadius: 4, marginRight: 4 }} />
+                          </TouchableOpacity>
                         )}
                         <Text style={styles.bomName}>{mat.material_name}</Text>
                         <Text style={styles.bomQty}>{mat.qty_per_unit * item.quantity} {mat.unit}</Text>
@@ -754,11 +760,11 @@ const styles = StyleSheet.create({
 
   itemRow: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    paddingVertical: Spacing.xs, borderBottomWidth: 1, borderBottomColor: Colors.border,
+    paddingVertical: Spacing.md, borderBottomWidth: 1, borderBottomColor: Colors.border,
   },
-  itemName: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.text },
-  itemMeta: { fontSize: FontSize.xs, color: Colors.textLight, marginTop: 1 },
-  itemTotal: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.text },
+  itemName: { fontSize: FontSize.md, fontWeight: '700', color: Colors.text },
+  itemMeta: { fontSize: FontSize.sm, color: Colors.textLight, marginTop: 2 },
+  itemTotal: { fontSize: FontSize.md, fontWeight: '700', color: Colors.text },
   itemTax: { fontSize: FontSize.xs, color: Colors.textLight },
   stockBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 4 },
   stockBadgeText: { fontSize: FontSize.xs, fontWeight: '600', color: Colors.success },

@@ -1,13 +1,15 @@
 import React, { useState, useCallback } from 'react';
 import {
   View, Text, StyleSheet, FlatList, TouchableOpacity,
-  RefreshControl, Alert, TextInput,
+  RefreshControl, Alert, TextInput, Image,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
+import ImageModal from '../components/ImageModal';
+
 
 export default function MaterialsScreen({ navigation }) {
   const { user } = useAuth();
@@ -17,6 +19,7 @@ export default function MaterialsScreen({ navigation }) {
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [viewedImage, setViewedImage] = useState(null);
 
   const fetchData = useCallback(async () => {
     try {
@@ -47,9 +50,16 @@ export default function MaterialsScreen({ navigation }) {
       activeOpacity={0.7}
     >
       <View style={styles.cardHeader}>
-        <View style={[styles.iconBox, { backgroundColor: Colors.secondary + '15' }]}>
-          <Ionicons name="flower" size={20} color={Colors.secondary} />
-        </View>
+        <TouchableOpacity 
+          style={[styles.iconBox, { backgroundColor: Colors.secondary + '15' }]}
+          onPress={(e) => { e.stopPropagation(); if (item.image_url) setViewedImage(api.getMediaUrl(item.image_url)); }}
+        >
+          {item.image_url ? (
+            <Image source={{ uri: api.getMediaUrl(item.image_url) }} style={{ width: 40, height: 40, borderRadius: BorderRadius.md }} />
+          ) : (
+            <Ionicons name="flower" size={20} color={Colors.secondary} />
+          )}
+        </TouchableOpacity>
         <View style={styles.cardInfo}>
           <Text style={styles.cardName}>{item.name}</Text>
           <Text style={styles.cardMeta}>{item.category_name} · SKU: {item.sku}</Text>
@@ -135,6 +145,12 @@ export default function MaterialsScreen({ navigation }) {
           <Ionicons name="add" size={28} color={Colors.white} />
         </TouchableOpacity>
       )}
+
+      <ImageModal 
+        visible={!!viewedImage} 
+        imageUrl={viewedImage} 
+        onClose={() => setViewedImage(null)} 
+      />
     </View>
   );
 }

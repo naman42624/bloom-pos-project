@@ -627,7 +627,7 @@ router.post(
             unitPrice = item.unit_price;
             taxRate = item.tax_rate || 0;
             materialId = material.id;
-          } else {
+          } else if (item.product_id) {
             // Product sale
             const product = db.prepare('SELECT id, name, tax_rate_id, selling_price FROM products WHERE id = ? AND is_active = 1').get(item.product_id);
             if (!product) throw new Error(`Product ID ${item.product_id} not found or inactive`);
@@ -637,8 +637,15 @@ router.post(
               const tr = db.prepare('SELECT percentage FROM tax_rates WHERE id = ?').get(product.tax_rate_id);
               if (tr) taxRate = tr.percentage;
             }
-            name = product.name;
+            name = item.product_name || product.name;
             productId = product.id;
+          } else {
+            // Custom ad-hoc item
+            name = item.product_name || 'Custom Item';
+            unitPrice = Number(item.unit_price) || 0;
+            taxRate = item.tax_rate || 0;
+            productId = null;
+            materialId = null;
           }
 
           const qty = item.quantity || 1;

@@ -405,6 +405,11 @@ class ApiService {
   }
 
   // ─── Product Materials ─────────────────────────────────
+  async getProductMaterials(productId) {
+    const res = await this.request(`/products/${productId}`);
+    return { success: true, data: res.data?.materials || [] };
+  }
+
   addProductMaterial(productId, data) {
     return this.request(`/products/${productId}/materials`, { method: 'POST', body: JSON.stringify(data) });
   }

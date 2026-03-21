@@ -175,6 +175,13 @@ export default function AttendanceScreen({ navigation }) {
 
   // Live elapsed time when clocked in
   const [elapsedTime, setElapsedTime] = useState(null);
+  const [currentTime, setCurrentTime] = useState(new Date()); // Live device time
+
+  useEffect(() => {
+    const timer = setInterval(() => setCurrentTime(new Date()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
   useEffect(() => {
     if (!isClockedIn || !attendance?.clock_in) {
       setElapsedTime(null);
@@ -227,6 +234,16 @@ export default function AttendanceScreen({ navigation }) {
               <Text style={styles.statusSubtitle}>{attendance.location_name}</Text>
             )}
           </View>
+        </View>
+
+        {/* Live Device Time */}
+        <View style={styles.liveTimeContainer}>
+          <Text style={styles.liveTimeText}>
+            {currentTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+          </Text>
+          <Text style={styles.liveDateText}>
+            {currentTime.toLocaleDateString([], { weekday: 'long', year: 'numeric', month: 'short', day: 'numeric' })}
+          </Text>
         </View>
 
         {attendance && (
@@ -629,6 +646,14 @@ const styles = StyleSheet.create({
   historyHours: { fontSize: FontSize.sm, fontWeight: '700', color: Colors.primary },
 
   emptyText: { fontSize: FontSize.sm, color: Colors.textLight, textAlign: 'center', paddingVertical: Spacing.lg },
+
+  liveTimeContainer: {
+    alignItems: 'center', marginVertical: Spacing.sm,
+    paddingVertical: Spacing.sm, backgroundColor: Colors.background,
+    borderRadius: BorderRadius.md,
+  },
+  liveTimeText: { fontSize: FontSize.hero, fontWeight: '800', color: Colors.primary, letterSpacing: 1 },
+  liveDateText: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: 2 },
 
   modalOverlay: {
     flex: 1, backgroundColor: 'rgba(0,0,0,0.5)',

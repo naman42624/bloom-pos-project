@@ -516,6 +516,18 @@ export default function DashboardScreen({ navigation }) {
           </View>
         </View>
       )}
+
+      {/* Quick Checkout Floating Action Button */}
+      {(isManagerOrOwner || user?.role === 'employee') && (
+        <TouchableOpacity
+          style={styles.fab}
+          onPress={() => navigation.navigate('POS', { screen: 'QuickCheckout' })}
+          activeOpacity={0.8}
+        >
+          <Ionicons name="flash" size={24} color={Colors.white} />
+          <Text style={styles.fabText}>Quick</Text>
+        </TouchableOpacity>
+      )}
     </ScrollView>
   );
 }
@@ -526,14 +538,14 @@ const styles = StyleSheet.create({
 
   welcomeCard: {
     backgroundColor: Colors.surface,
-    borderRadius: BorderRadius.lg,
+    borderRadius: BorderRadius.xl,
     padding: Spacing.lg,
     marginBottom: Spacing.lg,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
+    shadowOpacity: 0.03,
     shadowRadius: 4,
-    elevation: 2,
+    elevation: 1,
   },
   welcomeRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
   welcomeText: { flex: 1 },
@@ -548,28 +560,31 @@ const styles = StyleSheet.create({
   sectionTitle: { fontSize: FontSize.lg, fontWeight: '600', color: Colors.text, marginBottom: Spacing.md },
 
   quickActions: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.md },
-  quickAction: { alignItems: 'center', width: 72 },
+  quickAction: { alignItems: 'center', width: 84 },
   quickActionIcon: {
-    width: 52,
-    height: 52,
-    borderRadius: BorderRadius.lg,
+    width: 64,
+    height: 64,
+    borderRadius: BorderRadius.full,
+    backgroundColor: Colors.surface,
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: Spacing.xs,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.04, shadowRadius: 6, elevation: 2,
   },
-  quickActionLabel: { fontSize: FontSize.xs, color: Colors.textSecondary, fontWeight: '500' },
+  quickActionLabel: { fontSize: FontSize.sm, color: Colors.textSecondary, fontWeight: '600', textAlign: 'center' },
 
   statsRow: { flexDirection: 'row', gap: Spacing.md },
   statCard: {
     flex: 1,
     backgroundColor: Colors.surface,
-    borderRadius: BorderRadius.lg,
-    padding: Spacing.md,
+    borderRadius: BorderRadius.xl,
+    padding: Spacing.lg,
     alignItems: 'center',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.04, shadowRadius: 8, elevation: 2,
   },
-  statIconWrap: { width: 36, height: 36, borderRadius: BorderRadius.md, justifyContent: 'center', alignItems: 'center', marginBottom: Spacing.sm },
-  statValue: { fontSize: FontSize.xl, fontWeight: '700', color: Colors.text },
-  statTitle: { fontSize: FontSize.xs, color: Colors.textSecondary, marginTop: 2 },
+  statIconWrap: { width: 44, height: 44, borderRadius: BorderRadius.md, justifyContent: 'center', alignItems: 'center', marginBottom: Spacing.sm },
+  statValue: { fontSize: FontSize.xxl, fontWeight: '800', color: Colors.text },
+  statTitle: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: 4, fontWeight: '600' },
 
   sectionHeader: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
@@ -600,28 +615,35 @@ const styles = StyleSheet.create({
   taskStatusText: { fontSize: 10, fontWeight: '600', textTransform: 'capitalize' },
 
   // Order summary cards
-  orderSummaryRow: { flexDirection: 'row', gap: Spacing.sm },
+  orderSummaryRow: { flexDirection: 'row', gap: Spacing.md },
   orderSummaryCard: {
-    flex: 1, backgroundColor: Colors.surface, borderRadius: BorderRadius.md,
-    padding: Spacing.md, alignItems: 'center',
-    borderLeftWidth: 4, borderWidth: 1, borderColor: Colors.border,
+    flex: 1, backgroundColor: Colors.surface, borderRadius: BorderRadius.xl,
+    padding: Spacing.md, paddingVertical: Spacing.lg, alignItems: 'center',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.03, shadowRadius: 6, elevation: 2,
   },
-  orderSummaryCount: { fontSize: FontSize.xxl, fontWeight: '800' },
-  orderSummaryLabel: { fontSize: FontSize.xs, color: Colors.textSecondary, fontWeight: '600', marginTop: 2 },
+  orderSummaryCount: { fontSize: FontSize.hero || 42, fontWeight: '800' },
+  orderSummaryLabel: { fontSize: FontSize.sm, color: Colors.textSecondary, fontWeight: '700', marginTop: 4 },
 
   // Action items
   actionItemCard: {
     flexDirection: 'row', alignItems: 'center', gap: Spacing.md,
-    backgroundColor: Colors.surface, borderRadius: BorderRadius.md,
-    padding: Spacing.md, marginBottom: Spacing.sm,
-    borderWidth: 1, borderColor: Colors.border,
+    backgroundColor: Colors.surface, borderRadius: BorderRadius.xl,
+    padding: Spacing.md, marginBottom: Spacing.md,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.03, shadowRadius: 6, elevation: 2,
   },
   actionItemIcon: {
-    width: 44, height: 44, borderRadius: BorderRadius.md,
+    width: 54, height: 54, borderRadius: BorderRadius.md,
     justifyContent: 'center', alignItems: 'center',
   },
-  actionItemTitle: { fontSize: FontSize.md, fontWeight: '700', color: Colors.text },
-  actionItemDesc: { fontSize: FontSize.xs, color: Colors.textSecondary, marginTop: 2 },
+  actionItemDesc: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: 4 },
+  actionItemTitle: { fontSize: FontSize.lg, fontWeight: '700', color: Colors.text },
   lateChip: { backgroundColor: '#FFF3E0', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 },
   lateChipText: { fontSize: 9, fontWeight: '800', color: '#FF6D00' },
+
+  fab: {
+    position: 'absolute', bottom: 20, right: 20, width: 64, height: 64, borderRadius: 32,
+    backgroundColor: '#FF3D00', justifyContent: 'center', alignItems: 'center',
+    shadowColor: '#FF3D00', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 6,
+  },
+  fabText: { fontSize: 10, fontWeight: '800', color: Colors.white, marginTop: -2 },
 });

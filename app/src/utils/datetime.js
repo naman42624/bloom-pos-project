@@ -11,7 +11,8 @@ export function parseServerDate(value) {
 
   const hasTimezone = /[zZ]$|[+\-]\d{2}:?\d{2}$/.test(raw);
   const normalized = raw.includes(' ') ? raw.replace(' ', 'T') : raw;
-  const candidate = hasTimezone ? normalized : `${normalized}Z`;
+  // Don't append Z — server stores local time via nowLocal(), not UTC
+  const candidate = normalized;
 
   const parsed = new Date(candidate);
   if (!Number.isNaN(parsed.getTime())) return parsed;

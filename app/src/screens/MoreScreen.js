@@ -18,6 +18,8 @@ const MENU_ITEMS = [
   { key: 'Settings', icon: 'settings', label: 'Settings', roles: ['owner'] },
 ];
 
+const ICON_COLORS = ['#E91E63', '#9C27B0', '#3F51B5', '#00BCD4', '#4CAF50', '#FF9800', '#FF5722', '#795548', '#607D8B', '#F44336', '#E91E63'];
+
 export default function MoreScreen({ navigation }) {
   const { user } = useAuth();
   const role = user?.role;
@@ -26,20 +28,25 @@ export default function MoreScreen({ navigation }) {
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-      <View style={styles.grid}>
-        {visible.map(item => (
-          <TouchableOpacity
-            key={item.key}
-            style={styles.tile}
-            onPress={() => navigation.navigate(item.key)}
-            activeOpacity={0.7}
-          >
-            <View style={styles.iconWrap}>
-              <Ionicons name={item.icon} size={28} color={Colors.primary} />
-            </View>
-            <Text style={styles.tileLabel}>{item.label}</Text>
-          </TouchableOpacity>
-        ))}
+      <View style={styles.listContainer}>
+        {visible.map((item, index) => {
+          const iconColor = ICON_COLORS[index % ICON_COLORS.length];
+          const isLast = index === visible.length - 1;
+          return (
+            <TouchableOpacity
+              key={item.key}
+              style={[styles.tile, isLast && { borderBottomWidth: 0 }]}
+              onPress={() => navigation.navigate(item.key)}
+              activeOpacity={0.7}
+            >
+              <View style={[styles.iconWrap, { backgroundColor: iconColor }]}>
+                <Ionicons name={item.icon} size={20} color={Colors.white} />
+              </View>
+              <Text style={styles.tileLabel}>{item.label}</Text>
+              <Ionicons name="chevron-forward" size={20} color={Colors.textLight} />
+            </TouchableOpacity>
+          );
+        })}
       </View>
     </ScrollView>
   );
@@ -47,24 +54,26 @@ export default function MoreScreen({ navigation }) {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
-  content: { padding: Spacing.md },
-  grid: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.md },
-  tile: {
-    width: '47%',
+  content: { padding: Spacing.md, paddingBottom: 100 },
+  listContainer: {
     backgroundColor: Colors.surface,
-    borderRadius: BorderRadius.lg,
-    padding: Spacing.lg,
+    borderRadius: BorderRadius.xl,
+    overflow: 'hidden',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.03, shadowRadius: 6, elevation: 2,
+  },
+  tile: {
+    flexDirection: 'row',
     alignItems: 'center',
-    shadowColor: '#000',
-    shadowOpacity: 0.05,
-    shadowRadius: 4,
-    elevation: 2,
+    paddingVertical: 14,
+    paddingHorizontal: Spacing.lg,
+    backgroundColor: Colors.surface,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
   },
   iconWrap: {
-    width: 56, height: 56, borderRadius: 28,
-    backgroundColor: Colors.primary + '12',
+    width: 34, height: 34, borderRadius: 8,
     justifyContent: 'center', alignItems: 'center',
-    marginBottom: Spacing.sm,
+    marginRight: Spacing.md,
   },
-  tileLabel: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.text, textAlign: 'center' },
+  tileLabel: { flex: 1, fontSize: FontSize.md, fontWeight: '500', color: Colors.text },
 });

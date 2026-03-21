@@ -434,6 +434,9 @@ export default function DeliveryDetailScreen({ route, navigation }) {
             const canFulfill = !isFinal && item.product_id && !item.from_product_stock && isManager;
             return (
               <View key={i} style={styles.itemRow}>
+                {item.product_image && (
+                  <Image source={{ uri: item.product_image }} style={{ width: 48, height: 48, borderRadius: 8, marginRight: 8 }} />
+                )}
                 <View style={{ flex: 1 }}>
                   <Text style={styles.itemName}>{item.product_name || item.name}</Text>
                   {item.customization && <Text style={styles.itemCustom}>{item.customization}</Text>}
@@ -711,7 +714,7 @@ const styles = StyleSheet.create({
   infoRow: { flexDirection: 'row', alignItems: 'flex-start', marginBottom: 8, gap: 8 },
   infoLabel: { fontSize: FontSize.sm, color: Colors.textLight, width: 80 },
   infoValue: { fontSize: FontSize.sm, color: Colors.text, flex: 1, fontWeight: '500' },
-  itemRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 6, gap: 8 },
+  itemRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: Spacing.md, gap: 8, borderBottomWidth: 1, borderBottomColor: Colors.border },
   saleDetailBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 8, borderRadius: BorderRadius.md, borderWidth: 1, borderColor: Colors.primary + '40', backgroundColor: Colors.primary + '08' },
   convertPickupBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 8, borderRadius: BorderRadius.md, borderWidth: 1, borderColor: Colors.primary + '40', backgroundColor: Colors.primary + '08' },
   saleDetailBtnText: { fontSize: FontSize.sm, color: Colors.primary, fontWeight: '600' },
@@ -719,10 +722,10 @@ const styles = StyleSheet.create({
   stockBadgeText: { fontSize: FontSize.xs, color: Colors.success, fontWeight: '600' },
   fulfillBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 4, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, backgroundColor: Colors.primary + '10', alignSelf: 'flex-start' },
   fulfillBtnText: { fontSize: FontSize.xs, color: Colors.primary, fontWeight: '600' },
-  itemName: { flex: 1, fontSize: FontSize.sm, color: Colors.text },
-  itemCustom: { fontSize: FontSize.xs, color: Colors.textLight },
-  itemQty: { fontSize: FontSize.sm, color: Colors.textLight, width: 30, textAlign: 'center' },
-  itemPrice: { fontSize: FontSize.sm, color: Colors.text, fontWeight: '600', width: 70, textAlign: 'right' },
+  itemName: { flex: 1, fontSize: FontSize.md, fontWeight: '700', color: Colors.text },
+  itemCustom: { fontSize: FontSize.sm, color: Colors.textLight },
+  itemQty: { fontSize: FontSize.md, color: Colors.textLight, width: 30, textAlign: 'center' },
+  itemPrice: { fontSize: FontSize.md, color: Colors.text, fontWeight: '700', width: 70, textAlign: 'right' },
   codStatusBadge: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8, marginTop: 8, alignSelf: 'flex-start' },
   codStatusText: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.text },
   paymentRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 4, borderBottomWidth: 1, borderBottomColor: Colors.border },

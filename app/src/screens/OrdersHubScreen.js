@@ -43,25 +43,29 @@ export default function OrdersHubScreen({ navigation }) {
       contentContainerStyle={styles.content}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); fetchCounts(); }} colors={[Colors.primary]} />}
     >
-      <View style={styles.grid}>
-        {SECTIONS.map(s => (
-          <TouchableOpacity
-            key={s.key}
-            style={styles.tile}
-            onPress={() => navigation.navigate(s.key)}
-            activeOpacity={0.7}
-          >
-            <View style={[styles.iconWrap, { backgroundColor: s.color + '15' }]}>
-              <Ionicons name={s.icon} size={28} color={s.color} />
-            </View>
-            <Text style={styles.tileLabel}>{s.label}</Text>
-            {counts[s.countKey] > 0 && (
-              <View style={[styles.badge, { backgroundColor: s.color }]}>
-                <Text style={styles.badgeText}>{counts[s.countKey]}</Text>
+      <View style={styles.listContainer}>
+        {SECTIONS.map((s, idx) => {
+          const isLast = idx === SECTIONS.length - 1;
+          return (
+            <TouchableOpacity
+              key={s.key}
+              style={[styles.tile, isLast && { borderBottomWidth: 0 }]}
+              onPress={() => navigation.navigate(s.key)}
+              activeOpacity={0.7}
+            >
+              <View style={[styles.iconWrap, { backgroundColor: s.color }]}>
+                <Ionicons name={s.icon} size={20} color={Colors.white} />
               </View>
-            )}
-          </TouchableOpacity>
-        ))}
+              <Text style={styles.tileLabel}>{s.label}</Text>
+              {counts[s.countKey] > 0 && (
+                <View style={[styles.badge, { backgroundColor: Colors.surfaceAlt }]}>
+                  <Text style={styles.badgeText}>{counts[s.countKey]}</Text>
+                </View>
+              )}
+              <Ionicons name="chevron-forward" size={20} color={Colors.textLight} style={{ marginLeft: 8 }} />
+            </TouchableOpacity>
+          );
+        })}
       </View>
     </ScrollView>
   );
@@ -69,31 +73,32 @@ export default function OrdersHubScreen({ navigation }) {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
-  content: { padding: Spacing.md },
-  grid: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.md },
-  tile: {
-    width: '47%',
+  content: { padding: Spacing.md, gap: Spacing.md },
+  listContainer: {
     backgroundColor: Colors.surface,
-    borderRadius: BorderRadius.lg,
-    padding: Spacing.lg,
+    borderRadius: BorderRadius.xl,
+    overflow: 'hidden',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.03, shadowRadius: 6, elevation: 2,
+  },
+  tile: {
+    flexDirection: 'row',
     alignItems: 'center',
-    shadowColor: '#000',
-    shadowOpacity: 0.05,
-    shadowRadius: 4,
-    elevation: 2,
-    position: 'relative',
+    paddingVertical: 14,
+    paddingHorizontal: Spacing.lg,
+    backgroundColor: Colors.surface,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
   },
   iconWrap: {
-    width: 56, height: 56, borderRadius: 28,
+    width: 34, height: 34, borderRadius: 8,
     justifyContent: 'center', alignItems: 'center',
-    marginBottom: Spacing.sm,
+    marginRight: Spacing.md,
   },
-  tileLabel: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.text, textAlign: 'center' },
+  tileLabel: { flex: 1, fontSize: FontSize.md, fontWeight: '500', color: Colors.text },
   badge: {
-    position: 'absolute', top: 8, right: 8,
-    minWidth: 22, height: 22, borderRadius: 11,
+    minWidth: 28, height: 28, borderRadius: 14,
     justifyContent: 'center', alignItems: 'center',
-    paddingHorizontal: 6,
+    paddingHorizontal: 8,
   },
-  badgeText: { fontSize: FontSize.xs, fontWeight: '700', color: Colors.white },
+  badgeText: { fontSize: FontSize.sm, fontWeight: '700', color: Colors.textSecondary },
 });
