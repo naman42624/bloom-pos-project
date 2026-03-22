@@ -302,7 +302,7 @@ export default function ProductionQueueScreen({ navigation }) {
                   <Ionicons name="cube-outline" size={24} color={Colors.primary} />
                 )}
               </TouchableOpacity>
-              <Text style={styles.taskProduct}>{item.quantity}x {item.product_name}</Text>
+              <Text style={styles.taskProduct}>{item.quantity}x {item.product_name || item.item_product_name || 'Custom Item'}</Text>
               {item.priority === 'urgent' && (
                 <View style={styles.urgentBadge}>
                   <Ionicons name="flash" size={12} color="#FF6D00" />

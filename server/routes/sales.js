@@ -7,6 +7,17 @@ const { todayStr: localToday, nowLocal } = require('../utils/time');
 
 const router = express.Router();
 
+// ─── Auto-migration: expand schema CHECK constraints ─────────
+try {
+  const db = getDb();
+  // Add 'preparing' and 'ready' to sales.status
+  try { db.prepare("ALTER TABLE sales DROP CONSTRAINT IF EXISTS sales_status_check").run(); } catch {}
+  try { db.prepare("ALTER TABLE sales ADD CONSTRAINT sales_status_check CHECK(status IN ('pending','preparing','ready','completed','cancelled','draft'))").run(); } catch {}
+  // Add 'assigned' to production_tasks.status
+  try { db.prepare("ALTER TABLE production_tasks DROP CONSTRAINT IF EXISTS production_tasks_status_check").run(); } catch {}
+  try { db.prepare("ALTER TABLE production_tasks ADD CONSTRAINT production_tasks_status_check CHECK(status IN ('pending','assigned','in_progress','completed','cancelled'))").run(); } catch {}
+} catch (e) { console.log('Sales migration note:', e.message); }
+
 
 // ─── Helper: Generate sale number ────────────────────────────
 function generateSaleNumber(db, locationId) {
@@ -770,37 +781,13 @@ router.post(
         );
         const saleId = saleResult.lastInsertRowid;
 
-        // Insert items
-        const insertItemWithLineTotal = db.prepare(
-          'INSERT INTO sale_items (sale_id, product_id, material_id, product_name, quantity, unit_price, tax_rate, tax_amount, line_total, materials_deducted, from_product_stock, special_instructions, image_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-        );
-        const insertItemCompat = db.prepare(
+        // Insert items — use only the compat INSERT that omits line_total (it's GENERATED ALWAYS)
+        const insertItem = db.prepare(
           'INSERT INTO sale_items (sale_id, product_id, material_id, product_name, quantity, unit_price, tax_rate, tax_amount, materials_deducted, from_product_stock, special_instructions, image_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
         );
         const saleItemIds = [];
         for (const item of processedItems) {
-          let res;
-          const lineTotal = (Number(item.unit_price || 0) * Number(item.quantity || 0)) + Number(item.tax_amount || 0);
-          try {
-            res = insertItemWithLineTotal.run(
-              saleId,
-              item.product_id,
-              item.material_id,
-              item.product_name,
-              item.quantity,
-              item.unit_price,
-              item.tax_rate,
-              item.tax_amount,
-              lineTotal,
-              0,
-              0,
-              item.special_instructions || null,
-              item.image_url || null
-            );
-          } catch (err) {
-            const msg = String(err?.message || '').toLowerCase();
-            if (!msg.includes('generated') && !msg.includes('line_total')) throw err;
-            res = insertItemCompat.run(
+          const res = insertItem.run(
               saleId,
               item.product_id,
               item.material_id,
@@ -813,8 +800,7 @@ router.post(
               0,
               item.special_instructions || null,
               item.image_url || null
-            );
-          }
+          );
           saleItemIds.push({ ...item, sale_item_id: res.lastInsertRowid });
         }
 
@@ -867,9 +853,13 @@ router.post(
               // Non-walk-in: full quantity goes to production (lazy deduction)
 
               if (toMake > 0) {
-                const priority = order_type === 'walk_in' ? 'urgent' : 'normal';
+                const priority = order_type === 'walk_in' ? 'urgent' : 'medium';
                 insertTask.run(saleId, item.sale_item_id, item.product_id, location_id, toMake, priority, '');
               }
+            } else {
+              // Ad-hoc item (no product_id) — still create a production task
+              const priority = order_type === 'walk_in' ? 'urgent' : 'medium';
+              insertTask.run(saleId, item.sale_item_id, item.product_id || null, location_id, item.quantity, priority, item.special_instructions || '');
             }
           }
         }
@@ -1498,39 +1488,17 @@ router.post(
         );
         const saleId = saleResult.lastInsertRowid;
 
-        const insertItemWithLineTotal = db.prepare(
-          'INSERT INTO sale_items (sale_id, product_id, material_id, product_name, quantity, unit_price, tax_rate, tax_amount, line_total, materials_deducted, from_product_stock, special_instructions, image_url) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)'
-        );
-        const insertItemCompat = db.prepare(
+        const insertItem = db.prepare(
           'INSERT INTO sale_items (sale_id, product_id, material_id, product_name, quantity, unit_price, tax_rate, tax_amount, materials_deducted, from_product_stock, special_instructions, image_url) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, 0, 0, ?, ?)'
         );
         const insertTask = db.prepare(
-          `INSERT INTO production_tasks (sale_id, sale_item_id, product_id, location_id, quantity, priority, notes) VALUES (?, ?, ?, ?, ?, 'normal', '')`
+          `INSERT INTO production_tasks (sale_id, sale_item_id, product_id, location_id, quantity, priority, notes) VALUES (?, ?, ?, ?, ?, 'medium', '')`
         );
 
         for (const item of processedItems) {
-          let res;
-          try {
-            res = insertItemWithLineTotal.run(
-              saleId,
-              item.product_id,
-              item.product_name,
-              item.quantity,
-              item.unit_price,
-              item.tax_rate,
-              item.tax_amount,
-              item.line_total,
-              item.special_instructions || null,
-              item.image_url || null
-            );
-          } catch (err) {
-            const msg = String(err?.message || '').toLowerCase();
-            if (!msg.includes('generated') && !msg.includes('line_total')) throw err;
-            res = insertItemCompat.run(saleId, item.product_id, item.product_name, item.quantity, item.unit_price, item.tax_rate, item.tax_amount, item.special_instructions || null, item.image_url || null);
-          }
-          if (item.product_id) {
-            insertTask.run(saleId, res.lastInsertRowid, item.product_id, location_id, item.quantity);
-          }
+          const res = insertItem.run(saleId, item.product_id, item.product_name, item.quantity, item.unit_price, item.tax_rate, item.tax_amount, item.special_instructions || null, item.image_url || null);
+          // Create production task for all items
+          insertTask.run(saleId, res.lastInsertRowid, item.product_id || null, location_id, item.quantity);
         }
 
         // Auto-create delivery record
@@ -1599,7 +1567,7 @@ router.post(
 
         const prodResult = db.prepare(
           `INSERT INTO products (name, sku, category, type, selling_price, is_active, created_by)
-           VALUES (?, ?, 'other', 'custom', ?, 1, ?)`
+           VALUES (?, ?, 'other', 'custom', ?, 0, ?)`
         ).run(name, sku, finalPrice, req.user.id);
         const productId = prodResult.lastInsertRowid;
 

@@ -50,8 +50,14 @@ export default function SaleDetailScreen({ route, navigation }) {
   const [convertModalVisible, setConvertModalVisible] = useState(false);
   const [convertAddress, setConvertAddress] = useState('');
   const [convertCharges, setConvertCharges] = useState('');
-  const [convertTarget, setConvertTarget] = useState(null); // 'pickup' or 'delivery'
+  const [convertTarget, setConvertTarget] = useState(null);
   const [convertSavedAddresses, setConvertSavedAddresses] = useState([]);
+
+  // Assignment modal
+  const [assignModalVisible, setAssignModalVisible] = useState(false);
+  const [assignTaskId, setAssignTaskId] = useState(null);
+  const [employees, setEmployees] = useState([]);
+  const [loadingEmployees, setLoadingEmployees] = useState(false);
 
   useEffect(() => { fetchSale(); }, [saleId]);
 
@@ -134,6 +140,27 @@ export default function SaleDetailScreen({ route, navigation }) {
       fetchSale();
     } catch (err) {
       Alert.alert('Error', err.message || `Failed to ${label}`);
+    }
+  };
+
+  const openAssignModal = async (taskId) => {
+    setAssignTaskId(taskId);
+    setLoadingEmployees(true);
+    setAssignModalVisible(true);
+    try {
+      const res = await api.getUsers({ role: 'employee' });
+      setEmployees(res.data || []);
+    } catch { setEmployees([]); }
+    finally { setLoadingEmployees(false); }
+  };
+
+  const handleAssign = async (employeeId) => {
+    try {
+      await api.assignTask(assignTaskId, { assigned_to: employeeId });
+      setAssignModalVisible(false);
+      fetchSale();
+    } catch (err) {
+      Alert.alert('Error', err.message || 'Failed to assign');
     }
   };
 
@@ -410,13 +437,27 @@ export default function SaleDetailScreen({ route, navigation }) {
                     {!['completed', 'cancelled'].includes(sale.status) && (
                       <View style={styles.taskActions}>
                         {task.status === 'pending' && (
+                          <>
+                            <TouchableOpacity style={styles.taskActionBtn} onPress={() => handleTaskAction(task.id, 'pick', 'pick up')}>
+                              <Ionicons name="hand-left-outline" size={14} color={Colors.info} />
+                              <Text style={[styles.taskActionText, { color: Colors.info }]}>Pick Up</Text>
+                            </TouchableOpacity>
+                            {canManage && (
+                              <TouchableOpacity style={[styles.taskActionBtn, { backgroundColor: '#9C27B0' + '15' }]} onPress={() => openAssignModal(task.id)}>
+                                <Ionicons name="person-add-outline" size={14} color="#9C27B0" />
+                                <Text style={[styles.taskActionText, { color: '#9C27B0' }]}>Assign</Text>
+                              </TouchableOpacity>
+                            )}
+                          </>
+                        )}
+                        {task.status === 'assigned' && (
                           <TouchableOpacity style={styles.taskActionBtn} onPress={() => handleTaskAction(task.id, 'pick', 'pick up')}>
                             <Ionicons name="hand-left-outline" size={14} color={Colors.info} />
-                            <Text style={[styles.taskActionText, { color: Colors.info }]}>Pick</Text>
+                            <Text style={[styles.taskActionText, { color: Colors.info }]}>Pick Up</Text>
                           </TouchableOpacity>
                         )}
-                        {(task.status === 'pending' || task.status === 'assigned') && (
-                          <TouchableOpacity style={styles.taskActionBtn} onPress={() => handleTaskAction(task.id, 'start', 'start')}>
+                        {(task.status === 'assigned' || task.status === 'pending') && task.picked_by_name && (
+                          <TouchableOpacity style={[styles.taskActionBtn, { backgroundColor: '#00BCD4' + '15' }]} onPress={() => handleTaskAction(task.id, 'start', 'start')}>
                             <Ionicons name="play-outline" size={14} color="#00BCD4" />
                             <Text style={[styles.taskActionText, { color: '#00BCD4' }]}>Start</Text>
                           </TouchableOpacity>
@@ -726,6 +767,44 @@ export default function SaleDetailScreen({ route, navigation }) {
             </TouchableOpacity>
           </View>
         </KeyboardAvoidingView>
+      </Modal>
+
+      {/* Assign Employee Modal */}
+      <Modal visible={assignModalVisible} transparent animationType="fade">
+        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', alignItems: 'center' }}>
+          <View style={{ backgroundColor: Colors.surface, borderRadius: BorderRadius.lg, padding: Spacing.lg, width: '85%', maxHeight: '60%' }}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: Spacing.md }}>
+              <Text style={{ fontSize: FontSize.lg, fontWeight: '700', color: Colors.text }}>Assign to Employee</Text>
+              <TouchableOpacity onPress={() => setAssignModalVisible(false)}>
+                <Ionicons name="close" size={24} color={Colors.text} />
+              </TouchableOpacity>
+            </View>
+            {loadingEmployees ? (
+              <ActivityIndicator color={Colors.primary} size="large" style={{ padding: 20 }} />
+            ) : employees.length === 0 ? (
+              <Text style={{ color: Colors.textLight, textAlign: 'center', padding: 20 }}>No employees found</Text>
+            ) : (
+              <ScrollView>
+                {employees.map(emp => (
+                  <TouchableOpacity
+                    key={emp.id}
+                    style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: Spacing.sm, paddingHorizontal: Spacing.sm, borderBottomWidth: 1, borderBottomColor: Colors.border }}
+                    onPress={() => handleAssign(emp.id)}
+                  >
+                    <View style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: '#9C27B0' + '15', justifyContent: 'center', alignItems: 'center' }}>
+                      <Ionicons name="person" size={20} color="#9C27B0" />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ fontSize: FontSize.md, fontWeight: '600', color: Colors.text }}>{emp.name}</Text>
+                      {emp.phone && <Text style={{ fontSize: FontSize.xs, color: Colors.textLight }}>{emp.phone}</Text>}
+                    </View>
+                    <Ionicons name="chevron-forward" size={18} color={Colors.textLight} />
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            )}
+          </View>
+        </View>
       </Modal>
     </ScrollView>
   );

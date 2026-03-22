@@ -103,50 +103,36 @@ export default function CheckoutScreen({ route, navigation }) {
     try {
       const res = await api.getProductMaterials(item.product_id);
       if (res.success && res.data) {
-        setCustomMaterials(res.data.map(m => ({
-          material_id: m.material_id,
-          qty: String(m.quantity || 1)
-        })));
+        setCustomMaterials(res.data.map(m => {
+          const matInfo = allMaterialsList.find(mat => mat.id === m.material_id);
+          return {
+            material_id: m.material_id,
+            name: matInfo?.name || m.material_name || 'Material #' + m.material_id,
+            qty: String(m.quantity || 1)
+          };
+        }));
       }
     } catch (e) { console.log('Failed to fetch product materials:', e); }
   };
 
-  const handleCustomize = async () => {
+  const handleCustomize = () => {
     const charge = parseFloat(customCharge) || 0;
     const mats = customMaterials.filter(m => m.material_id && parseFloat(m.qty) > 0).map(m => ({
-      material_id: m.material_id, qty_per_unit: parseFloat(m.qty)
+      material_id: m.material_id, name: m.name, qty_per_unit: parseFloat(m.qty)
     }));
-    setCustomSubmitting(true);
-    try {
-      const res = await api.createCustomItem({
-        base_product_id: customProduct.product_id,
-        name: `Custom ${customProduct.product_name}`,
-        base_price: customProduct.unit_price,
-        custom_charge: charge,
-        location_id: locationId,
-        materials: mats
-      });
-      if (res.success) {
-        const newCart = [...cart];
-        newCart[customCartIndex] = {
-           ...newCart[customCartIndex],
-           product_id: res.data.id,
-           product_name: res.data.name,
-           unit_price: res.data.selling_price,
-           tax_rate: res.data.tax_rate,
-           image_url: res.data.image_url,
-           special_instructions: customSpecialInstructions
-        };
-        setCart(newCart);
-        setShowCustomize(false);
-      } else {
-        Alert.alert('Error', res.message || 'Failed to customize');
-      }
-    } catch (err) {
-      Alert.alert('Error', err.message || 'Something went wrong');
-    } finally {
-      setCustomSubmitting(false);
-    }
+
+    const newCart = [...cart];
+    newCart[customCartIndex] = {
+      ...newCart[customCartIndex],
+      unit_price: (newCart[customCartIndex].unit_price || 0) + charge,
+      special_instructions: customSpecialInstructions,
+      custom_materials: mats,
+      product_name: charge > 0
+        ? `${newCart[customCartIndex].product_name} (Custom +₹${charge})`
+        : newCart[customCartIndex].product_name,
+    };
+    setCart(newCart);
+    setShowCustomize(false);
   };
 
   const subtotal = cart.reduce((s, c) => s + (c.unit_price * c.quantity), 0);
@@ -920,13 +906,21 @@ export default function CheckoutScreen({ route, navigation }) {
                     </View>
                   </View>
 
-                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: Spacing.sm }}>
                     <Text style={styles.fieldLabel}>Materials</Text>
-                    <TouchableOpacity onPress={() => setCustomMaterials([...customMaterials, { material_id: null, name: '', qty: '1' }])} style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                      <Ionicons name="add-circle" size={18} color={Colors.primary} />
-                      <Text style={{ fontSize: FontSize.xs, color: Colors.primary, fontWeight: '600' }}>Add</Text>
-                    </TouchableOpacity>
                   </View>
+                  <TouchableOpacity
+                    onPress={() => setCustomMaterials([...customMaterials, { material_id: null, name: '', qty: '1' }])}
+                    style={{
+                      flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+                      backgroundColor: Colors.primary + '15', paddingVertical: Spacing.sm, paddingHorizontal: Spacing.md,
+                      borderRadius: BorderRadius.md, borderWidth: 1, borderColor: Colors.primary + '30', borderStyle: 'dashed',
+                      marginBottom: Spacing.sm,
+                    }}
+                  >
+                    <Ionicons name="add-circle" size={20} color={Colors.primary} />
+                    <Text style={{ fontSize: FontSize.sm, color: Colors.primary, fontWeight: '700' }}>Add Material</Text>
+                  </TouchableOpacity>
                   {customMaterials.map((m, idx) => (
                     <View key={idx} style={{ flexDirection: 'row', gap: Spacing.xs, alignItems: 'center', marginBottom: Spacing.xs }}>
                       <TouchableOpacity
