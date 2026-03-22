@@ -1,17 +1,4 @@
-const { Pool, types } = require('pg');
-const deasync = require('deasync');
-
-// ─── pg type parsers: cast DECIMAL/NUMERIC/INT to JS numbers ─
-// Without this, pg returns DECIMAL/NUMERIC as strings (e.g. "150.00")
-// which breaks .toFixed(), arithmetic, etc.
-const numericOIDs = [20, 21, 23, 26, 700, 701, 1700];
-for (const oid of numericOIDs) {
-  types.setTypeParser(oid, (val) => {
-    if (val === null) return null;
-    const n = Number(val);
-    return Number.isNaN(n) ? val : n;
-  });
-}
+const { spawnSync } = require('child_process');
 
 const DATABASE_URL = process.env.DATABASE_URL;
 
@@ -747,82 +734,57 @@ function bindParams(sql, params = []) {
   return result;
 }
 
-// ─── pg.Pool Connection Pooling ──────────────────────────────
-const pool = new Pool({
-  connectionString: DATABASE_URL,
-  max: 10,
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 5000,
-});
-
-pool.on('error', (err) => {
-  console.error('Unexpected error on idle pool client', err);
-});
-
-/**
- * Execute a raw SQL query synchronously via pg.Pool.
- * Returns the full result object from node-postgres.
- */
-function pgQuerySync(sql, params = []) {
-  let done = false;
-  let result = null;
-  let error = null;
-
-  pool.query(sql, params).then(
-    (res) => { result = res; done = true; },
-    (err) => { error = err; done = true; }
-  );
-
-  deasync.loopWhile(() => !done);
-
-  if (error) throw error;
-  return result;
-}
-
-/**
- * Run a raw SQL statement (DDL, DML, or plain query).
- * For compat with old spawnSync API — returns trimmed text output.
- */
 function runPsql(sql) {
-  const result = pgQuerySync(sql);
-  // For simple COUNT / SELECT 1, return the first cell value
-  if (result.rows && result.rows.length > 0) {
-    const firstRow = result.rows[0];
-    const keys = Object.keys(firstRow);
-    if (keys.length === 1) {
-      return String(firstRow[keys[0]] ?? '');
-    }
-    return JSON.stringify(firstRow);
+  const proc = spawnSync('psql', [DATABASE_URL, '-X', '-q', '-t', '-A', '-c', sql], {
+    encoding: 'utf8',
+  });
+
+  if (proc.status !== 0) {
+    const stderr = (proc.stderr || '').trim();
+    const stdout = (proc.stdout || '').trim();
+    throw new Error(stderr || stdout || 'PostgreSQL query failed');
   }
-  return '';
+
+  return (proc.stdout || '').trim();
 }
 
-/**
- * Run a SELECT query and return the rows as a JS array of objects.
- */
 function runSelect(sql) {
-  const result = pgQuerySync(sql);
-  return result.rows || [];
+  const wrapped = `SELECT COALESCE(json_agg(t), '[]'::json)::text FROM (${sql}) t`;
+  const output = runPsql(wrapped);
+
+  if (!output) return [];
+
+  const payload = output
+    .split('\n')
+    .filter((line) => line.trim().length > 0)
+    .join('\n') || '[]';
+  try {
+    return JSON.parse(payload);
+  } catch {
+    return [];
+  }
 }
 
-/**
- * Run an INSERT/UPDATE/DELETE and return { changes, lastInsertRowid }.
- */
 function runMutation(sql, mode) {
-  const result = pgQuerySync(sql);
-  const rows = result.rows || [];
+  const output = runPsql(sql);
+  const lines = output
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
 
   if (mode === 'insert') {
-    const first = rows[0];
-    const id = first ? (first.id ?? Object.values(first)[0] ?? null) : null;
+    const first = lines[0];
+    const parsed = first != null && first !== '' && !Number.isNaN(Number(first))
+      ? Number(first)
+      : first || null;
     return {
-      changes: result.rowCount || 0,
-      lastInsertRowid: id,
+      changes: lines.length,
+      lastInsertRowid: parsed,
     };
   }
 
   return {
-    changes: result.rowCount || 0,
+    changes: lines.length,
     lastInsertRowid: null,
   };
 }
@@ -884,11 +846,11 @@ function createPrepared(sql) {
 
 function getDb() {
   if (!initialized) {
-    pgQuerySync('SELECT 1');
+    runPsql('SELECT 1');
     ensureCriticalTimestampColumns();
     ensureCompatibilityColumns();
     initialized = true;
-    console.log('✅ Connected to PostgreSQL via pg.Pool (pooled)');
+    console.log('✅ Connected to PostgreSQL');
   }
 
   return {
@@ -906,7 +868,6 @@ function getDb() {
 
 function closeDb() {
   initialized = false;
-  pool.end().catch(() => {});
 }
 
-module.exports = { getDb, closeDb, pool };
+module.exports = { getDb, closeDb };
