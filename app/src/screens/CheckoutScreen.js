@@ -51,8 +51,8 @@ export default function CheckoutScreen({ route, navigation }) {
   const [showAddressPicker, setShowAddressPicker] = useState(false);
 
   // Scheduled date/time — for pickup, delivery, and pre-order
-  const [scheduledDate, setScheduledDate] = useState('');
-  const [scheduledTime, setScheduledTime] = useState('');
+  const [scheduledDate, setScheduledDate] = useState(route.params?.scheduledDate || '');
+  const [scheduledTime, setScheduledTime] = useState(route.params?.scheduledTime || '');
   const [datePickerDate, setDatePickerDate] = useState(new Date());
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [showTimePicker, setShowTimePicker] = useState(false);

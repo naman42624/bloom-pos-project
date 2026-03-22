@@ -339,10 +339,10 @@ export default function ProductionQueueScreen({ navigation }) {
           </View>
         )}
 
-        {item.order_special_instructions ? (
+        {(item.order_special_instructions || item.order_notes) ? (
           <View style={styles.assignedRow}>
             <Ionicons name="information-circle" size={14} color={Colors.warning} />
-            <Text style={[styles.assignedText, { color: Colors.warning, fontWeight: '600' }]}>Order Note: {item.order_special_instructions}</Text>
+            <Text style={[styles.assignedText, { color: Colors.warning, fontWeight: '600' }]}>Order Note: {item.order_special_instructions || item.order_notes}</Text>
           </View>
         ) : null}
 

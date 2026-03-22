@@ -7,6 +7,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { useFocusEffect } from '@react-navigation/native';
+import DateTimePickerModal from '../components/DateTimePickerModal';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
@@ -27,6 +28,13 @@ export default function QuickCheckoutScreen({ navigation }) {
 
   // Items
   const [items, setItems] = useState([]);
+
+  // Scheduled date/time
+  const [scheduledDate, setScheduledDate] = useState('');
+  const [scheduledTime, setScheduledTime] = useState('');
+  const [datePickerDate, setDatePickerDate] = useState(new Date());
+  const [showDatePicker, setShowDatePicker] = useState(false);
+  const [showTimePicker, setShowTimePicker] = useState(false);
 
   // Order type
   const [orderType, setOrderType] = useState('walk_in');
@@ -229,12 +237,31 @@ export default function QuickCheckoutScreen({ navigation }) {
         customerName: customerName.trim(),
         customerPhone: customerPhone.trim(),
         customerAddress: customerAddress.trim(),
+        scheduledDate,
+        scheduledTime,
       });
     } catch (err) {
       Alert.alert('Error', err.message || 'Failed to place order');
     } finally {
       setSubmitting(false);
     }
+  };
+
+  const handleDateConfirm = (date) => {
+    setShowDatePicker(false);
+    const yyyy = date.getFullYear();
+    const mm = String(date.getMonth() + 1).padStart(2, '0');
+    const dd = String(date.getDate()).padStart(2, '0');
+    setScheduledDate(`${yyyy}-${mm}-${dd}`);
+    setDatePickerDate(date);
+  };
+  
+  const handleTimeConfirm = (date) => {
+    setShowTimePicker(false);
+    const hh = String(date.getHours()).padStart(2, '0');
+    const min = String(date.getMinutes()).padStart(2, '0');
+    setScheduledTime(`${hh}:${min}`);
+    setDatePickerDate(date);
   };
 
   const pickImage = async (idx) => {
@@ -332,6 +359,38 @@ export default function QuickCheckoutScreen({ navigation }) {
                   </TouchableOpacity>
                 ))}
               </ScrollView>
+            </View>
+          )}
+
+          {/* Scheduled date/time — for pickup, delivery */}
+          {(orderType === 'pickup' || orderType === 'delivery') && (
+            <View style={{ marginTop: Spacing.md }}>
+              <Text style={styles.label}>Scheduled Date & Time (optional)</Text>
+              <View style={[styles.fieldRow, { gap: Spacing.sm }]}>
+                <TouchableOpacity
+                  style={[styles.input, { flex: 1, flexDirection: 'row', alignItems: 'center' }]}
+                  onPress={() => setShowDatePicker(true)}
+                >
+                  <Ionicons name="calendar-outline" size={18} color={scheduledDate ? Colors.primary : Colors.textLight} style={{ marginRight: 8 }} />
+                  <Text style={{ color: scheduledDate ? Colors.text : Colors.textLight }}>
+                    {scheduledDate || 'Select Date'}
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.input, { flex: 1, flexDirection: 'row', alignItems: 'center' }]}
+                  onPress={() => setShowTimePicker(true)}
+                >
+                  <Ionicons name="time-outline" size={18} color={scheduledTime ? Colors.primary : Colors.textLight} style={{ marginRight: 8 }} />
+                  <Text style={{ color: scheduledTime ? Colors.text : Colors.textLight }}>
+                    {scheduledTime || 'Select Time'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+              {(scheduledDate || scheduledTime) && (
+                <TouchableOpacity onPress={() => { setScheduledDate(''); setScheduledTime(''); }} style={{ marginTop: 4 }}>
+                  <Text style={{ fontSize: FontSize.xs, color: Colors.error }}>Clear date/time</Text>
+                </TouchableOpacity>
+              )}
             </View>
           )}
         </View>
@@ -595,6 +654,21 @@ export default function QuickCheckoutScreen({ navigation }) {
           </View>
         </View>
       </Modal>
+
+      <DateTimePickerModal
+        visible={showDatePicker}
+        mode="date"
+        date={datePickerDate}
+        onConfirm={handleDateConfirm}
+        onCancel={() => setShowDatePicker(false)}
+      />
+      <DateTimePickerModal
+        visible={showTimePicker}
+        mode="time"
+        date={datePickerDate}
+        onConfirm={handleTimeConfirm}
+        onCancel={() => setShowTimePicker(false)}
+      />
     </KeyboardAvoidingView>
   );
 }

@@ -722,12 +722,19 @@ router.post(
           const getReadyStockCheck = db.prepare('SELECT quantity FROM product_stock WHERE product_id = ? AND location_id = ?');
           let allInStock = true;
           for (const item of processedItems) {
+            if (item.special_instructions || item.image_url || item.materials?.length > 0) {
+              allInStock = false;
+              break;
+            }
             if (item.product_id) {
               const ready = getReadyStockCheck.get(item.product_id, location_id);
               if (!ready || ready.quantity < item.quantity) {
                 allInStock = false;
                 break;
               }
+            } else {
+              allInStock = false;
+              break;
             }
           }
           if (allInStock) {
@@ -910,7 +917,7 @@ router.post(
               scheduled_date, scheduled_time, cod_amount, cod_status)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
           `).run(saleId, location_id, delivery_address, customer_name || null, customer_phone || null,
-            scheduled_date || null, scheduled_time || null, codAmount, codAmount > 0 ? 'pending' : 'none');
+            scheduled_date || null, scheduled_time || null, codAmount, codAmount > 0 ? 'pending' : 'collected');
         }
 
         // Auto-save delivery address to customer's saved addresses
@@ -1316,7 +1323,7 @@ router.put(
             `).run(sale.id, sale.location_id, addr,
               sale.customer_name || null, sale.customer_phone || null,
               sale.scheduled_date || null, sale.scheduled_time || null,
-              codAmount, codAmount > 0 ? 'pending' : 'none');
+              codAmount, codAmount > 0 ? 'pending' : 'collected');
           } else {
             // Update existing delivery record
             db.prepare('UPDATE deliveries SET delivery_address = ?, updated_at = CURRENT_TIMESTAMP WHERE sale_id = ?')
