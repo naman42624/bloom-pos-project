@@ -505,9 +505,9 @@ router.get('/:id', authenticate, (req, res, next) => {
              mc.name as category_name, mc.unit
       FROM product_materials pm
       JOIN materials mat ON pm.material_id = mat.id
-      JOIN material_categories mc ON mat.category_id = mc.id
+      LEFT JOIN material_categories mc ON mat.category_id = mc.id
       WHERE pm.product_id = ?
-      ORDER BY mc.name, mat.name
+      ORDER BY mat.name
     `);
     const getTask = db.prepare(`
       SELECT pt.id, pt.status, pt.quantity, pt.priority, pt.assigned_to, pt.picked_by,
@@ -521,13 +521,10 @@ router.get('/:id', authenticate, (req, res, next) => {
     `);
 
     for (const item of sale.items) {
-      if (item.product_id) {
-        item.materials = getBOM.all(item.product_id);
-        item.production_task = getTask.get(item.id) || null;
-      } else {
-        item.materials = [];
-        item.production_task = null;
-      }
+      // Fetch material composition (BOM) for standard products
+      item.materials = item.product_id ? getBOM.all(item.product_id) : [];
+      // Fetch production task for ALL items (including ad-hoc)
+      item.production_task = getTask.get(item.id) || null;
     }
 
     // Production task summary for the entire sale

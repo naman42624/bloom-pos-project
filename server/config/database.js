@@ -1,5 +1,17 @@
-const { Pool } = require('pg');
+const { Pool, types } = require('pg');
 const deasync = require('deasync');
+
+// ─── pg type parsers: cast DECIMAL/NUMERIC/INT to JS numbers ─
+// Without this, pg returns DECIMAL/NUMERIC as strings (e.g. "150.00")
+// which breaks .toFixed(), arithmetic, etc.
+const numericOIDs = [20, 21, 23, 26, 700, 701, 1700];
+for (const oid of numericOIDs) {
+  types.setTypeParser(oid, (val) => {
+    if (val === null) return null;
+    const n = Number(val);
+    return Number.isNaN(n) ? val : n;
+  });
+}
 
 const DATABASE_URL = process.env.DATABASE_URL;
 
