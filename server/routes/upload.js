@@ -4,8 +4,7 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 
-const { authenticate } = require('../middleware/auth');
-const { authorize } = require('../middleware/rbac');
+const { authenticate, authorize } = require('../middleware/auth');
 
 const uploadDir = path.join(__dirname, '..', '..', 'uploads', 'general');
 if (!fs.existsSync(uploadDir)) {
