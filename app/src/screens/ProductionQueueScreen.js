@@ -339,12 +339,25 @@ export default function ProductionQueueScreen({ navigation }) {
           </View>
         )}
 
-        {item.special_instructions && (
+        {item.order_special_instructions ? (
           <View style={styles.assignedRow}>
             <Ionicons name="information-circle" size={14} color={Colors.warning} />
-            <Text style={[styles.assignedText, { color: Colors.warning, fontWeight: '600' }]}>Note: {item.special_instructions}</Text>
+            <Text style={[styles.assignedText, { color: Colors.warning, fontWeight: '600' }]}>Order Note: {item.order_special_instructions}</Text>
           </View>
-        )}
+        ) : null}
+
+        {item.item_special_instructions ? (
+          <View style={styles.assignedRow}>
+            <Ionicons name="information-circle-outline" size={14} color={Colors.warning} />
+            <Text style={[styles.assignedText, { color: Colors.warning, fontWeight: '600' }]}>Item Note: {item.item_special_instructions}</Text>
+          </View>
+        ) : null}
+
+        {item.item_image_url ? (
+          <TouchableOpacity onPress={() => setViewedImage(api.getMediaUrl(item.item_image_url))} style={{ marginTop: 8 }}>
+            <Image source={{ uri: api.getMediaUrl(item.item_image_url) }} style={{ width: '100%', height: 120, borderRadius: BorderRadius.md }} resizeMode="cover" />
+          </TouchableOpacity>
+        ) : null}
 
         {/* Material composition (BOM) */}
         {item.materials && item.materials.length > 0 && (

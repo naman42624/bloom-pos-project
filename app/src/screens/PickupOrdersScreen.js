@@ -237,6 +237,25 @@ export default function PickupOrdersScreen({ navigation }) {
           </View>
         </View>
 
+        {(item.special_instructions || item.notes) && (
+          <Text style={{ fontSize: FontSize.xs, color: '#D32F2F', marginTop: 8, fontWeight: '600' }}>
+            Order Note: {item.special_instructions || item.notes}
+          </Text>
+        )}
+        
+        {(item.items && item.items.length > 0) && (
+          <View style={{ marginTop: 8, backgroundColor: Colors.background, padding: 8, borderRadius: 6 }}>
+            {item.items.map((it, idx) => (
+              <View key={idx} style={{ marginBottom: idx === item.items.length - 1 ? 0 : 4 }}>
+                <Text style={{ fontSize: FontSize.sm, color: Colors.textSecondary }}>{it.quantity}x {it.product_name}</Text>
+                {it.item_special_instructions ? (
+                  <Text style={{ fontSize: FontSize.xs, color: '#F57C00', marginLeft: 8, fontWeight: '500' }}>* {it.item_special_instructions}</Text>
+                ) : null}
+              </View>
+            ))}
+          </View>
+        )}
+
         {/* Actions */}
         <View style={styles.cardActions}>
           {tab === 'waiting' && (

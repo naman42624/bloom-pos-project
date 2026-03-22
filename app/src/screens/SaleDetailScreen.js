@@ -384,6 +384,12 @@ export default function SaleDetailScreen({ route, navigation }) {
                       {item.quantity} × ₹{(item.unit_price || 0).toFixed(2)}
                       {item.tax_rate > 0 ? ` (${item.tax_rate}% tax)` : ''}
                     </Text>
+                    {item.special_instructions ? <Text style={{ fontSize: FontSize.xs, color: Colors.textLight, marginTop: 4 }}>Note: {item.special_instructions}</Text> : null}
+                    {item.image_url ? (
+                      <TouchableOpacity onPress={(e) => { e.stopPropagation(); setViewedImage(api.getMediaUrl(item.image_url)); }} style={{ marginTop: 8 }}>
+                         <Image source={{ uri: api.getMediaUrl(item.image_url) }} style={{ width: 60, height: 60, borderRadius: 6 }} />
+                      </TouchableOpacity>
+                    ) : null}
                   </View>
                   {hasMaterials && (
                     <Ionicons name={isExpanded ? 'chevron-up' : 'chevron-down'} size={16} color={Colors.textLight} />

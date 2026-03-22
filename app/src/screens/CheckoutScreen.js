@@ -26,13 +26,13 @@ const PAYMENT_METHODS = [
 ];
 
 export default function CheckoutScreen({ route, navigation }) {
-  const { cart: initialCart, locationId, orderType: initialOrderType } = route.params;
+  const { cart: initialCart, locationId, orderType: initialOrderType, customerName: initName, customerPhone: initPhone, customerAddress: initAddress } = route.params;
   const { user } = useAuth();
 
   const [cart, setCart] = useState(initialCart || []);
   const [orderType, setOrderType] = useState(initialOrderType || 'walk_in');
-  const [customerName, setCustomerName] = useState('');
-  const [customerPhone, setCustomerPhone] = useState('');
+  const [customerName, setCustomerName] = useState(initName || '');
+  const [customerPhone, setCustomerPhone] = useState(initPhone || '');
   const [customerId, setCustomerId] = useState(null);
   const [discountType, setDiscountType] = useState('fixed');
   const [discountValue, setDiscountValue] = useState('');
@@ -59,7 +59,7 @@ export default function CheckoutScreen({ route, navigation }) {
   // Pre-order sub-type (pickup or delivery)
   const [preOrderType, setPreOrderType] = useState('pickup');
   const [advanceAmount, setAdvanceAmount] = useState('');
-  const [deliveryAddress, setDeliveryAddress] = useState('');
+  const [deliveryAddress, setDeliveryAddress] = useState(initAddress || '');
   // Sender info — for delivery orders
   const [senderName, setSenderName] = useState('');
   const [senderPhone, setSenderPhone] = useState('');
@@ -79,6 +79,7 @@ export default function CheckoutScreen({ route, navigation }) {
   const [customCartIndex, setCustomCartIndex] = useState(-1);
   const [customCharge, setCustomCharge] = useState('');
   const [customMaterials, setCustomMaterials] = useState([]);
+  const [customSpecialInstructions, setCustomSpecialInstructions] = useState('');
   const [customSubmitting, setCustomSubmitting] = useState(false);
   const [allMaterialsList, setAllMaterialsList] = useState([]);
   const [viewedImage, setViewedImage] = useState(null);
@@ -88,13 +89,26 @@ export default function CheckoutScreen({ route, navigation }) {
     setCustomCartIndex(index);
     setCustomCharge('');
     setCustomMaterials([]);
+    setCustomSpecialInstructions(item.special_instructions || '');
     setShowCustomize(true);
+    let materialsList = allMaterialsList;
     if (allMaterialsList.length === 0) {
       try {
         const res = await api.getMaterials();
-        setAllMaterialsList(res.data.filter(m => m.is_active !== 0));
+        materialsList = res.data.filter(m => m.is_active !== 0);
+        setAllMaterialsList(materialsList);
       } catch {}
     }
+
+    try {
+      const res = await api.getProductMaterials(item.product_id);
+      if (res.success && res.data) {
+        setCustomMaterials(res.data.map(m => ({
+          material_id: m.material_id,
+          qty: String(m.quantity || 1)
+        })));
+      }
+    } catch (e) { console.log('Failed to fetch product materials:', e); }
   };
 
   const handleCustomize = async () => {
@@ -106,8 +120,11 @@ export default function CheckoutScreen({ route, navigation }) {
     try {
       const res = await api.createCustomItem({
         base_product_id: customProduct.product_id,
-        additional_charge: charge,
-        custom_materials: mats
+        name: `Custom ${customProduct.product_name}`,
+        base_price: customProduct.unit_price,
+        custom_charge: charge,
+        location_id: locationId,
+        materials: mats
       });
       if (res.success) {
         const newCart = [...cart];
@@ -117,7 +134,8 @@ export default function CheckoutScreen({ route, navigation }) {
            product_name: res.data.name,
            unit_price: res.data.selling_price,
            tax_rate: res.data.tax_rate,
-           image_url: res.data.image_url
+           image_url: res.data.image_url,
+           special_instructions: customSpecialInstructions
         };
         setCart(newCart);
         setShowCustomize(false);
@@ -327,6 +345,8 @@ export default function CheckoutScreen({ route, navigation }) {
         quantity: c.quantity,
         unit_price: c.unit_price,
         tax_rate: c.tax_rate,
+        special_instructions: c.special_instructions || '',
+        image_url: c.image_url || '',
       })),
       payments: paymentEntries,
     };
@@ -588,9 +608,15 @@ export default function CheckoutScreen({ route, navigation }) {
             <View key={c.material_id ? `mat_${c.material_id}_${idx}` : `prod_${c.product_id}_${idx}`} style={styles.summaryRow}>
               <View style={{ flex: 1, paddingRight: 8 }}>
                 <Text style={styles.summaryItemName} numberOfLines={1}>{c.material_id ? '🌿 ' : ''}{c.product_name} x {c.quantity}</Text>
+                {c.special_instructions ? <Text style={{ fontSize: FontSize.xs, color: Colors.textLight, marginTop: 2 }}>Note: {c.special_instructions}</Text> : null}
+                {c.image_url ? (
+                  <TouchableOpacity onPress={() => setViewedImage(api.getMediaUrl(c.image_url))} style={{ marginTop: 4 }}>
+                    <Image source={{ uri: api.getMediaUrl(c.image_url) }} style={{ width: 40, height: 40, borderRadius: 4 }} />
+                  </TouchableOpacity>
+                ) : null}
                 {c.product_id && (
                   <TouchableOpacity onPress={() => openCustomize(c, idx)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-                    <Text style={{ fontSize: FontSize.xs, color: Colors.primary, fontWeight: '600', marginTop: 2 }}>+ Customize</Text>
+                    <Text style={{ fontSize: FontSize.xs, color: Colors.primary, fontWeight: '600', marginTop: 4 }}>+ Customize</Text>
                   </TouchableOpacity>
                 )}
               </View>
@@ -938,6 +964,16 @@ export default function CheckoutScreen({ route, navigation }) {
                     placeholder="0"
                     placeholderTextColor={Colors.textLight}
                     keyboardType="numeric"
+                  />
+
+                  <Text style={[styles.fieldLabel, { marginTop: Spacing.sm }]}>Special Instructions</Text>
+                  <TextInput
+                    style={[styles.modalInput, { minHeight: 60 }]}
+                    value={customSpecialInstructions}
+                    onChangeText={setCustomSpecialInstructions}
+                    placeholder="Notes for production..."
+                    placeholderTextColor={Colors.textLight}
+                    multiline
                   />
 
                   <TouchableOpacity

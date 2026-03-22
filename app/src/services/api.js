@@ -753,6 +753,22 @@ class ApiService {
     });
   }
 
+  // Generic Media Upload
+  async uploadGenericMedia(imageUri) {
+    const formData = new FormData();
+    const filename = imageUri.split('/').pop();
+    const match = /\.(\w+)$/.exec(filename);
+    const type = match ? `image/${match[1]}` : `image`;
+
+    formData.append('image', { uri: imageUri, name: filename, type });
+
+    return this.request(`/upload`, {
+      method: 'POST',
+      body: formData,
+      headers: {}, // Let browser set Content-Type automatically
+    });
+  }
+
   // ─── COD Settlements ─────────────────────────────────────
   getUnsettledDeliveries(params = {}) {
     const q = new URLSearchParams(params).toString();

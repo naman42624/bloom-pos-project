@@ -127,11 +127,12 @@ export default function DashboardScreen({ navigation }) {
   };
 
   return (
-    <ScrollView
-      style={styles.container}
-      contentContainerStyle={styles.content}
-      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[Colors.primary]} />}
-    >
+    <View style={{ flex: 1 }}>
+      <ScrollView
+        style={styles.container}
+        contentContainerStyle={styles.content}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[Colors.primary]} />}
+      >
       {/* Welcome Header */}
       <View style={styles.welcomeCard}>
         <View style={styles.welcomeRow}>
@@ -517,6 +518,8 @@ export default function DashboardScreen({ navigation }) {
         </View>
       )}
 
+      </ScrollView>
+
       {/* Quick Checkout Floating Action Button */}
       {(isManagerOrOwner || user?.role === 'employee') && (
         <TouchableOpacity
@@ -528,7 +531,7 @@ export default function DashboardScreen({ navigation }) {
           <Text style={styles.fabText}>Quick</Text>
         </TouchableOpacity>
       )}
-    </ScrollView>
+    </View>
   );
 }
 

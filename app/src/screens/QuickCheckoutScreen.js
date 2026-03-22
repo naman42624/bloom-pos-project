@@ -5,6 +5,7 @@ import {
   KeyboardAvoidingView,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import * as ImagePicker from 'expo-image-picker';
 import { useFocusEffect } from '@react-navigation/native';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
@@ -86,6 +87,8 @@ export default function QuickCheckoutScreen({ navigation }) {
       materials: [],
       price: '',
       quantity: '1',
+      special_instructions: '',
+      image_url: '',
     }]);
   };
 
@@ -168,14 +171,6 @@ export default function QuickCheckoutScreen({ navigation }) {
 
   // Place order
   const handlePlaceOrder = async () => {
-    if (!customerName.trim()) {
-      Alert.alert('Required', 'Please enter customer name');
-      return;
-    }
-    if (!customerPhone.trim()) {
-      Alert.alert('Required', 'Please enter customer phone');
-      return;
-    }
     if (items.length === 0) {
       Alert.alert('Required', 'Please add at least one item');
       return;
@@ -197,8 +192,21 @@ export default function QuickCheckoutScreen({ navigation }) {
 
     setSubmitting(true);
     try {
+      const processedItems = await Promise.all(items.map(async (item) => {
+        let finalImageUrl = item.image_url;
+        if (finalImageUrl && !finalImageUrl.startsWith('http') && !finalImageUrl.startsWith('/')) {
+           try {
+             const res = await api.uploadGenericMedia(finalImageUrl);
+             if (res.success && res.url) {
+               finalImageUrl = res.url;
+             }
+           } catch (err) { console.log('Image upload failed', err); }
+        }
+        return { ...item, image_url: finalImageUrl };
+      }));
+
       // Build cart items
-      const cart = items.map(item => ({
+      const cart = processedItems.map(item => ({
         product_id: item.baseProduct?.id || null,
         material_id: null,
         product_name: item.name,
@@ -208,6 +216,9 @@ export default function QuickCheckoutScreen({ navigation }) {
         tax_rate: item.baseProduct?.tax_percentage || 0,
         tax_amount: 0,
         line_total: getItemTotal(item),
+        materials: item.materials,
+        special_instructions: item.special_instructions || '',
+        image_url: item.image_url || '',
       }));
 
       // Navigate to Checkout with pre-built cart and customer info
@@ -223,6 +234,17 @@ export default function QuickCheckoutScreen({ navigation }) {
       Alert.alert('Error', err.message || 'Failed to place order');
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const pickImage = async (idx) => {
+    let result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true,
+      quality: 0.8,
+    });
+    if (!result.canceled && result.assets && result.assets.length > 0) {
+      updateItem(idx, 'image_url', result.assets[0].uri);
     }
   };
 
@@ -459,6 +481,33 @@ export default function QuickCheckoutScreen({ navigation }) {
                     </TouchableOpacity>
                   </View>
                 ))}
+              </View>
+
+              {/* Special Instructions & Image */}
+              <View style={styles.fieldRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.label}>Special Instructions (Optional)</Text>
+                  <TextInput
+                    style={styles.input}
+                    value={item.special_instructions}
+                    onChangeText={(v) => updateItem(idx, 'special_instructions', v)}
+                    placeholder="Notes for production..."
+                    placeholderTextColor={Colors.textLight}
+                  />
+                </View>
+                <TouchableOpacity
+                  style={[styles.pickProductBtn, { minWidth: 70, marginLeft: 10, justifyContent: 'center', alignSelf: 'flex-end', height: 44, marginBottom: 8 }]}
+                  onPress={() => pickImage(idx)}
+                >
+                  {item.image_url ? (
+                    <Image source={{ uri: item.image_url }} style={{ width: 30, height: 30, borderRadius: 4 }} />
+                  ) : (
+                    <>
+                      <Ionicons name="camera-outline" size={20} color={Colors.primary} />
+                      <Text style={[styles.pickProductText, { marginLeft: 4 }]}>Photo</Text>
+                    </>
+                  )}
+                </TouchableOpacity>
               </View>
 
               {/* Item total */}

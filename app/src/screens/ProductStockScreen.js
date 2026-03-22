@@ -1,11 +1,12 @@
 import React, { useState, useCallback } from 'react';
 import {
   View, Text, StyleSheet, FlatList, TextInput,
-  TouchableOpacity, Alert, ScrollView, Modal, ActivityIndicator,
+  TouchableOpacity, Alert, ScrollView, Modal, ActivityIndicator, Image
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import api from '../services/api';
+import ImageModal from '../components/ImageModal';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 
 const ADJUST_TYPES = [
@@ -38,6 +39,7 @@ export default function ProductStockScreen({ navigation }) {
   const [adjustNotes, setAdjustNotes] = useState('');
   const [adjustMaterialId, setAdjustMaterialId] = useState(null);
   const [submitting, setSubmitting] = useState(false);
+  const [viewedImage, setViewedImage] = useState(null);
 
   useFocusEffect(
     useCallback(() => {
@@ -160,9 +162,16 @@ export default function ProductStockScreen({ navigation }) {
 
     return (
       <TouchableOpacity style={styles.card} onPress={() => openAdjust(item)} activeOpacity={0.7}>
-        <View style={styles.cardLeft}>
-          <Ionicons name="gift" size={24} color={Colors.primary} />
-        </View>
+        <TouchableOpacity 
+          style={styles.cardLeft}
+          onPress={(e) => { e.stopPropagation(); if (item.image_url) setViewedImage(api.getMediaUrl(item.image_url)); }}
+        >
+          {item.image_url ? (
+            <Image source={{ uri: api.getMediaUrl(item.image_url) }} style={{ width: 44, height: 44, borderRadius: BorderRadius.md }} />
+          ) : (
+            <Ionicons name="gift" size={24} color={Colors.primary} />
+          )}
+        </TouchableOpacity>
         <View style={styles.cardCenter}>
           <Text style={styles.cardName} numberOfLines={1}>{item.name}</Text>
           <Text style={styles.cardSku}>{item.sku} • {item.category || 'other'}</Text>
@@ -389,6 +398,12 @@ export default function ProductStockScreen({ navigation }) {
           </View>
         </View>
       </Modal>
+
+      <ImageModal 
+        visible={!!viewedImage} 
+        imageUrl={viewedImage} 
+        onClose={() => setViewedImage(null)} 
+      />
     </View>
   );
 }

@@ -257,13 +257,15 @@ router.get('/tasks', authenticate, authorize('owner', 'manager', 'employee'), (r
     let sql = `
       SELECT pt.*,
              p.name as product_name, p.sku as product_sku, p.image_url as product_image,
-             s.sale_number, s.order_type, s.customer_name, s.scheduled_date, s.scheduled_time, s.special_instructions,
+             s.sale_number, s.order_type, s.customer_name, s.scheduled_date, s.scheduled_time, s.special_instructions as order_special_instructions,
+             si.special_instructions AS item_special_instructions, si.image_url AS item_image_url,
              l.name as location_name,
              a.name as assigned_to_name,
              pk.name as picked_by_name
       FROM production_tasks pt
       JOIN products p ON pt.product_id = p.id
       JOIN sales s ON pt.sale_id = s.id
+      LEFT JOIN sale_items si ON pt.sale_item_id = si.id
       JOIN locations l ON pt.location_id = l.id
       LEFT JOIN users a ON pt.assigned_to = a.id
       LEFT JOIN users pk ON pt.picked_by = pk.id
@@ -335,11 +337,13 @@ router.get('/my-tasks', authenticate, (req, res, next) => {
     const tasks = db.prepare(`
       SELECT pt.*,
              p.name as product_name, p.sku as product_sku, p.image_url as product_image,
-             s.sale_number, s.order_type, s.customer_name, s.scheduled_date, s.scheduled_time, s.special_instructions,
+             s.sale_number, s.order_type, s.customer_name, s.scheduled_date, s.scheduled_time, s.special_instructions as order_special_instructions,
+             si.special_instructions AS item_special_instructions, si.image_url AS item_image_url,
              l.name as location_name
       FROM production_tasks pt
       JOIN products p ON pt.product_id = p.id
       JOIN sales s ON pt.sale_id = s.id
+      LEFT JOIN sale_items si ON pt.sale_item_id = si.id
       JOIN locations l ON pt.location_id = l.id
       WHERE (pt.assigned_to = ? OR pt.picked_by = ?)
         AND pt.status IN ('assigned', 'in_progress')

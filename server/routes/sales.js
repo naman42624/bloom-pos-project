@@ -101,6 +101,12 @@ router.get('/', authenticate, (req, res, next) => {
 
     const sales = db.prepare(sql).all(...params);
 
+    // Enrich each sale with items
+    const getItems = db.prepare('SELECT product_name, quantity, special_instructions as item_special_instructions, image_url as item_image_url FROM sale_items WHERE sale_id = ?');
+    for (const sale of sales) {
+      sale.items = getItems.all(sale.id);
+    }
+
     // Get total count for pagination
     let countSql = `SELECT COUNT(*) as total FROM sales s WHERE 1=1`;
     const countParams = [];
@@ -442,7 +448,7 @@ router.get(
       const orders = db.prepare(sql).all(...params);
 
       // Enrich each order with items
-      const getItems = db.prepare('SELECT product_name, quantity FROM sale_items WHERE sale_id = ?');
+      const getItems = db.prepare('SELECT product_name, quantity, special_instructions as item_special_instructions, image_url as item_image_url FROM sale_items WHERE sale_id = ?');
       for (const order of orders) {
         order.items = getItems.all(order.id);
       }
@@ -759,10 +765,10 @@ router.post(
 
         // Insert items
         const insertItemWithLineTotal = db.prepare(
-          'INSERT INTO sale_items (sale_id, product_id, material_id, product_name, quantity, unit_price, tax_rate, tax_amount, line_total, materials_deducted, from_product_stock) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+          'INSERT INTO sale_items (sale_id, product_id, material_id, product_name, quantity, unit_price, tax_rate, tax_amount, line_total, materials_deducted, from_product_stock, special_instructions, image_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
         );
         const insertItemCompat = db.prepare(
-          'INSERT INTO sale_items (sale_id, product_id, material_id, product_name, quantity, unit_price, tax_rate, tax_amount, materials_deducted, from_product_stock) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+          'INSERT INTO sale_items (sale_id, product_id, material_id, product_name, quantity, unit_price, tax_rate, tax_amount, materials_deducted, from_product_stock, special_instructions, image_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
         );
         const saleItemIds = [];
         for (const item of processedItems) {
@@ -780,7 +786,9 @@ router.post(
               item.tax_amount,
               lineTotal,
               0,
-              0
+              0,
+              item.special_instructions || null,
+              item.image_url || null
             );
           } catch (err) {
             const msg = String(err?.message || '').toLowerCase();
@@ -795,7 +803,9 @@ router.post(
               item.tax_rate,
               item.tax_amount,
               0,
-              0
+              0,
+              item.special_instructions || null,
+              item.image_url || null
             );
           }
           saleItemIds.push({ ...item, sale_item_id: res.lastInsertRowid });
@@ -1482,10 +1492,10 @@ router.post(
         const saleId = saleResult.lastInsertRowid;
 
         const insertItemWithLineTotal = db.prepare(
-          'INSERT INTO sale_items (sale_id, product_id, material_id, product_name, quantity, unit_price, tax_rate, tax_amount, line_total, materials_deducted, from_product_stock) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, 0, 0)'
+          'INSERT INTO sale_items (sale_id, product_id, material_id, product_name, quantity, unit_price, tax_rate, tax_amount, line_total, materials_deducted, from_product_stock, special_instructions, image_url) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)'
         );
         const insertItemCompat = db.prepare(
-          'INSERT INTO sale_items (sale_id, product_id, material_id, product_name, quantity, unit_price, tax_rate, tax_amount, materials_deducted, from_product_stock) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, 0, 0)'
+          'INSERT INTO sale_items (sale_id, product_id, material_id, product_name, quantity, unit_price, tax_rate, tax_amount, materials_deducted, from_product_stock, special_instructions, image_url) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, 0, 0, ?, ?)'
         );
         const insertTask = db.prepare(
           `INSERT INTO production_tasks (sale_id, sale_item_id, product_id, location_id, quantity, priority, notes) VALUES (?, ?, ?, ?, ?, 'normal', '')`
@@ -1502,12 +1512,14 @@ router.post(
               item.unit_price,
               item.tax_rate,
               item.tax_amount,
-              item.line_total
+              item.line_total,
+              item.special_instructions || null,
+              item.image_url || null
             );
           } catch (err) {
             const msg = String(err?.message || '').toLowerCase();
             if (!msg.includes('generated') && !msg.includes('line_total')) throw err;
-            res = insertItemCompat.run(saleId, item.product_id, item.product_name, item.quantity, item.unit_price, item.tax_rate, item.tax_amount);
+            res = insertItemCompat.run(saleId, item.product_id, item.product_name, item.quantity, item.unit_price, item.tax_rate, item.tax_amount, item.special_instructions || null, item.image_url || null);
           }
           if (item.product_id) {
             insertTask.run(saleId, res.lastInsertRowid, item.product_id, location_id, item.quantity);

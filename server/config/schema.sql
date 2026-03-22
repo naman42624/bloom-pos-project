@@ -294,6 +294,8 @@ CREATE TABLE IF NOT EXISTS sale_items (
   line_total DECIMAL(12,2) GENERATED ALWAYS AS (quantity * unit_price + tax_amount) STORED,
   materials_deducted INTEGER DEFAULT 0,
   from_product_stock INTEGER DEFAULT 0,
+  special_instructions TEXT,
+  image_url TEXT,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 

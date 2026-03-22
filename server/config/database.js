@@ -451,6 +451,10 @@ function ensureCompatibilityColumns() {
     ensureColumn('suppliers', 'notes', "TEXT DEFAULT ''");
     ensureColumn('suppliers', 'created_by', 'INTEGER REFERENCES users(id) ON DELETE SET NULL');
 
+    // Sale items: Phase 7 enhancements
+    ensureColumn('sale_items', 'special_instructions', 'TEXT');
+    ensureColumn('sale_items', 'image_url', 'TEXT');
+
     // Purchase orders: add columns expected by routes
     ensureColumn('purchase_orders', 'expected_date', 'DATE');
     ensureColumn('purchase_orders', 'expected_time', 'TIME');
