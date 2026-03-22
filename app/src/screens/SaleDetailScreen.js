@@ -149,9 +149,15 @@ export default function SaleDetailScreen({ route, navigation }) {
     setAssignModalVisible(true);
     try {
       const res = await api.getUsers({ role: 'employee' });
-      setEmployees(res.data || []);
-    } catch { setEmployees([]); }
-    finally { setLoadingEmployees(false); }
+      // API returns { data: { users: [...], pagination } }
+      const list = res.data?.users || res.data || [];
+      setEmployees(Array.isArray(list) ? list : []);
+    } catch (err) {
+      console.log('Failed to fetch employees:', err);
+      setEmployees([]);
+    } finally {
+      setLoadingEmployees(false);
+    }
   };
 
   const handleAssign = async (employeeId) => {

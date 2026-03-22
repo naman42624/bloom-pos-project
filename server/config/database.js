@@ -1,4 +1,5 @@
-const { spawnSync } = require('child_process');
+const { Pool } = require('pg');
+const deasync = require('deasync');
 
 const DATABASE_URL = process.env.DATABASE_URL;
 
@@ -734,57 +735,82 @@ function bindParams(sql, params = []) {
   return result;
 }
 
+// ─── pg.Pool Connection Pooling ──────────────────────────────
+const pool = new Pool({
+  connectionString: DATABASE_URL,
+  max: 10,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 5000,
+});
+
+pool.on('error', (err) => {
+  console.error('Unexpected error on idle pool client', err);
+});
+
+/**
+ * Execute a raw SQL query synchronously via pg.Pool.
+ * Returns the full result object from node-postgres.
+ */
+function pgQuerySync(sql, params = []) {
+  let done = false;
+  let result = null;
+  let error = null;
+
+  pool.query(sql, params).then(
+    (res) => { result = res; done = true; },
+    (err) => { error = err; done = true; }
+  );
+
+  deasync.loopWhile(() => !done);
+
+  if (error) throw error;
+  return result;
+}
+
+/**
+ * Run a raw SQL statement (DDL, DML, or plain query).
+ * For compat with old spawnSync API — returns trimmed text output.
+ */
 function runPsql(sql) {
-  const proc = spawnSync('psql', [DATABASE_URL, '-X', '-q', '-t', '-A', '-c', sql], {
-    encoding: 'utf8',
-  });
-
-  if (proc.status !== 0) {
-    const stderr = (proc.stderr || '').trim();
-    const stdout = (proc.stdout || '').trim();
-    throw new Error(stderr || stdout || 'PostgreSQL query failed');
+  const result = pgQuerySync(sql);
+  // For simple COUNT / SELECT 1, return the first cell value
+  if (result.rows && result.rows.length > 0) {
+    const firstRow = result.rows[0];
+    const keys = Object.keys(firstRow);
+    if (keys.length === 1) {
+      return String(firstRow[keys[0]] ?? '');
+    }
+    return JSON.stringify(firstRow);
   }
-
-  return (proc.stdout || '').trim();
+  return '';
 }
 
+/**
+ * Run a SELECT query and return the rows as a JS array of objects.
+ */
 function runSelect(sql) {
-  const wrapped = `SELECT COALESCE(json_agg(t), '[]'::json)::text FROM (${sql}) t`;
-  const output = runPsql(wrapped);
-
-  if (!output) return [];
-
-  const payload = output
-    .split('\n')
-    .filter((line) => line.trim().length > 0)
-    .join('\n') || '[]';
-  try {
-    return JSON.parse(payload);
-  } catch {
-    return [];
-  }
+  const result = pgQuerySync(sql);
+  return result.rows || [];
 }
 
+/**
+ * Run an INSERT/UPDATE/DELETE and return { changes, lastInsertRowid }.
+ */
 function runMutation(sql, mode) {
-  const output = runPsql(sql);
-  const lines = output
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
+  const result = pgQuerySync(sql);
+  const rows = result.rows || [];
 
   if (mode === 'insert') {
-    const first = lines[0];
-    const parsed = first != null && first !== '' && !Number.isNaN(Number(first))
-      ? Number(first)
-      : first || null;
+    const first = rows[0];
+    const id = first ? (first.id ?? Object.values(first)[0] ?? null) : null;
     return {
-      changes: lines.length,
-      lastInsertRowid: parsed,
+      changes: result.rowCount || 0,
+      lastInsertRowid: id,
     };
   }
 
   return {
-    changes: lines.length,
+    changes: result.rowCount || 0,
     lastInsertRowid: null,
   };
 }
@@ -846,11 +872,11 @@ function createPrepared(sql) {
 
 function getDb() {
   if (!initialized) {
-    runPsql('SELECT 1');
+    pgQuerySync('SELECT 1');
     ensureCriticalTimestampColumns();
     ensureCompatibilityColumns();
     initialized = true;
-    console.log('✅ Connected to PostgreSQL');
+    console.log('✅ Connected to PostgreSQL via pg.Pool (pooled)');
   }
 
   return {
@@ -868,6 +894,7 @@ function getDb() {
 
 function closeDb() {
   initialized = false;
+  pool.end().catch(() => {});
 }
 
-module.exports = { getDb, closeDb };
+module.exports = { getDb, closeDb, pool };

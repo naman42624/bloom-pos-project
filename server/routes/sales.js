@@ -733,7 +733,7 @@ router.post(
           const getReadyStockCheck = db.prepare('SELECT quantity FROM product_stock WHERE product_id = ? AND location_id = ?');
           let allInStock = true;
           for (const item of processedItems) {
-            if (item.special_instructions || item.image_url || item.materials?.length > 0) {
+            if (item.special_instructions || item.image_url || item.materials?.length > 0 || (item.custom_materials && item.custom_materials.length > 0)) {
               allInStock = false;
               break;
             }

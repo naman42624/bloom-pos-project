@@ -333,6 +333,7 @@ export default function CheckoutScreen({ route, navigation }) {
         tax_rate: c.tax_rate,
         special_instructions: c.special_instructions || '',
         image_url: c.image_url || '',
+        custom_materials: c.custom_materials || null,
       })),
       payments: paymentEntries,
     };
