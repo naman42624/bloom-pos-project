@@ -73,6 +73,7 @@ router.get('/', authenticate, authorize('owner', 'manager', 'delivery_partner', 
 
     let sql = `
       SELECT d.*, s.sale_number, s.grand_total, s.payment_status, s.order_type,
+             s.special_instructions,
              u.name as partner_name, u.phone as partner_phone,
              l.name as location_name,
              ab.name as assigned_by_name
@@ -117,8 +118,8 @@ router.get('/', authenticate, authorize('owner', 'manager', 'delivery_partner', 
 
     const deliveries = db.prepare(sql).all(...params);
 
-    // Get items for each delivery
-    const getItems = db.prepare('SELECT product_name, quantity FROM sale_items WHERE sale_id = ?');
+    // Get items for each delivery (include special instructions and image)
+    const getItems = db.prepare('SELECT product_name, quantity, special_instructions as item_special_instructions, image_url as item_image_url FROM sale_items WHERE sale_id = ?');
     for (const d of deliveries) {
       d.items = getItems.all(d.sale_id);
     }
