@@ -258,7 +258,7 @@ router.get('/tasks', authenticate, authorize('owner', 'manager', 'employee'), (r
       SELECT pt.*,
              p.name as product_name, p.sku as product_sku, p.image_url as product_image,
              s.sale_number, s.order_type, s.customer_name, s.scheduled_date, s.scheduled_time, s.special_instructions as order_special_instructions,
-             si.product_name AS item_product_name, si.special_instructions AS item_special_instructions, si.image_url AS item_image_url,
+             si.product_name AS item_product_name, si.special_instructions AS item_special_instructions, si.image_url AS item_image_url, si.custom_materials AS custom_materials_json,
              l.name as location_name,
              a.name as assigned_to_name,
              pk.name as picked_by_name
@@ -312,22 +312,44 @@ router.get('/tasks', authenticate, authorize('owner', 'manager', 'employee'), (r
     );
 
     for (const task of tasks) {
-      // Only fetch BOM for tasks with a product_id (skip ad-hoc items)
-      if (!task.product_id) {
-        task.materials = [];
-        continue;
+      // Parse custom_materials JSON if present
+      let customMats = null;
+      if (task.custom_materials_json) {
+        try { customMats = typeof task.custom_materials_json === 'string' ? JSON.parse(task.custom_materials_json) : task.custom_materials_json; } catch (_) {}
       }
-      const bom = getBOM.all(task.product_id);
-      task.materials = bom.map(b => {
-        const stock = getStock.get(b.material_id, task.location_id);
-        const needed = b.qty_per_unit * task.quantity;
-        return {
-          ...b,
-          total_needed: needed,
-          in_stock: stock ? stock.quantity : 0,
-          sufficient: stock ? stock.quantity >= needed : false,
-        };
-      });
+      task.custom_materials = customMats;
+      delete task.custom_materials_json;
+
+      // If custom_materials exist, show those instead of standard BOM
+      if (customMats && customMats.length > 0) {
+        task.materials = customMats.map(cm => {
+          const stock = getStock.get(cm.material_id, task.location_id);
+          const needed = (cm.qty_per_unit || cm.quantity || 1) * task.quantity;
+          return {
+            material_id: cm.material_id,
+            material_name: cm.name || cm.material_name || 'Material',
+            qty_per_unit: cm.qty_per_unit || cm.quantity || 1,
+            total_needed: needed,
+            in_stock: stock ? stock.quantity : 0,
+            sufficient: stock ? stock.quantity >= needed : false,
+          };
+        });
+      } else if (task.product_id) {
+        // Standard BOM
+        const bom = getBOM.all(task.product_id);
+        task.materials = bom.map(b => {
+          const stock = getStock.get(b.material_id, task.location_id);
+          const needed = b.qty_per_unit * task.quantity;
+          return {
+            ...b,
+            total_needed: needed,
+            in_stock: stock ? stock.quantity : 0,
+            sufficient: stock ? stock.quantity >= needed : false,
+          };
+        });
+      } else {
+        task.materials = [];
+      }
     }
 
     res.json({ success: true, data: tasks });
@@ -485,18 +507,32 @@ router.put(
       }
 
       const product = db.prepare('SELECT id, name FROM products WHERE id = ?').get(task.product_id);
-      const bom = db.prepare('SELECT material_id, quantity as qty_needed FROM product_materials WHERE product_id = ?').all(task.product_id);
+      const standardBom = db.prepare('SELECT material_id, quantity as qty_needed FROM product_materials WHERE product_id = ?').all(task.product_id || 0);
       const sale = db.prepare('SELECT sale_number FROM sales WHERE id = ?').get(task.sale_id);
 
+      // Check for custom_materials on the sale_item
+      let customMats = null;
+      if (task.sale_item_id) {
+        const si = db.prepare('SELECT custom_materials FROM sale_items WHERE id = ?').get(task.sale_item_id);
+        if (si?.custom_materials) {
+          try { customMats = typeof si.custom_materials === 'string' ? JSON.parse(si.custom_materials) : si.custom_materials; } catch (_) {}
+        }
+      }
+
+      // Use custom materials if present, otherwise standard BOM
+      const materialsToDeduct = (customMats && customMats.length > 0)
+        ? customMats.map(cm => ({ material_id: cm.material_id, qty_needed: cm.qty_per_unit || cm.quantity || 1 }))
+        : standardBom;
+
       const completeTx = db.transaction(() => {
-        // 1. Deduct materials via BOM
-        if (bom.length > 0) {
+        // 1. Deduct materials (custom or standard BOM)
+        if (materialsToDeduct.length > 0) {
           const deductStock = db.prepare('UPDATE material_stock SET quantity = GREATEST(0, quantity - ?), updated_at = CURRENT_TIMESTAMP WHERE material_id = ? AND location_id = ?');
           const logMaterialTx = db.prepare(
             `INSERT INTO material_transactions (material_id, location_id, type, quantity, reference_type, reference_id, notes, created_by)
              VALUES (?, ?, 'usage', ?, 'sale', ?, ?, ?)`
           );
-          for (const b of bom) {
+          for (const b of materialsToDeduct) {
             const usedQty = b.qty_needed * task.quantity;
             deductStock.run(usedQty, b.material_id, task.location_id);
             logMaterialTx.run(b.material_id, task.location_id, usedQty, task.sale_id, `Task #${task.id} for ${sale?.sale_number || ''}`, req.user.id);

@@ -421,6 +421,27 @@ export default function ProductionQueueScreen({ navigation }) {
       ready: { color: Colors.success, label: 'Ready', next: 'completed', nextLabel: 'Complete', icon: 'checkmark-circle-outline' },
     };
     const config = statusConfig[item.status] || { color: Colors.textLight, icon: 'ellipse', label: item.status || 'Unknown' };
+    const ts = item.task_summary || {};
+    const allTasksDone = item.all_tasks_done;
+    const hasIncompleteTasks = (ts.pending_tasks || 0) + (ts.assigned_tasks || 0) + (ts.in_progress_tasks || 0) > 0;
+    // Block completion for delivery orders with pending delivery
+    const deliveryBlocked = item.order_type === 'delivery' && item.delivery && item.delivery.status !== 'delivered';
+
+    // Determine if the next transition should be blocked
+    let nextBlocked = false;
+    let blockReason = '';
+    if (config.next === 'ready' && hasIncompleteTasks) {
+      nextBlocked = true;
+      blockReason = `${ts.pending_tasks + ts.assigned_tasks + ts.in_progress_tasks} task(s) incomplete`;
+    }
+    if (config.next === 'completed' && deliveryBlocked) {
+      nextBlocked = true;
+      blockReason = 'Delivery not completed';
+    }
+    if (config.next === 'completed' && hasIncompleteTasks) {
+      nextBlocked = true;
+      blockReason = `${ts.pending_tasks + ts.assigned_tasks + ts.in_progress_tasks} task(s) incomplete`;
+    }
 
     return (
       <TouchableOpacity
@@ -442,22 +463,65 @@ export default function ProductionQueueScreen({ navigation }) {
             <Text style={[styles.statusText, { color: config.color }]}>{config.label || item.status}</Text>
           </View>
         </View>
+
+        {/* Task progress summary */}
+        {ts.total_tasks > 0 && (
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 6, flexWrap: 'wrap' }}>
+            <Ionicons name="hammer-outline" size={14} color={Colors.textSecondary} />
+            {ts.completed_tasks > 0 && <Text style={{ fontSize: 11, color: Colors.success, fontWeight: '600' }}>✓ {ts.completed_tasks}</Text>}
+            {ts.in_progress_tasks > 0 && <Text style={{ fontSize: 11, color: Colors.primary, fontWeight: '600' }}>⚡ {ts.in_progress_tasks}</Text>}
+            {ts.assigned_tasks > 0 && <Text style={{ fontSize: 11, color: '#2196F3', fontWeight: '600' }}>👤 {ts.assigned_tasks}</Text>}
+            {ts.pending_tasks > 0 && <Text style={{ fontSize: 11, color: Colors.warning, fontWeight: '600' }}>⏳ {ts.pending_tasks}</Text>}
+          </View>
+        )}
+
+        {/* Delivery status indicator */}
+        {item.delivery && (
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 4 }}>
+            <Ionicons name="car-outline" size={14} color={item.delivery.status === 'delivered' ? Colors.success : Colors.warning} />
+            <Text style={{ fontSize: 11, color: item.delivery.status === 'delivered' ? Colors.success : Colors.warning, fontWeight: '600' }}>
+              Delivery: {item.delivery.status}
+            </Text>
+          </View>
+        )}
+
         <View style={styles.itemsList}>
           {(item.items || []).map((si, idx) => (
-            <Text key={idx} style={styles.itemText}>{si.quantity}x {si.product_name}</Text>
+            <View key={idx}>
+              <Text style={styles.itemText}>{si.quantity}x {si.product_name}</Text>
+              {si.item_special_instructions ? (
+                <Text style={{ fontSize: 11, color: Colors.warning, marginLeft: 16 }}>📝 {si.item_special_instructions}</Text>
+              ) : null}
+              {si.custom_materials && si.custom_materials.length > 0 ? (
+                <Text style={{ fontSize: 11, color: Colors.primary, marginLeft: 16 }}>
+                  🔧 {si.custom_materials.map(m => m.name || m.material_name).join(', ')}
+                </Text>
+              ) : null}
+            </View>
           ))}
         </View>
+
+        {/* Order-level notes */}
+        {item.notes || item.special_instructions ? (
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 4 }}>
+            <Ionicons name="information-circle" size={14} color={Colors.warning} />
+            <Text style={{ fontSize: 11, color: Colors.warning, fontWeight: '600', flex: 1 }}>
+              {item.notes || item.special_instructions}
+            </Text>
+          </View>
+        ) : null}
+
         <View style={styles.taskActions}>
-          {isManager && item.status === 'pending' && (
+          {isManager && (item.status === 'pending' || item.status === 'preparing') && hasIncompleteTasks && (
             <TouchableOpacity
               style={[styles.actionBtn, { backgroundColor: Colors.textSecondary }]}
               onPress={() => openAssignOrderModal(item)}
             >
               <Ionicons name="people" size={18} color={Colors.white} />
-              <Text style={styles.actionBtnText}>Assign</Text>
+              <Text style={styles.actionBtnText}>{allTasksDone ? 'Tasks Done' : 'Assign'}</Text>
             </TouchableOpacity>
           )}
-          {config.next && (
+          {config.next && !nextBlocked && (
             <TouchableOpacity
               style={[styles.actionBtn, { backgroundColor: config.color, flex: 1 }]}
               onPress={() => handleOrderStatus(item, config.next, config.nextLabel)}
@@ -465,6 +529,12 @@ export default function ProductionQueueScreen({ navigation }) {
               <Ionicons name={config.next === 'preparing' ? 'play' : config.next === 'ready' ? 'checkmark' : 'checkmark-done'} size={18} color={Colors.white} />
               <Text style={styles.actionBtnText}>{config.nextLabel}</Text>
             </TouchableOpacity>
+          )}
+          {config.next && nextBlocked && (
+            <View style={[styles.actionBtn, { backgroundColor: Colors.textLight, flex: 1, opacity: 0.6 }]}>
+              <Ionicons name="lock-closed" size={16} color={Colors.white} />
+              <Text style={[styles.actionBtnText, { fontSize: 11 }]}>{blockReason}</Text>
+            </View>
           )}
         </View>
       </TouchableOpacity>

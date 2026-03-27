@@ -458,10 +458,36 @@ router.get(
 
       const orders = db.prepare(sql).all(...params);
 
-      // Enrich each order with items
+      // Enrich each order with items, task status counts, and delivery info
       const getItems = db.prepare('SELECT product_name, quantity, special_instructions as item_special_instructions, image_url as item_image_url, custom_materials FROM sale_items WHERE sale_id = ?');
+      const getTaskCounts = db.prepare(`
+        SELECT 
+          COUNT(*) FILTER (WHERE status = 'pending') as pending_tasks,
+          COUNT(*) FILTER (WHERE status = 'assigned') as assigned_tasks,
+          COUNT(*) FILTER (WHERE status = 'in_progress') as in_progress_tasks,
+          COUNT(*) FILTER (WHERE status = 'completed') as completed_tasks,
+          COUNT(*) FILTER (WHERE status = 'cancelled') as cancelled_tasks,
+          COUNT(*) as total_tasks
+        FROM production_tasks WHERE sale_id = ?
+      `);
+      const getDelivery = db.prepare("SELECT id, status FROM deliveries WHERE sale_id = ? LIMIT 1");
+
       for (const order of orders) {
         order.items = getItems.all(order.id);
+        // Parse custom_materials from JSON string
+        for (const item of order.items) {
+          if (item.custom_materials && typeof item.custom_materials === 'string') {
+            try { item.custom_materials = JSON.parse(item.custom_materials); } catch (_) {}
+          }
+        }
+        // Add task status summary
+        const taskCounts = getTaskCounts.get(order.id);
+        order.task_summary = taskCounts || { pending_tasks: 0, assigned_tasks: 0, in_progress_tasks: 0, completed_tasks: 0, cancelled_tasks: 0, total_tasks: 0 };
+        order.all_tasks_done = taskCounts ? (taskCounts.pending_tasks + taskCounts.assigned_tasks + taskCounts.in_progress_tasks) === 0 : true;
+        // Add delivery info  
+        if (order.order_type === 'delivery') {
+          order.delivery = getDelivery.get(order.id) || null;
+        }
       }
 
       res.json({ success: true, data: orders });
@@ -1141,6 +1167,17 @@ router.put(
         }
       }
 
+      // ── Enforce delivery completion before marking order 'completed' ──
+      if (status === 'completed' && sale.order_type === 'delivery') {
+        const delivery = db.prepare("SELECT status FROM deliveries WHERE sale_id = ? LIMIT 1").get(sale.id);
+        if (delivery && delivery.status !== 'delivered') {
+          return res.status(400).json({
+            success: false,
+            message: `Cannot complete — delivery is still '${delivery.status}'. Mark the delivery as 'delivered' first.`,
+          });
+        }
+      }
+
       db.prepare('UPDATE sales SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(status, sale.id);
 
       // If marking ready, also update stock_deducted flag
@@ -1155,6 +1192,11 @@ router.put(
       // If marking completed for pickup orders, update pickup_status
       if (status === 'completed' && sale.order_type === 'pickup') {
         db.prepare("UPDATE sales SET pickup_status = 'picked_up' WHERE id = ?").run(sale.id);
+      }
+
+      // Auto-cancel any remaining production tasks when order is completed
+      if (status === 'completed') {
+        db.prepare("UPDATE production_tasks SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP WHERE sale_id = ? AND status NOT IN ('completed', 'cancelled')").run(sale.id);
       }
 
       const updated = db.prepare('SELECT * FROM sales WHERE id = ?').get(sale.id);

@@ -199,7 +199,8 @@ export default function DeliveriesScreen({ navigation }) {
     }
 
     if (!item.scheduled_date) return { label: null, countdown: null, isOverdue: false };
-    const dateStr = item.scheduled_date;
+    const dateStr = (item.scheduled_date || '').split('T')[0];
+    if (!dateStr) return { label: null, countdown: null, isOverdue: false };
     const timeStr = item.scheduled_time || '00:00';
     const target = new Date(`${dateStr}T${timeStr}:00`);
     const diffMs = target - now;

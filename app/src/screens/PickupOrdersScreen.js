@@ -170,28 +170,29 @@ export default function PickupOrdersScreen({ navigation }) {
 
   // Sort orders by scheduled date+time (earliest first, no-date last)
   const sortedOrders = [...orders].sort((a, b) => {
-    const dtA = a.scheduled_date ? `${a.scheduled_date} ${a.scheduled_time || '00:00'}` : 'zzzz';
-    const dtB = b.scheduled_date ? `${b.scheduled_date} ${b.scheduled_time || '00:00'}` : 'zzzz';
+    const dtA = a.scheduled_date ? `${(a.scheduled_date || '').split('T')[0]} ${a.scheduled_time || '00:00'}` : 'zzzz';
+    const dtB = b.scheduled_date ? `${(b.scheduled_date || '').split('T')[0]} ${b.scheduled_time || '00:00'}` : 'zzzz';
     return dtA.localeCompare(dtB);
   });
 
   // Group by date for section headers
   const getDateLabel = (dateStr) => {
-    if (!dateStr) return 'Unscheduled';
+    const ds = (dateStr || '').split('T')[0];
+    if (!ds) return 'Unscheduled';
     const today = now.toISOString().slice(0, 10);
     const tomorrow = new Date(now);
     tomorrow.setDate(tomorrow.getDate() + 1);
     const tomorrowStr = tomorrow.toISOString().slice(0, 10);
-    if (dateStr === today) return 'Today';
-    if (dateStr === tomorrowStr) return 'Tomorrow';
-    const d = new Date(dateStr + 'T00:00:00');
+    if (ds === today) return 'Today';
+    if (ds === tomorrowStr) return 'Tomorrow';
+    const d = new Date(ds + 'T00:00:00');
     return d.toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' });
   };
 
   const sections = [];
   const grouped = {};
   for (const item of sortedOrders) {
-    const key = item.scheduled_date || '_unscheduled';
+    const key = (item.scheduled_date || '').split('T')[0] || '_unscheduled';
     if (!grouped[key]) {
       grouped[key] = { title: getDateLabel(item.scheduled_date), data: [] };
       sections.push(grouped[key]);
