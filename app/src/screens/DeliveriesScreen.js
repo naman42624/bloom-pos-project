@@ -55,7 +55,8 @@ export default function DeliveriesScreen({ navigation }) {
     try {
       setLoading(true);
       const params = { limit: 200 };
-      if (activeLocation) params.location_id = activeLocation.id;
+      // Only filter by location for non-owner roles to avoid hiding deliveries
+      if (activeLocation && user?.role !== 'owner') params.location_id = activeLocation.id;
       if (statusFilter !== 'all') params.status = statusFilter;
 
       const [deliveriesRes, atRiskRes] = await Promise.all([

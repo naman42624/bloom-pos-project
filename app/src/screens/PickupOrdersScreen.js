@@ -47,7 +47,8 @@ export default function PickupOrdersScreen({ navigation }) {
     try {
       setLoading(true);
       const params = { order_type: 'pickup', pickup_status: tab, limit: 200 };
-      if (activeLocation) params.location_id = activeLocation.id;
+      // Only filter by location for non-owner roles
+      if (activeLocation && user?.role !== 'owner') params.location_id = activeLocation.id;
       const res = await api.getSales(params);
       setOrders(res.data?.sales || []);
     } catch (err) {

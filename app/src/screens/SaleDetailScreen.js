@@ -103,6 +103,16 @@ export default function SaleDetailScreen({ route, navigation }) {
       }
     }
 
+    // Guard: cannot complete order if any production tasks are still pending/assigned/in_progress
+    if (nextStatus === 'completed' && sale.production_tasks && sale.production_tasks.length > 0) {
+      const incompleteTasks = sale.production_tasks.filter(t => !['completed', 'cancelled'].includes(t.status));
+      if (incompleteTasks.length > 0) {
+        const msg = `Cannot complete this order — ${incompleteTasks.length} production task(s) are still ${incompleteTasks.map(t => t.status).join(', ')}. Please complete or cancel all tasks first.`;
+        Platform.OS === 'web' ? window.alert(msg) : Alert.alert('Cannot Complete', msg);
+        return;
+      }
+    }
+
     Alert.alert(label, `${label} for this order?`, [
       { text: 'Cancel', style: 'cancel' },
       {
@@ -454,7 +464,7 @@ export default function SaleDetailScreen({ route, navigation }) {
                     {task.assigned_to_name && <Text style={styles.taskAssignee}>👤 {task.assigned_to_name}</Text>}
                     {task.picked_by_name && <Text style={styles.taskAssignee}>🤲 {task.picked_by_name}</Text>}
                     {/* Action buttons based on task status */}
-                    {!['completed', 'cancelled'].includes(sale.status) && (
+                    {!['completed', 'cancelled'].includes(sale.status) && !['completed', 'cancelled'].includes(task.status) && (
                       <View style={styles.taskActions}>
                         {task.status === 'pending' && (
                           <>
@@ -471,12 +481,20 @@ export default function SaleDetailScreen({ route, navigation }) {
                           </>
                         )}
                         {task.status === 'assigned' && (
-                          <TouchableOpacity style={styles.taskActionBtn} onPress={() => handleTaskAction(task.id, 'pick', 'pick up')}>
-                            <Ionicons name="hand-left-outline" size={14} color={Colors.info} />
-                            <Text style={[styles.taskActionText, { color: Colors.info }]}>Pick Up</Text>
-                          </TouchableOpacity>
+                          <>
+                            {canManage && (
+                              <TouchableOpacity style={[styles.taskActionBtn, { backgroundColor: '#9C27B0' + '15' }]} onPress={() => openAssignModal(task.id)}>
+                                <Ionicons name="swap-horizontal-outline" size={14} color="#9C27B0" />
+                                <Text style={[styles.taskActionText, { color: '#9C27B0' }]}>Reassign</Text>
+                              </TouchableOpacity>
+                            )}
+                            <TouchableOpacity style={[styles.taskActionBtn, { backgroundColor: '#00BCD4' + '15' }]} onPress={() => handleTaskAction(task.id, 'start', 'start')}>
+                              <Ionicons name="play-outline" size={14} color="#00BCD4" />
+                              <Text style={[styles.taskActionText, { color: '#00BCD4' }]}>Start</Text>
+                            </TouchableOpacity>
+                          </>
                         )}
-                        {(task.status === 'assigned' || task.status === 'pending') && task.picked_by_name && (
+                        {task.status === 'pending' && task.picked_by_name && (
                           <TouchableOpacity style={[styles.taskActionBtn, { backgroundColor: '#00BCD4' + '15' }]} onPress={() => handleTaskAction(task.id, 'start', 'start')}>
                             <Ionicons name="play-outline" size={14} color="#00BCD4" />
                             <Text style={[styles.taskActionText, { color: '#00BCD4' }]}>Start</Text>

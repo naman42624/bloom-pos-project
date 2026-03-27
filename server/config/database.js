@@ -455,6 +455,11 @@ function ensureCompatibilityColumns() {
     ensureColumn('sale_items', 'special_instructions', 'TEXT');
     ensureColumn('sale_items', 'image_url', 'TEXT');
     ensureColumn('sale_items', 'custom_materials', 'JSONB');
+    // For legacy DBs where line_total is NOT generated, add a DEFAULT so INSERT can omit it
+    if (hasColumn('sale_items', 'line_total')) {
+      try { runPsql('ALTER TABLE sale_items ALTER COLUMN line_total SET DEFAULT 0'); } catch (_) {}
+      try { runPsql('ALTER TABLE sale_items ALTER COLUMN line_total DROP NOT NULL'); } catch (_) {}
+    }
 
     // Purchase orders: add columns expected by routes
     ensureColumn('purchase_orders', 'expected_date', 'DATE');

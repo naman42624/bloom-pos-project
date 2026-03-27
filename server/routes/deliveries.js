@@ -675,15 +675,15 @@ router.post(
         const netAmount = totalAmount - commissionAmount;
         const today = localDateStr();
 
-        // Create settlement with new fields
+        // Create settlement with new fields — include partner_id (NOT NULL in schema)
         const result = db.prepare(
           `INSERT INTO delivery_settlements 
-           (delivery_partner_id, location_id, total_amount, total_deliveries, status, notes, 
+           (partner_id, delivery_partner_id, location_id, total_amount, total_deliveries, status, notes, 
             settlement_number, settlement_date, period_start, period_end, 
             commission_percentage, commission_amount, net_amount)
-           VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)`
+           VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)`
         ).run(
-          delivery_partner_id, location_id, totalAmount, delivery_ids.length, notes || '',
+          delivery_partner_id, delivery_partner_id, location_id, totalAmount, delivery_ids.length, notes || '',
           settlementNumber, today, today, today,
           commissionPercentage, commissionAmount, netAmount
         );
