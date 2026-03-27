@@ -664,12 +664,14 @@ router.post(
       const db = getDb();
       const {
         location_id, order_type, items, payments,
-        customer_id, customer_name, customer_phone,
+        customer_id: customer_id_from_body, customer_name, customer_phone,
         discount_type, discount_value,
         delivery_charges, delivery_address, notes, special_instructions, customer_notes,
         scheduled_date, scheduled_time, advance_amount,
         sender_name, sender_phone, sender_message,
       } = req.body;
+      // Mutable alias — may be set by auto-create logic below
+      let customer_id = customer_id_from_body || null;
 
       const createSale = db.transaction(() => {
         // Calculate line items — supports both products and raw materials
