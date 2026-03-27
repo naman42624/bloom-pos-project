@@ -201,8 +201,13 @@ export default function DeliveriesScreen({ navigation }) {
     if (!item.scheduled_date) return { label: null, countdown: null, isOverdue: false };
     const dateStr = (item.scheduled_date || '').split('T')[0];
     if (!dateStr) return { label: null, countdown: null, isOverdue: false };
-    const timeStr = item.scheduled_time || '00:00';
-    const target = new Date(`${dateStr}T${timeStr}:00`);
+    // PostgreSQL TIME returns HH:MM:SS — only take HH:MM for display
+    const rawTime = (item.scheduled_time || '').split('.')[0]; // strip fractional seconds
+    const timeStr = rawTime || '00:00';
+    // Build ISO string: if timeStr is HH:MM:SS, don't append :00
+    const isoTime = timeStr.length <= 5 ? `${timeStr}:00` : timeStr;
+    const target = new Date(`${dateStr}T${isoTime}`);
+    if (isNaN(target.getTime())) return { label: dateStr, countdown: null, isOverdue: false };
     const diffMs = target - now;
     const diffMin = Math.round(diffMs / 60000);
 
@@ -216,11 +221,11 @@ export default function DeliveriesScreen({ navigation }) {
     else if (dateStr === tomorrowStr) dateLabel = 'Tomorrow';
     else {
       const d = new Date(dateStr + 'T00:00:00');
-      dateLabel = d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+      dateLabel = isNaN(d.getTime()) ? dateStr : d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
     }
 
-    const formattedTime = target.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true });
-    const label = `${dateLabel}, ${formattedTime}`;
+    const formattedTime = rawTime ? target.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true }) : '';
+    const label = formattedTime ? `${dateLabel}, ${formattedTime}` : dateLabel;
 
     let countdown = null;
     let isOverdue = false;

@@ -12,7 +12,7 @@ function getBaseUrl() {
 
 const API_BASE_URL = getBaseUrl();
 
-function getApiOrigin() {
+export function getApiOrigin() {
   try {
     return new URL(API_BASE_URL).origin;
   } catch (e) {

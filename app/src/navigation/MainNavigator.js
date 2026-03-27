@@ -61,6 +61,7 @@ import CustomerFormScreen from '../screens/CustomerFormScreen';
 // Production Queue
 import ProductionQueueScreen from '../screens/ProductionQueueScreen';
 import ProduceScreen from '../screens/ProduceScreen';
+import CompletedTasksScreen from '../screens/CompletedTasksScreen';
 
 // Phase 7 — Orders & Delivery
 import DeliveriesScreen from '../screens/DeliveriesScreen';
@@ -291,6 +292,7 @@ function POSStack() {
       <Stack.Screen name="CashRegister" component={CashRegisterScreen} options={{ title: 'Cash Register' }} />
       <Stack.Screen name="Expenses" component={ExpensesScreen} options={{ title: 'Expenses' }} />
       <Stack.Screen name="ProductionQueue" component={ProductionQueueScreen} options={{ title: 'Production Queue' }} />
+      <Stack.Screen name="CompletedTasks" component={CompletedTasksScreen} options={{ title: 'Completed Tasks' }} />
       <Stack.Screen name="ProduceProduct" component={ProduceScreen} options={{ title: 'Produce Products' }} />
       <Stack.Screen name="DeliveryDetail" component={DeliveryDetailScreen} options={{ title: 'Delivery' }} />
     </Stack.Navigator>
@@ -308,6 +310,7 @@ function SalesStack() {
       <Stack.Screen name="CashRegister" component={CashRegisterScreen} options={{ title: 'Cash Register' }} />
       <Stack.Screen name="Expenses" component={ExpensesScreen} options={{ title: 'Expenses' }} />
       <Stack.Screen name="ProductionQueue" component={ProductionQueueScreen} options={{ title: 'Production Queue' }} />
+      <Stack.Screen name="CompletedTasks" component={CompletedTasksScreen} options={{ title: 'Completed Tasks' }} />
       <Stack.Screen name="ProduceProduct" component={ProduceScreen} options={{ title: 'Produce Products' }} />
       <Stack.Screen name="DeliveryDetail" component={DeliveryDetailScreen} options={{ title: 'Delivery' }} />
     </Stack.Navigator>
@@ -330,6 +333,7 @@ function OrdersStack() {
       <Stack.Screen name="CashRegister" component={CashRegisterScreen} options={{ title: 'Cash Register' }} />
       <Stack.Screen name="Expenses" component={ExpensesScreen} options={{ title: 'Expenses' }} />
       <Stack.Screen name="ProductionQueue" component={ProductionQueueScreen} options={{ title: 'Production Queue' }} />
+      <Stack.Screen name="CompletedTasks" component={CompletedTasksScreen} options={{ title: 'Completed Tasks' }} />
       <Stack.Screen name="ProduceProduct" component={ProduceScreen} options={{ title: 'Produce Products' }} />
     </Stack.Navigator>
   );

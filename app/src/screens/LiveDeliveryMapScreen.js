@@ -6,8 +6,11 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import api from '../services/api';
+import { getApiOrigin } from '../services/api';
+import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import { MapView, Marker } from '../components/MapViewWrapper';
+import { io } from 'socket.io-client';
 
 const { width } = Dimensions.get('window');
 
@@ -37,6 +40,7 @@ function batteryColor(level) {
 }
 
 export default function LiveDeliveryMapScreen() {
+  const { user, token } = useAuth();
   const [loading, setLoading] = useState(true);
   const [partners, setPartners] = useState([]);
   const [selectedPartner, setSelectedPartner] = useState(null);
@@ -72,6 +76,40 @@ export default function LiveDeliveryMapScreen() {
       if (refreshInterval.current) clearInterval(refreshInterval.current);
     };
   }, [fetchPartners]));
+
+  // Real-time socket.io listener for partner:location events
+  useEffect(() => {
+    if (!token) return;
+    const baseUrl = getApiOrigin();
+    const socket = io(baseUrl, {
+      auth: { token },
+      transports: ['websocket'],
+    });
+    socket.on('partner:location', (data) => {
+      setPartners(prev => {
+        const idx = prev.findIndex(p => p.user_id === data.user_id);
+        if (idx >= 0) {
+          const updated = [...prev];
+          updated[idx] = {
+            ...updated[idx],
+            latitude: data.latitude,
+            longitude: data.longitude,
+            speed: data.speed,
+            heading: data.heading,
+            accuracy: data.accuracy,
+            is_moving: data.is_moving,
+            recorded_at: data.timestamp,
+          };
+          return updated;
+        }
+        return prev;
+      });
+    });
+    socket.on('partner:offline', (data) => {
+      setPartners(prev => prev.filter(p => p.user_id !== data.user_id));
+    });
+    return () => { socket.disconnect(); };
+  }, [token]);
 
   const fitToPartners = useCallback(() => {
     if (!mapRef.current || partners.length === 0) return;

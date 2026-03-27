@@ -269,12 +269,25 @@ router.get('/tasks', authenticate, authorize('owner', 'manager', 'employee'), (r
       JOIN locations l ON pt.location_id = l.id
       LEFT JOIN users a ON pt.assigned_to = a.id
       LEFT JOIN users pk ON pt.picked_by = pk.id
-      WHERE pt.status != 'cancelled'
+      WHERE 1=1
     `;
     const params = [];
 
+    // If no explicit status filter, default to hiding cancelled (for the active queue)
+    if (status) {
+      const statuses = status.split(',').map(s => s.trim()).filter(Boolean);
+      if (statuses.length === 1) {
+        sql += ' AND pt.status = ?';
+        params.push(statuses[0]);
+      } else if (statuses.length > 1) {
+        sql += ` AND pt.status IN (${statuses.map(() => '?').join(',')})`;
+        params.push(...statuses);
+      }
+    } else {
+      sql += " AND pt.status != 'cancelled'";
+    }
+
     if (location_id) { sql += ' AND pt.location_id = ?'; params.push(Number(location_id)); }
-    if (status) { sql += ' AND pt.status = ?'; params.push(status); }
     if (assigned_to) { sql += ' AND (pt.assigned_to = ? OR pt.picked_by = ?)'; params.push(Number(assigned_to), Number(assigned_to)); }
     if (sale_id) { sql += ' AND pt.sale_id = ?'; params.push(Number(sale_id)); }
 

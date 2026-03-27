@@ -581,6 +581,13 @@ export default function ProductionQueueScreen({ navigation }) {
             <Text style={[styles.viewBtnText, viewMode === tab.key && styles.viewBtnTextActive]}>{tab.label}</Text>
           </TouchableOpacity>
         ))}
+        <TouchableOpacity
+          style={{ marginLeft: 'auto', flexDirection: 'row', alignItems: 'center', gap: 4 }}
+          onPress={() => navigation.navigate('CompletedTasks')}
+        >
+          <Ionicons name="checkmark-done-circle-outline" size={18} color={Colors.primary} />
+          <Text style={{ fontSize: FontSize.sm, color: Colors.primary, fontWeight: '600' }}>History</Text>
+        </TouchableOpacity>
       </View>
 
       {/* Status filter (for tasks view) */}

@@ -7,6 +7,7 @@ import {
   TouchableOpacity,
   RefreshControl,
   ActivityIndicator,
+  Alert,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
@@ -64,6 +65,8 @@ export default function DashboardScreen({ navigation }) {
   const [urgentOrders, setUrgentOrders] = useState([]);
   const [atRiskOrders, setAtRiskOrders] = useState([]);
   const [reportKPIs, setReportKPIs] = useState(null);
+  const [registerOpen, setRegisterOpen] = useState(null); // null = loading, true/false
+  const [registerData, setRegisterData] = useState(null);
   const role = user?.role;
   const isStaff = role === 'owner' || role === 'manager' || role === 'employee';
   const isManagerOrOwner = role === 'owner' || role === 'manager';
@@ -106,6 +109,18 @@ export default function DashboardScreen({ navigation }) {
     }
 
     setRefreshing(false);
+
+    // Fetch cash register status for active location
+    if (isStaff && activeLocation?.id) {
+      try {
+        const regRes = await api.getRegisterStatus(activeLocation.id);
+        setRegisterOpen(regRes.isOpen === true);
+        setRegisterData(regRes.data || null);
+      } catch {
+        setRegisterOpen(null);
+        setRegisterData(null);
+      }
+    }
   }, [isStaff, isManagerOrOwner, user?.id, activeLocation]);
 
   useFocusEffect(
@@ -154,6 +169,32 @@ export default function DashboardScreen({ navigation }) {
           </View>
         )}
       </View>
+
+      {/* Cash Register Status Widget */}
+      {isStaff && registerOpen !== null && (
+        <TouchableOpacity
+          style={[styles.registerCard, { borderColor: registerOpen ? Colors.success : Colors.error }]}
+          onPress={() => navigation.navigate('POS', { screen: 'CashRegister' })}
+          activeOpacity={0.7}
+        >
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+            <View style={[styles.registerIcon, { backgroundColor: registerOpen ? Colors.success + '15' : Colors.error + '15' }]}>
+              <Ionicons name={registerOpen ? 'lock-open' : 'lock-closed'} size={22} color={registerOpen ? Colors.success : Colors.error} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.registerTitle}>
+                Cash Register: {registerOpen ? 'Open' : 'Closed'}
+              </Text>
+              {registerOpen && registerData ? (
+                <Text style={styles.registerSub}>Opening: ₹{(registerData.opening_balance || 0).toFixed(0)}</Text>
+              ) : (
+                <Text style={[styles.registerSub, { color: Colors.error }]}>Open the register before creating sales</Text>
+              )}
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={Colors.textLight} />
+          </View>
+        </TouchableOpacity>
+      )}
 
       {/* Revenue KPIs — Owner/Manager */}
       {isManagerOrOwner && reportKPIs && (
@@ -523,8 +564,17 @@ export default function DashboardScreen({ navigation }) {
       {/* Quick Checkout Floating Action Button */}
       {(isManagerOrOwner || user?.role === 'employee') && (
         <TouchableOpacity
-          style={styles.fab}
-          onPress={() => navigation.navigate('POS', { screen: 'QuickCheckout' })}
+          style={[styles.fab, registerOpen === false && { backgroundColor: Colors.textLight }]}
+          onPress={() => {
+            if (registerOpen === false) {
+              Alert.alert('Register Closed', 'Please open the cash register before creating sales.', [
+                { text: 'Open Register', onPress: () => navigation.navigate('POS', { screen: 'CashRegister' }) },
+                { text: 'Cancel', style: 'cancel' },
+              ]);
+              return;
+            }
+            navigation.navigate('POS', { screen: 'QuickCheckout' });
+          }}
           activeOpacity={0.8}
         >
           <Ionicons name="flash" size={24} color={Colors.white} />
@@ -649,4 +699,17 @@ const styles = StyleSheet.create({
     shadowColor: '#FF3D00', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 6,
   },
   fabText: { fontSize: 10, fontWeight: '800', color: Colors.white, marginTop: -2 },
+
+  // Cash Register widget
+  registerCard: {
+    backgroundColor: Colors.surface, borderRadius: BorderRadius.xl,
+    borderWidth: 2, padding: Spacing.md, marginBottom: Spacing.lg,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.04, shadowRadius: 6, elevation: 2,
+  },
+  registerIcon: {
+    width: 44, height: 44, borderRadius: BorderRadius.md,
+    justifyContent: 'center', alignItems: 'center',
+  },
+  registerTitle: { fontSize: FontSize.md, fontWeight: '700', color: Colors.text },
+  registerSub: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: 2 },
 });
