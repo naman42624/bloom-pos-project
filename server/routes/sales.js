@@ -105,7 +105,7 @@ router.get('/', authenticate, (req, res, next) => {
 
     sql += ' ORDER BY s.created_at DESC';
 
-    const limit = parseInt(lim) || 50;
+    const limit = parseInt(lim) || 200;
     const offset = parseInt(off) || 0;
     sql += ' LIMIT ? OFFSET ?';
     params.push(limit, offset);
@@ -113,7 +113,7 @@ router.get('/', authenticate, (req, res, next) => {
     const sales = db.prepare(sql).all(...params);
 
     // Enrich each sale with items
-    const getItems = db.prepare('SELECT product_name, quantity, special_instructions as item_special_instructions, image_url as item_image_url FROM sale_items WHERE sale_id = ?');
+    const getItems = db.prepare('SELECT product_name, quantity, special_instructions as item_special_instructions, image_url as item_image_url, custom_materials FROM sale_items WHERE sale_id = ?');
     for (const sale of sales) {
       sale.items = getItems.all(sale.id);
     }
@@ -459,7 +459,7 @@ router.get(
       const orders = db.prepare(sql).all(...params);
 
       // Enrich each order with items
-      const getItems = db.prepare('SELECT product_name, quantity, special_instructions as item_special_instructions, image_url as item_image_url FROM sale_items WHERE sale_id = ?');
+      const getItems = db.prepare('SELECT product_name, quantity, special_instructions as item_special_instructions, image_url as item_image_url, custom_materials FROM sale_items WHERE sale_id = ?');
       for (const order of orders) {
         order.items = getItems.all(order.id);
       }
@@ -521,6 +521,10 @@ router.get('/:id', authenticate, (req, res, next) => {
     `);
 
     for (const item of sale.items) {
+      // Parse custom_materials if stored as JSON string
+      if (item.custom_materials && typeof item.custom_materials === 'string') {
+        try { item.custom_materials = JSON.parse(item.custom_materials); } catch { item.custom_materials = null; }
+      }
       // Fetch material composition (BOM) for standard products
       item.materials = item.product_id ? getBOM.all(item.product_id) : [];
       // Fetch production task for ALL items (including ad-hoc)
@@ -668,7 +672,7 @@ router.post(
           subtotal += unitPrice * qty;
           taxTotal += taxAmount;
 
-          return { product_id: productId, material_id: materialId, product_name: name, quantity: qty, unit_price: unitPrice, tax_rate: taxRate, tax_amount: taxAmount, line_total: lineTotal };
+          return { product_id: productId, material_id: materialId, product_name: name, quantity: qty, unit_price: unitPrice, tax_rate: taxRate, tax_amount: taxAmount, line_total: lineTotal, special_instructions: item.special_instructions || null, image_url: item.image_url || null, custom_materials: item.custom_materials || null };
         });
 
         // Discount — with threshold enforcement
@@ -780,7 +784,7 @@ router.post(
 
         // Insert items — use only the compat INSERT that omits line_total (it's GENERATED ALWAYS)
         const insertItem = db.prepare(
-          'INSERT INTO sale_items (sale_id, product_id, material_id, product_name, quantity, unit_price, tax_rate, tax_amount, materials_deducted, from_product_stock, special_instructions, image_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+          'INSERT INTO sale_items (sale_id, product_id, material_id, product_name, quantity, unit_price, tax_rate, tax_amount, materials_deducted, from_product_stock, special_instructions, image_url, custom_materials) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
         );
         const saleItemIds = [];
         for (const item of processedItems) {
@@ -796,7 +800,8 @@ router.post(
               0,
               0,
               item.special_instructions || null,
-              item.image_url || null
+              item.image_url || null,
+              item.custom_materials ? JSON.stringify(item.custom_materials) : null
           );
           saleItemIds.push({ ...item, sale_item_id: res.lastInsertRowid });
         }

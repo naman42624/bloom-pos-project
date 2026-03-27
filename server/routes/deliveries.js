@@ -26,7 +26,7 @@ function generateSettlementNumber(db, locationId) {
   
   // Get max sequence number for today
   const maxSeq = db2.prepare(
-    `SELECT MAX(CAST(SUBSTR(settlement_number, -3) AS INTEGER)) as max_seq
+    `SELECT MAX(CAST(RIGHT(settlement_number, 3) AS INTEGER)) as max_seq
      FROM delivery_settlements
      WHERE location_id = ? AND settlement_date = ?`
   ).get(locationId, localDateStr());
@@ -111,7 +111,7 @@ router.get('/', authenticate, authorize('owner', 'manager', 'delivery_partner', 
 
     sql += ' ORDER BY CASE d.status WHEN \'pending\' THEN 1 WHEN \'assigned\' THEN 2 WHEN \'picked_up\' THEN 3 WHEN \'in_transit\' THEN 4 WHEN \'delivered\' THEN 5 WHEN \'failed\' THEN 6 WHEN \'cancelled\' THEN 7 END, d.scheduled_date ASC NULLS LAST, d.created_at DESC';
 
-    const limit = parseInt(lim) || 50;
+    const limit = parseInt(lim) || 200;
     const offset = parseInt(off) || 0;
     sql += ' LIMIT ? OFFSET ?';
     params.push(limit, offset);
@@ -119,7 +119,7 @@ router.get('/', authenticate, authorize('owner', 'manager', 'delivery_partner', 
     const deliveries = db.prepare(sql).all(...params);
 
     // Get items for each delivery (include special instructions and image)
-    const getItems = db.prepare('SELECT product_name, quantity, special_instructions as item_special_instructions, image_url as item_image_url FROM sale_items WHERE sale_id = ?');
+    const getItems = db.prepare('SELECT product_name, quantity, special_instructions as item_special_instructions, image_url as item_image_url, custom_materials FROM sale_items WHERE sale_id = ?');
     for (const d of deliveries) {
       d.items = getItems.all(d.sale_id);
     }

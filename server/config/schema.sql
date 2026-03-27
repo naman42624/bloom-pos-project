@@ -296,6 +296,7 @@ CREATE TABLE IF NOT EXISTS sale_items (
   from_product_stock INTEGER DEFAULT 0,
   special_instructions TEXT,
   image_url TEXT,
+  custom_materials JSONB,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
