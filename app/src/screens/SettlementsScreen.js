@@ -63,6 +63,7 @@ export default function SettlementsScreen({ navigation }) {
         delivery_partner_id: selectedPartner.id,
         delivery_ids: deliveryIds,
         total_amount: totalAmount,
+        location_id: activeLocation?.id,
       });
       const msg = `Settlement created for ₹${totalAmount.toFixed(0)}`;
       Platform.OS === 'web' ? window.alert(msg) : Alert.alert('Success', msg);

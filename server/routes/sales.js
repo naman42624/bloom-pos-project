@@ -782,12 +782,13 @@ router.post(
         );
         const saleId = saleResult.lastInsertRowid;
 
-        // Insert items — use only the compat INSERT that omits line_total (it's GENERATED ALWAYS)
+        // Insert items — include line_total explicitly (live DB has it as non-GENERATED NOT NULL column)
         const insertItem = db.prepare(
-          'INSERT INTO sale_items (sale_id, product_id, material_id, product_name, quantity, unit_price, tax_rate, tax_amount, materials_deducted, from_product_stock, special_instructions, image_url, custom_materials) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+          'INSERT INTO sale_items (sale_id, product_id, material_id, product_name, quantity, unit_price, tax_rate, tax_amount, line_total, materials_deducted, from_product_stock, special_instructions, image_url, custom_materials) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
         );
         const saleItemIds = [];
         for (const item of processedItems) {
+          const lineTotal = (item.unit_price * item.quantity) + (item.tax_amount || 0);
           const res = insertItem.run(
               saleId,
               item.product_id,
@@ -797,6 +798,7 @@ router.post(
               item.unit_price,
               item.tax_rate,
               item.tax_amount,
+              lineTotal,
               0,
               0,
               item.special_instructions || null,
@@ -1491,14 +1493,15 @@ router.post(
         const saleId = saleResult.lastInsertRowid;
 
         const insertItem = db.prepare(
-          'INSERT INTO sale_items (sale_id, product_id, material_id, product_name, quantity, unit_price, tax_rate, tax_amount, materials_deducted, from_product_stock, special_instructions, image_url) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, 0, 0, ?, ?)'
+          'INSERT INTO sale_items (sale_id, product_id, material_id, product_name, quantity, unit_price, tax_rate, tax_amount, line_total, materials_deducted, from_product_stock, special_instructions, image_url) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)'
         );
         const insertTask = db.prepare(
           `INSERT INTO production_tasks (sale_id, sale_item_id, product_id, location_id, quantity, priority, notes) VALUES (?, ?, ?, ?, ?, 'medium', '')`
         );
 
         for (const item of processedItems) {
-          const res = insertItem.run(saleId, item.product_id, item.product_name, item.quantity, item.unit_price, item.tax_rate, item.tax_amount, item.special_instructions || null, item.image_url || null);
+          const lineTotal = (item.unit_price * item.quantity) + (item.tax_amount || 0);
+          const res = insertItem.run(saleId, item.product_id, item.product_name, item.quantity, item.unit_price, item.tax_rate, item.tax_amount, lineTotal, item.special_instructions || null, item.image_url || null);
           // Create production task for all items
           insertTask.run(saleId, res.lastInsertRowid, item.product_id || null, location_id, item.quantity);
         }

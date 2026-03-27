@@ -88,9 +88,10 @@ export default function CheckoutScreen({ route, navigation }) {
     setCustomProduct(item);
     setCustomCartIndex(index);
     setCustomCharge('');
-    setCustomMaterials([]);
     setCustomSpecialInstructions(item.special_instructions || '');
     setShowCustomize(true);
+
+    // Load all materials list for the picker
     let materialsList = allMaterialsList;
     if (allMaterialsList.length === 0) {
       try {
@@ -100,19 +101,35 @@ export default function CheckoutScreen({ route, navigation }) {
       } catch {}
     }
 
+    // If item already has custom_materials, use those (preserve previous customizations)
+    if (item.custom_materials && item.custom_materials.length > 0) {
+      setCustomMaterials(item.custom_materials.map(m => ({
+        material_id: m.material_id,
+        name: m.name || materialsList.find(mat => mat.id === m.material_id)?.name || 'Material #' + m.material_id,
+        qty: String(m.qty_per_unit || m.qty || 1),
+      })));
+      return;
+    }
+
+    // Otherwise fetch base product materials as defaults
     try {
       const res = await api.getProductMaterials(item.product_id);
       if (res.success && res.data) {
         setCustomMaterials(res.data.map(m => {
-          const matInfo = allMaterialsList.find(mat => mat.id === m.material_id);
+          const matInfo = materialsList.find(mat => mat.id === m.material_id);
           return {
             material_id: m.material_id,
             name: matInfo?.name || m.material_name || 'Material #' + m.material_id,
             qty: String(m.quantity || 1)
           };
         }));
+      } else {
+        setCustomMaterials([]);
       }
-    } catch (e) { console.log('Failed to fetch product materials:', e); }
+    } catch (e) {
+      console.log('Failed to fetch product materials:', e);
+      setCustomMaterials([]);
+    }
   };
 
   const handleCustomize = () => {

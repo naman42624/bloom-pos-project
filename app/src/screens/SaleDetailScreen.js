@@ -93,6 +93,16 @@ export default function SaleDetailScreen({ route, navigation }) {
   };
 
   const handleStatusTransition = (nextStatus, label) => {
+    // Guard: delivery orders must be marked 'delivered' before completion
+    if (nextStatus === 'completed' && sale.order_type === 'delivery') {
+      const delStatus = sale.delivery?.status;
+      if (delStatus !== 'delivered') {
+        const msg = 'This delivery order cannot be completed until it has been delivered. Please mark the delivery as "Delivered" first.';
+        Platform.OS === 'web' ? window.alert(msg) : Alert.alert('Cannot Complete', msg);
+        return;
+      }
+    }
+
     Alert.alert(label, `${label} for this order?`, [
       { text: 'Cancel', style: 'cancel' },
       {
@@ -400,7 +410,11 @@ export default function SaleDetailScreen({ route, navigation }) {
             && item.product_id
             && !item.from_product_stock;
           const task = item.production_task;
-          const hasMaterials = item.materials && item.materials.length > 0;
+          const parsedCustomMaterials = item.custom_materials && typeof item.custom_materials === 'string'
+            ? (() => { try { return JSON.parse(item.custom_materials); } catch { return null; } })()
+            : item.custom_materials;
+          const hasCustomMaterials = parsedCustomMaterials && parsedCustomMaterials.length > 0;
+          const hasMaterials = hasCustomMaterials || (item.materials && item.materials.length > 0);
           const isExpanded = expandedItems[idx];
           return (
             <View key={idx} style={styles.itemRow}>
@@ -482,18 +496,32 @@ export default function SaleDetailScreen({ route, navigation }) {
                 {/* Expandable material composition */}
                 {isExpanded && hasMaterials && (
                   <View style={styles.bomContainer}>
-                    <Text style={styles.bomTitle}>Materials Required:</Text>
-                    {item.materials.map((mat, mIdx) => (
-                      <View key={mIdx} style={styles.bomRow}>
-                        {mat.material_image && (
-                          <TouchableOpacity onPress={(e) => { e.stopPropagation(); setViewedImage(api.getMediaUrl(mat.material_image)); }}>
-                            <Image source={{ uri: api.getMediaUrl(mat.material_image) }} style={{ width: 20, height: 20, borderRadius: 4, marginRight: 4 }} />
-                          </TouchableOpacity>
-                        )}
-                        <Text style={styles.bomName}>{mat.material_name}</Text>
-                        <Text style={styles.bomQty}>{mat.qty_per_unit * item.quantity} {mat.unit}</Text>
-                      </View>
-                    ))}
+                    {hasCustomMaterials ? (
+                      <>
+                        <Text style={[styles.bomTitle, { color: Colors.primary }]}>Customized Materials:</Text>
+                        {parsedCustomMaterials.map((mat, mIdx) => (
+                          <View key={mIdx} style={styles.bomRow}>
+                            <Text style={styles.bomName}>{mat.name || `Material #${mat.material_id}`}</Text>
+                            <Text style={styles.bomQty}>{(mat.qty_per_unit || mat.qty || 1) * item.quantity}</Text>
+                          </View>
+                        ))}
+                      </>
+                    ) : (
+                      <>
+                        <Text style={styles.bomTitle}>Materials Required:</Text>
+                        {item.materials.map((mat, mIdx) => (
+                          <View key={mIdx} style={styles.bomRow}>
+                            {mat.material_image && (
+                              <TouchableOpacity onPress={(e) => { e.stopPropagation(); setViewedImage(api.getMediaUrl(mat.material_image)); }}>
+                                <Image source={{ uri: api.getMediaUrl(mat.material_image) }} style={{ width: 20, height: 20, borderRadius: 4, marginRight: 4 }} />
+                              </TouchableOpacity>
+                            )}
+                            <Text style={styles.bomName}>{mat.material_name}</Text>
+                            <Text style={styles.bomQty}>{mat.qty_per_unit * item.quantity} {mat.unit}</Text>
+                          </View>
+                        ))}
+                      </>
+                    )}
                   </View>
                 )}
 

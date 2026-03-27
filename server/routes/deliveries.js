@@ -634,7 +634,7 @@ router.post(
   [
     body('delivery_partner_id').isInt(),
     body('delivery_ids').isArray({ min: 1 }).withMessage('At least one delivery required'),
-    body('location_id').isInt(),
+    body('location_id').optional({ nullable: true }).isInt(),
     body('notes').optional().trim(),
   ],
   (req, res, next) => {
@@ -643,7 +643,13 @@ router.post(
       if (!errors.isEmpty()) return res.status(400).json({ success: false, message: 'Validation failed', errors: errors.array() });
 
       const db = getDb();
-      const { delivery_partner_id, delivery_ids, location_id, notes } = req.body;
+      const { delivery_partner_id, delivery_ids, notes } = req.body;
+      // Derive location_id from first delivery if not explicitly provided
+      let location_id = req.body.location_id;
+      if (!location_id && delivery_ids && delivery_ids.length > 0) {
+        const firstDel = db.prepare('SELECT location_id FROM deliveries WHERE id = ?').get(delivery_ids[0]);
+        location_id = firstDel ? firstDel.location_id : null;
+      }
 
       const settleTx = db.transaction(() => {
         let totalAmount = 0;

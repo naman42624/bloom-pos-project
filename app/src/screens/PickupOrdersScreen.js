@@ -46,7 +46,7 @@ export default function PickupOrdersScreen({ navigation }) {
   const fetchOrders = useCallback(async () => {
     try {
       setLoading(true);
-      const params = { order_type: 'pickup', pickup_status: tab, limit: 100 };
+      const params = { order_type: 'pickup', pickup_status: tab, limit: 200 };
       if (activeLocation) params.location_id = activeLocation.id;
       const res = await api.getSales(params);
       setOrders(res.data?.sales || []);
@@ -133,7 +133,7 @@ export default function PickupOrdersScreen({ navigation }) {
     }
 
     if (!item.scheduled_date) return { label: null, countdown: null, isOverdue: false };
-    const dateStr = item.scheduled_date;
+    const dateStr = (item.scheduled_date || '').split('T')[0];
     const timeStr = item.scheduled_time || '00:00';
     const target = new Date(`${dateStr}T${timeStr}:00`);
     const diffMs = target - now;

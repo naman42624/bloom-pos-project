@@ -54,7 +54,7 @@ export default function DeliveriesScreen({ navigation }) {
   const fetchDeliveries = useCallback(async () => {
     try {
       setLoading(true);
-      const params = {};
+      const params = { limit: 200 };
       if (activeLocation) params.location_id = activeLocation.id;
       if (statusFilter !== 'all') params.status = statusFilter;
 
@@ -151,30 +151,33 @@ export default function DeliveriesScreen({ navigation }) {
 
   // Sort by scheduled date+time (earliest first, no-date last)
   const sortedDeliveries = [...filteredDeliveries].sort((a, b) => {
-    const dtA = a.scheduled_date ? `${a.scheduled_date} ${a.scheduled_time || '00:00'}` : 'zzzz';
-    const dtB = b.scheduled_date ? `${b.scheduled_date} ${b.scheduled_time || '00:00'}` : 'zzzz';
+    const dA = (a.scheduled_date || '').split('T')[0];
+    const dB = (b.scheduled_date || '').split('T')[0];
+    const dtA = dA ? `${dA} ${a.scheduled_time || '00:00'}` : 'zzzz';
+    const dtB = dB ? `${dB} ${b.scheduled_time || '00:00'}` : 'zzzz';
     return dtA.localeCompare(dtB);
   });
 
   // Group by date for section headers
   const getDateLabel = (dateStr) => {
-    if (!dateStr) return 'Unscheduled';
+    const ds = (dateStr || '').split('T')[0];
+    if (!ds) return 'Unscheduled';
     const today = now.toISOString().slice(0, 10);
     const tomorrow = new Date(now);
     tomorrow.setDate(tomorrow.getDate() + 1);
     const tomorrowStr = tomorrow.toISOString().slice(0, 10);
-    if (dateStr === today) return 'Today';
-    if (dateStr === tomorrowStr) return 'Tomorrow';
-    const d = new Date(dateStr + 'T00:00:00');
+    if (ds === today) return 'Today';
+    if (ds === tomorrowStr) return 'Tomorrow';
+    const d = new Date(ds + 'T00:00:00');
     return d.toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' });
   };
 
   const sections = [];
   const grouped = {};
   for (const item of sortedDeliveries) {
-    const key = item.scheduled_date || '_unscheduled';
+    const key = (item.scheduled_date || '').split('T')[0] || '_unscheduled';
     if (!grouped[key]) {
-      grouped[key] = { title: getDateLabel(item.scheduled_date), data: [] };
+      grouped[key] = { title: getDateLabel(key), data: [] };
       sections.push(grouped[key]);
     }
     grouped[key].data.push(item);

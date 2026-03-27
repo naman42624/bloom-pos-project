@@ -224,7 +224,7 @@ export default function QuickCheckoutScreen({ navigation }) {
         tax_rate: item.baseProduct?.tax_percentage || 0,
         tax_amount: 0,
         line_total: getItemTotal(item),
-        materials: item.materials,
+        custom_materials: item.materials,
         special_instructions: item.special_instructions || '',
         image_url: item.image_url || '',
       }));

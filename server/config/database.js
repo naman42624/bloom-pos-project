@@ -454,6 +454,7 @@ function ensureCompatibilityColumns() {
     // Sale items: Phase 7 enhancements
     ensureColumn('sale_items', 'special_instructions', 'TEXT');
     ensureColumn('sale_items', 'image_url', 'TEXT');
+    ensureColumn('sale_items', 'custom_materials', 'JSONB');
 
     // Purchase orders: add columns expected by routes
     ensureColumn('purchase_orders', 'expected_date', 'DATE');
