@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useCallback, useRef } from 'react';
+import React, { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TextInput,
   TouchableOpacity, Alert, Platform, ActivityIndicator, KeyboardAvoidingView,
@@ -6,6 +6,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import DateTimePickerModal from '../components/DateTimePickerModal';
+import { useFocusEffect } from '@react-navigation/native';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
@@ -67,6 +68,19 @@ export default function CheckoutScreen({ route, navigation }) {
 
   // Payment mode: 'pay_now' (default), 'cod' (delivery), 'credit' (customer credit), 'partial' (advance + rest later)
   const [paymentMode, setPaymentMode] = useState('pay_now');
+
+  // Register guard
+  const [registerOpen, setRegisterOpen] = useState(true);
+  useFocusEffect(
+    useCallback(() => {
+      (async () => {
+        try {
+          const res = await api.getRegisterStatus(locationId);
+          setRegisterOpen(res.data?.is_open === true || res.data?.is_open === 1);
+        } catch { setRegisterOpen(false); }
+      })();
+    }, [locationId])
+  );
 
   // Split payment — array of payment entries
   const [payments, setPayments] = useState([
@@ -265,6 +279,15 @@ export default function CheckoutScreen({ route, navigation }) {
 
   const handleSubmit = async () => {
     if (submitting) return;
+
+    // Register guard
+    if (!registerOpen) {
+      Alert.alert('Register Closed', 'Please open the cash register before creating a sale.', [
+        { text: 'Open Register', onPress: () => navigation.navigate('CashRegister') },
+        { text: 'Cancel', style: 'cancel' },
+      ]);
+      return;
+    }
 
     if (orderType === 'pre_order' && !scheduledDate) {
       Alert.alert('Required', 'Please enter a scheduled date for pre-order');

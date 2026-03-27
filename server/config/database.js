@@ -414,6 +414,85 @@ function ensureCoreTables() {
   runPsql('CREATE INDEX IF NOT EXISTS idx_po_items_order ON purchase_order_items(purchase_order_id)');
   runPsql('CREATE INDEX IF NOT EXISTS idx_po_items_material ON purchase_order_items(material_id)');
 
+  // Delivery tracking — GPS breadcrumbs from delivery partners
+  runPsql(`
+    CREATE TABLE IF NOT EXISTS delivery_locations (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      delivery_id INTEGER REFERENCES deliveries(id) ON DELETE SET NULL,
+      latitude DOUBLE PRECISION NOT NULL,
+      longitude DOUBLE PRECISION NOT NULL,
+      accuracy DOUBLE PRECISION,
+      speed DOUBLE PRECISION,
+      heading DOUBLE PRECISION,
+      battery_level DOUBLE PRECISION,
+      is_moving INTEGER DEFAULT 0,
+      recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  runPsql('CREATE INDEX IF NOT EXISTS idx_delivery_locations_user ON delivery_locations(user_id)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_delivery_locations_delivery ON delivery_locations(delivery_id)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_delivery_locations_recorded ON delivery_locations(recorded_at)');
+
+  // Delivery partner daily summary — aggregated from location breadcrumbs
+  runPsql(`
+    CREATE TABLE IF NOT EXISTS delivery_partner_daily (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      date DATE NOT NULL DEFAULT CURRENT_DATE,
+      total_deliveries INTEGER DEFAULT 0,
+      total_distance_km DOUBLE PRECISION DEFAULT 0,
+      total_active_minutes DOUBLE PRECISION DEFAULT 0,
+      total_idle_minutes DOUBLE PRECISION DEFAULT 0,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(user_id, date)
+    )
+  `);
+  runPsql('CREATE INDEX IF NOT EXISTS idx_dpd_user_date ON delivery_partner_daily(user_id, date)');
+
+  // Ensure partner_id column exists on delivery_settlements
+  if (!hasColumn('delivery_settlements', 'partner_id')) {
+    runPsql('ALTER TABLE delivery_settlements ADD COLUMN partner_id INTEGER REFERENCES users(id) ON DELETE SET NULL');
+  }
+
+  // Customer management tables
+  runPsql(`
+    CREATE TABLE IF NOT EXISTS customers (
+      id SERIAL PRIMARY KEY,
+      name VARCHAR(255),
+      phone VARCHAR(50) UNIQUE,
+      email VARCHAR(255),
+      birthday DATE,
+      anniversary DATE,
+      custom_dates JSONB DEFAULT '[]',
+      total_spent DECIMAL(12,2) DEFAULT 0,
+      credit_balance DECIMAL(12,2) DEFAULT 0,
+      notes TEXT,
+      is_active INTEGER DEFAULT 1,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  runPsql('CREATE INDEX IF NOT EXISTS idx_customers_phone ON customers(phone)');
+
+  runPsql(`
+    CREATE TABLE IF NOT EXISTS customer_addresses (
+      id SERIAL PRIMARY KEY,
+      customer_id INTEGER NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+      label VARCHAR(255) DEFAULT 'Home',
+      address TEXT NOT NULL,
+      city VARCHAR(255),
+      state VARCHAR(255),
+      pincode VARCHAR(20),
+      latitude DOUBLE PRECISION,
+      longitude DOUBLE PRECISION,
+      is_default INTEGER DEFAULT 0,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  runPsql('CREATE INDEX IF NOT EXISTS idx_customer_addresses_customer ON customer_addresses(customer_id)');
+
   // Seed default material categories if table is empty
   const catCount = runPsql("SELECT COUNT(*) FROM material_categories");
   if (catCount.trim() === '0') {

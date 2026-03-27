@@ -48,6 +48,7 @@ export default function ProductionQueueScreen({ navigation }) {
   const [refreshing, setRefreshing] = useState(false);
   const [statusFilter, setStatusFilter] = useState('');
   const [orderStatusFilter, setOrderStatusFilter] = useState('');
+  const [showFilters, setShowFilters] = useState(false);
   const [orderSearch, setOrderSearch] = useState('');
   const [locations, setLocations] = useState([]);
   const [selectedLocation, setSelectedLocation] = useState(null);
@@ -551,8 +552,28 @@ export default function ProductionQueueScreen({ navigation }) {
 
   return (
     <View style={styles.container}>
+      {/* Filter toggle button */}
+      <View style={styles.filterToggleRow}>
+        <TouchableOpacity
+          style={styles.filterToggleBtn}
+          onPress={() => setShowFilters(!showFilters)}
+        >
+          <Ionicons name={showFilters ? 'options' : 'options-outline'} size={16} color={Colors.primary} />
+          <Text style={styles.filterToggleText}>
+            {showFilters ? 'Hide Filters' : 'Filters'}
+          </Text>
+          {(selectedLocation || statusFilter || orderStatusFilter || selectedDate) && !showFilters ? (
+            <View style={styles.filterBadge}>
+              <Text style={styles.filterBadgeText}>
+                {[selectedLocation, statusFilter, orderStatusFilter, selectedDate].filter(Boolean).length}
+              </Text>
+            </View>
+          ) : null}
+        </TouchableOpacity>
+      </View>
+
       {/* Location filter */}
-      {(locations.length > 1 || isOwner) && (
+      {showFilters && (locations.length > 1 || isOwner) && (
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.locRow}
           contentContainerStyle={{ paddingHorizontal: Spacing.md, gap: Spacing.xs }}>
           {isOwner && (
@@ -591,7 +612,7 @@ export default function ProductionQueueScreen({ navigation }) {
       </View>
 
       {/* Status filter (for tasks view) */}
-      {viewMode === 'tasks' && (
+      {showFilters && viewMode === 'tasks' && (
         <View>
           <ScrollView horizontal showsHorizontalScrollIndicator={false}
             contentContainerStyle={{ paddingHorizontal: Spacing.md, gap: Spacing.xs, paddingVertical: Spacing.xs }}>
@@ -753,6 +774,11 @@ export default function ProductionQueueScreen({ navigation }) {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
   centered: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  filterToggleRow: { flexDirection: 'row', paddingHorizontal: Spacing.md, paddingTop: Spacing.xs, paddingBottom: 2 },
+  filterToggleBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingVertical: 4, paddingHorizontal: 8, borderRadius: BorderRadius.sm, backgroundColor: Colors.primary + '10' },
+  filterToggleText: { fontSize: FontSize.xs, fontWeight: '600', color: Colors.primary },
+  filterBadge: { backgroundColor: Colors.primary, borderRadius: 10, minWidth: 16, height: 16, alignItems: 'center', justifyContent: 'center', marginLeft: 2 },
+  filterBadgeText: { color: '#fff', fontSize: 10, fontWeight: '700' },
   locRow: { maxHeight: 48, borderBottomWidth: 1, borderBottomColor: Colors.border },
   viewToggle: {
     flexDirection: 'row', paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm,

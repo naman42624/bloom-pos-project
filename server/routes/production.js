@@ -273,7 +273,9 @@ router.get('/tasks', authenticate, authorize('owner', 'manager', 'employee'), (r
     `;
     const params = [];
 
-    // If no explicit status filter, default to hiding cancelled (for the active queue)
+    // If no explicit status filter, default to active queue:
+    // - hide cancelled tasks
+    // - hide tasks whose associated order/sale is already 'completed' or 'cancelled'
     if (status) {
       const statuses = status.split(',').map(s => s.trim()).filter(Boolean);
       if (statuses.length === 1) {
@@ -285,6 +287,7 @@ router.get('/tasks', authenticate, authorize('owner', 'manager', 'employee'), (r
       }
     } else {
       sql += " AND pt.status != 'cancelled'";
+      sql += " AND s.status NOT IN ('completed', 'cancelled')";
     }
 
     if (location_id) { sql += ' AND pt.location_id = ?'; params.push(Number(location_id)); }

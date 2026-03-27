@@ -15,6 +15,7 @@ import UsersScreen from '../screens/UsersScreen';
 import UserFormScreen from '../screens/UserFormScreen';
 import ProfileScreen from '../screens/ProfileScreen';
 import SettingsScreen from '../screens/SettingsScreen';
+import DataManagementScreen from '../screens/DataManagementScreen';
 
 // Phase 2 — Inventory
 import CategoriesScreen from '../screens/CategoriesScreen';
@@ -381,6 +382,7 @@ function MoreStack() {
       <Stack.Screen name="CashRegister" component={CashRegisterScreen} options={{ title: 'Cash Register' }} />
       <Stack.Screen name="Expenses" component={ExpensesScreen} options={{ title: 'Expenses' }} />
       <Stack.Screen name="Settings" component={SettingsScreen} options={{ title: 'Settings' }} />
+      <Stack.Screen name="DataManagement" component={DataManagementScreen} options={{ title: 'Data Management' }} />
       <Stack.Screen name="SaleDetail" component={SaleDetailScreen} options={{ title: 'Sale Details' }} />
       <Stack.Screen name="RefundSale" component={RefundSaleScreen} options={{ title: 'Refund' }} />
       <Stack.Screen name="AddPayment" component={AddPaymentScreen} options={{ title: 'Record Payment' }} />

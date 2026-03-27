@@ -89,9 +89,24 @@ router.get('/', authenticate, (req, res, next) => {
     if (date_from) { sql += ' AND s.created_at >= (?::date)'; params.push(date_from); }
     if (date_to) { sql += " AND s.created_at < (?::date + INTERVAL '1 day')"; params.push(date_to); }
     if (search) {
-      sql += ' AND (s.sale_number LIKE ? OR s.customer_name LIKE ? OR s.customer_phone LIKE ?)';
       const s = `%${search}%`;
-      params.push(s, s, s);
+      sql += ` AND (
+        s.sale_number ILIKE ?
+        OR s.customer_name ILIKE ?
+        OR s.customer_phone ILIKE ?
+        OR EXISTS (SELECT 1 FROM sale_items si2 WHERE si2.sale_id = s.id AND si2.product_name ILIKE ?)
+        OR EXISTS (SELECT 1 FROM deliveries d2 WHERE d2.sale_id = s.id AND d2.delivery_address ILIKE ?)
+        OR EXISTS (SELECT 1 FROM deliveries d3 JOIN users dp ON d3.delivery_partner_id = dp.id WHERE d3.sale_id = s.id AND dp.name ILIKE ?)
+        OR EXISTS (
+          SELECT 1 FROM sale_items si3
+          JOIN products pr ON si3.product_id = pr.id
+          JOIN product_materials pm ON pm.product_id = pr.id
+          JOIN materials m ON pm.material_id = m.id
+          WHERE si3.sale_id = s.id AND m.name ILIKE ?
+        )
+        OR EXISTS (SELECT 1 FROM sale_items si4 WHERE si4.sale_id = s.id AND si4.custom_materials::text ILIKE ?)
+      )`;
+      params.push(s, s, s, s, s, s, s, s);
     }
 
     // Scope by location for non-owner roles
@@ -747,6 +762,35 @@ router.post(
         else if (totalPaid > 0) paymentStatus = 'partial';
 
         const saleNumber = generateSaleNumber(db, location_id);
+
+        // ─── Customer auto-creation ──────────────────────
+        // If phone is provided but no customer_id, find or create
+        if (customer_phone && !customer_id) {
+          const existingCustomer = db.prepare(
+            "SELECT id FROM customers WHERE phone = ?"
+          ).get(customer_phone.trim());
+
+          if (existingCustomer) {
+            customer_id = existingCustomer.id;
+          } else {
+            const newCust = db.prepare(
+              "INSERT INTO customers (name, phone, created_at, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+            ).run(customer_name || 'Guest', customer_phone.trim());
+            customer_id = newCust.lastInsertRowid;
+          }
+        }
+
+        // Save delivery address to customer_addresses if delivery
+        if (customer_id && delivery_address && (order_type === 'delivery' || order_type === 'pre_order')) {
+          const existingAddr = db.prepare(
+            "SELECT id FROM customer_addresses WHERE customer_id = ? AND address = ?"
+          ).get(customer_id, delivery_address.trim());
+          if (!existingAddr) {
+            db.prepare(
+              "INSERT INTO customer_addresses (customer_id, label, address, created_at, updated_at) VALUES (?, 'Delivery', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+            ).run(customer_id, delivery_address.trim());
+          }
+        }
 
         // ─── Hybrid Stock Logic ──────────────────────────
         // Walk-in: auto-deduct from product_stock if available → completed / preparing
@@ -1673,5 +1717,51 @@ router.post(
     } catch (err) { next(err); }
   }
 );
+
+// ─── DELETE /api/sales/:id — Delete a sale (owner only) ───────
+router.delete('/:id', authenticate, authorize('owner'), (req, res, next) => {
+  try {
+    const db = getDb();
+    const sale = db.prepare('SELECT id FROM sales WHERE id = ?').get(req.params.id);
+    if (!sale) return res.status(404).json({ success: false, message: 'Sale not found' });
+
+    // Cascade delete
+    db.prepare('DELETE FROM production_tasks WHERE sale_id = ?').run(sale.id);
+    db.prepare('DELETE FROM deliveries WHERE sale_id = ?').run(sale.id);
+    db.prepare('DELETE FROM payments WHERE sale_id = ?').run(sale.id);
+    db.prepare('DELETE FROM sale_items WHERE sale_id = ?').run(sale.id);
+    db.prepare('DELETE FROM sales WHERE id = ?').run(sale.id);
+
+    res.json({ success: true, message: 'Sale deleted' });
+  } catch (err) { next(err); }
+});
+
+// ─── POST /api/sales/admin/reset — Reset all transactional data (owner only) ───
+router.post('/admin/reset', authenticate, authorize('owner'), (req, res, next) => {
+  try {
+    const { confirm } = req.body;
+    if (!confirm) return res.status(400).json({ success: false, message: 'Confirmation required' });
+
+    const db = getDb();
+    // Delete in dependency order
+    const tables = [
+      'delivery_settlement_items', 'delivery_settlements', 'delivery_collections',
+      'delivery_locations', 'delivery_partner_daily', 'delivery_proofs',
+      'production_tasks', 'production_logs', 'product_stock',
+      'payments', 'sale_items', 'deliveries', 'sales',
+      'cash_registers', 'attendance', 'outdoor_duty_requests', 'geofence_events',
+      'credit_payments', 'expenses', 'salary_payments', 'salary_advances',
+      'stock_transfers', 'notifications', 'customers', 'customer_addresses',
+    ];
+
+    for (const table of tables) {
+      try { db.prepare(`DELETE FROM ${table} WHERE 1=1`).run(); } catch (e) {
+        console.log(`Reset: skip ${table}:`, e.message);
+      }
+    }
+
+    res.json({ success: true, message: 'All transactional data reset.' });
+  } catch (err) { next(err); }
+});
 
 module.exports = router;

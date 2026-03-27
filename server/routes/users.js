@@ -430,4 +430,23 @@ router.put(
   }
 );
 
+// ─── DELETE /api/users/:id — Deactivate/delete user (owner only) ──
+router.delete('/:id', authorize('owner'), (req, res, next) => {
+  try {
+    const db = getDb();
+    const userId = parseInt(req.params.id);
+    if (userId === req.user.id) {
+      return res.status(400).json({ success: false, message: 'Cannot delete your own account' });
+    }
+    const target = db.prepare('SELECT id, role FROM users WHERE id = ?').get(userId);
+    if (!target) return res.status(404).json({ success: false, message: 'User not found' });
+
+    // Soft delete (preserve FK integrity)
+    db.prepare("UPDATE users SET is_active = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(userId);
+    db.prepare('DELETE FROM user_locations WHERE user_id = ?').run(userId);
+
+    res.json({ success: true, message: 'User deactivated' });
+  } catch (error) { next(error); }
+});
+
 module.exports = router;

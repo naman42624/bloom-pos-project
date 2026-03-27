@@ -16,6 +16,7 @@ const MENU_ITEMS = [
   { key: 'Expenses', icon: 'receipt', label: 'Expenses', roles: ['owner', 'manager'] },
   { key: 'Profile', icon: 'person-circle', label: 'Profile', roles: ['owner', 'manager'] },
   { key: 'Settings', icon: 'settings', label: 'Settings', roles: ['owner'] },
+  { key: 'DataManagement', icon: 'construct', label: 'Data Management', roles: ['owner'] },
 ];
 
 const ICON_COLORS = ['#E91E63', '#9C27B0', '#3F51B5', '#00BCD4', '#4CAF50', '#FF9800', '#FF5722', '#795548', '#607D8B', '#F44336', '#E91E63'];
