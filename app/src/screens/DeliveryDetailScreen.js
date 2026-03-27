@@ -645,6 +645,61 @@ export default function DeliveryDetailScreen({ route, navigation }) {
           )}
         </View>
       )}
+
+      {/* Failed delivery — Reattempt or Cancel */}
+      {delivery.status === 'failed' && isManager && (
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Failed Delivery Actions</Text>
+          <Text style={{ fontSize: FontSize.sm, color: Colors.textSecondary, marginBottom: 12 }}>
+            Reattempt to reassign to a partner, or cancel the delivery.
+          </Text>
+          <TouchableOpacity
+            style={[styles.actionBtn, { backgroundColor: '#2196F3', marginBottom: 10 }]}
+            disabled={actionLoading}
+            onPress={() => {
+              Alert.alert('Reattempt Delivery', 'Reset to "assigned" for another attempt?', [
+                { text: 'Back', style: 'cancel' },
+                { text: 'Reattempt', onPress: async () => {
+                  try { setActionLoading(true); await api.reattemptDelivery(deliveryId); fetchDelivery(); }
+                  catch (err) { Alert.alert('Error', err.message || 'Failed'); }
+                  finally { setActionLoading(false); }
+                }},
+              ]);
+            }}
+          >
+            <Ionicons name="refresh-circle" size={20} color="#fff" />
+            <Text style={styles.actionBtnText}>Reattempt Delivery</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.actionBtn, { backgroundColor: '#F44336' }]}
+            disabled={actionLoading}
+            onPress={() => {
+              Alert.alert('Cancel Delivery', 'Cancel this failed delivery?', [
+                { text: 'Back', style: 'cancel' },
+                { text: 'Cancel Delivery Only', onPress: async () => {
+                  try { setActionLoading(true); await api.cancelDelivery(deliveryId, { reason: 'Cancelled after failed delivery' }); fetchDelivery(); }
+                  catch (err) { Alert.alert('Error', err.message || 'Failed'); }
+                  finally { setActionLoading(false); }
+                }},
+                { text: 'Cancel Order Too', style: 'destructive', onPress: async () => {
+                  try {
+                    setActionLoading(true);
+                    await api.cancelDelivery(deliveryId, { reason: 'Cancelled after failed delivery' });
+                    await api.cancelSale(delivery.sale_id);
+                    fetchDelivery();
+                    Alert.alert('Cancelled', 'Delivery and order cancelled.');
+                  } catch (err) { Alert.alert('Error', err.message || 'Failed'); }
+                  finally { setActionLoading(false); }
+                }},
+              ]);
+            }}
+          >
+            {actionLoading ? <ActivityIndicator color="#fff" /> : <Ionicons name="close-circle" size={20} color="#fff" />}
+            <Text style={styles.actionBtnText}>Cancel Delivery</Text>
+          </TouchableOpacity>
+        </View>
+      )}
     </ScrollView>
 
     {/* Assign Partner Modal */}

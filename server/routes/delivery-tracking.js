@@ -257,7 +257,7 @@ router.get('/performance/:userId', authorize('owner', 'manager'), (req, res) => 
         END) as avg_delivery_minutes,
         SUM(CASE 
           WHEN status = 'delivered' AND scheduled_time IS NOT NULL AND delivered_time IS NOT NULL 
-            AND time(delivered_time) <= time(scheduled_time) 
+          AND delivered_time::time <= scheduled_time::time 
           THEN 1 ELSE 0 
         END) as on_time_count,
         SUM(CASE WHEN status = 'delivered' AND scheduled_time IS NOT NULL THEN 1 ELSE 0 END) as scheduled_count,

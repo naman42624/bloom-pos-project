@@ -76,7 +76,8 @@ export default function CheckoutScreen({ route, navigation }) {
       (async () => {
         try {
           const res = await api.getRegisterStatus(locationId);
-          setRegisterOpen(res.data?.is_open === true || res.data?.is_open === 1);
+          // API returns { isOpen: bool, data: register|null }
+          setRegisterOpen(res.isOpen === true);
         } catch { setRegisterOpen(false); }
       })();
     }, [locationId])

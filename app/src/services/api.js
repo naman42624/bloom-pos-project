@@ -745,6 +745,14 @@ class ApiService {
     return this.request(`/deliveries/${deliveryId}/fail`, { method: 'PUT', body: JSON.stringify(data) });
   }
 
+  reattemptDelivery(deliveryId) {
+    return this.request(`/deliveries/${deliveryId}/reattempt`, { method: 'PUT' });
+  }
+
+  cancelDelivery(deliveryId, data = {}) {
+    return this.request(`/deliveries/${deliveryId}/cancel`, { method: 'PUT', body: JSON.stringify(data) });
+  }
+
   uploadDeliveryProof(deliveryId, formData) {
     return this.request(`/deliveries/${deliveryId}/proof`, {
       method: 'POST',

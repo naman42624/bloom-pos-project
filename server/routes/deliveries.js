@@ -565,6 +565,79 @@ router.put(
   }
 );
 
+// ─── PUT /api/deliveries/:id/reattempt ───────────────────────
+// Reset a failed delivery back to 'assigned' for another attempt
+router.put('/:id(\\d+)/reattempt', authenticate, authorize('owner', 'manager'), (req, res, next) => {
+  try {
+    const db = getDb();
+    const delivery = db.prepare('SELECT * FROM deliveries WHERE id = ?').get(req.params.id);
+    if (!delivery) return res.status(404).json({ success: false, message: 'Delivery not found' });
+    if (delivery.status !== 'failed') {
+      return res.status(400).json({ success: false, message: 'Only failed deliveries can be reattempted' });
+    }
+
+    db.prepare(`
+      UPDATE deliveries
+      SET status = 'assigned', failure_reason = NULL, pickup_time = NULL, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(delivery.id);
+
+    // Set sale back to 'confirmed' so it's queued again
+    db.prepare("UPDATE sales SET status = 'confirmed', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(delivery.sale_id);
+
+    const updated = db.prepare('SELECT * FROM deliveries WHERE id = ?').get(delivery.id);
+    res.json({ success: true, data: updated, message: 'Delivery reset for reattempt' });
+  } catch (err) { next(err); }
+});
+
+// ─── PUT /api/deliveries/:id/cancel ──────────────────────────
+// Cancel a delivery (manager/owner). Adds prepared items to product_stock.
+router.put('/:id(\\d+)/cancel', authenticate, authorize('owner', 'manager'), (req, res, next) => {
+  try {
+    const db = getDb();
+    const delivery = db.prepare('SELECT * FROM deliveries WHERE id = ?').get(req.params.id);
+    if (!delivery) return res.status(404).json({ success: false, message: 'Delivery not found' });
+    if (['delivered', 'cancelled'].includes(delivery.status)) {
+      return res.status(400).json({ success: false, message: `Cannot cancel a ${delivery.status} delivery` });
+    }
+
+    const cancelTx = db.transaction(() => {
+      db.prepare(`
+        UPDATE deliveries SET status = 'cancelled', failure_reason = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `).run(req.body.reason || 'Cancelled by manager', delivery.id);
+
+      // Add prepared products back to stock (for walk-in resale)
+      const completedTasks = db.prepare(`
+        SELECT pt.*, si.product_id, si.quantity
+        FROM production_tasks pt
+        JOIN sale_items si ON pt.sale_item_id = si.id
+        WHERE pt.sale_id = ? AND pt.status = 'completed' AND si.product_id IS NOT NULL
+      `).all(delivery.sale_id);
+
+      for (const task of completedTasks) {
+        if (task.product_id && task.quantity) {
+          const existing = db.prepare('SELECT id FROM product_stock WHERE product_id = ? AND location_id = ?')
+            .get(task.product_id, delivery.location_id || 1);
+          if (existing) {
+            db.prepare('UPDATE product_stock SET quantity = quantity + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+              .run(task.quantity, existing.id);
+          } else {
+            try {
+              db.prepare('INSERT INTO product_stock (product_id, location_id, quantity) VALUES (?, ?, ?)')
+                .run(task.product_id, delivery.location_id || 1, task.quantity);
+            } catch (e) { /* product_stock may not exist */ }
+          }
+        }
+      }
+    });
+
+    cancelTx();
+    const updated = db.prepare('SELECT * FROM deliveries WHERE id = ?').get(delivery.id);
+    res.json({ success: true, data: updated, message: 'Delivery cancelled' });
+  } catch (err) { next(err); }
+});
+
 // ─── POST /api/deliveries/:id/proof ──────────────────────────
 // Upload delivery proof photo
 router.post(
@@ -698,7 +771,7 @@ router.post(
           const d = db.prepare('SELECT cod_collected FROM deliveries WHERE id = ?').get(did);
           insertItem.run(settlementId, did, d.cod_collected);
           // Mark delivery COD as settled
-          db.prepare("UPDATE deliveries SET cod_status = 'settled', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(did);
+          db.prepare("UPDATE deliveries SET cod_status = 'collected', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(did);
         }
 
         return settlementId;

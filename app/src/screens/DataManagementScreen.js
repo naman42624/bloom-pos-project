@@ -61,7 +61,20 @@ export default function DataManagementScreen({ navigation }) {
         default:
           res = { data: [] };
       }
-      const data = res.data?.items || res.data?.locations || res.data?.users || res.data || [];
+      let data = [];
+      if (section.endpoint === 'users') {
+        data = res.data?.users || res.data || [];
+      } else if (section.endpoint === 'sales') {
+        data = res.data?.sales || res.data?.items || [];
+      } else if (section.endpoint === 'locations') {
+        data = res.data?.locations || res.data || [];
+      } else if (section.endpoint === 'materials') {
+        data = Array.isArray(res.data) ? res.data : (res.data?.materials || []);
+      } else if (section.endpoint === 'products') {
+        data = Array.isArray(res.data) ? res.data : (res.data?.products || []);
+      } else {
+        data = Array.isArray(res.data) ? res.data : [];
+      }
       setSectionData(prev => ({ ...prev, [section.key]: Array.isArray(data) ? data : [] }));
     } catch (e) {
       Alert.alert('Error', e.message || 'Failed to load data');
@@ -126,7 +139,7 @@ export default function DataManagementScreen({ navigation }) {
           onPress: async () => {
             setResetting(true);
             try {
-              await api.request('/admin/reset', { method: 'POST', body: JSON.stringify({ confirm: true }) });
+              await api.request('/sales/admin/reset', { method: 'POST', body: JSON.stringify({ confirm: true }) });
               setResetText('');
               setSectionData({});
               Alert.alert('Reset Complete', 'All transactional data has been deleted.');
