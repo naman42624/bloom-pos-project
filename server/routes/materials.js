@@ -303,6 +303,130 @@ router.delete('/:id', authenticate, authorize('owner'), (req, res, next) => {
   }
 });
 
+// ─── GET /api/materials/metrics ──────────────────────────────
+// Inventory metrics: avg cost per material, total value, category breakdown
+router.get('/metrics', authenticate, authorize('owner', 'manager'), (req, res, next) => {
+  try {
+    const db = getDb();
+    const { location_id } = req.query;
+
+    // Total active materials
+    const totalMaterials = db.prepare('SELECT COUNT(*) as count FROM materials WHERE is_active = 1').get().count;
+
+    // Per-material detail with stock and avg cost
+    let materialsSql = `
+      SELECT m.id, m.name, m.sku, m.selling_price, m.min_stock_alert,
+             mc.name as category_name, mc.unit as category_unit, mc.id as category_id,
+             COALESCE(m.selling_price, 0) as unit_cost
+      FROM materials m
+      JOIN material_categories mc ON m.category_id = mc.id
+      WHERE m.is_active = 1
+      ORDER BY mc.name, m.name
+    `;
+    const materials = db.prepare(materialsSql).all();
+
+    // Get stock for each material
+    const stockSql = location_id
+      ? 'SELECT COALESCE(SUM(quantity), 0) as total_qty FROM material_stock WHERE material_id = ? AND location_id = ?'
+      : 'SELECT COALESCE(SUM(quantity), 0) as total_qty FROM material_stock WHERE material_id = ?';
+
+    const getAvgCost = db.prepare(`
+      SELECT COALESCE(AVG(default_price_per_unit), 0) as avg_cost
+      FROM supplier_materials WHERE material_id = ? AND default_price_per_unit > 0
+    `);
+
+    let totalStockValue = 0;
+    let totalStockUnits = 0;
+    const categoryMap = {};
+
+    const enriched = materials.map(m => {
+      const stockRow = location_id
+        ? db.prepare(stockSql).get(m.id, location_id)
+        : db.prepare(stockSql).get(m.id);
+      const stockQty = stockRow?.total_qty || 0;
+
+      let avgCost = 0;
+      try { avgCost = getAvgCost.get(m.id)?.avg_cost || 0; } catch (_) {}
+      const effectiveCost = m.selling_price > 0 ? m.selling_price : avgCost;
+      const stockValue = stockQty * effectiveCost;
+
+      totalStockValue += stockValue;
+      totalStockUnits += stockQty;
+
+      // Category aggregation
+      const catKey = m.category_id;
+      if (!categoryMap[catKey]) {
+        categoryMap[catKey] = {
+          category_id: catKey,
+          category_name: m.category_name,
+          unit: m.category_unit,
+          material_count: 0,
+          total_stock: 0,
+          total_value: 0,
+          avg_cost: 0,
+          costs: [],
+        };
+      }
+      categoryMap[catKey].material_count++;
+      categoryMap[catKey].total_stock += stockQty;
+      categoryMap[catKey].total_value += stockValue;
+      if (effectiveCost > 0) categoryMap[catKey].costs.push(effectiveCost);
+
+      return {
+        id: m.id,
+        name: m.name,
+        sku: m.sku,
+        category_name: m.category_name,
+        unit: m.category_unit,
+        stock_qty: stockQty,
+        avg_cost: Math.round(avgCost * 100) / 100,
+        selling_price: m.selling_price || 0,
+        stock_value: Math.round(stockValue * 100) / 100,
+        is_low: m.min_stock_alert > 0 && stockQty < m.min_stock_alert,
+      };
+    });
+
+    // Finalize category averages
+    const categories = Object.values(categoryMap).map(c => {
+      c.avg_cost = c.costs.length > 0
+        ? Math.round((c.costs.reduce((s, v) => s + v, 0) / c.costs.length) * 100) / 100
+        : 0;
+      delete c.costs;
+      c.total_value = Math.round(c.total_value * 100) / 100;
+      return c;
+    });
+
+    // Low stock count
+    const lowStockCount = enriched.filter(m => m.is_low).length;
+
+    // Location-wise totals
+    let locationTotals = [];
+    try {
+      locationTotals = db.prepare(`
+        SELECT l.id, l.name, COALESCE(SUM(ms.quantity), 0) as total_stock,
+               COUNT(DISTINCT ms.material_id) as material_count
+        FROM locations l
+        LEFT JOIN material_stock ms ON l.id = ms.location_id
+        GROUP BY l.id, l.name
+        ORDER BY l.name
+      `).all();
+    } catch (_) {}
+
+    res.json({
+      success: true,
+      data: {
+        total_materials: totalMaterials,
+        total_stock_units: totalStockUnits,
+        total_stock_value: Math.round(totalStockValue * 100) / 100,
+        low_stock_count: lowStockCount,
+        categories,
+        locations: locationTotals,
+        materials: enriched,
+      },
+    });
+  } catch (err) { next(err); }
+});
+
 // ─── GET /api/materials/low-stock ────────────────────────────
 // Returns materials that are below min_stock_alert at any location
 router.get('/low-stock', authenticate, (req, res, next) => {

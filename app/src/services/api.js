@@ -249,6 +249,11 @@ class ApiService {
     return this.request(`/materials${query ? `?${query}` : ''}`);
   }
 
+  getInventoryMetrics(params = {}) {
+    const query = new URLSearchParams(params).toString();
+    return this.request(`/materials/metrics${query ? `?${query}` : ''}`);
+  }
+
   getMaterial(id) {
     return this.request(`/materials/${id}`);
   }

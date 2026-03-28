@@ -183,57 +183,17 @@ export default function DashboardScreen({ navigation }) {
             </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.registerTitle}>
-                Cash Register: {registerOpen ? 'Open' : 'Closed'}
+                {activeLocation?.name ? `${activeLocation.name} — ` : ''}Register: {registerOpen ? 'Open' : 'Closed'}
               </Text>
               {registerOpen && registerData ? (
                 <Text style={styles.registerSub}>Opening: ₹{(registerData.opening_balance || 0).toFixed(0)}</Text>
               ) : (
-                <Text style={[styles.registerSub, { color: Colors.error }]}>Open the register before creating sales</Text>
+                <Text style={[styles.registerSub, { color: Colors.error }]}>Open the register{activeLocation?.name ? ` for ${activeLocation.name}` : ''} before checkout</Text>
               )}
             </View>
             <Ionicons name="chevron-forward" size={18} color={Colors.textLight} />
           </View>
         </TouchableOpacity>
-      )}
-
-      {/* Revenue KPIs — Owner/Manager */}
-      {isManagerOrOwner && reportKPIs && (
-        <View style={styles.section}>
-          <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>Today's Revenue</Text>
-            <TouchableOpacity onPress={() => navigation.navigate('More', { screen: 'Reports', initial: false })}>
-              <Text style={styles.seeAll}>Full Reports</Text>
-            </TouchableOpacity>
-          </View>
-          <View style={styles.statsRow}>
-            <StatCard
-              title="Today"
-              value={`₹${Math.round(reportKPIs.today?.revenue || 0).toLocaleString()}`}
-              icon="trending-up"
-              color={Colors.success}
-            />
-            <StatCard
-              title="Orders"
-              value={reportKPIs.today?.orders || 0}
-              icon="receipt"
-              color={Colors.primary}
-            />
-          </View>
-          <View style={[styles.statsRow, { marginTop: Spacing.sm }]}>
-            <StatCard
-              title="Yesterday"
-              value={`₹${Math.round(reportKPIs.yesterday?.revenue || 0).toLocaleString()}`}
-              icon="time"
-              color={Colors.info}
-            />
-            <StatCard
-              title="This Week"
-              value={`₹${Math.round(reportKPIs.week?.revenue || 0).toLocaleString()}`}
-              icon="calendar"
-              color="#9C27B0"
-            />
-          </View>
-        </View>
       )}
 
       {/* Owner/Manager Quick Actions */}
@@ -548,6 +508,46 @@ export default function DashboardScreen({ navigation }) {
         </View>
       )}
 
+      {/* Revenue KPIs — Owner/Manager (below operational data) */}
+      {isManagerOrOwner && reportKPIs && (
+        <View style={styles.section}>
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>Today's Revenue</Text>
+            <TouchableOpacity onPress={() => navigation.navigate('More', { screen: 'Reports', initial: false })}>
+              <Text style={styles.seeAll}>Full Reports</Text>
+            </TouchableOpacity>
+          </View>
+          <View style={styles.statsRow}>
+            <StatCard
+              title="Today"
+              value={`₹${Math.round(reportKPIs.today?.revenue || 0).toLocaleString()}`}
+              icon="trending-up"
+              color={Colors.success}
+            />
+            <StatCard
+              title="Orders"
+              value={reportKPIs.today?.orders || 0}
+              icon="receipt"
+              color={Colors.primary}
+            />
+          </View>
+          <View style={[styles.statsRow, { marginTop: Spacing.sm }]}>
+            <StatCard
+              title="Yesterday"
+              value={`₹${Math.round(reportKPIs.yesterday?.revenue || 0).toLocaleString()}`}
+              icon="time"
+              color={Colors.info}
+            />
+            <StatCard
+              title="This Week"
+              value={`₹${Math.round(reportKPIs.week?.revenue || 0).toLocaleString()}`}
+              icon="calendar"
+              color="#9C27B0"
+            />
+          </View>
+        </View>
+      )}
+
       {/* Overview — Non-owner sees location count & role */}
       {!isManagerOrOwner && (
         <View style={styles.section}>
@@ -564,15 +564,8 @@ export default function DashboardScreen({ navigation }) {
       {/* Quick Checkout Floating Action Button */}
       {(isManagerOrOwner || user?.role === 'employee') && (
         <TouchableOpacity
-          style={[styles.fab, registerOpen === false && { backgroundColor: Colors.textLight }]}
+          style={styles.fab}
           onPress={() => {
-            if (registerOpen === false) {
-              Alert.alert('Register Closed', 'Please open the cash register before creating sales.', [
-                { text: 'Open Register', onPress: () => navigation.navigate('POS', { screen: 'CashRegister' }) },
-                { text: 'Cancel', style: 'cancel' },
-              ]);
-              return;
-            }
             navigation.navigate('POS', { screen: 'QuickCheckout' });
           }}
           activeOpacity={0.8}

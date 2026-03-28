@@ -31,6 +31,7 @@ import PurchaseOrdersScreen from '../screens/PurchaseOrdersScreen';
 import PurchaseOrderDetailScreen from '../screens/PurchaseOrderDetailScreen';
 import PurchaseOrderFormScreen from '../screens/PurchaseOrderFormScreen';
 import StockOverviewScreen from '../screens/StockOverviewScreen';
+import InventoryMetricsScreen from '../screens/InventoryMetricsScreen';
 import StockAdjustScreen from '../screens/StockAdjustScreen';
 import StockTransfersScreen from '../screens/StockTransfersScreen';
 import StockTransferFormScreen from '../screens/StockTransferFormScreen';
@@ -223,6 +224,7 @@ function InventoryStack() {
       />
       {/* Stock */}
       <Stack.Screen name="StockAdjust" component={StockAdjustScreen} options={{ title: 'Adjust Stock', presentation: 'modal' }} />
+      <Stack.Screen name="InventoryMetrics" component={InventoryMetricsScreen} options={{ title: 'Inventory Metrics' }} />
       <Stack.Screen name="ProductStock" component={ProductStockScreen} options={{ title: 'Product Stock' }} />
       <Stack.Screen name="StockTransfers" component={StockTransfersScreen} options={{ title: 'Transfers' }} />
       <Stack.Screen
