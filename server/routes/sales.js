@@ -358,7 +358,7 @@ router.put(
           COALESCE(SUM(CASE WHEN p.method = 'upi' THEN p.amount ELSE 0 END), 0) as upi_total
         FROM payments p
         JOIN sales s ON p.sale_id = s.id
-        WHERE s.location_id = ? AND p.created_at >= ? AND s.status = 'completed'
+        WHERE s.location_id = ? AND p.created_at >= ? AND s.status != 'cancelled'
       `).get(location_id, sessionStart);
 
       let refundTotal = 0;
@@ -367,7 +367,7 @@ router.put(
           SELECT COALESCE(SUM(r.amount), 0) as total
           FROM refunds r
           JOIN sales s ON r.sale_id = s.id
-          WHERE s.location_id = ? AND r.created_at >= ? AND r.refund_method = 'cash' AND COALESCE(r.status, 'processed') = 'processed'
+          WHERE s.location_id = ? AND r.created_at >= ? AND r.refund_method = 'cash' AND COALESCE(r.status, 'processed') = 'processed' AND s.status != 'cancelled'
         `).get(location_id, sessionStart).total;
       } catch (err) {
         const msg = String(err?.message || '').toLowerCase();
@@ -803,20 +803,31 @@ router.post(
 
         // Save delivery address to customer_addresses if delivery
         if (customer_id && delivery_address && (order_type === 'delivery' || order_type === 'pre_order')) {
-          const existingAddr = db.prepare(
-            "SELECT id FROM customer_addresses WHERE customer_id = ? AND (address = ? OR address_line_1 = ?)"
-          ).get(customer_id, delivery_address.trim(), delivery_address.trim());
+          const addrClean = delivery_address.trim();
+          let existingAddr = null;
+          try {
+            existingAddr = db.prepare(
+              "SELECT id FROM customer_addresses WHERE customer_id = ? AND address_line_1 = ?"
+            ).get(customer_id, addrClean);
+          } catch (_) {
+            try {
+              existingAddr = db.prepare(
+                "SELECT id FROM customer_addresses WHERE customer_id = ? AND address = ?"
+              ).get(customer_id, addrClean);
+            } catch (__) {}
+          }
+
           if (!existingAddr) {
             try {
               db.prepare(
                 "INSERT INTO customer_addresses (customer_id, label, address_line_1, created_at, updated_at) VALUES (?, 'Delivery', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
-              ).run(customer_id, delivery_address.trim());
+              ).run(customer_id, addrClean);
             } catch (e) {
               // fallback: try 'address' column for legacy schema
               try {
                 db.prepare(
                   "INSERT INTO customer_addresses (customer_id, label, address, created_at, updated_at) VALUES (?, 'Delivery', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
-                ).run(customer_id, delivery_address.trim());
+                ).run(customer_id, addrClean);
               } catch (_) { /* ignore if column doesn't exist */ }
             }
           }
@@ -977,8 +988,7 @@ router.post(
           }
 
           // Update cash register for today
-          const today = localToday();
-          const register = db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND date = ?').get(location_id, today);
+          const register = db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1').get(location_id);
           if (register) {
             for (const pmt of payments) {
               if (pmt.method === 'cash') {
@@ -1015,16 +1025,35 @@ router.post(
 
         // Auto-save delivery address to customer's saved addresses
         if (customer_id && delivery_address) {
-          const existingAddr = db.prepare(
-            "SELECT id FROM customer_addresses WHERE customer_id = ? AND address_line_1 = ?"
-          ).get(customer_id, delivery_address);
+          const addrClean = delivery_address.trim();
+          let existingAddr = null;
+          try {
+            existingAddr = db.prepare(
+              "SELECT id FROM customer_addresses WHERE customer_id = ? AND address_line_1 = ?"
+            ).get(customer_id, addrClean);
+          } catch (_) {
+            try {
+              existingAddr = db.prepare(
+                "SELECT id FROM customer_addresses WHERE customer_id = ? AND address = ?"
+              ).get(customer_id, addrClean);
+            } catch (__) {}
+          }
+
           if (!existingAddr) {
             const addrCount = db.prepare(
               "SELECT COUNT(*) as cnt FROM customer_addresses WHERE customer_id = ?"
             ).get(customer_id).cnt;
-            db.prepare(
-              "INSERT INTO customer_addresses (customer_id, label, address_line_1, is_default) VALUES (?, ?, ?, ?)"
-            ).run(customer_id, 'Delivery', delivery_address, addrCount === 0 ? 1 : 0);
+            try {
+              db.prepare(
+                "INSERT INTO customer_addresses (customer_id, label, address_line_1, is_default) VALUES (?, ?, ?, ?)"
+              ).run(customer_id, 'Delivery', addrClean, addrCount === 0 ? 1 : 0);
+            } catch (e) {
+              try {
+                db.prepare(
+                  "INSERT INTO customer_addresses (customer_id, label, address, is_default) VALUES (?, ?, ?, ?)"
+                ).run(customer_id, 'Delivery', addrClean, addrCount === 0 ? 1 : 0);
+              } catch (__) {}
+            }
           }
         }
 
@@ -1121,8 +1150,7 @@ router.post(
       db.prepare('UPDATE sales SET payment_status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(paymentStatus, sale.id);
 
       // Update cash register
-      const today = localToday();
-      const register = db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND date = ?').get(sale.location_id, today);
+      const register = db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1').get(sale.location_id);
       if (register) {
         if (method === 'cash') {
           db.prepare('UPDATE cash_registers SET total_cash_sales = total_cash_sales + ?, expected_cash = expected_cash + ? WHERE id = ?').run(amount, amount, register.id);
@@ -1153,6 +1181,21 @@ router.put(
 
       const cancelTx = db.transaction(() => {
         db.prepare("UPDATE sales SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(req.params.id);
+
+        // Update cash register (decrement totals) if there's an open session
+        const register = db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1').get(sale.location_id);
+        if (register) {
+          const payments = db.prepare('SELECT method, amount FROM payments WHERE sale_id = ?').all(sale.id);
+          for (const pmt of payments) {
+            if (pmt.method === 'cash') {
+              db.prepare('UPDATE cash_registers SET total_cash_sales = total_cash_sales - ?, expected_cash = expected_cash - ? WHERE id = ?').run(pmt.amount, pmt.amount, register.id);
+            } else if (pmt.method === 'card') {
+              db.prepare('UPDATE cash_registers SET total_card_sales = total_card_sales - ? WHERE id = ?').run(pmt.amount, register.id);
+            } else if (pmt.method === 'upi') {
+              db.prepare('UPDATE cash_registers SET total_upi_sales = total_upi_sales - ? WHERE id = ?').run(pmt.amount, register.id);
+            }
+          }
+        }
 
         // Cancel any pending/in-progress production tasks
         db.prepare("UPDATE production_tasks SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP WHERE sale_id = ? AND status NOT IN ('completed', 'cancelled')").run(req.params.id);
@@ -1518,8 +1561,7 @@ router.post(
 
       // Update cash register if cash refund
       if (refund_method === 'cash') {
-        const today = localToday();
-        const register = db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND date = ?').get(sale.location_id, today);
+        const register = db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1').get(sale.location_id);
         if (register) {
           db.prepare('UPDATE cash_registers SET total_refunds_cash = total_refunds_cash + ?, expected_cash = expected_cash - ? WHERE id = ?').run(amount, amount, register.id);
         }

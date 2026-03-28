@@ -480,7 +480,8 @@ function ensureCoreTables() {
       id SERIAL PRIMARY KEY,
       customer_id INTEGER NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
       label VARCHAR(255) DEFAULT 'Home',
-      address TEXT NOT NULL,
+      address_line_1 TEXT, -- Replaced address with address_line_1 for consistency
+      address_line_2 TEXT,
       city VARCHAR(255),
       state VARCHAR(255),
       pincode VARCHAR(20),
@@ -768,7 +769,10 @@ function ensureCompatibilityColumns() {
 
   // ─── expenses ─────────────────────────────────────────────
   // Make expense_number nullable so routes that don't generate it don't fail
-  try { runPsql('ALTER TABLE expenses ALTER COLUMN expense_number DROP NOT NULL'); } catch (_) {}
+  // ─── customer_addresses ──────────────────────────────────
+  ensureColumn('customer_addresses', 'address_line_1', 'TEXT');
+  ensureColumn('customer_addresses', 'address_line_2', 'TEXT');
+  ensureColumn('customer_addresses', 'address', 'TEXT');
 }
 
 function normalizeSql(sql) {
