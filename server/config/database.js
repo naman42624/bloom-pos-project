@@ -492,6 +492,18 @@ function ensureCoreTables() {
     )
   `);
   runPsql('CREATE INDEX IF NOT EXISTS idx_customer_addresses_customer ON customer_addresses(customer_id)');
+  
+  runPsql(`
+    CREATE TABLE IF NOT EXISTS special_dates (
+      id SERIAL PRIMARY KEY,
+      customer_id INTEGER NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+      label VARCHAR(255) NOT NULL,
+      date DATE NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  runPsql('CREATE INDEX IF NOT EXISTS idx_special_dates_customer ON special_dates(customer_id)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_special_dates_date ON special_dates(date)');
 
   // Seed default material categories if table is empty
   const catCount = runPsql("SELECT COUNT(*) FROM material_categories");
