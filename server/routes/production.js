@@ -3,7 +3,7 @@ const { body, query, validationResult } = require('express-validator');
 const { getDb } = require('../config/database');
 const { authenticate, authorize } = require('../middleware/auth');
 const { createNotification, notifyByRole } = require('./notifications');
-const { todayStr: localToday } = require('../utils/time');
+const { todayStr: localToday, nowLocal } = require('../utils/time');
 
 const router = express.Router();
 
@@ -54,13 +54,13 @@ router.post(
         // 1. Deduct materials
         const deductStock = db.prepare('UPDATE material_stock SET quantity = quantity - ?, updated_at = CURRENT_TIMESTAMP WHERE material_id = ? AND location_id = ?');
         const logMaterialTx = db.prepare(
-          `INSERT INTO material_transactions (material_id, location_id, type, quantity, reference_type, reference_id, notes, created_by)
-           VALUES (?, ?, 'usage', ?, 'production', ?, ?, ?)`
+          `INSERT INTO material_transactions (material_id, location_id, type, quantity, reference_type, reference_id, notes, created_by, created_at)
+           VALUES (?, ?, 'usage', ?, 'production', ?, ?, ?, ?)`
         );
         for (const b of bom) {
           const usedQty = b.qty_needed * quantity;
           deductStock.run(usedQty, b.material_id, location_id);
-          logMaterialTx.run(b.material_id, location_id, usedQty, product_id, `Produced ${quantity}x ${product.name}`, req.user.id);
+          logMaterialTx.run(b.material_id, location_id, usedQty, product_id, `Produced ${quantity}x ${product.name}`, req.user.id, nowLocal());
         }
 
         // 2. Add to product_stock
@@ -73,8 +73,8 @@ router.post(
 
         // 3. Log production
         const logResult = db.prepare(
-          'INSERT INTO production_logs (product_id, location_id, quantity, produced_by, notes) VALUES (?, ?, ?, ?, ?)'
-        ).run(product_id, location_id, quantity, req.user.id, notes || '');
+          'INSERT INTO production_logs (product_id, location_id, quantity, produced_by, notes, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+        ).run(product_id, location_id, quantity, req.user.id, notes || '', nowLocal());
 
         return logResult.lastInsertRowid;
       });
@@ -138,8 +138,8 @@ router.post(
           const getStock = db.prepare('SELECT quantity FROM material_stock WHERE material_id = ? AND location_id = ?');
           const deductStock = db.prepare('UPDATE material_stock SET quantity = quantity - ?, updated_at = CURRENT_TIMESTAMP WHERE material_id = ? AND location_id = ?');
           const logTx = db.prepare(
-            `INSERT INTO material_transactions (material_id, location_id, type, quantity, reference_type, reference_id, notes, created_by)
-             VALUES (?, ?, 'usage', ?, 'production', ?, ?, ?)`
+            `INSERT INTO material_transactions (material_id, location_id, type, quantity, reference_type, reference_id, notes, created_by, created_at)
+             VALUES (?, ?, 'usage', ?, 'production', ?, ?, ?, ?)`
           );
           const insertBom = db.prepare('INSERT INTO product_materials (product_id, material_id, quantity) VALUES (?, ?, ?)');
 
@@ -151,7 +151,7 @@ router.post(
             const stock = getStock.get(m.material_id, location_id);
             if (stock && stock.quantity >= totalNeeded) {
               deductStock.run(totalNeeded, m.material_id, location_id);
-              logTx.run(m.material_id, location_id, totalNeeded, productId, `Custom produced ${quantity}x ${name}`, req.user.id);
+              logTx.run(m.material_id, location_id, totalNeeded, productId, `Custom produced ${quantity}x ${name}`, req.user.id, nowLocal());
             }
           }
         }
@@ -161,8 +161,8 @@ router.post(
 
         // 4. Log production
         const logResult = db.prepare(
-          'INSERT INTO production_logs (product_id, location_id, quantity, produced_by, notes) VALUES (?, ?, ?, ?, ?)'
-        ).run(productId, location_id, quantity, req.user.id, notes || `Custom: ${name}`);
+          'INSERT INTO production_logs (product_id, location_id, quantity, produced_by, notes, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+        ).run(productId, location_id, quantity, req.user.id, notes || `Custom: ${name}`, nowLocal());
 
         return { productId, logId: logResult.lastInsertRowid };
       })();
@@ -236,8 +236,8 @@ router.post(
 
       // Log as production with notes indicating adjustment
       db.prepare(
-        'INSERT INTO production_logs (product_id, location_id, quantity, produced_by, notes) VALUES (?, ?, ?, ?, ?)'
-      ).run(product_id, location_id, adjustment, req.user.id, `Adjustment: ${reason}`);
+        'INSERT INTO production_logs (product_id, location_id, quantity, produced_by, notes, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+      ).run(product_id, location_id, adjustment, req.user.id, `Adjustment: ${reason}`, nowLocal());
 
       res.json({ success: true, data: { product_id, location_id, previous_qty: currentQty, new_qty: newQty } });
     } catch (err) { next(err); }
@@ -545,13 +545,13 @@ router.put(
         if (materialsToDeduct.length > 0) {
           const deductStock = db.prepare('UPDATE material_stock SET quantity = GREATEST(0, quantity - ?), updated_at = CURRENT_TIMESTAMP WHERE material_id = ? AND location_id = ?');
           const logMaterialTx = db.prepare(
-            `INSERT INTO material_transactions (material_id, location_id, type, quantity, reference_type, reference_id, notes, created_by)
-             VALUES (?, ?, 'usage', ?, 'sale', ?, ?, ?)`
+            `INSERT INTO material_transactions (material_id, location_id, type, quantity, reference_type, reference_id, notes, created_by, created_at)
+             VALUES (?, ?, 'usage', ?, 'sale', ?, ?, ?, ?)`
           );
           for (const b of materialsToDeduct) {
             const usedQty = b.qty_needed * task.quantity;
             deductStock.run(usedQty, b.material_id, task.location_id);
-            logMaterialTx.run(b.material_id, task.location_id, usedQty, task.sale_id, `Task #${task.id} for ${sale?.sale_number || ''}`, req.user.id);
+            logMaterialTx.run(b.material_id, task.location_id, usedQty, task.sale_id, `Task #${task.id} for ${sale?.sale_number || ''}`, req.user.id, nowLocal());
           }
         }
 

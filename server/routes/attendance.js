@@ -457,9 +457,9 @@ router.put('/outdoor-duty/:id/approve', authorize('owner', 'manager'), (req, res
 
     db.prepare(`
       UPDATE outdoor_duty_requests
-      SET status = 'approved', approved_by = ?, start_time = COALESCE(start_time, CURRENT_TIMESTAMP)
+      SET status = 'approved', approved_by = ?, start_time = COALESCE(start_time, ?)
       WHERE id = ?
-    `).run(req.user.id, request.id);
+    `).run(req.user.id, nowLocal(), request.id);
 
     const updated = db.prepare('SELECT * FROM outdoor_duty_requests WHERE id = ?').get(request.id);
     res.json({ success: true, data: updated });

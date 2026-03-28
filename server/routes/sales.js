@@ -917,8 +917,8 @@ router.post(
         const getBOM = db.prepare('SELECT material_id, quantity FROM product_materials WHERE product_id = ?');
         const getReadyStock = db.prepare('SELECT quantity FROM product_stock WHERE product_id = ? AND location_id = ?');
         const insertTask = db.prepare(
-          `INSERT INTO production_tasks (sale_id, sale_item_id, product_id, location_id, quantity, priority, notes)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`
+          `INSERT INTO production_tasks (sale_id, sale_item_id, product_id, location_id, quantity, priority, notes, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
         );
 
         if (stockDeducted && !needsProduction) {
@@ -960,12 +960,12 @@ router.post(
 
               if (toMake > 0) {
                 const priority = order_type === 'walk_in' ? 'urgent' : 'medium';
-                insertTask.run(saleId, item.sale_item_id, item.product_id, location_id, toMake, priority, '');
+                insertTask.run(saleId, item.sale_item_id, item.product_id, location_id, toMake, priority, '', nowLocal());
               }
             } else {
               // Ad-hoc item (no product_id) — still create a production task
               const priority = order_type === 'walk_in' ? 'urgent' : 'medium';
-              insertTask.run(saleId, item.sale_item_id, item.product_id || null, location_id, item.quantity, priority, item.special_instructions || '');
+              insertTask.run(saleId, item.sale_item_id, item.product_id || null, location_id, item.quantity, priority, item.special_instructions || '', nowLocal());
             }
           }
         }
@@ -973,10 +973,10 @@ router.post(
         // Insert payments
         if (payments && payments.length > 0) {
           const insertPayment = db.prepare(
-            'INSERT INTO payments (sale_id, method, amount, reference_number, received_by) VALUES (?, ?, ?, ?, ?)'
+            'INSERT INTO payments (sale_id, method, amount, reference_number, received_by, created_at) VALUES (?, ?, ?, ?, ?, ?)'
           );
           for (const pmt of payments) {
-            insertPayment.run(saleId, pmt.method, pmt.amount, pmt.reference_number || null, req.user.id);
+            insertPayment.run(saleId, pmt.method, pmt.amount, pmt.reference_number || null, req.user.id, nowLocal());
           }
 
           // Update cash register for today
@@ -1010,10 +1010,10 @@ router.post(
           const codAmount = Math.max(0, grandTotal - totalPaid);
           db.prepare(`
             INSERT INTO deliveries (sale_id, location_id, delivery_address, customer_name, customer_phone,
-              scheduled_date, scheduled_time, cod_amount, cod_status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+              scheduled_date, scheduled_time, cod_amount, cod_status, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `).run(saleId, location_id, delivery_address, customer_name || null, customer_phone || null,
-            scheduled_date || null, scheduled_time || null, codAmount, codAmount > 0 ? 'pending' : 'collected');
+            scheduled_date || null, scheduled_time || null, codAmount, codAmount > 0 ? 'pending' : 'collected', nowLocal());
         }
 
         // Auto-save delivery address to customer's saved addresses
@@ -1112,8 +1112,8 @@ router.post(
 
       const { method, amount, reference_number } = req.body;
 
-      db.prepare('INSERT INTO payments (sale_id, method, amount, reference_number, received_by) VALUES (?, ?, ?, ?, ?)')
-        .run(sale.id, method, amount, reference_number || null, req.user.id);
+      db.prepare('INSERT INTO payments (sale_id, method, amount, reference_number, received_by, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+        .run(sale.id, method, amount, reference_number || null, req.user.id, nowLocal());
 
       // Recalculate payment status
       const totalPaid = db.prepare('SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE sale_id = ?').get(sale.id).total;
@@ -1430,12 +1430,12 @@ router.put(
             const codAmount = Math.max(0, newGrandTotal - totalPaid);
             db.prepare(`
               INSERT INTO deliveries (sale_id, location_id, delivery_address, customer_name, customer_phone,
-                scheduled_date, scheduled_time, cod_amount, cod_status)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                scheduled_date, scheduled_time, cod_amount, cod_status, created_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             `).run(sale.id, sale.location_id, addr,
               sale.customer_name || null, sale.customer_phone || null,
               sale.scheduled_date || null, sale.scheduled_time || null,
-              codAmount, codAmount > 0 ? 'pending' : 'collected');
+              codAmount, codAmount > 0 ? 'pending' : 'collected', nowLocal());
           } else {
             // Update existing delivery record
             db.prepare('UPDATE deliveries SET delivery_address = ?, updated_at = CURRENT_TIMESTAMP WHERE sale_id = ?')
@@ -1598,8 +1598,8 @@ router.post(
             subtotal, tax_total, discount_amount, delivery_charges,
             delivery_address, scheduled_date, scheduled_time,
             grand_total, payment_status, order_type, status, stock_deducted,
-            special_instructions, customer_notes, sender_name, sender_phone, sender_message, created_by)
-          VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, 'pending', ?, 'pending', 0, '', ?, ?, ?, ?, ?)
+            special_instructions, customer_notes, sender_name, sender_phone, sender_message, created_by, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, 'pending', ?, 'pending', 0, '', ?, ?, ?, ?, ?, ?)
         `).run(
           saleNumber, location_id, req.user.id, req.user.name, req.user.phone,
           subtotal, taxTotal,
@@ -1614,23 +1614,23 @@ router.post(
           'INSERT INTO sale_items (sale_id, product_id, material_id, product_name, quantity, unit_price, tax_rate, tax_amount, materials_deducted, from_product_stock, special_instructions, image_url) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, 0, 0, ?, ?)'
         );
         const insertTask = db.prepare(
-          `INSERT INTO production_tasks (sale_id, sale_item_id, product_id, location_id, quantity, priority, notes) VALUES (?, ?, ?, ?, ?, 'medium', '')`
+          `INSERT INTO production_tasks (sale_id, sale_item_id, product_id, location_id, quantity, priority, notes, created_at) VALUES (?, ?, ?, ?, ?, 'medium', '', ?)`
         );
 
         for (const item of processedItems) {
           const res = insertItem.run(saleId, item.product_id, item.product_name, item.quantity, item.unit_price, item.tax_rate, item.tax_amount, item.special_instructions || null, item.image_url || null);
           // Create production task for all items
-          insertTask.run(saleId, res.lastInsertRowid, item.product_id || null, location_id, item.quantity);
+          insertTask.run(saleId, res.lastInsertRowid, item.product_id || null, location_id, item.quantity, nowLocal());
         }
 
         // Auto-create delivery record
         if (order_type === 'delivery' && delivery_address) {
           db.prepare(`
             INSERT INTO deliveries (sale_id, location_id, delivery_address, customer_name, customer_phone,
-              scheduled_date, scheduled_time, cod_amount, cod_status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+              scheduled_date, scheduled_time, cod_amount, cod_status, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
           `).run(saleId, location_id, delivery_address, req.user.name, req.user.phone,
-            scheduled_date || null, scheduled_time || null, grandTotal);
+            scheduled_date || null, scheduled_time || null, grand_total, nowLocal());
         }
 
         // Update customer credit balance

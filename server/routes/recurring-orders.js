@@ -8,6 +8,7 @@ function localDateStr(dt) {
 const { body, validationResult } = require('express-validator');
 const { getDb } = require('../config/database');
 const { authenticate, authorize } = require('../middleware/auth');
+const { nowLocal, nowTimeStr, localToday } = require('../utils/time');
 
 // ─── GET /api/recurring-orders ───────────────────────────────
 router.get('/', authenticate, authorize('owner', 'manager'), (req, res, next) => {
@@ -255,14 +256,14 @@ function processRecurringOrders() {
         INSERT INTO sales (sale_number, location_id, customer_id, customer_name, customer_phone,
           subtotal, tax_total, discount_amount, delivery_charges, delivery_address,
           scheduled_date, scheduled_time, grand_total, payment_status, order_type, status,
-          special_instructions, customer_notes, sender_message, sender_name, sender_phone, created_by, source)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, 'pending', ?, 'pending', ?, ?, ?, ?, ?, ?, 'recurring')
+          special_instructions, customer_notes, sender_message, sender_name, sender_phone, created_by, source, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, 'pending', ?, 'pending', ?, ?, ?, ?, ?, ?, 'recurring', ?)
       `).run(
         saleNumber, ro.location_id, customer.id, customer.name, customer.phone,
         subtotal, taxTotal, ro.delivery_address || null,
         scheduledDate, ro.scheduled_time || null, grandTotal, ro.order_type,
         ro.notes || '', '', ro.sender_message || '', ro.sender_name || '', ro.sender_phone || '',
-        ro.created_by
+        ro.created_by, nowLocal()
       );
       const saleId = saleResult.lastInsertRowid;
 
@@ -276,12 +277,12 @@ function processRecurringOrders() {
 
       // Create production tasks
       const insertTask = db.prepare(
-        "INSERT INTO production_tasks (sale_id, sale_item_id, product_id, location_id, quantity, priority, notes) VALUES (?, ?, ?, ?, ?, 'normal', '')"
+        "INSERT INTO production_tasks (sale_id, sale_item_id, product_id, location_id, quantity, priority, notes, created_at) VALUES (?, ?, ?, ?, ?, 'normal', '', ?)"
       );
       const saleItems = db.prepare('SELECT * FROM sale_items WHERE sale_id = ?').all(saleId);
       for (const si of saleItems) {
         if (si.product_id) {
-          insertTask.run(saleId, si.id, si.product_id, ro.location_id, si.quantity);
+          insertTask.run(saleId, si.id, si.product_id, ro.location_id, si.quantity, nowLocal());
         }
       }
 
@@ -289,10 +290,10 @@ function processRecurringOrders() {
       if (ro.order_type === 'delivery' && ro.delivery_address) {
         db.prepare(`
           INSERT INTO deliveries (sale_id, location_id, delivery_address, customer_name, customer_phone,
-            scheduled_date, scheduled_time, cod_amount, cod_status)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+            scheduled_date, scheduled_time, cod_amount, cod_status, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
         `).run(saleId, ro.location_id, ro.delivery_address, customer.name, customer.phone,
-          scheduledDate, ro.scheduled_time || null, grandTotal);
+          scheduledDate, ro.scheduled_time || null, grandTotal, nowLocal());
       }
 
       // Set pickup status if pickup

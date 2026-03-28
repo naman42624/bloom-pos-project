@@ -1,6 +1,7 @@
 const express = require('express');
 const { getDb } = require('../config/database');
 const { authenticate } = require('../middleware/auth');
+const { nowLocal } = require('../utils/time');
 
 const router = express.Router();
 
@@ -51,12 +52,12 @@ async function createNotification({ userIds, title, body, type = 'general', data
     const dataStr = JSON.stringify(data);
 
     const insert = db.prepare(
-      'INSERT INTO notifications (user_id, title, body, type, data) VALUES (?, ?, ?, ?, ?)'
+      'INSERT INTO notifications (user_id, title, body, type, data, created_at) VALUES (?, ?, ?, ?, ?, ?)'
     );
 
     const pushTokens = [];
     for (const uid of ids) {
-      insert.run(uid, title, body, type, dataStr);
+      insert.run(uid, title, body, type, dataStr, nowLocal());
       if (sendPush) {
         const tokens = db.prepare('SELECT token FROM push_tokens WHERE user_id = ?').all(uid);
         pushTokens.push(...tokens.map((t) => t.token));

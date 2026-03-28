@@ -663,57 +663,62 @@ export default function QuickCheckoutScreen({ navigation }) {
       {/* Material Picker Modal */}
       <Modal visible={showMaterialPicker} animationType="slide" transparent>
         <View style={styles.modalOverlay}>
-          <View style={styles.modalCard}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Select Material</Text>
-              <TouchableOpacity onPress={() => setShowMaterialPicker(false)}>
-                <Ionicons name="close" size={24} color={Colors.text} />
-              </TouchableOpacity>
+          <KeyboardAvoidingView 
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'} 
+            style={{ width: '100%', alignItems: 'center' }}
+          >
+            <View style={styles.modalCard}>
+              <View style={styles.modalHeader}>
+                <Text style={styles.modalTitle}>Select Material</Text>
+                <TouchableOpacity onPress={() => setShowMaterialPicker(false)}>
+                  <Ionicons name="close" size={24} color={Colors.text} />
+                </TouchableOpacity>
+              </View>
+              <View style={styles.searchRow}>
+                <Ionicons name="search" size={18} color={Colors.textLight} />
+                <TextInput
+                  style={styles.searchInput}
+                  value={materialSearch}
+                  onChangeText={setMaterialSearch}
+                  placeholder="Search materials..."
+                  placeholderTextColor={Colors.textLight}
+                  autoFocus
+                />
+              </View>
+              <ScrollView style={{ maxHeight: 300 }}>
+                {allMaterials
+                  .filter(m => {
+                    const searchMatches = m.name.toLowerCase().includes(materialSearch.toLowerCase());
+                    const item = items[editingItemIdx];
+                    const alreadySelected = item?.materials.some((qm, qi) => qi !== editingMaterialIdx && qm.material_id === m.id);
+                    return searchMatches && !alreadySelected;
+                  })
+                  .slice(0, 50)
+                  .map(m => (
+                    <TouchableOpacity
+                      key={m.id}
+                      style={styles.productPickItem}
+                      onPress={() => {
+                        selectMaterialForItem(editingItemIdx, editingMaterialIdx, m);
+                        setShowMaterialPicker(false);
+                      }}
+                    >
+                      <View style={styles.productPickIcon}>
+                        <Ionicons name="leaf-outline" size={22} color={Colors.primary} />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.productPickName}>{m.name}</Text>
+                        <Text style={styles.productPickPrice}>{m.category_name || 'Material'}</Text>
+                      </View>
+                      <Ionicons name="add-circle" size={24} color={Colors.success} />
+                    </TouchableOpacity>
+                  ))}
+                {allMaterials.filter(m => m.name.toLowerCase().includes(materialSearch.toLowerCase())).length === 0 && (
+                  <Text style={styles.emptyText}>No materials found</Text>
+                )}
+              </ScrollView>
             </View>
-            <View style={styles.searchRow}>
-              <Ionicons name="search" size={18} color={Colors.textLight} />
-              <TextInput
-                style={styles.searchInput}
-                value={materialSearch}
-                onChangeText={setMaterialSearch}
-                placeholder="Search materials..."
-                placeholderTextColor={Colors.textLight}
-                autoFocus
-              />
-            </View>
-            <ScrollView style={{ maxHeight: 400 }}>
-              {allMaterials
-                .filter(m => {
-                  const searchMatches = m.name.toLowerCase().includes(materialSearch.toLowerCase());
-                  const item = items[editingItemIdx];
-                  const alreadySelected = item?.materials.some((qm, qi) => qi !== editingMaterialIdx && qm.material_id === m.id);
-                  return searchMatches && !alreadySelected;
-                })
-                .slice(0, 50)
-                .map(m => (
-                  <TouchableOpacity
-                    key={m.id}
-                    style={styles.productPickItem}
-                    onPress={() => {
-                      selectMaterialForItem(editingItemIdx, editingMaterialIdx, m);
-                      setShowMaterialPicker(false);
-                    }}
-                  >
-                    <View style={styles.productPickIcon}>
-                      <Ionicons name="leaf-outline" size={22} color={Colors.primary} />
-                    </View>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.productPickName}>{m.name}</Text>
-                      <Text style={styles.productPickPrice}>{m.category_name || 'Material'}</Text>
-                    </View>
-                    <Ionicons name="add-circle" size={24} color={Colors.success} />
-                  </TouchableOpacity>
-                ))}
-              {allMaterials.filter(m => m.name.toLowerCase().includes(materialSearch.toLowerCase())).length === 0 && (
-                <Text style={styles.emptyText}>No materials found</Text>
-              )}
-            </ScrollView>
-          </View>
+          </KeyboardAvoidingView>
         </View>
       </Modal>
 

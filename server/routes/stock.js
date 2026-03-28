@@ -2,7 +2,7 @@ const express = require('express');
 const { body, validationResult } = require('express-validator');
 const { getDb } = require('../config/database');
 const { authenticate, authorize } = require('../middleware/auth');
-const { todayStr: localToday } = require('../utils/time');
+const { todayStr: localToday, nowLocal } = require('../utils/time');
 
 const router = express.Router();
 
@@ -100,9 +100,9 @@ router.post(
 
         // Record transaction
         db.prepare(
-          `INSERT INTO material_transactions (material_id, location_id, type, quantity, notes, created_by)
-           VALUES (?, ?, ?, ?, ?, ?)`
-        ).run(material_id, location_id, type, Math.abs(quantity), notes || '', req.user.id);
+          `INSERT INTO material_transactions (material_id, location_id, type, quantity, notes, created_by, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`
+        ).run(material_id, location_id, type, Math.abs(quantity), notes || '', req.user.id, nowLocal());
       });
 
       try {
@@ -234,9 +234,9 @@ router.post(
             `).run(entry.closing_stock, entry.wastage || 0, entry.wastage_reason || '', Math.max(usedInProducts, 0), req.user.id, existingLog.id);
           } else {
             db.prepare(`
-              INSERT INTO daily_stock_logs (location_id, material_id, date, opening_stock, stock_in, stock_out, closing_stock, wastage, notes, counted_by)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            `).run(location_id, entry.material_id, today, openingStock, purchased.total, Math.max(usedInProducts, 0), entry.closing_stock, entry.wastage || 0, entry.wastage_reason || '', req.user.id);
+              INSERT INTO daily_stock_logs (location_id, material_id, date, opening_stock, stock_in, stock_out, closing_stock, wastage, notes, counted_by, created_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `).run(location_id, entry.material_id, today, openingStock, purchased.total, Math.max(usedInProducts, 0), entry.closing_stock, entry.wastage || 0, entry.wastage_reason || '', req.user.id, nowLocal());
           }
 
           // Update actual stock to match closing count — explicit SELECT+INSERT/UPDATE
@@ -246,20 +246,20 @@ router.post(
 
           if (existingMaterialStock) {
             db.prepare(
-              'UPDATE material_stock SET quantity = ?, last_counted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?'
-            ).run(entry.closing_stock, existingMaterialStock.id);
+              'UPDATE material_stock SET quantity = ?, last_counted_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'
+            ).run(entry.closing_stock, nowLocal(), existingMaterialStock.id);
           } else {
             db.prepare(
-              'INSERT INTO material_stock (material_id, location_id, quantity, last_counted_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)'
-            ).run(entry.material_id, location_id, entry.closing_stock);
+              'INSERT INTO material_stock (material_id, location_id, quantity, last_counted_at) VALUES (?, ?, ?, ?)'
+            ).run(entry.material_id, location_id, entry.closing_stock, nowLocal());
           }
 
           // Record wastage transaction if any
           if (entry.wastage > 0) {
             db.prepare(
-              `INSERT INTO material_transactions (material_id, location_id, type, quantity, notes, created_by)
-               VALUES (?, ?, 'wastage', ?, ?, ?)`
-            ).run(entry.material_id, location_id, entry.wastage, entry.wastage_reason || 'End of day wastage', req.user.id);
+              `INSERT INTO material_transactions (material_id, location_id, type, quantity, notes, created_by, created_at)
+               VALUES (?, ?, 'wastage', ?, ?, ?, ?)`
+            ).run(entry.material_id, location_id, entry.wastage, entry.wastage_reason || 'End of day wastage', req.user.id, nowLocal());
           }
         }
       });
@@ -342,18 +342,18 @@ router.post(
       `).get(material_id);
 
       const result = db.prepare(
-        `INSERT INTO stock_transfers (from_location_id, to_location_id, material_id, quantity, unit, initiated_by, notes)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`
-      ).run(from_location_id, to_location_id, material_id, quantity, mat ? mat.unit : 'pieces', req.user.id, notes || '');
+        `INSERT INTO stock_transfers (from_location_id, to_location_id, material_id, quantity, unit, initiated_by, notes, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(from_location_id, to_location_id, material_id, quantity, mat ? mat.unit : 'pieces', req.user.id, notes || '', nowLocal());
 
       // Deduct from source immediately
       db.prepare('UPDATE material_stock SET quantity = quantity - ?, updated_at = CURRENT_TIMESTAMP WHERE material_id = ? AND location_id = ?')
         .run(quantity, material_id, from_location_id);
 
       db.prepare(
-        `INSERT INTO material_transactions (material_id, location_id, type, quantity, unit, reference_type, reference_id, notes, created_by)
-         VALUES (?, ?, 'transfer_out', ?, ?, 'stock_transfer', ?, ?, ?)`
-      ).run(material_id, from_location_id, quantity, mat ? mat.unit : 'pieces', result.lastInsertRowid, `Transfer to location ${to_location_id}`, req.user.id);
+        `INSERT INTO material_transactions (material_id, location_id, type, quantity, unit, reference_type, reference_id, notes, created_by, created_at)
+         VALUES (?, ?, 'transfer_out', ?, ?, 'stock_transfer', ?, ?, ?, ?)`
+      ).run(material_id, from_location_id, quantity, mat ? mat.unit : 'pieces', result.lastInsertRowid, `Transfer to location ${to_location_id}`, req.user.id, nowLocal());
 
       const transfer = db.prepare(`
         SELECT st.*, fl.name as from_location_name, tl.name as to_location_name,
@@ -462,8 +462,8 @@ router.put(
 
         // Record transaction
         db.prepare(
-          `INSERT INTO material_transactions (material_id, location_id, type, quantity, unit, reference_type, reference_id, notes, created_by)
-           VALUES (?, ?, 'transfer_in', ?, ?, 'stock_transfer', ?, ?, ?)`
+          `INSERT INTO material_transactions (material_id, location_id, type, quantity, unit, reference_type, reference_id, notes, created_by, created_at)
+           VALUES (?, ?, 'transfer_in', ?, ?, 'stock_transfer', ?, ?, ?, ?)`
         ).run(
           transfer.material_id,
           transfer.to_location_id,
@@ -471,7 +471,8 @@ router.put(
           transfer.unit,
           transfer.id,
           `Transfer from location ${transfer.from_location_id}`,
-          req.user.id
+          req.user.id,
+          nowLocal()
         );
       });
 
@@ -523,8 +524,8 @@ router.put(
 
         // Record return transaction
         db.prepare(
-          `INSERT INTO material_transactions (material_id, location_id, type, quantity, unit, reference_type, reference_id, notes, created_by)
-           VALUES (?, ?, 'return', ?, ?, 'stock_transfer', ?, ?, ?)`
+          `INSERT INTO material_transactions (material_id, location_id, type, quantity, unit, reference_type, reference_id, notes, created_by, created_at)
+           VALUES (?, ?, 'return', ?, ?, 'stock_transfer', ?, ?, ?, ?)`
         ).run(
           transfer.material_id,
           transfer.from_location_id,
@@ -532,7 +533,8 @@ router.put(
           transfer.unit,
           transfer.id,
           'Transfer cancelled, stock returned',
-          req.user.id
+          req.user.id,
+          nowLocal()
         );
       });
 

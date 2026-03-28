@@ -328,10 +328,10 @@ router.put(
 
       db.prepare(`
         UPDATE deliveries SET
-          delivery_partner_id = ?, status = 'assigned', assigned_by = ?, assigned_at = CURRENT_TIMESTAMP,
+          delivery_partner_id = ?, status = 'assigned', assigned_by = ?, assigned_at = ?,
           failure_reason = '', updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
-      `).run(delivery_partner_id, req.user.id, delivery.id);
+      `).run(delivery_partner_id, req.user.id, nowLocal(), delivery.id);
 
       const updated = db.prepare(`
         SELECT d.*, u.name as partner_name FROM deliveries d
@@ -377,9 +377,9 @@ router.put(
       }
 
       db.prepare(`
-        UPDATE deliveries SET status = 'picked_up', pickup_time = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+        UPDATE deliveries SET status = 'picked_up', pickup_time = ?, updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
-      `).run(delivery.id);
+      `).run(nowLocal(), delivery.id);
 
       const updated = db.prepare('SELECT * FROM deliveries WHERE id = ?').get(delivery.id);
       res.json({ success: true, data: updated });
@@ -452,14 +452,14 @@ router.put(
             throw new Error('COD collection exceeds remaining amount');
           }
           db.prepare(
-            'INSERT INTO delivery_collections (delivery_id, amount, method, reference_number, collected_by) VALUES (?, ?, ?, ?, ?)'
-          ).run(delivery.id, cod_collected, cod_method || 'cash', cod_reference || null, req.user.id);
+            'INSERT INTO delivery_collections (delivery_id, amount, method, reference_number, collected_by, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+          ).run(delivery.id, cod_collected, cod_method || 'cash', cod_reference || null, req.user.id, nowLocal());
           totalCodCollected += cod_collected;
 
           // Create payment record on the sale
           db.prepare(
-            'INSERT INTO payments (sale_id, method, amount, reference_number, received_by) VALUES (?, ?, ?, ?, ?)'
-          ).run(delivery.sale_id, cod_method || 'cash', cod_collected, cod_reference ? `COD-${cod_reference}` : 'COD', req.user.id);
+            'INSERT INTO payments (sale_id, method, amount, reference_number, received_by, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+          ).run(delivery.sale_id, cod_method || 'cash', cod_collected, cod_reference ? `COD-${cod_reference}` : 'COD', req.user.id, nowLocal());
 
           // Recalculate payment status on the sale
           const sale = db.prepare('SELECT grand_total FROM sales WHERE id = ?').get(delivery.sale_id);
@@ -481,19 +481,19 @@ router.put(
         // Record delivery proof
         if (latitude || longitude) {
           db.prepare(
-            'INSERT INTO delivery_proofs (delivery_id, latitude, longitude, notes, created_by) VALUES (?, ?, ?, ?, ?)'
-          ).run(delivery.id, latitude || null, longitude || null, delivery_notes || '', req.user.id);
+            'INSERT INTO delivery_proofs (delivery_id, latitude, longitude, notes, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+          ).run(delivery.id, latitude || null, longitude || null, delivery_notes || '', req.user.id, nowLocal());
         }
 
         // Update delivery
         db.prepare(`
           UPDATE deliveries SET
-            status = 'delivered', delivered_time = CURRENT_TIMESTAMP,
+            status = 'delivered', delivered_time = ?,
             cod_collected = ?, cod_status = ?,
             delivery_notes = COALESCE(?, delivery_notes),
             updated_at = CURRENT_TIMESTAMP
           WHERE id = ?
-        `).run(totalCodCollected, codStatus, delivery_notes || null, delivery.id);
+        `).run(nowLocal(), totalCodCollected, codStatus, delivery_notes || null, delivery.id);
 
         // Mark sale as completed
         db.prepare("UPDATE sales SET status = 'completed', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(delivery.sale_id);
@@ -1068,10 +1068,10 @@ router.put(
         }
 
         db.prepare(`
-          UPDATE sales SET pickup_status = 'picked_up', picked_up_at = CURRENT_TIMESTAMP,
+          UPDATE sales SET pickup_status = 'picked_up', picked_up_at = ?,
             status = 'completed', updated_at = CURRENT_TIMESTAMP
           WHERE id = ?
-        `).run(sale.id);
+        `).run(nowLocal(), sale.id);
       });
 
       pickupTx();

@@ -1046,66 +1046,71 @@ export default function CheckoutScreen({ route, navigation }) {
 
       <Modal visible={showMaterialPicker} animationType="fade" transparent>
         <View style={styles.modalOverlay}>
-          <View style={[styles.modalContent, { paddingHorizontal: Spacing.md, paddingVertical: Spacing.md, marginBottom: 0 }]}>
-            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: Spacing.md }}>
-              <Text style={{ fontSize: FontSize.lg, fontWeight: '700', color: Colors.text }}>Select Material</Text>
-              <TouchableOpacity onPress={() => setShowMaterialPicker(false)}>
-                <Ionicons name="close" size={24} color={Colors.text} />
-              </TouchableOpacity>
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            style={{ width: '100%', alignItems: 'center' }}
+          >
+            <View style={[styles.modalContent, { paddingHorizontal: Spacing.md, paddingVertical: Spacing.md, marginBottom: 0, width: '100%' }]}>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: Spacing.md }}>
+                <Text style={{ fontSize: FontSize.lg, fontWeight: '700', color: Colors.text }}>Select Material</Text>
+                <TouchableOpacity onPress={() => setShowMaterialPicker(false)}>
+                  <Ionicons name="close" size={24} color={Colors.text} />
+                </TouchableOpacity>
+              </View>
+              <View style={{ 
+                flexDirection: 'row', alignItems: 'center', gap: 8, 
+                backgroundColor: Colors.surfaceAlt || '#f5f5f5', borderRadius: BorderRadius.md,
+                paddingHorizontal: Spacing.md, marginBottom: Spacing.md
+              }}>
+                <Ionicons name="search" size={18} color={Colors.textLight} />
+                <TextInput
+                  style={{ flex: 1, height: 44, fontSize: FontSize.md, color: Colors.text }}
+                  value={materialSearch}
+                  onChangeText={setMaterialSearch}
+                  placeholder="Search materials..."
+                  placeholderTextColor={Colors.textLight}
+                  autoFocus
+                />
+              </View>
+              <ScrollView style={{ maxHeight: 300 }}>
+                {allMaterialsList
+                  .filter(m => {
+                    const searchMatches = m.name.toLowerCase().includes(materialSearch.toLowerCase());
+                    const alreadySelected = customMaterials.some((qm, qi) => qi !== editingMaterialIdx && qm.material_id === m.id);
+                    return searchMatches && !alreadySelected;
+                  })
+                  .slice(0, 50)
+                  .map(m => (
+                    <TouchableOpacity
+                      key={m.id}
+                      style={{
+                        flexDirection: 'row', alignItems: 'center', gap: 12,
+                        paddingVertical: Spacing.md, borderBottomWidth: 1, borderBottomColor: Colors.border
+                      }}
+                      onPress={() => {
+                        setCustomMaterials(customMaterials.map((cm, ci) => ci === editingMaterialIdx ? { ...cm, material_id: m.id, name: m.name } : cm));
+                        setShowMaterialPicker(false);
+                      }}
+                    >
+                      <View style={{ 
+                        width: 40, height: 40, borderRadius: 8, 
+                        backgroundColor: Colors.primary + '10', justifyContent: 'center', alignItems: 'center' 
+                      }}>
+                        <Ionicons name="leaf-outline" size={20} color={Colors.primary} />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={{ fontSize: FontSize.md, fontWeight: '600', color: Colors.text }}>{m.name}</Text>
+                        <Text style={{ fontSize: FontSize.xs, color: Colors.textSecondary }}>{m.category_name || 'Material'}</Text>
+                      </View>
+                      <Ionicons name="add-circle" size={22} color={Colors.success} />
+                    </TouchableOpacity>
+                  ))}
+                {allMaterialsList.filter(m => m.name.toLowerCase().includes(materialSearch.toLowerCase())).length === 0 && (
+                  <Text style={{ textAlign: 'center', color: Colors.textLight, paddingVertical: Spacing.xl }}>No materials found</Text>
+                )}
+              </ScrollView>
             </View>
-            <View style={{ 
-              flexDirection: 'row', alignItems: 'center', gap: 8, 
-              backgroundColor: Colors.surfaceAlt || '#f5f5f5', borderRadius: BorderRadius.md,
-              paddingHorizontal: Spacing.md, marginBottom: Spacing.md
-            }}>
-              <Ionicons name="search" size={18} color={Colors.textLight} />
-              <TextInput
-                style={{ flex: 1, height: 44, fontSize: FontSize.md, color: Colors.text }}
-                value={materialSearch}
-                onChangeText={setMaterialSearch}
-                placeholder="Search materials..."
-                placeholderTextColor={Colors.textLight}
-                autoFocus
-              />
-            </View>
-            <ScrollView style={{ maxHeight: 350 }}>
-              {allMaterialsList
-                .filter(m => {
-                  const searchMatches = m.name.toLowerCase().includes(materialSearch.toLowerCase());
-                  const alreadySelected = customMaterials.some((qm, qi) => qi !== editingMaterialIdx && qm.material_id === m.id);
-                  return searchMatches && !alreadySelected;
-                })
-                .slice(0, 50)
-                .map(m => (
-                  <TouchableOpacity
-                    key={m.id}
-                    style={{
-                      flexDirection: 'row', alignItems: 'center', gap: 12,
-                      paddingVertical: Spacing.md, borderBottomWidth: 1, borderBottomColor: Colors.border
-                    }}
-                    onPress={() => {
-                      setCustomMaterials(customMaterials.map((cm, ci) => ci === editingMaterialIdx ? { ...cm, material_id: m.id, name: m.name } : cm));
-                      setShowMaterialPicker(false);
-                    }}
-                  >
-                    <View style={{ 
-                      width: 40, height: 40, borderRadius: 8, 
-                      backgroundColor: Colors.primary + '10', justifyContent: 'center', alignItems: 'center' 
-                    }}>
-                      <Ionicons name="leaf-outline" size={20} color={Colors.primary} />
-                    </View>
-                    <View style={{ flex: 1 }}>
-                      <Text style={{ fontSize: FontSize.md, fontWeight: '600', color: Colors.text }}>{m.name}</Text>
-                      <Text style={{ fontSize: FontSize.xs, color: Colors.textSecondary }}>{m.category_name || 'Material'}</Text>
-                    </View>
-                    <Ionicons name="add-circle" size={22} color={Colors.success} />
-                  </TouchableOpacity>
-                ))}
-              {allMaterialsList.filter(m => m.name.toLowerCase().includes(materialSearch.toLowerCase())).length === 0 && (
-                <Text style={{ textAlign: 'center', color: Colors.textLight, paddingVertical: Spacing.xl }}>No materials found</Text>
-              )}
-            </ScrollView>
-          </View>
+          </KeyboardAvoidingView>
         </View>
       </Modal>
     </KeyboardAvoidingView>
