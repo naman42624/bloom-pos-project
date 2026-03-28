@@ -4,6 +4,7 @@ const { getDb } = require('../config/database');
 const { authenticate, authorize } = require('../middleware/auth');
 const { createNotification, notifyByRole } = require('./notifications');
 const { todayStr: localToday, nowLocal } = require('../utils/time');
+const { safeParseJSON } = require('../utils/json');
 
 const router = express.Router();
 
@@ -329,11 +330,7 @@ router.get('/tasks', authenticate, authorize('owner', 'manager', 'employee'), (r
 
     for (const task of tasks) {
       // Parse custom_materials JSON if present
-      let customMats = null;
-      if (task.custom_materials_json) {
-        try { customMats = typeof task.custom_materials_json === 'string' ? JSON.parse(task.custom_materials_json) : task.custom_materials_json; } catch (_) {}
-      }
-      task.custom_materials = customMats;
+      task.custom_materials = safeParseJSON(task.custom_materials_json, null);
       delete task.custom_materials_json;
 
       // If custom_materials exist, show those instead of standard BOM
@@ -530,9 +527,7 @@ router.put(
       let customMats = null;
       if (task.sale_item_id) {
         const si = db.prepare('SELECT custom_materials FROM sale_items WHERE id = ?').get(task.sale_item_id);
-        if (si?.custom_materials) {
-          try { customMats = typeof si.custom_materials === 'string' ? JSON.parse(si.custom_materials) : si.custom_materials; } catch (_) {}
-        }
+        customMats = safeParseJSON(si?.custom_materials, null);
       }
 
       // Use custom materials if present, otherwise standard BOM

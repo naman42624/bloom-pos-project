@@ -7,6 +7,7 @@ function localDateStr(dt) {
 const { body, validationResult } = require('express-validator');
 const { getDb } = require('../config/database');
 const { authenticate, authorize } = require('../middleware/auth');
+const { safeParseJSON } = require('../utils/json');
 
 // ─── GET /api/customers ─────────────────────────────────────
 // List all customers (users with role='customer') + any unique phones from sales
@@ -79,7 +80,7 @@ router.get('/', authenticate, authorize('owner', 'manager', 'employee', 'deliver
       try {
         return {
           ...c,
-          custom_dates: typeof c.custom_dates === 'string' ? JSON.parse(c.custom_dates || '[]') : (c.custom_dates || []),
+          custom_dates: safeParseJSON(c.custom_dates, []),
           order_count: orderCountStmt.get(c.id || null, c.phone).c,
         };
       } catch (e) {
@@ -216,10 +217,9 @@ router.get('/upcoming-dates', authenticate, authorize('owner', 'manager'), (req,
       }
       // Check custom dates
       if (c.custom_dates) {
-        try {
-          const custom = JSON.parse(c.custom_dates);
-          for (const cd of custom) {
-            if (cd.date) {
+        const custom = safeParseJSON(c.custom_dates, []);
+        for (const cd of custom) {
+          if (cd.date) {
               const parts = cd.date.split('-'); // MM-DD format
               const thisYear = new Date(today.getFullYear(), parseInt(parts[0]) - 1, parseInt(parts[1]));
               if (thisYear < today) thisYear.setFullYear(thisYear.getFullYear() + 1);
@@ -228,8 +228,7 @@ router.get('/upcoming-dates', authenticate, authorize('owner', 'manager'), (req,
                 upcoming.push({ customer_id: c.id, customer_name: c.name, phone: c.phone, label: cd.label || 'Special Date', date: localDateStr(thisYear), days_away: diff });
               }
             }
-          }
-        } catch {}
+        }
       }
     }
 
@@ -250,7 +249,7 @@ router.get('/:id', authenticate, (req, res, next) => {
 
     if (!customer) return res.status(404).json({ success: false, message: 'Customer not found' });
 
-    customer.custom_dates = customer.custom_dates ? JSON.parse(customer.custom_dates) : [];
+    customer.custom_dates = safeParseJSON(customer.custom_dates, []);
 
     // Addresses
     const addresses = db.prepare(

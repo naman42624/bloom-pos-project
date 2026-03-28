@@ -3,6 +3,7 @@ const router = express.Router();
 const { getDb } = require('../config/database');
 const { authenticate, authorize } = require('../middleware/auth');
 const { todayStr, nowLocal } = require('../utils/time');
+const { safeParseJSON } = require('../utils/json');
 
 // All attendance routes require auth
 router.use(authenticate);
@@ -30,7 +31,7 @@ function isLateArrival(clockIn, operatingHours, userId, locationId) {
     }
     // Fallback to location operating_hours
     if (!operatingHours) return false;
-    const hours = JSON.parse(operatingHours);
+    const hours = safeParseJSON(operatingHours, {});
     const dayOfWeek = new Date(clockIn).toLocaleDateString('en-US', { weekday: 'long' }).toLowerCase();
     const dayHours = hours[dayOfWeek];
     if (!dayHours || !dayHours.open) return false;
@@ -60,7 +61,7 @@ function isEarlyDeparture(clockOut, operatingHours, userId, locationId) {
     }
     // Fallback to location operating_hours
     if (!operatingHours) return false;
-    const hours = JSON.parse(operatingHours);
+    const hours = safeParseJSON(operatingHours, {});
     const dayOfWeek = new Date(clockOut).toLocaleDateString('en-US', { weekday: 'long' }).toLowerCase();
     const dayHours = hours[dayOfWeek];
     if (!dayHours || !dayHours.close) return false;

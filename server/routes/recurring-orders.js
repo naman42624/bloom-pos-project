@@ -9,6 +9,7 @@ const { body, validationResult } = require('express-validator');
 const { getDb } = require('../config/database');
 const { authenticate, authorize } = require('../middleware/auth');
 const { nowLocal, nowTimeStr, localToday } = require('../utils/time');
+const { safeParseJSON } = require('../utils/json');
 
 // ─── GET /api/recurring-orders ───────────────────────────────
 router.get('/', authenticate, authorize('owner', 'manager'), (req, res, next) => {
@@ -35,8 +36,8 @@ router.get('/', authenticate, authorize('owner', 'manager'), (req, res, next) =>
     const orders = db.prepare(sql).all(...params);
     // Parse items JSON
     for (const o of orders) {
-      o.items = JSON.parse(o.items || '[]');
-      o.custom_days = o.custom_days ? JSON.parse(o.custom_days) : null;
+      o.items = safeParseJSON(o.items, []);
+      o.custom_days = safeParseJSON(o.custom_days, null);
     }
 
     res.json({ success: true, data: orders });
@@ -59,8 +60,8 @@ router.get('/:id', authenticate, authorize('owner', 'manager'), (req, res, next)
 
     if (!order) return res.status(404).json({ success: false, message: 'Recurring order not found' });
 
-    order.items = JSON.parse(order.items || '[]');
-    order.custom_days = order.custom_days ? JSON.parse(order.custom_days) : null;
+    order.items = safeParseJSON(order.items, []);
+    order.custom_days = safeParseJSON(order.custom_days, null);
 
     res.json({ success: true, data: order });
   } catch (err) { next(err); }
@@ -105,7 +106,7 @@ router.post(
       );
 
       const order = db.prepare('SELECT * FROM recurring_orders WHERE id = ?').get(result.lastInsertRowid);
-      order.items = JSON.parse(order.items || '[]');
+      order.items = safeParseJSON(order.items, []);
 
       res.status(201).json({ success: true, data: order });
     } catch (err) { next(err); }
@@ -160,7 +161,7 @@ router.put(
       );
 
       const updated = db.prepare('SELECT * FROM recurring_orders WHERE id = ?').get(req.params.id);
-      updated.items = JSON.parse(updated.items || '[]');
+      updated.items = safeParseJSON(updated.items, []);
 
       res.json({ success: true, data: updated });
     } catch (err) { next(err); }
@@ -218,7 +219,7 @@ function processRecurringOrders() {
     }
 
     const createSaleForRecurring = db.transaction((ro) => {
-      const items = JSON.parse(ro.items || '[]');
+      const items = safeParseJSON(ro.items, []);
       if (items.length === 0) return null;
 
       const customer = db.prepare('SELECT id, name, phone FROM users WHERE id = ?').get(ro.customer_id);
@@ -338,7 +339,7 @@ function calculateNextRunDate(frequency, customDaysJson, fromDate) {
       break;
     case 'custom': {
       // custom_days is an array of ISO date strings or day-of-week numbers (0-6)
-      const customDays = customDaysJson ? (typeof customDaysJson === 'string' ? JSON.parse(customDaysJson) : customDaysJson) : [];
+      const customDays = safeParseJSON(customDaysJson, []);
       if (customDays.length === 0) {
         date.setDate(date.getDate() + 1);
         break;

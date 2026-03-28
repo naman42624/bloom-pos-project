@@ -2,6 +2,7 @@ const express = require('express');
 const { body, param, validationResult } = require('express-validator');
 const { getDb } = require('../config/database');
 const { authenticate, authorize } = require('../middleware/auth');
+const { safeParseJSON } = require('../utils/json');
 
 const router = express.Router();
 router.use(authenticate);
@@ -36,7 +37,7 @@ router.get('/', (req, res, next) => {
     );
     locations = locations.map((loc) => ({
       ...loc,
-      operating_hours: loc.operating_hours ? JSON.parse(loc.operating_hours) : null,
+      operating_hours: safeParseJSON(loc.operating_hours, null),
       staff_count: staffCount.get(loc.id).count,
     }));
 
@@ -89,9 +90,7 @@ router.get('/:id', param('id').isInt(), (req, res, next) => {
       data: {
         location: {
           ...location,
-          operating_hours: location.operating_hours
-            ? JSON.parse(location.operating_hours)
-            : null,
+          operating_hours: safeParseJSON(location.operating_hours, null),
         },
         staff,
       },
@@ -189,9 +188,7 @@ router.post(
         data: {
           location: {
             ...location,
-            operating_hours: location.operating_hours
-              ? JSON.parse(location.operating_hours)
-              : null,
+            operating_hours: safeParseJSON(location.operating_hours, null),
           },
         },
       });
@@ -280,9 +277,7 @@ router.put(
         data: {
           location: {
             ...location,
-            operating_hours: location.operating_hours
-              ? JSON.parse(location.operating_hours)
-              : null,
+            operating_hours: safeParseJSON(location.operating_hours, null),
           },
         },
       });

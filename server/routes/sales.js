@@ -4,6 +4,7 @@ const { getDb } = require('../config/database');
 const { authenticate, authorize } = require('../middleware/auth');
 const { notifyByRole, createNotification } = require('./notifications');
 const { todayStr: localToday, nowLocal, nowTimeStr } = require('../utils/time');
+const { safeParseJSON } = require('../utils/json');
 
 const router = express.Router();
 
@@ -504,9 +505,7 @@ router.get(
         order.items = getItems.all(order.id);
         // Parse custom_materials from JSON string
         for (const item of order.items) {
-          if (item.custom_materials && typeof item.custom_materials === 'string') {
-            try { item.custom_materials = JSON.parse(item.custom_materials); } catch (_) {}
-          }
+          item.custom_materials = safeParseJSON(item.custom_materials, null);
         }
         // Add task status summary
         const taskCounts = getTaskCounts.get(order.id);
@@ -576,9 +575,7 @@ router.get('/:id', authenticate, (req, res, next) => {
 
     for (const item of sale.items) {
       // Parse custom_materials if stored as JSON string
-      if (item.custom_materials && typeof item.custom_materials === 'string') {
-        try { item.custom_materials = JSON.parse(item.custom_materials); } catch { item.custom_materials = null; }
-      }
+      item.custom_materials = safeParseJSON(item.custom_materials, null);
       // Fetch material composition (BOM) for standard products
       item.materials = item.product_id ? getBOM.all(item.product_id) : [];
       // Fetch production task for ALL items (including ad-hoc)
