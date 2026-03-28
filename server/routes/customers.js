@@ -10,49 +10,85 @@ const { authenticate, authorize } = require('../middleware/auth');
 
 // ─── GET /api/customers ─────────────────────────────────────
 // List all customers (users with role='customer') + any unique phones from sales
-router.get('/', authenticate, authorize('owner', 'manager', 'employee'), (req, res, next) => {
+router.get('/', authenticate, authorize('owner', 'manager', 'employee', 'delivery_partner'), (req, res, next) => {
   try {
     const db = getDb();
     const { search, limit = 50, offset = 0 } = req.query;
 
     let sql = `
       SELECT id, name, phone, email, birthday, anniversary, custom_dates,
-             total_spent, credit_balance, notes, is_active, created_at
+             total_spent, credit_balance, notes, is_active, created_at,
+             1 as is_registered
       FROM users
       WHERE role = 'customer'
     `;
     const params = [];
 
     if (search) {
-      sql += ` AND (name LIKE ? OR phone LIKE ? OR email LIKE ?)`;
+      sql += ` AND (name ILIKE ? OR phone ILIKE ? OR email ILIKE ?)`;
       params.push(`%${search}%`, `%${search}%`, `%${search}%`);
     }
 
     sql += ` ORDER BY name ASC LIMIT ? OFFSET ?`;
     params.push(parseInt(limit), parseInt(offset));
 
-    const customers = db.prepare(sql).all(...params);
+    let customers = db.prepare(sql).all(...params);
+
+    // If initial results are few and no search, or if we want to fulfill the "any unique phones" requirement:
+    // Only add unregistered customers if we are on the first page and search is flexible
+    if (customers.length < limit && (!offset || offset === 0)) {
+      let unregSql = `
+        SELECT NULL as id, MAX(customer_name) as name, customer_phone as phone, NULL as email,
+               NULL as birthday, NULL as anniversary, '[]' as custom_dates,
+               SUM(grand_total) as total_spent, 0 as credit_balance, '' as notes, 1 as is_active,
+               MIN(created_at) as created_at, 0 as is_registered
+        FROM sales
+        WHERE customer_id IS NULL AND customer_phone IS NOT NULL AND status != 'cancelled'
+      `;
+      const unregParams = [];
+      if (search) {
+        unregSql += ` AND (customer_name ILIKE ? OR customer_phone ILIKE ?)`;
+        unregParams.push(`%${search}%`, `%${search}%`);
+      }
+      unregSql += ` GROUP BY customer_phone ORDER BY total_spent DESC LIMIT ?`;
+      unregParams.push(limit - customers.length);
+
+      try {
+        const unregistered = db.prepare(unregSql).all(...unregParams);
+        customers = [...customers, ...unregistered];
+      } catch (e) {
+        console.error("Error fetching unregistered customers:", e.message);
+      }
+    }
 
     // Get total count
     let countSql = `SELECT COUNT(*) as total FROM users WHERE role = 'customer'`;
     const countParams = [];
     if (search) {
-      countSql += ` AND (name LIKE ? OR phone LIKE ? OR email LIKE ?)`;
+      countSql += ` AND (name ILIKE ? OR phone ILIKE ? OR email ILIKE ?)`;
       countParams.push(`%${search}%`, `%${search}%`, `%${search}%`);
     }
     const { total } = db.prepare(countSql).get(...countParams);
 
     // Attach order count for each customer
     const orderCountStmt = db.prepare(
-      `SELECT COUNT(*) as c FROM sales WHERE customer_id = ? AND status != 'cancelled'`
+      `SELECT COUNT(*) as c FROM sales WHERE (customer_id = ? OR (customer_id IS NULL AND customer_phone = ?)) AND status != 'cancelled'`
     );
-    const enriched = customers.map(c => ({
-      ...c,
-      custom_dates: c.custom_dates ? JSON.parse(c.custom_dates) : [],
-      order_count: orderCountStmt.get(c.id).c,
-    }));
 
-    res.json({ success: true, data: enriched, total, limit: parseInt(limit), offset: parseInt(offset) });
+    const enriched = customers.map(c => {
+      try {
+        return {
+          ...c,
+          custom_dates: typeof c.custom_dates === 'string' ? JSON.parse(c.custom_dates || '[]') : (c.custom_dates || []),
+          order_count: orderCountStmt.get(c.id || null, c.phone).c,
+        };
+      } catch (e) {
+        console.error(`Error enriching customer ${c.id || c.phone}:`, e.message);
+        return { ...c, custom_dates: [], order_count: 0 };
+      }
+    });
+
+    res.json({ success: true, data: enriched, total: Math.max(total, enriched.length), limit: parseInt(limit), offset: parseInt(offset) });
   } catch (err) { next(err); }
 });
 
@@ -109,18 +145,18 @@ router.get('/search', authenticate, (req, res, next) => {
     const registered = db.prepare(`
       SELECT id, name, phone, credit_balance, total_spent
       FROM users WHERE role = 'customer' AND is_active = 1
-        AND (phone LIKE ? OR name LIKE ?)
+        AND (phone ILIKE ? OR name ILIKE ?)
       ORDER BY total_spent DESC LIMIT 10
     `).all(term, term);
 
     // Search unregistered customers from sales history
     const unregistered = db.prepare(`
-      SELECT NULL as id, customer_name as name, customer_phone as phone,
+      SELECT NULL as id, MAX(customer_name) as name, customer_phone as phone,
              0 as credit_balance, SUM(grand_total) as total_spent
       FROM sales
       WHERE status != 'cancelled' AND customer_phone IS NOT NULL
         AND customer_id IS NULL
-        AND (customer_phone LIKE ? OR customer_name LIKE ?)
+        AND (customer_phone ILIKE ? OR customer_name ILIKE ?)
       GROUP BY customer_phone
       ORDER BY total_spent DESC LIMIT 5
     `).all(term, term);
