@@ -46,6 +46,33 @@ export default function QuickCheckoutScreen({ navigation }) {
   // Materials list (for building custom products)
   const [allMaterials, setAllMaterials] = useState([]);
 
+  // Delivery & Sender Info
+  const [senderName, setSenderName] = useState('');
+  const [senderPhone, setSenderPhone] = useState('');
+  const [senderMessage, setSenderMessage] = useState('');
+  const [receiverName, setReceiverName] = useState(''); // Mapping to customerName
+  const [receiverPhone, setReceiverPhone] = useState(''); // Mapping to customerPhone
+  const [orderNotes, setOrderNotes] = useState('');
+
+  // Surcharges & Discounts
+  const [deliveryCharges, setDeliveryCharges] = useState('');
+  const [discountValue, setDiscountValue] = useState('');
+  const [discountType, setDiscountType] = useState('fixed'); // 'fixed' or 'percentage'
+
+  // Customer Lookup
+  const [customerId, setCustomerId] = useState(null);
+  const [customerHistory, setCustomerHistory] = useState(null);
+  const [customerSuggestions, setCustomerSuggestions] = useState([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+
+  // Payment
+  const [paymentMethod, setPaymentMethod] = useState('cash'); // Legacy single selection
+  const [paymentReference, setPaymentReference] = useState(''); // Legacy single reference
+  const [payments, setPayments] = useState([{ method: 'cash', amount: '', reference: '' }]);
+  const [enableSplitPayment, setEnableSplitPayment] = useState(false);
+  const [paymentMode, setPaymentMode] = useState('pay_now'); // 'pay_now', 'cod', 'credit', 'partial'
+  const [advanceAmount, setAdvanceAmount] = useState('');
+
   // Submitting
   const [submitting, setSubmitting] = useState(false);
 
@@ -74,6 +101,13 @@ export default function QuickCheckoutScreen({ navigation }) {
       setLocations(locs);
       if (locs.length > 0 && !selectedLocation) setSelectedLocation(locs[0].id);
     } catch {}
+  };
+
+  const checkRegisterStatus = async (locId) => {
+    try {
+      const res = await api.getRegisterStatus(locId);
+      return res.isOpen === true;
+    } catch { return false; }
   };
 
   const fetchMaterials = async () => {
@@ -191,6 +225,20 @@ export default function QuickCheckoutScreen({ navigation }) {
 
   // Place order
   const handlePlaceOrder = async () => {
+    // Register guard
+    const isRegOpen = await checkRegisterStatus(selectedLocation);
+    if (!isRegOpen) {
+      Alert.alert(
+        'Register Closed',
+        'The cash register for this location is not open. Please open it before creating a sale.',
+        [
+          { text: 'Open Register', onPress: () => navigation.navigate('CashRegister') },
+          { text: 'Cancel', style: 'cancel' },
+        ]
+      );
+      return;
+    }
+
     if (items.length === 0) {
       Alert.alert('Required', 'Please add at least one item');
       return;
@@ -207,6 +255,10 @@ export default function QuickCheckoutScreen({ navigation }) {
     }
     if (orderType === 'delivery' && !customerAddress.trim()) {
       Alert.alert('Required', 'Delivery address is required');
+      return;
+    }
+    if (paymentMode === 'credit' && !customerId) {
+      Alert.alert('Required', 'Credit payments require a registered customer.');
       return;
     }
 
@@ -226,7 +278,7 @@ export default function QuickCheckoutScreen({ navigation }) {
       }));
 
       // Build cart items
-      const cart = processedItems.map(item => ({
+      const cartItems = processedItems.map(item => ({
         product_id: item.baseProduct?.id || null,
         material_id: null,
         product_name: item.name,
@@ -234,8 +286,8 @@ export default function QuickCheckoutScreen({ navigation }) {
         quantity: parseInt(item.quantity) || 1,
         unit_price: parseFloat(item.price) || 0,
         tax_rate: item.baseProduct?.tax_percentage || 0,
-        tax_amount: 0,
-        line_total: getItemTotal(item),
+        tax_amount: (parseFloat(item.price) || 0) * (parseInt(item.quantity) || 1) * (item.baseProduct?.tax_percentage || 0) / 100,
+        line_total: getItemTotal(item) + ((parseFloat(item.price) || 0) * (parseInt(item.quantity) || 1) * (item.baseProduct?.tax_percentage || 0) / 100),
         custom_materials: (item.materials || [])
           .filter(m => m.material_id)
           .map(m => ({ material_id: m.material_id, name: m.name, qty_per_unit: parseFloat(m.qty) || 1 })),
@@ -243,17 +295,65 @@ export default function QuickCheckoutScreen({ navigation }) {
         image_url: item.image_url || '',
       }));
 
-      // Navigate to Checkout with pre-built cart and customer info
-      navigation.navigate('Checkout', {
-        cart,
-        locationId: selectedLocation,
-        orderType,
-        customerName: customerName.trim(),
-        customerPhone: customerPhone.trim(),
-        customerAddress: customerAddress.trim(),
-        scheduledDate,
-        scheduledTime,
-      });
+      const subtotal = cartItems.reduce((s, c) => s + (c.unit_price * c.quantity), 0);
+      const taxRate = cartItems[0]?.tax_rate || 0;
+      const taxTotal = cartItems.reduce((s, c) => s + (c.unit_price * c.quantity * c.tax_rate / 100), 0);
+      
+      const discVal = parseFloat(discountValue) || 0;
+      const discountAmount = discountType === 'percentage' ? (subtotal * discVal / 100) : discVal;
+      const delivery = (orderType === 'delivery') ? (parseFloat(deliveryCharges) || 0) : 0;
+      const finalGrandTotal = Math.max(0, subtotal - discountAmount) + taxTotal + delivery;
+
+      // Payment entries
+      let paymentEntries = [];
+      if (paymentMode === 'pay_now') {
+        if (enableSplitPayment) {
+          paymentEntries = payments.map(p => ({
+            method: p.method,
+            amount: parseFloat(p.amount) || 0,
+            reference_number: p.reference.trim() || null,
+          })).filter(p => p.amount > 0);
+        } else {
+          paymentEntries = [{
+            method: paymentMethod,
+            amount: finalGrandTotal,
+            reference_number: paymentReference.trim() || null,
+          }];
+        }
+      }
+
+      const saleData = {
+        location_id: selectedLocation,
+        order_type: orderType,
+        customer_id: customerId,
+        customer_name: (receiverName || customerName).trim() || null,
+        customer_phone: (receiverPhone || customerPhone).trim() || null,
+        discount_type: discountAmount > 0 ? discountType : null,
+        discount_value: discVal,
+        delivery_charges: delivery,
+        notes: orderNotes || null,
+        delivery_address: orderType === 'delivery' ? customerAddress.trim() : null,
+        sender_name: senderName.trim() || null,
+        sender_phone: senderPhone.trim() || null,
+        sender_message: senderMessage.trim() || null,
+        scheduled_date: scheduledDate || null,
+        scheduled_time: scheduledTime || null,
+        items: cartItems,
+        payments: (paymentMode === 'pay_now' || paymentMode === 'partial') ? (
+          paymentMode === 'partial' 
+            ? [{ method: payments[0].method, amount: parseFloat(advanceAmount) || 0, reference_number: payments[0].reference || null }]
+            : paymentEntries
+        ) : [],
+        payment_mode: paymentMode,
+        advance_amount: paymentMode === 'partial' ? (parseFloat(advanceAmount) || 0) : null,
+      };
+
+      const res = await api.createSale(saleData);
+      if (res.success) {
+        navigation.replace('SaleDetail', { saleId: res.data.id });
+      } else {
+        Alert.alert('Error', res.message || 'Failed to place order');
+      }
     } catch (err) {
       Alert.alert('Error', err.message || 'Failed to place order');
     } finally {
@@ -290,56 +390,18 @@ export default function QuickCheckoutScreen({ navigation }) {
   };
 
   return (
-    <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-      <ScrollView style={styles.container} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+    <KeyboardAvoidingView 
+      style={{ flex: 1 }} 
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
+    >
+      <ScrollView 
+        style={styles.container} 
+        contentContainerStyle={[styles.content, { alignSelf: 'center', maxWidth: 800, width: '100%' }]} 
+        keyboardShouldPersistTaps="handled"
+      >
 
-        {/* ── Section 1: Customer ── */}
-        <View style={styles.section}>
-          <View style={styles.sectionHeader}>
-            <View style={styles.sectionIcon}>
-              <Ionicons name="person" size={20} color={Colors.primary} />
-            </View>
-            <Text style={styles.sectionTitle}>Customer Details</Text>
-          </View>
-          <View style={styles.fieldRow}>
-            <View style={styles.fieldHalf}>
-              <Text style={styles.label}>Name *</Text>
-              <TextInput
-                style={styles.input}
-                value={customerName}
-                onChangeText={setCustomerName}
-                placeholder="Customer name"
-                placeholderTextColor={Colors.textLight}
-              />
-            </View>
-            <View style={styles.fieldHalf}>
-              <Text style={styles.label}>Phone *</Text>
-              <TextInput
-                style={styles.input}
-                value={customerPhone}
-                onChangeText={setCustomerPhone}
-                placeholder="Phone number"
-                placeholderTextColor={Colors.textLight}
-                keyboardType="phone-pad"
-              />
-            </View>
-          </View>
-          {orderType === 'delivery' && (
-            <>
-              <Text style={styles.label}>Delivery Address *</Text>
-              <TextInput
-                style={[styles.input, { minHeight: 60, textAlignVertical: 'top' }]}
-                value={customerAddress}
-                onChangeText={setCustomerAddress}
-                placeholder="Full delivery address"
-                placeholderTextColor={Colors.textLight}
-                multiline
-              />
-            </>
-          )}
-        </View>
-
-        {/* ── Section 2: Order Type ── */}
+        {/* ── Section 1: Order Type (Moved to Top) ── */}
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
             <View style={styles.sectionIcon}>
@@ -409,7 +471,121 @@ export default function QuickCheckoutScreen({ navigation }) {
           )}
         </View>
 
-        {/* ── Section 3: Items ── */}
+        {/* ── Section 2: Customer / Receiver ── */}
+        <View style={styles.section}>
+          <View style={styles.sectionHeader}>
+            <View style={styles.sectionIcon}>
+              <Ionicons name="person" size={20} color={Colors.primary} />
+            </View>
+            <Text style={styles.sectionTitle}>{orderType === 'delivery' ? 'Receiver Details' : 'Customer Details'}</Text>
+          </View>
+          <View style={styles.fieldRow}>
+            <View style={styles.fieldHalf}>
+              <Text style={styles.label}>Phone *</Text>
+              <TextInput
+                style={styles.input}
+                value={receiverPhone || customerPhone}
+                onChangeText={(v) => {
+                  setReceiverPhone(v); 
+                  setCustomerPhone(v);
+                  if (v.length >= 10) {
+                    api.customerLookupEnhanced(v).then(res => {
+                      if (res.data) {
+                        setCustomerHistory(res.data);
+                        setCustomerId(res.data.id);
+                        if (res.data.name) {
+                          setReceiverName(res.data.name);
+                          setCustomerName(res.data.name);
+                        }
+                      }
+                    }).catch(() => {});
+                  }
+                }}
+                placeholder="Phone number"
+                placeholderTextColor={Colors.textLight}
+                keyboardType="phone-pad"
+              />
+            </View>
+            <View style={styles.fieldHalf}>
+              <Text style={styles.label}>Name *</Text>
+              <TextInput
+                style={styles.input}
+                value={receiverName || customerName}
+                onChangeText={(v) => { setReceiverName(v); setCustomerName(v); }}
+                placeholder="Name"
+                placeholderTextColor={Colors.textLight}
+              />
+            </View>
+          </View>
+          {customerHistory && (
+            <View style={styles.customerHint}>
+              <Ionicons name="person-circle" size={16} color={Colors.primary} />
+              <Text style={styles.customerHintText}>
+                {customerId ? '✓ Registered' : 'Returning'} customer • {customerHistory.order_count} orders • ₹{(customerHistory.total_spent || 0).toFixed(0)} total
+              </Text>
+            </View>
+          )}
+          {orderType === 'delivery' && (
+            <>
+              <Text style={styles.label}>Delivery Address *</Text>
+              <TextInput
+                style={[styles.input, { minHeight: 60, textAlignVertical: 'top' }]}
+                value={customerAddress}
+                onChangeText={setCustomerAddress}
+                placeholder="Full delivery address"
+                placeholderTextColor={Colors.textLight}
+                multiline
+              />
+
+              <View style={styles.divider} />
+              
+              <Text style={[styles.label, { marginTop: Spacing.sm }]}>Sender Info (optional)</Text>
+              <View style={styles.fieldRow}>
+                <View style={styles.fieldHalf}>
+                  <TextInput
+                    style={styles.input}
+                    value={senderName}
+                    onChangeText={setSenderName}
+                    placeholder="Sender name"
+                    placeholderTextColor={Colors.textLight}
+                  />
+                </View>
+                <View style={styles.fieldHalf}>
+                  <TextInput
+                    style={styles.input}
+                    value={senderPhone}
+                    onChangeText={setSenderPhone}
+                    placeholder="Sender phone"
+                    placeholderTextColor={Colors.textLight}
+                    keyboardType="phone-pad"
+                  />
+                </View>
+              </View>
+
+              <Text style={styles.label}>Card Message (optional)</Text>
+              <TextInput
+                style={[styles.input, { minHeight: 60 }]}
+                value={senderMessage}
+                onChangeText={setSenderMessage}
+                placeholder="Message for the recipient..."
+                placeholderTextColor={Colors.textLight}
+                multiline
+              />
+            </>
+          )}
+          
+          <Text style={styles.label}>Order Notes / Instructions (Optional)</Text>
+          <TextInput
+            style={[styles.input, { minHeight: 44 }]}
+            value={orderNotes}
+            onChangeText={setOrderNotes}
+            placeholder="Special instructions for the overall order..."
+            placeholderTextColor={Colors.textLight}
+            multiline
+          />
+        </View>
+
+        {/* ── Section 3: Items (moved below Customer) ── */}
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
             <View style={styles.sectionIcon}>
@@ -583,29 +759,223 @@ export default function QuickCheckoutScreen({ navigation }) {
           ))}
         </View>
 
-        {/* ── Grand Total + Place Order ── */}
-        {items.length > 0 && (
-          <View style={styles.section}>
-            <View style={styles.grandTotalRow}>
-              <Text style={styles.grandTotalLabel}>Grand Total</Text>
-              <Text style={styles.grandTotalValue}>₹{grandTotal.toFixed(0)}</Text>
+        {/* ── Section 4: Payment & Totals ── */}
+        <View style={styles.section}>
+          <View style={styles.sectionHeader}>
+            <View style={styles.sectionIcon}>
+              <Ionicons name="cash" size={20} color={Colors.primary} />
             </View>
-            <TouchableOpacity
-              style={[styles.placeOrderBtn, submitting && { opacity: 0.6 }]}
-              onPress={handlePlaceOrder}
-              disabled={submitting}
-            >
-              {submitting ? (
-                <ActivityIndicator color="#fff" />
-              ) : (
-                <>
-                  <Ionicons name="checkmark-circle" size={22} color="#fff" />
-                  <Text style={styles.placeOrderText}>Proceed to Checkout</Text>
-                </>
-              )}
-            </TouchableOpacity>
+            <Text style={styles.sectionTitle}>Payment & Charges</Text>
           </View>
-        )}
+
+          <View style={styles.fieldRow}>
+            {orderType === 'delivery' && (
+              <View style={styles.fieldHalf}>
+                <Text style={styles.label}>Delivery Charge (₹)</Text>
+                <TextInput
+                  style={styles.input}
+                  value={deliveryCharges}
+                  onChangeText={setDeliveryCharges}
+                  placeholder="0"
+                  placeholderTextColor={Colors.textLight}
+                  keyboardType="numeric"
+                />
+              </View>
+            )}
+            <View style={styles.fieldHalf}>
+              <Text style={styles.label}>Discount ({discountType === 'fixed' ? '₹' : '%'})</Text>
+              <View style={{ flexDirection: 'row', gap: 4 }}>
+                <TextInput
+                  style={[styles.input, { flex: 1 }]}
+                  value={discountValue}
+                  onChangeText={setDiscountValue}
+                  placeholder="0"
+                  placeholderTextColor={Colors.textLight}
+                  keyboardType="numeric"
+                />
+                <TouchableOpacity
+                  style={[styles.discToggle, { backgroundColor: Colors.surfaceAlt }]}
+                  onPress={() => setDiscountType(discountType === 'fixed' ? 'percentage' : 'fixed')}
+                >
+                  <Text style={{ fontSize: 16, fontWeight: '700', color: Colors.primary }}>
+                    {discountType === 'fixed' ? '₹' : '%'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+
+          <View style={styles.divider} />
+
+          <Text style={styles.label}>Payment Mode</Text>
+          <View style={[styles.orderTypeRow, { flexWrap: 'wrap', gap: 8 }]}>
+            {[
+              { key: 'pay_now', label: 'Pay Now', icon: 'cash-outline' },
+              { key: 'cod', label: 'COD', icon: 'bicycle-outline', hidden: orderType !== 'delivery' },
+              { key: 'credit', label: 'Credit', icon: 'time-outline' },
+              { key: 'partial', label: 'Partial', icon: 'pie-chart-outline', hidden: orderType === 'walk_in' },
+            ].filter(m => !m.hidden).map(m => (
+              <TouchableOpacity
+                key={m.key}
+                style={[styles.orderTypeBtn, { paddingVertical: 8, minWidth: 80, flex: 0 }, paymentMode === m.key && { backgroundColor: Colors.primary, borderColor: Colors.primary }]}
+                onPress={() => setPaymentMode(m.key)}
+              >
+                <Ionicons name={m.icon} size={20} color={paymentMode === m.key ? '#fff' : Colors.primary} />
+                <Text style={{ fontSize: 13, fontWeight: '600', color: paymentMode === m.key ? '#fff' : Colors.textSecondary }}>{m.label}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+
+          {paymentMode === 'partial' && (
+            <View style={{ marginTop: Spacing.sm }}>
+              <Text style={styles.label}>Advance Payment (₹)</Text>
+              <TextInput
+                style={styles.input}
+                value={advanceAmount}
+                onChangeText={setAdvanceAmount}
+                placeholder="Enter advance amount"
+                placeholderTextColor={Colors.textLight}
+                keyboardType="numeric"
+              />
+              {parseFloat(advanceAmount) > 0 && (
+                <Text style={[styles.label, { color: Colors.warning, marginTop: 4 }]}>
+                  Balance ₹{(finalGrandTotal - (parseFloat(advanceAmount) || 0)).toFixed(0)} to be collected later
+                </Text>
+              )}
+            </View>
+          )}
+
+          {paymentMode === 'pay_now' && (
+            <>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: Spacing.sm }}>
+                <Text style={styles.label}>Payment Method</Text>
+                <TouchableOpacity onPress={() => setEnableSplitPayment(!enableSplitPayment)}>
+                  <Text style={{ fontSize: 12, color: Colors.primary, fontWeight: '700' }}>
+                    {enableSplitPayment ? 'Single Payment' : '+ Split Payment'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
+              {!enableSplitPayment ? (
+                <View style={[styles.orderTypeRow, { marginTop: 4 }]}>
+                  {['cash', 'card', 'upi'].map(m => (
+                    <TouchableOpacity
+                      key={m}
+                      style={[styles.payMethodBtn, paymentMethod === m && styles.payMethodBtnActive]}
+                      onPress={() => setPaymentMethod(m)}
+                    >
+                      <Ionicons 
+                        name={m === 'cash' ? 'cash-outline' : m === 'card' ? 'card-outline' : 'phone-portrait-outline'} 
+                        size={18} 
+                        color={paymentMethod === m ? Colors.white : Colors.textSecondary} 
+                      />
+                      <Text style={[styles.payMethodText, paymentMethod === m && styles.payMethodTextActive]}>
+                        {m.toUpperCase()}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              ) : (
+                <View style={{ gap: 8, marginTop: 4 }}>
+                  {payments.map((pmt, pIdx) => (
+                    <View key={pIdx} style={[styles.fieldRow, { alignItems: 'center' }]}>
+                      <View style={{ width: 80 }}>
+                        <TouchableOpacity 
+                          style={styles.input} 
+                          onPress={() => {
+                            const newP = [...payments];
+                            const methods = ['cash', 'card', 'upi'];
+                            const curIdx = methods.indexOf(pmt.method);
+                            newP[pIdx].method = methods[(curIdx + 1) % 3];
+                            setPayments(newP);
+                          }}
+                        >
+                          <Text style={{ fontSize: 12, textAlign: 'center' }}>{pmt.method.toUpperCase()}</Text>
+                        </TouchableOpacity>
+                      </View>
+                      <TextInput
+                        style={[styles.input, { flex: 1 }]}
+                        value={pmt.amount}
+                        onChangeText={(v) => {
+                          const newP = [...payments];
+                          newP[pIdx].amount = v;
+                          setPayments(newP);
+                        }}
+                        placeholder="Amount"
+                        keyboardType="numeric"
+                      />
+                      {payments.length > 1 && (
+                        <TouchableOpacity onPress={() => setPayments(payments.filter((_, i) => i !== pIdx))}>
+                          <Ionicons name="trash-outline" size={20} color={Colors.error} />
+                        </TouchableOpacity>
+                      )}
+                    </View>
+                  ))}
+                  <TouchableOpacity 
+                    style={{ alignSelf: 'flex-start' }} 
+                    onPress={() => setPayments([...payments, { method: 'card', amount: '', reference: '' }])}
+                  >
+                    <Text style={{ fontSize: 12, color: Colors.primary }}>+ Add Another Method</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+
+              {paymentMethod !== 'cash' && !enableSplitPayment && (
+                <TextInput
+                  style={[styles.input, { marginTop: Spacing.xs }]}
+                  value={paymentReference}
+                  onChangeText={setPaymentReference}
+                  placeholder="Ref / Transaction ID (optional)"
+                  placeholderTextColor={Colors.textLight}
+                />
+              )}
+            </>
+          )}
+
+          {paymentMode === 'cod' && (
+            <View style={[styles.customerHint, { backgroundColor: Colors.warning + '15' }]}>
+              <Ionicons name="information-circle" size={16} color={Colors.warning} />
+              <Text style={styles.customerHintText}>Amount will be collected on delivery.</Text>
+            </View>
+          )}
+
+          {paymentMode === 'credit' && (
+            <View style={[styles.customerHint, { backgroundColor: Colors.error + '15' }]}>
+              <Ionicons name="alert-circle" size={16} color={Colors.error} />
+              <Text style={styles.customerHintText}>Sale will be added to customer credit.</Text>
+            </View>
+          )}
+
+          <View style={styles.grandTotalBox}>
+            <View style={styles.summaryLine}>
+              <Text style={styles.summaryLabel}>Subtotal</Text>
+              <Text style={styles.summaryValue}>₹{grandTotal.toFixed(0)}</Text>
+            </View>
+            <View style={styles.summaryLine}>
+              <Text style={styles.grandTotalLabel}>Grand Total</Text>
+              <Text style={styles.grandTotalValue}>₹{(
+                grandTotal + 
+                ((orderType === 'delivery' ? parseFloat(deliveryCharges) : 0) || 0) - 
+                (discountType === 'fixed' ? (parseFloat(discountValue) || 0) : (grandTotal * (parseFloat(discountValue) || 0) / 100))
+              ).toFixed(0)}</Text>
+            </View>
+          </View>
+
+          <TouchableOpacity
+            style={[styles.placeOrderBtn, submitting && { opacity: 0.6 }]}
+            onPress={handlePlaceOrder}
+            disabled={submitting}
+          >
+            {submitting ? (
+              <ActivityIndicator color="#fff" />
+            ) : (
+              <>
+                <Ionicons name="checkmark-done-circle" size={24} color="#fff" />
+                <Text style={styles.placeOrderText}>Confirm & Finish Order</Text>
+              </>
+            )}
+          </TouchableOpacity>
+        </View>
 
         <View style={{ height: 40 }} />
       </ScrollView>
@@ -613,7 +983,11 @@ export default function QuickCheckoutScreen({ navigation }) {
       {/* ── Product Picker Modal ── */}
       <Modal visible={showProductPicker} transparent animationType="slide">
         <View style={styles.modalOverlay}>
-          <View style={styles.modalCard}>
+          <KeyboardAvoidingView 
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'} 
+            style={{ width: '100%', alignItems: 'center' }}
+          >
+            <View style={styles.modalCard}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Select Product</Text>
               <TouchableOpacity onPress={() => setShowProductPicker(false)}>
@@ -657,64 +1031,79 @@ export default function QuickCheckoutScreen({ navigation }) {
               )}
             </ScrollView>
           </View>
+          </KeyboardAvoidingView>
         </View>
       </Modal>
 
       {/* Material Picker Modal */}
-      <Modal visible={showMaterialPicker} animationType="slide" transparent>
+      <Modal visible={showMaterialPicker} animationType="fade" transparent>
         <View style={styles.modalOverlay}>
           <KeyboardAvoidingView 
             behavior={Platform.OS === 'ios' ? 'padding' : 'height'} 
             style={{ width: '100%', alignItems: 'center' }}
           >
-            <View style={styles.modalCard}>
+            <View style={[styles.modalCard, { width: '90%', maxWidth: 500, paddingBottom: 20 }]}>
               <View style={styles.modalHeader}>
-                <Text style={styles.modalTitle}>Select Material</Text>
-                <TouchableOpacity onPress={() => setShowMaterialPicker(false)}>
-                  <Ionicons name="close" size={24} color={Colors.text} />
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                  <View style={[styles.sectionIcon, { width: 32, height: 32 }]}>
+                    <Ionicons name="leaf-outline" size={18} color={Colors.primary} />
+                  </View>
+                  <Text style={styles.modalTitle}>Select Material</Text>
+                </View>
+                <TouchableOpacity onPress={() => setShowMaterialPicker(false)} style={styles.closeBtn}>
+                  <Ionicons name="close" size={22} color={Colors.text} />
                 </TouchableOpacity>
               </View>
+
               <View style={styles.searchRow}>
                 <Ionicons name="search" size={18} color={Colors.textLight} />
                 <TextInput
                   style={styles.searchInput}
                   value={materialSearch}
                   onChangeText={setMaterialSearch}
-                  placeholder="Search materials..."
+                  placeholder="Search materials by name..."
                   placeholderTextColor={Colors.textLight}
                   autoFocus
                 />
               </View>
-              <ScrollView style={{ maxHeight: 300 }}>
-                {allMaterials
-                  .filter(m => {
-                    const searchMatches = m.name.toLowerCase().includes(materialSearch.toLowerCase());
-                    const item = items[editingItemIdx];
-                    const alreadySelected = item?.materials.some((qm, qi) => qi !== editingMaterialIdx && qm.material_id === m.id);
-                    return searchMatches && !alreadySelected;
-                  })
-                  .slice(0, 50)
-                  .map(m => (
-                    <TouchableOpacity
-                      key={m.id}
-                      style={styles.productPickItem}
-                      onPress={() => {
-                        selectMaterialForItem(editingItemIdx, editingMaterialIdx, m);
-                        setShowMaterialPicker(false);
-                      }}
-                    >
-                      <View style={styles.productPickIcon}>
-                        <Ionicons name="leaf-outline" size={22} color={Colors.primary} />
-                      </View>
-                      <View style={{ flex: 1 }}>
-                        <Text style={styles.productPickName}>{m.name}</Text>
-                        <Text style={styles.productPickPrice}>{m.category_name || 'Material'}</Text>
-                      </View>
-                      <Ionicons name="add-circle" size={24} color={Colors.success} />
-                    </TouchableOpacity>
-                  ))}
+
+              <ScrollView style={{ maxHeight: 400 }} showsVerticalScrollIndicator={false}>
+                <View style={{ gap: 8 }}>
+                  {allMaterials
+                    .filter(m => {
+                      const searchMatches = m.name.toLowerCase().includes(materialSearch.toLowerCase());
+                      const item = items[editingItemIdx];
+                      const alreadySelected = item?.materials.some((qm, qi) => qi !== editingMaterialIdx && qm.material_id === m.id);
+                      return searchMatches && !alreadySelected;
+                    })
+                    .slice(0, 50)
+                    .map(m => (
+                      <TouchableOpacity
+                        key={m.id}
+                        style={styles.materialPickCard}
+                        onPress={() => {
+                          selectMaterialForItem(editingItemIdx, editingMaterialIdx, m);
+                          setShowMaterialPicker(false);
+                        }}
+                      >
+                        <View style={styles.materialIconBox}>
+                          <Ionicons name="apps-outline" size={20} color={Colors.primary} />
+                        </View>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.materialPickName}>{m.name}</Text>
+                          <Text style={styles.materialPickCategory}>{m.category_name || 'General Material'}</Text>
+                        </View>
+                        <View style={styles.addCircle}>
+                          <Ionicons name="add" size={20} color={Colors.primary} />
+                        </View>
+                      </TouchableOpacity>
+                    ))}
+                </View>
                 {allMaterials.filter(m => m.name.toLowerCase().includes(materialSearch.toLowerCase())).length === 0 && (
-                  <Text style={styles.emptyText}>No materials found</Text>
+                  <View style={{ alignItems: 'center', paddingVertical: 40 }}>
+                    <Ionicons name="search-outline" size={40} color={Colors.textLight} />
+                    <Text style={[styles.emptyText, { marginTop: 8 }]}>No matching materials found</Text>
+                  </View>
                 )}
               </ScrollView>
             </View>
@@ -742,7 +1131,7 @@ export default function QuickCheckoutScreen({ navigation }) {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
-  content: { padding: Spacing.md },
+  content: { padding: Spacing.md, paddingBottom: 100 },
 
   section: {
     backgroundColor: Colors.surface, borderRadius: BorderRadius.lg,
@@ -758,6 +1147,7 @@ const styles = StyleSheet.create({
     marginRight: Spacing.sm,
   },
   sectionTitle: { fontSize: FontSize.lg, fontWeight: '700', color: Colors.text, flex: 1 },
+  closeBtn: { padding: 4, borderRadius: 20, backgroundColor: Colors.background },
 
   label: { fontSize: FontSize.xs, fontWeight: '600', color: Colors.textSecondary, marginBottom: 4, marginTop: Spacing.xs },
   input: {
@@ -766,12 +1156,12 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.sm, fontSize: FontSize.md, color: Colors.text,
     minHeight: 44,
   },
-  fieldRow: { flexDirection: 'row', gap: Spacing.sm },
-  fieldHalf: { flex: 1 },
+  fieldRow: { flexDirection: 'row', gap: Spacing.sm, flexWrap: 'wrap' },
+  fieldHalf: { flex: 1, minWidth: 150 },
 
-  orderTypeRow: { flexDirection: 'row', gap: Spacing.sm },
+  orderTypeRow: { flexDirection: 'row', gap: Spacing.sm, flexWrap: 'wrap' },
   orderTypeBtn: {
-    flex: 1, alignItems: 'center', justifyContent: 'center', gap: 4,
+    flex: 1, minWidth: 100, alignItems: 'center', justifyContent: 'center', gap: 4,
     paddingVertical: Spacing.md, borderRadius: BorderRadius.lg,
     backgroundColor: Colors.background, borderWidth: 2, borderColor: Colors.border,
     minHeight: 64,
@@ -811,7 +1201,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row', alignItems: 'center', gap: 4,
     backgroundColor: Colors.primary + '15', paddingHorizontal: Spacing.md,
     borderRadius: BorderRadius.md, alignSelf: 'flex-end',
-    minHeight: 44, marginTop: 20,
+    minHeight: 44, marginTop: 24,
   },
   pickProductText: { fontSize: FontSize.sm, color: Colors.primary, fontWeight: '600' },
 
@@ -851,12 +1241,42 @@ const styles = StyleSheet.create({
   grandTotalLabel: { fontSize: FontSize.xl, fontWeight: '700', color: Colors.text },
   grandTotalValue: { fontSize: FontSize.xxl, fontWeight: '700', color: Colors.primary },
 
+  divider: { height: 1, backgroundColor: Colors.border, marginVertical: Spacing.md },
+  
+  discToggle: {
+    width: 44, height: 44, borderRadius: BorderRadius.md,
+    borderWidth: 1, borderColor: Colors.border,
+    justifyContent: 'center', alignItems: 'center',
+  },
+
+  payMethodBtn: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    paddingVertical: Spacing.sm, borderRadius: BorderRadius.md,
+    backgroundColor: Colors.background, borderWidth: 1, borderColor: Colors.border,
+    minHeight: 44,
+  },
+  payMethodBtnActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
+  payMethodText: { fontSize: 12, fontWeight: '700', color: Colors.textSecondary },
+  payMethodTextActive: { color: Colors.white },
+
+  grandTotalBox: { marginTop: Spacing.md, gap: 4 },
+  summaryLine: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  summaryLabel: { fontSize: FontSize.sm, color: Colors.textSecondary },
+  summaryValue: { fontSize: FontSize.sm, color: Colors.text, fontWeight: '600' },
+
+  customerHint: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: Colors.primary + '10', padding: 10, borderRadius: BorderRadius.md, marginTop: Spacing.sm,
+  },
+  customerHintText: { fontSize: 12, color: Colors.text, flex: 1 },
+
   placeOrderBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
-    backgroundColor: Colors.primary, paddingVertical: Spacing.md,
-    borderRadius: BorderRadius.lg, minHeight: 56,
+    backgroundColor: Colors.success, paddingVertical: Spacing.md,
+    borderRadius: BorderRadius.lg, marginTop: Spacing.lg,
+    shadowColor: Colors.success, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 6,
   },
-  placeOrderText: { color: '#fff', fontWeight: '700', fontSize: FontSize.lg },
+  placeOrderText: { color: Colors.white, fontWeight: '800', fontSize: FontSize.lg },
 
   // Modal
   modalOverlay: {
@@ -889,4 +1309,21 @@ const styles = StyleSheet.create({
   },
   productPickName: { fontSize: FontSize.md, fontWeight: '600', color: Colors.text },
   productPickPrice: { fontSize: FontSize.sm, color: Colors.success, fontWeight: '600' },
+  
+  // Material Picker specific
+  materialPickCard: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.md,
+    backgroundColor: Colors.background, borderRadius: BorderRadius.md,
+    padding: Spacing.sm, borderWidth: 1, borderColor: Colors.border,
+  },
+  materialIconBox: {
+    width: 38, height: 38, borderRadius: 19,
+    backgroundColor: Colors.primary + '10', justifyContent: 'center', alignItems: 'center',
+  },
+  materialPickName: { fontSize: FontSize.md, fontWeight: '600', color: Colors.text },
+  materialPickCategory: { fontSize: FontSize.xs, color: Colors.textSecondary, marginTop: 1 },
+  addCircle: {
+    width: 28, height: 28, borderRadius: 14,
+    backgroundColor: Colors.primary + '10', justifyContent: 'center', alignItems: 'center',
+  },
 });

@@ -599,6 +599,9 @@ function ensureCompatibilityColumns() {
     }
     try { runPsql("ALTER TABLE production_tasks ADD CONSTRAINT production_tasks_status_check CHECK(status IN ('pending','assigned','in_progress','completed','cancelled'))"); } catch (_) {}
     try { runPsql("ALTER TABLE production_tasks ADD CONSTRAINT production_tasks_priority_check CHECK(priority IN ('low','medium','high','normal','urgent'))"); } catch (_) {}
+  
+  // Support ad-hoc items without a product_id
+  try { runPsql('ALTER TABLE production_tasks ALTER COLUMN product_id DROP NOT NULL'); } catch (_) {}
   ensureColumn('products', 'tax_rate_id', 'INTEGER REFERENCES tax_rates(id) ON DELETE SET NULL');
   ensureColumn('products', 'type', "VARCHAR(50) DEFAULT 'standard'");
   ensureColumn('products', 'category', 'VARCHAR(100)');
@@ -713,6 +716,7 @@ function ensureCompatibilityColumns() {
   ensureColumn('material_stock', 'last_counted_at', 'TIMESTAMP');
 
   // ─── sales ───────────────────────────────────────────────
+  ensureColumn('sales', 'payment_mode', "VARCHAR(50) DEFAULT 'pay_now'");
   ensureColumn('sales', 'discount_type', 'VARCHAR(50)');
   ensureColumn('sales', 'discount_approved_by', 'INTEGER REFERENCES users(id) ON DELETE SET NULL');
   // Drop over-restrictive status check (routes use 'preparing', 'completing' etc.)
