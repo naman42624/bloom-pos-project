@@ -334,8 +334,8 @@ router.get('/tasks', authenticate, authorize('owner', 'manager', 'employee'), (r
       delete task.custom_materials_json;
 
       // If custom_materials exist, show those instead of standard BOM
-      if (customMats && customMats.length > 0) {
-        task.materials = customMats.map(cm => {
+      if (task.custom_materials && task.custom_materials.length > 0) {
+        task.materials = task.custom_materials.map(cm => {
           const stock = getStock.get(cm.material_id, task.location_id);
           const needed = (cm.qty_per_unit || cm.qty || cm.quantity || 1) * task.quantity;
           return {

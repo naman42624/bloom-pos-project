@@ -416,18 +416,18 @@ export default function POSScreen({ navigation, route }) {
       )}
 
       {/* Order type — big visible buttons */}
-      <View style={styles.orderTypeRow}>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.orderTypeRow} contentContainerStyle={{ paddingHorizontal: Spacing.md, gap: Spacing.sm }}>
         {ORDER_TYPES.map((t) => (
           <TouchableOpacity
             key={t.key}
-            style={[styles.orderTypeBtn, orderType === t.key && { backgroundColor: t.color, borderColor: t.color }]}
+            style={[styles.orderTypeBtn, orderType === t.key && { backgroundColor: t.color, borderColor: t.color, elevation: 4, shadowOpacity: 0.2 }]}
             onPress={() => setOrderType(t.key)}
           >
             <Ionicons name={t.icon} size={20} color={orderType === t.key ? Colors.white : t.color} />
             <Text style={[styles.orderTypeBtnText, orderType === t.key && { color: Colors.white }]}>{t.label}</Text>
           </TouchableOpacity>
         ))}
-      </View>
+      </ScrollView>
 
       {/* Search row */}
       <View style={styles.searchRow}>
@@ -696,27 +696,32 @@ export default function POSScreen({ navigation, route }) {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
-  locRow: { maxHeight: 48, backgroundColor: Colors.surface, borderBottomWidth: 1, borderBottomColor: Colors.border },
+  locRow: { maxHeight: 60, backgroundColor: Colors.surface, borderBottomWidth: 1, borderBottomColor: Colors.border, paddingVertical: Spacing.sm },
   locChip: {
-    paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm,
-    borderRadius: BorderRadius.full, backgroundColor: Colors.background,
+    paddingHorizontal: Spacing.lg, paddingVertical: Spacing.sm,
+    borderRadius: BorderRadius.full, backgroundColor: Colors.surfaceAlt,
     borderWidth: 1, borderColor: Colors.border,
+    minHeight: 36, justifyContent: 'center',
   },
-  locChipActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
-  locChipText: { fontSize: FontSize.sm, color: Colors.textSecondary, fontWeight: '500' },
+  locChipActive: { 
+    backgroundColor: Colors.primary, borderColor: Colors.primary,
+    shadowColor: Colors.primary, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.3, shadowRadius: 4, elevation: 4,
+  },
+  locChipText: { fontSize: FontSize.sm, color: Colors.textSecondary, fontWeight: '600' },
   locChipTextActive: { color: Colors.white, fontWeight: '700' },
 
   orderTypeRow: {
-    flexDirection: 'row', paddingHorizontal: Spacing.sm, paddingVertical: Spacing.sm,
-    gap: Spacing.xs, backgroundColor: Colors.surface,
+    maxHeight: 70, paddingVertical: Spacing.sm,
+    backgroundColor: Colors.surface,
     borderBottomWidth: 1, borderBottomColor: Colors.border,
   },
   orderTypeBtn: {
-    flex: 1, alignItems: 'center', justifyContent: 'center', gap: 2,
-    paddingVertical: Spacing.sm, borderRadius: BorderRadius.md,
-    backgroundColor: Colors.background, borderWidth: 1.5, borderColor: Colors.border,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    paddingHorizontal: Spacing.md, paddingVertical: Spacing.xs, borderRadius: BorderRadius.md,
+    backgroundColor: Colors.surfaceAlt, borderWidth: 1.5, borderColor: Colors.border,
+    minWidth: 100, minHeight: 40,
   },
-  orderTypeBtnText: { fontSize: 11, fontWeight: '700', color: Colors.textSecondary },
+  orderTypeBtnText: { fontSize: 13, fontWeight: '700', color: Colors.textSecondary },
 
   searchRow: {
     flexDirection: 'row', alignItems: 'center',
@@ -749,7 +754,7 @@ const styles = StyleSheet.create({
   tabBtnText: { fontSize: FontSize.sm, color: Colors.textSecondary, fontWeight: '600' },
   tabBtnTextActive: { color: Colors.white, fontWeight: '700' },
 
-  catFilterRow: { maxHeight: 40, backgroundColor: Colors.background, paddingVertical: 4 },
+  catFilterRow: { maxHeight: 50, backgroundColor: Colors.background, paddingVertical: Spacing.xs },
 
   listContent: { padding: Spacing.md, paddingBottom: 20 },
   productCard: {
