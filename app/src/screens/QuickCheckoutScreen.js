@@ -261,6 +261,14 @@ export default function QuickCheckoutScreen({ navigation }) {
       Alert.alert('Required', 'Credit payments require a registered customer.');
       return;
     }
+    if (paymentMode === 'partial' && (parseFloat(advanceAmount) || 0) <= 0) {
+      Alert.alert('Required', 'Please enter an advance payment amount for partial pay');
+      return;
+    }
+    if (!selectedLocation) {
+      Alert.alert('Required', 'Please select a location');
+      return;
+    }
 
     setSubmitting(true);
     try {
@@ -344,7 +352,6 @@ export default function QuickCheckoutScreen({ navigation }) {
             ? [{ method: payments[0].method, amount: parseFloat(advanceAmount) || 0, reference_number: payments[0].reference || null }]
             : paymentEntries
         ) : [],
-        payment_mode: paymentMode,
         advance_amount: paymentMode === 'partial' ? (parseFloat(advanceAmount) || 0) : null,
       };
 

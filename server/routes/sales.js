@@ -679,7 +679,6 @@ router.post(
         delivery_charges, delivery_address, notes, special_instructions, customer_notes,
         scheduled_date, scheduled_time, advance_amount,
         sender_name, sender_phone, sender_message,
-        payment_mode,
       } = req.body;
       // Mutable alias — may be set by auto-create logic below
       let customer_id = customer_id_from_body || null;
@@ -880,9 +879,8 @@ router.post(
             subtotal, tax_total, discount_amount, discount_type, discount_percentage, discount_approved_by,
             delivery_charges, delivery_address, scheduled_date, scheduled_time,
             grand_total, payment_status, order_type, status, stock_deducted,
-            special_instructions, customer_notes, sender_name, sender_phone, sender_message, created_by, created_at,
-            payment_mode)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            special_instructions, customer_notes, sender_name, sender_phone, sender_message, created_by, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           saleNumber, location_id, customer_id || null, customer_name || null, customer_phone || null,
           subtotal, taxTotal, discountAmount, discount_type || null, discountPercentage, discountApprovedBy,
@@ -892,8 +890,7 @@ router.post(
           grandTotal, paymentStatus, order_type, initialStatus, stockDeducted,
           notes || special_instructions || '', customer_notes || '',
           sender_name || '', sender_phone || '', sender_message || '', req.user.id,
-          nowLocal(),
-          payment_mode || 'pay_now'
+          nowLocal()
         );
         const saleId = saleResult.lastInsertRowid;
 
