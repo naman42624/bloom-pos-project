@@ -3,7 +3,7 @@ const { body, query, validationResult } = require('express-validator');
 const { getDb } = require('../config/database');
 const { authenticate, authorize } = require('../middleware/auth');
 const { notifyByRole, createNotification } = require('./notifications');
-const { todayStr: localToday, nowLocal } = require('../utils/time');
+const { todayStr: localToday, nowLocal, nowTimeStr } = require('../utils/time');
 
 const router = express.Router();
 
