@@ -228,17 +228,30 @@ router.get('/register/status', authenticate, (req, res, next) => {
     if (!location_id) return res.status(400).json({ success: false, message: 'location_id is required' });
 
     const today = localToday();
-    // Get the most recent register session for this location today
-    const register = db.prepare(`
+
+    // First check if there is ANY unclosed register for this location (could be from yesterday)
+    let register = db.prepare(`
       SELECT cr.*, u1.name as opened_by_name, u2.name as closed_by_name
       FROM cash_registers cr
       LEFT JOIN users u1 ON cr.opened_by = u1.id
       LEFT JOIN users u2 ON cr.closed_by = u2.id
-      WHERE cr.location_id = ? AND cr.date = ?
+      WHERE cr.location_id = ? AND cr.closed_at IS NULL
       ORDER BY cr.id DESC LIMIT 1
-    `).get(location_id, today);
+    `).get(location_id);
 
-    // Add today's cash expenses to the response
+    // If no open register exists, get today's most recent closed session (if any)
+    if (!register) {
+      register = db.prepare(`
+        SELECT cr.*, u1.name as opened_by_name, u2.name as closed_by_name
+        FROM cash_registers cr
+        LEFT JOIN users u1 ON cr.opened_by = u1.id
+        LEFT JOIN users u2 ON cr.closed_by = u2.id
+        WHERE cr.location_id = ? AND cr.date = ?
+        ORDER BY cr.id DESC LIMIT 1
+      `).get(location_id, today);
+    }
+
+    // Add today's cash expenses to the response (or the open register's date expenses)
     if (register) {
       const expenseTotal = db.prepare(`
         SELECT COALESCE(SUM(amount), 0) as total
