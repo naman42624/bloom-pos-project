@@ -84,7 +84,7 @@ router.get('/lookup', authenticate, (req, res, next) => {
 
     // Fallback: check sales history for unregistered customers
     const salesCustomer = db.prepare(`
-      SELECT customer_name as name, customer_phone as phone, COUNT(*) as order_count,
+      SELECT MAX(customer_name) as name, customer_phone as phone, COUNT(*) as order_count,
              SUM(grand_total) as total_spent, MAX(created_at) as last_order
       FROM sales
       WHERE customer_phone = ? AND status != 'cancelled'

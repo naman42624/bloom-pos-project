@@ -308,7 +308,7 @@ router.get('/tasks', authenticate, authorize('owner', 'manager', 'employee'), (r
       CASE pt.priority WHEN 'urgent' THEN 0 ELSE 1 END,
       CASE pt.status WHEN 'in_progress' THEN 0 WHEN 'assigned' THEN 1 WHEN 'pending' THEN 2 ELSE 3 END,
       s.scheduled_date ASC NULLS LAST,
-      pt.created_at ASC`;
+      pt.created_at DESC`;
 
     const tasks = db.prepare(sql).all(...params);
 
@@ -340,11 +340,11 @@ router.get('/tasks', authenticate, authorize('owner', 'manager', 'employee'), (r
       if (customMats && customMats.length > 0) {
         task.materials = customMats.map(cm => {
           const stock = getStock.get(cm.material_id, task.location_id);
-          const needed = (cm.qty_per_unit || cm.quantity || 1) * task.quantity;
+          const needed = (cm.qty_per_unit || cm.qty || cm.quantity || 1) * task.quantity;
           return {
             material_id: cm.material_id,
             material_name: cm.name || cm.material_name || 'Material',
-            qty_per_unit: cm.qty_per_unit || cm.quantity || 1,
+            qty_per_unit: cm.qty_per_unit || cm.qty || cm.quantity || 1,
             total_needed: needed,
             in_stock: stock ? stock.quantity : 0,
             sufficient: stock ? stock.quantity >= needed : false,
@@ -537,7 +537,7 @@ router.put(
 
       // Use custom materials if present, otherwise standard BOM
       const materialsToDeduct = (customMats && customMats.length > 0)
-        ? customMats.map(cm => ({ material_id: cm.material_id, qty_needed: cm.qty_per_unit || cm.quantity || 1 }))
+        ? customMats.map(cm => ({ material_id: cm.material_id, qty_needed: cm.qty_per_unit || cm.qty || cm.quantity || 1 }))
         : standardBom;
 
       const completeTx = db.transaction(() => {

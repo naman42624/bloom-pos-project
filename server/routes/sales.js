@@ -12,7 +12,7 @@ try {
   const db = getDb();
   // Add 'preparing' and 'ready' to sales.status
   try { db.prepare("ALTER TABLE sales DROP CONSTRAINT IF EXISTS sales_status_check").run(); } catch {}
-  try { db.prepare("ALTER TABLE sales ADD CONSTRAINT sales_status_check CHECK(status IN ('pending','preparing','ready','completed','cancelled','draft'))").run(); } catch {}
+  try { db.prepare("ALTER TABLE sales ADD CONSTRAINT sales_status_check CHECK(status IN ('pending','confirmed','preparing','ready','completed','cancelled','draft'))").run(); } catch {}
   // Add 'assigned' to production_tasks.status
   try { db.prepare("ALTER TABLE production_tasks DROP CONSTRAINT IF EXISTS production_tasks_status_check").run(); } catch {}
   try { db.prepare("ALTER TABLE production_tasks ADD CONSTRAINT production_tasks_status_check CHECK(status IN ('pending','assigned','in_progress','completed','cancelled'))").run(); } catch {}
@@ -766,31 +766,49 @@ router.post(
         const saleNumber = generateSaleNumber(db, location_id);
 
         // ─── Customer auto-creation ──────────────────────
-        // If phone is provided but no customer_id, find or create
+        // If phone is provided but no customer_id, find or create in USERS table (role='customer')
         if (customer_phone && !customer_id) {
           const existingCustomer = db.prepare(
-            "SELECT id FROM customers WHERE phone = ?"
+            "SELECT id FROM users WHERE phone = ? AND role = 'customer'"
           ).get(customer_phone.trim());
 
           if (existingCustomer) {
             customer_id = existingCustomer.id;
           } else {
-            const newCust = db.prepare(
-              "INSERT INTO customers (name, phone, created_at, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
-            ).run(customer_name || 'Guest', customer_phone.trim());
-            customer_id = newCust.lastInsertRowid;
+            // Also check if any user (non-customer) has this phone — don't duplicate
+            const anyUser = db.prepare("SELECT id FROM users WHERE phone = ?").get(customer_phone.trim());
+            if (anyUser) {
+              customer_id = anyUser.id; // reuse existing user
+            } else {
+              const bcrypt = require('bcryptjs');
+              const salt = bcrypt.genSaltSync(10);
+              const hashedPassword = bcrypt.hashSync(`bloom_${Date.now()}`, salt);
+              const newCust = db.prepare(
+                "INSERT INTO users (name, phone, password, role, created_at, updated_at) VALUES (?, ?, ?, 'customer', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+              ).run(customer_name || 'Guest', customer_phone.trim(), hashedPassword);
+              customer_id = newCust.lastInsertRowid;
+            }
           }
         }
 
         // Save delivery address to customer_addresses if delivery
         if (customer_id && delivery_address && (order_type === 'delivery' || order_type === 'pre_order')) {
           const existingAddr = db.prepare(
-            "SELECT id FROM customer_addresses WHERE customer_id = ? AND address = ?"
-          ).get(customer_id, delivery_address.trim());
+            "SELECT id FROM customer_addresses WHERE customer_id = ? AND (address = ? OR address_line_1 = ?)"
+          ).get(customer_id, delivery_address.trim(), delivery_address.trim());
           if (!existingAddr) {
-            db.prepare(
-              "INSERT INTO customer_addresses (customer_id, label, address, created_at, updated_at) VALUES (?, 'Delivery', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
-            ).run(customer_id, delivery_address.trim());
+            try {
+              db.prepare(
+                "INSERT INTO customer_addresses (customer_id, label, address_line_1, created_at, updated_at) VALUES (?, 'Delivery', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+              ).run(customer_id, delivery_address.trim());
+            } catch (e) {
+              // fallback: try 'address' column for legacy schema
+              try {
+                db.prepare(
+                  "INSERT INTO customer_addresses (customer_id, label, address, created_at, updated_at) VALUES (?, 'Delivery', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+                ).run(customer_id, delivery_address.trim());
+              } catch (_) { /* ignore if column doesn't exist */ }
+            }
           }
         }
 

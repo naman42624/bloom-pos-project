@@ -430,9 +430,13 @@ export default function SaleDetailScreen({ route, navigation }) {
             <View key={idx} style={styles.itemRow}>
               <View style={{ flex: 1 }}>
                 <TouchableOpacity onPress={() => hasMaterials && toggleItemExpand(idx)} style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                  {item.product_image && (
-                    <TouchableOpacity onPress={(e) => { e.stopPropagation(); setViewedImage(api.getMediaUrl(item.product_image)); }}>
-                      <Image source={{ uri: api.getMediaUrl(item.product_image) }} style={{ width: 48, height: 48, borderRadius: 8, marginRight: 6 }} />
+                  {/* Primary product image — prefer product_image, fallback to image_url */}
+                  {(item.product_image || item.image_url) && (
+                    <TouchableOpacity onPress={(e) => {
+                      e.stopPropagation();
+                      setViewedImage(api.getMediaUrl(item.product_image || item.image_url));
+                    }}>
+                      <Image source={{ uri: api.getMediaUrl(item.product_image || item.image_url) }} style={{ width: 48, height: 48, borderRadius: 8, marginRight: 6 }} />
                     </TouchableOpacity>
                   )}
                   <View style={{ flex: 1 }}>
@@ -442,7 +446,8 @@ export default function SaleDetailScreen({ route, navigation }) {
                       {item.tax_rate > 0 ? ` (${item.tax_rate}% tax)` : ''}
                     </Text>
                     {item.special_instructions ? <Text style={{ fontSize: FontSize.xs, color: Colors.textLight, marginTop: 4 }}>Note: {item.special_instructions}</Text> : null}
-                    {item.image_url ? (
+                    {/* Show custom image_url only if different from product_image */}
+                    {item.image_url && item.product_image && item.image_url !== item.product_image ? (
                       <TouchableOpacity onPress={(e) => { e.stopPropagation(); setViewedImage(api.getMediaUrl(item.image_url)); }} style={{ marginTop: 8 }}>
                          <Image source={{ uri: api.getMediaUrl(item.image_url) }} style={{ width: 60, height: 60, borderRadius: 6 }} />
                       </TouchableOpacity>

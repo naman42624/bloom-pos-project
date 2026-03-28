@@ -69,19 +69,15 @@ export default function CheckoutScreen({ route, navigation }) {
   // Payment mode: 'pay_now' (default), 'cod' (delivery), 'credit' (customer credit), 'partial' (advance + rest later)
   const [paymentMode, setPaymentMode] = useState('pay_now');
 
-  // Register guard
-  const [registerOpen, setRegisterOpen] = useState(true);
-  useFocusEffect(
-    useCallback(() => {
-      (async () => {
-        try {
-          const res = await api.getRegisterStatus(locationId);
-          // API returns { isOpen: bool, data: register|null }
-          setRegisterOpen(res.isOpen === true);
-        } catch { setRegisterOpen(false); }
-      })();
-    }, [locationId])
-  );
+  // Register guard — checked at submit time via handleSubmit
+  const [registerOpen, setRegisterOpen] = useState(null); // null = not yet checked
+  const checkRegisterStatus = useCallback(async () => {
+    try {
+      const res = await api.getRegisterStatus(locationId);
+      setRegisterOpen(res.isOpen === true);
+      return res.isOpen === true;
+    } catch { setRegisterOpen(false); return false; }
+  }, [locationId]);
 
   // Split payment — array of payment entries
   const [payments, setPayments] = useState([
@@ -281,12 +277,17 @@ export default function CheckoutScreen({ route, navigation }) {
   const handleSubmit = async () => {
     if (submitting) return;
 
-    // Register guard
-    if (!registerOpen) {
-      Alert.alert('Register Closed', 'Please open the cash register before creating a sale.', [
-        { text: 'Open Register', onPress: () => navigation.navigate('CashRegister') },
-        { text: 'Cancel', style: 'cancel' },
-      ]);
+    // Register guard — check at submit time (not on focus)
+    const isOpen = await checkRegisterStatus();
+    if (!isOpen) {
+      Alert.alert(
+        'Register Closed',
+        `The cash register for this location is not open. Please open it before creating a sale.`,
+        [
+          { text: 'Open Register', onPress: () => navigation.navigate('CashRegister') },
+          { text: 'Cancel', style: 'cancel' },
+        ]
+      );
       return;
     }
 
