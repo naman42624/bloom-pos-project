@@ -871,17 +871,18 @@ router.post(
             subtotal, tax_total, discount_amount, discount_type, discount_percentage, discount_approved_by,
             delivery_charges, delivery_address, scheduled_date, scheduled_time,
             grand_total, payment_status, order_type, status, stock_deducted,
-            special_instructions, customer_notes, sender_name, sender_phone, sender_message, created_by)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            special_instructions, customer_notes, sender_name, sender_phone, sender_message, created_by, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           saleNumber, location_id, customer_id || null, customer_name || null, customer_phone || null,
           subtotal, taxTotal, discountAmount, discount_type || null, discountPercentage, discountApprovedBy,
           delivery_charges || 0, delivery_address || null,
           scheduled_date || (order_type === 'walk_in' ? localToday() : null),
-          scheduled_time || null,
+          scheduled_time || (order_type === 'walk_in' ? nowTimeStr() : null),
           grandTotal, paymentStatus, order_type, initialStatus, stockDeducted,
           notes || special_instructions || '', customer_notes || '',
-          sender_name || '', sender_phone || '', sender_message || '', req.user.id
+          sender_name || '', sender_phone || '', sender_message || '', req.user.id,
+          nowLocal()
         );
         const saleId = saleResult.lastInsertRowid;
 

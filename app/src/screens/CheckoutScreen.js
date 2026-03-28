@@ -95,6 +95,11 @@ export default function CheckoutScreen({ route, navigation }) {
   const [allMaterialsList, setAllMaterialsList] = useState([]);
   const [viewedImage, setViewedImage] = useState(null);
 
+  // Material search modal
+  const [showMaterialPicker, setShowMaterialPicker] = useState(false);
+  const [materialSearch, setMaterialSearch] = useState('');
+  const [editingMaterialIdx, setEditingMaterialIdx] = useState(null);
+
   const openCustomize = async (item, index) => {
     setCustomProduct(item);
     setCustomCartIndex(index);
@@ -141,6 +146,12 @@ export default function CheckoutScreen({ route, navigation }) {
       console.log('Failed to fetch product materials:', e);
       setCustomMaterials([]);
     }
+  };
+
+  const openMaterialPicker = (matIdx) => {
+    setEditingMaterialIdx(matIdx);
+    setMaterialSearch('');
+    setShowMaterialPicker(true);
   };
 
   const handleCustomize = () => {
@@ -968,14 +979,7 @@ export default function CheckoutScreen({ route, navigation }) {
                     <View key={idx} style={{ flexDirection: 'row', gap: Spacing.xs, alignItems: 'center', marginBottom: Spacing.xs }}>
                       <TouchableOpacity
                         style={[styles.modalInput, { flex: 2, justifyContent: 'center', paddingVertical: Spacing.xs + 4 }]}
-                        onPress={() => {
-                          const filtered = allMaterialsList.filter(mat => !customMaterials.some((qm, qi) => qi !== idx && qm.material_id === mat.id));
-                          if (filtered.length === 0) { Alert.alert('All added'); return; }
-                          Alert.alert('Select Material', '', filtered.map(mat => ({
-                            text: mat.name,
-                            onPress: () => setCustomMaterials(customMaterials.map((cm, ci) => ci === idx ? { ...cm, material_id: mat.id, name: mat.name } : cm)),
-                          })).concat([{ text: 'Cancel', style: 'cancel' }]));
-                        }}
+                        onPress={() => openMaterialPicker(idx)}
                       >
                         <Text style={{ color: m.material_id ? Colors.text : Colors.textLight, fontSize: FontSize.sm }}>{m.name || 'Select material...'}</Text>
                       </TouchableOpacity>
@@ -1039,6 +1043,71 @@ export default function CheckoutScreen({ route, navigation }) {
         imageUrl={viewedImage} 
         onClose={() => setViewedImage(null)} 
       />
+
+      <Modal visible={showMaterialPicker} animationType="fade" transparent>
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, { paddingHorizontal: Spacing.md, paddingVertical: Spacing.md, marginBottom: 0 }]}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: Spacing.md }}>
+              <Text style={{ fontSize: FontSize.lg, fontWeight: '700', color: Colors.text }}>Select Material</Text>
+              <TouchableOpacity onPress={() => setShowMaterialPicker(false)}>
+                <Ionicons name="close" size={24} color={Colors.text} />
+              </TouchableOpacity>
+            </View>
+            <View style={{ 
+              flexDirection: 'row', alignItems: 'center', gap: 8, 
+              backgroundColor: Colors.surfaceAlt || '#f5f5f5', borderRadius: BorderRadius.md,
+              paddingHorizontal: Spacing.md, marginBottom: Spacing.md
+            }}>
+              <Ionicons name="search" size={18} color={Colors.textLight} />
+              <TextInput
+                style={{ flex: 1, height: 44, fontSize: FontSize.md, color: Colors.text }}
+                value={materialSearch}
+                onChangeText={setMaterialSearch}
+                placeholder="Search materials..."
+                placeholderTextColor={Colors.textLight}
+                autoFocus
+              />
+            </View>
+            <ScrollView style={{ maxHeight: 350 }}>
+              {allMaterialsList
+                .filter(m => {
+                  const searchMatches = m.name.toLowerCase().includes(materialSearch.toLowerCase());
+                  const alreadySelected = customMaterials.some((qm, qi) => qi !== editingMaterialIdx && qm.material_id === m.id);
+                  return searchMatches && !alreadySelected;
+                })
+                .slice(0, 50)
+                .map(m => (
+                  <TouchableOpacity
+                    key={m.id}
+                    style={{
+                      flexDirection: 'row', alignItems: 'center', gap: 12,
+                      paddingVertical: Spacing.md, borderBottomWidth: 1, borderBottomColor: Colors.border
+                    }}
+                    onPress={() => {
+                      setCustomMaterials(customMaterials.map((cm, ci) => ci === editingMaterialIdx ? { ...cm, material_id: m.id, name: m.name } : cm));
+                      setShowMaterialPicker(false);
+                    }}
+                  >
+                    <View style={{ 
+                      width: 40, height: 40, borderRadius: 8, 
+                      backgroundColor: Colors.primary + '10', justifyContent: 'center', alignItems: 'center' 
+                    }}>
+                      <Ionicons name="leaf-outline" size={20} color={Colors.primary} />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ fontSize: FontSize.md, fontWeight: '600', color: Colors.text }}>{m.name}</Text>
+                      <Text style={{ fontSize: FontSize.xs, color: Colors.textSecondary }}>{m.category_name || 'Material'}</Text>
+                    </View>
+                    <Ionicons name="add-circle" size={22} color={Colors.success} />
+                  </TouchableOpacity>
+                ))}
+              {allMaterialsList.filter(m => m.name.toLowerCase().includes(materialSearch.toLowerCase())).length === 0 && (
+                <Text style={{ textAlign: 'center', color: Colors.textLight, paddingVertical: Spacing.xl }}>No materials found</Text>
+              )}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
     </KeyboardAvoidingView>
   );
 }
