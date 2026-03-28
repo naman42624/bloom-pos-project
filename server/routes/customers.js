@@ -275,7 +275,7 @@ router.get('/:id', authenticate, (req, res, next) => {
     const creditPayments = db.prepare(`
       SELECT cp.*, u.name as received_by_name
       FROM credit_payments cp
-      LEFT JOIN users u ON cp.received_by = u.id
+      LEFT JOIN users u ON cp.recorded_by = u.id
       WHERE cp.customer_id = ?
       ORDER BY cp.created_at DESC LIMIT 20
     `).all(req.params.id);
@@ -531,7 +531,7 @@ router.post(
       const creditTx = db.transaction(() => {
         // Record credit payment
         const result = db.prepare(
-          'INSERT INTO credit_payments (customer_id, amount, method, received_by, notes, sale_id) VALUES (?, ?, ?, ?, ?, ?)'
+          'INSERT INTO credit_payments (customer_id, amount, method, recorded_by, notes, sale_id) VALUES (?, ?, ?, ?, ?, ?)'
         ).run(customerId, amount, method, req.user.id, notes || '', sale_id || null);
 
         // Reduce customer credit balance
@@ -561,7 +561,7 @@ router.post(
 
       const payment = db.prepare(`
         SELECT cp.*, u.name as received_by_name
-        FROM credit_payments cp LEFT JOIN users u ON cp.received_by = u.id
+        FROM credit_payments cp LEFT JOIN users u ON cp.recorded_by = u.id
         WHERE cp.id = ?
       `).get(paymentId);
 
@@ -579,7 +579,7 @@ router.get('/:id/credits', authenticate, (req, res, next) => {
     const payments = db.prepare(`
       SELECT cp.*, u.name as received_by_name
       FROM credit_payments cp
-      LEFT JOIN users u ON cp.received_by = u.id
+      LEFT JOIN users u ON cp.recorded_by = u.id
       WHERE cp.customer_id = ?
       ORDER BY cp.created_at DESC
     `).all(req.params.id);
