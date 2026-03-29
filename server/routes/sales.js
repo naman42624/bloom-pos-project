@@ -1001,12 +1001,15 @@ router.post(
           }
         }
 
-        // For non-walk-in orders, check if we've auto-fulfilled everything (this can happen if code was modified for other automated flows)
-        if (order_type !== 'walk_in' && needsProduction) {
+        // Final status check: Auto-promote to 'completed' (for walk-in) or 'ready' (for others)
+        // if everything was fulfilled from stock (i.e. zero production tasks created)
+        if (needsProduction) {
           const taskCount = db.prepare("SELECT COUNT(*) as cnt FROM production_tasks WHERE sale_id = ? AND status NOT IN ('completed', 'cancelled')").get(saleId).cnt;
-          const unfulfilled = db.prepare("SELECT COUNT(*) as cnt FROM sale_items WHERE sale_id = ? AND product_id IS NOT NULL AND from_product_stock = 0").get(saleId).cnt;
-          if (taskCount === 0 && unfulfilled === 0) {
-            db.prepare("UPDATE sales SET status = 'ready', stock_deducted = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(saleId);
+          const unfulfilledItems = db.prepare("SELECT COUNT(*) as cnt FROM sale_items WHERE sale_id = ? AND product_id IS NOT NULL AND from_product_stock = 0").get(saleId).cnt;
+
+          if (taskCount === 0 && unfulfilledItems === 0) {
+            const finalStatus = order_type === 'walk_in' ? 'completed' : 'ready';
+            db.prepare("UPDATE sales SET status = ?, stock_deducted = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(finalStatus, saleId);
             if (order_type === 'pickup') {
               db.prepare("UPDATE sales SET pickup_status = 'ready_for_pickup' WHERE id = ?").run(saleId);
             }
