@@ -147,11 +147,17 @@ export default function DeliveryDetailScreen({ route, navigation }) {
     if (proofPhoto) {
       try {
         const formData = new FormData();
-        formData.append('photo', {
-          uri: proofPhoto.uri,
-          type: 'image/jpeg',
-          name: `proof_${deliveryId}_${Date.now()}.jpg`,
-        });
+        if (Platform.OS === 'web') {
+          const resp = await fetch(proofPhoto.uri);
+          const blob = await resp.blob();
+          formData.append('photo', blob, `proof_${deliveryId}_${Date.now()}.jpg`);
+        } else {
+          formData.append('photo', {
+            uri: proofPhoto.uri,
+            type: 'image/jpeg',
+            name: `proof_${deliveryId}_${Date.now()}.jpg`,
+          });
+        }
         await api.uploadDeliveryProof(deliveryId, formData);
       } catch (err) {
         console.warn('Proof upload error (continuing):', err);

@@ -277,10 +277,16 @@ class ApiService {
 
   async uploadMaterialImage(materialId, imageUri) {
     const formData = new FormData();
-    const filename = imageUri.split('/').pop();
-    const match = /\.(\w+)$/.exec(filename);
-    const ext = match ? match[1] : 'jpg';
-    formData.append('image', { uri: imageUri, name: filename, type: `image/${ext}` });
+    if (Platform.OS === 'web') {
+      const response = await fetch(imageUri);
+      const blob = await response.blob();
+      formData.append('image', blob, imageUri.split('/').pop() || 'upload.jpg');
+    } else {
+      const filename = imageUri.split('/').pop();
+      const match = /\.(\w+)$/.exec(filename);
+      const ext = match ? match[1] : 'jpg';
+      formData.append('image', { uri: imageUri, name: filename, type: `image/${ext}` });
+    }
 
     const url = `${API_BASE_URL}/materials/${materialId}/image`;
     const headers = {};
@@ -430,10 +436,16 @@ class ApiService {
   // ─── Product Images ────────────────────────────────────
   async uploadProductImage(productId, imageUri, isPrimary = false) {
     const formData = new FormData();
-    const filename = imageUri.split('/').pop();
-    const match = /\.(\w+)$/.exec(filename);
-    const ext = match ? match[1] : 'jpg';
-    formData.append('image', { uri: imageUri, name: filename, type: `image/${ext}` });
+    if (Platform.OS === 'web') {
+      const response = await fetch(imageUri);
+      const blob = await response.blob();
+      formData.append('image', blob, imageUri.split('/').pop() || 'upload.jpg');
+    } else {
+      const filename = imageUri.split('/').pop();
+      const match = /\.(\w+)$/.exec(filename);
+      const ext = match ? match[1] : 'jpg';
+      formData.append('image', { uri: imageUri, name: filename, type: `image/${ext}` });
+    }
     if (isPrimary) formData.append('is_primary', '1');
 
     const url = `${API_BASE_URL}/products/${productId}/images`;
@@ -769,11 +781,16 @@ class ApiService {
   // Generic Media Upload
   async uploadGenericMedia(imageUri) {
     const formData = new FormData();
-    const filename = imageUri.split('/').pop();
-    const match = /\.(\w+)$/.exec(filename);
-    const type = match ? `image/${match[1]}` : `image`;
-
-    formData.append('image', { uri: imageUri, name: filename, type });
+    if (Platform.OS === 'web') {
+      const response = await fetch(imageUri);
+      const blob = await response.blob();
+      formData.append('image', blob, imageUri.split('/').pop() || 'upload.jpg');
+    } else {
+      const filename = imageUri.split('/').pop();
+      const match = /\.(\w+)$/.exec(filename);
+      const type = match ? `image/${match[1]}` : 'image/jpeg';
+      formData.append('image', { uri: imageUri, name: filename, type });
+    }
 
     return this.request(`/upload`, {
       method: 'POST',

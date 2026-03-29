@@ -1,8 +1,8 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TextInput, Image,
   TouchableOpacity, Alert, Platform, Modal, ActivityIndicator,
-  KeyboardAvoidingView,
+  KeyboardAvoidingView, Pressable
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
@@ -86,6 +86,7 @@ export default function QuickCheckoutScreen({ navigation }) {
   const [showMaterialPicker, setShowMaterialPicker] = useState(false);
   const [materialSearch, setMaterialSearch] = useState('');
   const [editingMaterialIdx, setEditingMaterialIdx] = useState(null);
+  const searchTimer = useRef(null);
 
   useFocusEffect(
     useCallback(() => {
@@ -100,8 +101,59 @@ export default function QuickCheckoutScreen({ navigation }) {
       const locs = res.data?.locations || res.data || [];
       setLocations(locs);
       if (locs.length > 0 && !selectedLocation) setSelectedLocation(locs[0].id);
-    } catch {}
+    } catch { }
   };
+
+  const handlePhoneChange = useCallback((text) => {
+    setReceiverPhone(text);
+    setCustomerPhone(text);
+    setShowSuggestions(false);
+
+    // Debounced search for autocomplete
+    if (searchTimer.current) clearTimeout(searchTimer.current);
+    if (text.length >= 3 && text.length < 10) {
+      searchTimer.current = setTimeout(async () => {
+        try {
+          const res = await api.customerSearch(text);
+          if (res.data && res.data.length > 0) {
+            setCustomerSuggestions(res.data);
+            setShowSuggestions(true);
+          } else {
+            setCustomerSuggestions([]);
+            setShowSuggestions(false);
+          }
+        } catch { /* ignore */ }
+      }, 300);
+    } else {
+      setCustomerSuggestions([]);
+      if (text.length >= 10) {
+        // Enhanced lookup for full number
+        api.customerLookupEnhanced(text).then(res => {
+          if (res.data) {
+            setCustomerHistory(res.data);
+            setCustomerId(res.data.id);
+            if (res.data.name && !(receiverName || customerName)) {
+              setReceiverName(res.data.name);
+              setCustomerName(res.data.name);
+            }
+          }
+        }).catch(() => { });
+      } else {
+        setCustomerHistory(null);
+        setCustomerId(null);
+      }
+    }
+  }, [receiverName, customerName]);
+
+  const selectCustomer = useCallback((c) => {
+    setReceiverPhone(c.phone || '');
+    setCustomerPhone(c.phone || '');
+    setReceiverName(c.name || '');
+    setCustomerName(c.name || '');
+    if (c.id) setCustomerId(c.id);
+    setShowSuggestions(false);
+    setCustomerSuggestions([]);
+  }, []);
 
   const checkRegisterStatus = async (locId) => {
     try {
@@ -114,7 +166,7 @@ export default function QuickCheckoutScreen({ navigation }) {
     try {
       const res = await api.getMaterials({});
       setAllMaterials(res.data || []);
-    } catch {}
+    } catch { }
   };
 
   const fetchProducts = async (q) => {
@@ -123,7 +175,7 @@ export default function QuickCheckoutScreen({ navigation }) {
       if (selectedLocation) params.location_id = selectedLocation;
       const res = await api.getProducts(params);
       setProducts(res.data || []);
-    } catch {}
+    } catch { }
   };
 
   // Add a blank custom item
@@ -221,7 +273,25 @@ export default function QuickCheckoutScreen({ navigation }) {
     return price * qty;
   };
 
-  const grandTotal = items.reduce((sum, it) => sum + getItemTotal(it), 0);
+  const itemsSubtotal = items.reduce((sum, it) => sum + getItemTotal(it), 0);
+
+  const totals = useMemo(() => {
+    const subtotal = itemsSubtotal;
+    const taxRate = items[0]?.baseProduct?.tax_percentage || 0;
+    const taxTotal = items.reduce((s, it) => {
+      const price = parseFloat(it.price) || 0;
+      const qty = parseInt(it.quantity) || 1;
+      const tax = it.baseProduct?.tax_percentage || 0;
+      return s + (price * qty * tax / 100);
+    }, 0);
+
+    const discVal = parseFloat(discountValue) || 0;
+    const discountAmount = discountType === 'percentage' ? (subtotal * discVal / 100) : discVal;
+    const delivery = (orderType === 'delivery') ? (parseFloat(deliveryCharges) || 0) : 0;
+    const finalTotal = Math.max(0, subtotal - discountAmount) + taxTotal + delivery;
+
+    return { subtotal, taxTotal, discountAmount, delivery, finalTotal };
+  }, [items, discountValue, discountType, orderType, deliveryCharges]);
 
   // Place order
   const handlePlaceOrder = async () => {
@@ -275,12 +345,12 @@ export default function QuickCheckoutScreen({ navigation }) {
       const processedItems = await Promise.all(items.map(async (item) => {
         let finalImageUrl = item.image_url;
         if (finalImageUrl && !finalImageUrl.startsWith('http') && !finalImageUrl.startsWith('/')) {
-           try {
-             const res = await api.uploadGenericMedia(finalImageUrl);
-             if (res.success && res.url) {
-               finalImageUrl = res.url;
-             }
-           } catch (err) { console.log('Image upload failed', err); }
+          try {
+            const res = await api.uploadGenericMedia(finalImageUrl);
+            if (res.success && res.url) {
+              finalImageUrl = res.url;
+            }
+          } catch (err) { console.log('Image upload failed', err); }
         }
         return { ...item, image_url: finalImageUrl };
       }));
@@ -303,14 +373,8 @@ export default function QuickCheckoutScreen({ navigation }) {
         image_url: item.image_url || '',
       }));
 
-      const subtotal = cartItems.reduce((s, c) => s + (c.unit_price * c.quantity), 0);
-      const taxRate = cartItems[0]?.tax_rate || 0;
-      const taxTotal = cartItems.reduce((s, c) => s + (c.unit_price * c.quantity * c.tax_rate / 100), 0);
-      
+      const { subtotal, taxTotal, discountAmount, delivery, finalTotal: finalGrandTotal } = totals;
       const discVal = parseFloat(discountValue) || 0;
-      const discountAmount = discountType === 'percentage' ? (subtotal * discVal / 100) : discVal;
-      const delivery = (orderType === 'delivery') ? (parseFloat(deliveryCharges) || 0) : 0;
-      const finalGrandTotal = Math.max(0, subtotal - discountAmount) + taxTotal + delivery;
 
       // Payment entries
       let paymentEntries = [];
@@ -348,11 +412,11 @@ export default function QuickCheckoutScreen({ navigation }) {
         scheduled_time: scheduledTime || null,
         items: cartItems,
         payments: (paymentMode === 'pay_now' || paymentMode === 'partial') ? (
-          paymentMode === 'partial' 
+          paymentMode === 'partial'
             ? [{ method: payments[0].method, amount: parseFloat(advanceAmount) || 0, reference_number: payments[0].reference || null }]
             : paymentEntries
         ) : [],
-        advance_amount: paymentMode === 'partial' ? (parseFloat(advanceAmount) || 0) : null,
+        advance_amount: paymentMode === 'partial' ? (parseFloat(advanceAmount) || 0) : 0,
       };
 
       const res = await api.createSale(saleData);
@@ -376,7 +440,7 @@ export default function QuickCheckoutScreen({ navigation }) {
     setScheduledDate(`${yyyy}-${mm}-${dd}`);
     setDatePickerDate(date);
   };
-  
+
   const handleTimeConfirm = (date) => {
     setShowTimePicker(false);
     const hh = String(date.getHours()).padStart(2, '0');
@@ -386,25 +450,41 @@ export default function QuickCheckoutScreen({ navigation }) {
   };
 
   const pickImage = async (idx) => {
-    let result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: true,
-      quality: 0.8,
-    });
-    if (!result.canceled && result.assets && result.assets.length > 0) {
-      updateItem(idx, 'image_url', result.assets[0].uri);
+    try {
+      if (Platform.OS !== 'web') {
+        const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+        if (status !== 'granted') {
+          Alert.alert('Permission Required', 'We need access to your photos to add a product image.');
+          return;
+        }
+      }
+
+      let result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaType?.Images || 'images',
+        allowsEditing: true,
+        quality: 0.8,
+      });
+      
+      if (!result.canceled && result.assets && result.assets.length > 0) {
+        updateItem(idx, 'image_url', result.assets[0].uri);
+      }
+    } catch (err) {
+      console.error('Image picker error:', err);
+      const msg = 'Could not open image library';
+      if (Platform.OS === 'web') window.alert(msg);
+      else Alert.alert('Error', msg);
     }
   };
 
   return (
-    <KeyboardAvoidingView 
-      style={{ flex: 1 }} 
+    <KeyboardAvoidingView
+      style={{ flex: 1 }}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
     >
-      <ScrollView 
-        style={styles.container} 
-        contentContainerStyle={[styles.content, { alignSelf: 'center', maxWidth: 800, width: '100%' }]} 
+      <ScrollView
+        style={styles.container}
+        contentContainerStyle={[styles.content, { alignSelf: 'center', maxWidth: 800, width: '100%' }]}
         keyboardShouldPersistTaps="handled"
       >
 
@@ -492,26 +572,24 @@ export default function QuickCheckoutScreen({ navigation }) {
               <TextInput
                 style={styles.input}
                 value={receiverPhone || customerPhone}
-                onChangeText={(v) => {
-                  setReceiverPhone(v); 
-                  setCustomerPhone(v);
-                  if (v.length >= 10) {
-                    api.customerLookupEnhanced(v).then(res => {
-                      if (res.data) {
-                        setCustomerHistory(res.data);
-                        setCustomerId(res.data.id);
-                        if (res.data.name) {
-                          setReceiverName(res.data.name);
-                          setCustomerName(res.data.name);
-                        }
-                      }
-                    }).catch(() => {});
-                  }
-                }}
+                onChangeText={handlePhoneChange}
                 placeholder="Phone number"
                 placeholderTextColor={Colors.textLight}
                 keyboardType="phone-pad"
               />
+              {showSuggestions && customerSuggestions.length > 0 && (
+                <View style={styles.suggestionsBox}>
+                  {customerSuggestions.map((c, idx) => (
+                    <TouchableOpacity key={c.phone + idx} style={styles.suggestionItem} onPress={() => selectCustomer(c)}>
+                      <Ionicons name={c.id ? 'person' : 'person-outline'} size={16} color={Colors.primary} />
+                      <View style={{ flex: 1, marginLeft: 8 }}>
+                        <Text style={styles.suggestionName}>{c.name || 'Unknown'}</Text>
+                        <Text style={styles.suggestionPhone}>{c.phone}{c.total_spent > 0 ? ` • ₹${Math.round(c.total_spent)}` : ''}</Text>
+                      </View>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              )}
             </View>
             <View style={styles.fieldHalf}>
               <Text style={styles.label}>Name *</Text>
@@ -545,7 +623,7 @@ export default function QuickCheckoutScreen({ navigation }) {
               />
 
               <View style={styles.divider} />
-              
+
               <Text style={[styles.label, { marginTop: Spacing.sm }]}>Sender Info (optional)</Text>
               <View style={styles.fieldRow}>
                 <View style={styles.fieldHalf}>
@@ -580,7 +658,7 @@ export default function QuickCheckoutScreen({ navigation }) {
               />
             </>
           )}
-          
+
           <Text style={styles.label}>Order Notes / Instructions (Optional)</Text>
           <TextInput
             style={[styles.input, { minHeight: 44 }]}
@@ -731,7 +809,7 @@ export default function QuickCheckoutScreen({ navigation }) {
               </View>
 
               {/* Special Instructions & Image */}
-              <View style={styles.fieldRow}>
+              <View style={[styles.fieldRow, { flexWrap: 'nowrap', alignItems: 'center' }]}>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.label}>Special Instructions (Optional)</Text>
                   <TextInput
@@ -742,19 +820,34 @@ export default function QuickCheckoutScreen({ navigation }) {
                     placeholderTextColor={Colors.textLight}
                   />
                 </View>
-                <TouchableOpacity
-                  style={[styles.pickProductBtn, { minWidth: 70, marginLeft: 10, justifyContent: 'center', alignSelf: 'flex-end', height: 44, marginBottom: 8 }]}
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.pickProductBtn,
+                    { 
+                      minWidth: 90, 
+                      marginLeft: 10, 
+                      justifyContent: 'center', 
+                      height: 50, 
+                      marginTop: 10, 
+                      zIndex: 1000,
+                      opacity: pressed ? 0.6 : 1,
+                      borderWidth: 1,
+                      borderColor: Colors.primary + '30',
+                      backgroundColor: pressed ? Colors.primary + '25' : Colors.primary + '15'
+                    }
+                  ]}
                   onPress={() => pickImage(idx)}
+                  hitSlop={15}
                 >
                   {item.image_url ? (
-                    <Image source={{ uri: item.image_url }} style={{ width: 30, height: 30, borderRadius: 4 }} />
+                    <Image source={{ uri: item.image_url }} style={{ width: 40, height: 40, borderRadius: 4 }} />
                   ) : (
-                    <>
-                      <Ionicons name="camera-outline" size={20} color={Colors.primary} />
-                      <Text style={[styles.pickProductText, { marginLeft: 4 }]}>Photo</Text>
-                    </>
+                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                      <Ionicons name="camera-outline" size={24} color={Colors.primary} />
+                      <Text style={[styles.pickProductText, { marginLeft: 6 }]}>Photo</Text>
+                    </View>
                   )}
-                </TouchableOpacity>
+                </Pressable>
               </View>
 
               {/* Item total */}
@@ -846,7 +939,7 @@ export default function QuickCheckoutScreen({ navigation }) {
               />
               {parseFloat(advanceAmount) > 0 && (
                 <Text style={[styles.label, { color: Colors.warning, marginTop: 4 }]}>
-                  Balance ₹{(finalGrandTotal - (parseFloat(advanceAmount) || 0)).toFixed(0)} to be collected later
+                  Balance ₹{(totals.finalTotal - (parseFloat(advanceAmount) || 0)).toFixed(0)} to be collected later
                 </Text>
               )}
             </View>
@@ -871,10 +964,10 @@ export default function QuickCheckoutScreen({ navigation }) {
                       style={[styles.payMethodBtn, paymentMethod === m && styles.payMethodBtnActive]}
                       onPress={() => setPaymentMethod(m)}
                     >
-                      <Ionicons 
-                        name={m === 'cash' ? 'cash-outline' : m === 'card' ? 'card-outline' : 'phone-portrait-outline'} 
-                        size={18} 
-                        color={paymentMethod === m ? Colors.white : Colors.textSecondary} 
+                      <Ionicons
+                        name={m === 'cash' ? 'cash-outline' : m === 'card' ? 'card-outline' : 'phone-portrait-outline'}
+                        size={18}
+                        color={paymentMethod === m ? Colors.white : Colors.textSecondary}
                       />
                       <Text style={[styles.payMethodText, paymentMethod === m && styles.payMethodTextActive]}>
                         {m.toUpperCase()}
@@ -887,8 +980,8 @@ export default function QuickCheckoutScreen({ navigation }) {
                   {payments.map((pmt, pIdx) => (
                     <View key={pIdx} style={[styles.fieldRow, { alignItems: 'center' }]}>
                       <View style={{ width: 80 }}>
-                        <TouchableOpacity 
-                          style={styles.input} 
+                        <TouchableOpacity
+                          style={styles.input}
                           onPress={() => {
                             const newP = [...payments];
                             const methods = ['cash', 'card', 'upi'];
@@ -918,8 +1011,8 @@ export default function QuickCheckoutScreen({ navigation }) {
                       )}
                     </View>
                   ))}
-                  <TouchableOpacity 
-                    style={{ alignSelf: 'flex-start' }} 
+                  <TouchableOpacity
+                    style={{ alignSelf: 'flex-start' }}
                     onPress={() => setPayments([...payments, { method: 'card', amount: '', reference: '' }])}
                   >
                     <Text style={{ fontSize: 12, color: Colors.primary }}>+ Add Another Method</Text>
@@ -956,15 +1049,26 @@ export default function QuickCheckoutScreen({ navigation }) {
           <View style={styles.grandTotalBox}>
             <View style={styles.summaryLine}>
               <Text style={styles.summaryLabel}>Subtotal</Text>
-              <Text style={styles.summaryValue}>₹{grandTotal.toFixed(0)}</Text>
+              <Text style={styles.summaryValue}>₹{totals.subtotal.toFixed(2)}</Text>
             </View>
             <View style={styles.summaryLine}>
+              <Text style={styles.summaryLabel}>Discount</Text>
+              <Text style={styles.summaryValue}>-₹{totals.discountAmount.toFixed(2)}</Text>
+            </View>
+            <View style={styles.summaryLine}>
+              <Text style={styles.summaryLabel}>Tax</Text>
+              <Text style={styles.summaryValue}>+₹{totals.taxTotal.toFixed(2)}</Text>
+            </View>
+            {orderType === 'delivery' && (
+              <View style={styles.summaryLine}>
+                <Text style={styles.summaryLabel}>Delivery</Text>
+                <Text style={styles.summaryValue}>+₹{totals.delivery.toFixed(2)}</Text>
+              </View>
+            )}
+            <View style={[styles.divider, { marginVertical: Spacing.sm }]} />
+            <View style={styles.grandTotalRow}>
               <Text style={styles.grandTotalLabel}>Grand Total</Text>
-              <Text style={styles.grandTotalValue}>₹{(
-                grandTotal + 
-                ((orderType === 'delivery' ? parseFloat(deliveryCharges) : 0) || 0) - 
-                (discountType === 'fixed' ? (parseFloat(discountValue) || 0) : (grandTotal * (parseFloat(discountValue) || 0) / 100))
-              ).toFixed(0)}</Text>
+              <Text style={styles.grandTotalValue}>₹{totals.finalTotal.toFixed(2)}</Text>
             </View>
           </View>
 
@@ -990,54 +1094,54 @@ export default function QuickCheckoutScreen({ navigation }) {
       {/* ── Product Picker Modal ── */}
       <Modal visible={showProductPicker} transparent animationType="slide">
         <View style={styles.modalOverlay}>
-          <KeyboardAvoidingView 
-            behavior={Platform.OS === 'ios' ? 'padding' : 'height'} 
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
             style={{ width: '100%', alignItems: 'center' }}
           >
             <View style={styles.modalCard}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Select Product</Text>
-              <TouchableOpacity onPress={() => setShowProductPicker(false)}>
-                <Ionicons name="close" size={24} color={Colors.text} />
-              </TouchableOpacity>
-            </View>
-            <View style={styles.searchRow}>
-              <Ionicons name="search" size={18} color={Colors.textLight} />
-              <TextInput
-                style={styles.searchInput}
-                value={productSearch}
-                onChangeText={(v) => { setProductSearch(v); fetchProducts(v); }}
-                placeholder="Search products..."
-                placeholderTextColor={Colors.textLight}
-                autoFocus
-              />
-            </View>
-            <ScrollView style={{ maxHeight: 400 }}>
-              {products.map(p => (
-                <TouchableOpacity
-                  key={p.id}
-                  style={styles.productPickItem}
-                  onPress={() => addFromProduct(p, editingItemIdx)}
-                >
-                  <View style={styles.productPickIcon}>
-                    {p.image_url ? (
-                      <Image source={{ uri: p.image_url }} style={{ width: 40, height: 40, borderRadius: 8 }} />
-                    ) : (
-                      <Ionicons name="gift" size={22} color={Colors.primary} />
-                    )}
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.productPickName}>{p.name}</Text>
-                    <Text style={styles.productPickPrice}>₹{(p.selling_price || 0).toFixed(0)}</Text>
-                  </View>
-                  <Ionicons name="add-circle" size={24} color={Colors.success} />
+              <View style={styles.modalHeader}>
+                <Text style={styles.modalTitle}>Select Product</Text>
+                <TouchableOpacity onPress={() => setShowProductPicker(false)}>
+                  <Ionicons name="close" size={24} color={Colors.text} />
                 </TouchableOpacity>
-              ))}
-              {products.length === 0 && (
-                <Text style={styles.emptyText}>No products found</Text>
-              )}
-            </ScrollView>
-          </View>
+              </View>
+              <View style={styles.searchRow}>
+                <Ionicons name="search" size={18} color={Colors.textLight} />
+                <TextInput
+                  style={styles.searchInput}
+                  value={productSearch}
+                  onChangeText={(v) => { setProductSearch(v); fetchProducts(v); }}
+                  placeholder="Search products..."
+                  placeholderTextColor={Colors.textLight}
+                  autoFocus
+                />
+              </View>
+              <ScrollView style={{ maxHeight: 400 }}>
+                {products.map(p => (
+                  <TouchableOpacity
+                    key={p.id}
+                    style={styles.productPickItem}
+                    onPress={() => addFromProduct(p, editingItemIdx)}
+                  >
+                    <View style={styles.productPickIcon}>
+                      {p.image_url ? (
+                        <Image source={{ uri: p.image_url }} style={{ width: 40, height: 40, borderRadius: 8 }} />
+                      ) : (
+                        <Ionicons name="gift" size={22} color={Colors.primary} />
+                      )}
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.productPickName}>{p.name}</Text>
+                      <Text style={styles.productPickPrice}>₹{(p.selling_price || 0).toFixed(0)}</Text>
+                    </View>
+                    <Ionicons name="add-circle" size={24} color={Colors.success} />
+                  </TouchableOpacity>
+                ))}
+                {products.length === 0 && (
+                  <Text style={styles.emptyText}>No products found</Text>
+                )}
+              </ScrollView>
+            </View>
           </KeyboardAvoidingView>
         </View>
       </Modal>
@@ -1045,8 +1149,8 @@ export default function QuickCheckoutScreen({ navigation }) {
       {/* Material Picker Modal */}
       <Modal visible={showMaterialPicker} animationType="fade" transparent>
         <View style={styles.modalOverlay}>
-          <KeyboardAvoidingView 
-            behavior={Platform.OS === 'ios' ? 'padding' : 'height'} 
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
             style={{ width: '100%', alignItems: 'center' }}
           >
             <View style={[styles.modalCard, { width: '90%', maxWidth: 500, paddingBottom: 20 }]}>
@@ -1163,7 +1267,7 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.sm, fontSize: FontSize.md, color: Colors.text,
     minHeight: 44,
   },
-  fieldRow: { flexDirection: 'row', gap: Spacing.sm, flexWrap: 'wrap' },
+  fieldRow: { flexDirection: 'row', gap: Spacing.sm, flexWrap: 'wrap', zIndex: 10 },
   fieldHalf: { flex: 1, minWidth: 150 },
 
   orderTypeRow: { flexDirection: 'row', gap: Spacing.sm, flexWrap: 'wrap' },
@@ -1249,7 +1353,7 @@ const styles = StyleSheet.create({
   grandTotalValue: { fontSize: FontSize.xxl, fontWeight: '700', color: Colors.primary },
 
   divider: { height: 1, backgroundColor: Colors.border, marginVertical: Spacing.md },
-  
+
   discToggle: {
     width: 44, height: 44, borderRadius: BorderRadius.md,
     borderWidth: 1, borderColor: Colors.border,
@@ -1316,7 +1420,7 @@ const styles = StyleSheet.create({
   },
   productPickName: { fontSize: FontSize.md, fontWeight: '600', color: Colors.text },
   productPickPrice: { fontSize: FontSize.sm, color: Colors.success, fontWeight: '600' },
-  
+
   // Material Picker specific
   materialPickCard: {
     flexDirection: 'row', alignItems: 'center', gap: Spacing.md,
@@ -1333,4 +1437,19 @@ const styles = StyleSheet.create({
     width: 28, height: 28, borderRadius: 14,
     backgroundColor: Colors.primary + '10', justifyContent: 'center', alignItems: 'center',
   },
+
+  // Suggestions
+  suggestionsBox: {
+    position: 'absolute', top: 72, left: 0, right: 0,
+    backgroundColor: Colors.surface, borderRadius: BorderRadius.md,
+    borderWidth: 1, borderColor: Colors.border,
+    zIndex: 1000, elevation: 10,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.1, shadowRadius: 8,
+  },
+  suggestionItem: {
+    flexDirection: 'row', alignItems: 'center', padding: 12,
+    borderBottomWidth: 1, borderBottomColor: Colors.border,
+  },
+  suggestionName: { fontSize: FontSize.sm, fontWeight: '700', color: Colors.text },
+  suggestionPhone: { fontSize: 12, color: Colors.textSecondary },
 });
