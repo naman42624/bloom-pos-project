@@ -1151,7 +1151,7 @@ router.post(
 
       // Decrement customer credit balance
       if (sale.customer_id) {
-        db.prepare('UPDATE users SET credit_balance = MAX(0, credit_balance - ?), updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(amount, sale.customer_id);
+        db.prepare('UPDATE users SET credit_balance = GREATEST(0, credit_balance - ?), updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(amount, sale.customer_id);
       }
 
       // Update cash register

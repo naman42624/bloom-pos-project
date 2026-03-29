@@ -1063,7 +1063,7 @@ router.put(
 
           // Update customer credit if applicable
           if (sale.customer_id && paidNow > 0) {
-            db.prepare('UPDATE users SET credit_balance = MAX(0, credit_balance - ?), updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(paidNow, sale.customer_id);
+            db.prepare('UPDATE users SET credit_balance = GREATEST(0, credit_balance - ?), updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(paidNow, sale.customer_id);
           }
         }
 
