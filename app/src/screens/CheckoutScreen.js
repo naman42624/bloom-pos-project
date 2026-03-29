@@ -387,6 +387,7 @@ export default function CheckoutScreen({ route, navigation }) {
         special_instructions: c.special_instructions || '',
         image_url: c.image_url || '',
         custom_materials: c.custom_materials || null,
+        fulfill_from_stock: c.fulfill_from_stock || false,
       })),
       payments: paymentEntries,
     };

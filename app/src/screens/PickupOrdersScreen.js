@@ -35,7 +35,11 @@ export default function PickupOrdersScreen({ navigation }) {
   const [pickupPayAmount, setPickupPayAmount] = useState('');
   const [pickupPayRef, setPickupPayRef] = useState('');
 
+  const [locations, setLocations] = useState([]);
+  const [selectedLocation, setSelectedLocation] = useState(null);
+
   const isManagerOrOwner = user?.role === 'owner' || user?.role === 'manager';
+  const isOwner = user?.role === 'owner';
 
   // Tick every 60s to update countdowns
   useEffect(() => {
@@ -43,12 +47,25 @@ export default function PickupOrdersScreen({ navigation }) {
     return () => clearInterval(tickRef.current);
   }, []);
 
+  const fetchLocations = useCallback(async () => {
+    try {
+      const res = await api.getLocations();
+      const locs = (res.data?.locations || res.data || []).filter(l => (l.type === 'shop' || l.type == null) && l.is_active);
+      setLocations(locs);
+      if (locs.length > 0 && selectedLocation === null && !isOwner) {
+        const defaultLoc = activeLocation && locs.some(l => l.id === activeLocation.id) ? activeLocation.id : locs[0].id;
+        setSelectedLocation(defaultLoc);
+      }
+    } catch (err) { console.error('Error fetching locations:', err); }
+  }, [activeLocation, isOwner, selectedLocation]);
+
+  useFocusEffect(useCallback(() => { fetchLocations(); }, [fetchLocations]));
+
   const fetchOrders = useCallback(async () => {
     try {
       setLoading(true);
       const params = { order_type: 'pickup', pickup_status: tab, limit: 200 };
-      // Only filter by location for non-owner roles
-      if (activeLocation && user?.role !== 'owner') params.location_id = activeLocation.id;
+      if (selectedLocation) params.location_id = selectedLocation;
       const res = await api.getSales(params);
       setOrders(res.data?.sales || []);
     } catch (err) {
@@ -56,7 +73,7 @@ export default function PickupOrdersScreen({ navigation }) {
     } finally {
       setLoading(false);
     }
-  }, [tab, activeLocation]);
+  }, [tab, selectedLocation]);
 
   useFocusEffect(useCallback(() => { fetchOrders(); }, [fetchOrders]));
 
@@ -229,7 +246,10 @@ export default function PickupOrdersScreen({ navigation }) {
 
         <View style={styles.cardHeader}>
           <View>
-            <Text style={styles.orderNum}>{item.sale_number}</Text>
+            <Text style={styles.orderNum}>
+              {item.sale_number}
+              {!selectedLocation && item.location_name ? ` • ${item.location_name}` : ''}
+            </Text>
             <Text style={styles.cardSub}>{item.customer_name || 'Walk-in'}</Text>
           </View>
           <Text style={styles.amount}>₹{(item.grand_total || 0).toFixed(0)}</Text>
@@ -318,6 +338,29 @@ export default function PickupOrdersScreen({ navigation }) {
           </TouchableOpacity>
         ))}
       </View>
+
+      {/* Location filter */}
+      {(locations.length > 0 && isManagerOrOwner) && (
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.locationTabsRow}>
+          {isOwner && (
+            <TouchableOpacity
+              style={[styles.locationChip, selectedLocation === null && styles.locationChipActive]}
+              onPress={() => setSelectedLocation(null)}
+            >
+              <Text style={[styles.locationChipText, selectedLocation === null && styles.locationChipTextActive]}>All Locations</Text>
+            </TouchableOpacity>
+          )}
+          {locations.map(loc => (
+            <TouchableOpacity
+              key={loc.id}
+              style={[styles.locationChip, selectedLocation === loc.id && styles.locationChipActive]}
+              onPress={() => setSelectedLocation(loc.id)}
+            >
+              <Text style={[styles.locationChipText, selectedLocation === loc.id && styles.locationChipTextActive]}>{loc.name}</Text>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
+      )}
 
       <SectionList
         sections={sections}
@@ -430,6 +473,11 @@ const styles = StyleSheet.create({
   tabActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
   tabText: { fontSize: FontSize.sm, color: Colors.textLight, fontWeight: '600' },
   tabTextActive: { color: '#fff' },
+  locationTabsRow: { flexGrow: 0, paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm },
+  locationChip: { paddingHorizontal: 16, paddingVertical: 6, borderRadius: 20, backgroundColor: Colors.surface, marginRight: 8, borderWidth: 1, borderColor: Colors.border, borderStyle: 'dashed' },
+  locationChipActive: { backgroundColor: Colors.primary + '15', borderColor: Colors.primary, borderStyle: 'solid' },
+  locationChipText: { fontSize: FontSize.sm, color: Colors.textSecondary },
+  locationChipTextActive: { color: Colors.primary, fontWeight: '700' },
   card: { backgroundColor: Colors.surface, borderRadius: BorderRadius.lg, padding: Spacing.md, marginBottom: Spacing.md, shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 4, elevation: 2 },
   timeHeader: { backgroundColor: Colors.primary + '10', borderRadius: BorderRadius.sm, padding: Spacing.sm, marginBottom: Spacing.sm, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   timeHeaderOverdue: { backgroundColor: '#FFEBEE' },

@@ -951,8 +951,8 @@ router.post(
             } else if (item.product_id) {
               let toMake = item.quantity;
 
-              // Walk-in: use partial ready stock to speed up
-              if (order_type === 'walk_in') {
+              // Walk-in or explicitly fulfilled: use partial ready stock to speed up
+              if (order_type === 'walk_in' || item.fulfill_from_stock === true || item.fulfill_from_stock === 'true') {
                 const ready = getReadyStock.get(item.product_id, location_id);
                 const readyQty = ready ? ready.quantity : 0;
                 if (readyQty > 0) {
@@ -960,7 +960,7 @@ router.post(
                   toMake = item.quantity - fromStock;
                   deductProductStock.run(fromStock, item.product_id, location_id);
                   if (fromStock > 0) {
-                    db.prepare('UPDATE sale_items SET from_product_stock = 1 WHERE id = ?').run(item.sale_item_id);
+                    db.prepare('UPDATE sale_items SET from_product_stock = 1, materials_deducted = 1 WHERE id = ?').run(item.sale_item_id);
                   }
                 }
               }
@@ -974,6 +974,18 @@ router.post(
               // Ad-hoc item (no product_id) — still create a production task
               const priority = order_type === 'walk_in' ? 'urgent' : 'medium';
               insertTask.run(saleId, item.sale_item_id, item.product_id || null, location_id, item.quantity, priority, item.special_instructions || '', nowLocal());
+            }
+          }
+        }
+
+        // Auto-complete to 'ready' if fully fulfilled from stock
+        if (order_type !== 'walk_in' && needsProduction) {
+          const taskCount = db.prepare("SELECT COUNT(*) as cnt FROM production_tasks WHERE sale_id = ? AND status NOT IN ('completed', 'cancelled')").get(saleId).cnt;
+          const unfulfilled = db.prepare("SELECT COUNT(*) as cnt FROM sale_items WHERE sale_id = ? AND product_id IS NOT NULL AND from_product_stock = 0").get(saleId).cnt;
+          if (taskCount === 0 && unfulfilled === 0) {
+            db.prepare("UPDATE sales SET status = 'ready', stock_deducted = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(saleId);
+            if (order_type === 'pickup') {
+              db.prepare("UPDATE sales SET pickup_status = 'ready_for_pickup' WHERE id = ?").run(saleId);
             }
           }
         }

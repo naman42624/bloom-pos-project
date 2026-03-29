@@ -93,7 +93,13 @@ router.get('/', authenticate, authorize('owner', 'manager', 'delivery_partner', 
     }
 
     if (location_id) { sql += ' AND d.location_id = ?'; params.push(parseInt(location_id)); }
-    if (status) { sql += ' AND d.status = ?'; params.push(status); }
+    if (status) {
+      if (status === 'active') {
+        sql += " AND d.status IN ('pending', 'assigned', 'picked_up', 'in_transit')";
+      } else {
+        sql += ' AND d.status = ?'; params.push(status);
+      }
+    }
     if (delivery_partner_id && req.user.role !== 'delivery_partner') {
       sql += ' AND d.delivery_partner_id = ?'; params.push(parseInt(delivery_partner_id));
     }

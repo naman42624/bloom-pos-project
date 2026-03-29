@@ -8,6 +8,7 @@ import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import { formatDateTime } from '../utils/datetime';
 
 const STATUS_TABS = [
+  { key: 'active', label: 'Active (To-Do)' },
   { key: 'all', label: 'All' },
   { key: 'pending', label: 'Pending' },
   { key: 'assigned', label: 'Assigned' },
@@ -31,7 +32,7 @@ export default function DeliveriesScreen({ navigation }) {
   const { user, activeLocation } = useAuth();
   const [deliveries, setDeliveries] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [statusFilter, setStatusFilter] = useState('all');
+  const [statusFilter, setStatusFilter] = useState('active');
   const [search, setSearch] = useState('');
   const [assignModalVisible, setAssignModalVisible] = useState(false);
   const [selectedDelivery, setSelectedDelivery] = useState(null);
@@ -40,7 +41,11 @@ export default function DeliveriesScreen({ navigation }) {
   const [now, setNow] = useState(new Date());
   const tickRef = useRef(null);
 
+  const [locations, setLocations] = useState([]);
+  const [selectedLocation, setSelectedLocation] = useState(null);
+
   const isManager = user?.role === 'owner' || user?.role === 'manager';
+  const isOwner = user?.role === 'owner';
 
   const [batchMode, setBatchMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState(new Set());
@@ -51,17 +56,30 @@ export default function DeliveriesScreen({ navigation }) {
     return () => clearInterval(tickRef.current);
   }, []);
 
+  const fetchLocations = useCallback(async () => {
+    try {
+      const res = await api.getLocations();
+      const locs = (res.data?.locations || res.data || []).filter(l => (l.type === 'shop' || l.type == null) && l.is_active);
+      setLocations(locs);
+      if (locs.length > 0 && selectedLocation === null && !isOwner) {
+        const defaultLoc = activeLocation && locs.some(l => l.id === activeLocation.id) ? activeLocation.id : locs[0].id;
+        setSelectedLocation(defaultLoc);
+      }
+    } catch (err) { console.error('Error fetching locations:', err); }
+  }, [activeLocation, isOwner, selectedLocation]);
+
+  useFocusEffect(useCallback(() => { fetchLocations(); }, [fetchLocations]));
+
   const fetchDeliveries = useCallback(async () => {
     try {
       setLoading(true);
       const params = { limit: 200 };
-      // Only filter by location for non-owner roles to avoid hiding deliveries
-      if (activeLocation && user?.role !== 'owner') params.location_id = activeLocation.id;
+      if (selectedLocation) params.location_id = selectedLocation;
       if (statusFilter !== 'all') params.status = statusFilter;
 
       const [deliveriesRes, atRiskRes] = await Promise.all([
         api.getDeliveries(params),
-        isManager ? api.getAtRiskOrders(activeLocation ? { location_id: activeLocation.id } : {}).catch(() => ({ data: [] })) : Promise.resolve({ data: [] }),
+        isManager ? api.getAtRiskOrders(selectedLocation ? { location_id: selectedLocation } : {}).catch(() => ({ data: [] })) : Promise.resolve({ data: [] }),
       ]);
 
       setDeliveries(deliveriesRes.data || []);
@@ -77,7 +95,7 @@ export default function DeliveriesScreen({ navigation }) {
     } finally {
       setLoading(false);
     }
-  }, [activeLocation, statusFilter, isManager]);
+  }, [selectedLocation, statusFilter, isManager]);
 
   useFocusEffect(useCallback(() => { fetchDeliveries(); }, [fetchDeliveries]));
 
@@ -282,8 +300,11 @@ export default function DeliveriesScreen({ navigation }) {
         )}
 
         <View style={styles.cardHeader}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-            <Text style={styles.orderNum}>{item.sale_number}</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap', flex: 1 }}>
+            <Text style={styles.orderNum}>
+              {item.sale_number}
+              {!selectedLocation && item.location_name ? ` • ${item.location_name}` : ''}
+            </Text>
             {isAtRisk && (
               <View style={styles.urgentBadge}>
                 <Ionicons name="warning" size={10} color="#FF6D00" />
@@ -291,6 +312,7 @@ export default function DeliveriesScreen({ navigation }) {
               </View>
             )}
           </View>
+
           <View style={[styles.badge, { backgroundColor: statusColor + '20' }]}>
             <Text style={[styles.badgeText, { color: statusColor }]}>
               {item.status.replace(/_/g, ' ').toUpperCase()}
@@ -389,6 +411,29 @@ export default function DeliveriesScreen({ navigation }) {
         ))}
       </ScrollView>
 
+      {/* Location filter */}
+      {(locations.length > 0 && isManager) && (
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.locationTabsRow}>
+          {isOwner && (
+            <TouchableOpacity
+              style={[styles.locationChip, selectedLocation === null && styles.locationChipActive]}
+              onPress={() => setSelectedLocation(null)}
+            >
+              <Text style={[styles.locationChipText, selectedLocation === null && styles.locationChipTextActive]}>All Locations</Text>
+            </TouchableOpacity>
+          )}
+          {locations.map(loc => (
+            <TouchableOpacity
+              key={loc.id}
+              style={[styles.locationChip, selectedLocation === loc.id && styles.locationChipActive]}
+              onPress={() => setSelectedLocation(loc.id)}
+            >
+              <Text style={[styles.locationChipText, selectedLocation === loc.id && styles.locationChipTextActive]}>{loc.name}</Text>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
+      )}
+
       {/* Batch mode bar */}
       {isManager && batchMode && (
         <View style={styles.batchBar}>
@@ -473,11 +518,16 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
   searchRow: { flexDirection: 'row', alignItems: 'center', margin: Spacing.md, marginBottom: 0, backgroundColor: Colors.surface, borderRadius: BorderRadius.md, paddingHorizontal: 12, paddingVertical: 8 },
   searchInput: { flex: 1, fontSize: FontSize.md, color: Colors.text },
-  tabsRow: { flexGrow: 0, paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm },
+  tabsRow: { flexGrow: 0, paddingHorizontal: Spacing.md, paddingTop: Spacing.sm },
   tab: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, backgroundColor: Colors.surface, marginRight: 8, borderWidth: 1, borderColor: Colors.border },
   tabActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
   tabText: { fontSize: FontSize.sm, color: Colors.textLight },
   tabTextActive: { color: '#fff', fontWeight: '600' },
+  locationTabsRow: { flexGrow: 0, paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm, marginBottom: Spacing.sm },
+  locationChip: { paddingHorizontal: 16, paddingVertical: 6, borderRadius: 20, backgroundColor: Colors.surface, marginRight: 8, borderWidth: 1, borderColor: Colors.border, borderStyle: 'dashed' },
+  locationChipActive: { backgroundColor: Colors.primary + '15', borderColor: Colors.primary, borderStyle: 'solid' },
+  locationChipText: { fontSize: FontSize.sm, color: Colors.textSecondary },
+  locationChipTextActive: { color: Colors.primary, fontWeight: '700' },
   card: { backgroundColor: Colors.surface, borderRadius: BorderRadius.lg, padding: Spacing.md, marginBottom: Spacing.md, shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 4, elevation: 2 },
   cardAtRisk: { borderWidth: 2, borderColor: '#FF6D00' },
   timeHeader: { backgroundColor: Colors.primary + '10', borderRadius: BorderRadius.sm, padding: Spacing.sm, marginBottom: Spacing.sm, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },

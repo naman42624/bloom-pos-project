@@ -188,6 +188,7 @@ export default function QuickCheckoutScreen({ navigation }) {
       quantity: '1',
       special_instructions: '',
       image_url: '',
+      fulfill_from_stock: false,
     }]);
   };
 
@@ -207,6 +208,7 @@ export default function QuickCheckoutScreen({ navigation }) {
         baseProduct: product,
         materials: bom,
         price: String(product.selling_price || 0),
+        fulfill_from_stock: (product.ready_qty || product.stock_quantity || 0) > 0,
       };
       setItems(updated);
     } catch {
@@ -216,6 +218,7 @@ export default function QuickCheckoutScreen({ navigation }) {
         name: product.name,
         baseProduct: product,
         price: String(product.selling_price || 0),
+        fulfill_from_stock: (product.ready_qty || product.stock_quantity || 0) > 0,
       };
       setItems(updated);
     }
@@ -371,6 +374,7 @@ export default function QuickCheckoutScreen({ navigation }) {
           .map(m => ({ material_id: m.material_id, name: m.name, qty_per_unit: parseFloat(m.qty) || 1 })),
         special_instructions: item.special_instructions || '',
         image_url: item.image_url || '',
+        fulfill_from_stock: item.fulfill_from_stock || false,
       }));
 
       const { subtotal, taxTotal, discountAmount, delivery, finalTotal: finalGrandTotal } = totals;
@@ -773,6 +777,19 @@ export default function QuickCheckoutScreen({ navigation }) {
                   </View>
                 </View>
               </View>
+
+              {/* Fulfill From Stock Toggle */}
+              {item.baseProduct && (item.baseProduct.ready_qty > 0 || item.baseProduct.stock_quantity > 0) && item.materials.length === 0 && !item.special_instructions && (
+                <TouchableOpacity
+                  style={{ flexDirection: 'row', alignItems: 'center', marginTop: 12, marginBottom: 4 }}
+                  onPress={() => updateItem(idx, 'fulfill_from_stock', !item.fulfill_from_stock)}
+                >
+                  <Ionicons name={item.fulfill_from_stock ? 'checkmark-circle' : 'ellipse-outline'} size={20} color={item.fulfill_from_stock ? Colors.success : Colors.textLight} />
+                  <Text style={{ fontSize: FontSize.sm, color: item.fulfill_from_stock ? Colors.success : Colors.textSecondary, fontWeight: '500', marginLeft: 6 }}>
+                    Fulfill from Stock (Avail: {item.baseProduct.ready_qty || item.baseProduct.stock_quantity})
+                  </Text>
+                </TouchableOpacity>
+              )}
 
               {/* Materials */}
               <View style={styles.materialsSection}>

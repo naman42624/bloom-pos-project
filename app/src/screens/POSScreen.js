@@ -157,6 +157,10 @@ export default function POSScreen({ navigation, route }) {
         tax_amount: taxAmount,
         line_total: unitPrice + taxAmount,
         image_url: product.image_url,
+        stock_quantity: product.ready_qty || product.stock_quantity || 0,
+        fulfill_from_stock: (product.ready_qty || product.stock_quantity || 0) > 0,
+        custom_materials: [],
+        special_instructions: '',
       }];
     });
   };
@@ -545,6 +549,17 @@ export default function POSScreen({ navigation, route }) {
                     <Ionicons name="add" size={20} color={Colors.primary} />
                   </TouchableOpacity>
                 </View>
+                {!c.material_id && c.stock_quantity > 0 && (!c.custom_materials || c.custom_materials.length === 0) && !c.special_instructions && (
+                  <TouchableOpacity
+                    style={{ flexDirection: 'row', alignItems: 'center', marginTop: 8, gap: 6 }}
+                    onPress={() => setCart(prev => prev.map(it => cartItemKey(it) === cartItemKey(c) ? { ...it, fulfill_from_stock: !it.fulfill_from_stock } : it))}
+                  >
+                    <Ionicons name={c.fulfill_from_stock ? 'checkmark-circle' : 'ellipse-outline'} size={18} color={c.fulfill_from_stock ? Colors.success : Colors.textLight} />
+                    <Text style={{ fontSize: 11, color: c.fulfill_from_stock ? Colors.success : Colors.textLight }}>
+                      Fulfill from Stock (Avail: {c.stock_quantity})
+                    </Text>
+                  </TouchableOpacity>
+                )}
               </View>
             ))}
           </ScrollView>
