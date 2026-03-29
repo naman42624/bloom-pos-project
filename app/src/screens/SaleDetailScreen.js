@@ -476,8 +476,7 @@ export default function SaleDetailScreen({ route, navigation }) {
         {(sale.items || []).map((item, idx) => {
           const itemName = item.product_name || item.display_name || 'Item';
           const itemTotal = item.line_total ?? ((Number(item.quantity) || 0) * (Number(item.unit_price) || 0) + (Number(item.tax_amount) || 0));
-          const canFulfill = sale.order_type !== 'walk_in'
-            && !['cancelled', 'completed'].includes(sale.status)
+          const canFulfill = !['cancelled', 'completed'].includes(sale.status)
             && item.product_id
             && !item.from_product_stock;
           const task = item.production_task;

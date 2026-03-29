@@ -549,30 +549,25 @@ export default function POSScreen({ navigation, route }) {
                     <Ionicons name="add" size={20} color={Colors.primary} />
                   </TouchableOpacity>
                 </View>
-                {!c.material_id && c.stock_quantity > 0 && !c.special_instructions && (
+                {orderType === 'walk_in' && !c.material_id && c.stock_quantity > 0 && !c.special_instructions && (
                   <TouchableOpacity
                     style={{
-                      flexDirection: 'row', alignItems: 'center', marginTop: 10, paddingVertical: 8, paddingHorizontal: 12,
-                      borderRadius: 8, gap: 8,
-                      backgroundColor: c.fulfill_from_stock ? Colors.success + '18' : Colors.warning + '12',
-                      borderWidth: 1.5,
-                      borderColor: c.fulfill_from_stock ? Colors.success + '50' : Colors.warning + '40',
+                      flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-start',
+                      marginTop: 6, paddingVertical: 4, paddingHorizontal: 10, borderRadius: 12,
+                      backgroundColor: c.fulfill_from_stock ? Colors.success + '15' : Colors.textLight + '10',
+                      borderWidth: 1, borderColor: c.fulfill_from_stock ? Colors.success + '40' : Colors.textLight + '30',
+                      gap: 4
                     }}
                     onPress={() => setCart(prev => prev.map(it => cartItemKey(it) === cartItemKey(c) ? { ...it, fulfill_from_stock: !it.fulfill_from_stock } : it))}
                   >
                     <Ionicons
                       name={c.fulfill_from_stock ? 'checkmark-circle' : 'cube-outline'}
-                      size={20}
-                      color={c.fulfill_from_stock ? Colors.success : Colors.warning}
+                      size={14}
+                      color={c.fulfill_from_stock ? Colors.success : Colors.textSecondary}
                     />
-                    <View style={{ flex: 1 }}>
-                      <Text style={{ fontSize: 13, fontWeight: '700', color: c.fulfill_from_stock ? Colors.success : Colors.warning }}>
-                        {c.fulfill_from_stock ? '✓ Fulfilling from Stock' : 'Fulfill from Ready Stock?'}
-                      </Text>
-                      <Text style={{ fontSize: 11, color: Colors.textSecondary, marginTop: 1 }}>
-                        {c.stock_quantity} ready · Tap to {c.fulfill_from_stock ? 'create production task instead' : 'use from stock'}
-                      </Text>
-                    </View>
+                    <Text style={{ fontSize: 11, fontWeight: '600', color: c.fulfill_from_stock ? Colors.success : Colors.textSecondary }}>
+                      {c.fulfill_from_stock ? 'From Stock' : 'Use Stock?'}
+                    </Text>
                   </TouchableOpacity>
                 )}
               </View>

@@ -843,41 +843,54 @@ router.post(
 
         if (order_type === 'walk_in') {
           const getReadyStockCheck = db.prepare('SELECT quantity FROM product_stock WHERE product_id = ? AND location_id = ?');
-          let allInStock = true;
+          let allSubmittableFromStock = true;
+
           for (const item of processedItems) {
+            // Cannot satisfy from ready-made stock if customized
             if (item.special_instructions) {
-              allInStock = false;
+              allSubmittableFromStock = false;
               break;
             }
-            // Check for actual customizations (custom_materials may be a JSON string or array)
             let customMats = item.custom_materials;
             if (typeof customMats === 'string') {
               try { customMats = JSON.parse(customMats); } catch { customMats = null; }
             }
             if (customMats && Array.isArray(customMats) && customMats.length > 0) {
-              allInStock = false;
+              allSubmittableFromStock = false;
               break;
             }
+
+            // Only try fulfilling from stock if user specifically requested it
+            const requested = item.fulfill_from_stock === true || item.fulfill_from_stock === 'true';
+            if (!requested) {
+              allSubmittableFromStock = false;
+              break;
+            }
+
             if (item.product_id) {
               const ready = getReadyStockCheck.get(item.product_id, location_id);
               if (!ready || ready.quantity < item.quantity) {
-                allInStock = false;
+                allSubmittableFromStock = false;
                 break;
               }
             } else {
-              allInStock = false;
+              // Ad-hoc item with no product ID always needs some "production" or ad-hoc handling
+              allSubmittableFromStock = false;
               break;
             }
           }
-          if (allInStock) {
+
+          if (allSubmittableFromStock) {
             initialStatus = 'completed';
             stockDeducted = 1;
+            needsProduction = false;
           } else {
             initialStatus = 'preparing';
             needsProduction = true;
           }
         } else {
-          // delivery / pickup / pre_order — always pending, production tasks created
+          // delivery / pickup / pre_order — always pending, production tasks created.
+          // Fulfill-from-stock for these types is handled manually after sale creation.
           initialStatus = 'pending';
           needsProduction = true;
         }
@@ -960,8 +973,8 @@ router.post(
             } else if (item.product_id) {
               let toMake = item.quantity;
 
-              // Walk-ins always try stock; non-walk-ins only if explicitly toggled on
-              const shouldFulfill = order_type === 'walk_in' || item.fulfill_from_stock === true || item.fulfill_from_stock === 'true';
+              // At checkout time, fulfillment is strictly for walk-ins that requested it
+              const shouldFulfill = order_type === 'walk_in' && (item.fulfill_from_stock === true || item.fulfill_from_stock === 'true');
 
               if (shouldFulfill) {
                 const ready = getReadyStock.get(item.product_id, location_id);
@@ -975,7 +988,6 @@ router.post(
                   }
                 }
               }
-              // Non-walk-in: full quantity goes to production (lazy deduction)
 
               if (toMake > 0) {
                 const priority = order_type === 'walk_in' ? 'urgent' : 'medium';
@@ -989,7 +1001,7 @@ router.post(
           }
         }
 
-        // Auto-complete to 'ready' if fully fulfilled from stock
+        // For non-walk-in orders, check if we've auto-fulfilled everything (this can happen if code was modified for other automated flows)
         if (order_type !== 'walk_in' && needsProduction) {
           const taskCount = db.prepare("SELECT COUNT(*) as cnt FROM production_tasks WHERE sale_id = ? AND status NOT IN ('completed', 'cancelled')").get(saleId).cnt;
           const unfulfilled = db.prepare("SELECT COUNT(*) as cnt FROM sale_items WHERE sale_id = ? AND product_id IS NOT NULL AND from_product_stock = 0").get(saleId).cnt;
