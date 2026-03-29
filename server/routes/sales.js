@@ -725,7 +725,7 @@ router.post(
           subtotal += unitPrice * qty;
           taxTotal += taxAmount;
 
-          return { product_id: productId, material_id: materialId, product_name: name, quantity: qty, unit_price: unitPrice, tax_rate: taxRate, tax_amount: taxAmount, line_total: lineTotal, special_instructions: item.special_instructions || null, image_url: item.image_url || null, custom_materials: item.custom_materials || null };
+          return { product_id: productId, material_id: materialId, product_name: name, quantity: qty, unit_price: unitPrice, tax_rate: taxRate, tax_amount: taxAmount, line_total: lineTotal, special_instructions: item.special_instructions || null, image_url: item.image_url || null, custom_materials: item.custom_materials || null, fulfill_from_stock: item.fulfill_from_stock };
         });
 
         // Discount — with threshold enforcement
@@ -951,8 +951,10 @@ router.post(
             } else if (item.product_id) {
               let toMake = item.quantity;
 
-              // Walk-in or explicitly fulfilled: use partial ready stock to speed up
-              if (order_type === 'walk_in' || item.fulfill_from_stock === true || item.fulfill_from_stock === 'true') {
+              // Walk-ins always try stock; non-walk-ins only if explicitly toggled on
+              const shouldFulfill = order_type === 'walk_in' || item.fulfill_from_stock === true || item.fulfill_from_stock === 'true';
+
+              if (shouldFulfill) {
                 const ready = getReadyStock.get(item.product_id, location_id);
                 const readyQty = ready ? ready.quantity : 0;
                 if (readyQty > 0) {

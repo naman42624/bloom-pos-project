@@ -779,7 +779,7 @@ export default function QuickCheckoutScreen({ navigation }) {
               </View>
 
               {/* Fulfill From Stock Toggle */}
-              {item.baseProduct && (item.baseProduct.ready_qty > 0 || item.baseProduct.stock_quantity > 0) && item.materials.length === 0 && !item.special_instructions && (
+              {item.baseProduct && (item.baseProduct.ready_qty > 0 || item.baseProduct.stock_quantity > 0) && !item.special_instructions && (
                 <TouchableOpacity
                   style={{ flexDirection: 'row', alignItems: 'center', marginTop: 12, marginBottom: 4 }}
                   onPress={() => updateItem(idx, 'fulfill_from_stock', !item.fulfill_from_stock)}

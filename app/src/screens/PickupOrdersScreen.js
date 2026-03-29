@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { View, Text, SectionList, TouchableOpacity, StyleSheet, Alert, Platform, ActivityIndicator, Modal, TextInput, KeyboardAvoidingView } from 'react-native';
+import { View, Text, SectionList, TouchableOpacity, StyleSheet, Alert, Platform, ActivityIndicator, Modal, TextInput, KeyboardAvoidingView, ScrollView } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '../context/AuthContext';

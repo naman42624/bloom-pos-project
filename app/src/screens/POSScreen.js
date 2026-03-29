@@ -549,7 +549,7 @@ export default function POSScreen({ navigation, route }) {
                     <Ionicons name="add" size={20} color={Colors.primary} />
                   </TouchableOpacity>
                 </View>
-                {!c.material_id && c.stock_quantity > 0 && (!c.custom_materials || c.custom_materials.length === 0) && !c.special_instructions && (
+                {!c.material_id && c.stock_quantity > 0 && !c.special_instructions && (
                   <TouchableOpacity
                     style={{ flexDirection: 'row', alignItems: 'center', marginTop: 8, gap: 6 }}
                     onPress={() => setCart(prev => prev.map(it => cartItemKey(it) === cartItemKey(c) ? { ...it, fulfill_from_stock: !it.fulfill_from_stock } : it))}
