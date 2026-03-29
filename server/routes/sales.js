@@ -845,7 +845,16 @@ router.post(
           const getReadyStockCheck = db.prepare('SELECT quantity FROM product_stock WHERE product_id = ? AND location_id = ?');
           let allInStock = true;
           for (const item of processedItems) {
-            if (item.special_instructions || item.image_url || item.materials?.length > 0 || (item.custom_materials && item.custom_materials.length > 0)) {
+            if (item.special_instructions) {
+              allInStock = false;
+              break;
+            }
+            // Check for actual customizations (custom_materials may be a JSON string or array)
+            let customMats = item.custom_materials;
+            if (typeof customMats === 'string') {
+              try { customMats = JSON.parse(customMats); } catch { customMats = null; }
+            }
+            if (customMats && Array.isArray(customMats) && customMats.length > 0) {
               allInStock = false;
               break;
             }

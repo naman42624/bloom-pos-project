@@ -781,13 +781,28 @@ export default function QuickCheckoutScreen({ navigation }) {
               {/* Fulfill From Stock Toggle */}
               {item.baseProduct && (item.baseProduct.ready_qty > 0 || item.baseProduct.stock_quantity > 0) && !item.special_instructions && (
                 <TouchableOpacity
-                  style={{ flexDirection: 'row', alignItems: 'center', marginTop: 12, marginBottom: 4 }}
+                  style={{
+                    flexDirection: 'row', alignItems: 'center', marginTop: 12, marginBottom: 4, paddingVertical: 10, paddingHorizontal: 14,
+                    borderRadius: 10, gap: 10,
+                    backgroundColor: item.fulfill_from_stock ? Colors.success + '18' : Colors.warning + '12',
+                    borderWidth: 1.5,
+                    borderColor: item.fulfill_from_stock ? Colors.success + '50' : Colors.warning + '40',
+                  }}
                   onPress={() => updateItem(idx, 'fulfill_from_stock', !item.fulfill_from_stock)}
                 >
-                  <Ionicons name={item.fulfill_from_stock ? 'checkmark-circle' : 'ellipse-outline'} size={20} color={item.fulfill_from_stock ? Colors.success : Colors.textLight} />
-                  <Text style={{ fontSize: FontSize.sm, color: item.fulfill_from_stock ? Colors.success : Colors.textSecondary, fontWeight: '500', marginLeft: 6 }}>
-                    Fulfill from Stock (Avail: {item.baseProduct.ready_qty || item.baseProduct.stock_quantity})
-                  </Text>
+                  <Ionicons
+                    name={item.fulfill_from_stock ? 'checkmark-circle' : 'cube-outline'}
+                    size={22}
+                    color={item.fulfill_from_stock ? Colors.success : Colors.warning}
+                  />
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ fontSize: 14, fontWeight: '700', color: item.fulfill_from_stock ? Colors.success : Colors.warning }}>
+                      {item.fulfill_from_stock ? '✓ Fulfilling from Stock' : 'Fulfill from Ready Stock?'}
+                    </Text>
+                    <Text style={{ fontSize: 12, color: Colors.textSecondary, marginTop: 2 }}>
+                      {item.baseProduct.ready_qty || item.baseProduct.stock_quantity} ready · Tap to {item.fulfill_from_stock ? 'create production task instead' : 'use from stock'}
+                    </Text>
+                  </View>
                 </TouchableOpacity>
               )}
 
