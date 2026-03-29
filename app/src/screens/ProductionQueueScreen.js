@@ -178,39 +178,84 @@ export default function ProductionQueueScreen({ navigation }) {
   };
 
   const handlePickTask = (task) => {
-    Alert.alert('Pick Task', `Pick up: ${task.quantity}x ${task.product_name}?`, [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Pick Up', onPress: async () => {
-        try {
-          await api.pickTask(task.id);
-          fetchTasks();
-        } catch (err) { Alert.alert('Error', err.message || 'Failed'); }
-      }},
-    ]);
+    const msg = `Pick up: ${task.quantity}x ${task.product_name}?`;
+    const onConfirm = async () => {
+      try {
+        await api.pickTask(task.id);
+        fetchTasks();
+      } catch (err) {
+        if (Platform.OS === 'web') {
+          window.alert('Error: ' + (err.message || 'Failed'));
+        } else {
+          Alert.alert('Error', err.message || 'Failed');
+        }
+      }
+    };
+
+    if (Platform.OS === 'web') {
+      setTimeout(() => {
+        if (window.confirm(msg)) onConfirm();
+      }, 50);
+    } else {
+      Alert.alert('Pick Task', msg, [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Pick Up', onPress: onConfirm },
+      ]);
+    }
   };
 
   const handleStartTask = (task) => {
-    Alert.alert('Start Task', `Start making ${task.quantity}x ${task.product_name}?`, [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Start', onPress: async () => {
-        try {
-          await api.startTask(task.id);
-          fetchTasks();
-        } catch (err) { Alert.alert('Error', err.message || 'Failed'); }
-      }},
-    ]);
+    const msg = `Start making ${task.quantity}x ${task.product_name}?`;
+    const onConfirm = async () => {
+      try {
+        await api.startTask(task.id);
+        fetchTasks();
+      } catch (err) {
+        if (Platform.OS === 'web') {
+          window.alert('Error: ' + (err.message || 'Failed'));
+        } else {
+          Alert.alert('Error', err.message || 'Failed');
+        }
+      }
+    };
+
+    if (Platform.OS === 'web') {
+      setTimeout(() => {
+        if (window.confirm(msg)) onConfirm();
+      }, 50);
+    } else {
+      Alert.alert('Start Task', msg, [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Start', onPress: onConfirm },
+      ]);
+    }
   };
 
   const handleCompleteTask = (task) => {
-    Alert.alert('Complete Task', `Done making ${task.quantity}x ${task.product_name}?\n\nMaterials will be deducted.`, [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Complete', style: 'default', onPress: async () => {
-        try {
-          await api.completeTask(task.id);
-          fetchTasks();
-        } catch (err) { Alert.alert('Error', err.message || 'Failed'); }
-      }},
-    ]);
+    const msg = `Done making ${task.quantity}x ${task.product_name}?\n\nMaterials will be deducted.`;
+    const onConfirm = async () => {
+      try {
+        await api.completeTask(task.id);
+        fetchTasks();
+      } catch (err) {
+        if (Platform.OS === 'web') {
+          window.alert('Error: ' + (err.message || 'Failed'));
+        } else {
+          Alert.alert('Error', err.message || 'Failed');
+        }
+      }
+    };
+
+    if (Platform.OS === 'web') {
+      setTimeout(() => {
+        if (window.confirm(msg)) onConfirm();
+      }, 50);
+    } else {
+      Alert.alert('Complete Task', msg, [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Complete', style: 'default', onPress: onConfirm },
+      ]);
+    }
   };
 
   const openAssignModal = async (task) => {
@@ -268,15 +313,30 @@ export default function ProductionQueueScreen({ navigation }) {
 
   // Order-level status (legacy)
   const handleOrderStatus = (order, nextStatus, label) => {
-    Alert.alert(label, `${label} for ${order.sale_number}?`, [
-      { text: 'Cancel', style: 'cancel' },
-      { text: label, onPress: async () => {
-        try {
-          await api.updateOrderStatus(order.id, nextStatus);
-          fetchOrders();
-        } catch (err) { Alert.alert('Error', err.message || 'Failed'); }
-      }},
-    ]);
+    const msg = `${label} for ${order.sale_number}?`;
+    const onConfirm = async () => {
+      try {
+        await api.updateOrderStatus(order.id, nextStatus);
+        fetchOrders();
+      } catch (err) {
+        if (Platform.OS === 'web') {
+          window.alert('Error: ' + (err.message || 'Failed'));
+        } else {
+          Alert.alert('Error', err.message || 'Failed');
+        }
+      }
+    };
+
+    if (Platform.OS === 'web') {
+      setTimeout(() => {
+        if (window.confirm(msg)) onConfirm();
+      }, 50);
+    } else {
+      Alert.alert(label, msg, [
+        { text: 'Cancel', style: 'cancel' },
+        { text: label, onPress: onConfirm },
+      ]);
+    }
   };
 
   const formatTime = (dateStr) => {

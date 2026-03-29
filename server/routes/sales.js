@@ -1149,6 +1149,11 @@ router.post(
 
       db.prepare('UPDATE sales SET payment_status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(paymentStatus, sale.id);
 
+      // Decrement customer credit balance
+      if (sale.customer_id) {
+        db.prepare('UPDATE users SET credit_balance = MAX(0, credit_balance - ?), updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(amount, sale.customer_id);
+      }
+
       // Update cash register
       const register = db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1').get(sale.location_id);
       if (register) {
@@ -1292,6 +1297,18 @@ router.put(
           return res.status(400).json({
             success: false,
             message: `Cannot complete — delivery is still '${delivery.status}'. Mark the delivery as 'delivered' first.`,
+          });
+        }
+      }
+
+      // ── Enforce pickup payment before marking order 'completed' ──
+      if (status === 'completed' && sale.order_type === 'pickup') {
+        const totalPaid = db.prepare('SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE sale_id = ?').get(sale.id).total;
+        const balanceDue = sale.grand_total - totalPaid;
+        if (balanceDue > 0.01) {
+          return res.status(400).json({
+            success: false,
+            message: `Cannot complete pickup — balance due: ₹${balanceDue.toFixed(2)}. Please collect payment first.`,
           });
         }
       }

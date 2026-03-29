@@ -210,7 +210,34 @@ export default function CustomerDetailScreen({ route, navigation }) {
               <Ionicons name="alert-circle" size={20} color={Colors.error} />
               <Text style={styles.dueAmount}>₹{customer.credit_balance.toFixed(2)}</Text>
             </View>
+            
+            {/* Pending Dues Breakup */}
+            {(customer.orders || []).filter(o => o.balance_due > 0.01).length > 0 && (
+              <View style={{ marginTop: Spacing.sm }}>
+                <Text style={[styles.sectionTitle, { marginTop: 0, paddingHorizontal: 0, fontSize: FontSize.sm, color: Colors.textSecondary }]}>
+                  Pending Dues Breakup:
+                </Text>
+                {(customer.orders || []).filter(o => o.balance_due > 0.01).map(order => (
+                  <TouchableOpacity
+                    key={`due-${order.id}`}
+                    style={[styles.orderCard, { marginHorizontal: 0, borderColor: Colors.error + '30', backgroundColor: Colors.error + '05' }]}
+                    onPress={() => navigation.navigate('SaleDetail', { saleId: order.id })}
+                  >
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.orderNumber}>{order.sale_number}</Text>
+                      <Text style={styles.orderMeta}>{formatDate(order.created_at)}</Text>
+                    </View>
+                    <View style={{ alignItems: 'flex-end', marginRight: Spacing.xs }}>
+                      <Text style={[styles.orderTotal, { color: Colors.error }]}>Due: ₹{order.balance_due.toFixed(0)}</Text>
+                      <Text style={styles.orderMeta}>Total: ₹{(order.grand_total || 0).toFixed(0)}</Text>
+                    </View>
+                    <Ionicons name="chevron-forward" size={16} color={Colors.textLight} />
+                  </TouchableOpacity>
+                ))}
+              </View>
+            )}
           </View>
+
         )}
 
         {/* Credit payment history */}

@@ -36,6 +36,12 @@ const TASK_STATUS_COLORS = {
   cancelled: '#9E9E9E',
 };
 
+const PAYMENT_METHODS = [
+  { key: 'cash', label: 'Cash', icon: 'cash' },
+  { key: 'card', label: 'Card', icon: 'card' },
+  { key: 'upi', label: 'UPI', icon: 'phone-portrait' },
+];
+
 export default function SaleDetailScreen({ route, navigation }) {
   const { saleId } = route.params;
   const { user } = useAuth();
@@ -58,6 +64,13 @@ export default function SaleDetailScreen({ route, navigation }) {
   const [assignTaskId, setAssignTaskId] = useState(null);
   const [employees, setEmployees] = useState([]);
   const [loadingEmployees, setLoadingEmployees] = useState(false);
+
+  // Pickup Payment Modal
+  const [pickupPayModalVisible, setPickupPayModalVisible] = useState(false);
+  const [pickupPayMethod, setPickupPayMethod] = useState('cash');
+  const [pickupPayAmount, setPickupPayAmount] = useState('');
+  const [pickupPayRef, setPickupPayRef] = useState('');
+  const [confirmingPickup, setConfirmingPickup] = useState(false);
 
   useEffect(() => { fetchSale(); }, [saleId]);
 
@@ -113,20 +126,68 @@ export default function SaleDetailScreen({ route, navigation }) {
       }
     }
 
-    Alert.alert(label, `${label} for this order?`, [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: label,
-        onPress: async () => {
-          try {
-            await api.updateOrderStatus(saleId, nextStatus);
-            fetchSale();
-          } catch (err) {
-            Alert.alert('Error', err.message || 'Failed to update status');
-          }
-        },
-      },
-    ]);
+    // Guard: pickup orders must be fully paid before completion
+    if (nextStatus === 'completed' && sale.order_type === 'pickup' && due > 0.01) {
+      setPickupPayAmount(due.toFixed(0));
+      setPickupPayMethod('cash');
+      setPickupPayRef('');
+      setPickupPayModalVisible(true);
+      return;
+    }
+
+    const msg = `${label} for this order?`;
+    const onConfirm = async () => {
+      try {
+        await api.updateOrderStatus(saleId, nextStatus);
+        fetchSale();
+      } catch (err) {
+        if (Platform.OS === 'web') {
+          window.alert('Error: ' + (err.message || 'Failed to update status'));
+        } else {
+          Alert.alert('Error', err.message || 'Failed to update status');
+        }
+      }
+    };
+
+    if (Platform.OS === 'web') {
+      setTimeout(() => {
+        if (window.confirm(msg)) onConfirm();
+      }, 50);
+    } else {
+      Alert.alert(label, msg, [
+        { text: 'Cancel', style: 'cancel' },
+        { text: label, onPress: onConfirm },
+      ]);
+    }
+  };
+
+  const handleConfirmPickupPayment = async () => {
+    const amt = parseFloat(pickupPayAmount);
+    if (!amt || amt <= 0) {
+      Alert.alert('Invalid', 'Please enter a valid payment amount.');
+      return;
+    }
+
+    setConfirmingPickup(true);
+    try {
+      // 1. Record payment
+      await api.addPaymentToSale(saleId, {
+        method: pickupPayMethod,
+        amount: amt,
+        reference_number: pickupPayRef || null,
+      });
+
+      // 2. Update status to completed
+      await api.updateOrderStatus(saleId, 'completed');
+
+      setPickupPayModalVisible(false);
+      fetchSale();
+      Alert.alert('Success', 'Payment recorded and order completed.');
+    } catch (err) {
+      Alert.alert('Error', err.message || 'Failed to complete pickup payment');
+    } finally {
+      setConfirmingPickup(false);
+    }
   };
 
   const handleFulfillFromStock = (saleItemId, productName) => {
@@ -863,6 +924,81 @@ export default function SaleDetailScreen({ route, navigation }) {
           </View>
         </View>
       </Modal>
+      
+      {/* Pickup Payment Modal */}
+      <Modal visible={pickupPayModalVisible} transparent animationType="slide">
+        <KeyboardAvoidingView style={styles.modalOverlay} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Complete Pickup Payment</Text>
+              <TouchableOpacity onPress={() => setPickupPayModalVisible(false)}>
+                <Ionicons name="close" size={24} color={Colors.text} />
+              </TouchableOpacity>
+            </View>
+
+            <Text style={styles.modalSubtitle}>
+              {sale.sale_number} — {sale.customer_name || sale.customer_display_name || 'Customer'}
+            </Text>
+
+            <View style={styles.balanceBox}>
+              <Text style={styles.balanceLabel}>Remaining Balance</Text>
+              <Text style={styles.balanceAmount}>₹{due.toFixed(2)}</Text>
+            </View>
+
+            <Text style={styles.fieldLabel}>Payment Method</Text>
+            <View style={styles.chipRow}>
+              {PAYMENT_METHODS.map(m => (
+                <TouchableOpacity
+                  key={m.key}
+                  style={[styles.methodChip, pickupPayMethod === m.key && styles.methodChipActive]}
+                  onPress={() => setPickupPayMethod(m.key)}
+                >
+                  <Ionicons name={m.icon} size={16} color={pickupPayMethod === m.key ? '#fff' : Colors.textSecondary} />
+                  <Text style={[styles.methodChipText, pickupPayMethod === m.key && styles.methodChipTextActive]}>{m.label}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            <Text style={styles.fieldLabel}>Amount to Receive</Text>
+            <TextInput
+              style={styles.modalInput}
+              value={pickupPayAmount}
+              onChangeText={setPickupPayAmount}
+              placeholder="₹ Amount"
+              placeholderTextColor={Colors.textLight}
+              keyboardType="numeric"
+            />
+
+            {pickupPayMethod !== 'cash' && (
+              <>
+                <Text style={styles.fieldLabel}>Reference / Transaction ID</Text>
+                <TextInput
+                  style={styles.modalInput}
+                  value={pickupPayRef}
+                  onChangeText={setPickupPayRef}
+                  placeholder="Optional reference"
+                  placeholderTextColor={Colors.textLight}
+                />
+              </>
+            )}
+
+            <TouchableOpacity
+              style={[styles.confirmBtn, confirmingPickup && { opacity: 0.6 }]}
+              onPress={handleConfirmPickupPayment}
+              disabled={confirmingPickup}
+            >
+              {confirmingPickup ? (
+                <ActivityIndicator color="#fff" size="small" />
+              ) : (
+                <>
+                  <Ionicons name="checkmark-circle" size={20} color="#fff" />
+                  <Text style={styles.confirmBtnText}>Confirm Payment & Complete</Text>
+                </>
+              )}
+            </TouchableOpacity>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
     </ScrollView>
   );
 }
@@ -975,4 +1111,23 @@ const styles = StyleSheet.create({
   convertInfo: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: Spacing.md, lineHeight: 20 },
   confirmBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: Colors.primary, paddingVertical: 14, borderRadius: BorderRadius.md, marginTop: Spacing.lg },
   confirmBtnText: { color: '#fff', fontSize: FontSize.md, fontWeight: '700' },
+
+  // Pickup Modal Specifics
+  modalSubtitle: { fontSize: FontSize.sm, color: Colors.textSecondary, marginBottom: Spacing.md },
+  balanceBox: {
+    backgroundColor: Colors.primary + '10', borderRadius: BorderRadius.md,
+    padding: Spacing.md, alignItems: 'center', marginBottom: Spacing.md,
+    borderWidth: 1, borderColor: Colors.primary + '30',
+  },
+  balanceLabel: { fontSize: FontSize.xs, color: Colors.primary, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 1 },
+  balanceAmount: { fontSize: FontSize.xl, fontWeight: '800', color: Colors.primary, marginTop: 4 },
+  chipRow: { flexDirection: 'row', gap: Spacing.xs, marginBottom: Spacing.sm },
+  methodChip: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    paddingVertical: 10, borderRadius: BorderRadius.full, backgroundColor: Colors.background,
+    borderWidth: 1, borderColor: Colors.border,
+  },
+  methodChipActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
+  methodChipText: { fontSize: FontSize.xs, color: Colors.textSecondary, fontWeight: '600' },
+  methodChipTextActive: { color: '#fff' },
 });
