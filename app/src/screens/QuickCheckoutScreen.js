@@ -6,7 +6,8 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect, CommonActions } from '@react-navigation/native';
+
 import DateTimePickerModal from '../components/DateTimePickerModal';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
@@ -430,8 +431,17 @@ export default function QuickCheckoutScreen({ navigation }) {
 
       const res = await api.createSale(saleData);
       if (res.success) {
-        navigation.replace('SaleDetail', { saleId: res.data.id });
+        navigation.dispatch(
+          CommonActions.reset({
+            index: 1,
+            routes: [
+              { name: 'POSHome', params: { clearCart: true } },
+              { name: 'SaleDetail', params: { saleId: res.data.id, fromCheckout: true } },
+            ],
+          })
+        );
       } else {
+
         Alert.alert('Error', res.message || 'Failed to place order');
       }
     } catch (err) {

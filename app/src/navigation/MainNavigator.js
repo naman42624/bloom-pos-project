@@ -129,8 +129,12 @@ function DashboardStack() {
       <Stack.Screen name="SaleDetail" component={SaleDetailScreen} options={{ title: 'Sale Details' }} />
       <Stack.Screen name="DeliveryDetail" component={DeliveryDetailScreen} options={{ title: 'Delivery' }} />
       <Stack.Screen name="ProductionQueue" component={ProductionQueueScreen} options={{ title: 'Production Queue' }} />
+      <Stack.Screen name="CompletedTasks" component={CompletedTasksScreen} options={{ title: 'Completed Tasks' }} />
+      <Stack.Screen name="ProduceProduct" component={ProduceScreen} options={{ title: 'Produce Products' }} />
+      <Stack.Screen name="RefundSale" component={RefundSaleScreen} options={{ title: 'Refund' }} />
       <Stack.Screen name="MaterialDetail" component={MaterialDetailScreen} options={{ title: 'Material Details' }} />
     </Stack.Navigator>
+
   );
 }
 

@@ -121,12 +121,21 @@ export default function ProductionQueueScreen({ navigation }) {
       const diffMins = Math.floor((scheduled - now) / 60000);
       if (diffMins < 0) return 'late';
       if (diffMins < 60) return 'urgent';
-    } else if (schedDate && schedDate < todayStr) {
-      return 'late';
+
+
+
+    }
+
+    // 3. Urgent (Walk-in or ASAP/Unscheduled Pickup/Delivery)
+    if (task.order_type === 'walk_in') return 'urgent';
+    if (!task.scheduled_date && (task.order_type === 'pickup' || task.order_type === 'delivery')) {
+      return 'urgent';
     }
 
     return null;
   }, [now, todayStr]);
+
+
 
   // Helper: check if order is urgent or late
   const getOrderUrgency = useCallback((order) => {
@@ -147,16 +156,21 @@ export default function ProductionQueueScreen({ navigation }) {
       if (scheduled) {
         if (scheduled < now) return 'late';
         const diffMs = scheduled - now;
-        if (diffMs > 0 && diffMs < 3600000) return 'urgent'; // < 1 hour
+        if (diffMs >= 0 && diffMs < 3600000) return 'urgent'; // < 1 hour
       }
     }
 
-    // 3. Urgent (Walk-in only)
-    if (order.order_type === 'walk_in') return 'urgent';
 
+    // 3. Urgent (Walk-in or ASAP/Unscheduled Pickup/Delivery)
+    if (order.order_type === 'walk_in') return 'urgent';
+    // If no explicit scheduled_date, it's an "ASAP" order. Use creation time as baseline.
+    if (!order.scheduled_date && (order.order_type === 'pickup' || order.order_type === 'delivery')) {
+      return 'urgent';
+    }
 
     return null;
   }, [now, todayStr, timezone]);
+
 
 
   const renderSLA = (item) => {

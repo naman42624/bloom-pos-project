@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useLayoutEffect } from 'react';
+
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, Platform, ActivityIndicator, Modal, TextInput, KeyboardAvoidingView,
 } from 'react-native';
@@ -49,6 +50,27 @@ export default function SaleDetailScreen({ route, navigation }) {
   const [loading, setLoading] = useState(true);
   const [expandedItems, setExpandedItems] = useState({});
   const [viewedImage, setViewedImage] = useState(null);
+
+  const fromCheckout = route.params?.fromCheckout;
+
+  useLayoutEffect(() => {
+    if (fromCheckout) {
+      navigation.setOptions({
+        headerLeft: () => null, // Hide back button if we want to force "Done"
+        headerRight: () => (
+          <TouchableOpacity 
+            onPress={() => navigation.navigate('POS', { screen: 'POSHome', params: { clearCart: true } })}
+
+
+            style={{ marginRight: 10, backgroundColor: Colors.primary, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20 }}
+          >
+            <Text style={{ color: Colors.white, fontWeight: 'bold', fontSize: 13 }}>Done</Text>
+          </TouchableOpacity>
+        ),
+      });
+    }
+  }, [navigation, fromCheckout]);
+
 
   const canManage = user?.role === 'owner' || user?.role === 'manager';
 
@@ -816,7 +838,32 @@ export default function SaleDetailScreen({ route, navigation }) {
         </TouchableOpacity>
       )}
 
-      <View style={{ height: 40 }} />
+
+      {/* Navigation Shortcut */}
+      <View style={{ marginTop: Spacing.xl, gap: Spacing.md }}>
+        <TouchableOpacity 
+          style={[styles.actionBtn, { backgroundColor: Colors.primary, paddingVertical: 16 }]} 
+          onPress={() => navigation.navigate('POS', { screen: 'POSHome', params: { clearCart: true } })}
+        >
+          <Ionicons name="cart" size={20} color={Colors.white} />
+          <Text style={[styles.actionBtnText, { fontSize: FontSize.md }]}>Return to POS</Text>
+        </TouchableOpacity>
+
+
+        <TouchableOpacity 
+          style={[styles.actionBtn, { backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.border, paddingVertical: 12 }]} 
+          onPress={() => navigation.navigate('Dashboard', { screen: 'DashboardHome' })}
+
+
+
+        >
+          <Ionicons name="home-outline" size={18} color={Colors.textSecondary} />
+          <Text style={[styles.actionBtnText, { color: Colors.textSecondary }]}>Back to Dashboard</Text>
+        </TouchableOpacity>
+      </View>
+
+      <View style={{ height: 60 }} />
+
 
       {/* Convert Order Type Modal */}
       <Modal visible={convertModalVisible} transparent animationType="slide">

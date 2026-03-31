@@ -102,8 +102,15 @@ export default function POSScreen({ navigation, route }) {
       fetchProducts();
       fetchMaterials();
       fetchLocations();
-    }, [selectedLocation])
+
+      // Clear cart if returning from successful sale
+      if (route.params?.clearCart) {
+        setCart([]);
+        navigation.setParams({ clearCart: undefined });
+      }
+    }, [selectedLocation, route.params?.clearCart])
   );
+
 
   const fetchProducts = async (q) => {
     try {
