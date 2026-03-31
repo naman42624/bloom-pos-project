@@ -12,6 +12,8 @@ import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import { Image } from 'react-native';
 import ImageModal from '../components/ImageModal';
+import { getShopNow } from '../utils/datetime';
+
 
 const ORDER_TYPES = [
   { key: 'walk_in', label: 'Walk-in', icon: 'walk' },
@@ -28,7 +30,9 @@ const PAYMENT_METHODS = [
 
 export default function CheckoutScreen({ route, navigation }) {
   const { cart: initialCart, locationId, orderType: initialOrderType, customerName: initName, customerPhone: initPhone, customerAddress: initAddress } = route.params;
-  const { user } = useAuth();
+  const { user, settings } = useAuth();
+  const timezone = settings?.timezone || 'Asia/Kolkata';
+
 
   const [cart, setCart] = useState(initialCart || []);
   const [orderType, setOrderType] = useState(initialOrderType || 'walk_in');
@@ -54,9 +58,10 @@ export default function CheckoutScreen({ route, navigation }) {
   // Scheduled date/time — for pickup, delivery, and pre-order
   const [scheduledDate, setScheduledDate] = useState(route.params?.scheduledDate || '');
   const [scheduledTime, setScheduledTime] = useState(route.params?.scheduledTime || '');
-  const [datePickerDate, setDatePickerDate] = useState(new Date());
+  const [datePickerDate, setDatePickerDate] = useState(getShopNow(timezone));
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [showTimePicker, setShowTimePicker] = useState(false);
+
   // Pre-order sub-type (pickup or delivery)
   const [preOrderType, setPreOrderType] = useState('pickup');
   const [advanceAmount, setAdvanceAmount] = useState('');
@@ -526,8 +531,9 @@ export default function CheckoutScreen({ route, navigation }) {
               visible={showDatePicker}
               mode="date"
               value={datePickerDate}
-              minimumDate={new Date()}
+              minimumDate={getShopNow(timezone)}
               onCancel={() => setShowDatePicker(false)}
+
               onConfirm={(selected) => {
                 setShowDatePicker(false);
                 setDatePickerDate(selected);

@@ -5,7 +5,9 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
+import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
+import { getShopNow, getShopTodayStr } from '../utils/datetime';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 
 function formatHours(h) {
@@ -13,21 +15,29 @@ function formatHours(h) {
   return h.toFixed(1);
 }
 
-function getDateRange(period) {
-  const now = new Date();
-  const end = now.toISOString().split('T')[0];
+function getDateRange(period, timezone) {
+  const shopNow = getShopNow(timezone);
+  const end = getShopTodayStr(timezone);
+  
   let start;
   if (period === 'week') {
-    const d = new Date(now);
+    // Go back 6 days from shopNow
+    const d = new Date(shopNow);
     d.setDate(d.getDate() - 6);
-    start = d.toISOString().split('T')[0];
+    // Use Intl to format exactly in that timezone to avoid ISO string UTC shift
+    start = new Intl.DateTimeFormat('en-CA', { 
+      timeZone: timezone, 
+      year: 'numeric', month: '2-digit', day: '2-digit' 
+    }).format(d);
   } else if (period === 'month') {
-    start = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+    start = `${shopNow.getFullYear()}-${String(shopNow.getMonth() + 1).padStart(2, '0')}-01`;
   } else {
     start = end;
   }
   return { start, end };
 }
+
+
 
 const PERIODS = [
   { key: 'today', label: 'Today' },
@@ -36,7 +46,10 @@ const PERIODS = [
 ];
 
 export default function AttendanceReportScreen() {
+  const { settings } = useAuth();
+  const timezone = settings?.timezone || 'Asia/Kolkata';
   const [loading, setLoading] = useState(true);
+
   const [refreshing, setRefreshing] = useState(false);
   const [period, setPeriod] = useState('week');
   const [summary, setSummary] = useState([]);
@@ -46,7 +59,8 @@ export default function AttendanceReportScreen() {
 
   const fetchData = useCallback(async () => {
     try {
-      const { start, end } = getDateRange(period);
+      const { start, end } = getDateRange(period, timezone);
+
       const params = { start_date: start, end_date: end };
       if (selectedLoc) params.location_id = selectedLoc;
 

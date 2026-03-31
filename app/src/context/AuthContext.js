@@ -16,7 +16,8 @@ const initialState = {
   activeLocation: null,
   isLoading: true,
   isAuthenticated: false,
-  isSetupComplete: null, // null = unknown, true/false = checked
+  isSetupComplete: null,
+  settings: {},
 };
 
 function authReducer(state, action) {
@@ -59,6 +60,8 @@ function authReducer(state, action) {
       return { ...state, user: { ...state.user, ...action.user } };
     case 'SET_ACTIVE_LOCATION':
       return { ...state, activeLocation: action.location };
+    case 'SET_SETTINGS':
+      return { ...state, settings: action.settings || {} };
     case 'SET_LOADING':
       return { ...state, isLoading: action.isLoading };
     default:
@@ -85,6 +88,7 @@ export function AuthProvider({ children }) {
           try {
             const response = await api.getProfile();
             const activeLocation = locationJson ? JSON.parse(locationJson) : null;
+            const settingsRes = await api.getSettings().catch(() => ({ data: {} }));
             dispatch({
               type: 'RESTORE_TOKEN',
               token,
@@ -92,6 +96,7 @@ export function AuthProvider({ children }) {
               locations: response.data.locations || [],
               activeLocation,
             });
+            dispatch({ type: 'SET_SETTINGS', settings: settingsRes.data || {} });
           } catch {
             await AsyncStorage.multiRemove([STORAGE_KEY_TOKEN, STORAGE_KEY_USER, STORAGE_KEY_LOCATION]);
             api.clearToken();
@@ -137,6 +142,14 @@ export function AuthProvider({ children }) {
     }
 
     dispatch({ type: 'LOGIN', user, token, locations, activeLocation });
+    
+    try {
+      const settingsRes = await api.getSettings();
+      dispatch({ type: 'SET_SETTINGS', settings: settingsRes.data || {} });
+    } catch (e) {
+      console.log('Failed to fetch settings after login:', e);
+    }
+
     return response;
   };
 

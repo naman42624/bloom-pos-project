@@ -1,7 +1,7 @@
 import React, { useState, useCallback } from 'react';
 import {
   View, Text, StyleSheet, FlatList, TouchableOpacity,
-  ActivityIndicator, TextInput, Platform,
+  ActivityIndicator, TextInput, Platform, useWindowDimensions,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
@@ -17,6 +17,8 @@ const FILTER_TABS = [
 ];
 
 export default function CompletedTasksScreen({ navigation }) {
+  const { width } = useWindowDimensions();
+  const isTablet = width >= 768;
   const { user } = useAuth();
   const [tasks, setTasks] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -61,7 +63,7 @@ export default function CompletedTasksScreen({ navigation }) {
 
     return (
       <TouchableOpacity
-        style={styles.card}
+        style={[styles.card, isTablet && { flexDirection: 'row', alignItems: 'center' }]}
         onPress={() => {
           if (item.sale_id) {
             navigation.navigate('SaleDetail', { saleId: item.sale_id });
@@ -69,40 +71,41 @@ export default function CompletedTasksScreen({ navigation }) {
         }}
         activeOpacity={0.7}
       >
-        <View style={styles.cardTop}>
+        <View style={[{ flex: 1 }, isTablet && { flexDirection: 'row', alignItems: 'center', gap: Spacing.lg }]}>
           <View style={{ flex: 1 }}>
             <Text style={styles.productName}>{item.quantity || 1}x {item.product_name}</Text>
             <Text style={styles.saleNumber}>{item.sale_number} • {item.order_type?.replace('_', ' ')}</Text>
           </View>
-          <View style={[styles.statusBadge, { backgroundColor: statusColor + '15' }]}>
-            <Ionicons
-              name={isCompleted ? 'checkmark-circle' : 'close-circle'}
-              size={14}
-              color={statusColor}
-            />
-            <Text style={[styles.statusText, { color: statusColor }]}>{statusLabel}</Text>
+          
+          <View style={[styles.cardDetails, isTablet && { marginTop: 0, flexDirection: 'row', gap: Spacing.lg, flex: 1.5 }]}>
+            {item.assigned_to_name && (
+              <View style={styles.detailRow}>
+                <Ionicons name="person-outline" size={14} color={Colors.textSecondary} />
+                <Text style={styles.detailText}>{item.assigned_to_name}</Text>
+              </View>
+            )}
+            {item.completed_at && (
+              <View style={[styles.detailRow, isTablet && { minWidth: 140 }]}>
+                <Ionicons name="time-outline" size={14} color={Colors.textSecondary} />
+                <Text style={styles.detailText}>{formatDateTime(item.completed_at || item.updated_at)}</Text>
+              </View>
+            )}
+            {item.special_instructions && !isTablet && (
+              <View style={styles.detailRow}>
+                <Ionicons name="document-text-outline" size={14} color={Colors.textSecondary} />
+                <Text style={styles.detailText} numberOfLines={1}>{item.special_instructions}</Text>
+              </View>
+            )}
           </View>
         </View>
 
-        <View style={styles.cardDetails}>
-          {item.assigned_to_name && (
-            <View style={styles.detailRow}>
-              <Ionicons name="person-outline" size={14} color={Colors.textSecondary} />
-              <Text style={styles.detailText}>{item.assigned_to_name}</Text>
-            </View>
-          )}
-          {item.completed_at && (
-            <View style={styles.detailRow}>
-              <Ionicons name="time-outline" size={14} color={Colors.textSecondary} />
-              <Text style={styles.detailText}>{formatDateTime(item.completed_at || item.updated_at)}</Text>
-            </View>
-          )}
-          {item.special_instructions && (
-            <View style={styles.detailRow}>
-              <Ionicons name="document-text-outline" size={14} color={Colors.textSecondary} />
-              <Text style={styles.detailText} numberOfLines={1}>{item.special_instructions}</Text>
-            </View>
-          )}
+        <View style={[styles.statusBadge, { backgroundColor: statusColor + '15' }, isTablet && { marginLeft: Spacing.md }]}>
+          <Ionicons
+            name={isCompleted ? 'checkmark-circle' : 'close-circle'}
+            size={14}
+            color={statusColor}
+          />
+          <Text style={[styles.statusText, { color: statusColor }]}>{statusLabel}</Text>
         </View>
       </TouchableOpacity>
     );
@@ -204,12 +207,11 @@ const styles = StyleSheet.create({
   },
   summaryText: { fontSize: FontSize.sm, color: Colors.textSecondary, fontWeight: '600' },
 
-  listContent: { paddingHorizontal: Spacing.md, paddingBottom: Spacing.xl },
+  listContent: { paddingHorizontal: Spacing.md, paddingBottom: Spacing.xl, gap: Spacing.md },
 
   card: {
     backgroundColor: Colors.surface, borderRadius: BorderRadius.md,
     borderWidth: 1, borderColor: Colors.border, padding: Spacing.md,
-    marginBottom: Spacing.sm,
   },
   cardTop: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start',

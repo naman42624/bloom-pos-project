@@ -499,7 +499,13 @@ router.get(
           COUNT(*) as total_tasks
         FROM production_tasks WHERE sale_id = ?
       `);
-      const getDelivery = db.prepare("SELECT id, status FROM deliveries WHERE sale_id = ? LIMIT 1");
+      const getDelivery = db.prepare(`
+        SELECT d.id, d.status, u.name as partner_name 
+        FROM deliveries d
+        LEFT JOIN users u ON d.delivery_partner_id = u.id
+        WHERE d.sale_id = ? LIMIT 1
+      `);
+
 
       for (const order of orders) {
         order.items = getItems.all(order.id);

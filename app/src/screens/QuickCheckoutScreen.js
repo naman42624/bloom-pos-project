@@ -11,6 +11,8 @@ import DateTimePickerModal from '../components/DateTimePickerModal';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
+import { getShopNow } from '../utils/datetime';
+
 
 const ORDER_TYPES = [
   { key: 'walk_in', label: 'Walk-in', icon: 'person', color: '#4CAF50' },
@@ -19,7 +21,9 @@ const ORDER_TYPES = [
 ];
 
 export default function QuickCheckoutScreen({ navigation }) {
-  const { user } = useAuth();
+  const { user, settings } = useAuth();
+  const timezone = settings?.timezone || 'Asia/Kolkata';
+
 
   // Customer
   const [customerName, setCustomerName] = useState('');
@@ -32,9 +36,10 @@ export default function QuickCheckoutScreen({ navigation }) {
   // Scheduled date/time
   const [scheduledDate, setScheduledDate] = useState('');
   const [scheduledTime, setScheduledTime] = useState('');
-  const [datePickerDate, setDatePickerDate] = useState(new Date());
+  const [datePickerDate, setDatePickerDate] = useState(getShopNow(timezone));
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [showTimePicker, setShowTimePicker] = useState(false);
+
 
   // Order type
   const [orderType, setOrderType] = useState('walk_in');
@@ -1252,7 +1257,8 @@ export default function QuickCheckoutScreen({ navigation }) {
       <DateTimePickerModal
         visible={showDatePicker}
         mode="date"
-        date={datePickerDate}
+        value={datePickerDate}
+        minimumDate={getShopNow(timezone)}
         onConfirm={handleDateConfirm}
         onCancel={() => setShowDatePicker(false)}
       />

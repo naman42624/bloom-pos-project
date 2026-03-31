@@ -7,7 +7,9 @@ import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import api from '../services/api';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
-import { parseServerDate, formatDate, formatTime } from '../utils/datetime';
+import { useAuth } from '../context/AuthContext';
+import { parseServerDate, formatDate, formatTime, formatShopDateLabel } from '../utils/datetime';
+
 
 const STATUS_COLORS = { completed: Colors.success, cancelled: Colors.error, draft: Colors.warning, pending: Colors.warning, preparing: Colors.info, ready: Colors.success };
 const PAY_COLORS = { paid: Colors.success, partial: Colors.warning, pending: Colors.error, refunded: Colors.textLight };
@@ -21,7 +23,7 @@ const FILTERS = [
 ];
 
 // Helper: Group sales by date (newest first)
-function groupSalesByDate(salesList) {
+function groupSalesByDate(salesList, timezone) {
   if (!salesList.length) return [];
 
   // Sort by created_at (newest first)
@@ -31,12 +33,7 @@ function groupSalesByDate(salesList) {
 
   const grouped = {};
   sorted.forEach(sale => {
-    const date = formatDate(sale.created_at, 'en-IN', {
-      weekday: 'short', 
-      year: 'numeric', 
-      month: 'short', 
-      day: 'numeric' 
-    });
+    const date = formatShopDateLabel(sale.created_at, timezone);
     if (!grouped[date]) grouped[date] = [];
     grouped[date].push(sale);
   });
@@ -47,8 +44,12 @@ function groupSalesByDate(salesList) {
   }));
 }
 
+
 export default function SalesScreen({ navigation }) {
+  const { settings } = useAuth();
+  const timezone = settings?.timezone || 'Asia/Kolkata';
   const [sales, setSales] = useState([]);
+
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState('');
@@ -230,7 +231,8 @@ export default function SalesScreen({ navigation }) {
 
       {/* List */}
       <SectionList
-        sections={groupSalesByDate(sales)}
+        sections={groupSalesByDate(sales, timezone)}
+
         keyExtractor={(item) => String(item.id)}
         renderItem={({ item }) => renderSale({ item })}
         renderSectionHeader={renderSectionHeader}

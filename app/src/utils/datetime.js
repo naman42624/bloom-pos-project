@@ -1,3 +1,5 @@
+const DEFAULT_TZ = 'Asia/Kolkata';
+
 export function parseServerDate(value) {
   if (!value) return null;
   if (value instanceof Date) return value;
@@ -114,3 +116,65 @@ export function sortByDateDesc(key = 'created_at') {
     return db - da;
   };
 }
+
+/**
+ * Get current date in Shop Timezone as a Date object
+ */
+export function getShopNow(timezone = DEFAULT_TZ) {
+  const now = new Date();
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: timezone,
+    year: 'numeric', month: 'numeric', day: 'numeric',
+    hour: 'numeric', minute: 'numeric', second: 'numeric',
+    hour12: false
+  }).formatToParts(now);
+
+  const map = {};
+  parts.forEach(p => map[p.type] = p.value);
+  
+  // Create a Date object representing the time in that zone
+  return new Date(map.year, map.month - 1, map.day, map.hour, map.minute, map.second);
+}
+
+/**
+ * Get current date string (YYYY-MM-DD) in Shop Timezone
+ */
+export function getShopTodayStr(timezone = DEFAULT_TZ) {
+  return new Intl.DateTimeFormat('en-CA', { 
+    timeZone: timezone, 
+    year: 'numeric', month: '2-digit', day: '2-digit' 
+  }).format(new Date());
+}
+
+/**
+ * Get tomorrow's date string (YYYY-MM-DD) in Shop Timezone
+ */
+export function getShopTomorrowStr(timezone = DEFAULT_TZ) {
+  const tomorrow = new Date(Date.now() + 86400000);
+  return new Intl.DateTimeFormat('en-CA', { 
+    timeZone: timezone, 
+    year: 'numeric', month: '2-digit', day: '2-digit' 
+  }).format(tomorrow);
+}
+
+
+/**
+ * Format date for display considering Shop Timezone
+ */
+export function formatShopDateLabel(value, timezone = DEFAULT_TZ) {
+  const d = parseServerDate(value);
+  if (!d) return '';
+  
+  const shopNow = getShopNow(timezone);
+  const today = new Date(shopNow.getFullYear(), shopNow.getMonth(), shopNow.getDate());
+  const target = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  
+  const diffDays = Math.round((today - target) / (1000 * 60 * 60 * 24));
+  
+  if (diffDays === 0) return 'Today';
+  if (diffDays === 1) return 'Yesterday';
+  if (diffDays === -1) return 'Tomorrow';
+  
+  return formatDate(value);
+}
+

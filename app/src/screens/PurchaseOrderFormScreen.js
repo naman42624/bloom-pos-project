@@ -4,7 +4,10 @@ import {
   ScrollView, Alert, TouchableOpacity, TextInput,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
+import { getShopTodayStr, getShopNow } from '../utils/datetime';
+
 import Input from '../components/Input';
 import Button from '../components/Button';
 import DismissKeyboard from '../components/DismissKeyboard';
@@ -13,7 +16,10 @@ import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import DateTimePickerModal from '../components/DateTimePickerModal';
 
 export default function PurchaseOrderFormScreen({ route, navigation }) {
+  const { settings } = useAuth();
+  const timezone = settings?.timezone || 'Asia/Kolkata';
   const existingOrder = route.params?.order;
+
   const isEditing = !!existingOrder;
 
   const [suppliers, setSuppliers] = useState([]);
@@ -117,6 +123,7 @@ export default function PurchaseOrderFormScreen({ route, navigation }) {
         supplier_id: supplierId,
         location_id: locationId,
         expected_date: expectedDate ? expectedDate.toISOString().split('T')[0] : undefined,
+
         notes: notes.trim() || undefined,
         items: items.map((i) => ({
           material_id: i.material_id,
@@ -199,7 +206,8 @@ export default function PurchaseOrderFormScreen({ route, navigation }) {
             visible={showDatePicker}
             mode="date"
             value={expectedDate}
-            minimumDate={new Date()}
+            minimumDate={getShopNow(timezone)}
+
             title="Expected Date"
             onCancel={() => setShowDatePicker(false)}
             onConfirm={(selected) => {

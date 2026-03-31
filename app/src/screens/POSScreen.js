@@ -1,8 +1,8 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   View, Text, StyleSheet, FlatList, TextInput, Image,
   TouchableOpacity, Alert, Platform, ScrollView, Modal, ActivityIndicator,
-  KeyboardAvoidingView,
+  KeyboardAvoidingView, useWindowDimensions
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
@@ -13,12 +13,23 @@ import ImageModal from '../components/ImageModal';
 
 
 export default function POSScreen({ navigation, route }) {
+  const { width } = useWindowDimensions();
+  const isTablet = width >= 768;
+  const numColumns = useMemo(() => {
+    if (width >= 1200) return 4;
+    if (width >= 900) return 3;
+    if (width >= 600) return 2;
+    return 1;
+  }, [width]);
+
   const { user } = useAuth();
   const isManager = user?.role === 'owner' || user?.role === 'manager';
+  
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
 
   React.useLayoutEffect(() => {
     navigation.setOptions({
-      headerRight: () => (
+      headerRight: isTablet ? null : () => (
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, marginRight: Spacing.md }}>
           <TouchableOpacity
             style={{ flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: Colors.warning + '15', paddingHorizontal: 8, paddingVertical: 4, borderRadius: BorderRadius.sm }}
@@ -44,7 +55,7 @@ export default function POSScreen({ navigation, route }) {
         </View>
       ),
     });
-  }, [navigation]);
+  }, [navigation, isTablet]);
 
   const [products, setProducts] = useState([]);
   const [materials, setMaterials] = useState([]);
@@ -331,6 +342,37 @@ export default function POSScreen({ navigation, route }) {
     const inCart = cart.find((c) => c.product_id === item.id && !c.material_id);
     const readyQty = item.ready_qty || 0;
     const canMakeQty = item.available_qty;
+    
+    // On tablet grid, use a tile design (vertical)
+    if (numColumns > 1) {
+      return (
+        <TouchableOpacity style={styles.productTile} onPress={() => addToCart(item)} activeOpacity={0.7}>
+          <TouchableOpacity 
+            style={styles.tileIconWrap}
+            onPress={(e) => { e.stopPropagation(); if (item.image_url) setViewedImage(api.getMediaUrl(item.image_url)); }}
+          >
+            {item.image_url ? (
+              <Image source={{ uri: api.getMediaUrl(item.image_url) }} style={styles.tileImg} />
+            ) : (
+              <Ionicons name="gift" size={32} color={Colors.primary} />
+            )}
+            {inCart && (
+              <View style={styles.qtyBadge}>
+                <Text style={styles.qtyBadgeText}>{inCart.quantity}</Text>
+              </View>
+            )}
+          </TouchableOpacity>
+          <View style={styles.tileInfo}>
+            <Text style={styles.tileName} numberOfLines={2}>{item.name}</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+              <Text style={styles.tilePrice}>₹{(item.selling_price || 0).toFixed(0)}</Text>
+              {readyQty > 0 && <View style={styles.readyBadgeIcon}><Text style={styles.readyBadgeText}>{readyQty}R</Text></View>}
+            </View>
+          </View>
+        </TouchableOpacity>
+      );
+    }
+
     return (
       <TouchableOpacity style={[styles.productCard]} onPress={() => addToCart(item)} activeOpacity={0.7}>
         <TouchableOpacity 
@@ -369,10 +411,49 @@ export default function POSScreen({ navigation, route }) {
     );
   };
 
-  const renderMaterial = ({ item }) => {
+  const renderMaterial = ({ item, index }) => {
     const inCart = cart.find((c) => c.material_id === item.id);
     const stockQty = item.stock_quantity ?? null;
     const outOfStock = stockQty !== null && stockQty <= 0;
+
+    // Use tile design on grid views for consistency
+    if (numColumns > 1) {
+      return (
+        <TouchableOpacity 
+          style={[styles.productTile, outOfStock && { opacity: 0.6 }]} 
+          onPress={() => addMaterialToCart(item)} 
+          activeOpacity={0.7}
+        >
+          <TouchableOpacity 
+            style={[styles.tileIconWrap, { backgroundColor: Colors.success + '12' }]}
+            onPress={(e) => { e.stopPropagation(); if (item.image_url) setViewedImage(api.getMediaUrl(item.image_url)); }}
+          >
+            {item.image_url ? (
+              <Image source={{ uri: api.getMediaUrl(item.image_url) }} style={styles.tileImg} />
+            ) : (
+              <Ionicons name="leaf" size={32} color={Colors.success} />
+            )}
+            {inCart && (
+              <View style={styles.qtyBadge}>
+                <Text style={styles.qtyBadgeText}>{inCart.quantity}</Text>
+              </View>
+            )}
+          </TouchableOpacity>
+          <View style={styles.tileInfo}>
+            <Text style={styles.tileName} numberOfLines={2}>{item.name}</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+              <Text style={styles.tilePrice}>₹{(item.selling_price || item.avg_cost || 0).toFixed(0)}</Text>
+              {stockQty !== null && (
+                <Text style={{ fontSize: 10, color: outOfStock ? Colors.error : Colors.textLight }}>
+                  • {stockQty} units
+                </Text>
+              )}
+            </View>
+          </View>
+        </TouchableOpacity>
+      );
+    }
+
     return (
       <TouchableOpacity style={[styles.productCard, outOfStock && styles.productCardDimmed]} onPress={() => addMaterialToCart(item)} activeOpacity={0.7}>
         <TouchableOpacity 
@@ -402,39 +483,88 @@ export default function POSScreen({ navigation, route }) {
     );
   };
 
-  return (
-    <View style={styles.container}>
-      {/* Location selector */}
-      {locations.length > 1 && (
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.locRow} contentContainerStyle={{ paddingHorizontal: Spacing.md, gap: Spacing.xs }}>
+  // Components for reorganization
+  const renderLocationPicker = (vertical = false) => (
+    <View style={vertical ? { gap: Spacing.xs, paddingHorizontal: Spacing.sm } : null}>
+      {vertical && <Text style={styles.sidebarSectionTitle}>Locations</Text>}
+      {locations.length > 1 ? (
+        <ScrollView 
+          horizontal={!vertical} 
+          showsHorizontalScrollIndicator={false} 
+          style={!vertical && styles.locRow} 
+          contentContainerStyle={!vertical ? { paddingHorizontal: Spacing.md, gap: Spacing.xs } : { gap: Spacing.xs }}
+        >
           {locations.map((loc) => (
             <TouchableOpacity
               key={loc.id}
-              style={[styles.locChip, selectedLocation === loc.id && styles.locChipActive]}
+              style={[styles.locChip, selectedLocation === loc.id && styles.locChipActive, vertical && { width: '100%', minHeight: 40 }]}
               onPress={() => setSelectedLocation(loc.id)}
             >
               <Text style={[styles.locChipText, selectedLocation === loc.id && styles.locChipTextActive]}>{loc.name}</Text>
             </TouchableOpacity>
           ))}
         </ScrollView>
-      )}
+      ) : null}
+    </View>
+  );
 
-      {/* Order type — big visible buttons */}
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.orderTypeRow} contentContainerStyle={{ paddingHorizontal: Spacing.md, gap: Spacing.sm }}>
+  const renderOrderTypePicker = (vertical = false) => (
+    <View style={vertical ? { gap: Spacing.xs, paddingHorizontal: Spacing.sm, marginTop: Spacing.md } : null}>
+      {vertical && <Text style={styles.sidebarSectionTitle}>Order Type</Text>}
+      <ScrollView 
+        horizontal={!vertical} 
+        showsHorizontalScrollIndicator={false} 
+        style={!vertical && styles.orderTypeRow} 
+        contentContainerStyle={!vertical ? { paddingHorizontal: Spacing.md, gap: Spacing.sm } : { gap: Spacing.xs }}
+      >
         {ORDER_TYPES.map((t) => (
           <TouchableOpacity
             key={t.key}
-            style={[styles.orderTypeBtn, orderType === t.key && { backgroundColor: t.color, borderColor: t.color, elevation: 4, shadowOpacity: 0.2 }]}
+            style={[
+              styles.orderTypeBtn, 
+              orderType === t.key && { backgroundColor: t.color, borderColor: t.color, elevation: 4, shadowOpacity: 0.2 },
+              vertical && { width: '100%', minHeight: 44, justifyContent: 'flex-start', paddingHorizontal: Spacing.md }
+            ]}
             onPress={() => setOrderType(t.key)}
           >
-            <Ionicons name={t.icon} size={20} color={orderType === t.key ? Colors.white : t.color} />
+            <Ionicons name={t.icon} size={18} color={orderType === t.key ? Colors.white : t.color} />
             <Text style={[styles.orderTypeBtnText, orderType === t.key && { color: Colors.white }]}>{t.label}</Text>
           </TouchableOpacity>
         ))}
       </ScrollView>
+    </View>
+  );
 
+  const renderCategoryList = (vertical = false) => (
+    <View style={vertical ? { gap: Spacing.xs, paddingHorizontal: Spacing.sm, marginTop: Spacing.md, flex: 1 } : null}>
+      {vertical && <Text style={styles.sidebarSectionTitle}>Categories</Text>}
+      <ScrollView 
+        horizontal={!vertical} 
+        showsHorizontalScrollIndicator={false} 
+        style={!vertical && styles.catFilterRow} 
+        contentContainerStyle={!vertical ? { paddingHorizontal: Spacing.md, gap: Spacing.xs } : { gap: Spacing.xs }}
+      >
+        {PRODUCT_CATEGORIES.map((cat) => (
+          <TouchableOpacity
+            key={cat.key || 'all'}
+            style={[
+              styles.locChip, 
+              selectedCategory === cat.key && styles.locChipActive,
+              vertical && { width: '100%', minHeight: 40, justifyContent: 'flex-start' }
+            ]}
+            onPress={() => setSelectedCategory(cat.key)}
+          >
+            <Text style={[styles.locChipText, selectedCategory === cat.key && styles.locChipTextActive]}>{cat.label}</Text>
+          </TouchableOpacity>
+        ))}
+      </ScrollView>
+    </View>
+  );
+
+  const renderUnifiedTopBar = () => (
+    <View style={styles.unifiedTopBar}>
       {/* Search row */}
-      <View style={styles.searchRow}>
+      <View style={[styles.searchRow, { flex: 1, backgroundColor: 'transparent', paddingHorizontal: 0, paddingVertical: 0 }]}>
         <View style={styles.searchWrap}>
           <Ionicons name="search" size={20} color={Colors.textLight} style={{ marginRight: 6 }} />
           <TextInput
@@ -450,140 +580,235 @@ export default function POSScreen({ navigation, route }) {
             </TouchableOpacity>
           )}
         </View>
-        <TouchableOpacity style={styles.scanBtn} onPress={handleScanQR}>
-          <Ionicons name="qr-code" size={24} color={Colors.white} />
+        <TouchableOpacity style={[styles.scanBtn, { width: 44, height: 44 }]} onPress={handleScanQR}>
+          <Ionicons name="qr-code" size={20} color={Colors.white} />
         </TouchableOpacity>
         {isManager && (
-          <TouchableOpacity style={[styles.scanBtn, { backgroundColor: Colors.success }]} onPress={openQuickAdd}>
-            <Ionicons name="add" size={24} color={Colors.white} />
+          <TouchableOpacity style={[styles.scanBtn, { backgroundColor: Colors.success, width: 44, height: 44 }]} onPress={openQuickAdd}>
+            <Ionicons name="add" size={20} color={Colors.white} />
           </TouchableOpacity>
         )}
       </View>
 
-      {/* Products / Materials toggle */}
-      <View style={styles.tabRow}>
+      {/* Tabs */}
+      <View style={[styles.tabRow, { backgroundColor: 'transparent', borderBottomWidth: 0, paddingHorizontal: 0, paddingVertical: 0, marginLeft: Spacing.md, minWidth: 260 }]}>
         <TouchableOpacity
-          style={[styles.tabBtn, activeTab === 'products' && styles.tabBtnActive]}
+          style={[styles.tabBtn, activeTab === 'products' && styles.tabBtnActive, { height: 44 }]}
           onPress={() => { setActiveTab('products'); setSearch(''); }}
         >
-          <Ionicons name="gift" size={18} color={activeTab === 'products' ? Colors.white : Colors.textSecondary} />
+          <Ionicons name="gift" size={16} color={activeTab === 'products' ? Colors.white : Colors.textSecondary} />
           <Text style={[styles.tabBtnText, activeTab === 'products' && styles.tabBtnTextActive]}>Products</Text>
         </TouchableOpacity>
         <TouchableOpacity
-          style={[styles.tabBtn, activeTab === 'materials' && styles.tabBtnActive]}
+          style={[styles.tabBtn, activeTab === 'materials' && styles.tabBtnActive, { height: 44 }]}
           onPress={() => { setActiveTab('materials'); setSearch(''); }}
         >
-          <Ionicons name="leaf" size={18} color={activeTab === 'materials' ? Colors.white : Colors.textSecondary} />
-          <Text style={[styles.tabBtnText, activeTab === 'materials' && styles.tabBtnTextActive]}>Raw Materials</Text>
+          <Ionicons name="leaf" size={16} color={activeTab === 'materials' ? Colors.white : Colors.textSecondary} />
+          <Text style={[styles.tabBtnText, activeTab === 'materials' && styles.tabBtnTextActive]}>Raw</Text>
         </TouchableOpacity>
       </View>
 
-      {/* List */}
-      {activeTab === 'products' ? (
-        <>
-          {/* Category filter chips */}
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.catFilterRow} contentContainerStyle={{ paddingHorizontal: Spacing.md, gap: Spacing.xs }}>
-            {PRODUCT_CATEGORIES.map((cat) => (
-              <TouchableOpacity
-                key={cat.key || 'all'}
-                style={[styles.locChip, selectedCategory === cat.key && styles.locChipActive]}
-                onPress={() => setSelectedCategory(cat.key)}
-              >
-                <Text style={[styles.locChipText, selectedCategory === cat.key && styles.locChipTextActive]}>{cat.label}</Text>
+      {/* Quick shortcuts on tablet */}
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, marginLeft: Spacing.md }}>
+        <TouchableOpacity 
+          style={styles.headerShortCut}
+          onPress={() => navigation.navigate('QuickCheckout')}
+        >
+          <Ionicons name="flash" size={18} color={Colors.warning} />
+        </TouchableOpacity>
+        <TouchableOpacity 
+          style={styles.headerShortCut}
+          onPress={() => navigation.navigate('ProduceProduct')}
+        >
+          <Ionicons name="hammer" size={18} color={Colors.success} />
+        </TouchableOpacity>
+        <TouchableOpacity 
+          style={styles.headerShortCut}
+          onPress={() => navigation.navigate('ProductionQueue')}
+        >
+          <Ionicons name="list" size={18} color={Colors.primary} />
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+
+  const renderProductList = () => (
+    <View style={{ flex: 1 }}>
+      {!isTablet && renderCategoryList(false)}
+      <FlatList
+        data={activeTab === 'products' 
+          ? (selectedCategory ? products.filter(p => p.category === selectedCategory) : products)
+          : materials
+        }
+        key={`pos-grid-${numColumns}-${activeTab}`}
+        numColumns={numColumns}
+        keyExtractor={(item) => `${activeTab}_${item.id}`}
+        renderItem={activeTab === 'products' ? renderProduct : renderMaterial}
+        columnWrapperStyle={numColumns > 1 ? { paddingHorizontal: Spacing.md, gap: Spacing.md } : null}
+        contentContainerStyle={[styles.listContent, numColumns > 1 && { paddingHorizontal: 0 }]}
+        style={{ flex: 1 }}
+        ListEmptyComponent={
+          <View style={styles.empty}>
+            <Ionicons name={activeTab === 'products' ? "gift-outline" : "leaf-outline"} size={48} color={Colors.textLight} />
+            <Text style={styles.emptyText}>{loading ? 'Loading...' : `No ${activeTab} found`}</Text>
+          </View>
+        }
+      />
+    </View>
+  );
+
+  const renderCartSidebar = () => (
+    <View style={isTablet ? styles.sideCart : styles.cartPanel}>
+      <View style={styles.cartPanelHeader}>
+        <Text style={styles.cartPanelTitle}>Order Summary</Text>
+        <TouchableOpacity onPress={clearCart} style={styles.clearBtn}>
+          <Ionicons name="trash-outline" size={16} color={Colors.error} />
+          <Text style={styles.clearText}>Clear</Text>
+        </TouchableOpacity>
+      </View>
+      <ScrollView style={[styles.cartItemsList, isTablet && { maxHeight: 'none', flex: 1 }]} nestedScrollEnabled>
+        {cart.map((c) => (
+          <View key={cartItemKey(c)} style={styles.cartItem}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.cartItemName} numberOfLines={2}>
+                {c.material_id ? '🌿 ' : ''}{c.product_name}
+              </Text>
+              <Text style={styles.cartItemPrice}>₹{c.unit_price} × {c.quantity} = ₹{(c.unit_price * c.quantity).toFixed(0)}</Text>
+            </View>
+            <View style={styles.qtyControls}>
+              <TouchableOpacity style={styles.qtyBtn} onPress={() => updateCartQty(c, -1)}>
+                <Ionicons name={c.quantity === 1 ? 'trash-outline' : 'remove'} size={20} color={c.quantity === 1 ? Colors.error : Colors.primary} />
               </TouchableOpacity>
-            ))}
-          </ScrollView>
-          <FlatList
-            data={selectedCategory ? products.filter(p => p.category === selectedCategory) : products}
-            keyExtractor={(item) => `prod_${item.id}`}
-            renderItem={renderProduct}
-          contentContainerStyle={styles.listContent}
-          ListEmptyComponent={
-            <View style={styles.empty}>
-              <Ionicons name="gift-outline" size={48} color={Colors.textLight} />
-              <Text style={styles.emptyText}>{loading ? 'Loading...' : 'No products found'}</Text>
+              <Text style={styles.qtyText}>{c.quantity}</Text>
+              <TouchableOpacity style={styles.qtyBtn} onPress={() => updateCartQty(c, 1)}>
+                <Ionicons name="add" size={20} color={Colors.primary} />
+              </TouchableOpacity>
             </View>
-          }
-        />
-        </>
-      ) : (
-        <FlatList
-          data={materials}
-          keyExtractor={(item) => `mat_${item.id}`}
-          renderItem={renderMaterial}
-          contentContainerStyle={styles.listContent}
-          ListEmptyComponent={
-            <View style={styles.empty}>
-              <Ionicons name="leaf-outline" size={48} color={Colors.textLight} />
-              <Text style={styles.emptyText}>{loading ? 'Loading...' : 'No materials found'}</Text>
+            {orderType === 'walk_in' && !c.material_id && (c.stock_quantity || 0) > 0 && !c.special_instructions && (
+              <TouchableOpacity
+                style={{
+                  flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-start',
+                  marginTop: 6, paddingVertical: 4, paddingHorizontal: 10, borderRadius: 12,
+                  backgroundColor: c.fulfill_from_stock ? Colors.success + '15' : Colors.textLight + '10',
+                  borderWidth: 1, borderColor: c.fulfill_from_stock ? Colors.success + '40' : Colors.textLight + '30',
+                  gap: 4, width: '100%', justifyContent: 'center'
+                }}
+                onPress={() => setCart(prev => prev.map(it => cartItemKey(it) === cartItemKey(c) ? { ...it, fulfill_from_stock: !it.fulfill_from_stock } : it))}
+              >
+                <Ionicons
+                  name={c.fulfill_from_stock ? 'checkmark-circle' : 'cube-outline'}
+                  size={14}
+                  color={c.fulfill_from_stock ? Colors.success : Colors.textSecondary}
+                />
+                <Text style={{ fontSize: 11, fontWeight: '600', color: c.fulfill_from_stock ? Colors.success : Colors.textSecondary }}>
+                  {c.fulfill_from_stock ? 'From Stock' : 'Use Stock?'}
+                </Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        ))}
+      </ScrollView>
+      <View style={styles.cartTotals}>
+        <View style={styles.cartTotalRow}>
+          <Text style={styles.cartGrandLabel}>Total</Text>
+          <Text style={styles.cartGrandVal}>₹{grandTotal.toFixed(0)}</Text>
+        </View>
+      </View>
+      <TouchableOpacity style={styles.checkoutBtn} onPress={goToCheckout}>
+        <Ionicons name="cart" size={22} color={Colors.white} />
+        <Text style={styles.checkoutBtnText}>Checkout  ₹{grandTotal.toFixed(0)}</Text>
+      </TouchableOpacity>
+    </View>
+  );
+
+  return (
+    <View style={[styles.container, isTablet && { flexDirection: 'row' }]}>
+      {/* Tablet Left Sidebar */}
+      {isTablet && (
+        <View style={[styles.sideFilters, isSidebarCollapsed && { width: 60 }]}>
+          <TouchableOpacity 
+            style={styles.collapseToggle} 
+            onPress={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
+          >
+            <Ionicons name={isSidebarCollapsed ? "chevron-forward" : "chevron-back"} size={20} color={Colors.textSecondary} />
+          </TouchableOpacity>
+          
+          {!isSidebarCollapsed && (
+            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 40 }}>
+              {renderLocationPicker(true)}
+              {renderOrderTypePicker(true)}
+              {renderCategoryList(true)}
+            </ScrollView>
+          )}
+          {isSidebarCollapsed && (
+            <View style={{ alignItems: 'center', gap: Spacing.md }}>
+              <Ionicons name="location" size={22} color={Colors.primary} />
+              <Ionicons name="list" size={22} color={Colors.primary} />
+              <Ionicons name="grid" size={22} color={Colors.primary} />
             </View>
-          }
-        />
+          )}
+        </View>
       )}
 
-      {/* Cart items panel */}
-      {cart.length > 0 && (
-        <View style={styles.cartPanel}>
-          <View style={styles.cartPanelHeader}>
-            <Text style={styles.cartPanelTitle}>Cart ({itemCount} items)</Text>
-            <TouchableOpacity onPress={clearCart} style={styles.clearBtn}>
-              <Ionicons name="trash-outline" size={16} color={Colors.error} />
-              <Text style={styles.clearText}>Clear</Text>
-            </TouchableOpacity>
-          </View>
-          <ScrollView style={styles.cartItemsList} nestedScrollEnabled>
-            {cart.map((c) => (
-              <View key={cartItemKey(c)} style={styles.cartItem}>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.cartItemName} numberOfLines={1}>
-                    {c.material_id ? '🌿 ' : ''}{c.product_name}
-                  </Text>
-                  <Text style={styles.cartItemPrice}>₹{c.unit_price} × {c.quantity} = ₹{(c.unit_price * c.quantity).toFixed(0)}</Text>
-                </View>
-                <View style={styles.qtyControls}>
-                  <TouchableOpacity style={styles.qtyBtn} onPress={() => updateCartQty(c, -1)}>
-                    <Ionicons name={c.quantity === 1 ? 'trash-outline' : 'remove'} size={20} color={c.quantity === 1 ? Colors.error : Colors.primary} />
-                  </TouchableOpacity>
-                  <Text style={styles.qtyText}>{c.quantity}</Text>
-                  <TouchableOpacity style={styles.qtyBtn} onPress={() => updateCartQty(c, 1)}>
-                    <Ionicons name="add" size={20} color={Colors.primary} />
-                  </TouchableOpacity>
-                </View>
-                {orderType === 'walk_in' && !c.material_id && c.stock_quantity > 0 && !c.special_instructions && (
-                  <TouchableOpacity
-                    style={{
-                      flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-start',
-                      marginTop: 6, paddingVertical: 4, paddingHorizontal: 10, borderRadius: 12,
-                      backgroundColor: c.fulfill_from_stock ? Colors.success + '15' : Colors.textLight + '10',
-                      borderWidth: 1, borderColor: c.fulfill_from_stock ? Colors.success + '40' : Colors.textLight + '30',
-                      gap: 4
-                    }}
-                    onPress={() => setCart(prev => prev.map(it => cartItemKey(it) === cartItemKey(c) ? { ...it, fulfill_from_stock: !it.fulfill_from_stock } : it))}
-                  >
-                    <Ionicons
-                      name={c.fulfill_from_stock ? 'checkmark-circle' : 'cube-outline'}
-                      size={14}
-                      color={c.fulfill_from_stock ? Colors.success : Colors.textSecondary}
-                    />
-                    <Text style={{ fontSize: 11, fontWeight: '600', color: c.fulfill_from_stock ? Colors.success : Colors.textSecondary }}>
-                      {c.fulfill_from_stock ? 'From Stock' : 'Use Stock?'}
-                    </Text>
+      {/* Main Center Area */}
+      <View style={[{ flex: 1 }]}>
+        {!isTablet ? (
+          <View style={styles.headerContainer}>
+            {renderLocationPicker(false)}
+            {renderOrderTypePicker(false)}
+            <View style={styles.searchRow}>
+              <View style={styles.searchWrap}>
+                <Ionicons name="search" size={20} color={Colors.textLight} style={{ marginRight: 6 }} />
+                <TextInput
+                  style={styles.searchInput}
+                  value={search}
+                  onChangeText={handleSearch}
+                  placeholder={activeTab === 'products' ? 'Search products...' : 'Search materials...'}
+                  placeholderTextColor={Colors.textLight}
+                />
+                {search.length > 0 && (
+                  <TouchableOpacity onPress={() => handleSearch('')}>
+                    <Ionicons name="close-circle" size={20} color={Colors.textLight} />
                   </TouchableOpacity>
                 )}
               </View>
-            ))}
-          </ScrollView>
-          <View style={styles.cartTotals}>
-            <View style={styles.cartTotalRow}>
-              <Text style={styles.cartGrandLabel}>Total</Text>
-              <Text style={styles.cartGrandVal}>₹{grandTotal.toFixed(0)}</Text>
+              <TouchableOpacity style={styles.scanBtn} onPress={handleScanQR}>
+                <Ionicons name="qr-code" size={24} color={Colors.white} />
+              </TouchableOpacity>
+              {isManager && (
+                <TouchableOpacity style={[styles.scanBtn, { backgroundColor: Colors.success }]} onPress={openQuickAdd}>
+                  <Ionicons name="add" size={24} color={Colors.white} />
+                </TouchableOpacity>
+              )}
+            </View>
+            <View style={styles.tabRow}>
+              <TouchableOpacity
+                style={[styles.tabBtn, activeTab === 'products' && styles.tabBtnActive]}
+                onPress={() => { setActiveTab('products'); setSearch(''); }}
+              >
+                <Ionicons name="gift" size={18} color={activeTab === 'products' ? Colors.white : Colors.textSecondary} />
+                <Text style={[styles.tabBtnText, activeTab === 'products' && styles.tabBtnTextActive]}>Products</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.tabBtn, activeTab === 'materials' && styles.tabBtnActive]}
+                onPress={() => { setActiveTab('materials'); setSearch(''); }}
+              >
+                <Ionicons name="leaf" size={18} color={activeTab === 'materials' ? Colors.white : Colors.textSecondary} />
+                <Text style={[styles.tabBtnText, activeTab === 'materials' && styles.tabBtnTextActive]}>Raw Materials</Text>
+              </TouchableOpacity>
             </View>
           </View>
-          <TouchableOpacity style={styles.checkoutBtn} onPress={goToCheckout}>
-            <Ionicons name="cart" size={22} color={Colors.white} />
-            <Text style={styles.checkoutBtnText}>Checkout  ₹{grandTotal.toFixed(0)}</Text>
-          </TouchableOpacity>
-        </View>
+        ) : (
+          renderUnifiedTopBar()
+        )}
+
+        {/* List area */}
+        {renderProductList()}
+      </View>
+
+      {/* Responsive Cart Panel */}
+      {cart.length > 0 && (
+        renderCartSidebar()
       )}
 
       {/* Quick-add Product Modal */}
@@ -721,12 +946,19 @@ export default function POSScreen({ navigation, route }) {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
-  locRow: { maxHeight: 60, backgroundColor: Colors.surface, borderBottomWidth: 1, borderBottomColor: Colors.border, paddingVertical: Spacing.sm },
+  headerContainer: {
+    backgroundColor: Colors.surface,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.05, shadowRadius: 8, elevation: 4,
+    zIndex: 10,
+  },
+  locRow: { maxHeight: 48, paddingVertical: Spacing.xs },
   locChip: {
-    paddingHorizontal: Spacing.lg, paddingVertical: Spacing.sm,
+    paddingHorizontal: Spacing.md, paddingVertical: 6,
     borderRadius: BorderRadius.full, backgroundColor: Colors.surfaceAlt,
     borderWidth: 1, borderColor: Colors.border,
-    minHeight: 36, justifyContent: 'center',
+    justifyContent: 'center', alignItems: 'center', minHeight: 32,
   },
   locChipActive: { 
     backgroundColor: Colors.primary, borderColor: Colors.primary,
@@ -738,7 +970,6 @@ const styles = StyleSheet.create({
   orderTypeRow: {
     maxHeight: 70, paddingVertical: Spacing.sm,
     backgroundColor: Colors.surface,
-    borderBottomWidth: 1, borderBottomColor: Colors.border,
   },
   orderTypeBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
@@ -806,6 +1037,10 @@ const styles = StyleSheet.create({
     borderRadius: BorderRadius.sm,
   },
   readyBadgeText: { fontSize: 11, fontWeight: '700', color: Colors.success },
+  readyBadgeIcon: {
+    backgroundColor: Colors.success + '12', paddingHorizontal: 4, paddingVertical: 1,
+    borderRadius: 4, borderWeight: 0.5, borderColor: Colors.success + '30'
+  },
   canMakeText: { fontSize: 11, color: Colors.textLight, fontStyle: 'italic' },
 
   empty: { alignItems: 'center', paddingTop: 80 },
@@ -815,6 +1050,7 @@ const styles = StyleSheet.create({
     position: 'absolute', top: -6, right: -6,
     width: 22, height: 22, borderRadius: 11,
     backgroundColor: Colors.primary, justifyContent: 'center', alignItems: 'center',
+    zIndex: 2,
   },
   qtyBadgeText: { color: Colors.white, fontSize: 11, fontWeight: '700' },
 
@@ -823,6 +1059,36 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: BorderRadius.xl, borderTopRightRadius: BorderRadius.xl,
     shadowColor: '#000', shadowOffset: { width: 0, height: -4 }, shadowOpacity: 0.05, shadowRadius: 12, elevation: 12,
     maxHeight: 360, paddingBottom: Spacing.sm,
+  },
+  sideCart: {
+    width: 320, backgroundColor: Colors.surface,
+    borderLeftWidth: 1, borderLeftColor: Colors.border,
+    paddingTop: Spacing.sm,
+  },
+  sideFilters: {
+    width: 200, backgroundColor: Colors.surface,
+    borderRightWidth: 1, borderRightColor: Colors.border,
+    paddingTop: Spacing.lg,
+  },
+  sidebarSectionTitle: {
+    fontSize: 10, fontWeight: '800', color: Colors.textLight,
+    textTransform: 'uppercase', letterSpacing: 1,
+    marginBottom: Spacing.sm, paddingHorizontal: 4,
+  },
+  collapseToggle: {
+    alignSelf: 'flex-end', padding: 8, marginRight: 4, marginBottom: 8,
+  },
+  unifiedTopBar: {
+    flexDirection: 'row', alignItems: 'center',
+    paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm,
+    backgroundColor: Colors.surface,
+    borderBottomWidth: 1, borderBottomColor: Colors.border,
+  },
+  headerShortCut: {
+    width: 40, height: 40, borderRadius: 20,
+    backgroundColor: Colors.surfaceAlt, 
+    justifyContent: 'center', alignItems: 'center',
+    borderWidth: 1, borderColor: Colors.border,
   },
   cartPanelHeader: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
@@ -833,29 +1099,47 @@ const styles = StyleSheet.create({
   clearText: { fontSize: FontSize.sm, color: Colors.error, fontWeight: '700' },
   cartItemsList: { maxHeight: 160, paddingHorizontal: Spacing.md },
   cartItem: {
-    flexDirection: 'row', alignItems: 'center',
-    paddingVertical: Spacing.sm, borderBottomWidth: 1, borderBottomColor: Colors.border,
+    flexDirection: 'row', alignItems: 'flex-start', flexWrap: 'wrap',
+    paddingVertical: Spacing.md, borderBottomWidth: 1, borderBottomColor: Colors.border,
+    gap: 12,
   },
-  cartItemName: { fontSize: FontSize.md, color: Colors.text, fontWeight: '700' },
+  cartItemName: { fontSize: FontSize.md, color: Colors.text, fontWeight: '700', flexShrink: 1 },
   cartItemPrice: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: 4 },
-  qtyControls: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  qtyControls: { flexDirection: 'row', alignItems: 'center', gap: 6, marginLeft: 'auto' },
   qtyBtn: {
-    width: 40, height: 40, borderRadius: 20,
+    width: 36, height: 36, borderRadius: 18,
     backgroundColor: Colors.surfaceAlt, 
     justifyContent: 'center', alignItems: 'center',
   },
-  qtyText: { fontSize: FontSize.lg, fontWeight: '700', color: Colors.text, minWidth: 32, textAlign: 'center' },
-  cartTotals: { paddingHorizontal: Spacing.md, paddingVertical: Spacing.xs },
+  qtyText: { fontSize: FontSize.md, fontWeight: '700', color: Colors.text, minWidth: 24, textAlign: 'center' },
+  cartTotals: { paddingHorizontal: Spacing.md, paddingVertical: Spacing.md },
   cartTotalRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 },
   cartGrandLabel: { fontSize: FontSize.xl, fontWeight: '700', color: Colors.text },
   cartGrandVal: { fontSize: FontSize.xl, fontWeight: '700', color: Colors.primary },
   checkoutBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
-    backgroundColor: Colors.primary, marginHorizontal: Spacing.lg,
-    marginBottom: Spacing.sm, paddingVertical: Spacing.md, borderRadius: BorderRadius.full,
+    backgroundColor: Colors.primary, marginHorizontal: Spacing.md,
+    marginBottom: Spacing.md, paddingVertical: Spacing.md, borderRadius: BorderRadius.full,
     shadowColor: Colors.primary, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.25, shadowRadius: 8, elevation: 6,
   },
   checkoutBtnText: { color: Colors.white, fontWeight: '800', fontSize: FontSize.lg },
+
+  // Tile styles for Grid
+  productTile: {
+    flex: 1, backgroundColor: Colors.surface, borderRadius: BorderRadius.lg,
+    padding: Spacing.sm, marginBottom: Spacing.sm, minHeight: 220,
+    borderWidth: 1, borderColor: Colors.border,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.04, shadowRadius: 8, elevation: 2,
+  },
+  tileIconWrap: {
+    width: '100%', aspectRatio: 1, borderRadius: BorderRadius.md,
+    backgroundColor: Colors.primary + '12', justifyContent: 'center', alignItems: 'center',
+    marginBottom: Spacing.sm, overflow: 'hidden',
+  },
+  tileImg: { width: '100%', height: '100%' },
+  tileInfo: { paddingHorizontal: 2 },
+  tileName: { fontSize: FontSize.sm, fontWeight: '700', color: Colors.text, marginBottom: 4 },
+  tilePrice: { fontSize: FontSize.md, fontWeight: '700', color: Colors.success },
 
   // Quick-add modal
   modalOverlay: {

@@ -5,7 +5,11 @@ import { useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
-import { formatDateTime } from '../utils/datetime';
+import { 
+  parseServerDate, formatDateTime, formatShopDateLabel, 
+  getShopNow, getShopTodayStr, getShopTomorrowStr 
+} from '../utils/datetime';
+
 
 const PICKUP_TABS = [
   { key: 'waiting', label: 'Preparing', icon: 'hourglass-outline' },
@@ -20,13 +24,16 @@ const PAYMENT_METHODS = [
 ];
 
 export default function PickupOrdersScreen({ navigation }) {
-  const { user, activeLocation } = useAuth();
+  const { user, activeLocation, settings } = useAuth();
+  const timezone = settings?.timezone || 'Asia/Kolkata';
+
   const [tab, setTab] = useState('waiting');
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(null);
-  const [now, setNow] = useState(new Date());
+  const [now, setNow] = useState(getShopNow(timezone));
   const tickRef = useRef(null);
+
 
   // Payment collection modal for pickup
   const [paymentModalVisible, setPaymentModalVisible] = useState(false);
@@ -43,9 +50,9 @@ export default function PickupOrdersScreen({ navigation }) {
 
   // Tick every 60s to update countdowns
   useEffect(() => {
-    tickRef.current = setInterval(() => setNow(new Date()), 60000);
+    tickRef.current = setInterval(() => setNow(getShopNow(timezone)), 60000);
     return () => clearInterval(tickRef.current);
-  }, []);
+  }, [timezone]);
 
   const fetchLocations = useCallback(async () => {
     try {
@@ -156,23 +163,22 @@ export default function PickupOrdersScreen({ navigation }) {
     const rawTime = (item.scheduled_time || '').split('.')[0];
     const timeStr = rawTime || '00:00';
     const isoTime = timeStr.length <= 5 ? `${timeStr}:00` : timeStr;
-    const target = new Date(`${dateStr}T${isoTime}`);
+    const target = parseServerDate(`${dateStr}T${isoTime}`);
+
     if (isNaN(target.getTime())) return { label: dateStr, countdown: null, isOverdue: false };
     const diffMs = target - now;
     const diffMin = Math.round(diffMs / 60000);
 
-    const today = now.toISOString().slice(0, 10);
-    const tomorrow = new Date(now);
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    const tomorrowStr = tomorrow.toISOString().slice(0, 10);
+    const today = getShopTodayStr(timezone);
+    const tomorrowStr = getShopTomorrowStr(timezone);
 
     let dateLabel = '';
     if (dateStr === today) dateLabel = 'Today';
     else if (dateStr === tomorrowStr) dateLabel = 'Tomorrow';
     else {
-      const d = new Date(dateStr + 'T00:00:00');
-      dateLabel = isNaN(d.getTime()) ? dateStr : d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+      dateLabel = target.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
     }
+
 
     const formattedTime = rawTime ? target.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true }) : '';
     const label = formattedTime ? `${dateLabel}, ${formattedTime}` : dateLabel;
@@ -197,18 +203,8 @@ export default function PickupOrdersScreen({ navigation }) {
   });
 
   // Group by date for section headers
-  const getDateLabel = (dateStr) => {
-    const ds = (dateStr || '').split('T')[0];
-    if (!ds) return 'Unscheduled';
-    const today = now.toISOString().slice(0, 10);
-    const tomorrow = new Date(now);
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    const tomorrowStr = tomorrow.toISOString().slice(0, 10);
-    if (ds === today) return 'Today';
-    if (ds === tomorrowStr) return 'Tomorrow';
-    const d = new Date(ds + 'T00:00:00');
-    return d.toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' });
-  };
+  const getDateLabel = (dateStr) => formatShopDateLabel(dateStr, timezone);
+
 
   const sections = [];
   const grouped = {};

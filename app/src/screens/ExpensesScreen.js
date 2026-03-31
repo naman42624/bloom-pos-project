@@ -6,7 +6,9 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
+import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
+import { getShopTodayStr } from '../utils/datetime';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 
 const EXPENSE_CATEGORIES = [
@@ -27,7 +29,10 @@ const PAYMENT_METHODS = [
 ];
 
 export default function ExpensesScreen() {
+  const { settings } = useAuth();
+  const timezone = settings?.timezone || 'Asia/Kolkata';
   const [expenses, setExpenses] = useState([]);
+
   const [total, setTotal] = useState(0);
   const [locations, setLocations] = useState([]);
   const [selectedLocation, setSelectedLocation] = useState(null);
@@ -65,8 +70,9 @@ export default function ExpensesScreen() {
   const fetchExpenses = async () => {
     try {
       setLoading(true);
-      const today = new Date().toISOString().slice(0, 10);
+      const today = getShopTodayStr(timezone);
       const res = await api.getExpenses({ location_id: selectedLocation, start_date: today, end_date: today });
+
       setExpenses(res.data || []);
       setTotal(res.total || 0);
     } catch {} finally {
@@ -81,8 +87,9 @@ export default function ExpensesScreen() {
 
     setSubmitting(true);
     try {
-      const today = new Date().toISOString().slice(0, 10);
+      const today = getShopTodayStr(timezone);
       await api.createExpense({
+
         location_id: selectedLocation,
         category,
         amount: amt,
