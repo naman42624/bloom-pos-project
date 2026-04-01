@@ -37,6 +37,7 @@ export default function POSScreen({ navigation, route }) {
   const [selectedLocation, setSelectedLocation] = useState(null);
   const [activeTab, setActiveTab] = useState('products'); // 'products' or 'materials'
   const [selectedCategory, setSelectedCategory] = useState(null); // null = all
+  const [showReadyOnly, setShowReadyOnly] = useState(false);
   const [viewedImage, setViewedImage] = useState(null);
 
   // Order type selection (Step 1)
@@ -380,6 +381,14 @@ export default function POSScreen({ navigation, route }) {
     }
   }, [route.params?.scannedProduct]);
 
+  const filteredProducts = useMemo(() => {
+    let list = selectedCategory ? products.filter((p) => p.category === selectedCategory) : products;
+    if (showReadyOnly) {
+      list = list.filter((p) => Number(p.ready_qty || 0) > 0);
+    }
+    return list;
+  }, [products, selectedCategory, showReadyOnly]);
+
   const renderProduct = ({ item, index }) => {
     const inCart = cart.find((c) => c.product_id === item.id && !c.material_id);
     const readyQty = item.ready_qty || 0;
@@ -603,6 +612,27 @@ export default function POSScreen({ navigation, route }) {
     </View>
   );
 
+  const renderReadyFilter = (vertical = false) => (
+    <View style={vertical ? { gap: Spacing.xs, paddingHorizontal: Spacing.sm, marginTop: Spacing.md } : { paddingHorizontal: Spacing.md, paddingTop: Spacing.sm }}>
+      {vertical && <Text style={styles.sidebarSectionTitle}>Availability</Text>}
+      <TouchableOpacity
+        style={[
+          styles.locChip,
+          showReadyOnly && styles.locChipActive,
+          vertical && { width: '100%', minHeight: 40, justifyContent: 'flex-start', flexDirection: 'row', gap: Spacing.xs },
+        ]}
+        onPress={() => setShowReadyOnly((prev) => !prev)}
+      >
+        <Ionicons
+          name={showReadyOnly ? 'checkmark-circle' : 'cube-outline'}
+          size={16}
+          color={showReadyOnly ? Colors.white : Colors.textSecondary}
+        />
+        <Text style={[styles.locChipText, showReadyOnly && styles.locChipTextActive]}>Ready Only</Text>
+      </TouchableOpacity>
+    </View>
+  );
+
   const renderUnifiedTopBar = () => (
     <View style={styles.unifiedTopBar}>
       {/* Search row */}
@@ -683,9 +713,10 @@ export default function POSScreen({ navigation, route }) {
   const renderProductList = () => (
     <View style={{ flex: 1 }}>
       {!isTablet && renderCategoryList(false)}
+      {!isTablet && activeTab === 'products' && renderReadyFilter(false)}
       <FlatList
         data={activeTab === 'products' 
-          ? (selectedCategory ? products.filter(p => p.category === selectedCategory) : products)
+          ? filteredProducts
           : materials
         }
         key={`pos-grid-${numColumns}-${activeTab}`}
@@ -802,6 +833,7 @@ export default function POSScreen({ navigation, route }) {
               {renderLocationPicker(true)}
               {renderOrderTypePicker(true)}
               {renderCategoryList(true)}
+              {activeTab === 'products' && renderReadyFilter(true)}
             </ScrollView>
           )}
           {isSidebarCollapsed && (
