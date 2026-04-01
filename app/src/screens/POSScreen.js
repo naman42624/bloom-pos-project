@@ -338,7 +338,13 @@ export default function POSScreen({ navigation, route }) {
       Alert.alert('Location', 'Please select a location');
       return;
     }
-    navigation.navigate('Checkout', { cart, locationId: selectedLocation, orderType });
+
+    navigation.navigate('QuickCheckout', {
+      prefillCart: cart,
+      locationId: selectedLocation,
+      orderType,
+      prefillToken: Date.now(),
+    });
   };
 
   const handleScanQR = () => {

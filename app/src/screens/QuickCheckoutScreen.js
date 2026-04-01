@@ -19,6 +19,7 @@ const ORDER_TYPES = [
   { key: 'walk_in', label: 'Walk-in', icon: 'person', color: '#4CAF50' },
   { key: 'pickup', label: 'Pickup', icon: 'bag-handle', color: '#2196F3' },
   { key: 'delivery', label: 'Delivery', icon: 'bicycle', color: '#FF9800' },
+  { key: 'pre_order', label: 'Pre-Order', icon: 'calendar', color: Colors.primary },
 ];
 
 export default function QuickCheckoutScreen({ navigation, route }) {
@@ -44,6 +45,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
 
   // Order type
   const [orderType, setOrderType] = useState('walk_in');
+  const [preOrderType, setPreOrderType] = useState('pickup');
 
   // Location
   const [locations, setLocations] = useState([]);
@@ -105,6 +107,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
   const [materialSearch, setMaterialSearch] = useState('');
   const [editingMaterialIdx, setEditingMaterialIdx] = useState(null);
   const searchTimer = useRef(null);
+  const prefillAppliedRef = useRef(null);
 
   useFocusEffect(
     useCallback(() => {
@@ -264,11 +267,100 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     } catch { }
   };
 
+  const mapPosCartItemToQuickItem = useCallback((cartItem) => {
+    const isMaterialOnly = !!cartItem?.material_id && !cartItem?.product_id;
+    return {
+      name: cartItem?.product_name || '',
+      baseProduct: cartItem?.product_id ? {
+        id: cartItem.product_id,
+        name: cartItem.product_name || '',
+        sku: cartItem.product_sku || '',
+        selling_price: Number(cartItem.unit_price || 0),
+        tax_percentage: Number(cartItem.tax_rate || 0),
+        image_url: cartItem.image_url || '',
+        ready_qty: Number(cartItem.stock_quantity || 0),
+        stock_quantity: Number(cartItem.stock_quantity || 0),
+      } : null,
+      baseMaterial: isMaterialOnly ? {
+        id: cartItem.material_id,
+        name: cartItem.product_name || '',
+        sku: cartItem.product_sku || '',
+      } : null,
+      materials: Array.isArray(cartItem?.custom_materials)
+        ? cartItem.custom_materials.map((m) => ({
+            material_id: m.material_id,
+            name: m.name || '',
+            qty: String(m.qty_per_unit || m.qty || 1),
+          }))
+        : [],
+      price: String(cartItem?.unit_price ?? 0),
+      quantity: String(cartItem?.quantity ?? 1),
+      special_instructions: cartItem?.special_instructions || '',
+      image_url: cartItem?.image_url || '',
+      fulfill_from_stock: !!cartItem?.fulfill_from_stock,
+    };
+  }, []);
+
+  useEffect(() => {
+    const prefillToken = route.params?.prefillToken;
+    const prefillCart = route.params?.prefillCart;
+    if (!prefillToken || prefillAppliedRef.current === prefillToken) return;
+    if (!Array.isArray(prefillCart) || prefillCart.length === 0) return;
+
+    prefillAppliedRef.current = prefillToken;
+
+    const hydratePrefillItems = async () => {
+      const normalized = prefillCart.map(mapPosCartItemToQuickItem);
+      const enriched = await Promise.all(
+        normalized.map(async (item) => {
+          if (!item.baseProduct?.id) return item;
+          if (Array.isArray(item.materials) && item.materials.length > 0) return item;
+
+          try {
+            const bomRes = await api.getProductMaterials(item.baseProduct.id);
+            const bom = (bomRes.data || []).map((m) => ({
+              material_id: m.material_id,
+              name: m.material_name || m.name,
+              qty: String(m.quantity || 1),
+            }));
+            return { ...item, materials: bom };
+          } catch {
+            return item;
+          }
+        })
+      );
+
+      setItems(enriched);
+    };
+
+    hydratePrefillItems();
+    if (route.params?.locationId) setSelectedLocation(route.params.locationId);
+    if (route.params?.orderType) {
+      setOrderType(route.params.orderType);
+    }
+    setActiveDraftId(null);
+
+    navigation.setParams({
+      prefillCart: undefined,
+      locationId: undefined,
+      orderType: undefined,
+      prefillToken: undefined,
+    });
+  }, [
+    route.params?.prefillToken,
+    route.params?.prefillCart,
+    route.params?.locationId,
+    route.params?.orderType,
+    mapPosCartItemToQuickItem,
+    navigation,
+  ]);
+
   // Add a blank custom item
   const addItem = () => {
     setItems([...items, {
       name: '',
       baseProduct: null, // optional: link to existing product
+      baseMaterial: null,
       materials: [],
       price: '',
       quantity: '1',
@@ -292,6 +384,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
         ...updated[idx],
         name: product.name,
         baseProduct: product,
+        baseMaterial: null,
         materials: bom,
         price: String(product.selling_price || 0),
         fulfill_from_stock: (product.ready_qty || product.stock_quantity || 0) > 0,
@@ -303,6 +396,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
         ...updated[idx],
         name: product.name,
         baseProduct: product,
+        baseMaterial: null,
         price: String(product.selling_price || 0),
         fulfill_from_stock: (product.ready_qty || product.stock_quantity || 0) > 0,
       };
@@ -376,11 +470,14 @@ export default function QuickCheckoutScreen({ navigation, route }) {
 
     const discVal = parseFloat(discountValue) || 0;
     const discountAmount = discountType === 'percentage' ? (subtotal * discVal / 100) : discVal;
-    const delivery = (orderType === 'delivery') ? (parseFloat(deliveryCharges) || 0) : 0;
+    const needsDelivery = orderType === 'delivery' || (orderType === 'pre_order' && preOrderType === 'delivery');
+    const delivery = needsDelivery ? (parseFloat(deliveryCharges) || 0) : 0;
     const finalTotal = Math.max(0, subtotal - discountAmount) + taxTotal + delivery;
 
     return { subtotal, taxTotal, discountAmount, delivery, finalTotal };
-  }, [items, discountValue, discountType, orderType, deliveryCharges]);
+  }, [items, discountValue, discountType, orderType, preOrderType, deliveryCharges]);
+
+  const needsDelivery = orderType === 'delivery' || (orderType === 'pre_order' && preOrderType === 'delivery');
 
   const buildDraftPayload = useCallback(() => ({
     customerName,
@@ -390,6 +487,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     scheduledDate,
     scheduledTime,
     orderType,
+    preOrderType,
     selectedLocation,
     useCustomerAsSender,
     senderSameAsReceiver,
@@ -419,6 +517,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     scheduledDate,
     scheduledTime,
     orderType,
+    preOrderType,
     selectedLocation,
     useCustomerAsSender,
     senderSameAsReceiver,
@@ -451,6 +550,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     setScheduledDate(p.scheduledDate || '');
     setScheduledTime(p.scheduledTime || '');
     setOrderType(p.orderType || 'walk_in');
+    setPreOrderType(p.preOrderType || 'pickup');
     setSelectedLocation(p.selectedLocation || null);
     setUseCustomerAsSender(p.useCustomerAsSender !== false);
     setSenderSameAsReceiver(!!p.senderSameAsReceiver);
@@ -594,7 +694,12 @@ export default function QuickCheckoutScreen({ navigation, route }) {
         return;
       }
     }
-    if (orderType === 'delivery' && !customerAddress.trim()) {
+    if (orderType === 'pre_order' && !scheduledDate) {
+      Alert.alert('Required', 'Please enter a scheduled date for pre-order');
+      return;
+    }
+
+    if (needsDelivery && !customerAddress.trim()) {
       Alert.alert('Required', 'Delivery address is required');
       return;
     }
@@ -608,19 +713,19 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     const effectiveReceiverPhone = (senderSameAsReceiver ? effectiveSenderPhone : receiverPhone).trim();
     const effectiveReceiverId = senderSameAsReceiver ? effectiveSenderId : (receiverId || null);
 
-    if (orderType === 'delivery' && !effectiveSenderName) {
+    if (needsDelivery && !effectiveSenderName) {
       Alert.alert('Required', 'Please enter sender/customer name');
       return;
     }
-    if (orderType === 'delivery' && !effectiveSenderPhone) {
+    if (needsDelivery && !effectiveSenderPhone) {
       Alert.alert('Required', 'Please enter sender/customer phone');
       return;
     }
-    if (orderType === 'delivery' && !effectiveReceiverName) {
+    if (needsDelivery && !effectiveReceiverName) {
       Alert.alert('Required', 'Please enter receiver name');
       return;
     }
-    if (orderType === 'delivery' && !effectiveReceiverPhone) {
+    if (needsDelivery && !effectiveReceiverPhone) {
       Alert.alert('Required', 'Please enter receiver phone');
       return;
     }
@@ -655,9 +760,9 @@ export default function QuickCheckoutScreen({ navigation, route }) {
       // Build cart items
       const cartItems = processedItems.map(item => ({
         product_id: item.baseProduct?.id || null,
-        material_id: null,
+        material_id: item.baseMaterial?.id || null,
         product_name: item.name,
-        product_sku: item.baseProduct?.sku || '',
+        product_sku: item.baseProduct?.sku || item.baseMaterial?.sku || '',
         quantity: parseInt(item.quantity) || 1,
         unit_price: parseFloat(item.price) || 0,
         tax_rate: item.baseProduct?.tax_percentage || 0,
@@ -695,25 +800,25 @@ export default function QuickCheckoutScreen({ navigation, route }) {
       const saleData = {
         location_id: selectedLocation,
         order_type: orderType,
-        customer_id: orderType === 'delivery' ? (customerId || null) : customerId,
-        customer_name: orderType === 'delivery' ? (effectiveCustomerName || null) : (customerName.trim() || null),
-        customer_phone: orderType === 'delivery' ? (effectiveCustomerPhone || null) : (customerPhone.trim() || null),
+        customer_id: needsDelivery ? (customerId || null) : customerId,
+        customer_name: needsDelivery ? (effectiveCustomerName || null) : (customerName.trim() || null),
+        customer_phone: needsDelivery ? (effectiveCustomerPhone || null) : (customerPhone.trim() || null),
         discount_type: discountAmount > 0 ? discountType : null,
         discount_value: discVal,
         delivery_charges: delivery,
         notes: orderNotes || null,
-        delivery_address: orderType === 'delivery' ? customerAddress.trim() : null,
-        sender_customer_id: orderType === 'delivery' ? (useCustomerAsSender ? (effectiveSenderId || null) : null) : null,
-        receiver_customer_id: orderType === 'delivery' ? (effectiveReceiverId || null) : null,
-        sender_same_as_receiver: orderType === 'delivery' ? senderSameAsReceiver : false,
-        sender_name: orderType === 'delivery' ? (effectiveSenderName || null) : (senderName.trim() || null),
-        sender_phone: orderType === 'delivery' ? (effectiveSenderPhone || null) : (senderPhone.trim() || null),
-        receiver_name: orderType === 'delivery' ? (effectiveReceiverName || null) : null,
-        receiver_phone: orderType === 'delivery' ? (effectiveReceiverPhone || null) : null,
-        sender_address: orderType === 'delivery' ? (senderAddress.trim() || null) : null,
+        delivery_address: needsDelivery ? customerAddress.trim() : null,
+        sender_customer_id: needsDelivery ? (useCustomerAsSender ? (effectiveSenderId || null) : null) : null,
+        receiver_customer_id: needsDelivery ? (effectiveReceiverId || null) : null,
+        sender_same_as_receiver: needsDelivery ? senderSameAsReceiver : false,
+        sender_name: needsDelivery ? (effectiveSenderName || null) : null,
+        sender_phone: needsDelivery ? (effectiveSenderPhone || null) : null,
+        receiver_name: needsDelivery ? (effectiveReceiverName || null) : null,
+        receiver_phone: needsDelivery ? (effectiveReceiverPhone || null) : null,
+        sender_address: needsDelivery ? (senderAddress.trim() || null) : null,
         sender_address_label: null,
         receiver_address_label: null,
-        sender_message: senderMessage.trim() || null,
+        sender_message: needsDelivery ? (senderMessage.trim() || null) : null,
         scheduled_date: scheduledDate || null,
         scheduled_time: scheduledTime || null,
         items: cartItems,
@@ -724,6 +829,18 @@ export default function QuickCheckoutScreen({ navigation, route }) {
         ) : [],
         advance_amount: paymentMode === 'partial' ? (parseFloat(advanceAmount) || 0) : 0,
       };
+
+      if (orderType === 'pre_order') {
+        const advance = parseFloat(advanceAmount) || 0;
+        saleData.pre_order = {
+          scheduled_date: scheduledDate,
+          scheduled_time: scheduledTime || null,
+          advance_amount: advance,
+          remaining_amount: Math.max(0, finalGrandTotal - advance),
+          delivery_address: needsDelivery ? customerAddress.trim() : null,
+          special_instructions: orderNotes || null,
+        };
+      }
 
       const res = await api.createSale(saleData);
       if (res.success) {
@@ -846,10 +963,30 @@ export default function QuickCheckoutScreen({ navigation, route }) {
             </View>
           )}
 
-          {/* Scheduled date/time — for pickup, delivery */}
-          {(orderType === 'pickup' || orderType === 'delivery') && (
+          {orderType === 'pre_order' && (
+            <View style={{ marginTop: Spacing.sm }}>
+              <Text style={styles.label}>Pre-order Mode</Text>
+              <View style={{ flexDirection: 'row', gap: Spacing.xs }}>
+                <TouchableOpacity
+                  style={[styles.chip, preOrderType === 'pickup' && styles.chipActive]}
+                  onPress={() => setPreOrderType('pickup')}
+                >
+                  <Text style={[styles.chipText, preOrderType === 'pickup' && styles.chipTextActive]}>Pickup</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.chip, preOrderType === 'delivery' && styles.chipActive]}
+                  onPress={() => setPreOrderType('delivery')}
+                >
+                  <Text style={[styles.chipText, preOrderType === 'delivery' && styles.chipTextActive]}>Delivery</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          )}
+
+          {/* Scheduled date/time — for pickup, delivery, pre-order */}
+          {(orderType === 'pickup' || orderType === 'delivery' || orderType === 'pre_order') && (
             <View style={{ marginTop: Spacing.md }}>
-              <Text style={styles.label}>Scheduled Date & Time (optional)</Text>
+              <Text style={styles.label}>Scheduled Date & Time {orderType === 'pre_order' ? '(date required)' : '(optional)'}</Text>
               <View style={[styles.fieldRow, { gap: Spacing.sm }]}>
                 <TouchableOpacity
                   style={[styles.input, { flex: 1, flexDirection: 'row', alignItems: 'center' }]}
@@ -885,11 +1022,11 @@ export default function QuickCheckoutScreen({ navigation, route }) {
             <View style={styles.sectionIcon}>
               <Ionicons name="person" size={20} color={Colors.primary} />
             </View>
-            <Text style={styles.sectionTitle}>{orderType === 'delivery' ? 'Sender & Receiver Details' : 'Customer Details'}</Text>
+            <Text style={styles.sectionTitle}>{needsDelivery ? 'Sender & Receiver Details' : 'Customer Details'}</Text>
           </View>
           <View style={styles.fieldRow}>
             <View style={styles.fieldHalf}>
-              <Text style={styles.label}>{orderType === 'delivery' ? 'Customer / Sender Phone *' : 'Phone *'}</Text>
+              <Text style={styles.label}>{needsDelivery ? 'Customer / Sender Phone *' : 'Phone *'}</Text>
               <TextInput
                 style={styles.input}
                 value={customerPhone}
@@ -913,7 +1050,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
               )}
             </View>
             <View style={styles.fieldHalf}>
-              <Text style={styles.label}>{orderType === 'delivery' ? 'Customer / Sender Name *' : 'Name *'}</Text>
+              <Text style={styles.label}>{needsDelivery ? 'Customer / Sender Name *' : 'Name *'}</Text>
               <TextInput
                 style={styles.input}
                 value={customerName}
@@ -931,7 +1068,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
               </Text>
             </View>
           )}
-          {orderType === 'delivery' && (
+          {needsDelivery && (
             <>
               <TouchableOpacity
                 style={styles.checkRow}
@@ -1060,12 +1197,12 @@ export default function QuickCheckoutScreen({ navigation, route }) {
             </>
           )}
 
-          <Text style={styles.label}>{orderType === 'delivery' ? 'Special Comment (optional)' : 'Order Notes / Instructions (optional)'}</Text>
+          <Text style={styles.label}>{needsDelivery ? 'Special Comment (optional)' : 'Order Notes / Instructions (optional)'}</Text>
           <TextInput
             style={[styles.input, { minHeight: 44 }]}
             value={orderNotes}
             onChangeText={setOrderNotes}
-            placeholder={orderType === 'delivery' ? 'Any special comment for delivery slip...' : 'Special instructions for the overall order...'}
+            placeholder={needsDelivery ? 'Any special comment for delivery slip...' : 'Special instructions for the overall order...'}
             placeholderTextColor={Colors.textLight}
             multiline
           />
@@ -1293,7 +1430,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
           </View>
 
           <View style={styles.fieldRow}>
-            {orderType === 'delivery' && (
+            {needsDelivery && (
               <View style={styles.fieldHalf}>
                 <Text style={styles.label}>Delivery Charge (₹)</Text>
                 <TextInput
@@ -1335,7 +1472,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
           <View style={[styles.orderTypeRow, { flexWrap: 'wrap', gap: 8 }]}>
             {[
               { key: 'pay_now', label: 'Pay Now', icon: 'cash-outline' },
-              { key: 'cod', label: 'COD', icon: 'bicycle-outline', hidden: orderType !== 'delivery' },
+              { key: 'cod', label: 'COD', icon: 'bicycle-outline', hidden: !needsDelivery },
               { key: 'credit', label: 'Credit', icon: 'time-outline' },
               { key: 'partial', label: 'Partial', icon: 'pie-chart-outline', hidden: orderType === 'walk_in' },
             ].filter(m => !m.hidden).map(m => (

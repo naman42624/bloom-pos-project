@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useLayoutEffect } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useCallback } from 'react';
 
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, Platform, ActivityIndicator, Modal, TextInput, KeyboardAvoidingView,
@@ -342,169 +342,25 @@ export default function SaleDetailScreen({ route, navigation }) {
     }
   };
 
+  const resolveItemLineTotal = useCallback((item) => {
+    const qty = Number(item?.quantity) || 0;
+    const unitPrice = Number(item?.unit_price) || 0;
+    const base = qty * unitPrice;
+    const taxFromField = Number(item?.tax_amount) || 0;
+    const taxRate = Number(item?.tax_rate) || 0;
+    const computedTax = taxFromField > 0 ? taxFromField : (base * taxRate / 100);
+    const computed = base + computedTax;
+    const stored = Number(item?.line_total);
+
+    // Legacy rows may carry line_total=0; use computed amount in that case.
+    if (!Number.isFinite(stored) || (stored <= 0 && computed > 0)) return computed;
+    return stored;
+  }, []);
+
   const generateReceipt = async () => {
     const paidAmt = (sale.payments || []).reduce((s, p) => s + p.amount, 0);
     const dueAmt = sale.grand_total - paidAmt;
-    const isDeliverySlip = sale.order_type === 'delivery' || (sale.order_type === 'pre_order' && !!sale.delivery_address);
-
-    const deliveryDate = sale.scheduled_date || (sale.pre_order && sale.pre_order.scheduled_date) || '';
-    const deliveryTime = sale.scheduled_time || (sale.pre_order && sale.pre_order.scheduled_time) || '';
-    const shipToName = sale.receiver_name || sale.receiver_display_name || sale.delivery?.customer_name || sale.customer_name || sale.customer_display_name || '';
-    const shipToPhone = sale.receiver_phone || sale.receiver_display_phone || sale.delivery?.customer_phone || sale.customer_phone || sale.customer_display_phone || '';
-    const senderDisplayName = sale.sender_name || sale.sender_display_name || sale.customer_name || sale.customer_display_name || '';
-    const senderDisplayPhone = sale.sender_phone || sale.sender_display_phone || sale.customer_phone || sale.customer_display_phone || '';
-    const itemsHtml = (sale.items || []).map(item => {
-      const qty = item.quantity || 0;
-      const name = item.product_name || item.display_name || 'Item';
-      const note = item.special_instructions ? ` (Note: ${item.special_instructions})` : '';
-      return `<tr><td class="sku">${qty} x ${name}${note}</td></tr>`;
-    }).join('');
-
-    const html = isDeliverySlip ? `
-      <html><head><meta charset="utf-8"><style>
-        header {
-          width: 4in;
-          display: block;
-          margin-left: auto;
-          margin-right: auto;
-          height: 1in;
-          text-align: center;
-          padding-top: 6px;
-        }
-        body {
-          margin: 0;
-          width: 8.5in;
-          color: #111;
-        }
-        * {
-          font-family: Arial, sans-serif;
-          font-size: 15px;
-        }
-        .brand {
-          font-size: 26px;
-          font-weight: 700;
-          letter-spacing: 1px;
-        }
-        .brand-sub {
-          font-size: 12px;
-          margin-top: 2px;
-        }
-        th {
-          color: black;
-          font-weight: bold;
-          border: solid 2px #c0c0c0;
-        }
-        td {
-          vertical-align: top;
-        }
-        .store-info div {
-          font-size: 0.8em;
-        }
-        .store-info div.company-name {
-          font-size: 1em;
-          font-weight: bold;
-        }
-        table.order-info td {
-          padding: 2px 4px;
-        }
-        table.order-info tr td.label {
-          font-weight: bold;
-          text-align: right;
-          border-right: solid 1px #c0c0c0;
-        }
-        table.line-items {
-          margin-top: 0.1in;
-          padding: 0.1in 0;
-        }
-        table.line-items th {
-          padding: 2px;
-        }
-        table.footer {
-          border-top: solid 1px #707070;
-        }
-        td.notes {
-          padding: 0.1in;
-          font-style: italic;
-        }
-        .sku {
-          padding-left: 8px;
-        }
-        .signature {
-          padding-top: 28px;
-          text-align: right;
-          font-weight: 600;
-        }
-      </style></head><body>
-        <header>
-          <div class="brand">FLOWER POINT</div>
-          <div class="brand-sub">Delivery Slip</div>
-        </header>
-        <table cellspacing="0" cellpadding="2" border="0" style="width:8.5in">
-          <thead>
-            <tr>
-              <th colspan="3">Delivery Slip</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td colspan="2" style="width:4.5in" class="store-info">
-                <div class="company-name">Flower Point</div>
-                <div>Shop no.1, plot, No.678, Mall Rd, Model Town, Jalandhar,<br/>Punjab 144003<br/>+91 9915574333 , 0181-5072000</div>
-              </td>
-              <td style="width:3.5in;" align="right" valign="top"></td>
-            </tr>
-            <tr><td style="height:0.15in"></td></tr>
-            <tr>
-              <td align="right" style="width:1in"><b>Ship To:</b></td>
-              <td style="width:3.5in; font-size:14px">
-                <div>${shipToName || '-'}</div>
-                <div>${sale.delivery_address || '-'}</div>
-                <div>${shipToPhone || '-'}</div>
-              </td>
-              <td style="width:2.5in">
-                <table cellspacing="0" border="0" class="order-info">
-                  <tr>
-                    <td align="right" class="label">Challan #</td>
-                    <td>${sale.id}</td>
-                  </tr>
-                  <tr>
-                    <td align="right" class="label">Order #</td>
-                    <td>${sale.sale_number}</td>
-                  </tr>
-                  <tr>
-                    <td align="right" class="label">Delivery Date</td>
-                    <td>${deliveryDate || '-'}</td>
-                  </tr>
-                  <tr>
-                    <td align="right" class="label">Delivery Time</td>
-                    <td>${deliveryTime || '-'}</td>
-                  </tr>
-                </table>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-
-        <table cellspacing="0" cellpadding="2" border="0" style="width:100%" class="footer">
-          <tbody>
-            <tr>
-              <td class="notes">
-                <p><b>Message:</b> ${sale.sender_message || '-'}</p>
-                <p><b>From:</b> ${senderDisplayName || '-'}${senderDisplayPhone ? ` (${senderDisplayPhone})` : ''}</p>
-                <p><b>Special Comment:</b> ${sale.notes || sale.special_instructions || '-'}</p>
-                <p><b>Items:</b></p>
-                <table cellspacing="0" cellpadding="2" border="0" class="line-items" style="width:100%">
-                  <tbody>${itemsHtml || '<tr><td class="sku">No items</td></tr>'}</tbody>
-                </table>
-              </td>
-            </tr>
-            <tr>
-              <td class="signature">Receiver's Signature</td>
-            </tr>
-          </tbody>
-        </table>
-      </body></html>
-    ` : `
+    const receiptHtml = `
       <html><head><meta charset="utf-8"><style>
         body { font-family: 'Courier New', monospace; max-width: 300px; margin: 0 auto; padding: 16px; font-size: 12px; }
         .center { text-align: center; }
@@ -529,7 +385,7 @@ export default function SaleDetailScreen({ route, navigation }) {
             <p>${item.product_name || item.display_name || 'Item'}</p>
             <div class="row">
               <span>${item.quantity} x ₹${(item.unit_price || 0).toFixed(2)}</span>
-              <span>₹${(item.line_total || 0).toFixed(2)}</span>
+              <span>₹${resolveItemLineTotal(item).toFixed(2)}</span>
             </div>
           </div>
         `).join('')}
@@ -584,11 +440,11 @@ export default function SaleDetailScreen({ route, navigation }) {
     };
     try {
       if (Platform.OS === 'web') {
-        printHtmlOnWeb(html, isDeliverySlip ? 'Delivery Slip' : 'Receipt');
+        printHtmlOnWeb(receiptHtml, 'Receipt');
         return;
       }
 
-      const { uri } = await Print.printToFileAsync({ html, width: isDeliverySlip ? 612 : 300 });
+      const { uri } = await Print.printToFileAsync({ html: receiptHtml, width: 300 });
       await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: `Receipt ${sale.sale_number}` });
     } catch (err) {
       Alert.alert('Error', 'Could not generate receipt');
@@ -755,7 +611,7 @@ export default function SaleDetailScreen({ route, navigation }) {
         <Text style={styles.sectionTitle}>Items ({(sale.items || []).length})</Text>
         {(sale.items || []).map((item, idx) => {
           const itemName = item.product_name || item.display_name || 'Item';
-          const itemTotal = item.line_total ?? ((Number(item.quantity) || 0) * (Number(item.unit_price) || 0) + (Number(item.tax_amount) || 0));
+          const itemTotal = resolveItemLineTotal(item);
           const canFulfill = !['cancelled', 'completed'].includes(sale.status)
             && item.product_id
             && !item.from_product_stock;
@@ -1025,7 +881,7 @@ export default function SaleDetailScreen({ route, navigation }) {
       {/* Receipt button */}
       <TouchableOpacity style={[styles.actionBtn, { backgroundColor: Colors.primary, alignSelf: 'stretch', marginHorizontal: 0, marginTop: Spacing.md }]} onPress={generateReceipt}>
         <Ionicons name="receipt" size={18} color={Colors.white} />
-        <Text style={styles.actionBtnText}>{sale.order_type === 'delivery' ? 'Share Delivery Slip / PDF' : 'Share Receipt / PDF'}</Text>
+        <Text style={styles.actionBtnText}>Share Receipt / PDF</Text>
       </TouchableOpacity>
 
       {/* Order status transitions */}

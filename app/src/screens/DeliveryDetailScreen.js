@@ -240,16 +240,22 @@ export default function DeliveryDetailScreen({ route, navigation }) {
     const senderName = delivery.sender_name || '';
     const senderPhone = delivery.sender_phone || '';
     const senderMessage = delivery.sender_message || '';
+    const orderInstructions = delivery.delivery_notes || delivery.special_instructions || delivery.notes || '';
     const scheduledDate = delivery.scheduled_date || '';
     const scheduledTime = delivery.scheduled_time || '';
 
-    const itemsHtml = (delivery.items || []).map(item => `
+    const itemsHtml = (showInstructions) => (delivery.items || []).map((item) => {
+      const itemInstruction = item.special_instructions || item.customization || item.note || '';
+      return `
       <tr>
-        <td style="padding:4px 6px;border-bottom:1px solid #ddd;">${item.product_name || ''}</td>
-        <td style="padding:4px 6px;border-bottom:1px solid #ddd;text-align:center;">${item.quantity}</td>
-        <td style="padding:4px 6px;border-bottom:1px solid #ddd;text-align:right;">₹${(item.line_total || 0).toFixed(0)}</td>
+        <td style="padding:4px 6px;border-bottom:1px solid #ddd;">
+          <div style="font-weight:600;">${item.product_name || ''}</div>
+          ${showInstructions && itemInstruction ? `<div style="font-size:9px;color:#666;margin-top:2px;">${itemInstruction}</div>` : ''}
+        </td>
+        <td style="padding:4px 6px;border-bottom:1px solid #ddd;text-align:center;vertical-align:top;">${item.quantity}</td>
       </tr>
-    `).join('');
+    `;
+    }).join('');
 
     const codToCollect = Math.max((delivery.cod_amount || 0) - (delivery.cod_collected || 0), 0);
     const codAmt = codToCollect.toFixed(0);
@@ -280,17 +286,16 @@ export default function DeliveryDetailScreen({ route, navigation }) {
             <tr style="background:#f5f5f5;">
               <th style="padding:3px 4px;text-align:left;border-bottom:2px solid #ddd;">Item</th>
               <th style="padding:3px 4px;text-align:center;border-bottom:2px solid #ddd;">Qty</th>
-              <th style="padding:3px 4px;text-align:right;border-bottom:2px solid #ddd;">Amount</th>
             </tr>
           </thead>
-          <tbody>${itemsHtml}</tbody>
+          <tbody>${itemsHtml(showInstructions)}</tbody>
         </table>
+        ${showInstructions && orderInstructions ? `<div style="background:#F5F5F5;border-radius:4px;padding:3px 6px;margin:3px 0;font-size:10px;"><strong>Order Instructions:</strong> ${orderInstructions}</div>` : ''}
         <div style="border-top:1px dashed #999;margin:5px 0;"></div>
-        <div style="display:flex;justify-content:space-between;font-size:11px;font-weight:bold;">
-          ${parseFloat(codAmt) > 0 ? `<span style="color:#E91E63;">COD: ₹${codAmt}</span>` : '<span style="color:#4CAF50;">PREPAID</span>'}
-          <span style="color:#666;">${copyTitle}</span>
+        <div style="display:flex;justify-content:space-between;font-size:11px;font-weight:bold;align-items:flex-end;">
+          <div>${parseFloat(codAmt) > 0 ? `<span style="color:#E91E63;">COD: ₹${codAmt}</span>` : '<span style="color:#4CAF50;">PREPAID</span>'}</div>
         </div>
-        ${showInstructions && delivery.special_instructions ? `<div style="font-size:10px;color:#666;margin-top:4px;"><strong>Instructions:</strong> ${delivery.special_instructions}</div>` : ''}
+        ${showInstructions ? `<div style="margin-top:8px;border-top:1px solid #333;padding-top:6px;font-size:10px;display:flex;justify-content:space-between;align-items:flex-end;min-height:44px;"><span>Receiver's Signature</span><span style="border-bottom:1px solid #333;display:inline-block;width:180px;height:18px;"></span></div>` : ''}
       </div>
     `;
 
