@@ -719,6 +719,13 @@ function ensureCompatibilityColumns() {
   ensureColumn('sales', 'payment_mode', "VARCHAR(50) DEFAULT 'pay_now'");
   ensureColumn('sales', 'discount_type', 'VARCHAR(50)');
   ensureColumn('sales', 'discount_approved_by', 'INTEGER REFERENCES users(id) ON DELETE SET NULL');
+  ensureColumn('sales', 'sender_customer_id', 'INTEGER REFERENCES users(id) ON DELETE SET NULL');
+  ensureColumn('sales', 'receiver_customer_id', 'INTEGER REFERENCES users(id) ON DELETE SET NULL');
+  ensureColumn('sales', 'receiver_name', "VARCHAR(255) DEFAULT ''");
+  ensureColumn('sales', 'receiver_phone', "VARCHAR(20) DEFAULT ''");
+  ensureColumn('sales', 'sender_same_as_receiver', 'INTEGER DEFAULT 0');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_sales_sender_customer ON sales(sender_customer_id)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_sales_receiver_customer ON sales(receiver_customer_id)');
   // Drop over-restrictive status check (routes use 'preparing', 'completing' etc.)
   try { runPsql('ALTER TABLE sales DROP CONSTRAINT IF EXISTS sales_status_check'); } catch (_) {}
 

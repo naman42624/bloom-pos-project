@@ -80,6 +80,12 @@ export default function SaleDetailScreen({ route, navigation }) {
   const [convertCharges, setConvertCharges] = useState('');
   const [convertTarget, setConvertTarget] = useState(null);
   const [convertSavedAddresses, setConvertSavedAddresses] = useState([]);
+  const [convertSenderName, setConvertSenderName] = useState('');
+  const [convertSenderPhone, setConvertSenderPhone] = useState('');
+  const [convertSenderAddress, setConvertSenderAddress] = useState('');
+  const [convertReceiverName, setConvertReceiverName] = useState('');
+  const [convertReceiverPhone, setConvertReceiverPhone] = useState('');
+  const [convertSenderSameAsReceiver, setConvertSenderSameAsReceiver] = useState(false);
 
   // Assignment modal
   const [assignModalVisible, setAssignModalVisible] = useState(false);
@@ -281,6 +287,12 @@ export default function SaleDetailScreen({ route, navigation }) {
     setConvertTarget(target);
     setConvertAddress(sale?.delivery_address || '');
     setConvertCharges(target === 'delivery' ? '' : '0');
+    setConvertSenderName(sale?.sender_name || sale?.customer_name || '');
+    setConvertSenderPhone(sale?.sender_phone || sale?.customer_phone || '');
+    setConvertReceiverName(sale?.receiver_name || '');
+    setConvertReceiverPhone(sale?.receiver_phone || '');
+    setConvertSenderSameAsReceiver(!!sale?.sender_same_as_receiver);
+    setConvertSenderAddress('');
     setConvertSavedAddresses([]);
     // Fetch saved addresses for the customer
     if (target === 'delivery' && sale?.customer_id) {
@@ -295,8 +307,29 @@ export default function SaleDetailScreen({ route, navigation }) {
     try {
       const data = { new_order_type: convertTarget };
       if (convertTarget === 'delivery') {
+        if (!convertAddress?.trim()) {
+          Alert.alert('Required', 'Delivery address is required');
+          return;
+        }
+        if (!convertSenderName?.trim() || !convertSenderPhone?.trim()) {
+          Alert.alert('Required', 'Sender name and phone are required');
+          return;
+        }
+        if (!convertSenderSameAsReceiver && (!convertReceiverName?.trim() || !convertReceiverPhone?.trim())) {
+          Alert.alert('Required', 'Receiver name and phone are required');
+          return;
+        }
+
         data.delivery_address = convertAddress;
         data.delivery_charges = parseFloat(convertCharges) || 0;
+        data.sender_name = convertSenderName;
+        data.sender_phone = convertSenderPhone;
+        data.sender_same_as_receiver = convertSenderSameAsReceiver;
+        data.receiver_name = convertSenderSameAsReceiver ? convertSenderName : convertReceiverName;
+        data.receiver_phone = convertSenderSameAsReceiver ? convertSenderPhone : convertReceiverPhone;
+        data.sender_address = convertSenderAddress || null;
+        data.sender_address_label = null;
+        data.receiver_address_label = null;
       } else {
         data.delivery_charges = 0;
       }
@@ -312,7 +345,166 @@ export default function SaleDetailScreen({ route, navigation }) {
   const generateReceipt = async () => {
     const paidAmt = (sale.payments || []).reduce((s, p) => s + p.amount, 0);
     const dueAmt = sale.grand_total - paidAmt;
-    const html = `
+    const isDeliverySlip = sale.order_type === 'delivery' || (sale.order_type === 'pre_order' && !!sale.delivery_address);
+
+    const deliveryDate = sale.scheduled_date || (sale.pre_order && sale.pre_order.scheduled_date) || '';
+    const deliveryTime = sale.scheduled_time || (sale.pre_order && sale.pre_order.scheduled_time) || '';
+    const shipToName = sale.receiver_name || sale.receiver_display_name || sale.delivery?.customer_name || sale.customer_name || sale.customer_display_name || '';
+    const shipToPhone = sale.receiver_phone || sale.receiver_display_phone || sale.delivery?.customer_phone || sale.customer_phone || sale.customer_display_phone || '';
+    const senderDisplayName = sale.sender_name || sale.sender_display_name || sale.customer_name || sale.customer_display_name || '';
+    const senderDisplayPhone = sale.sender_phone || sale.sender_display_phone || sale.customer_phone || sale.customer_display_phone || '';
+    const itemsHtml = (sale.items || []).map(item => {
+      const qty = item.quantity || 0;
+      const name = item.product_name || item.display_name || 'Item';
+      const note = item.special_instructions ? ` (Note: ${item.special_instructions})` : '';
+      return `<tr><td class="sku">${qty} x ${name}${note}</td></tr>`;
+    }).join('');
+
+    const html = isDeliverySlip ? `
+      <html><head><meta charset="utf-8"><style>
+        header {
+          width: 4in;
+          display: block;
+          margin-left: auto;
+          margin-right: auto;
+          height: 1in;
+          text-align: center;
+          padding-top: 6px;
+        }
+        body {
+          margin: 0;
+          width: 8.5in;
+          color: #111;
+        }
+        * {
+          font-family: Arial, sans-serif;
+          font-size: 15px;
+        }
+        .brand {
+          font-size: 26px;
+          font-weight: 700;
+          letter-spacing: 1px;
+        }
+        .brand-sub {
+          font-size: 12px;
+          margin-top: 2px;
+        }
+        th {
+          color: black;
+          font-weight: bold;
+          border: solid 2px #c0c0c0;
+        }
+        td {
+          vertical-align: top;
+        }
+        .store-info div {
+          font-size: 0.8em;
+        }
+        .store-info div.company-name {
+          font-size: 1em;
+          font-weight: bold;
+        }
+        table.order-info td {
+          padding: 2px 4px;
+        }
+        table.order-info tr td.label {
+          font-weight: bold;
+          text-align: right;
+          border-right: solid 1px #c0c0c0;
+        }
+        table.line-items {
+          margin-top: 0.1in;
+          padding: 0.1in 0;
+        }
+        table.line-items th {
+          padding: 2px;
+        }
+        table.footer {
+          border-top: solid 1px #707070;
+        }
+        td.notes {
+          padding: 0.1in;
+          font-style: italic;
+        }
+        .sku {
+          padding-left: 8px;
+        }
+        .signature {
+          padding-top: 28px;
+          text-align: right;
+          font-weight: 600;
+        }
+      </style></head><body>
+        <header>
+          <div class="brand">FLOWER POINT</div>
+          <div class="brand-sub">Delivery Slip</div>
+        </header>
+        <table cellspacing="0" cellpadding="2" border="0" style="width:8.5in">
+          <thead>
+            <tr>
+              <th colspan="3">Delivery Slip</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td colspan="2" style="width:4.5in" class="store-info">
+                <div class="company-name">Flower Point</div>
+                <div>Shop no.1, plot, No.678, Mall Rd, Model Town, Jalandhar,<br/>Punjab 144003<br/>+91 9915574333 , 0181-5072000</div>
+              </td>
+              <td style="width:3.5in;" align="right" valign="top"></td>
+            </tr>
+            <tr><td style="height:0.15in"></td></tr>
+            <tr>
+              <td align="right" style="width:1in"><b>Ship To:</b></td>
+              <td style="width:3.5in; font-size:14px">
+                <div>${shipToName || '-'}</div>
+                <div>${sale.delivery_address || '-'}</div>
+                <div>${shipToPhone || '-'}</div>
+              </td>
+              <td style="width:2.5in">
+                <table cellspacing="0" border="0" class="order-info">
+                  <tr>
+                    <td align="right" class="label">Challan #</td>
+                    <td>${sale.id}</td>
+                  </tr>
+                  <tr>
+                    <td align="right" class="label">Order #</td>
+                    <td>${sale.sale_number}</td>
+                  </tr>
+                  <tr>
+                    <td align="right" class="label">Delivery Date</td>
+                    <td>${deliveryDate || '-'}</td>
+                  </tr>
+                  <tr>
+                    <td align="right" class="label">Delivery Time</td>
+                    <td>${deliveryTime || '-'}</td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+
+        <table cellspacing="0" cellpadding="2" border="0" style="width:100%" class="footer">
+          <tbody>
+            <tr>
+              <td class="notes">
+                <p><b>Message:</b> ${sale.sender_message || '-'}</p>
+                <p><b>From:</b> ${senderDisplayName || '-'}${senderDisplayPhone ? ` (${senderDisplayPhone})` : ''}</p>
+                <p><b>Special Comment:</b> ${sale.notes || sale.special_instructions || '-'}</p>
+                <p><b>Items:</b></p>
+                <table cellspacing="0" cellpadding="2" border="0" class="line-items" style="width:100%">
+                  <tbody>${itemsHtml || '<tr><td class="sku">No items</td></tr>'}</tbody>
+                </table>
+              </td>
+            </tr>
+            <tr>
+              <td class="signature">Receiver's Signature</td>
+            </tr>
+          </tbody>
+        </table>
+      </body></html>
+    ` : `
       <html><head><meta charset="utf-8"><style>
         body { font-family: 'Courier New', monospace; max-width: 300px; margin: 0 auto; padding: 16px; font-size: 12px; }
         .center { text-align: center; }
@@ -358,10 +550,25 @@ export default function SaleDetailScreen({ route, navigation }) {
       </body></html>
     `;
     try {
-      const { uri } = await Print.printToFileAsync({ html, width: 300 });
       if (Platform.OS === 'web') {
-        await Print.printAsync({ html });
+        const printWin = window.open('', '_blank', 'noopener,noreferrer,width=900,height=900');
+        if (!printWin) {
+          Alert.alert('Popup Blocked', 'Please allow popups to print the delivery slip.');
+          return;
+        }
+        printWin.document.open();
+        printWin.document.write(html);
+        printWin.document.close();
+        const triggerPrint = () => {
+          try {
+            printWin.focus();
+            printWin.print();
+          } catch (_) {}
+        };
+        printWin.onload = triggerPrint;
+        setTimeout(triggerPrint, 500);
       } else {
+        const { uri } = await Print.printToFileAsync({ html, width: isDeliverySlip ? 612 : 300 });
         await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: `Receipt ${sale.sale_number}` });
       }
     } catch (err) {
@@ -435,13 +642,45 @@ export default function SaleDetailScreen({ route, navigation }) {
       </View>
 
       {/* Customer info */}
-      {(sale.customer_name || sale.customer_phone || sale.customer_display_name) && (
+      {(sale.order_type === 'delivery'
+        ? (sale.sender_name || sale.sender_display_name || sale.customer_name || sale.customer_display_name)
+        : (sale.customer_name || sale.customer_display_name)
+      ) && (
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Customer</Text>
-          <Text style={styles.infoText}>{sale.customer_name || sale.customer_display_name}</Text>
-          {(sale.customer_phone || sale.customer_display_phone) && (
-            <Text style={styles.infoSubtext}>{sale.customer_phone || sale.customer_display_phone}</Text>
+          <Text style={styles.sectionTitle}>{sale.order_type === 'delivery' ? 'Sender' : 'Customer'}</Text>
+          <Text style={styles.infoText}>
+            {sale.order_type === 'delivery'
+              ? (sale.sender_name || sale.sender_display_name || sale.customer_name || sale.customer_display_name)
+              : (sale.customer_name || sale.customer_display_name)
+            }
+          </Text>
+          {(sale.order_type === 'delivery'
+            ? (sale.sender_phone || sale.sender_display_phone || sale.customer_phone || sale.customer_display_phone)
+            : (sale.customer_phone || sale.customer_display_phone)
+          ) && (
+            <Text style={styles.infoSubtext}>
+              {sale.order_type === 'delivery'
+                ? (sale.sender_phone || sale.sender_display_phone || sale.customer_phone || sale.customer_display_phone)
+                : (sale.customer_phone || sale.customer_display_phone)
+              }
+            </Text>
           )}
+          {sale.order_type === 'delivery' && sale.sender_message ? (
+            <Text style={styles.infoSubtext}>Message: {sale.sender_message}</Text>
+          ) : null}
+        </View>
+      )}
+
+      {sale.order_type === 'delivery' && (sale.receiver_name || sale.receiver_phone || sale.delivery?.customer_name || sale.delivery?.customer_phone || sale.delivery_address) && (
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Receiver</Text>
+          {(sale.receiver_name || sale.receiver_display_name || sale.delivery?.customer_name) ? (
+            <Text style={styles.infoText}>{sale.receiver_name || sale.receiver_display_name || sale.delivery?.customer_name}</Text>
+          ) : null}
+          {(sale.receiver_phone || sale.receiver_display_phone || sale.delivery?.customer_phone) ? (
+            <Text style={styles.infoSubtext}>{sale.receiver_phone || sale.receiver_display_phone || sale.delivery?.customer_phone}</Text>
+          ) : null}
+          {sale.delivery_address ? <Text style={styles.infoSubtext}>{sale.delivery_address}</Text> : null}
         </View>
       )}
 
@@ -755,7 +994,7 @@ export default function SaleDetailScreen({ route, navigation }) {
       {/* Notes */}
       {(sale.notes || sale.special_instructions) && (
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Notes</Text>
+          <Text style={styles.sectionTitle}>{sale.order_type === 'delivery' ? 'Special Comment' : 'Notes'}</Text>
           <Text style={styles.infoText}>{sale.notes || sale.special_instructions}</Text>
         </View>
       )}
@@ -763,7 +1002,7 @@ export default function SaleDetailScreen({ route, navigation }) {
       {/* Receipt button */}
       <TouchableOpacity style={[styles.actionBtn, { backgroundColor: Colors.primary, alignSelf: 'stretch', marginHorizontal: 0, marginTop: Spacing.md }]} onPress={generateReceipt}>
         <Ionicons name="receipt" size={18} color={Colors.white} />
-        <Text style={styles.actionBtnText}>Share Receipt / PDF</Text>
+        <Text style={styles.actionBtnText}>{sale.order_type === 'delivery' ? 'Share Delivery Slip / PDF' : 'Share Receipt / PDF'}</Text>
       </TouchableOpacity>
 
       {/* Order status transitions */}
@@ -880,6 +1119,63 @@ export default function SaleDetailScreen({ route, navigation }) {
 
             {convertTarget === 'delivery' && (
               <>
+                <Text style={styles.fieldLabel}>Sender Name *</Text>
+                <TextInput
+                  style={styles.modalInput}
+                  value={convertSenderName}
+                  onChangeText={setConvertSenderName}
+                  placeholder="Sender name"
+                  placeholderTextColor={Colors.textLight}
+                />
+
+                <Text style={styles.fieldLabel}>Sender Phone *</Text>
+                <TextInput
+                  style={styles.modalInput}
+                  value={convertSenderPhone}
+                  onChangeText={setConvertSenderPhone}
+                  placeholder="Sender phone"
+                  placeholderTextColor={Colors.textLight}
+                  keyboardType="phone-pad"
+                />
+
+                <Text style={styles.fieldLabel}>Sender Address (optional)</Text>
+                <TextInput
+                  style={styles.modalInput}
+                  value={convertSenderAddress}
+                  onChangeText={setConvertSenderAddress}
+                  placeholder="Sender address"
+                  placeholderTextColor={Colors.textLight}
+                  multiline
+                />
+
+                <TouchableOpacity style={styles.checkRow} onPress={() => setConvertSenderSameAsReceiver(!convertSenderSameAsReceiver)}>
+                  <Ionicons name={convertSenderSameAsReceiver ? 'checkbox' : 'square-outline'} size={20} color={convertSenderSameAsReceiver ? Colors.primary : Colors.textLight} />
+                  <Text style={styles.checkLabel}>Self Receive</Text>
+                </TouchableOpacity>
+
+                {!convertSenderSameAsReceiver && (
+                  <>
+                    <Text style={styles.fieldLabel}>Receiver Name *</Text>
+                    <TextInput
+                      style={styles.modalInput}
+                      value={convertReceiverName}
+                      onChangeText={setConvertReceiverName}
+                      placeholder="Receiver name"
+                      placeholderTextColor={Colors.textLight}
+                    />
+
+                    <Text style={styles.fieldLabel}>Receiver Phone *</Text>
+                    <TextInput
+                      style={styles.modalInput}
+                      value={convertReceiverPhone}
+                      onChangeText={setConvertReceiverPhone}
+                      placeholder="Receiver phone"
+                      placeholderTextColor={Colors.textLight}
+                      keyboardType="phone-pad"
+                    />
+                  </>
+                )}
+
                 <Text style={styles.fieldLabel}>Delivery Address *</Text>
                 {convertSavedAddresses.length > 0 && (
                   <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 8 }}>
@@ -1152,6 +1448,13 @@ const styles = StyleSheet.create({
   modalContent: { backgroundColor: Colors.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: Spacing.lg, maxHeight: '80%' },
   modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: Spacing.md },
   modalTitle: { fontSize: FontSize.lg, fontWeight: '700', color: Colors.text },
+  checkRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: Colors.background, borderWidth: 1, borderColor: Colors.border,
+    borderRadius: BorderRadius.md, paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm,
+    marginTop: Spacing.sm,
+  },
+  checkLabel: { fontSize: FontSize.sm, color: Colors.text, fontWeight: '600' },
   fieldLabel: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.textSecondary, marginTop: Spacing.md, marginBottom: Spacing.xs },
   modalInput: { backgroundColor: Colors.background, borderRadius: BorderRadius.md, padding: Spacing.md, fontSize: FontSize.md, color: Colors.text, borderWidth: 1, borderColor: Colors.border },
   convertInfo: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: Spacing.md, lineHeight: 20 },

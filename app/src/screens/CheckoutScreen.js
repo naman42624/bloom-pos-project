@@ -68,9 +68,21 @@ export default function CheckoutScreen({ route, navigation }) {
   const [advanceAmount, setAdvanceAmount] = useState('');
   const [deliveryAddress, setDeliveryAddress] = useState(initAddress || '');
   // Sender info — for delivery orders
+  const [useCustomerAsSender, setUseCustomerAsSender] = useState(true);
+  const [senderSameAsReceiver, setSenderSameAsReceiver] = useState(false);
   const [senderName, setSenderName] = useState('');
   const [senderPhone, setSenderPhone] = useState('');
   const [senderMessage, setSenderMessage] = useState('');
+  const [senderAddress, setSenderAddress] = useState('');
+  const [receiverName, setReceiverName] = useState('');
+  const [receiverPhone, setReceiverPhone] = useState('');
+  const [receiverId, setReceiverId] = useState(null);
+  const [receiverHistory, setReceiverHistory] = useState(null);
+  const [receiverSuggestions, setReceiverSuggestions] = useState([]);
+  const [showReceiverSuggestions, setShowReceiverSuggestions] = useState(false);
+  const receiverSearchTimer = useRef(null);
+  const [receiverSavedAddresses, setReceiverSavedAddresses] = useState([]);
+  const [addressPickerTarget, setAddressPickerTarget] = useState('receiver');
 
   // Payment mode: 'pay_now' (default), 'cod' (delivery), 'credit' (customer credit), 'partial' (advance + rest later)
   const [paymentMode, setPaymentMode] = useState('pay_now');
@@ -209,6 +221,9 @@ export default function CheckoutScreen({ route, navigation }) {
   const handlePhoneChange = useCallback((text) => {
     setCustomerPhone(text);
     setShowSuggestions(false);
+    if (senderSameAsReceiver && useCustomerAsSender) {
+      setReceiverPhone(text);
+    }
 
     // Debounced search for autocomplete
     if (searchTimer.current) clearTimeout(searchTimer.current);
@@ -234,8 +249,44 @@ export default function CheckoutScreen({ route, navigation }) {
     setCustomerPhone(c.phone || '');
     setCustomerName(c.name || '');
     if (c.id) setCustomerId(c.id);
+    if (senderSameAsReceiver && useCustomerAsSender) {
+      setReceiverPhone(c.phone || '');
+      setReceiverName(c.name || '');
+      setReceiverId(c.id || null);
+    }
     setShowSuggestions(false);
     setCustomerSuggestions([]);
+  }, [senderSameAsReceiver, useCustomerAsSender]);
+
+  const handleReceiverPhoneChange = useCallback((text) => {
+    setReceiverPhone(text);
+    setShowReceiverSuggestions(false);
+
+    if (receiverSearchTimer.current) clearTimeout(receiverSearchTimer.current);
+    if (text.length >= 3 && text.length < 10) {
+      receiverSearchTimer.current = setTimeout(async () => {
+        try {
+          const res = await api.customerSearch(text);
+          if (res.data && res.data.length > 0) {
+            setReceiverSuggestions(res.data);
+            setShowReceiverSuggestions(true);
+          } else {
+            setReceiverSuggestions([]);
+            setShowReceiverSuggestions(false);
+          }
+        } catch { /* ignore */ }
+      }, 300);
+    } else {
+      setReceiverSuggestions([]);
+    }
+  }, []);
+
+  const selectReceiver = useCallback((c) => {
+    setReceiverPhone(c.phone || '');
+    setReceiverName(c.name || '');
+    setReceiverId(c.id || null);
+    setShowReceiverSuggestions(false);
+    setReceiverSuggestions([]);
   }, []);
 
   React.useEffect(() => {
@@ -248,6 +299,11 @@ export default function CheckoutScreen({ route, navigation }) {
             if (res.data.is_registered) setCustomerId(res.data.id);
             if (!customerName && res.data.name) {
               setCustomerName(res.data.name);
+            }
+            if (senderSameAsReceiver && useCustomerAsSender) {
+              setReceiverHistory(res.data);
+              setReceiverId(res.data.is_registered ? res.data.id : null);
+              if (!receiverName && res.data.name) setReceiverName(res.data.name);
             }
           } else {
             setCustomerHistory(null);
@@ -262,21 +318,65 @@ export default function CheckoutScreen({ route, navigation }) {
       setCustomerHistory(null);
       setCustomerId(null);
     }
-  }, [customerPhone]);
-
-  // Load saved addresses when customer is identified
-  const loadSavedAddresses = useCallback(async () => {
-    if (!customerId) return;
-    try {
-      const res = await api.getCustomerAddresses(customerId);
-      if (res.data) setSavedAddresses(res.data);
-    } catch { /* ignore */ }
-  }, [customerId]);
+  }, [customerPhone, customerName, senderSameAsReceiver, useCustomerAsSender, receiverName]);
 
   React.useEffect(() => {
-    if (customerId) loadSavedAddresses();
-    else setSavedAddresses([]);
-  }, [customerId]);
+    if (senderSameAsReceiver) {
+      const sourceName = useCustomerAsSender ? customerName : senderName;
+      const sourcePhone = useCustomerAsSender ? customerPhone : senderPhone;
+      setReceiverName(sourceName || '');
+      setReceiverPhone(sourcePhone || '');
+      setReceiverId(useCustomerAsSender ? (customerId || null) : null);
+      setReceiverHistory(useCustomerAsSender ? (customerHistory || null) : null);
+      setShowReceiverSuggestions(false);
+      setReceiverSuggestions([]);
+      return;
+    }
+
+    if (receiverPhone.length >= 10) {
+      (async () => {
+        try {
+          const res = await api.customerLookupEnhanced(receiverPhone);
+          if (res.data) {
+            setReceiverHistory(res.data);
+            if (res.data.is_registered) setReceiverId(res.data.id);
+            if (!receiverName && res.data.name) setReceiverName(res.data.name);
+          } else {
+            setReceiverHistory(null);
+            setReceiverId(null);
+          }
+        } catch {
+          setReceiverHistory(null);
+          setReceiverId(null);
+        }
+      })();
+    } else {
+      setReceiverHistory(null);
+      if (!senderSameAsReceiver) setReceiverId(null);
+    }
+  }, [receiverPhone, receiverName, senderSameAsReceiver, useCustomerAsSender, customerName, customerPhone, customerId, customerHistory, senderName, senderPhone]);
+
+  const loadAddressesFor = useCallback(async (id, setter) => {
+    if (!id) {
+      setter([]);
+      return;
+    }
+    try {
+      const res = await api.getCustomerAddresses(id);
+      setter(res.data || []);
+    } catch {
+      setter([]);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    const senderIdForAddress = useCustomerAsSender ? customerId : null;
+    loadAddressesFor(senderIdForAddress, setSavedAddresses);
+  }, [customerId, useCustomerAsSender, loadAddressesFor]);
+
+  React.useEffect(() => {
+    loadAddressesFor(receiverId, setReceiverSavedAddresses);
+  }, [receiverId, loadAddressesFor]);
 
   const addPaymentSplit = () => {
     setPayments([...payments, { method: 'card', amount: '', reference: '' }]);
@@ -312,14 +412,44 @@ export default function CheckoutScreen({ route, navigation }) {
       Alert.alert('Required', 'Please enter a scheduled date for pre-order');
       return;
     }
+
+    const effectiveSenderName = (useCustomerAsSender ? customerName : senderName).trim();
+    const effectiveSenderPhone = (useCustomerAsSender ? customerPhone : senderPhone).trim();
+    const effectiveSenderId = useCustomerAsSender ? (customerId || null) : null;
+    const effectiveCustomerName = (customerName || '').trim();
+    const effectiveCustomerPhone = (customerPhone || '').trim();
+    const effectiveReceiverName = (senderSameAsReceiver ? effectiveSenderName : receiverName).trim();
+    const effectiveReceiverPhone = (senderSameAsReceiver ? effectiveSenderPhone : receiverPhone).trim();
+    const effectiveReceiverId = senderSameAsReceiver ? effectiveSenderId : (receiverId || null);
+
     if (needsDelivery && !deliveryAddress) {
       Alert.alert('Required', 'Please enter a delivery address');
       return;
     }
 
-    // Credit requires customer
-    if (paymentMode === 'credit' && !customerId) {
-      Alert.alert('Required', 'Credit sales require a registered customer. Please enter customer phone.');
+    if (needsDelivery && !effectiveSenderName) {
+      Alert.alert('Required', 'Please enter sender/customer name');
+      return;
+    }
+
+    if (needsDelivery && !effectiveSenderPhone) {
+      Alert.alert('Required', 'Please enter sender/customer phone');
+      return;
+    }
+
+    if (needsDelivery && !effectiveReceiverName) {
+      Alert.alert('Required', 'Please enter receiver name');
+      return;
+    }
+
+    if (needsDelivery && !effectiveReceiverPhone) {
+      Alert.alert('Required', 'Please enter receiver phone');
+      return;
+    }
+
+    // Credit requires sender details; sender customer will be auto-created if needed.
+    if (paymentMode === 'credit' && !effectiveSenderPhone) {
+      Alert.alert('Required', 'Credit sales require sender phone details.');
       return;
     }
 
@@ -367,9 +497,9 @@ export default function CheckoutScreen({ route, navigation }) {
     const saleData = {
       location_id: locationId,
       order_type: orderType,
-      customer_id: customerId || null,
-      customer_name: customerName || null,
-      customer_phone: customerPhone || null,
+      customer_id: needsDelivery ? (customerId || null) : (customerId || null),
+      customer_name: needsDelivery ? (effectiveCustomerName || null) : (customerName || null),
+      customer_phone: needsDelivery ? (effectiveCustomerPhone || null) : (customerPhone || null),
       discount_type: discount > 0 ? discountType : null,
       discount_value: discount > 0
         ? (discountType === 'percentage' ? (parseFloat(discountValue) || 0) : discount)
@@ -377,8 +507,16 @@ export default function CheckoutScreen({ route, navigation }) {
       delivery_charges: delivery,
       notes: notes || null,
       delivery_address: needsDelivery ? deliveryAddress : null,
-      sender_name: needsDelivery ? (senderName || null) : null,
-      sender_phone: needsDelivery ? (senderPhone || null) : null,
+      sender_customer_id: needsDelivery ? (useCustomerAsSender ? (effectiveSenderId || null) : null) : null,
+      receiver_customer_id: needsDelivery ? (effectiveReceiverId || null) : null,
+      sender_same_as_receiver: needsDelivery ? senderSameAsReceiver : false,
+      sender_name: needsDelivery ? (effectiveSenderName || null) : null,
+      sender_phone: needsDelivery ? (effectiveSenderPhone || null) : null,
+      receiver_name: needsDelivery ? (effectiveReceiverName || null) : null,
+      receiver_phone: needsDelivery ? (effectiveReceiverPhone || null) : null,
+      sender_address: needsDelivery ? (senderAddress || null) : null,
+      sender_address_label: null,
+      receiver_address_label: null,
       sender_message: needsDelivery ? (senderMessage || null) : null,
       scheduled_date: scheduledDate || null,
       scheduled_time: scheduledTime || null,
@@ -477,12 +615,18 @@ export default function CheckoutScreen({ route, navigation }) {
           </>
         )}
 
-        {/* Customer info */}
-        <Text style={styles.sectionTitle}>Customer (optional)</Text>
+        {/* Customer / sender info */}
+        <Text style={styles.sectionTitle}>{needsDelivery ? 'Customer / Sender' : 'Customer (optional)'}</Text>
         <View style={styles.row}>
           <TextInput style={[styles.input, { flex: 1 }]} value={customerName} onChangeText={setCustomerName} placeholder="Name" placeholderTextColor={Colors.textLight} />
           <TextInput style={[styles.input, { flex: 1 }]} value={customerPhone} onChangeText={handlePhoneChange} placeholder="Phone" placeholderTextColor={Colors.textLight} keyboardType="phone-pad" />
         </View>
+        {needsDelivery && (
+          <View style={styles.codHint}>
+            <Ionicons name="information-circle" size={16} color={Colors.info} />
+            <Text style={[styles.codHintText, { color: Colors.info }]}>This customer is treated as the order sender by default.</Text>
+          </View>
+        )}
         {showSuggestions && customerSuggestions.length > 0 && (
           <View style={styles.suggestionsBox}>
             {customerSuggestions.map((c, idx) => (
@@ -571,24 +715,91 @@ export default function CheckoutScreen({ route, navigation }) {
         {/* Delivery address */}
         {needsDelivery && (
           <>
+            <Text style={styles.sectionTitle}>Delivery Contacts</Text>
+            <TouchableOpacity
+              style={styles.checkRow}
+              onPress={() => {
+                const next = !useCustomerAsSender;
+                if (!next) {
+                  if (!senderName) setSenderName(customerName || '');
+                  if (!senderPhone) setSenderPhone(customerPhone || '');
+                }
+                setUseCustomerAsSender(next);
+              }}
+            >
+              <Ionicons name={useCustomerAsSender ? 'checkbox' : 'square-outline'} size={20} color={useCustomerAsSender ? Colors.primary : Colors.textLight} />
+              <Text style={styles.checkLabel}>Use customer as sender</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity style={styles.checkRow} onPress={() => setSenderSameAsReceiver(!senderSameAsReceiver)}>
+              <Ionicons name={senderSameAsReceiver ? 'checkbox' : 'square-outline'} size={20} color={senderSameAsReceiver ? Colors.primary : Colors.textLight} />
+              <Text style={styles.checkLabel}>Self Receive</Text>
+            </TouchableOpacity>
+
+            {!useCustomerAsSender && (
+              <>
+                <Text style={[styles.sectionTitle, { marginTop: Spacing.sm }]}>Sender Details</Text>
+                <View style={styles.row}>
+                  <TextInput style={[styles.input, { flex: 1 }]} value={senderName} onChangeText={setSenderName} placeholder="Sender name" placeholderTextColor={Colors.textLight} />
+                  <TextInput style={[styles.input, { flex: 1 }]} value={senderPhone} onChangeText={setSenderPhone} placeholder="Sender phone" placeholderTextColor={Colors.textLight} keyboardType="phone-pad" />
+                </View>
+              </>
+            )}
+
+            {!senderSameAsReceiver && (
+              <>
+                <Text style={[styles.sectionTitle, { marginTop: Spacing.sm }]}>Receiver Details</Text>
+                <View style={styles.row}>
+                  <TextInput style={[styles.input, { flex: 1 }]} value={receiverName} onChangeText={setReceiverName} placeholder="Receiver name" placeholderTextColor={Colors.textLight} />
+                  <TextInput style={[styles.input, { flex: 1 }]} value={receiverPhone} onChangeText={handleReceiverPhoneChange} placeholder="Receiver phone" placeholderTextColor={Colors.textLight} keyboardType="phone-pad" />
+                </View>
+                {showReceiverSuggestions && receiverSuggestions.length > 0 && (
+                  <View style={styles.suggestionsBox}>
+                    {receiverSuggestions.map((c, idx) => (
+                      <TouchableOpacity key={c.phone + idx} style={styles.suggestionItem} onPress={() => selectReceiver(c)}>
+                        <Ionicons name={c.id ? 'person' : 'person-outline'} size={16} color={Colors.primary} />
+                        <View style={{ flex: 1, marginLeft: 8 }}>
+                          <Text style={styles.suggestionName}>{c.name || 'Unknown'}</Text>
+                          <Text style={styles.suggestionPhone}>{c.phone}{c.total_spent > 0 ? ` • ₹${Math.round(c.total_spent)}` : ''}</Text>
+                        </View>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                )}
+                {receiverHistory && (
+                  <View style={styles.customerHint}>
+                    <Ionicons name="person-circle" size={16} color={Colors.primary} />
+                    <Text style={styles.customerHintText}>
+                      {receiverId ? '✓ Registered' : 'Returning'} receiver • {receiverHistory.order_count} orders • ₹{(receiverHistory.total_spent || 0).toFixed(0)} total
+                    </Text>
+                  </View>
+                )}
+              </>
+            )}
+
             <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
               <Text style={styles.sectionTitle}>Delivery Address</Text>
-              {customerId && savedAddresses.length > 0 && (
-                <TouchableOpacity style={styles.savedAddrBtn} onPress={() => setShowAddressPicker(true)}>
+              {receiverId && receiverSavedAddresses.length > 0 && (
+                <TouchableOpacity style={styles.savedAddrBtn} onPress={() => { setAddressPickerTarget('receiver'); setShowAddressPicker(true); }}>
                   <Ionicons name="bookmark" size={14} color={Colors.primary} />
-                  <Text style={styles.savedAddrBtnText}>Saved ({savedAddresses.length})</Text>
+                  <Text style={styles.savedAddrBtnText}>Saved ({receiverSavedAddresses.length})</Text>
                 </TouchableOpacity>
               )}
             </View>
             <TextInput style={styles.input} value={deliveryAddress} onChangeText={setDeliveryAddress} placeholder="Full address" placeholderTextColor={Colors.textLight} multiline />
 
-            {/* Sender Info */}
-            <Text style={[styles.sectionTitle, { marginTop: Spacing.md }]}>Sender Info (optional)</Text>
-            <View style={styles.row}>
-              <TextInput style={[styles.input, { flex: 1 }]} value={senderName} onChangeText={setSenderName} placeholder="Sender name" placeholderTextColor={Colors.textLight} />
-              <TextInput style={[styles.input, { flex: 1 }]} value={senderPhone} onChangeText={setSenderPhone} placeholder="Sender phone" placeholderTextColor={Colors.textLight} keyboardType="phone-pad" />
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+              <Text style={[styles.sectionTitle, { marginTop: Spacing.sm }]}>Sender Address (optional)</Text>
+              {useCustomerAsSender && customerId && savedAddresses.length > 0 && (
+                <TouchableOpacity style={styles.savedAddrBtn} onPress={() => { setAddressPickerTarget('sender'); setShowAddressPicker(true); }}>
+                  <Ionicons name="bookmark" size={14} color={Colors.primary} />
+                  <Text style={styles.savedAddrBtnText}>Saved ({savedAddresses.length})</Text>
+                </TouchableOpacity>
+              )}
             </View>
-            <TextInput style={[styles.input, { minHeight: 60 }]} value={senderMessage} onChangeText={setSenderMessage} placeholder="Message from sender..." placeholderTextColor={Colors.textLight} multiline />
+            <TextInput style={styles.input} value={senderAddress} onChangeText={setSenderAddress} placeholder="Sender address (if different)" placeholderTextColor={Colors.textLight} multiline />
+
+            <TextInput style={[styles.input, { minHeight: 60 }]} value={senderMessage} onChangeText={setSenderMessage} placeholder="Message / card text" placeholderTextColor={Colors.textLight} multiline />
           </>
         )}
 
@@ -653,10 +864,10 @@ export default function CheckoutScreen({ route, navigation }) {
           </>
         )}
 
-        {/* Notes */}
-        <Text style={styles.sectionTitle}>Notes</Text>
+        {/* Notes / special comment */}
+        <Text style={styles.sectionTitle}>{needsDelivery ? 'Special Comment (optional)' : 'Notes'}</Text>
         <TextInput style={[styles.input, { minHeight: 60 }]} value={notes} onChangeText={setNotes}
-          placeholder="Any special instructions..." placeholderTextColor={Colors.textLight} multiline />
+          placeholder={needsDelivery ? 'Any special comment for delivery slip...' : 'Any special instructions...'} placeholderTextColor={Colors.textLight} multiline />
 
         {/* Order summary */}
         <View style={styles.summaryBox}>
@@ -913,20 +1124,24 @@ export default function CheckoutScreen({ route, navigation }) {
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Saved Addresses</Text>
+              <Text style={styles.modalTitle}>{addressPickerTarget === 'sender' ? 'Saved Sender Addresses' : 'Saved Receiver Addresses'}</Text>
               <TouchableOpacity onPress={() => setShowAddressPicker(false)}>
                 <Ionicons name="close" size={24} color={Colors.text} />
               </TouchableOpacity>
             </View>
             <FlatList
-              data={savedAddresses}
+              data={addressPickerTarget === 'sender' ? savedAddresses : receiverSavedAddresses}
               keyExtractor={(item) => String(item.id)}
               renderItem={({ item }) => (
                 <TouchableOpacity
                   style={styles.addressItem}
                   onPress={() => {
                     const parts = [item.address_line_1, item.address_line_2, item.city, item.state, item.pincode].filter(Boolean);
-                    setDeliveryAddress(parts.join(', '));
+                    if (addressPickerTarget === 'sender') {
+                      setSenderAddress(parts.join(', '));
+                    } else {
+                      setDeliveryAddress(parts.join(', '));
+                    }
                     setShowAddressPicker(false);
                   }}
                 >
@@ -1149,6 +1364,14 @@ const styles = StyleSheet.create({
   chipActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
   chipText: { fontSize: FontSize.sm, color: Colors.textSecondary, fontWeight: '500' },
   chipTextActive: { color: Colors.white, fontWeight: '700' },
+
+  checkRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.border,
+    borderRadius: BorderRadius.md, paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm,
+    marginTop: Spacing.xs,
+  },
+  checkLabel: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.text },
 
   row: { flexDirection: 'row', gap: Spacing.sm },
   input: {

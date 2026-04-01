@@ -59,6 +59,76 @@ function recalcSaleTotals(db, saleId) {
   return { subtotal, taxTotal, discountAmount, grandTotal };
 }
 
+function normalizePhone(phone) {
+  return String(phone || '').trim();
+}
+
+function buildAutoAddressLabel(customerName, fallback = 'Address') {
+  const cleanName = String(customerName || '').trim();
+  if (!cleanName) return fallback;
+  return `${cleanName} Address`;
+}
+
+function resolveOrCreateCustomer(db, { customerId, name, phone }) {
+  if (customerId) return customerId;
+
+  const phoneNorm = normalizePhone(phone);
+  if (!phoneNorm) return null;
+
+  const existingCustomer = db.prepare(
+    "SELECT id FROM users WHERE phone = ? AND role = 'customer'"
+  ).get(phoneNorm);
+  if (existingCustomer) return existingCustomer.id;
+
+  const anyUser = db.prepare("SELECT id FROM users WHERE phone = ?").get(phoneNorm);
+  if (anyUser) return anyUser.id;
+
+  const bcrypt = require('bcryptjs');
+  const salt = bcrypt.genSaltSync(10);
+  const hashedPassword = bcrypt.hashSync(`bloom_${Date.now()}`, salt);
+  const created = db.prepare(
+    "INSERT INTO users (name, phone, password, role, created_at, updated_at) VALUES (?, ?, ?, 'customer', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+  ).run(name || 'Guest', phoneNorm, hashedPassword);
+  return created.lastInsertRowid;
+}
+
+function saveCustomerAddress(db, { customerId, address, label, customerName, fallbackLabel = 'Address' }) {
+  const addrClean = String(address || '').trim();
+  if (!customerId || !addrClean) return;
+  const finalLabel = String(label || '').trim() || buildAutoAddressLabel(customerName, fallbackLabel);
+
+  let existingAddr = null;
+  try {
+    existingAddr = db.prepare(
+      'SELECT id FROM customer_addresses WHERE customer_id = ? AND address_line_1 = ?'
+    ).get(customerId, addrClean);
+  } catch (_) {
+    try {
+      existingAddr = db.prepare(
+        'SELECT id FROM customer_addresses WHERE customer_id = ? AND address = ?'
+      ).get(customerId, addrClean);
+    } catch (__) {}
+  }
+
+  if (existingAddr) return;
+
+  const addrCount = db.prepare(
+    'SELECT COUNT(*) as cnt FROM customer_addresses WHERE customer_id = ?'
+  ).get(customerId).cnt;
+
+  try {
+    db.prepare(
+      'INSERT INTO customer_addresses (customer_id, label, address_line_1, is_default, created_at, updated_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)'
+    ).run(customerId, finalLabel, addrClean, addrCount === 0 ? 1 : 0);
+  } catch (_) {
+    try {
+      db.prepare(
+        'INSERT INTO customer_addresses (customer_id, label, address, is_default, created_at, updated_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)'
+      ).run(customerId, finalLabel, addrClean, addrCount === 0 ? 1 : 0);
+    } catch (__) {}
+  }
+}
+
 // ═══════════════════════════════════════════════════════════════
 // SALES CRUD
 // ═══════════════════════════════════════════════════════════════
@@ -72,11 +142,15 @@ router.get('/', authenticate, (req, res, next) => {
     let sql = `
       SELECT s.*, l.name as location_name, u.name as created_by_name,
              c.name as customer_display_name, c.phone as customer_display_phone,
+              snd.name as sender_display_name, snd.phone as sender_display_phone,
+              rcv.name as receiver_display_name, rcv.phone as receiver_display_phone,
              COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.sale_id = s.id), 0) as total_paid
       FROM sales s
       LEFT JOIN locations l ON s.location_id = l.id
       LEFT JOIN users u ON s.created_by = u.id
       LEFT JOIN users c ON s.customer_id = c.id
+            LEFT JOIN users snd ON s.sender_customer_id = snd.id
+            LEFT JOIN users rcv ON s.receiver_customer_id = rcv.id
       WHERE 1=1
     `;
     const params = [];
@@ -95,6 +169,8 @@ router.get('/', authenticate, (req, res, next) => {
         s.sale_number ILIKE ?
         OR s.customer_name ILIKE ?
         OR s.customer_phone ILIKE ?
+        OR s.receiver_name ILIKE ?
+        OR s.receiver_phone ILIKE ?
         OR EXISTS (SELECT 1 FROM sale_items si2 WHERE si2.sale_id = s.id AND si2.product_name ILIKE ?)
         OR EXISTS (SELECT 1 FROM deliveries d2 WHERE d2.sale_id = s.id AND d2.delivery_address ILIKE ?)
         OR EXISTS (SELECT 1 FROM deliveries d3 JOIN users dp ON d3.delivery_partner_id = dp.id WHERE d3.sale_id = s.id AND dp.name ILIKE ?)
@@ -107,7 +183,7 @@ router.get('/', authenticate, (req, res, next) => {
         )
         OR EXISTS (SELECT 1 FROM sale_items si4 WHERE si4.sale_id = s.id AND si4.custom_materials::text ILIKE ?)
       )`;
-      params.push(s, s, s, s, s, s, s, s);
+      params.push(s, s, s, s, s, s, s, s, s, s);
     }
 
     // Scope by location for non-owner roles
@@ -536,11 +612,15 @@ router.get('/:id', authenticate, (req, res, next) => {
       SELECT s.*, l.name as location_name, l.address as location_address,
              l.phone as location_phone,
              u.name as created_by_name,
-             c.name as customer_display_name, c.phone as customer_display_phone
+              c.name as customer_display_name, c.phone as customer_display_phone,
+              snd.name as sender_display_name, snd.phone as sender_display_phone,
+              rcv.name as receiver_display_name, rcv.phone as receiver_display_phone
       FROM sales s
       LEFT JOIN locations l ON s.location_id = l.id
       LEFT JOIN users u ON s.created_by = u.id
       LEFT JOIN users c ON s.customer_id = c.id
+            LEFT JOIN users snd ON s.sender_customer_id = snd.id
+            LEFT JOIN users rcv ON s.receiver_customer_id = rcv.id
       WHERE s.id = ?
     `).get(req.params.id);
 
@@ -657,10 +737,18 @@ router.post(
     body('customer_id').optional({ nullable: true }).isInt(),
     body('customer_name').optional({ nullable: true }).trim(),
     body('customer_phone').optional({ nullable: true }).trim(),
+    body('sender_customer_id').optional({ nullable: true }).isInt(),
+    body('receiver_customer_id').optional({ nullable: true }).isInt(),
     body('discount_type').optional({ nullable: true }).isIn(['fixed', 'percentage']),
     body('discount_value').optional({ nullable: true }).isFloat({ min: 0 }),
     body('delivery_charges').optional().isFloat({ min: 0 }),
     body('delivery_address').optional({ nullable: true }).trim(),
+    body('receiver_name').optional({ nullable: true }).trim(),
+    body('receiver_phone').optional({ nullable: true }).trim(),
+    body('sender_same_as_receiver').optional().isBoolean().toBoolean(),
+    body('sender_address').optional({ nullable: true }).trim(),
+    body('sender_address_label').optional({ nullable: true }).trim(),
+    body('receiver_address_label').optional({ nullable: true }).trim(),
     body('notes').optional({ nullable: true }).trim(),
     body('special_instructions').optional().trim(),
     body('customer_notes').optional().trim(),
@@ -681,8 +769,12 @@ router.post(
       const {
         location_id, order_type, items, payments,
         customer_id: customer_id_from_body, customer_name, customer_phone,
+        sender_customer_id: sender_customer_id_from_body,
+        receiver_customer_id: receiver_customer_id_from_body,
         discount_type, discount_value,
         delivery_charges, delivery_address, notes, special_instructions, customer_notes,
+        receiver_name, receiver_phone, sender_same_as_receiver,
+        sender_address, sender_address_label, receiver_address_label,
         scheduled_date, scheduled_time, advance_amount,
         sender_name, sender_phone, sender_message,
       } = req.body;
@@ -780,63 +872,78 @@ router.post(
         else if (totalPaid > 0) paymentStatus = 'partial';
 
         const saleNumber = generateSaleNumber(db, location_id);
+        let saleCustomerName = customer_name || null;
+        let saleCustomerPhone = customer_phone || null;
+        let senderCustomerId = null;
+        let receiverCustomerId = null;
+        let senderNameForSale = sender_name || '';
+        let senderPhoneForSale = sender_phone || '';
+        let receiverNameForSale = receiver_name || '';
+        let receiverPhoneForSale = receiver_phone || '';
+        let senderReceiverSame = sender_same_as_receiver === true;
 
-        // ─── Customer auto-creation ──────────────────────
-        // If phone is provided but no customer_id, find or create in USERS table (role='customer')
-        if (customer_phone && !customer_id) {
-          const existingCustomer = db.prepare(
-            "SELECT id FROM users WHERE phone = ? AND role = 'customer'"
-          ).get(customer_phone.trim());
+        const hasDeliveryReceiver = order_type === 'delivery' || (order_type === 'pre_order' && !!delivery_address);
+        const senderExplicit = !!(sender_name || sender_phone || sender_customer_id_from_body);
+        const receiverExplicit = !!(receiver_name || receiver_phone || receiver_customer_id_from_body);
+        const customerExplicit = !!(customer_id_from_body || customer_name || customer_phone);
 
-          if (existingCustomer) {
-            customer_id = existingCustomer.id;
+        if (hasDeliveryReceiver) {
+          // Backward compatibility: old payload had customer as receiver + sender_* as sender.
+          if (senderExplicit && !receiverExplicit && (customer_name || customer_phone)) {
+            receiverNameForSale = receiverNameForSale || customer_name || '';
+            receiverPhoneForSale = receiverPhoneForSale || customer_phone || '';
+          }
+
+          // Preferred model: customer_* is sender (order placer).
+          senderNameForSale = senderNameForSale || customer_name || '';
+          senderPhoneForSale = senderPhoneForSale || customer_phone || '';
+
+          if (senderReceiverSame || (!receiverNameForSale && !receiverPhoneForSale)) {
+            senderReceiverSame = true;
+            receiverNameForSale = senderNameForSale;
+            receiverPhoneForSale = senderPhoneForSale;
+          }
+
+          senderCustomerId = resolveOrCreateCustomer(db, {
+            customerId: sender_customer_id_from_body || (!senderExplicit ? customer_id_from_body : null),
+            name: senderNameForSale || customer_name,
+            phone: senderPhoneForSale || customer_phone,
+          });
+
+          receiverCustomerId = senderReceiverSame
+            ? senderCustomerId
+            : resolveOrCreateCustomer(db, {
+                customerId: receiver_customer_id_from_body || null,
+                name: receiverNameForSale,
+                phone: receiverPhoneForSale,
+              });
+
+          if (senderExplicit && customerExplicit) {
+            customer_id = resolveOrCreateCustomer(db, {
+              customerId: customer_id_from_body || null,
+              name: customer_name,
+              phone: customer_phone,
+            }) || null;
+            saleCustomerName = customer_name || null;
+            saleCustomerPhone = customer_phone || null;
           } else {
-            // Also check if any user (non-customer) has this phone — don't duplicate
-            const anyUser = db.prepare("SELECT id FROM users WHERE phone = ?").get(customer_phone.trim());
-            if (anyUser) {
-              customer_id = anyUser.id; // reuse existing user
-            } else {
-              const bcrypt = require('bcryptjs');
-              const salt = bcrypt.genSaltSync(10);
-              const hashedPassword = bcrypt.hashSync(`bloom_${Date.now()}`, salt);
-              const newCust = db.prepare(
-                "INSERT INTO users (name, phone, password, role, created_at, updated_at) VALUES (?, ?, ?, 'customer', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
-              ).run(customer_name || 'Guest', customer_phone.trim(), hashedPassword);
-              customer_id = newCust.lastInsertRowid;
-            }
+            customer_id = senderCustomerId || customer_id || null;
+            saleCustomerName = senderNameForSale || customer_name || receiverNameForSale || null;
+            saleCustomerPhone = senderPhoneForSale || customer_phone || receiverPhoneForSale || null;
           }
-        }
-
-        // Save delivery address to customer_addresses if delivery
-        if (customer_id && delivery_address && (order_type === 'delivery' || order_type === 'pre_order')) {
-          const addrClean = delivery_address.trim();
-          let existingAddr = null;
-          try {
-            existingAddr = db.prepare(
-              "SELECT id FROM customer_addresses WHERE customer_id = ? AND address_line_1 = ?"
-            ).get(customer_id, addrClean);
-          } catch (_) {
-            try {
-              existingAddr = db.prepare(
-                "SELECT id FROM customer_addresses WHERE customer_id = ? AND address = ?"
-              ).get(customer_id, addrClean);
-            } catch (__) {}
-          }
-
-          if (!existingAddr) {
-            try {
-              db.prepare(
-                "INSERT INTO customer_addresses (customer_id, label, address_line_1, created_at, updated_at) VALUES (?, 'Delivery', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
-              ).run(customer_id, addrClean);
-            } catch (e) {
-              // fallback: try 'address' column for legacy schema
-              try {
-                db.prepare(
-                  "INSERT INTO customer_addresses (customer_id, label, address, created_at, updated_at) VALUES (?, 'Delivery', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
-                ).run(customer_id, addrClean);
-              } catch (_) { /* ignore if column doesn't exist */ }
-            }
-          }
+        } else {
+          customer_id = resolveOrCreateCustomer(db, {
+            customerId: customer_id_from_body || null,
+            name: customer_name,
+            phone: customer_phone,
+          });
+          saleCustomerName = customer_name || null;
+          saleCustomerPhone = customer_phone || null;
+          senderReceiverSame = false;
+          senderNameForSale = sender_name || '';
+          senderPhoneForSale = sender_phone || '';
+          receiverNameForSale = '';
+          receiverPhoneForSale = '';
         }
 
         // ─── Hybrid Stock Logic ──────────────────────────
@@ -907,17 +1014,21 @@ router.post(
             subtotal, tax_total, discount_amount, discount_type, discount_percentage, discount_approved_by,
             delivery_charges, delivery_address, scheduled_date, scheduled_time,
             grand_total, payment_status, order_type, status, stock_deducted,
-            special_instructions, customer_notes, sender_name, sender_phone, sender_message, created_by, created_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            special_instructions, customer_notes,
+            sender_customer_id, receiver_customer_id, sender_same_as_receiver,
+            sender_name, sender_phone, receiver_name, receiver_phone, sender_message,
+            created_by, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
-          saleNumber, location_id, customer_id || null, customer_name || null, customer_phone || null,
+          saleNumber, location_id, customer_id || null, saleCustomerName || null, saleCustomerPhone || null,
           subtotal, taxTotal, discountAmount, discount_type || null, discountPercentage, discountApprovedBy,
           delivery_charges || 0, delivery_address || null,
           scheduled_date || (order_type === 'walk_in' ? localToday() : null),
           scheduled_time || (order_type === 'walk_in' ? nowTimeStr() : null),
           grandTotal, paymentStatus, order_type, initialStatus, stockDeducted,
           notes || special_instructions || '', customer_notes || '',
-          sender_name || '', sender_phone || '', sender_message || '', req.user.id,
+          senderCustomerId || null, receiverCustomerId || null, senderReceiverSame ? 1 : 0,
+          senderNameForSale || '', senderPhoneForSale || '', receiverNameForSale || '', receiverPhoneForSale || '', sender_message || '', req.user.id,
           nowLocal()
         );
         const saleId = saleResult.lastInsertRowid;
@@ -1063,42 +1174,40 @@ router.post(
             INSERT INTO deliveries (sale_id, location_id, delivery_address, customer_name, customer_phone,
               scheduled_date, scheduled_time, cod_amount, cod_status, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          `).run(saleId, location_id, delivery_address, customer_name || null, customer_phone || null,
+          `).run(saleId, location_id, delivery_address, receiverNameForSale || saleCustomerName || null, receiverPhoneForSale || saleCustomerPhone || null,
             scheduled_date || null, scheduled_time || null, codAmount, codAmount > 0 ? 'pending' : 'collected', nowLocal());
         }
 
-        // Auto-save delivery address to customer's saved addresses
-        if (customer_id && delivery_address) {
-          const addrClean = delivery_address.trim();
-          let existingAddr = null;
-          try {
-            existingAddr = db.prepare(
-              "SELECT id FROM customer_addresses WHERE customer_id = ? AND address_line_1 = ?"
-            ).get(customer_id, addrClean);
-          } catch (_) {
-            try {
-              existingAddr = db.prepare(
-                "SELECT id FROM customer_addresses WHERE customer_id = ? AND address = ?"
-              ).get(customer_id, addrClean);
-            } catch (__) {}
+        // Save sender/receiver addresses with labels when provided
+        if (delivery_address) {
+          if (receiverCustomerId) {
+            saveCustomerAddress(db, {
+              customerId: receiverCustomerId,
+              address: delivery_address,
+              label: receiver_address_label,
+              customerName: receiverNameForSale,
+              fallbackLabel: 'Receiver Address',
+            });
           }
+          if (senderCustomerId && senderReceiverSame) {
+            saveCustomerAddress(db, {
+              customerId: senderCustomerId,
+              address: delivery_address,
+              label: sender_address_label,
+              customerName: senderNameForSale,
+              fallbackLabel: 'Self Receive',
+            });
+          }
+        }
 
-          if (!existingAddr) {
-            const addrCount = db.prepare(
-              "SELECT COUNT(*) as cnt FROM customer_addresses WHERE customer_id = ?"
-            ).get(customer_id).cnt;
-            try {
-              db.prepare(
-                "INSERT INTO customer_addresses (customer_id, label, address_line_1, is_default) VALUES (?, ?, ?, ?)"
-              ).run(customer_id, 'Delivery', addrClean, addrCount === 0 ? 1 : 0);
-            } catch (e) {
-              try {
-                db.prepare(
-                  "INSERT INTO customer_addresses (customer_id, label, address, is_default) VALUES (?, ?, ?, ?)"
-                ).run(customer_id, 'Delivery', addrClean, addrCount === 0 ? 1 : 0);
-              } catch (__) {}
-            }
-          }
+        if (senderCustomerId && sender_address) {
+          saveCustomerAddress(db, {
+            customerId: senderCustomerId,
+            address: sender_address,
+            label: sender_address_label,
+            customerName: senderNameForSale,
+            fallbackLabel: 'Sender Address',
+          });
         }
 
         // Auto-set pickup_status for pickup orders (always waiting — lazy stock)
@@ -1107,12 +1216,13 @@ router.post(
         }
 
         // Update customer total_spent and credit_balance
-        if (customer_id) {
-          db.prepare('UPDATE users SET total_spent = total_spent + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(grandTotal, customer_id);
+        const duesCustomerId = (order_type === 'delivery' && senderCustomerId) ? senderCustomerId : customer_id;
+        if (duesCustomerId) {
+          db.prepare('UPDATE users SET total_spent = total_spent + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(grandTotal, duesCustomerId);
           // If not fully paid, add remaining to credit balance
           const unpaid = grandTotal - totalPaid;
           if (unpaid > 0) {
-            db.prepare('UPDATE users SET credit_balance = credit_balance + ? WHERE id = ?').run(unpaid, customer_id);
+            db.prepare('UPDATE users SET credit_balance = credit_balance + ? WHERE id = ?').run(unpaid, duesCustomerId);
           }
         }
 
@@ -1486,6 +1596,14 @@ router.put(
     body('new_order_type').isIn(['pickup', 'delivery']).withMessage('Must be pickup or delivery'),
     body('delivery_address').optional({ nullable: true }).trim(),
     body('delivery_charges').optional().isFloat({ min: 0 }),
+    body('sender_name').optional({ nullable: true }).trim(),
+    body('sender_phone').optional({ nullable: true }).trim(),
+    body('receiver_name').optional({ nullable: true }).trim(),
+    body('receiver_phone').optional({ nullable: true }).trim(),
+    body('sender_same_as_receiver').optional().isBoolean().toBoolean(),
+    body('sender_address').optional({ nullable: true }).trim(),
+    body('sender_address_label').optional({ nullable: true }).trim(),
+    body('receiver_address_label').optional({ nullable: true }).trim(),
   ],
   (req, res, next) => {
     try {
@@ -1503,7 +1621,11 @@ router.put(
         return res.status(400).json({ success: false, message: `Order is already ${sale.order_type}` });
       }
 
-      const { new_order_type, delivery_address, delivery_charges } = req.body;
+      const {
+        new_order_type, delivery_address, delivery_charges,
+        sender_name, sender_phone, receiver_name, receiver_phone,
+        sender_same_as_receiver, sender_address, sender_address_label, receiver_address_label,
+      } = req.body;
 
       if (new_order_type === 'delivery' && !delivery_address && !sale.delivery_address) {
         return res.status(400).json({ success: false, message: 'Delivery address is required when converting to delivery' });
@@ -1512,13 +1634,71 @@ router.put(
       const convertTx = db.transaction(() => {
         const addr = delivery_address || sale.delivery_address || '';
         const charges = delivery_charges != null ? delivery_charges : 0;
+        const senderNameFinal = sender_name || sale.sender_name || sale.customer_name || '';
+        const senderPhoneFinal = sender_phone || sale.sender_phone || sale.customer_phone || '';
+        const senderExplicit = !!(sender_name || sender_phone);
+
+        let senderSame = sender_same_as_receiver === true;
+        let receiverNameFinal = receiver_name || sale.receiver_name || '';
+        let receiverPhoneFinal = receiver_phone || sale.receiver_phone || '';
+        if (senderSame || (!receiverNameFinal && !receiverPhoneFinal)) {
+          senderSame = true;
+          receiverNameFinal = senderNameFinal;
+          receiverPhoneFinal = senderPhoneFinal;
+        }
+
+        const senderCustomerId = resolveOrCreateCustomer(db, {
+          customerId: senderExplicit
+            ? null
+            : (sale.sender_customer_id || sale.customer_id || null),
+          name: senderNameFinal,
+          phone: senderPhoneFinal,
+        });
+        const receiverCustomerId = senderSame
+          ? senderCustomerId
+          : resolveOrCreateCustomer(db, {
+              customerId: sale.receiver_customer_id || null,
+              name: receiverNameFinal,
+              phone: receiverPhoneFinal,
+            });
 
         // Update order type
         const newGrandTotal = sale.grand_total - (sale.delivery_charges || 0) + charges;
         db.prepare(`
-          UPDATE sales SET order_type = ?, delivery_address = ?, delivery_charges = ?,
-          grand_total = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
-        `).run(new_order_type, new_order_type === 'delivery' ? addr : sale.delivery_address, charges, newGrandTotal, sale.id);
+          UPDATE sales
+          SET order_type = ?,
+              delivery_address = ?,
+              delivery_charges = ?,
+              grand_total = ?,
+              customer_id = ?,
+              customer_name = ?,
+              customer_phone = ?,
+              sender_customer_id = ?,
+              receiver_customer_id = ?,
+              sender_same_as_receiver = ?,
+              sender_name = ?,
+              sender_phone = ?,
+              receiver_name = ?,
+              receiver_phone = ?,
+              updated_at = CURRENT_TIMESTAMP
+          WHERE id = ?
+        `).run(
+          new_order_type,
+          new_order_type === 'delivery' ? addr : sale.delivery_address,
+          charges,
+          newGrandTotal,
+          sale.customer_id || senderCustomerId || null,
+          sale.customer_name || senderNameFinal || null,
+          sale.customer_phone || senderPhoneFinal || null,
+          senderCustomerId || null,
+          receiverCustomerId || null,
+          senderSame ? 1 : 0,
+          senderNameFinal || '',
+          senderPhoneFinal || '',
+          receiverNameFinal || '',
+          receiverPhoneFinal || '',
+          sale.id
+        );
 
         if (new_order_type === 'delivery') {
           // Pickup → Delivery: clear pickup_status, create delivery record
@@ -1534,13 +1714,42 @@ router.put(
                 scheduled_date, scheduled_time, cod_amount, cod_status, created_at)
               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             `).run(sale.id, sale.location_id, addr,
-              sale.customer_name || null, sale.customer_phone || null,
+              receiverNameFinal || senderNameFinal || sale.customer_name || null,
+              receiverPhoneFinal || senderPhoneFinal || sale.customer_phone || null,
               sale.scheduled_date || null, sale.scheduled_time || null,
               codAmount, codAmount > 0 ? 'pending' : 'collected', nowLocal());
           } else {
             // Update existing delivery record
-            db.prepare('UPDATE deliveries SET delivery_address = ?, updated_at = CURRENT_TIMESTAMP WHERE sale_id = ?')
-              .run(addr, sale.id);
+            db.prepare('UPDATE deliveries SET delivery_address = ?, customer_name = ?, customer_phone = ?, updated_at = CURRENT_TIMESTAMP WHERE sale_id = ?')
+              .run(addr, receiverNameFinal || senderNameFinal || sale.customer_name || null, receiverPhoneFinal || senderPhoneFinal || sale.customer_phone || null, sale.id);
+          }
+
+          if (receiverCustomerId && addr) {
+            saveCustomerAddress(db, {
+              customerId: receiverCustomerId,
+              address: addr,
+              label: receiver_address_label,
+              customerName: receiverNameFinal,
+              fallbackLabel: 'Receiver Address',
+            });
+          }
+          if (senderCustomerId && senderSame && addr) {
+            saveCustomerAddress(db, {
+              customerId: senderCustomerId,
+              address: addr,
+              label: sender_address_label,
+              customerName: senderNameFinal,
+              fallbackLabel: 'Self Receive',
+            });
+          }
+          if (senderCustomerId && sender_address) {
+            saveCustomerAddress(db, {
+              customerId: senderCustomerId,
+              address: sender_address,
+              label: sender_address_label,
+              customerName: senderNameFinal,
+              fallbackLabel: 'Sender Address',
+            });
           }
         } else {
           // Delivery → Pickup: set pickup_status, cancel pending delivery

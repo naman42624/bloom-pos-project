@@ -346,6 +346,14 @@ export default function CustomerDetailScreen({ route, navigation }) {
               <View style={{ flex: 1 }}>
                 <Text style={styles.orderNumber}>{order.sale_number}</Text>
                 <Text style={styles.orderMeta}>{formatDate(order.created_at)} • {order.order_type?.replace(/_/g, ' ')}</Text>
+                {order.order_type === 'delivery' && (order.sender_same_as_receiver !== 1 && order.sender_same_as_receiver !== true) && (order.receiver_name || order.receiver_phone) ? (
+                  <Text style={styles.orderMeta}>
+                    To: {order.receiver_name || 'Receiver'}{order.receiver_phone ? ` • ${order.receiver_phone}` : ''}
+                  </Text>
+                ) : null}
+                {order.order_type === 'delivery' && order.delivery_address ? (
+                  <Text style={styles.orderMeta} numberOfLines={1}>Address: {order.delivery_address}</Text>
+                ) : null}
               </View>
               <Text style={styles.orderTotal}>₹{(order.grand_total || 0).toFixed(0)}</Text>
               <Ionicons name="chevron-forward" size={16} color={Colors.textLight} />

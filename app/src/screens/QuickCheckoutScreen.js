@@ -53,11 +53,15 @@ export default function QuickCheckoutScreen({ navigation }) {
   const [allMaterials, setAllMaterials] = useState([]);
 
   // Delivery & Sender Info
+  const [useCustomerAsSender, setUseCustomerAsSender] = useState(true);
+  const [senderSameAsReceiver, setSenderSameAsReceiver] = useState(false);
   const [senderName, setSenderName] = useState('');
   const [senderPhone, setSenderPhone] = useState('');
   const [senderMessage, setSenderMessage] = useState('');
-  const [receiverName, setReceiverName] = useState(''); // Mapping to customerName
-  const [receiverPhone, setReceiverPhone] = useState(''); // Mapping to customerPhone
+  const [senderAddress, setSenderAddress] = useState('');
+  const [receiverName, setReceiverName] = useState('');
+  const [receiverPhone, setReceiverPhone] = useState('');
+  const [receiverId, setReceiverId] = useState(null);
   const [orderNotes, setOrderNotes] = useState('');
 
   // Surcharges & Discounts
@@ -70,6 +74,9 @@ export default function QuickCheckoutScreen({ navigation }) {
   const [customerHistory, setCustomerHistory] = useState(null);
   const [customerSuggestions, setCustomerSuggestions] = useState([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
+  const [receiverHistory, setReceiverHistory] = useState(null);
+  const [receiverSuggestions, setReceiverSuggestions] = useState([]);
+  const [showReceiverSuggestions, setShowReceiverSuggestions] = useState(false);
 
   // Payment
   const [paymentMethod, setPaymentMethod] = useState('cash'); // Legacy single selection
@@ -111,9 +118,11 @@ export default function QuickCheckoutScreen({ navigation }) {
   };
 
   const handlePhoneChange = useCallback((text) => {
-    setReceiverPhone(text);
     setCustomerPhone(text);
     setShowSuggestions(false);
+    if (senderSameAsReceiver && useCustomerAsSender) {
+      setReceiverPhone(text);
+    }
 
     // Debounced search for autocomplete
     if (searchTimer.current) clearTimeout(searchTimer.current);
@@ -137,10 +146,16 @@ export default function QuickCheckoutScreen({ navigation }) {
         api.customerLookupEnhanced(text).then(res => {
           if (res.data) {
             setCustomerHistory(res.data);
-            setCustomerId(res.data.id);
-            if (res.data.name && !(receiverName || customerName)) {
-              setReceiverName(res.data.name);
+            setCustomerId(res.data.is_registered ? res.data.id : null);
+            if (res.data.name && !customerName) {
               setCustomerName(res.data.name);
+            }
+            if (senderSameAsReceiver && useCustomerAsSender) {
+              setReceiverHistory(res.data);
+              setReceiverId(res.data.is_registered ? res.data.id : null);
+              if (res.data.name && !receiverName) {
+                setReceiverName(res.data.name);
+              }
             }
           }
         }).catch(() => { });
@@ -149,17 +164,77 @@ export default function QuickCheckoutScreen({ navigation }) {
         setCustomerId(null);
       }
     }
-  }, [receiverName, customerName]);
+  }, [senderSameAsReceiver, useCustomerAsSender, receiverName, customerName]);
 
   const selectCustomer = useCallback((c) => {
-    setReceiverPhone(c.phone || '');
     setCustomerPhone(c.phone || '');
-    setReceiverName(c.name || '');
     setCustomerName(c.name || '');
     if (c.id) setCustomerId(c.id);
+    if (senderSameAsReceiver && useCustomerAsSender) {
+      setReceiverPhone(c.phone || '');
+      setReceiverName(c.name || '');
+      setReceiverId(c.id || null);
+    }
     setShowSuggestions(false);
     setCustomerSuggestions([]);
+  }, [senderSameAsReceiver, useCustomerAsSender]);
+
+  const handleReceiverPhoneChange = useCallback((text) => {
+    setReceiverPhone(text);
+    setShowReceiverSuggestions(false);
+
+    if (searchTimer.current) clearTimeout(searchTimer.current);
+    if (text.length >= 3 && text.length < 10) {
+      searchTimer.current = setTimeout(async () => {
+        try {
+          const res = await api.customerSearch(text);
+          if (res.data && res.data.length > 0) {
+            setReceiverSuggestions(res.data);
+            setShowReceiverSuggestions(true);
+          } else {
+            setReceiverSuggestions([]);
+            setShowReceiverSuggestions(false);
+          }
+        } catch {}
+      }, 300);
+    } else {
+      setReceiverSuggestions([]);
+      if (text.length >= 10) {
+        api.customerLookupEnhanced(text).then(res => {
+          if (res.data) {
+            setReceiverHistory(res.data);
+            setReceiverId(res.data.is_registered ? res.data.id : null);
+            if (res.data.name && !receiverName) {
+              setReceiverName(res.data.name);
+            }
+          }
+        }).catch(() => {});
+      } else {
+        setReceiverHistory(null);
+        if (!senderSameAsReceiver) setReceiverId(null);
+      }
+    }
+  }, [receiverName, senderSameAsReceiver]);
+
+  const selectReceiver = useCallback((c) => {
+    setReceiverPhone(c.phone || '');
+    setReceiverName(c.name || '');
+    setReceiverId(c.id || null);
+    setShowReceiverSuggestions(false);
+    setReceiverSuggestions([]);
   }, []);
+
+  useEffect(() => {
+    if (senderSameAsReceiver) {
+      const senderNameFinal = (useCustomerAsSender ? customerName : senderName) || '';
+      const senderPhoneFinal = (useCustomerAsSender ? customerPhone : senderPhone) || '';
+      setReceiverName(senderNameFinal);
+      setReceiverPhone(senderPhoneFinal);
+      setReceiverId(useCustomerAsSender ? (customerId || null) : null);
+      setReceiverHistory(useCustomerAsSender ? customerHistory : null);
+      if (!customerAddress && senderAddress) setCustomerAddress(senderAddress);
+    }
+  }, [senderSameAsReceiver, useCustomerAsSender, customerName, customerPhone, senderName, senderPhone, customerId, customerHistory, customerAddress, senderAddress]);
 
   const checkRegisterStatus = async (locId) => {
     try {
@@ -336,8 +411,34 @@ export default function QuickCheckoutScreen({ navigation }) {
       Alert.alert('Required', 'Delivery address is required');
       return;
     }
-    if (paymentMode === 'credit' && !customerId) {
-      Alert.alert('Required', 'Credit payments require a registered customer.');
+
+    const effectiveSenderName = (useCustomerAsSender ? customerName : senderName).trim();
+    const effectiveSenderPhone = (useCustomerAsSender ? customerPhone : senderPhone).trim();
+    const effectiveSenderId = useCustomerAsSender ? (customerId || null) : null;
+    const effectiveCustomerName = (customerName || '').trim();
+    const effectiveCustomerPhone = (customerPhone || '').trim();
+    const effectiveReceiverName = (senderSameAsReceiver ? effectiveSenderName : receiverName).trim();
+    const effectiveReceiverPhone = (senderSameAsReceiver ? effectiveSenderPhone : receiverPhone).trim();
+    const effectiveReceiverId = senderSameAsReceiver ? effectiveSenderId : (receiverId || null);
+
+    if (orderType === 'delivery' && !effectiveSenderName) {
+      Alert.alert('Required', 'Please enter sender/customer name');
+      return;
+    }
+    if (orderType === 'delivery' && !effectiveSenderPhone) {
+      Alert.alert('Required', 'Please enter sender/customer phone');
+      return;
+    }
+    if (orderType === 'delivery' && !effectiveReceiverName) {
+      Alert.alert('Required', 'Please enter receiver name');
+      return;
+    }
+    if (orderType === 'delivery' && !effectiveReceiverPhone) {
+      Alert.alert('Required', 'Please enter receiver phone');
+      return;
+    }
+    if (paymentMode === 'credit' && !effectiveSenderPhone) {
+      Alert.alert('Required', 'Credit payments require sender phone details.');
       return;
     }
     if (paymentMode === 'partial' && (parseFloat(advanceAmount) || 0) <= 0) {
@@ -407,16 +508,24 @@ export default function QuickCheckoutScreen({ navigation }) {
       const saleData = {
         location_id: selectedLocation,
         order_type: orderType,
-        customer_id: customerId,
-        customer_name: (receiverName || customerName).trim() || null,
-        customer_phone: (receiverPhone || customerPhone).trim() || null,
+        customer_id: orderType === 'delivery' ? (customerId || null) : customerId,
+        customer_name: orderType === 'delivery' ? (effectiveCustomerName || null) : (customerName.trim() || null),
+        customer_phone: orderType === 'delivery' ? (effectiveCustomerPhone || null) : (customerPhone.trim() || null),
         discount_type: discountAmount > 0 ? discountType : null,
         discount_value: discVal,
         delivery_charges: delivery,
         notes: orderNotes || null,
         delivery_address: orderType === 'delivery' ? customerAddress.trim() : null,
-        sender_name: senderName.trim() || null,
-        sender_phone: senderPhone.trim() || null,
+        sender_customer_id: orderType === 'delivery' ? (useCustomerAsSender ? (effectiveSenderId || null) : null) : null,
+        receiver_customer_id: orderType === 'delivery' ? (effectiveReceiverId || null) : null,
+        sender_same_as_receiver: orderType === 'delivery' ? senderSameAsReceiver : false,
+        sender_name: orderType === 'delivery' ? (effectiveSenderName || null) : (senderName.trim() || null),
+        sender_phone: orderType === 'delivery' ? (effectiveSenderPhone || null) : (senderPhone.trim() || null),
+        receiver_name: orderType === 'delivery' ? (effectiveReceiverName || null) : null,
+        receiver_phone: orderType === 'delivery' ? (effectiveReceiverPhone || null) : null,
+        sender_address: orderType === 'delivery' ? (senderAddress.trim() || null) : null,
+        sender_address_label: null,
+        receiver_address_label: null,
         sender_message: senderMessage.trim() || null,
         scheduled_date: scheduledDate || null,
         scheduled_time: scheduledTime || null,
@@ -583,14 +692,14 @@ export default function QuickCheckoutScreen({ navigation }) {
             <View style={styles.sectionIcon}>
               <Ionicons name="person" size={20} color={Colors.primary} />
             </View>
-            <Text style={styles.sectionTitle}>{orderType === 'delivery' ? 'Receiver Details' : 'Customer Details'}</Text>
+            <Text style={styles.sectionTitle}>{orderType === 'delivery' ? 'Sender & Receiver Details' : 'Customer Details'}</Text>
           </View>
           <View style={styles.fieldRow}>
             <View style={styles.fieldHalf}>
-              <Text style={styles.label}>Phone *</Text>
+              <Text style={styles.label}>{orderType === 'delivery' ? 'Customer / Sender Phone *' : 'Phone *'}</Text>
               <TextInput
                 style={styles.input}
-                value={receiverPhone || customerPhone}
+                value={customerPhone}
                 onChangeText={handlePhoneChange}
                 placeholder="Phone number"
                 placeholderTextColor={Colors.textLight}
@@ -611,11 +720,11 @@ export default function QuickCheckoutScreen({ navigation }) {
               )}
             </View>
             <View style={styles.fieldHalf}>
-              <Text style={styles.label}>Name *</Text>
+              <Text style={styles.label}>{orderType === 'delivery' ? 'Customer / Sender Name *' : 'Name *'}</Text>
               <TextInput
                 style={styles.input}
-                value={receiverName || customerName}
-                onChangeText={(v) => { setReceiverName(v); setCustomerName(v); }}
+                value={customerName}
+                onChangeText={setCustomerName}
                 placeholder="Name"
                 placeholderTextColor={Colors.textLight}
               />
@@ -631,6 +740,101 @@ export default function QuickCheckoutScreen({ navigation }) {
           )}
           {orderType === 'delivery' && (
             <>
+              <TouchableOpacity
+                style={styles.checkRow}
+                onPress={() => {
+                  const next = !useCustomerAsSender;
+                  if (!next) {
+                    if (!senderName) setSenderName(customerName || '');
+                    if (!senderPhone) setSenderPhone(customerPhone || '');
+                  }
+                  setUseCustomerAsSender(next);
+                }}
+              >
+                <Ionicons name={useCustomerAsSender ? 'checkbox' : 'square-outline'} size={20} color={useCustomerAsSender ? Colors.primary : Colors.textLight} />
+                <Text style={styles.checkLabel}>Use customer as sender</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity style={styles.checkRow} onPress={() => setSenderSameAsReceiver(!senderSameAsReceiver)}>
+                <Ionicons name={senderSameAsReceiver ? 'checkbox' : 'square-outline'} size={20} color={senderSameAsReceiver ? Colors.primary : Colors.textLight} />
+                <Text style={styles.checkLabel}>Self Receive</Text>
+              </TouchableOpacity>
+
+              {!useCustomerAsSender && (
+                <>
+                  <Text style={styles.label}>Sender Details *</Text>
+                  <View style={styles.fieldRow}>
+                    <View style={styles.fieldHalf}>
+                      <TextInput
+                        style={styles.input}
+                        value={senderName}
+                        onChangeText={setSenderName}
+                        placeholder="Sender name"
+                        placeholderTextColor={Colors.textLight}
+                      />
+                    </View>
+                    <View style={styles.fieldHalf}>
+                      <TextInput
+                        style={styles.input}
+                        value={senderPhone}
+                        onChangeText={setSenderPhone}
+                        placeholder="Sender phone"
+                        placeholderTextColor={Colors.textLight}
+                        keyboardType="phone-pad"
+                      />
+                    </View>
+                  </View>
+                </>
+              )}
+
+              {!senderSameAsReceiver && (
+                <>
+                  <Text style={styles.label}>Receiver Details *</Text>
+                  <View style={styles.fieldRow}>
+                    <View style={styles.fieldHalf}>
+                      <TextInput
+                        style={styles.input}
+                        value={receiverPhone}
+                        onChangeText={handleReceiverPhoneChange}
+                        placeholder="Receiver phone"
+                        placeholderTextColor={Colors.textLight}
+                        keyboardType="phone-pad"
+                      />
+                      {showReceiverSuggestions && receiverSuggestions.length > 0 && (
+                        <View style={styles.suggestionsBox}>
+                          {receiverSuggestions.map((c, idx) => (
+                            <TouchableOpacity key={c.phone + idx} style={styles.suggestionItem} onPress={() => selectReceiver(c)}>
+                              <Ionicons name={c.id ? 'person' : 'person-outline'} size={16} color={Colors.primary} />
+                              <View style={{ flex: 1, marginLeft: 8 }}>
+                                <Text style={styles.suggestionName}>{c.name || 'Unknown'}</Text>
+                                <Text style={styles.suggestionPhone}>{c.phone}{c.total_spent > 0 ? ` • ₹${Math.round(c.total_spent)}` : ''}</Text>
+                              </View>
+                            </TouchableOpacity>
+                          ))}
+                        </View>
+                      )}
+                    </View>
+                    <View style={styles.fieldHalf}>
+                      <TextInput
+                        style={styles.input}
+                        value={receiverName}
+                        onChangeText={setReceiverName}
+                        placeholder="Receiver name"
+                        placeholderTextColor={Colors.textLight}
+                      />
+                    </View>
+                  </View>
+                  {receiverHistory && (
+                    <View style={styles.customerHint}>
+                      <Ionicons name="person-circle" size={16} color={Colors.primary} />
+                      <Text style={styles.customerHintText}>
+                        {receiverId ? '✓ Registered' : 'Returning'} receiver • {receiverHistory.order_count} orders • ₹{(receiverHistory.total_spent || 0).toFixed(0)} total
+                      </Text>
+                    </View>
+                  )}
+                </>
+              )}
+
               <Text style={styles.label}>Delivery Address *</Text>
               <TextInput
                 style={[styles.input, { minHeight: 60, textAlignVertical: 'top' }]}
@@ -641,32 +845,17 @@ export default function QuickCheckoutScreen({ navigation }) {
                 multiline
               />
 
-              <View style={styles.divider} />
+              <Text style={styles.label}>Sender Address (optional)</Text>
+              <TextInput
+                style={[styles.input, { minHeight: 44, textAlignVertical: 'top' }]}
+                value={senderAddress}
+                onChangeText={setSenderAddress}
+                placeholder="Sender address"
+                placeholderTextColor={Colors.textLight}
+                multiline
+              />
 
-              <Text style={[styles.label, { marginTop: Spacing.sm }]}>Sender Info (optional)</Text>
-              <View style={styles.fieldRow}>
-                <View style={styles.fieldHalf}>
-                  <TextInput
-                    style={styles.input}
-                    value={senderName}
-                    onChangeText={setSenderName}
-                    placeholder="Sender name"
-                    placeholderTextColor={Colors.textLight}
-                  />
-                </View>
-                <View style={styles.fieldHalf}>
-                  <TextInput
-                    style={styles.input}
-                    value={senderPhone}
-                    onChangeText={setSenderPhone}
-                    placeholder="Sender phone"
-                    placeholderTextColor={Colors.textLight}
-                    keyboardType="phone-pad"
-                  />
-                </View>
-              </View>
-
-              <Text style={styles.label}>Card Message (optional)</Text>
+              <Text style={styles.label}>Message / Card Text (optional)</Text>
               <TextInput
                 style={[styles.input, { minHeight: 60 }]}
                 value={senderMessage}
@@ -678,12 +867,12 @@ export default function QuickCheckoutScreen({ navigation }) {
             </>
           )}
 
-          <Text style={styles.label}>Order Notes / Instructions (Optional)</Text>
+          <Text style={styles.label}>{orderType === 'delivery' ? 'Special Comment (optional)' : 'Order Notes / Instructions (optional)'}</Text>
           <TextInput
             style={[styles.input, { minHeight: 44 }]}
             value={orderNotes}
             onChangeText={setOrderNotes}
-            placeholder="Special instructions for the overall order..."
+            placeholder={orderType === 'delivery' ? 'Any special comment for delivery slip...' : 'Special instructions for the overall order...'}
             placeholderTextColor={Colors.textLight}
             multiline
           />
@@ -1329,6 +1518,14 @@ const styles = StyleSheet.create({
   chipActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
   chipText: { fontSize: FontSize.sm, color: Colors.textSecondary, fontWeight: '500' },
   chipTextActive: { color: Colors.white },
+
+  checkRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: Colors.background, borderWidth: 1, borderColor: Colors.border,
+    borderRadius: BorderRadius.md, paddingHorizontal: Spacing.sm, paddingVertical: Spacing.sm,
+    marginTop: Spacing.xs,
+  },
+  checkLabel: { fontSize: FontSize.sm, color: Colors.text, fontWeight: '600' },
 
   addItemBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 4,

@@ -261,6 +261,11 @@ CREATE TABLE IF NOT EXISTS sales (
   status VARCHAR(50) DEFAULT 'pending' CHECK(status IN ('pending', 'completed', 'cancelled', 'draft')),
   pickup_status VARCHAR(50) CHECK(pickup_status IN ('waiting', 'ready_for_pickup', 'picked_up')),
   stock_deducted INTEGER DEFAULT 0,
+  sender_customer_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  receiver_customer_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  sender_same_as_receiver INTEGER DEFAULT 0,
+  receiver_name VARCHAR(255) DEFAULT '',
+  receiver_phone VARCHAR(20) DEFAULT '',
   sender_message TEXT DEFAULT '',
   sender_name TEXT DEFAULT '',
   sender_phone TEXT DEFAULT '',
@@ -275,6 +280,8 @@ CREATE TABLE IF NOT EXISTS sales (
 
 CREATE INDEX IF NOT EXISTS idx_sales_location ON sales(location_id);
 CREATE INDEX IF NOT EXISTS idx_sales_customer ON sales(customer_id);
+CREATE INDEX IF NOT EXISTS idx_sales_sender_customer ON sales(sender_customer_id);
+CREATE INDEX IF NOT EXISTS idx_sales_receiver_customer ON sales(receiver_customer_id);
 CREATE INDEX IF NOT EXISTS idx_sales_date ON sales(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sales_status ON sales(status);
 CREATE INDEX IF NOT EXISTS idx_sales_payment_status ON sales(payment_status);

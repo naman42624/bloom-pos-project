@@ -73,7 +73,15 @@ router.get('/', authenticate, authorize('owner', 'manager', 'employee', 'deliver
 
     // Attach order count for each customer
     const orderCountStmt = db.prepare(
-      `SELECT COUNT(*) as c FROM sales WHERE (customer_id = ? OR (customer_id IS NULL AND customer_phone = ?)) AND status != 'cancelled'`
+      `SELECT COUNT(*) as c
+       FROM sales
+       WHERE (
+         customer_id = ?
+         OR sender_customer_id = ?
+         OR (customer_id IS NULL AND customer_phone = ?)
+         OR (sender_customer_id IS NULL AND sender_phone = ?)
+       )
+       AND status != 'cancelled'`
     );
 
     const enriched = customers.map(c => {
@@ -81,7 +89,7 @@ router.get('/', authenticate, authorize('owner', 'manager', 'employee', 'deliver
         return {
           ...c,
           custom_dates: safeParseJSON(c.custom_dates, []),
-          order_count: orderCountStmt.get(c.id || null, c.phone).c,
+          order_count: orderCountStmt.get(c.id || null, c.id || null, c.phone, c.phone).c,
         };
       } catch (e) {
         console.error(`Error enriching customer ${c.id || c.phone}:`, e.message);
@@ -108,11 +116,11 @@ router.get('/lookup', authenticate, (req, res, next) => {
 
     if (user) {
       const orderCount = db.prepare(
-        `SELECT COUNT(*) as c FROM sales WHERE customer_id = ? AND status != 'cancelled'`
-      ).get(user.id).c;
+        `SELECT COUNT(*) as c FROM sales WHERE (customer_id = ? OR sender_customer_id = ?) AND status != 'cancelled'`
+      ).get(user.id, user.id).c;
       const lastOrder = db.prepare(
-        `SELECT created_at FROM sales WHERE customer_id = ? AND status != 'cancelled' ORDER BY created_at DESC LIMIT 1`
-      ).get(user.id);
+        `SELECT created_at FROM sales WHERE (customer_id = ? OR sender_customer_id = ?) AND status != 'cancelled' ORDER BY created_at DESC LIMIT 1`
+      ).get(user.id, user.id);
       return res.json({
         success: true,
         data: { ...user, order_count: orderCount, last_order: lastOrder?.created_at || null, is_registered: true },
@@ -121,12 +129,20 @@ router.get('/lookup', authenticate, (req, res, next) => {
 
     // Fallback: check sales history for unregistered customers
     const salesCustomer = db.prepare(`
-      SELECT MAX(customer_name) as name, customer_phone as phone, COUNT(*) as order_count,
+      SELECT MAX(name) as name, phone, COUNT(*) as order_count,
              SUM(grand_total) as total_spent, MAX(created_at) as last_order
-      FROM sales
-      WHERE customer_phone = ? AND status != 'cancelled'
-      GROUP BY customer_phone
-    `).get(phone);
+      FROM (
+        SELECT customer_name as name, customer_phone as phone, grand_total, created_at
+        FROM sales
+        WHERE customer_id IS NULL AND customer_phone = ? AND status != 'cancelled'
+        UNION ALL
+        SELECT sender_name as name, sender_phone as phone, grand_total, created_at
+        FROM sales
+        WHERE sender_customer_id IS NULL AND sender_phone = ? AND status != 'cancelled'
+      ) x
+      GROUP BY phone
+      LIMIT 1
+    `).get(phone, phone);
 
     res.json({ success: true, data: salesCustomer ? { ...salesCustomer, is_registered: false } : null });
   } catch (err) { next(err); }
@@ -152,13 +168,19 @@ router.get('/search', authenticate, (req, res, next) => {
 
     // Search unregistered customers from sales history
     const unregistered = db.prepare(`
-      SELECT NULL as id, MAX(customer_name) as name, customer_phone as phone,
+      SELECT NULL as id, MAX(name) as name, phone,
              0 as credit_balance, SUM(grand_total) as total_spent
-      FROM sales
-      WHERE status != 'cancelled' AND customer_phone IS NOT NULL
-        AND customer_id IS NULL
-        AND (customer_phone ILIKE ? OR customer_name ILIKE ?)
-      GROUP BY customer_phone
+      FROM (
+        SELECT customer_name as name, customer_phone as phone, grand_total
+        FROM sales
+        WHERE status != 'cancelled' AND customer_phone IS NOT NULL AND customer_id IS NULL
+        UNION ALL
+        SELECT sender_name as name, sender_phone as phone, grand_total
+        FROM sales
+        WHERE status != 'cancelled' AND sender_phone IS NOT NULL AND sender_customer_id IS NULL
+      ) s
+      WHERE (phone ILIKE ? OR name ILIKE ?)
+      GROUP BY phone
       ORDER BY total_spent DESC LIMIT 5
     `).all(term, term);
 
@@ -259,11 +281,13 @@ router.get('/:id', authenticate, (req, res, next) => {
     // Order history (recent 20)
     const orders = db.prepare(`
       SELECT s.id, s.sale_number, s.grand_total, s.order_type, s.status, s.payment_status, s.created_at,
+             s.receiver_name, s.receiver_phone, s.sender_same_as_receiver,
+             s.delivery_address, s.sender_name, s.sender_phone,
              COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.sale_id = s.id), 0) as total_paid
       FROM sales s
-      WHERE s.customer_id = ? AND s.status != 'cancelled'
+      WHERE (s.customer_id = ? OR s.sender_customer_id = ?) AND s.status != 'cancelled'
       ORDER BY s.created_at DESC LIMIT 20
-    `).all(req.params.id);
+    `).all(req.params.id, req.params.id);
 
     // Calculate balance due per order
     const ordersWithDues = orders.map(o => ({
@@ -275,7 +299,7 @@ router.get('/:id', authenticate, (req, res, next) => {
     const creditPayments = db.prepare(`
       SELECT cp.*, u.name as received_by_name
       FROM credit_payments cp
-      LEFT JOIN users u ON cp.recorded_by = u.id
+      LEFT JOIN users u ON cp.received_by = u.id
       WHERE cp.customer_id = ?
       ORDER BY cp.created_at DESC LIMIT 20
     `).all(req.params.id);
@@ -640,14 +664,14 @@ router.get('/:id/orders', authenticate, (req, res, next) => {
              l.name as location_name
       FROM sales s
       LEFT JOIN locations l ON s.location_id = l.id
-      WHERE s.customer_id = ? AND s.status != 'cancelled'
+      WHERE (s.customer_id = ? OR s.sender_customer_id = ?) AND s.status != 'cancelled'
       ORDER BY s.created_at DESC
       LIMIT ? OFFSET ?
-    `).all(req.params.id, parseInt(limit), parseInt(offset));
+    `).all(req.params.id, req.params.id, parseInt(limit), parseInt(offset));
 
     const { total } = db.prepare(
-      "SELECT COUNT(*) as total FROM sales WHERE customer_id = ? AND status != 'cancelled'"
-    ).get(req.params.id);
+      "SELECT COUNT(*) as total FROM sales WHERE (customer_id = ? OR sender_customer_id = ?) AND status != 'cancelled'"
+    ).get(req.params.id, req.params.id);
 
     res.json({ success: true, data: orders, total });
   } catch (err) { next(err); }
