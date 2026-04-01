@@ -497,6 +497,23 @@ class ApiService {
     return this.request('/sales', { method: 'POST', body: JSON.stringify(data) });
   }
 
+  getSaleDrafts(params = {}) {
+    const query = new URLSearchParams(params).toString();
+    return this.request(`/sales/drafts${query ? `?${query}` : ''}`);
+  }
+
+  getSaleDraft(id) {
+    return this.request(`/sales/drafts/${id}`);
+  }
+
+  saveSaleDraft(data) {
+    return this.request('/sales/drafts', { method: 'POST', body: JSON.stringify(data) });
+  }
+
+  deleteSaleDraft(id) {
+    return this.request(`/sales/drafts/${id}`, { method: 'DELETE' });
+  }
+
   addPaymentToSale(saleId, data) {
     return this.request(`/sales/${saleId}/payments`, { method: 'POST', body: JSON.stringify(data) });
   }

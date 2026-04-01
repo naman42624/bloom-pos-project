@@ -27,40 +27,11 @@ export default function POSScreen({ navigation, route }) {
   
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
 
-  React.useLayoutEffect(() => {
-    navigation.setOptions({
-      headerRight: isTablet ? null : () => (
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, marginRight: Spacing.md }}>
-          <TouchableOpacity
-            style={{ flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: Colors.warning + '15', paddingHorizontal: 8, paddingVertical: 4, borderRadius: BorderRadius.sm }}
-            onPress={() => navigation.navigate('QuickCheckout')}
-          >
-            <Ionicons name="flash" size={18} color={Colors.warning} />
-            <Text style={{ fontSize: FontSize.xs, color: Colors.warning, fontWeight: '700' }}>Quick Sale</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}
-            onPress={() => navigation.navigate('ProduceProduct')}
-          >
-            <Ionicons name="hammer" size={18} color={Colors.success} />
-            <Text style={{ fontSize: FontSize.xs, color: Colors.success, fontWeight: '600' }}>Make</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}
-            onPress={() => navigation.navigate('ProductionQueue')}
-          >
-            <Ionicons name="list" size={18} color={Colors.primary} />
-            <Text style={{ fontSize: FontSize.xs, color: Colors.primary, fontWeight: '600' }}>Queue</Text>
-          </TouchableOpacity>
-        </View>
-      ),
-    });
-  }, [navigation, isTablet]);
-
   const [products, setProducts] = useState([]);
   const [materials, setMaterials] = useState([]);
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
+  const [resumingDraft, setResumingDraft] = useState(false);
   const [cart, setCart] = useState([]);
   const [locations, setLocations] = useState([]);
   const [selectedLocation, setSelectedLocation] = useState(null);
@@ -96,6 +67,43 @@ export default function POSScreen({ navigation, route }) {
   const [qaSubmitting, setQaSubmitting] = useState(false);
   const [qaMaterials, setQaMaterials] = useState([]); // [{material_id, name, qty}]
   const [allMaterialsList, setAllMaterialsList] = useState([]);
+
+  React.useLayoutEffect(() => {
+    navigation.setOptions({
+      headerRight: isTablet ? null : () => (
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, marginRight: Spacing.md }}>
+          <TouchableOpacity
+            style={{ flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: Colors.warning + '15', paddingHorizontal: 8, paddingVertical: 4, borderRadius: BorderRadius.sm }}
+            onPress={() => navigation.navigate('QuickCheckout')}
+          >
+            <Ionicons name="flash" size={18} color={Colors.warning} />
+            <Text style={{ fontSize: FontSize.xs, color: Colors.warning, fontWeight: '700' }}>Quick Sale</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}
+            onPress={() => navigation.navigate('SaleDrafts', { locationId: selectedLocation })}
+          >
+            <Ionicons name="document-text" size={18} color={Colors.warning} />
+            <Text style={{ fontSize: FontSize.xs, color: Colors.warning, fontWeight: '600' }}>Drafts</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}
+            onPress={() => navigation.navigate('ProduceProduct')}
+          >
+            <Ionicons name="hammer" size={18} color={Colors.success} />
+            <Text style={{ fontSize: FontSize.xs, color: Colors.success, fontWeight: '600' }}>Make</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}
+            onPress={() => navigation.navigate('ProductionQueue')}
+          >
+            <Ionicons name="list" size={18} color={Colors.primary} />
+            <Text style={{ fontSize: FontSize.xs, color: Colors.primary, fontWeight: '600' }}>Queue</Text>
+          </TouchableOpacity>
+        </View>
+      ),
+    });
+  }, [navigation, isTablet, selectedLocation]);
 
   useFocusEffect(
     useCallback(() => {
@@ -335,6 +343,27 @@ export default function POSScreen({ navigation, route }) {
 
   const handleScanQR = () => {
     navigation.navigate('QRScanner', { fromPOS: true });
+  };
+
+  const handleResumeLatestDraft = async () => {
+    if (resumingDraft) return;
+    setResumingDraft(true);
+    try {
+      const params = selectedLocation ? { location_id: selectedLocation } : {};
+      const res = await api.getSaleDrafts(params);
+      const latest = (res?.data || [])[0];
+      if (!latest) {
+        Alert.alert('No Drafts', 'No saved drafts were found for this location.');
+        return;
+      }
+
+      const target = latest.context === 'quick_checkout' ? 'QuickCheckout' : 'Checkout';
+      navigation.navigate(target, { draftId: latest.id });
+    } catch (err) {
+      Alert.alert('Error', err.message || 'Failed to load latest draft');
+    } finally {
+      setResumingDraft(false);
+    }
   };
 
   // Handle scanned product returned from QR scanner
@@ -625,6 +654,12 @@ export default function POSScreen({ navigation, route }) {
         </TouchableOpacity>
         <TouchableOpacity 
           style={styles.headerShortCut}
+          onPress={() => navigation.navigate('SaleDrafts', { locationId: selectedLocation })}
+        >
+          <Ionicons name="document-text" size={18} color={Colors.warning} />
+        </TouchableOpacity>
+        <TouchableOpacity 
+          style={styles.headerShortCut}
           onPress={() => navigation.navigate('ProduceProduct')}
         >
           <Ionicons name="hammer" size={18} color={Colors.success} />
@@ -668,10 +703,26 @@ export default function POSScreen({ navigation, route }) {
     <View style={isTablet ? styles.sideCart : styles.cartPanel}>
       <View style={styles.cartPanelHeader}>
         <Text style={styles.cartPanelTitle}>Order Summary</Text>
-        <TouchableOpacity onPress={clearCart} style={styles.clearBtn}>
-          <Ionicons name="trash-outline" size={16} color={Colors.error} />
-          <Text style={styles.clearText}>Clear</Text>
-        </TouchableOpacity>
+        <View style={styles.cartHeaderActions}>
+          <TouchableOpacity
+            onPress={handleResumeLatestDraft}
+            style={styles.resumeDraftBtn}
+            disabled={resumingDraft}
+          >
+            {resumingDraft ? (
+              <ActivityIndicator size="small" color={Colors.warning} />
+            ) : (
+              <>
+                <Ionicons name="play-circle-outline" size={16} color={Colors.warning} />
+                <Text style={styles.resumeDraftText}>Resume Latest</Text>
+              </>
+            )}
+          </TouchableOpacity>
+          <TouchableOpacity onPress={clearCart} style={styles.clearBtn}>
+            <Ionicons name="trash-outline" size={16} color={Colors.error} />
+            <Text style={styles.clearText}>Clear</Text>
+          </TouchableOpacity>
+        </View>
       </View>
       <ScrollView style={[styles.cartItemsList, isTablet && { maxHeight: 'none', flex: 1 }]} nestedScrollEnabled>
         {cart.map((c) => (
@@ -781,6 +832,12 @@ export default function POSScreen({ navigation, route }) {
               </View>
               <TouchableOpacity style={styles.scanBtn} onPress={handleScanQR}>
                 <Ionicons name="qr-code" size={24} color={Colors.white} />
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.scanBtn, { backgroundColor: Colors.warning }]}
+                onPress={() => navigation.navigate('SaleDrafts', { locationId: selectedLocation })}
+              >
+                <Ionicons name="document-text" size={22} color={Colors.white} />
               </TouchableOpacity>
               {isManager && (
                 <TouchableOpacity style={[styles.scanBtn, { backgroundColor: Colors.success }]} onPress={openQuickAdd}>
@@ -1102,6 +1159,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.md, paddingTop: Spacing.sm, paddingBottom: Spacing.xs,
   },
   cartPanelTitle: { fontSize: FontSize.lg, fontWeight: '700', color: Colors.text },
+  cartHeaderActions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  resumeDraftBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    padding: 8, backgroundColor: Colors.warning + '15', borderRadius: BorderRadius.sm,
+    borderWidth: 1, borderColor: Colors.warning + '35',
+  },
+  resumeDraftText: { fontSize: FontSize.sm, color: Colors.warning, fontWeight: '700' },
   clearBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, padding: 8, backgroundColor: Colors.errorLight, borderRadius: BorderRadius.sm },
   clearText: { fontSize: FontSize.sm, color: Colors.error, fontWeight: '700' },
   cartItemsList: { maxHeight: 160, paddingHorizontal: Spacing.md },

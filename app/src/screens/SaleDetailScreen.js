@@ -549,28 +549,47 @@ export default function SaleDetailScreen({ route, navigation }) {
         <div class="center"><p>Thank you for your purchase!</p></div>
       </body></html>
     `;
+
+    const printHtmlOnWeb = (markup, title) => {
+      const frame = document.createElement('iframe');
+      frame.style.position = 'fixed';
+      frame.style.right = '0';
+      frame.style.bottom = '0';
+      frame.style.width = '0';
+      frame.style.height = '0';
+      frame.style.border = '0';
+      frame.setAttribute('aria-hidden', 'true');
+      document.body.appendChild(frame);
+
+      const frameDoc = frame.contentWindow?.document;
+      if (!frameDoc) {
+        document.body.removeChild(frame);
+        throw new Error('Unable to open print frame');
+      }
+
+      frameDoc.open();
+      frameDoc.write(`<html><head><title>${title}</title></head><body>${markup}</body></html>`);
+      frameDoc.close();
+
+      setTimeout(() => {
+        try {
+          frame.contentWindow?.focus();
+          frame.contentWindow?.print();
+        } finally {
+          setTimeout(() => {
+            if (frame.parentNode) frame.parentNode.removeChild(frame);
+          }, 500);
+        }
+      }, 250);
+    };
     try {
       if (Platform.OS === 'web') {
-        const printWin = window.open('', '_blank', 'noopener,noreferrer,width=900,height=900');
-        if (!printWin) {
-          Alert.alert('Popup Blocked', 'Please allow popups to print the delivery slip.');
-          return;
-        }
-        printWin.document.open();
-        printWin.document.write(html);
-        printWin.document.close();
-        const triggerPrint = () => {
-          try {
-            printWin.focus();
-            printWin.print();
-          } catch (_) {}
-        };
-        printWin.onload = triggerPrint;
-        setTimeout(triggerPrint, 500);
-      } else {
-        const { uri } = await Print.printToFileAsync({ html, width: isDeliverySlip ? 612 : 300 });
-        await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: `Receipt ${sale.sale_number}` });
+        printHtmlOnWeb(html, isDeliverySlip ? 'Delivery Slip' : 'Receipt');
+        return;
       }
+
+      const { uri } = await Print.printToFileAsync({ html, width: isDeliverySlip ? 612 : 300 });
+      await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: `Receipt ${sale.sale_number}` });
     } catch (err) {
       Alert.alert('Error', 'Could not generate receipt');
     }
@@ -817,6 +836,10 @@ export default function SaleDetailScreen({ route, navigation }) {
                             <TouchableOpacity style={[styles.taskActionBtn, { backgroundColor: '#00BCD4' + '15' }]} onPress={() => handleTaskAction(task.id, 'start', 'start')}>
                               <Ionicons name="play-outline" size={14} color="#00BCD4" />
                               <Text style={[styles.taskActionText, { color: '#00BCD4' }]}>Start</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity style={[styles.taskActionBtn, { backgroundColor: Colors.success + '15' }]} onPress={() => handleTaskAction(task.id, 'complete', 'complete')}>
+                              <Ionicons name="checkmark-circle" size={14} color={Colors.success} />
+                              <Text style={[styles.taskActionText, { color: Colors.success }]}>Complete</Text>
                             </TouchableOpacity>
                           </>
                         )}

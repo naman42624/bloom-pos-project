@@ -506,6 +506,28 @@ function ensureCoreTables() {
   runPsql('CREATE INDEX IF NOT EXISTS idx_special_dates_customer ON special_dates(customer_id)');
   runPsql('CREATE INDEX IF NOT EXISTS idx_special_dates_date ON special_dates(date)');
 
+  runPsql(`
+    CREATE TABLE IF NOT EXISTS sale_drafts (
+      id SERIAL PRIMARY KEY,
+      location_id INTEGER REFERENCES locations(id) ON DELETE SET NULL,
+      context VARCHAR(50) DEFAULT 'checkout',
+      order_type VARCHAR(50) DEFAULT 'walk_in',
+      customer_name VARCHAR(255),
+      customer_phone VARCHAR(20),
+      customer_address TEXT,
+      item_count INTEGER DEFAULT 0,
+      grand_total DECIMAL(10,2) DEFAULT 0,
+      payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  runPsql('CREATE INDEX IF NOT EXISTS idx_sale_drafts_created_by ON sale_drafts(created_by)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_sale_drafts_location ON sale_drafts(location_id)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_sale_drafts_updated_at ON sale_drafts(updated_at DESC)');
+
   // Seed default material categories if table is empty
   const catCount = runPsql("SELECT COUNT(*) FROM material_categories");
   if (catCount.trim() === '0') {
@@ -726,6 +748,19 @@ function ensureCompatibilityColumns() {
   ensureColumn('sales', 'sender_same_as_receiver', 'INTEGER DEFAULT 0');
   runPsql('CREATE INDEX IF NOT EXISTS idx_sales_sender_customer ON sales(sender_customer_id)');
   runPsql('CREATE INDEX IF NOT EXISTS idx_sales_receiver_customer ON sales(receiver_customer_id)');
+  ensureColumn('sale_drafts', 'location_id', 'INTEGER REFERENCES locations(id) ON DELETE SET NULL');
+  ensureColumn('sale_drafts', 'context', "VARCHAR(50) DEFAULT 'checkout'");
+  ensureColumn('sale_drafts', 'order_type', "VARCHAR(50) DEFAULT 'walk_in'");
+  ensureColumn('sale_drafts', 'customer_name', 'VARCHAR(255)');
+  ensureColumn('sale_drafts', 'customer_phone', 'VARCHAR(20)');
+  ensureColumn('sale_drafts', 'customer_address', 'TEXT');
+  ensureColumn('sale_drafts', 'item_count', 'INTEGER DEFAULT 0');
+  ensureColumn('sale_drafts', 'grand_total', 'DECIMAL(10,2) DEFAULT 0');
+  ensureColumn('sale_drafts', 'payload', "JSONB DEFAULT '{}'::jsonb");
+  ensureColumn('sale_drafts', 'updated_by', 'INTEGER REFERENCES users(id) ON DELETE SET NULL');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_sale_drafts_created_by ON sale_drafts(created_by)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_sale_drafts_location ON sale_drafts(location_id)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_sale_drafts_updated_at ON sale_drafts(updated_at DESC)');
   // Drop over-restrictive status check (routes use 'preparing', 'completing' etc.)
   try { runPsql('ALTER TABLE sales DROP CONSTRAINT IF EXISTS sales_status_check'); } catch (_) {}
 

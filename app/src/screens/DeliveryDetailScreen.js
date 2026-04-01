@@ -251,44 +251,44 @@ export default function DeliveryDetailScreen({ route, navigation }) {
       </tr>
     `).join('');
 
-    const totalAmt = (delivery.grand_total || 0).toFixed(0);
-    const codAmt = (delivery.cod_amount || 0).toFixed(0);
+    const codToCollect = Math.max((delivery.cod_amount || 0) - (delivery.cod_collected || 0), 0);
+    const codAmt = codToCollect.toFixed(0);
 
     const buildCopyHtml = (copyTitle, showInstructions) => `
-      <div style="border:2px solid #333;border-radius:6px;padding:12px 16px;height:48%;box-sizing:border-box;position:relative;overflow:hidden;">
+      <div style="border:2px solid #333;border-radius:6px;padding:10px 14px;box-sizing:border-box;position:relative;overflow:hidden;page-break-inside:avoid;break-inside:avoid;flex:1;min-height:0;">
         <div style="position:absolute;top:6px;right:10px;font-size:10px;color:#999;font-weight:600;text-transform:uppercase;letter-spacing:1px;">${copyTitle}</div>
-        <div style="text-align:center;margin-bottom:6px;">
-          <div style="font-size:18px;font-weight:bold;color:#E91E63;">${shopName}</div>
-          ${locationName ? `<div style="font-size:11px;color:#555;">${locationName}</div>` : ''}
-          ${locationAddress ? `<div style="font-size:10px;color:#888;">${locationAddress}</div>` : ''}
-          ${locationPhone ? `<div style="font-size:10px;color:#888;">Ph: ${locationPhone}</div>` : ''}
+        <div style="text-align:center;margin-bottom:4px;">
+          <div style="font-size:16px;font-weight:bold;color:#E91E63;line-height:1.1;">${shopName}</div>
+          ${locationName ? `<div style="font-size:10px;color:#555;line-height:1.1;">${locationName}</div>` : ''}
+          ${locationAddress ? `<div style="font-size:9px;color:#888;line-height:1.1;">${locationAddress}</div>` : ''}
+          ${locationPhone ? `<div style="font-size:9px;color:#888;line-height:1.1;">Ph: ${locationPhone}</div>` : ''}
         </div>
-        <div style="border-top:1px dashed #999;margin:6px 0;"></div>
-        <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:4px;">
+        <div style="border-top:1px dashed #999;margin:5px 0;"></div>
+        <div style="display:flex;justify-content:space-between;font-size:10px;margin-bottom:3px;">
           <span><strong>Order:</strong> ${orderNo}</span>
           <span><strong>Date:</strong> ${date}</span>
         </div>
-        ${scheduledDate ? `<div style="font-size:11px;margin-bottom:4px;"><strong>Scheduled:</strong> ${scheduledDate} ${scheduledTime || ''}</div>` : ''}
-        <div style="display:flex;gap:20px;font-size:11px;margin-bottom:2px;">
+        ${scheduledDate ? `<div style="font-size:10px;margin-bottom:3px;"><strong>Scheduled:</strong> ${scheduledDate} ${scheduledTime || ''}</div>` : ''}
+        <div style="display:flex;gap:12px;font-size:10px;margin-bottom:2px;">
           <div style="flex:1;"><strong>Customer:</strong> ${customerName}${customerPhone ? ' • ' + customerPhone : ''}</div>
         </div>
-        <div style="font-size:11px;margin-bottom:4px;"><strong>Address:</strong> ${address}</div>
-        ${senderName || senderPhone ? `<div style="font-size:11px;margin-bottom:2px;"><strong>Sender:</strong> ${senderName}${senderPhone ? ' • ' + senderPhone : ''}</div>` : ''}
-        ${senderMessage ? `<div style="background:#FFF3E0;border-radius:4px;padding:4px 8px;margin:4px 0;font-size:11px;"><strong>Message:</strong> ${senderMessage}</div>` : ''}
-        <table style="width:100%;border-collapse:collapse;font-size:11px;margin-top:6px;">
+        <div style="font-size:10px;margin-bottom:3px;"><strong>Address:</strong> ${address}</div>
+        ${senderName || senderPhone ? `<div style="font-size:10px;margin-bottom:2px;"><strong>Sender:</strong> ${senderName}${senderPhone ? ' • ' + senderPhone : ''}</div>` : ''}
+        ${senderMessage ? `<div style="background:#FFF3E0;border-radius:4px;padding:3px 6px;margin:3px 0;font-size:10px;"><strong>Message:</strong> ${senderMessage}</div>` : ''}
+        <table style="width:100%;border-collapse:collapse;font-size:10px;margin-top:4px;">
           <thead>
             <tr style="background:#f5f5f5;">
-              <th style="padding:4px 6px;text-align:left;border-bottom:2px solid #ddd;">Item</th>
-              <th style="padding:4px 6px;text-align:center;border-bottom:2px solid #ddd;">Qty</th>
-              <th style="padding:4px 6px;text-align:right;border-bottom:2px solid #ddd;">Amount</th>
+              <th style="padding:3px 4px;text-align:left;border-bottom:2px solid #ddd;">Item</th>
+              <th style="padding:3px 4px;text-align:center;border-bottom:2px solid #ddd;">Qty</th>
+              <th style="padding:3px 4px;text-align:right;border-bottom:2px solid #ddd;">Amount</th>
             </tr>
           </thead>
           <tbody>${itemsHtml}</tbody>
         </table>
-        <div style="border-top:1px dashed #999;margin:6px 0;"></div>
-        <div style="display:flex;justify-content:space-between;font-size:12px;font-weight:bold;">
-          <span>Total: ₹${totalAmt}</span>
+        <div style="border-top:1px dashed #999;margin:5px 0;"></div>
+        <div style="display:flex;justify-content:space-between;font-size:11px;font-weight:bold;">
           ${parseFloat(codAmt) > 0 ? `<span style="color:#E91E63;">COD: ₹${codAmt}</span>` : '<span style="color:#4CAF50;">PREPAID</span>'}
+          <span style="color:#666;">${copyTitle}</span>
         </div>
         ${showInstructions && delivery.special_instructions ? `<div style="font-size:10px;color:#666;margin-top:4px;"><strong>Instructions:</strong> ${delivery.special_instructions}</div>` : ''}
       </div>
@@ -297,8 +297,9 @@ export default function DeliveryDetailScreen({ route, navigation }) {
     const html = `
       <html><head><meta charset="utf-8">
       <style>
-        @page { size: A4; margin: 12mm; }
-        body { font-family: Arial, Helvetica, sans-serif; margin: 0; padding: 0; height: 100vh; display: flex; flex-direction: column; justify-content: space-between; gap: 12px; }
+        @page { size: A4 portrait; margin: 8mm; }
+        html, body { margin: 0; padding: 0; }
+        body { font-family: Arial, Helvetica, sans-serif; display: flex; flex-direction: column; gap: 8px; min-height: 100vh; }
       </style></head>
       <body>
         ${buildCopyHtml('Shop Copy', true)}
@@ -306,11 +307,44 @@ export default function DeliveryDetailScreen({ route, navigation }) {
       </body></html>
     `;
 
+    const printHtmlOnWeb = (markup, title) => {
+      const frame = document.createElement('iframe');
+      frame.style.position = 'fixed';
+      frame.style.right = '0';
+      frame.style.bottom = '0';
+      frame.style.width = '0';
+      frame.style.height = '0';
+      frame.style.border = '0';
+      frame.setAttribute('aria-hidden', 'true');
+      document.body.appendChild(frame);
+
+      const frameDoc = frame.contentWindow?.document;
+      if (!frameDoc) {
+        document.body.removeChild(frame);
+        throw new Error('Unable to open print frame');
+      }
+
+      frameDoc.open();
+      frameDoc.write(`<html><head><title>${title}</title></head><body>${markup}</body></html>`);
+      frameDoc.close();
+
+      setTimeout(() => {
+        try {
+          frame.contentWindow?.focus();
+          frame.contentWindow?.print();
+        } finally {
+          setTimeout(() => {
+            if (frame.parentNode) frame.parentNode.removeChild(frame);
+          }, 500);
+        }
+      }, 250);
+    };
+
     try {
-      const { uri } = await Print.printToFileAsync({ html });
       if (Platform.OS === 'web') {
-        await Print.printAsync({ html });
+        printHtmlOnWeb(html, 'Delivery Challan');
       } else {
+        const { uri } = await Print.printToFileAsync({ html });
         await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: `Challan ${orderNo}` });
       }
     } catch {

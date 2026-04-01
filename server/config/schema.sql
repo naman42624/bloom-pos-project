@@ -287,6 +287,28 @@ CREATE INDEX IF NOT EXISTS idx_sales_status ON sales(status);
 CREATE INDEX IF NOT EXISTS idx_sales_payment_status ON sales(payment_status);
 CREATE INDEX IF NOT EXISTS idx_sales_order_type ON sales(order_type);
 
+-- ─── Sale Drafts (incomplete checkout snapshots) ───────────
+CREATE TABLE IF NOT EXISTS sale_drafts (
+  id SERIAL PRIMARY KEY,
+  location_id INTEGER REFERENCES locations(id) ON DELETE SET NULL,
+  context VARCHAR(50) DEFAULT 'checkout' CHECK(context IN ('checkout', 'quick_checkout')),
+  order_type VARCHAR(50) DEFAULT 'walk_in' CHECK(order_type IN ('walk_in', 'delivery', 'pickup', 'pre_order')),
+  customer_name VARCHAR(255),
+  customer_phone VARCHAR(20),
+  customer_address TEXT,
+  item_count INTEGER DEFAULT 0,
+  grand_total DECIMAL(10,2) DEFAULT 0,
+  payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_sale_drafts_created_by ON sale_drafts(created_by);
+CREATE INDEX IF NOT EXISTS idx_sale_drafts_location ON sale_drafts(location_id);
+CREATE INDEX IF NOT EXISTS idx_sale_drafts_updated_at ON sale_drafts(updated_at DESC);
+
 -- ─── Sale Items ────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS sale_items (
   id SERIAL PRIMARY KEY,

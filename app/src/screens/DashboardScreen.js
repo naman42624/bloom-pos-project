@@ -220,6 +220,12 @@ export default function DashboardScreen({ navigation }) {
               onPress={() => navigation.navigate('Inventory', { screen: 'Products' })}
             />
             <QuickAction
+              icon="document-text"
+              label="Drafts"
+              color={Colors.warning}
+              onPress={() => navigation.navigate('SaleDrafts', { locationId: activeLocation?.id })}
+            />
+            <QuickAction
               icon="people"
               label="Staff"
               color={Colors.info}
@@ -271,6 +277,12 @@ export default function DashboardScreen({ navigation }) {
               color={Colors.info}
               onPress={() => navigation.navigate('ProductionQueue')}
 
+            />
+            <QuickAction
+              icon="document-text"
+              label="Drafts"
+              color={Colors.warning}
+              onPress={() => navigation.navigate('SaleDrafts', { locationId: activeLocation?.id })}
             />
           </View>
         </View>

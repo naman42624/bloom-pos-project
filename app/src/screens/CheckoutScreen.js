@@ -45,6 +45,11 @@ export default function CheckoutScreen({ route, navigation }) {
   const [deliveryCharges, setDeliveryCharges] = useState('');
   const [notes, setNotes] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [savingDraft, setSavingDraft] = useState(false);
+  const [draftPickerVisible, setDraftPickerVisible] = useState(false);
+  const [draftsLoading, setDraftsLoading] = useState(false);
+  const [drafts, setDrafts] = useState([]);
+  const [activeDraftId, setActiveDraftId] = useState(null);
 
   // Customer lookup
   const [customerHistory, setCustomerHistory] = useState(null);
@@ -391,6 +396,177 @@ export default function CheckoutScreen({ route, navigation }) {
     setPayments(payments.map((p, i) => i === idx ? { ...p, [field]: value } : p));
   };
 
+  const buildDraftPayload = useCallback(() => ({
+    cart,
+    orderType,
+    preOrderType,
+    customerName,
+    customerPhone,
+    customerId,
+    discountType,
+    discountValue,
+    deliveryCharges,
+    notes,
+    scheduledDate,
+    scheduledTime,
+    deliveryAddress,
+    useCustomerAsSender,
+    senderSameAsReceiver,
+    senderName,
+    senderPhone,
+    senderMessage,
+    senderAddress,
+    receiverName,
+    receiverPhone,
+    receiverId,
+    paymentMode,
+    payments,
+    advanceAmount,
+  }), [
+    cart,
+    orderType,
+    preOrderType,
+    customerName,
+    customerPhone,
+    customerId,
+    discountType,
+    discountValue,
+    deliveryCharges,
+    notes,
+    scheduledDate,
+    scheduledTime,
+    deliveryAddress,
+    useCustomerAsSender,
+    senderSameAsReceiver,
+    senderName,
+    senderPhone,
+    senderMessage,
+    senderAddress,
+    receiverName,
+    receiverPhone,
+    receiverId,
+    paymentMode,
+    payments,
+    advanceAmount,
+  ]);
+
+  const applyDraftPayload = useCallback((payload, draftId = null) => {
+    const p = payload && typeof payload === 'object' ? payload : {};
+    setCart(Array.isArray(p.cart) ? p.cart : []);
+    setOrderType(p.orderType || 'walk_in');
+    setPreOrderType(p.preOrderType || 'pickup');
+    setCustomerName(p.customerName || '');
+    setCustomerPhone(p.customerPhone || '');
+    setCustomerId(p.customerId || null);
+    setDiscountType(p.discountType || 'fixed');
+    setDiscountValue(p.discountValue || '');
+    setDeliveryCharges(p.deliveryCharges || '');
+    setNotes(p.notes || '');
+    setScheduledDate(p.scheduledDate || '');
+    setScheduledTime(p.scheduledTime || '');
+    setDeliveryAddress(p.deliveryAddress || '');
+    setUseCustomerAsSender(p.useCustomerAsSender !== false);
+    setSenderSameAsReceiver(!!p.senderSameAsReceiver);
+    setSenderName(p.senderName || '');
+    setSenderPhone(p.senderPhone || '');
+    setSenderMessage(p.senderMessage || '');
+    setSenderAddress(p.senderAddress || '');
+    setReceiverName(p.receiverName || '');
+    setReceiverPhone(p.receiverPhone || '');
+    setReceiverId(p.receiverId || null);
+    setPaymentMode(p.paymentMode || 'pay_now');
+    setPayments(Array.isArray(p.payments) && p.payments.length > 0 ? p.payments : [{ method: 'cash', amount: '', reference: '' }]);
+    setAdvanceAmount(p.advanceAmount || '');
+    setActiveDraftId(draftId);
+  }, []);
+
+  const loadDrafts = useCallback(async () => {
+    setDraftsLoading(true);
+    try {
+      const res = await api.getSaleDrafts({ location_id: locationId, context: 'checkout' });
+      setDrafts(res.data || []);
+    } catch (err) {
+      Alert.alert('Error', err.message || 'Failed to load drafts');
+    } finally {
+      setDraftsLoading(false);
+    }
+  }, [locationId]);
+
+  const handleSaveDraft = useCallback(async () => {
+    if (savingDraft || submitting) return;
+    const hasAnyData = cart.length > 0 || customerName.trim() || customerPhone.trim() || notes.trim();
+    if (!hasAnyData) {
+      Alert.alert('Nothing to save', 'Add at least one item or customer details before saving draft.');
+      return;
+    }
+
+    setSavingDraft(true);
+    try {
+      const res = await api.saveSaleDraft({
+        id: activeDraftId,
+        location_id: locationId,
+        context: 'checkout',
+        order_type: orderType,
+        customer_name: customerName || null,
+        customer_phone: customerPhone || null,
+        customer_address: deliveryAddress || null,
+        item_count: cart.length,
+        grand_total: grandTotal,
+        payload: buildDraftPayload(),
+      });
+      setActiveDraftId(res?.data?.id || null);
+      Alert.alert('Draft Saved', 'You can resume this order anytime from drafts.');
+    } catch (err) {
+      Alert.alert('Error', err.message || 'Failed to save draft');
+    } finally {
+      setSavingDraft(false);
+    }
+  }, [savingDraft, submitting, cart.length, customerName, customerPhone, notes, activeDraftId, locationId, orderType, deliveryAddress, grandTotal, buildDraftPayload]);
+
+  const handleOpenDraftPicker = useCallback(async () => {
+    setDraftPickerVisible(true);
+    await loadDrafts();
+  }, [loadDrafts]);
+
+  const handleResumeDraft = useCallback(async (draftId) => {
+    try {
+      const res = await api.getSaleDraft(draftId);
+      const draft = res.data;
+      applyDraftPayload(draft.payload, draft.id);
+      setDraftPickerVisible(false);
+      Alert.alert('Draft Loaded', 'Draft has been restored into checkout.');
+    } catch (err) {
+      Alert.alert('Error', err.message || 'Failed to load draft');
+    }
+  }, [applyDraftPayload]);
+
+  const handleDeleteDraft = useCallback(async (draftId) => {
+    try {
+      await api.deleteSaleDraft(draftId);
+      if (activeDraftId === draftId) setActiveDraftId(null);
+      await loadDrafts();
+    } catch (err) {
+      Alert.alert('Error', err.message || 'Failed to delete draft');
+    }
+  }, [activeDraftId, loadDrafts]);
+
+  React.useEffect(() => {
+    const draftId = route.params?.draftId;
+    if (!draftId) return;
+
+    (async () => {
+      try {
+        const res = await api.getSaleDraft(draftId);
+        const draft = res.data;
+        applyDraftPayload(draft.payload, draft.id);
+      } catch (err) {
+        Alert.alert('Error', err.message || 'Failed to load draft');
+      } finally {
+        navigation.setParams({ draftId: undefined });
+      }
+    })();
+  }, [route.params?.draftId, applyDraftPayload, navigation]);
+
   const handleSubmit = async () => {
     if (submitting) return;
 
@@ -552,6 +728,12 @@ export default function CheckoutScreen({ route, navigation }) {
     try {
       const res = await api.createSale(saleData);
       if (res.success) {
+        if (activeDraftId) {
+          try {
+            await api.deleteSaleDraft(activeDraftId);
+          } catch (_) {}
+          setActiveDraftId(null);
+        }
         navigation.dispatch(
           CommonActions.reset({
             index: 1,
@@ -1016,7 +1198,8 @@ export default function CheckoutScreen({ route, navigation }) {
         )}
 
         {/* Payment — split payment support */}
-        {paymentMode === 'pay_now' && (
+        {(paymentMode === 'pay_now' || paymentMode === 'partial') && (
+
         <View style={styles.paymentSection}>
           <View style={styles.paymentHeader}>
             <Text style={styles.sectionTitle}>Payment</Text>
@@ -1102,6 +1285,22 @@ export default function CheckoutScreen({ route, navigation }) {
         </View>
         )}
 
+        <View style={styles.draftActionsRow}>
+          <TouchableOpacity
+            style={[styles.draftActionBtn, (savingDraft || submitting) && { opacity: 0.6 }]}
+            onPress={handleSaveDraft}
+            disabled={savingDraft || submitting}
+          >
+            {savingDraft ? <ActivityIndicator color={Colors.primary} size="small" /> : <Ionicons name="save-outline" size={16} color={Colors.primary} />}
+            <Text style={styles.draftActionText}>{activeDraftId ? 'Update Draft' : 'Save Draft'}</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity style={styles.draftActionBtn} onPress={handleOpenDraftPicker}>
+            <Ionicons name="folder-open-outline" size={16} color={Colors.primary} />
+            <Text style={styles.draftActionText}>Resume Draft</Text>
+          </TouchableOpacity>
+        </View>
+
         {/* Submit */}
         <TouchableOpacity style={[styles.submitBtn, submitting && { opacity: 0.6 }]} onPress={handleSubmit} disabled={submitting}>
           {submitting ? (
@@ -1158,6 +1357,41 @@ export default function CheckoutScreen({ route, navigation }) {
               )}
               ListEmptyComponent={<Text style={{ textAlign: 'center', color: Colors.textLight, padding: 20 }}>No saved addresses</Text>}
             />
+          </View>
+        </View>
+      </Modal>
+
+      <Modal visible={draftPickerVisible} transparent animationType="slide" onRequestClose={() => setDraftPickerVisible(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Saved Drafts</Text>
+              <TouchableOpacity onPress={() => setDraftPickerVisible(false)}>
+                <Ionicons name="close" size={24} color={Colors.text} />
+              </TouchableOpacity>
+            </View>
+            {draftsLoading ? (
+              <View style={styles.draftLoader}>
+                <ActivityIndicator color={Colors.primary} />
+              </View>
+            ) : (
+              <FlatList
+                data={drafts}
+                keyExtractor={(item) => String(item.id)}
+                renderItem={({ item }) => (
+                  <View style={styles.draftItemCard}>
+                    <TouchableOpacity style={{ flex: 1 }} onPress={() => handleResumeDraft(item.id)}>
+                      <Text style={styles.draftItemTitle}>{item.customer_name || 'Unnamed Draft'}</Text>
+                      <Text style={styles.draftItemMeta}>{(item.order_type || 'walk_in').replace('_', ' ')} • {item.item_count || 0} items • ₹{Number(item.grand_total || 0).toFixed(2)}</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity onPress={() => handleDeleteDraft(item.id)}>
+                      <Ionicons name="trash-outline" size={18} color={Colors.error} />
+                    </TouchableOpacity>
+                  </View>
+                )}
+                ListEmptyComponent={<Text style={{ textAlign: 'center', color: Colors.textLight, padding: 20 }}>No saved drafts</Text>}
+              />
+            )}
           </View>
         </View>
       </Modal>
@@ -1422,6 +1656,25 @@ const styles = StyleSheet.create({
   },
   paymentEntryLabel: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.textSecondary },
 
+  draftActionsRow: {
+    flexDirection: 'row',
+    gap: Spacing.sm,
+    marginTop: Spacing.lg,
+  },
+  draftActionBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    borderWidth: 1,
+    borderColor: Colors.primary + '55',
+    backgroundColor: Colors.primary + '10',
+    borderRadius: BorderRadius.md,
+    paddingVertical: Spacing.md,
+  },
+  draftActionText: { fontSize: FontSize.sm, color: Colors.primary, fontWeight: '700' },
+
   submitBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.sm,
     backgroundColor: Colors.primary, borderRadius: BorderRadius.md,
@@ -1493,6 +1746,18 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1, borderBottomColor: Colors.border,
   },
   modalTitle: { fontSize: FontSize.lg, fontWeight: '700', color: Colors.text },
+  draftLoader: { paddingVertical: Spacing.lg, alignItems: 'center' },
+  draftItemCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+  },
+  draftItemTitle: { fontSize: FontSize.md, color: Colors.text, fontWeight: '700' },
+  draftItemMeta: { fontSize: FontSize.xs, color: Colors.textSecondary, marginTop: 2 },
   addressItem: {
     paddingHorizontal: Spacing.lg, paddingVertical: Spacing.md,
     borderBottomWidth: 1, borderBottomColor: Colors.border,

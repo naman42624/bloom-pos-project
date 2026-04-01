@@ -48,6 +48,7 @@ import QRLabelScreen from '../screens/QRLabelScreen';
 import POSScreen from '../screens/POSScreen';
 import QuickCheckoutScreen from '../screens/QuickCheckoutScreen';
 import CheckoutScreen from '../screens/CheckoutScreen';
+import SaleDraftsScreen from '../screens/SaleDraftsScreen';
 import SaleDetailScreen from '../screens/SaleDetailScreen';
 import SalesScreen from '../screens/SalesScreen';
 import CashRegisterScreen from '../screens/CashRegisterScreen';
@@ -126,6 +127,7 @@ function DashboardStack() {
         })}
       />
       <Stack.Screen name="Notifications" component={NotificationCenterScreen} options={{ title: 'Notifications' }} />
+      <Stack.Screen name="SaleDrafts" component={SaleDraftsScreen} options={{ title: 'Saved Drafts' }} />
       <Stack.Screen name="SaleDetail" component={SaleDetailScreen} options={{ title: 'Sale Details' }} />
       <Stack.Screen name="DeliveryDetail" component={DeliveryDetailScreen} options={{ title: 'Delivery' }} />
       <Stack.Screen name="ProductionQueue" component={ProductionQueueScreen} options={{ title: 'Production Queue' }} />
@@ -290,6 +292,7 @@ function POSStack() {
   return (
     <Stack.Navigator screenOptions={stackScreenOptions}>
       <Stack.Screen name="POSHome" component={POSScreen} options={{ title: 'Point of Sale' }} />
+      <Stack.Screen name="SaleDrafts" component={SaleDraftsScreen} options={{ title: 'Saved Drafts' }} />
       <Stack.Screen name="QuickCheckout" component={QuickCheckoutScreen} options={{ title: 'Quick Checkout' }} />
       <Stack.Screen name="Checkout" component={CheckoutScreen} options={{ title: 'Checkout' }} />
       <Stack.Screen name="SaleDetail" component={SaleDetailScreen} options={{ title: 'Sale Details' }} />

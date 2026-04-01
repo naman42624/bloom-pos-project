@@ -129,6 +129,14 @@ function saveCustomerAddress(db, { customerId, address, label, customerName, fal
   }
 }
 
+function mapSaleDraftRow(draft) {
+  if (!draft) return null;
+  return {
+    ...draft,
+    payload: safeParseJSON(draft.payload, {}),
+  };
+}
+
 // ═══════════════════════════════════════════════════════════════
 // SALES CRUD
 // ═══════════════════════════════════════════════════════════════
@@ -290,6 +298,155 @@ router.get('/today-summary', authenticate, (req, res, next) => {
     `).all(...params);
 
     res.json({ success: true, data: { ...summary, paymentBreakdown } });
+  } catch (err) { next(err); }
+});
+
+// ─── GET /api/sales/drafts ──────────────────────────────────
+router.get('/drafts', authenticate, authorize('owner', 'manager', 'employee'), (req, res, next) => {
+  try {
+    const db = getDb();
+    const { location_id, context, search } = req.query;
+
+    let sql = `
+      SELECT id, location_id, context, order_type, customer_name, customer_phone,
+             customer_address, item_count, grand_total, created_by, updated_by,
+             created_at, updated_at
+      FROM sale_drafts
+      WHERE created_by = ?
+    `;
+    const params = [req.user.id];
+
+    if (location_id) { sql += ' AND location_id = ?'; params.push(location_id); }
+    if (context) { sql += ' AND context = ?'; params.push(context); }
+    if (search) {
+      const q = `%${search}%`;
+      sql += ' AND (customer_name ILIKE ? OR customer_phone ILIKE ?)';
+      params.push(q, q);
+    }
+
+    sql += ' ORDER BY updated_at DESC LIMIT 100';
+    const drafts = db.prepare(sql).all(...params);
+
+    res.json({ success: true, data: drafts });
+  } catch (err) { next(err); }
+});
+
+// ─── GET /api/sales/drafts/:id ──────────────────────────────
+router.get('/drafts/:id', authenticate, authorize('owner', 'manager', 'employee'), (req, res, next) => {
+  try {
+    const db = getDb();
+    const draft = db.prepare(
+      `SELECT * FROM sale_drafts WHERE id = ? AND created_by = ?`
+    ).get(req.params.id, req.user.id);
+
+    if (!draft) {
+      return res.status(404).json({ success: false, message: 'Draft not found' });
+    }
+
+    res.json({ success: true, data: mapSaleDraftRow(draft) });
+  } catch (err) { next(err); }
+});
+
+// ─── POST /api/sales/drafts ─────────────────────────────────
+router.post(
+  '/drafts',
+  authenticate,
+  authorize('owner', 'manager', 'employee'),
+  [
+    body('id').optional({ nullable: true }).isInt(),
+    body('location_id').optional({ nullable: true }).isInt(),
+    body('context').optional({ nullable: true }).isIn(['checkout', 'quick_checkout']),
+    body('order_type').optional({ nullable: true }).isIn(['walk_in', 'pickup', 'delivery', 'pre_order']),
+    body('customer_name').optional({ nullable: true }).trim(),
+    body('customer_phone').optional({ nullable: true }).trim(),
+    body('customer_address').optional({ nullable: true }).trim(),
+    body('item_count').optional({ nullable: true }).isInt({ min: 0 }),
+    body('grand_total').optional({ nullable: true }).isFloat({ min: 0 }),
+    body('payload').optional({ nullable: true }).isObject(),
+  ],
+  (req, res, next) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) return res.status(400).json({ success: false, message: 'Validation failed', errors: errors.array() });
+
+      const db = getDb();
+      const {
+        id,
+        location_id,
+        context,
+        order_type,
+        customer_name,
+        customer_phone,
+        customer_address,
+        item_count,
+        grand_total,
+        payload,
+      } = req.body;
+
+      const payloadData = payload && typeof payload === 'object' ? payload : {};
+      const base = {
+        location_id: location_id || null,
+        context: context || 'checkout',
+        order_type: order_type || 'walk_in',
+        customer_name: customer_name || null,
+        customer_phone: customer_phone || null,
+        customer_address: customer_address || null,
+        item_count: Number.isFinite(Number(item_count)) ? Number(item_count) : 0,
+        grand_total: Number.isFinite(Number(grand_total)) ? Number(grand_total) : 0,
+        payload: payloadData,
+      };
+
+      let draftId = null;
+      if (id) {
+        const existing = db.prepare('SELECT id FROM sale_drafts WHERE id = ? AND created_by = ?').get(id, req.user.id);
+        if (!existing) {
+          return res.status(404).json({ success: false, message: 'Draft not found' });
+        }
+
+        db.prepare(`
+          UPDATE sale_drafts
+          SET location_id = ?, context = ?, order_type = ?, customer_name = ?, customer_phone = ?,
+              customer_address = ?, item_count = ?, grand_total = ?, payload = ?,
+              updated_by = ?, updated_at = CURRENT_TIMESTAMP
+          WHERE id = ?
+        `).run(
+          base.location_id, base.context, base.order_type, base.customer_name, base.customer_phone,
+          base.customer_address, base.item_count, base.grand_total, JSON.stringify(base.payload),
+          req.user.id, id
+        );
+        draftId = id;
+      } else {
+        const created = db.prepare(`
+          INSERT INTO sale_drafts (
+            location_id, context, order_type, customer_name, customer_phone,
+            customer_address, item_count, grand_total, payload,
+            created_by, updated_by, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        `).run(
+          base.location_id, base.context, base.order_type, base.customer_name, base.customer_phone,
+          base.customer_address, base.item_count, base.grand_total, JSON.stringify(base.payload),
+          req.user.id, req.user.id
+        );
+        draftId = created.lastInsertRowid;
+      }
+
+      const saved = db.prepare('SELECT * FROM sale_drafts WHERE id = ? AND created_by = ?').get(draftId, req.user.id);
+      res.status(id ? 200 : 201).json({ success: true, data: mapSaleDraftRow(saved) });
+    } catch (err) { next(err); }
+  }
+);
+
+// ─── DELETE /api/sales/drafts/:id ───────────────────────────
+router.delete('/drafts/:id', authenticate, authorize('owner', 'manager', 'employee'), (req, res, next) => {
+  try {
+    const db = getDb();
+    const existing = db.prepare('SELECT id FROM sale_drafts WHERE id = ? AND created_by = ?').get(req.params.id, req.user.id);
+    if (!existing) {
+      return res.status(404).json({ success: false, message: 'Draft not found' });
+    }
+
+    db.prepare('DELETE FROM sale_drafts WHERE id = ? AND created_by = ?').run(req.params.id, req.user.id);
+    res.json({ success: true, message: 'Draft deleted' });
   } catch (err) { next(err); }
 });
 
