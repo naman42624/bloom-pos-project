@@ -45,6 +45,7 @@ export default function CheckoutScreen({ route, navigation }) {
   const [deliveryCharges, setDeliveryCharges] = useState('');
   const [notes, setNotes] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [submitErrors, setSubmitErrors] = useState([]);
   const [savingDraft, setSavingDraft] = useState(false);
   const [draftPickerVisible, setDraftPickerVisible] = useState(false);
   const [draftsLoading, setDraftsLoading] = useState(false);
@@ -95,11 +96,18 @@ export default function CheckoutScreen({ route, navigation }) {
   // Register guard — checked at submit time via handleSubmit
   const [registerOpen, setRegisterOpen] = useState(null); // null = not yet checked
   const checkRegisterStatus = useCallback(async () => {
+    if (!locationId) {
+      setRegisterOpen(false);
+      return false;
+    }
     try {
       const res = await api.getRegisterStatus(locationId);
       setRegisterOpen(res.isOpen === true);
       return res.isOpen === true;
-    } catch { setRegisterOpen(false); return false; }
+    } catch {
+      setRegisterOpen(false);
+      return false;
+    }
   }, [locationId]);
 
   // Split payment — array of payment entries
@@ -568,11 +576,23 @@ export default function CheckoutScreen({ route, navigation }) {
   }, [route.params?.draftId, applyDraftPayload, navigation]);
 
   const handleSubmit = async () => {
-    if (submitting) return;
+    if (submitting) {
+      setSubmitErrors(['Order submission is already in progress. Please wait.']);
+      return;
+    }
+
+    setSubmitErrors([]);
+
+    if (!locationId) {
+      setSubmitErrors(['Please select a location before creating a sale.']);
+      Alert.alert('Required', 'Please select a location before creating a sale.');
+      return;
+    }
 
     // Register guard — check at submit time (not on focus)
     const isOpen = await checkRegisterStatus();
     if (!isOpen) {
+      setSubmitErrors(['The cash register for this location is not open. Please open it before creating a sale.']);
       Alert.alert(
         'Register Closed',
         `The cash register for this location is not open. Please open it before creating a sale.`,
@@ -585,6 +605,7 @@ export default function CheckoutScreen({ route, navigation }) {
     }
 
     if (orderType === 'pre_order' && !scheduledDate) {
+      setSubmitErrors(['Please enter a scheduled date for pre-order.']);
       Alert.alert('Required', 'Please enter a scheduled date for pre-order');
       return;
     }
@@ -599,32 +620,38 @@ export default function CheckoutScreen({ route, navigation }) {
     const effectiveReceiverId = senderSameAsReceiver ? effectiveSenderId : (receiverId || null);
 
     if (needsDelivery && !deliveryAddress) {
+      setSubmitErrors(['Please enter a delivery address.']);
       Alert.alert('Required', 'Please enter a delivery address');
       return;
     }
 
     if (needsDelivery && !effectiveSenderName) {
+      setSubmitErrors(['Please enter sender/customer name.']);
       Alert.alert('Required', 'Please enter sender/customer name');
       return;
     }
 
     if (needsDelivery && !effectiveSenderPhone) {
+      setSubmitErrors(['Please enter sender/customer phone.']);
       Alert.alert('Required', 'Please enter sender/customer phone');
       return;
     }
 
     if (needsDelivery && !effectiveReceiverName) {
+      setSubmitErrors(['Please enter receiver name.']);
       Alert.alert('Required', 'Please enter receiver name');
       return;
     }
 
     if (needsDelivery && !effectiveReceiverPhone) {
+      setSubmitErrors(['Please enter receiver phone.']);
       Alert.alert('Required', 'Please enter receiver phone');
       return;
     }
 
     // Credit requires sender details; sender customer will be auto-created if needed.
     if (paymentMode === 'credit' && !effectiveSenderPhone) {
+      setSubmitErrors(['Credit sales require sender phone details.']);
       Alert.alert('Required', 'Credit sales require sender phone details.');
       return;
     }
@@ -637,10 +664,12 @@ export default function CheckoutScreen({ route, navigation }) {
 
     // Partial requires advance amount
     if (isPartial && advance <= 0) {
+      setSubmitErrors(['Please enter an advance payment amount.']);
       Alert.alert('Required', 'Please enter an advance payment amount');
       return;
     }
     if (isPartial && advance >= grandTotal) {
+      setSubmitErrors(['Advance amount must be less than total.']);
       Alert.alert('Invalid', 'Advance amount must be less than the total. Use "Pay Now" for full payment.');
       return;
     }
@@ -666,6 +695,7 @@ export default function CheckoutScreen({ route, navigation }) {
     }
 
     if (paymentEntries.length === 0 && !isPreOrderWithAdvance && !isCodOrCredit && !isPartial) {
+      setSubmitErrors(['Please enter payment amount.']);
       Alert.alert('Payment', 'Please enter payment amount');
       return;
     }
@@ -728,6 +758,7 @@ export default function CheckoutScreen({ route, navigation }) {
     try {
       const res = await api.createSale(saleData);
       if (res.success) {
+        setSubmitErrors([]);
         if (activeDraftId) {
           try {
             await api.deleteSaleDraft(activeDraftId);
@@ -744,11 +775,18 @@ export default function CheckoutScreen({ route, navigation }) {
           })
         );
       } else {
-
-        Alert.alert('Error', res.message || 'Failed to create sale');
+        const message = res.message || 'Failed to create sale';
+        setSubmitErrors([message]);
+        Alert.alert('Error', message);
       }
     } catch (err) {
-      Alert.alert('Error', err.message || 'Something went wrong');
+      const backendErrors = Array.isArray(err?.errors)
+        ? err.errors.map((e) => e?.msg).filter(Boolean)
+        : [];
+      const fallbackMessage = err?.message || 'Something went wrong';
+      const messages = backendErrors.length > 0 ? backendErrors : [fallbackMessage];
+      setSubmitErrors(messages);
+      Alert.alert('Error', messages[0]);
     } finally {
       setSubmitting(false);
     }
@@ -826,8 +864,8 @@ export default function CheckoutScreen({ route, navigation }) {
           <View style={styles.customerHint}>
             <Ionicons name="person-circle" size={16} color={Colors.primary} />
             <Text style={styles.customerHintText}>
-              {customerId ? '✓ Registered' : 'Returning'} customer • {customerHistory.order_count} orders • ₹{(customerHistory.total_spent || 0).toFixed(0)} total
-              {(customerHistory.credit_balance || 0) > 0 ? ` • ₹${customerHistory.credit_balance.toFixed(0)} due` : ''}
+              {customerId ? '✓ Registered' : 'Returning'} customer • {customerHistory.order_count} orders • ₹{Number(customerHistory.total_spent || 0).toFixed(0)} total
+              {(customerHistory.credit_balance || 0) > 0 ? ` • ₹${Number(customerHistory.credit_balance).toFixed(0)} due` : ''}
             </Text>
           </View>
         )}
@@ -952,7 +990,7 @@ export default function CheckoutScreen({ route, navigation }) {
                   <View style={styles.customerHint}>
                     <Ionicons name="person-circle" size={16} color={Colors.primary} />
                     <Text style={styles.customerHintText}>
-                      {receiverId ? '✓ Registered' : 'Returning'} receiver • {receiverHistory.order_count} orders • ₹{(receiverHistory.total_spent || 0).toFixed(0)} total
+                      {receiverId ? '✓ Registered' : 'Returning'} receiver • {receiverHistory.order_count} orders • ₹{Number(receiverHistory.total_spent || 0).toFixed(0)} total
                     </Text>
                   </View>
                 )}
@@ -992,7 +1030,7 @@ export default function CheckoutScreen({ route, navigation }) {
             <TextInput style={styles.input} value={advanceAmount} onChangeText={setAdvanceAmount} placeholder="₹ Advance amount" placeholderTextColor={Colors.textLight} keyboardType="numeric" />
             {parseFloat(advanceAmount) > 0 && (
               <Text style={styles.remainingHint}>
-                Remaining: ₹{(grandTotal - (parseFloat(advanceAmount) || 0)).toFixed(2)}
+                Remaining: ₹{Number(grandTotal - (parseFloat(advanceAmount) || 0)).toFixed(2)}
               </Text>
             )}
           </>
@@ -1025,13 +1063,13 @@ export default function CheckoutScreen({ route, navigation }) {
           if (pct > 30 && user.role !== 'owner') return (
             <View style={styles.codHint}>
               <Ionicons name="alert-circle" size={16} color={Colors.error} />
-              <Text style={[styles.codHintText, { color: Colors.error }]}>Discount {pct.toFixed(0)}% exceeds owner threshold (30%). Only owner can apply.</Text>
+              <Text style={[styles.codHintText, { color: Colors.error }]}>Discount {Number(pct).toFixed(0)}% exceeds owner threshold (30%). Only owner can apply.</Text>
             </View>
           );
           if (pct > 20 && user.role === 'employee') return (
             <View style={styles.codHint}>
               <Ionicons name="alert-circle" size={16} color={Colors.warning} />
-              <Text style={styles.codHintText}>Discount {pct.toFixed(0)}% exceeds threshold (20%). A manager or owner must apply.</Text>
+              <Text style={styles.codHintText}>Discount {Number(pct).toFixed(0)}% exceeds threshold (20%). A manager or owner must apply.</Text>
             </View>
           );
           return null;
@@ -1070,34 +1108,34 @@ export default function CheckoutScreen({ route, navigation }) {
                   </TouchableOpacity>
                 )}
               </View>
-              <Text style={styles.summaryItemPrice}>₹{(c.unit_price * c.quantity).toFixed(2)}</Text>
+              <Text style={styles.summaryItemPrice}>₹{Number(c.unit_price * c.quantity).toFixed(2)}</Text>
             </View>
           ))}
           <View style={styles.divider} />
           <View style={styles.summaryRow}>
             <Text style={styles.summaryLabel}>Subtotal</Text>
-            <Text style={styles.summaryValue}>₹{subtotal.toFixed(2)}</Text>
+            <Text style={styles.summaryValue}>₹{Number(subtotal).toFixed(2)}</Text>
           </View>
           <View style={styles.summaryRow}>
             <Text style={styles.summaryLabel}>Tax</Text>
-            <Text style={styles.summaryValue}>₹{taxTotal.toFixed(2)}</Text>
+            <Text style={styles.summaryValue}>₹{Number(taxTotal).toFixed(2)}</Text>
           </View>
           {discount > 0 && (
             <View style={styles.summaryRow}>
               <Text style={[styles.summaryLabel, { color: Colors.error }]}>Discount</Text>
-              <Text style={[styles.summaryValue, { color: Colors.error }]}>-₹{discount.toFixed(2)}</Text>
+              <Text style={[styles.summaryValue, { color: Colors.error }]}>-₹{Number(discount).toFixed(2)}</Text>
             </View>
           )}
           {delivery > 0 && (
             <View style={styles.summaryRow}>
               <Text style={styles.summaryLabel}>Delivery</Text>
-              <Text style={styles.summaryValue}>₹{delivery.toFixed(2)}</Text>
+              <Text style={styles.summaryValue}>₹{Number(delivery).toFixed(2)}</Text>
             </View>
           )}
           <View style={styles.divider} />
           <View style={styles.summaryRow}>
             <Text style={styles.grandLabel}>Grand Total</Text>
-            <Text style={styles.grandValue}>₹{grandTotal.toFixed(2)}</Text>
+            <Text style={styles.grandValue}>₹{Number(grandTotal).toFixed(2)}</Text>
           </View>
         </View>
 
@@ -1142,7 +1180,7 @@ export default function CheckoutScreen({ route, navigation }) {
           <View style={styles.codHint}>
             <Ionicons name="information-circle" size={16} color={Colors.info} />
             <Text style={[styles.codHintText, { color: Colors.info }]}>
-              Pay advance now, remaining ₹{(grandTotal - (parseFloat(advanceAmount) || 0)).toFixed(0)} {needsDelivery ? 'on delivery' : 'on pickup'}
+              Pay advance now, remaining ₹{Number(grandTotal - (parseFloat(advanceAmount) || 0)).toFixed(0)} {needsDelivery ? 'on delivery' : 'on pickup'}
             </Text>
           </View>
         )}
@@ -1150,13 +1188,13 @@ export default function CheckoutScreen({ route, navigation }) {
         {paymentMode === 'cod' && (
           <View style={styles.codHint}>
             <Ionicons name="information-circle" size={16} color={Colors.warning} />
-            <Text style={styles.codHintText}>₹{grandTotal.toFixed(0)} will be collected on delivery</Text>
+            <Text style={styles.codHintText}>₹{Number(grandTotal).toFixed(0)} will be collected on delivery</Text>
           </View>
         )}
         {paymentMode === 'credit' && (
           <View style={styles.codHint}>
             <Ionicons name="information-circle" size={16} color={Colors.warning} />
-            <Text style={styles.codHintText}>₹{grandTotal.toFixed(0)} will be added to customer credit{customerId ? '' : ' (select customer)'}</Text>
+            <Text style={styles.codHintText}>₹{Number(grandTotal).toFixed(0)} will be added to customer credit{customerId ? '' : ' (select customer)'}</Text>
           </View>
         )}
 
@@ -1190,7 +1228,7 @@ export default function CheckoutScreen({ route, navigation }) {
                   Remaining {needsDelivery ? 'COD' : 'on Pickup'}
                 </Text>
                 <Text style={[styles.changeDueAmount, { color: Colors.warning }]}>
-                  ₹{Math.max(0, grandTotal - (parseFloat(advanceAmount) || 0)).toFixed(2)}
+                  ₹{Number(Math.max(0, grandTotal - (parseFloat(advanceAmount) || 0))).toFixed(2)}
                 </Text>
               </View>
             )}
@@ -1258,7 +1296,7 @@ export default function CheckoutScreen({ route, navigation }) {
               <Text style={styles.summaryLabel}>Total Entered</Text>
               <Text style={[styles.summaryValue, {
                 color: Math.abs(totalPaymentEntered - grandTotal) < 0.01 ? Colors.success : Colors.error,
-              }]}>₹{totalPaymentEntered.toFixed(2)} / ₹{grandTotal.toFixed(2)}</Text>
+              }]}>₹{Number(totalPaymentEntered).toFixed(2)} / ₹{Number(grandTotal).toFixed(2)}</Text>
             </View>
           )}
 
@@ -1276,7 +1314,7 @@ export default function CheckoutScreen({ route, navigation }) {
                 <View style={styles.changeDueBox}>
                   <Ionicons name="cash" size={18} color={Colors.success} />
                   <Text style={styles.changeDueLabel}>Change Due</Text>
-                  <Text style={styles.changeDueAmount}>₹{changeDue.toFixed(2)}</Text>
+                  <Text style={styles.changeDueAmount}>₹{Number(changeDue).toFixed(2)}</Text>
                 </View>
               );
             }
@@ -1301,6 +1339,15 @@ export default function CheckoutScreen({ route, navigation }) {
           </TouchableOpacity>
         </View>
 
+        {submitErrors.length > 0 && (
+          <View style={styles.submitErrorsBox}>
+            <Text style={styles.submitErrorsTitle}>Please fix the following before submitting:</Text>
+            {submitErrors.map((msg, idx) => (
+              <Text key={`${idx}-${msg}`} style={styles.submitErrorItem}>• {msg}</Text>
+            ))}
+          </View>
+        )}
+
         {/* Submit */}
         <TouchableOpacity style={[styles.submitBtn, submitting && { opacity: 0.6 }]} onPress={handleSubmit} disabled={submitting}>
           {submitting ? (
@@ -1309,7 +1356,7 @@ export default function CheckoutScreen({ route, navigation }) {
             <>
               <Ionicons name="checkmark-circle" size={20} color={Colors.white} />
               <Text style={styles.submitBtnText}>
-                {orderType === 'pre_order' ? 'Create Pre-order' : paymentMode === 'cod' ? 'Create COD Order' : paymentMode === 'credit' ? 'Create Credit Sale' : paymentMode === 'partial' ? `Create Order — Advance ₹${(parseFloat(advanceAmount) || 0).toFixed(0)}` : 'Complete Sale'} — ₹{grandTotal.toFixed(2)}
+                {orderType === 'pre_order' ? 'Create Pre-order' : paymentMode === 'cod' ? 'Create COD Order' : paymentMode === 'credit' ? 'Create Credit Sale' : paymentMode === 'partial' ? `Create Order — Advance ₹${Number(parseFloat(advanceAmount) || 0).toFixed(0)}` : 'Complete Sale'} — ₹{Number(grandTotal).toFixed(2)}
               </Text>
             </>
           )}
@@ -1422,7 +1469,7 @@ export default function CheckoutScreen({ route, navigation }) {
                     </TouchableOpacity>
                     <View style={{ flex: 1 }}>
                       <Text style={{ fontSize: FontSize.lg, fontWeight: '700', color: Colors.text }}>{customProduct.product_name}</Text>
-                      <Text style={{ fontSize: FontSize.sm, color: Colors.textSecondary }}>Base Price: ₹{(customProduct.unit_price || 0).toFixed(0)}</Text>
+                      <Text style={{ fontSize: FontSize.sm, color: Colors.textSecondary }}>Base Price: ₹{Number(customProduct.unit_price || 0).toFixed(0)}</Text>
                     </View>
                   </View>
 
@@ -1674,6 +1721,26 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.md,
   },
   draftActionText: { fontSize: FontSize.sm, color: Colors.primary, fontWeight: '700' },
+
+  submitErrorsBox: {
+    marginTop: Spacing.md,
+    borderWidth: 1,
+    borderColor: Colors.error + '55',
+    backgroundColor: Colors.error + '12',
+    borderRadius: BorderRadius.md,
+    padding: Spacing.sm,
+    gap: 4,
+  },
+  submitErrorsTitle: {
+    fontSize: FontSize.sm,
+    fontWeight: '700',
+    color: Colors.error,
+  },
+  submitErrorItem: {
+    fontSize: FontSize.xs,
+    color: Colors.text,
+    lineHeight: 18,
+  },
 
   submitBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.sm,

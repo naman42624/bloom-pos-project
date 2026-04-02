@@ -106,7 +106,7 @@ export default function CashRegisterScreen({ navigation }) {
           setIsOpen(false);
           setActualCash('');
           setClosingNotes('');
-          Alert.alert('Closed', 'Register closed. Discrepancy: ₹' + (res.data.discrepancy || 0).toFixed(2));
+          Alert.alert('Closed', 'Register closed. Discrepancy: ₹' + Number(res.data.discrepancy || 0).toFixed(2));
         } else {
           Alert.alert('Error', res.message);
         }
@@ -170,12 +170,12 @@ export default function CashRegisterScreen({ navigation }) {
           <View style={styles.statusDetails}>
             <View style={styles.detailRow}>
               <Text style={styles.detailLabel}>Opening Balance</Text>
-              <Text style={styles.detailVal}>₹{(register.opening_balance || 0).toFixed(2)}</Text>
+              <Text style={styles.detailVal}>₹{Number(register.opening_balance || 0).toFixed(2)}</Text>
             </View>
             {(register.total_expenses_cash || 0) > 0 && (
               <View style={styles.detailRow}>
                 <Text style={styles.detailLabel}>Cash Expenses</Text>
-                <Text style={[styles.detailVal, { color: Colors.error }]}>-₹{(register.total_expenses_cash).toFixed(2)}</Text>
+                <Text style={[styles.detailVal, { color: Colors.error }]}>-₹{Number(register.total_expenses_cash).toFixed(2)}</Text>
               </View>
             )}
             <View style={styles.detailRow}>
@@ -189,38 +189,38 @@ export default function CashRegisterScreen({ navigation }) {
           <View style={styles.statusDetails}>
             <View style={styles.detailRow}>
               <Text style={styles.detailLabel}>Opening</Text>
-              <Text style={styles.detailVal}>₹{(register.opening_balance || 0).toFixed(2)}</Text>
+              <Text style={styles.detailVal}>₹{Number(register.opening_balance || 0).toFixed(2)}</Text>
             </View>
             <View style={styles.detailRow}>
               <Text style={styles.detailLabel}>Cash Sales</Text>
-              <Text style={styles.detailVal}>₹{(register.total_cash_sales || 0).toFixed(2)}</Text>
+              <Text style={styles.detailVal}>₹{Number(register.total_cash_sales || 0).toFixed(2)}</Text>
             </View>
             <View style={styles.detailRow}>
               <Text style={styles.detailLabel}>Card Sales</Text>
-              <Text style={styles.detailVal}>₹{(register.total_card_sales || 0).toFixed(2)}</Text>
+              <Text style={styles.detailVal}>₹{Number(register.total_card_sales || 0).toFixed(2)}</Text>
             </View>
             <View style={styles.detailRow}>
               <Text style={styles.detailLabel}>UPI Sales</Text>
-              <Text style={styles.detailVal}>₹{(register.total_upi_sales || 0).toFixed(2)}</Text>
+              <Text style={styles.detailVal}>₹{Number(register.total_upi_sales || 0).toFixed(2)}</Text>
             </View>
             <View style={styles.detailRow}>
               <Text style={styles.detailLabel}>Refunds (Cash)</Text>
-              <Text style={[styles.detailVal, { color: Colors.error }]}>-₹{(register.total_refunds_cash || 0).toFixed(2)}</Text>
+              <Text style={[styles.detailVal, { color: Colors.error }]}>-₹{Number(register.total_refunds_cash || 0).toFixed(2)}</Text>
             </View>
             {(register.total_expenses_cash || 0) > 0 && (
               <View style={styles.detailRow}>
                 <Text style={styles.detailLabel}>Expenses (Cash)</Text>
-                <Text style={[styles.detailVal, { color: Colors.error }]}>-₹{(register.total_expenses_cash).toFixed(2)}</Text>
+                <Text style={[styles.detailVal, { color: Colors.error }]}>-₹{Number(register.total_expenses_cash).toFixed(2)}</Text>
               </View>
             )}
             <View style={styles.divider} />
             <View style={styles.detailRow}>
               <Text style={styles.detailLabel}>Expected Cash</Text>
-              <Text style={[styles.detailVal, { fontWeight: '700' }]}>₹{(register.expected_cash || 0).toFixed(2)}</Text>
+              <Text style={[styles.detailVal, { fontWeight: '700' }]}>₹{Number(register.expected_cash || 0).toFixed(2)}</Text>
             </View>
             <View style={styles.detailRow}>
               <Text style={styles.detailLabel}>Actual Cash</Text>
-              <Text style={[styles.detailVal, { fontWeight: '700' }]}>₹{(register.actual_cash || 0).toFixed(2)}</Text>
+              <Text style={[styles.detailVal, { fontWeight: '700' }]}>₹{Number(register.actual_cash || 0).toFixed(2)}</Text>
             </View>
             <View style={styles.detailRow}>
               <Text style={[styles.detailLabel, { fontWeight: '700' }]}>Discrepancy</Text>
@@ -228,7 +228,7 @@ export default function CashRegisterScreen({ navigation }) {
                 fontWeight: '700',
                 color: Math.abs(register.discrepancy || 0) < 1 ? Colors.success : Colors.error,
               }]}>
-                ₹{(register.discrepancy || 0).toFixed(2)}
+                ₹{Number(register.discrepancy || 0).toFixed(2)}
               </Text>
             </View>
           </View>
@@ -306,18 +306,18 @@ export default function CashRegisterScreen({ navigation }) {
               </View>
               <View style={styles.detailRow}>
                 <Text style={styles.detailLabel}>Opening</Text>
-                <Text style={styles.detailVal}>₹{(s.opening_balance || 0).toFixed(2)}</Text>
+                <Text style={styles.detailVal}>₹{Number(s.opening_balance || 0).toFixed(2)}</Text>
               </View>
               {s.closed_at && (
                 <>
                   <View style={styles.detailRow}>
                     <Text style={styles.detailLabel}>Cash / Card / UPI</Text>
-                    <Text style={styles.detailVal}>₹{(s.total_cash_sales || 0).toFixed(0)} / ₹{(s.total_card_sales || 0).toFixed(0)} / ₹{(s.total_upi_sales || 0).toFixed(0)}</Text>
+                    <Text style={styles.detailVal}>₹{Number(s.total_cash_sales || 0).toFixed(0)} / ₹{Number(s.total_card_sales || 0).toFixed(0)} / ₹{Number(s.total_upi_sales || 0).toFixed(0)}</Text>
                   </View>
                   <View style={styles.detailRow}>
                     <Text style={styles.detailLabel}>Discrepancy</Text>
                     <Text style={[styles.detailVal, { color: Math.abs(s.discrepancy || 0) < 1 ? Colors.success : Colors.error }]}>
-                      ₹{(s.discrepancy || 0).toFixed(2)}
+                      ₹{Number(s.discrepancy || 0).toFixed(2)}
                     </Text>
                   </View>
                 </>
@@ -356,16 +356,16 @@ export default function CashRegisterScreen({ navigation }) {
               </View>
               <View style={styles.detailRow}>
                 <Text style={styles.detailLabel}>Opening</Text>
-                <Text style={styles.detailVal}>₹{(h.opening_balance || 0).toFixed(2)}</Text>
+                <Text style={styles.detailVal}>₹{Number(h.opening_balance || 0).toFixed(2)}</Text>
               </View>
               <View style={styles.detailRow}>
                 <Text style={styles.detailLabel}>Cash / Card / UPI</Text>
-                <Text style={styles.detailVal}>₹{(h.total_cash_sales || 0).toFixed(0)} / ₹{(h.total_card_sales || 0).toFixed(0)} / ₹{(h.total_upi_sales || 0).toFixed(0)}</Text>
+                <Text style={styles.detailVal}>₹{Number(h.total_cash_sales || 0).toFixed(0)} / ₹{Number(h.total_card_sales || 0).toFixed(0)} / ₹{Number(h.total_upi_sales || 0).toFixed(0)}</Text>
               </View>
               <View style={styles.detailRow}>
                 <Text style={styles.detailLabel}>Discrepancy</Text>
                 <Text style={[styles.detailVal, { color: Math.abs(h.discrepancy || 0) < 1 ? Colors.success : Colors.error }]}>
-                  ₹{(h.discrepancy || 0).toFixed(2)}
+                  ₹{Number(h.discrepancy || 0).toFixed(2)}
                 </Text>
               </View>
               <Text style={styles.histMeta}>Opened: {h.opened_by_name} • Closed: {h.closed_by_name || '-'}</Text>

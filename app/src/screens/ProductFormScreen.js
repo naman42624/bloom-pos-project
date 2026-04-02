@@ -318,7 +318,7 @@ export default function ProductFormScreen({ route, navigation }) {
                       <View style={styles.matFieldWrap}>
                         <Text style={styles.matFieldLabel}>Subtotal</Text>
                         <Text style={styles.matSubtotal}>
-                          ₹{((parseFloat(mat.quantity) || 0) * (parseFloat(mat.cost_per_unit) || 0)).toFixed(2)}
+                          ₹{Number((parseFloat(mat.quantity) || 0) * (parseFloat(mat.cost_per_unit) || 0)).toFixed(2)}
                         </Text>
                       </View>
                     </View>
@@ -326,7 +326,7 @@ export default function ProductFormScreen({ route, navigation }) {
                 ))}
                 <View style={styles.costSummary}>
                   <Text style={styles.costSummaryLabel}>Estimated Cost</Text>
-                  <Text style={styles.costSummaryValue}>₹{estimatedCost.toFixed(2)}</Text>
+                  <Text style={styles.costSummaryValue}>₹{Number(estimatedCost).toFixed(2)}</Text>
                 </View>
               </>
             )}

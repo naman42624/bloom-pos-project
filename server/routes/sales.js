@@ -1,6 +1,7 @@
 const express = require('express');
 const { body, query, validationResult } = require('express-validator');
 const { getDb } = require('../config/database');
+const { getDb: getAsyncDb } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
 const { notifyByRole, createNotification } = require('./notifications');
 const { todayStr: localToday, nowLocal, nowTimeStr } = require('../utils/time');
@@ -142,9 +143,9 @@ function mapSaleDraftRow(draft) {
 // ═══════════════════════════════════════════════════════════════
 
 // ─── GET /api/sales ──────────────────────────────────────────
-router.get('/', authenticate, (req, res, next) => {
+router.get('/', authenticate, async (req, res, next) => {
   try {
-    const db = getDb();
+    const db = await getAsyncDb();
     const { location_id, order_type, payment_status, status, pickup_status, date_from, date_to, search, limit: lim, offset: off } = req.query;
 
     let sql = `
@@ -196,7 +197,7 @@ router.get('/', authenticate, (req, res, next) => {
 
     // Scope by location for non-owner roles
     if (req.user.role === 'employee' || req.user.role === 'manager') {
-      const userLocs = db.prepare('SELECT location_id FROM user_locations WHERE user_id = ?').all(req.user.id).map(r => r.location_id);
+      const userLocs = (await db.prepare('SELECT location_id FROM user_locations WHERE user_id = ?').all(req.user.id)).map(r => r.location_id);
       if (userLocs.length > 0 && !location_id) {
         sql += ` AND s.location_id IN (${userLocs.map(() => '?').join(',')})`;
         params.push(...userLocs);
@@ -210,12 +211,34 @@ router.get('/', authenticate, (req, res, next) => {
     sql += ' LIMIT ? OFFSET ?';
     params.push(limit, offset);
 
-    const sales = db.prepare(sql).all(...params);
+    const sales = await db.prepare(sql).all(...params);
 
-    // Enrich each sale with items
-    const getItems = db.prepare('SELECT product_name, quantity, special_instructions as item_special_instructions, image_url as item_image_url, custom_materials FROM sale_items WHERE sale_id = ?');
-    for (const sale of sales) {
-      sale.items = getItems.all(sale.id);
+    // Enrich sales with items in a single batched query to avoid N+1 lookups
+    if (sales.length > 0) {
+      const saleIds = sales.map((sale) => sale.id);
+      const placeholders = saleIds.map(() => '?').join(',');
+      const saleItems = await db.prepare(
+        `SELECT sale_id, product_name, quantity, special_instructions as item_special_instructions, image_url as item_image_url, custom_materials
+         FROM sale_items
+         WHERE sale_id IN (${placeholders})`
+      ).all(...saleIds);
+
+      const itemsBySaleId = new Map();
+      for (const row of saleItems) {
+        const current = itemsBySaleId.get(row.sale_id) || [];
+        current.push({
+          product_name: row.product_name,
+          quantity: row.quantity,
+          item_special_instructions: row.item_special_instructions,
+          item_image_url: row.item_image_url,
+          custom_materials: row.custom_materials,
+        });
+        itemsBySaleId.set(row.sale_id, current);
+      }
+
+      for (const sale of sales) {
+        sale.items = itemsBySaleId.get(sale.id) || [];
+      }
     }
 
     // Get total count for pagination
@@ -228,7 +251,7 @@ router.get('/', authenticate, (req, res, next) => {
     else { countSql += " AND s.status != 'cancelled'"; }
     if (date_from) { countSql += ' AND s.created_at >= (?::date)'; countParams.push(date_from); }
     if (date_to) { countSql += " AND s.created_at < (?::date + INTERVAL '1 day')"; countParams.push(date_to); }
-    const { total } = db.prepare(countSql).get(...countParams);
+    const { total } = await db.prepare(countSql).get(...countParams);
 
     res.json({ success: true, data: { sales, total, limit, offset } });
   } catch (err) { next(err); }
@@ -236,13 +259,13 @@ router.get('/', authenticate, (req, res, next) => {
 
 // ─── GET /api/sales/customer-lookup ──────────────────────────
 // Lookup customer by phone from past sales
-router.get('/customer-lookup', authenticate, (req, res, next) => {
+router.get('/customer-lookup', authenticate, async (req, res, next) => {
   try {
-    const db = getDb();
+    const db = await getAsyncDb();
     const { phone } = req.query;
     if (!phone || phone.length < 4) return res.json({ success: true, data: null });
 
-    const customer = db.prepare(`
+    const customer = await db.prepare(`
       SELECT customer_name, customer_phone, COUNT(*) as order_count,
              SUM(grand_total) as total_spent, MAX(created_at) as last_order
       FROM sales
@@ -257,9 +280,9 @@ router.get('/customer-lookup', authenticate, (req, res, next) => {
 });
 
 // ─── GET /api/sales/today-summary ────────────────────────────
-router.get('/today-summary', authenticate, (req, res, next) => {
+router.get('/today-summary', authenticate, async (req, res, next) => {
   try {
-    const db = getDb();
+    const db = await getAsyncDb();
     const { location_id } = req.query;
     const today = localToday();
 
@@ -270,7 +293,7 @@ router.get('/today-summary', authenticate, (req, res, next) => {
       params.push(location_id);
     }
 
-    const summary = db.prepare(`
+    const summary = await db.prepare(`
       SELECT
         COUNT(*) as total_sales,
         COALESCE(SUM(s.grand_total), 0) as total_revenue,
@@ -287,7 +310,7 @@ router.get('/today-summary', authenticate, (req, res, next) => {
     `).get(...params);
 
     // Payment method breakdown
-    const paymentBreakdown = db.prepare(`
+    const paymentBreakdown = await db.prepare(`
       SELECT p.method, COALESCE(SUM(p.amount), 0) as total
       FROM payments p
       JOIN sales s ON p.sale_id = s.id
@@ -302,9 +325,9 @@ router.get('/today-summary', authenticate, (req, res, next) => {
 });
 
 // ─── GET /api/sales/drafts ──────────────────────────────────
-router.get('/drafts', authenticate, authorize('owner', 'manager', 'employee'), (req, res, next) => {
+router.get('/drafts', authenticate, authorize('owner', 'manager', 'employee'), async (req, res, next) => {
   try {
-    const db = getDb();
+    const db = await getAsyncDb();
     const { location_id, context, search } = req.query;
 
     let sql = `
@@ -325,17 +348,17 @@ router.get('/drafts', authenticate, authorize('owner', 'manager', 'employee'), (
     }
 
     sql += ' ORDER BY updated_at DESC LIMIT 100';
-    const drafts = db.prepare(sql).all(...params);
+    const drafts = await db.prepare(sql).all(...params);
 
     res.json({ success: true, data: drafts });
   } catch (err) { next(err); }
 });
 
 // ─── GET /api/sales/drafts/:id ──────────────────────────────
-router.get('/drafts/:id', authenticate, authorize('owner', 'manager', 'employee'), (req, res, next) => {
+router.get('/drafts/:id', authenticate, authorize('owner', 'manager', 'employee'), async (req, res, next) => {
   try {
-    const db = getDb();
-    const draft = db.prepare(
+    const db = await getAsyncDb();
+    const draft = await db.prepare(
       `SELECT * FROM sale_drafts WHERE id = ? AND created_by = ?`
     ).get(req.params.id, req.user.id);
 
@@ -655,9 +678,9 @@ router.put(
 );
 
 // ─── GET /api/sales/register/history ─────────────────────────
-router.get('/register/history', authenticate, authorize('owner', 'manager'), (req, res, next) => {
+router.get('/register/history', authenticate, authorize('owner', 'manager'), async (req, res, next) => {
   try {
-    const db = getDb();
+    const db = await getAsyncDb();
     const { location_id, limit: lim } = req.query;
 
     let sql = `
@@ -675,7 +698,7 @@ router.get('/register/history', authenticate, authorize('owner', 'manager'), (re
     sql += ' LIMIT ?';
     params.push(limit);
 
-    const registers = db.prepare(sql).all(...params);
+    const registers = await db.prepare(sql).all(...params);
     res.json({ success: true, data: registers });
   } catch (err) { next(err); }
 });
@@ -686,9 +709,9 @@ router.get(
   '/production-queue',
   authenticate,
   authorize('owner', 'manager', 'employee'),
-  (req, res, next) => {
+  async (req, res, next) => {
     try {
-      const db = getDb();
+      const db = await getAsyncDb();
       const { location_id, status } = req.query;
 
       let sql = `SELECT s.*, l.name as location_name, u.name as created_by_name
@@ -709,7 +732,7 @@ router.get(
 
       // Scope managers to their assigned locations
       if (req.user.role === 'manager' && !location_id) {
-        const userLocs = db.prepare('SELECT location_id FROM user_locations WHERE user_id = ?').all(req.user.id).map(r => r.location_id);
+        const userLocs = (await db.prepare('SELECT location_id FROM user_locations WHERE user_id = ?').all(req.user.id)).map(r => r.location_id);
         if (userLocs.length > 0) {
           sql += ` AND s.location_id IN (${userLocs.map(() => '?').join(',')})`;
           params.push(...userLocs);
@@ -718,41 +741,90 @@ router.get(
 
       sql += ' ORDER BY CASE s.status WHEN \'pending\' THEN 1 WHEN \'preparing\' THEN 2 WHEN \'ready\' THEN 3 END, s.scheduled_date ASC NULLS LAST, s.created_at ASC';
 
-      const orders = db.prepare(sql).all(...params);
+  const orders = await db.prepare(sql).all(...params);
 
-      // Enrich each order with items, task status counts, and delivery info
-      const getItems = db.prepare('SELECT product_name, quantity, special_instructions as item_special_instructions, image_url as item_image_url, custom_materials FROM sale_items WHERE sale_id = ?');
-      const getTaskCounts = db.prepare(`
-        SELECT 
-          COUNT(*) FILTER (WHERE status = 'pending') as pending_tasks,
-          COUNT(*) FILTER (WHERE status = 'assigned') as assigned_tasks,
-          COUNT(*) FILTER (WHERE status = 'in_progress') as in_progress_tasks,
-          COUNT(*) FILTER (WHERE status = 'completed') as completed_tasks,
-          COUNT(*) FILTER (WHERE status = 'cancelled') as cancelled_tasks,
-          COUNT(*) as total_tasks
-        FROM production_tasks WHERE sale_id = ?
-      `);
-      const getDelivery = db.prepare(`
-        SELECT d.id, d.status, u.name as partner_name 
-        FROM deliveries d
-        LEFT JOIN users u ON d.delivery_partner_id = u.id
-        WHERE d.sale_id = ? LIMIT 1
-      `);
+      if (orders.length > 0) {
+        const orderIds = orders.map((order) => order.id);
+        const placeholders = orderIds.map(() => '?').join(',');
 
+        const itemRows = await db.prepare(
+          `SELECT sale_id, product_name, quantity, special_instructions as item_special_instructions, image_url as item_image_url, custom_materials
+           FROM sale_items
+           WHERE sale_id IN (${placeholders})`
+        ).all(...orderIds);
 
-      for (const order of orders) {
-        order.items = getItems.all(order.id);
-        // Parse custom_materials from JSON string
-        for (const item of order.items) {
-          item.custom_materials = safeParseJSON(item.custom_materials, null);
+        const taskRows = await db.prepare(
+          `SELECT
+             sale_id,
+             COUNT(*) FILTER (WHERE status = 'pending') as pending_tasks,
+             COUNT(*) FILTER (WHERE status = 'assigned') as assigned_tasks,
+             COUNT(*) FILTER (WHERE status = 'in_progress') as in_progress_tasks,
+             COUNT(*) FILTER (WHERE status = 'completed') as completed_tasks,
+             COUNT(*) FILTER (WHERE status = 'cancelled') as cancelled_tasks,
+             COUNT(*) as total_tasks
+           FROM production_tasks
+           WHERE sale_id IN (${placeholders})
+           GROUP BY sale_id`
+        ).all(...orderIds);
+
+        const deliveryOrderIds = orders.filter((order) => order.order_type === 'delivery').map((order) => order.id);
+        let deliveryRows = [];
+        if (deliveryOrderIds.length > 0) {
+          const deliveryPlaceholders = deliveryOrderIds.map(() => '?').join(',');
+          deliveryRows = await db.prepare(
+            `SELECT d.sale_id, d.id, d.status, u.name as partner_name
+             FROM deliveries d
+             LEFT JOIN users u ON d.delivery_partner_id = u.id
+             WHERE d.sale_id IN (${deliveryPlaceholders})
+             ORDER BY d.id DESC`
+          ).all(...deliveryOrderIds);
         }
-        // Add task status summary
-        const taskCounts = getTaskCounts.get(order.id);
-        order.task_summary = taskCounts || { pending_tasks: 0, assigned_tasks: 0, in_progress_tasks: 0, completed_tasks: 0, cancelled_tasks: 0, total_tasks: 0 };
-        order.all_tasks_done = taskCounts ? (taskCounts.pending_tasks + taskCounts.assigned_tasks + taskCounts.in_progress_tasks) === 0 : true;
-        // Add delivery info  
-        if (order.order_type === 'delivery') {
-          order.delivery = getDelivery.get(order.id) || null;
+
+        const itemsBySaleId = new Map();
+        for (const row of itemRows) {
+          const current = itemsBySaleId.get(row.sale_id) || [];
+          current.push({
+            product_name: row.product_name,
+            quantity: row.quantity,
+            item_special_instructions: row.item_special_instructions,
+            item_image_url: row.item_image_url,
+            custom_materials: safeParseJSON(row.custom_materials, null),
+          });
+          itemsBySaleId.set(row.sale_id, current);
+        }
+
+        const taskSummaryBySaleId = new Map();
+        for (const row of taskRows) {
+          taskSummaryBySaleId.set(row.sale_id, row);
+        }
+
+        const deliveryBySaleId = new Map();
+        for (const row of deliveryRows) {
+          if (!deliveryBySaleId.has(row.sale_id)) {
+            deliveryBySaleId.set(row.sale_id, {
+              id: row.id,
+              status: row.status,
+              partner_name: row.partner_name,
+            });
+          }
+        }
+
+        for (const order of orders) {
+          order.items = itemsBySaleId.get(order.id) || [];
+          const taskSummary = taskSummaryBySaleId.get(order.id) || {
+            pending_tasks: 0,
+            assigned_tasks: 0,
+            in_progress_tasks: 0,
+            completed_tasks: 0,
+            cancelled_tasks: 0,
+            total_tasks: 0,
+          };
+          order.task_summary = taskSummary;
+          order.all_tasks_done = (taskSummary.pending_tasks + taskSummary.assigned_tasks + taskSummary.in_progress_tasks) === 0;
+
+          if (order.order_type === 'delivery') {
+            order.delivery = deliveryBySaleId.get(order.id) || null;
+          }
         }
       }
 

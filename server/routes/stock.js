@@ -1,6 +1,7 @@
 const express = require('express');
 const { body, validationResult } = require('express-validator');
 const { getDb } = require('../config/database');
+const { getDb: getAsyncDb } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
 const { todayStr: localToday, nowLocal } = require('../utils/time');
 
@@ -8,9 +9,9 @@ const router = express.Router();
 
 // ─── GET /api/stock?location_id=&material_id= ───────────────
 // Get stock levels
-router.get('/', authenticate, (req, res, next) => {
+router.get('/', authenticate, async (req, res, next) => {
   try {
-    const db = getDb();
+    const db = await getAsyncDb();
     const { location_id, material_id, category_id } = req.query;
 
     let sql = `
@@ -39,7 +40,7 @@ router.get('/', authenticate, (req, res, next) => {
 
     sql += ' ORDER BY mc.name ASC, m.name ASC';
 
-    const stock = db.prepare(sql).all(...params);
+    const stock = await db.prepare(sql).all(...params);
     res.json({ success: true, data: stock });
   } catch (err) {
     next(err);
@@ -129,9 +130,9 @@ router.post(
 
 // ─── GET /api/stock/transactions ─────────────────────────────
 // Stock transaction history
-router.get('/transactions', authenticate, (req, res, next) => {
+router.get('/transactions', authenticate, async (req, res, next) => {
   try {
-    const db = getDb();
+    const db = await getAsyncDb();
     const { material_id, location_id, type, from_date, to_date, limit } = req.query;
 
     let sql = `
@@ -171,7 +172,7 @@ router.get('/transactions', authenticate, (req, res, next) => {
     const maxLimit = Math.min(parseInt(limit) || 50, 200);
     sql += ` LIMIT ${maxLimit}`;
 
-    const transactions = db.prepare(sql).all(...params);
+    const transactions = await db.prepare(sql).all(...params);
     res.json({ success: true, data: transactions });
   } catch (err) {
     next(err);
@@ -273,9 +274,9 @@ router.post(
 );
 
 // ─── GET /api/stock/reconcile?location_id=&date= ────────────
-router.get('/reconcile', authenticate, (req, res, next) => {
+router.get('/reconcile', authenticate, async (req, res, next) => {
   try {
-    const db = getDb();
+    const db = await getAsyncDb();
     const { location_id, date } = req.query;
     const targetDate = date || localToday();
 
@@ -283,7 +284,7 @@ router.get('/reconcile', authenticate, (req, res, next) => {
       return res.status(400).json({ success: false, message: 'location_id is required' });
     }
 
-    const logs = db.prepare(`
+    const logs = await db.prepare(`
       SELECT dsl.*, m.name as material_name, m.sku, mc.name as category_name,
              u1.name as counted_by_name
       FROM daily_stock_logs dsl
@@ -374,9 +375,9 @@ router.post(
 );
 
 // ─── GET /api/stock/transfers ────────────────────────────────
-router.get('/transfers', authenticate, (req, res, next) => {
+router.get('/transfers', authenticate, async (req, res, next) => {
   try {
-    const db = getDb();
+    const db = await getAsyncDb();
     const { location_id, status } = req.query;
 
     let sql = `
@@ -404,7 +405,7 @@ router.get('/transfers', authenticate, (req, res, next) => {
 
     sql += ' ORDER BY st.created_at DESC';
 
-    const transfers = db.prepare(sql).all(...params);
+    const transfers = await db.prepare(sql).all(...params);
     res.json({ success: true, data: transfers });
   } catch (err) {
     next(err);

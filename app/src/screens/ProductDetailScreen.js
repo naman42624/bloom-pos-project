@@ -139,7 +139,7 @@ export default function ProductDetailScreen({ route, navigation }) {
   }
 
   const margin = (product.selling_price || 0) - (product.estimated_cost || 0);
-  const marginPct = product.selling_price ? ((margin / product.selling_price) * 100).toFixed(1) : '0';
+  const marginPct = product.selling_price ? ((Number(margin) / Number(product.selling_price)) * 100).toFixed(1) : '0';
 
   const pickAndUploadImage = async () => {
     try {
@@ -263,17 +263,17 @@ export default function ProductDetailScreen({ route, navigation }) {
           <View style={styles.priceGrid}>
             <View style={styles.priceBox}>
               <Text style={styles.priceBoxLabel}>Estimated Cost</Text>
-              <Text style={styles.priceBoxValue}>₹{(product.estimated_cost || 0).toFixed(2)}</Text>
+              <Text style={styles.priceBoxValue}>₹{Number(product.estimated_cost || 0).toFixed(2)}</Text>
             </View>
             <View style={styles.priceBox}>
               <Text style={styles.priceBoxLabel}>Selling Price</Text>
-              <Text style={[styles.priceBoxValue, { color: Colors.success }]}>₹{(product.selling_price || 0).toFixed(2)}</Text>
+              <Text style={[styles.priceBoxValue, { color: Colors.success }]}>₹{Number(product.selling_price || 0).toFixed(2)}</Text>
             </View>
             {canManage && (
               <View style={styles.priceBox}>
                 <Text style={styles.priceBoxLabel}>Margin</Text>
                 <Text style={[styles.priceBoxValue, { color: margin >= 0 ? Colors.success : Colors.error }]}>
-                  ₹{margin.toFixed(2)} ({marginPct}%)
+                  ₹{Number(margin).toFixed(2)} ({marginPct}%)
                 </Text>
               </View>
             )}
@@ -309,7 +309,7 @@ export default function ProductDetailScreen({ route, navigation }) {
                   <View style={styles.matInfo}>
                     <Text style={styles.matName}>{mat.material_name}</Text>
                     <Text style={styles.matDetail}>
-                      {mat.quantity} {mat.unit} × ₹{unitCost.toFixed(2)} = ₹{(mat.quantity * unitCost).toFixed(2)}
+                      {mat.quantity} {mat.unit} × ₹{Number(unitCost).toFixed(2)} = ₹{Number(mat.quantity * unitCost).toFixed(2)}
                     </Text>
                   </View>
                   {canManage && (

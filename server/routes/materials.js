@@ -4,6 +4,7 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const { getDb } = require('../config/database');
+const { getDb: getAsyncDb } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
 
 const router = express.Router();
@@ -35,9 +36,9 @@ const upload = multer({
 
 // ─── GET /api/materials ──────────────────────────────────────
 // List materials with optional filters: ?category_id=&location_id=&search=&all=1
-router.get('/', authenticate, (req, res, next) => {
+router.get('/', authenticate, async (req, res, next) => {
   try {
-    const db = getDb();
+    const db = await getAsyncDb();
     const { category_id, location_id, search, all } = req.query;
 
     let sql = `
@@ -71,25 +72,41 @@ router.get('/', authenticate, (req, res, next) => {
 
     let materials;
     try {
-      materials = db.prepare(sql).all(...params);
+      materials = await db.prepare(sql).all(...params);
     } catch (queryErr) {
       const msg = String(queryErr?.message || '').toLowerCase();
       if (!msg.includes('supplier_materials')) throw queryErr;
 
       const fallbackSql = sql
         .replace(/,\s*COALESCE\([\s\S]*?\)\s*as avg_cost\s*/i, ', 0 as avg_cost ');
-      materials = db.prepare(fallbackSql).all(...params);
+      materials = await db.prepare(fallbackSql).all(...params);
     }
 
-    // If location_id is specified, attach stock info
+    // If location_id is specified, attach stock info via a single batched query
     if (location_id) {
-      const stockStmt = db.prepare(
-        'SELECT quantity, last_counted_at FROM material_stock WHERE material_id = ? AND location_id = ?'
-      );
-      materials = materials.map((m) => {
-        const stock = stockStmt.get(m.id, location_id);
-        return { ...m, stock_quantity: stock ? stock.quantity : 0, last_counted_at: stock ? stock.last_counted_at : null };
-      });
+      if (materials.length > 0) {
+        const materialIds = materials.map((m) => m.id);
+        const placeholders = materialIds.map(() => '?').join(',');
+        const stockRows = await db.prepare(
+          `SELECT material_id, quantity, last_counted_at
+           FROM material_stock
+           WHERE location_id = ? AND material_id IN (${placeholders})`
+        ).all(location_id, ...materialIds);
+
+        const stockByMaterialId = new Map();
+        for (const row of stockRows) {
+          stockByMaterialId.set(row.material_id, row);
+        }
+
+        materials = materials.map((m) => {
+          const stock = stockByMaterialId.get(m.id);
+          return {
+            ...m,
+            stock_quantity: stock ? stock.quantity : 0,
+            last_counted_at: stock ? stock.last_counted_at : null,
+          };
+        });
+      }
     }
 
     res.json({ success: true, data: materials });
@@ -100,13 +117,13 @@ router.get('/', authenticate, (req, res, next) => {
 
 // ─── GET /api/materials/metrics ──────────────────────────────
 // Inventory metrics: avg cost per material, total value, category breakdown
-router.get('/metrics', authenticate, authorize('owner', 'manager'), (req, res, next) => {
+router.get('/metrics', authenticate, authorize('owner', 'manager'), async (req, res, next) => {
   try {
-    const db = getDb();
+    const db = await getAsyncDb();
     const { location_id } = req.query;
 
     // Total active materials
-    const totalMaterials = db.prepare('SELECT COUNT(*) as count FROM materials WHERE is_active = 1').get().count;
+    const totalMaterials = (await db.prepare('SELECT COUNT(*) as count FROM materials WHERE is_active = 1').get()).count;
 
     // Per-material detail with stock and avg cost
     let materialsSql = `
@@ -118,30 +135,56 @@ router.get('/metrics', authenticate, authorize('owner', 'manager'), (req, res, n
       WHERE m.is_active = 1
       ORDER BY mc.name, m.name
     `;
-    const materials = db.prepare(materialsSql).all();
+    const materials = await db.prepare(materialsSql).all();
 
-    // Get stock for each material
-    const stockSql = location_id
-      ? 'SELECT COALESCE(SUM(quantity), 0) as total_qty FROM material_stock WHERE material_id = ? AND location_id = ?'
-      : 'SELECT COALESCE(SUM(quantity), 0) as total_qty FROM material_stock WHERE material_id = ?';
+    const stockByMaterialId = new Map();
+    const avgCostByMaterialId = new Map();
 
-    const getAvgCost = db.prepare(`
-      SELECT COALESCE(AVG(default_price_per_unit), 0) as avg_cost
-      FROM supplier_materials WHERE material_id = ? AND default_price_per_unit > 0
-    `);
+    if (materials.length > 0) {
+      const materialIds = materials.map((m) => m.id);
+      const placeholders = materialIds.map(() => '?').join(',');
+
+      const stockRows = location_id
+        ? await db.prepare(
+            `SELECT material_id, COALESCE(SUM(quantity), 0) as total_qty
+             FROM material_stock
+             WHERE location_id = ? AND material_id IN (${placeholders})
+             GROUP BY material_id`
+          ).all(location_id, ...materialIds)
+        : await db.prepare(
+            `SELECT material_id, COALESCE(SUM(quantity), 0) as total_qty
+             FROM material_stock
+             WHERE material_id IN (${placeholders})
+             GROUP BY material_id`
+          ).all(...materialIds);
+
+      for (const row of stockRows) {
+        stockByMaterialId.set(row.material_id, row.total_qty || 0);
+      }
+
+      try {
+        const avgCostRows = await db.prepare(
+          `SELECT material_id, COALESCE(AVG(default_price_per_unit), 0) as avg_cost
+           FROM supplier_materials
+           WHERE default_price_per_unit > 0 AND material_id IN (${placeholders})
+           GROUP BY material_id`
+        ).all(...materialIds);
+
+        for (const row of avgCostRows) {
+          avgCostByMaterialId.set(row.material_id, row.avg_cost || 0);
+        }
+      } catch (_) {
+        // supplier_materials may be unavailable in some legacy environments
+      }
+    }
 
     let totalStockValue = 0;
     let totalStockUnits = 0;
     const categoryMap = {};
 
     const enriched = materials.map(m => {
-      const stockRow = location_id
-        ? db.prepare(stockSql).get(m.id, location_id)
-        : db.prepare(stockSql).get(m.id);
-      const stockQty = stockRow?.total_qty || 0;
-
-      let avgCost = 0;
-      try { avgCost = getAvgCost.get(m.id)?.avg_cost || 0; } catch (_) {}
+      const stockQty = stockByMaterialId.get(m.id) || 0;
+      const avgCost = avgCostByMaterialId.get(m.id) || 0;
       const effectiveCost = m.selling_price > 0 ? m.selling_price : avgCost;
       const stockValue = stockQty * effectiveCost;
 
@@ -223,13 +266,13 @@ router.get('/metrics', authenticate, authorize('owner', 'manager'), (req, res, n
 });
 
 // ─── GET /api/materials/:id ──────────────────────────────────
-router.get('/:id', authenticate, (req, res, next) => {
+router.get('/:id', authenticate, async (req, res, next) => {
   try {
-    const db = getDb();
+    const db = await getAsyncDb();
     const id = parseInt(req.params.id);
     if (isNaN(id)) return next(); // Fall through to other routes or 404
 
-    const material = db.prepare(`
+    const material = await db.prepare(`
       SELECT m.*, mc.name as category_name, mc.unit as category_unit, mc.has_bundle, mc.default_bundle_size
       FROM materials m
       JOIN material_categories mc ON m.category_id = mc.id
@@ -241,7 +284,7 @@ router.get('/:id', authenticate, (req, res, next) => {
     }
 
     // Stock across all locations
-    const stock = db.prepare(`
+    const stock = await db.prepare(`
       SELECT ms.*, l.name as location_name
       FROM material_stock ms
       JOIN locations l ON ms.location_id = l.id
@@ -249,7 +292,7 @@ router.get('/:id', authenticate, (req, res, next) => {
     `).all(req.params.id);
 
     // Suppliers for this material
-    const suppliers = db.prepare(`
+    const suppliers = await db.prepare(`
       SELECT s.id, s.name, s.phone, sm.default_price_per_unit
       FROM supplier_materials sm
       JOIN suppliers s ON sm.supplier_id = s.id

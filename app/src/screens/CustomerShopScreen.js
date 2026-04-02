@@ -138,7 +138,7 @@ export default function CustomerShopScreen({ navigation }) {
         setSenderMessage('');
         setScheduledDate('');
         setScheduledTime('');
-        Alert.alert('Order Placed!', `Order #${res.data.sale_number}\nTotal: ₹${res.data.grand_total.toFixed(0)}\n\nYou can track it in My Orders.`, [
+        Alert.alert('Order Placed!', `Order #${res.data.sale_number}\nTotal: ₹${Number(res.data.grand_total).toFixed(0)}\n\nYou can track it in My Orders.`, [
           { text: 'View Orders', onPress: () => navigation.navigate('MyOrders') },
           { text: 'OK' },
         ]);
@@ -156,7 +156,7 @@ export default function CustomerShopScreen({ navigation }) {
       <View style={styles.productCard}>
         <View style={{ flex: 1 }}>
           <Text style={styles.productName} numberOfLines={1}>{item.name}</Text>
-          <Text style={styles.productPrice}>₹{(item.selling_price || 0).toFixed(0)}</Text>
+          <Text style={styles.productPrice}>₹{Number(item.selling_price || 0).toFixed(0)}</Text>
           {item.type && <Text style={styles.productType}>{item.type.replace(/_/g, ' ')}</Text>}
         </View>
         {inCart ? (
@@ -236,7 +236,7 @@ export default function CustomerShopScreen({ navigation }) {
         <View style={styles.cartBar}>
           <View style={{ flex: 1 }}>
             <Text style={styles.cartCount}>{cartCount} item{cartCount > 1 ? 's' : ''}</Text>
-            <Text style={styles.cartTotal}>₹{cartTotal.toFixed(0)}</Text>
+            <Text style={styles.cartTotal}>₹{Number(cartTotal).toFixed(0)}</Text>
           </View>
           <TouchableOpacity style={styles.cartBtn} onPress={() => setShowCheckout(true)}>
             <Text style={styles.cartBtnText}>Place Order</Text>
@@ -267,7 +267,7 @@ export default function CustomerShopScreen({ navigation }) {
                     <Text style={styles.cartItemName}>{item.product_name}</Text>
                     <Text style={styles.cartItemPrice}>₹{item.unit_price} × {item.quantity}</Text>
                   </View>
-                  <Text style={styles.cartItemTotal}>₹{(item.unit_price * item.quantity).toFixed(0)}</Text>
+                  <Text style={styles.cartItemTotal}>₹{Number(item.unit_price * item.quantity).toFixed(0)}</Text>
                   <TouchableOpacity onPress={() => removeFromCart(item.product_id)} style={{ marginLeft: 8 }}>
                     <Ionicons name="trash-outline" size={18} color={Colors.error} />
                   </TouchableOpacity>
@@ -275,7 +275,7 @@ export default function CustomerShopScreen({ navigation }) {
               ))}
               <View style={styles.totalRow}>
                 <Text style={styles.totalLabel}>Total</Text>
-                <Text style={styles.totalValue}>₹{cartTotal.toFixed(0)}</Text>
+                <Text style={styles.totalValue}>₹{Number(cartTotal).toFixed(0)}</Text>
               </View>
             </View>
 
@@ -416,7 +416,7 @@ export default function CustomerShopScreen({ navigation }) {
                 <>
                   <Ionicons name="checkmark-circle" size={20} color={Colors.white} />
                   <Text style={styles.submitBtnText}>
-                    Place {orderType === 'delivery' ? 'Delivery' : 'Pickup'} Order — ₹{cartTotal.toFixed(0)}
+                    Place {orderType === 'delivery' ? 'Delivery' : 'Pickup'} Order — ₹{Number(cartTotal).toFixed(0)}
                   </Text>
                 </>
               )}

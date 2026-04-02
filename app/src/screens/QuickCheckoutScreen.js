@@ -90,6 +90,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
 
   // Submitting
   const [submitting, setSubmitting] = useState(false);
+  const [submitErrors, setSubmitErrors] = useState([]);
   const [savingDraft, setSavingDraft] = useState(false);
   const [draftPickerVisible, setDraftPickerVisible] = useState(false);
   const [draftsLoading, setDraftsLoading] = useState(false);
@@ -245,6 +246,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
   }, [senderSameAsReceiver, useCustomerAsSender, customerName, customerPhone, senderName, senderPhone, customerId, customerHistory, customerAddress, senderAddress]);
 
   const checkRegisterStatus = async (locId) => {
+    if (!locId) return false;
     try {
       const res = await api.getRegisterStatus(locId);
       return res.isOpen === true;
@@ -666,42 +668,34 @@ export default function QuickCheckoutScreen({ navigation, route }) {
 
   // Place order
   const handlePlaceOrder = async () => {
-    // Register guard
-    const isRegOpen = await checkRegisterStatus(selectedLocation);
-    if (!isRegOpen) {
-      Alert.alert(
-        'Register Closed',
-        'The cash register for this location is not open. Please open it before creating a sale.',
-        [
-          { text: 'Open Register', onPress: () => navigation.navigate('CashRegister') },
-          { text: 'Cancel', style: 'cancel' },
-        ]
-      );
+    if (submitting) {
+      setSubmitErrors(['Order submission is already in progress. Please wait.']);
       return;
     }
 
-    if (items.length === 0) {
-      Alert.alert('Required', 'Please add at least one item');
-      return;
-    }
+    const validationErrors = [];
+    setSubmitErrors([]);
+
+    if (!selectedLocation) validationErrors.push('Please select a location.');
+    if (items.length === 0) validationErrors.push('Please add at least one item.');
+
     for (const item of items) {
       if (!item.name.trim()) {
-        Alert.alert('Required', 'All items must have a name');
-        return;
+        validationErrors.push('All items must have a name.');
+        break;
       }
       if ((parseFloat(item.price) || 0) <= 0) {
-        Alert.alert('Required', 'All items must have a price');
-        return;
+        validationErrors.push('All items must have a valid price greater than 0.');
+        break;
       }
     }
+
     if (orderType === 'pre_order' && !scheduledDate) {
-      Alert.alert('Required', 'Please enter a scheduled date for pre-order');
-      return;
+      validationErrors.push('Please enter a scheduled date for pre-order.');
     }
 
     if (needsDelivery && !customerAddress.trim()) {
-      Alert.alert('Required', 'Delivery address is required');
-      return;
+      validationErrors.push('Delivery address is required.');
     }
 
     const effectiveSenderName = (useCustomerAsSender ? customerName : senderName).trim();
@@ -714,31 +708,57 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     const effectiveReceiverId = senderSameAsReceiver ? effectiveSenderId : (receiverId || null);
 
     if (needsDelivery && !effectiveSenderName) {
-      Alert.alert('Required', 'Please enter sender/customer name');
-      return;
+      validationErrors.push('Please enter sender/customer name.');
     }
     if (needsDelivery && !effectiveSenderPhone) {
-      Alert.alert('Required', 'Please enter sender/customer phone');
-      return;
+      validationErrors.push('Please enter sender/customer phone.');
     }
     if (needsDelivery && !effectiveReceiverName) {
-      Alert.alert('Required', 'Please enter receiver name');
-      return;
+      validationErrors.push('Please enter receiver name.');
     }
     if (needsDelivery && !effectiveReceiverPhone) {
-      Alert.alert('Required', 'Please enter receiver phone');
-      return;
+      validationErrors.push('Please enter receiver phone.');
     }
     if (paymentMode === 'credit' && !effectiveSenderPhone) {
-      Alert.alert('Required', 'Credit payments require sender phone details.');
+      validationErrors.push('Credit payments require sender phone details.');
+    }
+
+    const partialAdvance = parseFloat(advanceAmount) || 0;
+    if (paymentMode === 'partial' && partialAdvance <= 0) {
+      validationErrors.push('Please enter an advance payment amount for partial pay.');
+    }
+    if (paymentMode === 'partial' && partialAdvance >= totals.finalTotal) {
+      validationErrors.push('Advance amount must be less than total for partial payment.');
+    }
+
+    if (paymentMode === 'pay_now') {
+      if (enableSplitPayment) {
+        const entered = payments.reduce((sum, p) => sum + (parseFloat(p.amount) || 0), 0);
+        if (entered <= 0) {
+          validationErrors.push('Enter at least one payment amount.');
+        }
+      }
+    }
+
+    if (validationErrors.length > 0) {
+      setSubmitErrors(validationErrors);
+      Alert.alert('Cannot submit order', validationErrors[0]);
       return;
     }
-    if (paymentMode === 'partial' && (parseFloat(advanceAmount) || 0) <= 0) {
-      Alert.alert('Required', 'Please enter an advance payment amount for partial pay');
-      return;
-    }
-    if (!selectedLocation) {
-      Alert.alert('Required', 'Please select a location');
+
+    // Register guard
+    const isRegOpen = await checkRegisterStatus(selectedLocation);
+    if (!isRegOpen) {
+      const msg = 'The cash register for this location is not open. Please open it before creating a sale.';
+      setSubmitErrors([msg]);
+      Alert.alert(
+        'Register Closed',
+        msg,
+        [
+          { text: 'Open Register', onPress: () => navigation.navigate('CashRegister') },
+          { text: 'Cancel', style: 'cancel' },
+        ]
+      );
       return;
     }
 
@@ -844,6 +864,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
 
       const res = await api.createSale(saleData);
       if (res.success) {
+        setSubmitErrors([]);
         if (activeDraftId) {
           try {
             await api.deleteSaleDraft(activeDraftId);
@@ -860,11 +881,18 @@ export default function QuickCheckoutScreen({ navigation, route }) {
           })
         );
       } else {
-
-        Alert.alert('Error', res.message || 'Failed to place order');
+        const message = res.message || 'Failed to place order';
+        setSubmitErrors([message]);
+        Alert.alert('Error', message);
       }
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to place order');
+      const backendErrors = Array.isArray(err?.errors)
+        ? err.errors.map((e) => e?.msg).filter(Boolean)
+        : [];
+      const fallbackMessage = err?.message || 'Failed to place order';
+      const messages = backendErrors.length > 0 ? backendErrors : [fallbackMessage];
+      setSubmitErrors(messages);
+      Alert.alert('Error', messages[0]);
     } finally {
       setSubmitting(false);
     }
@@ -1064,7 +1092,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
             <View style={styles.customerHint}>
               <Ionicons name="person-circle" size={16} color={Colors.primary} />
               <Text style={styles.customerHintText}>
-                {customerId ? '✓ Registered' : 'Returning'} customer • {customerHistory.order_count} orders • ₹{(customerHistory.total_spent || 0).toFixed(0)} total
+                {customerId ? '✓ Registered' : 'Returning'} customer • {customerHistory.order_count} orders • ₹{Number(customerHistory.total_spent || 0).toFixed(0)} total
               </Text>
             </View>
           )}
@@ -1158,7 +1186,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
                     <View style={styles.customerHint}>
                       <Ionicons name="person-circle" size={16} color={Colors.primary} />
                       <Text style={styles.customerHintText}>
-                        {receiverId ? '✓ Registered' : 'Returning'} receiver • {receiverHistory.order_count} orders • ₹{(receiverHistory.total_spent || 0).toFixed(0)} total
+                        {receiverId ? '✓ Registered' : 'Returning'} receiver • {receiverHistory.order_count} orders • ₹{Number(receiverHistory.total_spent || 0).toFixed(0)} total
                       </Text>
                     </View>
                   )}
@@ -1414,7 +1442,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
               {/* Item total */}
               <View style={styles.itemTotal}>
                 <Text style={styles.itemTotalLabel}>Item Total</Text>
-                <Text style={styles.itemTotalValue}>₹{getItemTotal(item).toFixed(0)}</Text>
+                <Text style={styles.itemTotalValue}>₹{Number(getItemTotal(item)).toFixed(0)}</Text>
               </View>
             </View>
           ))}
@@ -1500,7 +1528,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
               />
               {parseFloat(advanceAmount) > 0 && (
                 <Text style={[styles.label, { color: Colors.warning, marginTop: 4 }]}>
-                  Balance ₹{(totals.finalTotal - (parseFloat(advanceAmount) || 0)).toFixed(0)} to be collected later
+                  Balance ₹{Number(totals.finalTotal - (parseFloat(advanceAmount) || 0)).toFixed(0)} to be collected later
                 </Text>
               )}
             </View>
@@ -1611,26 +1639,26 @@ export default function QuickCheckoutScreen({ navigation, route }) {
           <View style={styles.grandTotalBox}>
             <View style={styles.summaryLine}>
               <Text style={styles.summaryLabel}>Subtotal</Text>
-              <Text style={styles.summaryValue}>₹{totals.subtotal.toFixed(2)}</Text>
+              <Text style={styles.summaryValue}>₹{Number(totals.subtotal).toFixed(2)}</Text>
             </View>
             <View style={styles.summaryLine}>
               <Text style={styles.summaryLabel}>Discount</Text>
-              <Text style={styles.summaryValue}>-₹{totals.discountAmount.toFixed(2)}</Text>
+              <Text style={styles.summaryValue}>-₹{Number(totals.discountAmount).toFixed(2)}</Text>
             </View>
             <View style={styles.summaryLine}>
               <Text style={styles.summaryLabel}>Tax</Text>
-              <Text style={styles.summaryValue}>+₹{totals.taxTotal.toFixed(2)}</Text>
+              <Text style={styles.summaryValue}>+₹{Number(totals.taxTotal).toFixed(2)}</Text>
             </View>
             {orderType === 'delivery' && (
               <View style={styles.summaryLine}>
                 <Text style={styles.summaryLabel}>Delivery</Text>
-                <Text style={styles.summaryValue}>+₹{totals.delivery.toFixed(2)}</Text>
+                <Text style={styles.summaryValue}>+₹{Number(totals.delivery).toFixed(2)}</Text>
               </View>
             )}
             <View style={[styles.divider, { marginVertical: Spacing.sm }]} />
             <View style={styles.grandTotalRow}>
               <Text style={styles.grandTotalLabel}>Grand Total</Text>
-              <Text style={styles.grandTotalValue}>₹{totals.finalTotal.toFixed(2)}</Text>
+              <Text style={styles.grandTotalValue}>₹{Number(totals.finalTotal).toFixed(2)}</Text>
             </View>
           </View>
 
@@ -1649,6 +1677,15 @@ export default function QuickCheckoutScreen({ navigation, route }) {
               <Text style={styles.draftActionText}>Resume Draft</Text>
             </TouchableOpacity>
           </View>
+
+          {submitErrors.length > 0 && (
+            <View style={styles.submitErrorsBox}>
+              <Text style={styles.submitErrorsTitle}>Please fix the following before submitting:</Text>
+              {submitErrors.map((msg, idx) => (
+                <Text key={`${idx}-${msg}`} style={styles.submitErrorItem}>• {msg}</Text>
+              ))}
+            </View>
+          )}
 
           <TouchableOpacity
             style={[styles.placeOrderBtn, submitting && { opacity: 0.6 }]}
@@ -1744,7 +1781,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
                     </View>
                     <View style={{ flex: 1 }}>
                       <Text style={styles.productPickName}>{p.name}</Text>
-                      <Text style={styles.productPickPrice}>₹{(p.selling_price || 0).toFixed(0)}</Text>
+                      <Text style={styles.productPickPrice}>₹{Number(p.selling_price || 0).toFixed(0)}</Text>
                     </View>
                     <Ionicons name="add-circle" size={24} color={Colors.success} />
                   </TouchableOpacity>
@@ -2021,6 +2058,26 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.md,
   },
   draftActionText: { fontSize: FontSize.sm, color: Colors.primary, fontWeight: '700' },
+
+  submitErrorsBox: {
+    marginTop: Spacing.md,
+    borderWidth: 1,
+    borderColor: Colors.error + '55',
+    backgroundColor: Colors.error + '12',
+    borderRadius: BorderRadius.md,
+    padding: Spacing.sm,
+    gap: 4,
+  },
+  submitErrorsTitle: {
+    fontSize: FontSize.sm,
+    fontWeight: '700',
+    color: Colors.error,
+  },
+  submitErrorItem: {
+    fontSize: FontSize.xs,
+    color: Colors.text,
+    lineHeight: 18,
+  },
 
   placeOrderBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,

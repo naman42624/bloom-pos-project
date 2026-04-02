@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { getDb } = require('../config/database');
+const { getDb: getAsyncDb } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
 const { nowLocal } = require('../utils/time');
 
@@ -11,14 +12,14 @@ router.use(authenticate);
 // ═══════════════════════════════════════════════════════════════
 
 // Get shift for a specific user (or all shifts)
-router.get('/shifts', authorize('owner', 'manager', 'employee', 'delivery_partner'), (req, res) => {
+router.get('/shifts', authorize('owner', 'manager', 'employee', 'delivery_partner'), async (req, res) => {
   try {
-    const db = getDb();
+    const db = await getAsyncDb();
     const { user_id, location_id } = req.query;
 
     // Employees/DP can only see their own shift
     if (req.user.role === 'employee' || req.user.role === 'delivery_partner') {
-      const shifts = db.prepare(`
+      const shifts = await db.prepare(`
         SELECT es.*, u.name as user_name, u.phone as user_phone, u.role as user_role, l.name as location_name
         FROM employee_shifts es
         JOIN users u ON es.user_id = u.id
@@ -42,14 +43,14 @@ router.get('/shifts', authorize('owner', 'manager', 'employee', 'delivery_partne
 
     // Managers see only assigned locations
     if (req.user.role === 'manager') {
-      const locs = db.prepare('SELECT location_id FROM user_locations WHERE user_id = ?').all(req.user.id).map(l => l.location_id);
+      const locs = (await db.prepare('SELECT location_id FROM user_locations WHERE user_id = ?').all(req.user.id)).map(l => l.location_id);
       if (locs.length > 0) {
         where.push(`es.location_id IN (${locs.map(() => '?').join(',')})`);
         params.push(...locs);
       }
     }
 
-    const shifts = db.prepare(`
+    const shifts = await db.prepare(`
       SELECT es.*, u.name as user_name, u.phone as user_phone, u.role as user_role, l.name as location_name
       FROM employee_shifts es
       JOIN users u ON es.user_id = u.id
@@ -154,13 +155,13 @@ router.delete('/shifts/:id', authorize('owner', 'manager'), (req, res) => {
 // ═══════════════════════════════════════════════════════════════
 
 // Get salaries — owner sees all, staff sees own
-router.get('/salaries', authorize('owner', 'manager', 'employee', 'delivery_partner'), (req, res) => {
+router.get('/salaries', authorize('owner', 'manager', 'employee', 'delivery_partner'), async (req, res) => {
   try {
-    const db = getDb();
+    const db = await getAsyncDb();
 
     if (req.user.role === 'owner') {
       // Owner sees all staff salaries
-      const salaries = db.prepare(`
+      const salaries = await db.prepare(`
         SELECT es.*, u.name as user_name, u.phone as user_phone, u.role as user_role,
                up.name as updater_name
         FROM employee_salaries es
@@ -171,7 +172,7 @@ router.get('/salaries', authorize('owner', 'manager', 'employee', 'delivery_part
       `).all();
 
       // Also get users without salary records
-      const usersWithout = db.prepare(`
+      const usersWithout = await db.prepare(`
         SELECT u.id, u.name, u.phone, u.role
         FROM users u
         WHERE u.role IN ('manager', 'employee', 'delivery_partner') AND u.is_active = 1
@@ -183,7 +184,7 @@ router.get('/salaries', authorize('owner', 'manager', 'employee', 'delivery_part
     }
 
     // Staff sees only their own
-    const salary = db.prepare(`
+    const salary = await db.prepare(`
       SELECT es.*, u.name as user_name
       FROM employee_salaries es
       JOIN users u ON es.user_id = u.id
@@ -255,10 +256,10 @@ router.post('/salaries', authorize('owner'), (req, res) => {
 });
 
 // Get salary history for a user — Owner only
-router.get('/salaries/:userId/history', authorize('owner'), (req, res) => {
+router.get('/salaries/:userId/history', authorize('owner'), async (req, res) => {
   try {
-    const db = getDb();
-    const history = db.prepare(`
+    const db = await getAsyncDb();
+    const history = await db.prepare(`
       SELECT sh.*, u.name as user_name, c.name as changed_by_name
       FROM salary_history sh
       JOIN users u ON sh.user_id = u.id
@@ -515,9 +516,9 @@ router.post('/payroll/disburse', authorize('owner'), (req, res) => {
 });
 
 // Get payment history
-router.get('/payroll/history', authorize('owner', 'manager', 'employee', 'delivery_partner'), (req, res) => {
+router.get('/payroll/history', authorize('owner', 'manager', 'employee', 'delivery_partner'), async (req, res) => {
   try {
-    const db = getDb();
+    const db = await getAsyncDb();
     const { user_id, page = 1, limit = 20 } = req.query;
     const offset = (Number(page) - 1) * Number(limit);
 
@@ -534,9 +535,9 @@ router.get('/payroll/history', authorize('owner', 'manager', 'employee', 'delive
 
     const whereClause = where.length ? 'WHERE ' + where.join(' AND ') : '';
 
-    const total = db.prepare(`SELECT COUNT(*) as count FROM salary_payments sp ${whereClause}`).get(...params).count;
+    const total = (await db.prepare(`SELECT COUNT(*) as count FROM salary_payments sp ${whereClause}`).get(...params)).count;
 
-    const payments = db.prepare(`
+    const payments = await db.prepare(`
       SELECT sp.*, u.name as user_name, u.role as user_role, p.name as paid_by_name
       FROM salary_payments sp
       JOIN users u ON sp.user_id = u.id

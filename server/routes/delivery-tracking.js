@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { getDb } = require('../config/database');
+const { getDb: getAsyncDb } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
 const { todayStr, nowLocal } = require('../utils/time');
 
@@ -81,12 +82,12 @@ router.post('/location', authorize('delivery_partner'), (req, res) => {
 // ═══════════════════════════════════════════════════════════════
 // GET ACTIVE DELIVERY PARTNERS (for live map — manager/owner)
 // ═══════════════════════════════════════════════════════════════
-router.get('/active-partners', authorize('owner', 'manager'), (req, res) => {
+router.get('/active-partners', authorize('owner', 'manager'), async (req, res) => {
   try {
-    const db = getDb();
+    const db = await getAsyncDb();
 
     // Get ALL active delivery partners
-    const allPartners = db.prepare(`
+    const allPartners = await db.prepare(`
       SELECT u.id as user_id, u.name as user_name, u.phone, u.avatar
       FROM users u
       WHERE u.role = 'delivery_partner' AND u.is_active = 1
@@ -94,7 +95,7 @@ router.get('/active-partners', authorize('owner', 'manager'), (req, res) => {
     `).all();
 
     // Get latest position for each partner who has reported in last 30 min
-    const recentLocations = db.prepare(`
+    const recentLocations = await db.prepare(`
       SELECT 
         dl.user_id, dl.latitude, dl.longitude, dl.speed, dl.heading, dl.battery_level,
         dl.is_moving, dl.recorded_at, dl.delivery_id
@@ -138,10 +139,10 @@ router.get('/active-partners', authorize('owner', 'manager'), (req, res) => {
 // ═══════════════════════════════════════════════════════════════
 // GET DELIVERY ROUTE (GPS breadcrumbs for a specific delivery)
 // ═══════════════════════════════════════════════════════════════
-router.get('/route/:deliveryId', authorize('owner', 'manager'), (req, res) => {
+router.get('/route/:deliveryId', authorize('owner', 'manager'), async (req, res) => {
   try {
-    const db = getDb();
-    const points = db.prepare(`
+    const db = await getAsyncDb();
+    const points = await db.prepare(`
       SELECT latitude, longitude, speed, heading, is_moving, recorded_at
       FROM delivery_locations
       WHERE delivery_id = ?
@@ -171,9 +172,9 @@ router.get('/route/:deliveryId', authorize('owner', 'manager'), (req, res) => {
 // ═══════════════════════════════════════════════════════════════
 // GET DELIVERY PARTNER DAILY SUMMARY
 // ═══════════════════════════════════════════════════════════════
-router.get('/daily-summary', authorize('owner', 'manager', 'delivery_partner'), (req, res) => {
+router.get('/daily-summary', authorize('owner', 'manager', 'delivery_partner'), async (req, res) => {
   try {
-    const db = getDb();
+    const db = await getAsyncDb();
     const { user_id, date, start_date, end_date } = req.query;
 
     let where = ['1=1'];
@@ -195,7 +196,7 @@ router.get('/daily-summary', authorize('owner', 'manager', 'delivery_partner'), 
       if (end_date) { where.push('dpd.date <= ?'); params.push(end_date); }
     }
 
-    const summaries = db.prepare(`
+    const summaries = await db.prepare(`
       SELECT dpd.*, u.name as user_name, u.phone as user_phone
       FROM delivery_partner_daily dpd
       JOIN users u ON dpd.user_id = u.id
@@ -213,10 +214,10 @@ router.get('/daily-summary', authorize('owner', 'manager', 'delivery_partner'), 
 // ═══════════════════════════════════════════════════════════════
 // GET LATEST POSITION (for a specific partner)
 // ═══════════════════════════════════════════════════════════════
-router.get('/latest/:userId', authorize('owner', 'manager'), (req, res) => {
+router.get('/latest/:userId', authorize('owner', 'manager'), async (req, res) => {
   try {
-    const db = getDb();
-    const loc = db.prepare(`
+    const db = await getAsyncDb();
+    const loc = await db.prepare(`
       SELECT dl.*, d.delivery_address, d.customer_name, d.status as delivery_status
       FROM delivery_locations dl
       LEFT JOIN deliveries d ON dl.delivery_id = d.id
@@ -234,9 +235,9 @@ router.get('/latest/:userId', authorize('owner', 'manager'), (req, res) => {
 // ═══════════════════════════════════════════════════════════════
 // GET PARTNER PERFORMANCE METRICS
 // ═══════════════════════════════════════════════════════════════
-router.get('/performance/:userId', authorize('owner', 'manager'), (req, res) => {
+router.get('/performance/:userId', authorize('owner', 'manager'), async (req, res) => {
   try {
-    const db = getDb();
+    const db = await getAsyncDb();
     const userId = Number(req.params.userId);
     const { days = 30 } = req.query;
 
@@ -245,7 +246,7 @@ router.get('/performance/:userId', authorize('owner', 'manager'), (req, res) => 
     const sinceStr = since.toISOString();
 
     // Delivery counts and avg time
-    const stats = db.prepare(`
+    const stats = await db.prepare(`
       SELECT 
         COUNT(*) as total_assigned,
         SUM(CASE WHEN status = 'delivered' THEN 1 ELSE 0 END) as total_delivered,
@@ -267,7 +268,7 @@ router.get('/performance/:userId', authorize('owner', 'manager'), (req, res) => 
     `).get(userId, sinceStr);
 
     // Daily breakdown (last N days)
-    const dailyBreakdown = db.prepare(`
+    const dailyBreakdown = await db.prepare(`
       SELECT 
         DATE(delivered_time) as date,
         COUNT(*) as deliveries,
@@ -280,7 +281,7 @@ router.get('/performance/:userId', authorize('owner', 'manager'), (req, res) => 
     `).all(userId, sinceStr);
 
     // Distance and active time from daily summary
-    const distanceStats = db.prepare(`
+    const distanceStats = await db.prepare(`
       SELECT 
         SUM(total_distance_km) as total_distance_km,
         SUM(total_active_minutes) as total_active_minutes,

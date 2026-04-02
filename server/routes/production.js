@@ -1,6 +1,7 @@
 const express = require('express');
 const { body, query, validationResult } = require('express-validator');
 const { getDb } = require('../config/database');
+const { getDb: getAsyncDb } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
 const { createNotification, notifyByRole } = require('./notifications');
 const { todayStr: localToday, nowLocal } = require('../utils/time');
@@ -184,9 +185,9 @@ router.post(
 // ═══════════════════════════════════════════════════════════════
 
 // GET /api/production/product-stock — Get all product stock across locations
-router.get('/product-stock', authenticate, (req, res, next) => {
+router.get('/product-stock', authenticate, async (req, res, next) => {
   try {
-    const db = getDb();
+    const db = await getAsyncDb();
     const { location_id } = req.query;
 
     let sql = `
@@ -201,7 +202,7 @@ router.get('/product-stock', authenticate, (req, res, next) => {
     if (location_id) { sql += ' AND ps.location_id = ?'; params.push(Number(location_id)); }
     sql += ' ORDER BY p.name ASC';
 
-    const stock = db.prepare(sql).all(...params);
+    const stock = await db.prepare(sql).all(...params);
     res.json({ success: true, data: stock });
   } catch (err) { next(err); }
 });
@@ -250,9 +251,9 @@ router.post(
 // ═══════════════════════════════════════════════════════════════
 
 // GET /api/production/tasks — Get all production tasks (queue)
-router.get('/tasks', authenticate, authorize('owner', 'manager', 'employee'), (req, res, next) => {
+router.get('/tasks', authenticate, authorize('owner', 'manager', 'employee'), async (req, res, next) => {
   try {
-    const db = getDb();
+    const db = await getAsyncDb();
     const { location_id, status, assigned_to, sale_id } = req.query;
 
     let sql = `
@@ -297,7 +298,7 @@ router.get('/tasks', authenticate, authorize('owner', 'manager', 'employee'), (r
 
     // Scope by location for employees and managers
     if (req.user.role === 'employee' || req.user.role === 'manager') {
-      const userLocs = db.prepare('SELECT location_id FROM user_locations WHERE user_id = ?').all(req.user.id).map(r => r.location_id);
+      const userLocs = (await db.prepare('SELECT location_id FROM user_locations WHERE user_id = ?').all(req.user.id)).map(r => r.location_id);
       if (userLocs.length > 0 && !location_id) {
         sql += ` AND pt.location_id IN (${userLocs.map(() => '?').join(',')})`;
         params.push(...userLocs);
@@ -311,7 +312,7 @@ router.get('/tasks', authenticate, authorize('owner', 'manager', 'employee'), (r
       s.scheduled_date ASC NULLS LAST,
       pt.created_at DESC`;
 
-    const tasks = db.prepare(sql).all(...params);
+    const tasks = await db.prepare(sql).all(...params);
 
     const getBOM = db.prepare(`
       SELECT pm.material_id, pm.quantity as qty_per_unit,
@@ -336,7 +337,7 @@ router.get('/tasks', authenticate, authorize('owner', 'manager', 'employee'), (r
       // If custom_materials exist, show those instead of standard BOM
       if (task.custom_materials && task.custom_materials.length > 0) {
         task.materials = task.custom_materials.map(cm => {
-          const stock = getStock.get(cm.material_id, task.location_id);
+          const stock = (getStock.get && typeof getStock.get === 'function') ? getStock.get(cm.material_id, task.location_id) : null;
           const needed = (cm.qty_per_unit || cm.qty || cm.quantity || 1) * task.quantity;
           return {
             material_id: cm.material_id,
@@ -349,9 +350,9 @@ router.get('/tasks', authenticate, authorize('owner', 'manager', 'employee'), (r
         });
       } else if (task.product_id) {
         // Standard BOM
-        const bom = getBOM.all(task.product_id);
-        task.materials = bom.map(b => {
-          const stock = getStock.get(b.material_id, task.location_id);
+        const bom = await getBOM.all(task.product_id);
+        task.materials = (Array.isArray(bom) ? bom : []).map(b => {
+          const stock =  (getStock.get && typeof getStock.get === 'function') ? getStock.get(b.material_id, task.location_id) : null;
           const needed = b.qty_per_unit * task.quantity;
           return {
             ...b,
@@ -370,10 +371,10 @@ router.get('/tasks', authenticate, authorize('owner', 'manager', 'employee'), (r
 });
 
 // GET /api/production/my-tasks — Current employee's tasks
-router.get('/my-tasks', authenticate, (req, res, next) => {
+router.get('/my-tasks', authenticate, async (req, res, next) => {
   try {
-    const db = getDb();
-    const tasks = db.prepare(`
+    const db = await getAsyncDb();
+    const tasks = await db.prepare(`
       SELECT pt.*,
              p.name as product_name, p.sku as product_sku, p.image_url as product_image,
              s.sale_number, s.order_type, s.customer_name, s.scheduled_date, s.scheduled_time, s.special_instructions as order_special_instructions,
@@ -628,9 +629,9 @@ router.put(
 // DASHBOARD SUMMARY — Counts for action items
 // ═══════════════════════════════════════════════════════════════
 
-router.get('/dashboard-summary', authenticate, authorize('owner', 'manager', 'employee'), (req, res, next) => {
+router.get('/dashboard-summary', authenticate, authorize('owner', 'manager', 'employee'), async (req, res, next) => {
   try {
-    const db = getDb();
+    const db = await getAsyncDb();
     const { location_id } = req.query;
     const role = req.user.role;
 
@@ -641,7 +642,7 @@ router.get('/dashboard-summary', authenticate, authorize('owner', 'manager', 'em
       locFilter = ' AND location_id = ?';
       locParams.push(Number(location_id));
     } else if (role === 'manager') {
-      const userLocs = db.prepare('SELECT location_id FROM user_locations WHERE user_id = ?').all(req.user.id).map(r => r.location_id);
+      const userLocs = (await db.prepare('SELECT location_id FROM user_locations WHERE user_id = ?').all(req.user.id)).map(r => r.location_id);
       if (userLocs.length > 0) {
         locFilter = ` AND location_id IN (${userLocs.map(() => '?').join(',')})`;
         locParams.push(...userLocs);
@@ -649,29 +650,29 @@ router.get('/dashboard-summary', authenticate, authorize('owner', 'manager', 'em
     }
 
     // Pending orders count
-    const pendingOrders = db.prepare(
+    const pendingOrders = await db.prepare(
       `SELECT COUNT(*) as cnt FROM sales WHERE status = 'pending'${locFilter}`
     ).get(...locParams);
 
     // Preparing orders count
-    const preparingOrders = db.prepare(
+    const preparingOrders = await db.prepare(
       `SELECT COUNT(*) as cnt FROM sales WHERE status = 'preparing'${locFilter}`
     ).get(...locParams);
 
     // Ready orders count
-    const readyOrders = db.prepare(
+    const readyOrders = await db.prepare(
       `SELECT COUNT(*) as cnt FROM sales WHERE status = 'ready'${locFilter}`
     ).get(...locParams);
 
     // Unassigned tasks (for managers/owners)
     let taskLocFilter = locFilter.replace(/location_id/g, 'pt.location_id');
     let taskLocParams = [...locParams];
-    const unassignedTasks = db.prepare(
+    const unassignedTasks = await db.prepare(
       `SELECT COUNT(*) as cnt FROM production_tasks pt WHERE pt.status = 'pending' AND pt.assigned_to IS NULL${taskLocFilter}`
     ).get(...taskLocParams);
 
     // Total pending tasks (not completed/cancelled)
-    const pendingTasks = db.prepare(
+    const pendingTasks = await db.prepare(
       `SELECT COUNT(*) as cnt FROM production_tasks pt WHERE pt.status IN ('pending', 'assigned', 'in_progress')${taskLocFilter}`
     ).get(...taskLocParams);
 
@@ -687,7 +688,7 @@ router.get('/dashboard-summary', authenticate, authorize('owner', 'manager', 'em
         orderLocFilter = ` AND s.location_id IN (${locParams.map(() => '?').join(',')})`;
         orderLocParams.push(...locParams);
       }
-      const pendingItems = db.prepare(`
+      const pendingItems = await db.prepare(`
         SELECT si.product_id, si.quantity, s.location_id
         FROM sale_items si
         JOIN sales s ON si.sale_id = s.id
@@ -698,7 +699,7 @@ router.get('/dashboard-summary', authenticate, authorize('owner', 'manager', 'em
       const materialNeeds = {};
       const getBOM = db.prepare('SELECT material_id, quantity as qty_needed FROM product_materials WHERE product_id = ?');
       for (const item of pendingItems) {
-        const bom = getBOM.all(item.product_id);
+        const bom = await getBOM.all(item.product_id);
         for (const b of bom) {
           const key = `${b.material_id}_${item.location_id}`;
           if (!materialNeeds[key]) materialNeeds[key] = { material_id: b.material_id, location_id: item.location_id, needed: 0 };
@@ -707,7 +708,7 @@ router.get('/dashboard-summary', authenticate, authorize('owner', 'manager', 'em
       }
       for (const key of Object.keys(materialNeeds)) {
         const need = materialNeeds[key];
-        const stock = db.prepare('SELECT quantity FROM material_stock WHERE material_id = ? AND location_id = ?').get(need.material_id, need.location_id);
+        const stock = await db.prepare('SELECT quantity FROM material_stock WHERE material_id = ? AND location_id = ?').get(need.material_id, need.location_id);
         if (!stock || stock.quantity < need.needed) materialShortages++;
       }
     }
@@ -730,9 +731,9 @@ router.get('/dashboard-summary', authenticate, authorize('owner', 'manager', 'em
 // PRODUCTION STATS — Employee production tracking (incentives)
 // ═══════════════════════════════════════════════════════════════
 
-router.get('/stats', authenticate, (req, res, next) => {
+router.get('/stats', authenticate, async (req, res, next) => {
   try {
-    const db = getDb();
+    const db = await getAsyncDb();
     const { location_id, date_from, date_to, user_id } = req.query;
 
     const today = localToday();
@@ -747,7 +748,7 @@ router.get('/stats', authenticate, (req, res, next) => {
     if (location_id) { locFilter = ' AND pl.location_id = ?'; params.push(Number(location_id)); }
 
     // Per-employee breakdown
-    const byEmployee = db.prepare(`
+    const byEmployee = await db.prepare(`
       SELECT pl.produced_by, u.name as employee_name,
              COUNT(*) as total_logs,
              SUM(pl.quantity) as total_produced,
@@ -766,7 +767,7 @@ router.get('/stats', authenticate, (req, res, next) => {
     if (user_id) params2.push(Number(user_id));
     if (location_id) params2.push(Number(location_id));
 
-    const byProduct = db.prepare(`
+    const byProduct = await db.prepare(`
       SELECT pl.product_id, p.name as product_name,
              SUM(pl.quantity) as total_produced
       FROM production_logs pl
@@ -786,9 +787,9 @@ router.get('/stats', authenticate, (req, res, next) => {
 // MATERIAL ALERTS — Check materials needed for upcoming orders
 // ═══════════════════════════════════════════════════════════════
 
-router.get('/material-alerts', authenticate, authorize('owner', 'manager'), (req, res, next) => {
+router.get('/material-alerts', authenticate, authorize('owner', 'manager'), async (req, res, next) => {
   try {
-    const db = getDb();
+    const db = await getAsyncDb();
     const { location_id } = req.query;
 
     // Get all pending/preparing orders' items and their BOM requirements
@@ -796,7 +797,7 @@ router.get('/material-alerts', authenticate, authorize('owner', 'manager'), (req
     const params = [];
     if (location_id) { orderFilter += ' AND s.location_id = ?'; params.push(Number(location_id)); }
 
-    const pendingItems = db.prepare(`
+    const pendingItems = await db.prepare(`
       SELECT si.product_id, si.quantity, s.location_id, s.sale_number, s.scheduled_date,
              si.materials_deducted
       FROM sale_items si
@@ -809,7 +810,7 @@ router.get('/material-alerts', authenticate, authorize('owner', 'manager'), (req
     const getBOM = db.prepare('SELECT material_id, quantity as qty_needed FROM product_materials WHERE product_id = ?');
 
     for (const item of pendingItems) {
-      const bom = getBOM.all(item.product_id);
+      const bom = await getBOM.all(item.product_id);
       for (const b of bom) {
         const key = `${b.material_id}_${item.location_id}`;
         if (!materialNeeds[key]) {
@@ -826,17 +827,17 @@ router.get('/material-alerts', authenticate, authorize('owner', 'manager'), (req
     const alerts = [];
     for (const key of Object.keys(materialNeeds)) {
       const need = materialNeeds[key];
-      const stock = db.prepare('SELECT quantity FROM material_stock WHERE material_id = ? AND location_id = ?').get(need.material_id, need.location_id);
+      const stock = await db.prepare('SELECT quantity FROM material_stock WHERE material_id = ? AND location_id = ?').get(need.material_id, need.location_id);
       const currentQty = stock ? stock.quantity : 0;
       const shortage = need.needed - currentQty;
 
-      const material = db.prepare(`
+      const material = await db.prepare(`
         SELECT m.name, m.sku, mc.unit, mc.name as category_name
         FROM materials m JOIN material_categories mc ON m.category_id = mc.id
         WHERE m.id = ?
       `).get(need.material_id);
 
-      const location = db.prepare('SELECT name FROM locations WHERE id = ?').get(need.location_id);
+      const location = await db.prepare('SELECT name FROM locations WHERE id = ?').get(need.location_id);
 
       alerts.push({
         material_id: need.material_id,
@@ -868,9 +869,9 @@ router.get('/material-alerts', authenticate, authorize('owner', 'manager'), (req
 // PRODUCTION LOGS — View production history
 // ═══════════════════════════════════════════════════════════════
 
-router.get('/logs', authenticate, (req, res, next) => {
+router.get('/logs', authenticate, async (req, res, next) => {
   try {
-    const db = getDb();
+    const db = await getAsyncDb();
     const { location_id, user_id, product_id, date_from, date_to, limit: lim } = req.query;
 
     let sql = `
@@ -896,7 +897,7 @@ router.get('/logs', authenticate, (req, res, next) => {
     sql += ` LIMIT ?`;
     params.push(parseInt(lim) || 50);
 
-    const logs = db.prepare(sql).all(...params);
+    const logs = await db.prepare(sql).all(...params);
     res.json({ success: true, data: logs });
   } catch (err) { next(err); }
 });

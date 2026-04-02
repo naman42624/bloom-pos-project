@@ -416,7 +416,7 @@ export default function POSScreen({ navigation, route }) {
           <View style={styles.tileInfo}>
             <Text style={styles.tileName} numberOfLines={2}>{item.name}</Text>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
-              <Text style={styles.tilePrice}>₹{(item.selling_price || 0).toFixed(0)}</Text>
+              <Text style={styles.tilePrice}>₹{Number(item.selling_price || 0).toFixed(0)}</Text>
               {readyQty > 0 && <View style={styles.readyBadgeIcon}><Text style={styles.readyBadgeText}>{readyQty}R</Text></View>}
             </View>
           </View>
@@ -457,7 +457,7 @@ export default function POSScreen({ navigation, route }) {
             )}
           </View>
         </View>
-        <Text style={styles.productPrice}>₹{(item.selling_price || 0).toFixed(0)}</Text>
+        <Text style={styles.productPrice}>₹{Number(item.selling_price || 0).toFixed(0)}</Text>
       </TouchableOpacity>
     );
   };
@@ -493,7 +493,7 @@ export default function POSScreen({ navigation, route }) {
           <View style={styles.tileInfo}>
             <Text style={styles.tileName} numberOfLines={2}>{item.name}</Text>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-              <Text style={styles.tilePrice}>₹{(item.selling_price || item.avg_cost || 0).toFixed(0)}</Text>
+              <Text style={styles.tilePrice}>₹{Number(item.selling_price || item.avg_cost || 0).toFixed(0)}</Text>
               {stockQty !== null && (
                 <Text style={{ fontSize: 10, color: outOfStock ? Colors.error : Colors.textLight }}>
                   • {stockQty} units
@@ -529,7 +529,7 @@ export default function POSScreen({ navigation, route }) {
             {stockQty !== null ? (outOfStock ? '  •  Out of Stock' : `  •  Stock: ${stockQty}`) : ''}
           </Text>
         </View>
-        <Text style={styles.productPrice}>₹{(item.selling_price || item.avg_cost || 0).toFixed(0)}</Text>
+        <Text style={styles.productPrice}>₹{Number(item.selling_price || item.avg_cost || 0).toFixed(0)}</Text>
       </TouchableOpacity>
     );
   };
@@ -768,7 +768,7 @@ export default function POSScreen({ navigation, route }) {
               <Text style={styles.cartItemName} numberOfLines={2}>
                 {c.material_id ? '🌿 ' : ''}{c.product_name}
               </Text>
-              <Text style={styles.cartItemPrice}>₹{c.unit_price} × {c.quantity} = ₹{(c.unit_price * c.quantity).toFixed(0)}</Text>
+              <Text style={styles.cartItemPrice}>₹{c.unit_price} × {c.quantity} = ₹{Number(c.unit_price * c.quantity).toFixed(0)}</Text>
             </View>
             <View style={styles.qtyControls}>
               <TouchableOpacity style={styles.qtyBtn} onPress={() => updateCartQty(c, -1)}>
@@ -806,12 +806,12 @@ export default function POSScreen({ navigation, route }) {
       <View style={styles.cartTotals}>
         <View style={styles.cartTotalRow}>
           <Text style={styles.cartGrandLabel}>Total</Text>
-          <Text style={styles.cartGrandVal}>₹{grandTotal.toFixed(0)}</Text>
+          <Text style={styles.cartGrandVal}>₹{Number(grandTotal).toFixed(0)}</Text>
         </View>
       </View>
       <TouchableOpacity style={styles.checkoutBtn} onPress={goToCheckout}>
         <Ionicons name="cart" size={22} color={Colors.white} />
-        <Text style={styles.checkoutBtnText}>Checkout  ₹{grandTotal.toFixed(0)}</Text>
+        <Text style={styles.checkoutBtnText}>Checkout  ₹{Number(grandTotal).toFixed(0)}</Text>
       </TouchableOpacity>
     </View>
   );

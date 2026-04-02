@@ -437,12 +437,12 @@ export default function AddRecurringOrderScreen({ route, navigation }) {
                     <Ionicons name="add" size={16} color={Colors.success} />
                   </TouchableOpacity>
                 </View>
-                <Text style={styles.itemPrice}>₹{(item.unit_price * item.quantity).toFixed(0)}</Text>
+                <Text style={styles.itemPrice}>₹{Number(item.unit_price * item.quantity).toFixed(0)}</Text>
               </View>
             ))}
             <View style={styles.totalRow}>
               <Text style={styles.totalLabel}>Total per order</Text>
-              <Text style={styles.totalValue}>₹{totalAmount.toFixed(0)}</Text>
+              <Text style={styles.totalValue}>₹{Number(totalAmount).toFixed(0)}</Text>
             </View>
           </View>
         )}

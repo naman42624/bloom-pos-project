@@ -40,7 +40,7 @@ export default function RefundSaleScreen({ route, navigation }) {
           refund_method: method,
         });
         if (res.success) {
-          Alert.alert('Refunded', `₹${refundAmt.toFixed(2)} refunded successfully`);
+          Alert.alert('Refunded', `₹${Number(refundAmt).toFixed(2)} refunded successfully`);
           navigation.goBack();
         } else {
           Alert.alert('Error', res.message || 'Refund failed');
@@ -51,9 +51,9 @@ export default function RefundSaleScreen({ route, navigation }) {
     };
 
     if (Platform.OS === 'web') {
-      if (window.confirm(`Refund ₹${refundAmt.toFixed(2)} via ${method}?`)) doRefund();
+      if (window.confirm(`Refund ₹${Number(refundAmt).toFixed(2)} via ${method}?`)) doRefund();
     } else {
-      Alert.alert('Confirm Refund', `Refund ₹${refundAmt.toFixed(2)} via ${method}?`, [
+      Alert.alert('Confirm Refund', `Refund ₹${Number(refundAmt).toFixed(2)} via ${method}?`, [
         { text: 'Cancel', style: 'cancel' },
         { text: 'Refund', style: 'destructive', onPress: doRefund },
       ]);
@@ -64,7 +64,7 @@ export default function RefundSaleScreen({ route, navigation }) {
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       <View style={styles.card}>
         <Text style={styles.title}>Process Refund</Text>
-        <Text style={styles.hint}>Sale total: ₹{(grandTotal || 0).toFixed(2)}</Text>
+        <Text style={styles.hint}>Sale total: ₹{Number(grandTotal || 0).toFixed(2)}</Text>
 
         <Text style={styles.label}>Refund Amount</Text>
         <TextInput

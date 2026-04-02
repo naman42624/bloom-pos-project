@@ -1,6 +1,7 @@
 const express = require('express');
 const { body, validationResult } = require('express-validator');
 const { getDb } = require('../config/database');
+const { getDb: getAsyncDb } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
 const { todayStr: localToday } = require('../utils/time');
 
@@ -46,9 +47,9 @@ function generateExpenseNumber(db, locationId) {
 }
 
 // ─── GET /api/expenses ───────────────────────────────────────
-router.get('/', authenticate, (req, res, next) => {
+router.get('/', authenticate, async (req, res, next) => {
   try {
-    const db = getDb();
+    const db = await getAsyncDb();
     const { location_id, category, start_date, end_date } = req.query;
 
     let sql = `
@@ -67,7 +68,7 @@ router.get('/', authenticate, (req, res, next) => {
 
     sql += ' ORDER BY e.expense_date DESC, e.created_at DESC';
 
-    const expenses = db.prepare(sql).all(...params);
+    const expenses = await db.prepare(sql).all(...params);
 
     // Calculate totals
     const total = expenses.reduce((s, e) => s + e.amount, 0);
@@ -170,9 +171,9 @@ router.delete('/:id', authenticate, authorize('owner', 'manager'), (req, res, ne
 });
 
 // ─── GET /api/expenses/summary ───────────────────────────────
-router.get('/summary', authenticate, (req, res, next) => {
+router.get('/summary', authenticate, async (req, res, next) => {
   try {
-    const db = getDb();
+    const db = await getAsyncDb();
     const { location_id, start_date, end_date } = req.query;
 
     let sql = 'SELECT category, SUM(amount) as total, COUNT(*) as count FROM expenses WHERE 1=1';
@@ -184,7 +185,7 @@ router.get('/summary', authenticate, (req, res, next) => {
 
     sql += ' GROUP BY category ORDER BY total DESC';
 
-    const summary = db.prepare(sql).all(...params);
+    const summary = await db.prepare(sql).all(...params);
     const grandTotal = summary.reduce((s, r) => s + r.total, 0);
 
     res.json({ success: true, data: summary, total: grandTotal });

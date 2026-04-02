@@ -6,6 +6,7 @@ const path = require('path');
 const fs = require('fs');
 
 const { getDb } = require('../config/database');
+const { getDb: getAsyncDb } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
 
 const router = express.Router();
@@ -85,9 +86,9 @@ function recalcEstimatedCost(db, productId) {
 // ═══════════════════════════════════════════════════════════════
 
 // ─── GET /api/products ───────────────────────────────────────
-router.get('/', authenticate, (req, res, next) => {
+router.get('/', authenticate, async (req, res, next) => {
   try {
-    const db = getDb();
+    const db = await getAsyncDb();
     const { type, category, search, is_active, location_id } = req.query;
 
     let sql = `
@@ -109,33 +110,61 @@ router.get('/', authenticate, (req, res, next) => {
 
     sql += ' ORDER BY sale_count DESC, p.name ASC';
 
-    const products = db.prepare(sql).all(...params);
+    const products = await db.prepare(sql).all(...params);
 
     // Calculate available quantity based on BOM and material stock
     // Also get ready product stock from product_stock table
     const locId = location_id ? Number(location_id) : null;
-    if (locId) {
-      const getBOM = db.prepare('SELECT material_id, quantity as qty_needed FROM product_materials WHERE product_id = ?');
-      const getStock = db.prepare('SELECT quantity FROM material_stock WHERE material_id = ? AND location_id = ?');
-      const getReadyStock = db.prepare('SELECT quantity FROM product_stock WHERE product_id = ? AND location_id = ?');
-      for (const product of products) {
-        // Ready stock (already made products)
-        const readyStock = getReadyStock.get(product.id, locId);
-        product.ready_qty = readyStock ? readyStock.quantity : 0;
+    if (locId && products.length > 0) {
+      const productIds = products.map((product) => product.id);
+      const placeholders = productIds.map(() => '?').join(',');
 
-        // Can-make qty from BOM
-        const bom = getBOM.all(product.id);
+      const readyStockRows = await db.prepare(
+        `SELECT product_id, quantity
+         FROM product_stock
+         WHERE location_id = ? AND product_id IN (${placeholders})`
+      ).all(locId, ...productIds);
+
+      const bomRows = await db.prepare(
+        `SELECT pm.product_id, pm.material_id, pm.quantity as qty_needed,
+                COALESCE(ms.quantity, 0) as stock_qty
+         FROM product_materials pm
+         LEFT JOIN material_stock ms
+           ON ms.material_id = pm.material_id AND ms.location_id = ?
+         WHERE pm.product_id IN (${placeholders})
+         ORDER BY pm.product_id`
+      ).all(locId, ...productIds);
+
+      const readyByProductId = new Map();
+      for (const row of readyStockRows) {
+        readyByProductId.set(row.product_id, row.quantity || 0);
+      }
+
+      const bomByProductId = new Map();
+      for (const row of bomRows) {
+        const current = bomByProductId.get(row.product_id) || [];
+        current.push(row);
+        bomByProductId.set(row.product_id, current);
+      }
+
+      for (const product of products) {
+        product.ready_qty = readyByProductId.get(product.id) || 0;
+
+        const bom = bomByProductId.get(product.id) || [];
         if (bom.length === 0) {
           product.available_qty = null; // no BOM = unlimited
-        } else {
-          let minAvail = Infinity;
-          for (const b of bom) {
-            const stock = getStock.get(b.material_id, locId);
-            const available = stock ? Math.floor(stock.quantity / b.qty_needed) : 0;
-            if (available < minAvail) minAvail = available;
-          }
-          product.available_qty = minAvail === Infinity ? null : minAvail;
+          continue;
         }
+
+        let minAvail = Infinity;
+        for (const item of bom) {
+          const qtyNeeded = Number(item.qty_needed || 0);
+          if (qtyNeeded <= 0) continue;
+          const available = Math.floor(Number(item.stock_qty || 0) / qtyNeeded);
+          if (available < minAvail) minAvail = available;
+        }
+
+        product.available_qty = minAvail === Infinity ? null : minAvail;
       }
     }
 
@@ -144,10 +173,10 @@ router.get('/', authenticate, (req, res, next) => {
 });
 
 // ─── GET /api/products/:id ───────────────────────────────────
-router.get('/:id', authenticate, (req, res, next) => {
+router.get('/:id', authenticate, async (req, res, next) => {
   try {
-    const db = getDb();
-    const product = db.prepare(`
+    const db = await getAsyncDb();
+    const product = await db.prepare(`
       SELECT p.*, tr.name as tax_name, tr.percentage as tax_percentage,
              l.name as location_name
       FROM products p
@@ -159,7 +188,7 @@ router.get('/:id', authenticate, (req, res, next) => {
     if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
 
     // Materials (bill of materials)
-    product.materials = db.prepare(`
+    product.materials = await db.prepare(`
       SELECT pm.*, m.name as material_name, m.sku as material_sku,
              mc.name as category_name, mc.unit as unit,
              COALESCE(
@@ -174,7 +203,7 @@ router.get('/:id', authenticate, (req, res, next) => {
     `).all(req.params.id);
 
     // Ready stock per location
-    product.stock = db.prepare(`
+    product.stock = await db.prepare(`
       SELECT ps.*, l.name as location_name
       FROM product_stock ps
       JOIN locations l ON ps.location_id = l.id
@@ -183,7 +212,7 @@ router.get('/:id', authenticate, (req, res, next) => {
     product.total_ready_qty = product.stock.reduce((sum, s) => sum + s.quantity, 0);
 
     // Images
-    product.images = db.prepare(
+    product.images = await db.prepare(
       'SELECT * FROM product_images WHERE product_id = ? ORDER BY is_primary DESC, sort_order ASC'
     ).all(req.params.id);
 

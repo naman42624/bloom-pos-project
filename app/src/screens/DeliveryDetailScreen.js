@@ -75,7 +75,7 @@ export default function DeliveryDetailScreen({ route, navigation }) {
       const res = await api.getDelivery(deliveryId);
       setDelivery(res.data);
       if (res.data?.cod_amount) {
-        const remaining = (res.data.cod_amount - (res.data.cod_collected || 0)).toFixed(2);
+        const remaining = Number(res.data.cod_amount - (res.data.cod_collected || 0)).toFixed(2);
         setCodAmount(remaining);
       }
     } catch (err) {
@@ -258,7 +258,7 @@ export default function DeliveryDetailScreen({ route, navigation }) {
     }).join('');
 
     const codToCollect = Math.max((delivery.cod_amount || 0) - (delivery.cod_collected || 0), 0);
-    const codAmt = codToCollect.toFixed(0);
+    const codAmt = Number(codToCollect).toFixed(0);
 
     const buildCopyHtml = (copyTitle, showInstructions) => `
       <div style="border:2px solid #333;border-radius:6px;padding:10px 14px;box-sizing:border-box;position:relative;overflow:hidden;page-break-inside:avoid;break-inside:avoid;flex:1;min-height:0;">
@@ -498,14 +498,14 @@ export default function DeliveryDetailScreen({ route, navigation }) {
                   ) : null}
                 </View>
                 <Text style={styles.itemQty}>x{item.quantity}</Text>
-                {!isPartner && <Text style={styles.itemPrice}>₹{((item.line_total || item.total || 0)).toFixed(0)}</Text>}
+                {!isPartner && <Text style={styles.itemPrice}>₹{Number(item.line_total || item.total || 0).toFixed(0)}</Text>}
               </View>
             );
           })}
           {!isPartner && (
             <View style={[styles.itemRow, { borderTopWidth: 1, borderTopColor: Colors.border, marginTop: 8, paddingTop: 8 }]}>
               <Text style={[styles.itemName, { fontWeight: '700' }]}>Grand Total</Text>
-              <Text style={[styles.itemPrice, { fontWeight: '700', fontSize: FontSize.lg }]}>₹{(delivery.grand_total || 0).toFixed(0)}</Text>
+              <Text style={[styles.itemPrice, { fontWeight: '700', fontSize: FontSize.lg }]}>₹{Number(delivery.grand_total || 0).toFixed(0)}</Text>
             </View>
           )}
         </View>
@@ -516,16 +516,16 @@ export default function DeliveryDetailScreen({ route, navigation }) {
         <Text style={styles.sectionTitle}>{isPartner ? 'Collection' : 'Payment'}</Text>
         {!isPartner && (
           <>
-            <InfoRow icon="cash-outline" label="Grand Total" value={`₹${(delivery.grand_total || 0).toFixed(0)}`} />
-            <InfoRow icon="wallet-outline" label="Paid at Shop" value={`₹${((delivery.grand_total || 0) - (delivery.cod_amount || 0)).toFixed(0)}`} />
+            <InfoRow icon="cash-outline" label="Grand Total" value={`₹${Number(delivery.grand_total || 0).toFixed(0)}`} />
+            <InfoRow icon="wallet-outline" label="Paid at Shop" value={`₹${Number((delivery.grand_total || 0) - (delivery.cod_amount || 0)).toFixed(0)}`} />
           </>
         )}
         {delivery.cod_amount > 0 && (
           <>
-            <InfoRow icon="card-outline" label={isPartner ? 'Amount to Collect' : 'COD Amount'} value={`₹${delivery.cod_amount.toFixed(0)}`} />
-            <InfoRow icon="checkmark-done-outline" label="Collected" value={`₹${(delivery.cod_collected || 0).toFixed(0)}`} />
-            {delivery.cod_amount - (delivery.cod_collected || 0) > 0 && (
-              <InfoRow icon="alert-circle-outline" label="Remaining" value={`₹${(delivery.cod_amount - (delivery.cod_collected || 0)).toFixed(0)}`} />
+            <InfoRow icon="card-outline" label={isPartner ? 'Amount to Collect' : 'COD Amount'} value={`₹${Number(delivery.cod_amount).toFixed(0)}`} />
+            <InfoRow icon="checkmark-done-outline" label="Collected" value={`₹${Number(delivery.cod_collected || 0).toFixed(0)}`} />
+            {delivery.cod_amount - (delivery.cod_collected || 0) > 0.01 && (
+              <InfoRow icon="alert-circle-outline" label="Remaining" value={`₹${Number(delivery.cod_amount - (delivery.cod_collected || 0)).toFixed(0)}`} />
             )}
             <View style={[styles.codStatusBadge, { backgroundColor: delivery.cod_status === 'collected' ? '#E8F5E9' : delivery.cod_status === 'settled' ? '#E3F2FD' : '#FFF3E0' }]}>
               <Text style={styles.codStatusText}>
@@ -545,7 +545,7 @@ export default function DeliveryDetailScreen({ route, navigation }) {
             {delivery.payments.map((p, i) => (
               <View key={i} style={styles.paymentRow}>
                 <Text style={styles.cardText}>{p.method?.toUpperCase()}</Text>
-                <Text style={styles.cardText}>₹{p.amount.toFixed(0)}</Text>
+                <Text style={styles.cardText}>₹{Number(p.amount).toFixed(0)}</Text>
                 <Text style={[styles.cardText, { fontSize: FontSize.xs }]}>{formatDate(p.created_at)}</Text>
               </View>
             ))}
@@ -609,7 +609,7 @@ export default function DeliveryDetailScreen({ route, navigation }) {
                   <Text style={styles.formTitle}>Confirm Delivery</Text>
                   {delivery.cod_amount > 0 && (
                     <>
-                      <Text style={styles.label}>COD Amount to Collect (₹{(delivery.cod_amount - (delivery.cod_collected || 0)).toFixed(0)} remaining)</Text>
+                      <Text style={styles.label}>COD Amount to Collect (₹{Number(delivery.cod_amount - (delivery.cod_collected || 0)).toFixed(0)} remaining)</Text>
                       <TextInput
                         style={styles.input}
                         value={codAmount}

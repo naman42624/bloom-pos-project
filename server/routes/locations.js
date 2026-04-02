@@ -1,6 +1,7 @@
 const express = require('express');
 const { body, param, validationResult } = require('express-validator');
 const { getDb } = require('../config/database');
+const { getDb: getAsyncDb } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
 const { safeParseJSON } = require('../utils/json');
 
@@ -9,17 +10,17 @@ router.use(authenticate);
 
 // ─── GET /api/locations ──────────────────────────────────────
 // Owner: all locations; Manager/Employee: assigned locations
-router.get('/', (req, res, next) => {
+router.get('/', async (req, res, next) => {
   try {
-    const db = getDb();
+    const db = await getAsyncDb();
     let locations;
 
     if (req.user.role === 'owner' || req.user.role === 'customer') {
-      locations = db
+      locations = await db
         .prepare('SELECT * FROM locations WHERE is_active = 1 ORDER BY type, name')
         .all();
     } else {
-      locations = db
+      locations = await db
         .prepare(
           `SELECT l.* FROM locations l
            JOIN user_locations ul ON ul.location_id = l.id
@@ -29,16 +30,26 @@ router.get('/', (req, res, next) => {
         .all(req.user.id);
     }
 
-    // Add staff count for each location (only active users)
-    const staffCount = db.prepare(
-      `SELECT COUNT(*) as count FROM user_locations ul
-       JOIN users u ON u.id = ul.user_id
-       WHERE ul.location_id = ? AND u.is_active = 1`
-    );
+    // Add staff count for each location (only active users) using one grouped query
+    const locationIds = locations.map((loc) => loc.id);
+    let staffCountByLocationId = new Map();
+    if (locationIds.length > 0) {
+      const placeholders = locationIds.map(() => '?').join(',');
+      const staffRows = await db.prepare(
+        `SELECT ul.location_id, COUNT(*) as count
+         FROM user_locations ul
+         JOIN users u ON u.id = ul.user_id
+         WHERE ul.location_id IN (${placeholders}) AND u.is_active = 1
+         GROUP BY ul.location_id`
+      ).all(...locationIds);
+
+      staffCountByLocationId = new Map(staffRows.map((row) => [row.location_id, Number(row.count || 0)]));
+    }
+
     locations = locations.map((loc) => ({
       ...loc,
       operating_hours: safeParseJSON(loc.operating_hours, null),
-      staff_count: staffCount.get(loc.id).count,
+      staff_count: staffCountByLocationId.get(loc.id) || 0,
     }));
 
     res.json({ success: true, data: { locations } });
@@ -48,15 +59,15 @@ router.get('/', (req, res, next) => {
 });
 
 // ─── GET /api/locations/:id ──────────────────────────────────
-router.get('/:id', param('id').isInt(), (req, res, next) => {
+router.get('/:id', param('id').isInt(), async (req, res, next) => {
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({ success: false, errors: errors.array() });
     }
 
-    const db = getDb();
-    const location = db
+    const db = await getAsyncDb();
+    const location = await db
       .prepare('SELECT * FROM locations WHERE id = ?')
       .get(req.params.id);
 
@@ -66,7 +77,7 @@ router.get('/:id', param('id').isInt(), (req, res, next) => {
 
     // Non-owners must be assigned to this location
     if (req.user.role !== 'owner') {
-      const assignment = db
+      const assignment = await db
         .prepare('SELECT id FROM user_locations WHERE user_id = ? AND location_id = ?')
         .get(req.user.id, req.params.id);
       if (!assignment) {
@@ -75,7 +86,7 @@ router.get('/:id', param('id').isInt(), (req, res, next) => {
     }
 
     // Get assigned staff
-    const staff = db
+    const staff = await db
       .prepare(
         `SELECT u.id, u.name, u.phone, u.role, ul.is_primary
          FROM users u

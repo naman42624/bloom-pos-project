@@ -6,14 +6,15 @@ function localDateStr(dt) {
 }
 const { body, validationResult } = require('express-validator');
 const { getDb } = require('../config/database');
+const { getDb: getAsyncDb } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
 const { safeParseJSON } = require('../utils/json');
 
 // ─── GET /api/customers ─────────────────────────────────────
 // List all customers (users with role='customer') + any unique phones from sales
-router.get('/', authenticate, authorize('owner', 'manager', 'employee', 'delivery_partner'), (req, res, next) => {
+router.get('/', authenticate, authorize('owner', 'manager', 'employee', 'delivery_partner'), async (req, res, next) => {
   try {
-    const db = getDb();
+    const db = await getAsyncDb();
     const { search, limit = 50, offset = 0 } = req.query;
 
     let sql = `
@@ -33,7 +34,7 @@ router.get('/', authenticate, authorize('owner', 'manager', 'employee', 'deliver
     sql += ` ORDER BY name ASC LIMIT ? OFFSET ?`;
     params.push(parseInt(limit), parseInt(offset));
 
-    let customers = db.prepare(sql).all(...params);
+    let customers = await db.prepare(sql).all(...params);
 
     // If initial results are few and no search, or if we want to fulfill the "any unique phones" requirement:
     // Only add unregistered customers if we are on the first page and search is flexible
@@ -55,7 +56,7 @@ router.get('/', authenticate, authorize('owner', 'manager', 'employee', 'deliver
       unregParams.push(limit - customers.length);
 
       try {
-        const unregistered = db.prepare(unregSql).all(...unregParams);
+        const unregistered = await db.prepare(unregSql).all(...unregParams);
         customers = [...customers, ...unregistered];
       } catch (e) {
         console.error("Error fetching unregistered customers:", e.message);
@@ -69,27 +70,55 @@ router.get('/', authenticate, authorize('owner', 'manager', 'employee', 'deliver
       countSql += ` AND (name ILIKE ? OR phone ILIKE ? OR email ILIKE ?)`;
       countParams.push(`%${search}%`, `%${search}%`, `%${search}%`);
     }
-    const { total } = db.prepare(countSql).get(...countParams);
+    const { total } = await db.prepare(countSql).get(...countParams);
 
-    // Attach order count for each customer
-    const orderCountStmt = db.prepare(
-      `SELECT COUNT(*) as c
-       FROM sales
-       WHERE (
-         customer_id = ?
-         OR sender_customer_id = ?
-         OR (customer_id IS NULL AND customer_phone = ?)
-         OR (sender_customer_id IS NULL AND sender_phone = ?)
-       )
-       AND status != 'cancelled'`
-    );
+    // Attach order count for each customer using batched lookups
+    const registeredIds = customers.filter((customer) => customer.is_registered && customer.id).map((customer) => customer.id);
+    const unregisteredPhones = customers.filter((customer) => !customer.is_registered && customer.phone).map((customer) => customer.phone);
+
+    const orderCountById = new Map();
+    const orderCountByPhone = new Map();
+
+    if (registeredIds.length > 0) {
+      const placeholders = registeredIds.map(() => '?').join(',');
+      const registeredRows = await db.prepare(
+        `SELECT customer_id as key_id, COUNT(*) as c
+         FROM sales
+         WHERE customer_id IN (${placeholders}) AND status != 'cancelled'
+         GROUP BY customer_id`
+      ).all(...registeredIds);
+      for (const row of registeredRows) {
+        orderCountById.set(row.key_id, Number(row.c || 0));
+      }
+    }
+
+    if (unregisteredPhones.length > 0) {
+      const placeholders = unregisteredPhones.map(() => '?').join(',');
+      const unregisteredRows = await db.prepare(
+        `SELECT phone, SUM(c) as c FROM (
+           SELECT customer_phone as phone, COUNT(*) as c
+           FROM sales
+           WHERE customer_id IS NULL AND customer_phone IN (${placeholders}) AND status != 'cancelled'
+           GROUP BY customer_phone
+           UNION ALL
+           SELECT sender_phone as phone, COUNT(*) as c
+           FROM sales
+           WHERE sender_customer_id IS NULL AND sender_phone IN (${placeholders}) AND status != 'cancelled'
+           GROUP BY sender_phone
+         ) x
+         GROUP BY phone`
+      ).all(...unregisteredPhones, ...unregisteredPhones);
+      for (const row of unregisteredRows) {
+        orderCountByPhone.set(row.phone, Number(row.c || 0));
+      }
+    }
 
     const enriched = customers.map(c => {
       try {
         return {
           ...c,
           custom_dates: safeParseJSON(c.custom_dates, []),
-          order_count: orderCountStmt.get(c.id || null, c.id || null, c.phone, c.phone).c,
+          order_count: c.is_registered ? (orderCountById.get(c.id) || 0) : (orderCountByPhone.get(c.phone) || 0),
         };
       } catch (e) {
         console.error(`Error enriching customer ${c.id || c.phone}:`, e.message);
@@ -103,22 +132,22 @@ router.get('/', authenticate, authorize('owner', 'manager', 'employee', 'deliver
 
 // ─── GET /api/customers/lookup ───────────────────────────────
 // Phone-based lookup — checks users table first, then sales history
-router.get('/lookup', authenticate, (req, res, next) => {
+router.get('/lookup', authenticate, async (req, res, next) => {
   try {
-    const db = getDb();
+    const db = await getAsyncDb();
     const { phone } = req.query;
     if (!phone || phone.length < 4) return res.json({ success: true, data: null });
 
     // Check if registered customer exists
-    const user = db.prepare(
+    const user = await db.prepare(
       `SELECT id, name, phone, email, credit_balance, total_spent FROM users WHERE phone = ? AND role = 'customer'`
     ).get(phone);
 
     if (user) {
-      const orderCount = db.prepare(
+      const orderCount = await db.prepare(
         `SELECT COUNT(*) as c FROM sales WHERE (customer_id = ? OR sender_customer_id = ?) AND status != 'cancelled'`
       ).get(user.id, user.id).c;
-      const lastOrder = db.prepare(
+      const lastOrder = await db.prepare(
         `SELECT created_at FROM sales WHERE (customer_id = ? OR sender_customer_id = ?) AND status != 'cancelled' ORDER BY created_at DESC LIMIT 1`
       ).get(user.id, user.id);
       return res.json({
@@ -128,7 +157,7 @@ router.get('/lookup', authenticate, (req, res, next) => {
     }
 
     // Fallback: check sales history for unregistered customers
-    const salesCustomer = db.prepare(`
+    const salesCustomer = await db.prepare(`
       SELECT MAX(name) as name, phone, COUNT(*) as order_count,
              SUM(grand_total) as total_spent, MAX(created_at) as last_order
       FROM (
@@ -150,16 +179,16 @@ router.get('/lookup', authenticate, (req, res, next) => {
 
 // ─── GET /api/customers/search ───────────────────────────────
 // Autocomplete search by partial phone or name (for checkout dropdown)
-router.get('/search', authenticate, (req, res, next) => {
+router.get('/search', authenticate, async (req, res, next) => {
   try {
-    const db = getDb();
+    const db = await getAsyncDb();
     const { q } = req.query;
     if (!q || q.length < 3) return res.json({ success: true, data: [] });
 
     const term = `%${q}%`;
 
     // Search registered customers
-    const registered = db.prepare(`
+    const registered = await db.prepare(`
       SELECT id, name, phone, credit_balance, total_spent
       FROM users WHERE role = 'customer' AND is_active = 1
         AND (phone ILIKE ? OR name ILIKE ?)
@@ -167,7 +196,7 @@ router.get('/search', authenticate, (req, res, next) => {
     `).all(term, term);
 
     // Search unregistered customers from sales history
-    const unregistered = db.prepare(`
+    const unregistered = await db.prepare(`
       SELECT NULL as id, MAX(name) as name, phone,
              0 as credit_balance, SUM(grand_total) as total_spent
       FROM (
@@ -200,13 +229,13 @@ router.get('/search', authenticate, (req, res, next) => {
 
 // ─── GET /api/customers/upcoming-dates ───────────────────────
 // Special dates coming up in the next N days
-router.get('/upcoming-dates', authenticate, authorize('owner', 'manager'), (req, res, next) => {
+router.get('/upcoming-dates', authenticate, authorize('owner', 'manager'), async (req, res, next) => {
   try {
-    const db = getDb();
+    const db = await getAsyncDb();
     const { days = 30 } = req.query;
 
     // Get all customers with birthday/anniversary/custom_dates
-    const customers = db.prepare(`
+    const customers = await db.prepare(`
       SELECT id, name, phone, birthday, anniversary, custom_dates
       FROM users
       WHERE role = 'customer' AND is_active = 1
@@ -260,10 +289,10 @@ router.get('/upcoming-dates', authenticate, authorize('owner', 'manager'), (req,
 });
 
 // ─── GET /api/customers/:id ─────────────────────────────────
-router.get('/:id', authenticate, (req, res, next) => {
+router.get('/:id', authenticate, async (req, res, next) => {
   try {
-    const db = getDb();
-    const customer = db.prepare(`
+    const db = await getAsyncDb();
+    const customer = await db.prepare(`
       SELECT id, name, phone, email, birthday, anniversary, custom_dates,
              total_spent, credit_balance, notes, is_active, created_at, updated_at
       FROM users WHERE id = ? AND role = 'customer'
@@ -274,12 +303,12 @@ router.get('/:id', authenticate, (req, res, next) => {
     customer.custom_dates = safeParseJSON(customer.custom_dates, []);
 
     // Addresses
-    const addresses = db.prepare(
+    const addresses = await db.prepare(
       'SELECT * FROM customer_addresses WHERE customer_id = ? ORDER BY is_default DESC, created_at DESC'
     ).all(req.params.id);
 
     // Order history (recent 20)
-    const orders = db.prepare(`
+    const orders = await db.prepare(`
       SELECT s.id, s.sale_number, s.grand_total, s.order_type, s.status, s.payment_status, s.created_at,
              s.receiver_name, s.receiver_phone, s.sender_same_as_receiver,
              s.delivery_address, s.sender_name, s.sender_phone,
@@ -296,7 +325,7 @@ router.get('/:id', authenticate, (req, res, next) => {
     }));
 
     // Credit payments
-    const creditPayments = db.prepare(`
+    const creditPayments = await db.prepare(`
       SELECT cp.*, u.name as received_by_name
       FROM credit_payments cp
       LEFT JOIN users u ON cp.received_by = u.id
@@ -305,7 +334,7 @@ router.get('/:id', authenticate, (req, res, next) => {
     `).all(req.params.id);
 
     // Special dates from separate table
-    const specialDates = db.prepare(
+    const specialDates = await db.prepare(
       'SELECT * FROM special_dates WHERE customer_id = ? ORDER BY date ASC'
     ).all(req.params.id);
 
@@ -419,10 +448,10 @@ router.put(
 );
 
 // ─── GET /api/customers/:id/addresses ────────────────────────
-router.get('/:id/addresses', authenticate, (req, res, next) => {
+router.get('/:id/addresses', authenticate, async (req, res, next) => {
   try {
-    const db = getDb();
-    const addresses = db.prepare(
+    const db = await getAsyncDb();
+    const addresses = await db.prepare(
       'SELECT * FROM customer_addresses WHERE customer_id = ? ORDER BY is_default DESC, created_at DESC'
     ).all(req.params.id);
     res.json({ success: true, data: addresses });
@@ -597,10 +626,10 @@ router.post(
 );
 
 // ─── GET /api/customers/:id/credits ──────────────────────────
-router.get('/:id/credits', authenticate, (req, res, next) => {
+router.get('/:id/credits', authenticate, async (req, res, next) => {
   try {
-    const db = getDb();
-    const payments = db.prepare(`
+    const db = await getAsyncDb();
+    const payments = await db.prepare(`
       SELECT cp.*, u.name as received_by_name
       FROM credit_payments cp
       LEFT JOIN users u ON cp.recorded_by = u.id
@@ -608,7 +637,7 @@ router.get('/:id/credits', authenticate, (req, res, next) => {
       ORDER BY cp.created_at DESC
     `).all(req.params.id);
 
-    const customer = db.prepare("SELECT credit_balance FROM users WHERE id = ? AND role = 'customer'").get(req.params.id);
+    const customer = await db.prepare("SELECT credit_balance FROM users WHERE id = ? AND role = 'customer'").get(req.params.id);
     res.json({ success: true, data: payments, credit_balance: customer?.credit_balance || 0 });
   } catch (err) { next(err); }
 });
@@ -653,12 +682,12 @@ router.delete('/:id/special-dates/:dateId', authenticate, (req, res, next) => {
 });
 
 // ─── GET /api/customers/:id/orders ───────────────────────────
-router.get('/:id/orders', authenticate, (req, res, next) => {
+router.get('/:id/orders', authenticate, async (req, res, next) => {
   try {
-    const db = getDb();
+    const db = await getAsyncDb();
     const { limit = 30, offset = 0 } = req.query;
 
-    const orders = db.prepare(`
+    const orders = await db.prepare(`
       SELECT s.id, s.sale_number, s.grand_total, s.order_type, s.status,
              s.discount_amount, s.payment_status, s.created_at,
              l.name as location_name
@@ -669,7 +698,7 @@ router.get('/:id/orders', authenticate, (req, res, next) => {
       LIMIT ? OFFSET ?
     `).all(req.params.id, req.params.id, parseInt(limit), parseInt(offset));
 
-    const { total } = db.prepare(
+    const { total } = await db.prepare(
       "SELECT COUNT(*) as total FROM sales WHERE (customer_id = ? OR sender_customer_id = ?) AND status != 'cancelled'"
     ).get(req.params.id, req.params.id);
 

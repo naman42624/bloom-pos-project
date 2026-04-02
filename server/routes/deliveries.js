@@ -1,6 +1,7 @@
 const express = require('express');
 const { body, validationResult } = require('express-validator');
 const { getDb } = require('../config/database');
+const { getDb: getAsyncDb } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
 const { createNotification, notifyByRole } = require('./notifications');
 const { nowLocal } = require('../utils/time');
@@ -66,9 +67,9 @@ const upload = multer({
 
 // ─── GET /api/deliveries ─────────────────────────────────────
 // List deliveries with filters
-router.get('/', authenticate, authorize('owner', 'manager', 'delivery_partner', 'employee'), (req, res, next) => {
+router.get('/', authenticate, authorize('owner', 'manager', 'delivery_partner', 'employee'), async (req, res, next) => {
   try {
-    const db = getDb();
+    const db = await getAsyncDb();
     const { location_id, status, delivery_partner_id, date_from, date_to, limit: lim, offset: off } = req.query;
 
     let sql = `
@@ -108,7 +109,7 @@ router.get('/', authenticate, authorize('owner', 'manager', 'delivery_partner', 
 
     // Scope managers to their locations
     if (req.user.role === 'manager' && !location_id) {
-      const userLocs = db.prepare('SELECT location_id FROM user_locations WHERE user_id = ?').all(req.user.id).map(r => r.location_id);
+      const userLocs = (await db.prepare('SELECT location_id FROM user_locations WHERE user_id = ?').all(req.user.id)).map(r => r.location_id);
       if (userLocs.length > 0) {
         sql += ` AND d.location_id IN (${userLocs.map(() => '?').join(',')})`;
         params.push(...userLocs);
@@ -122,12 +123,34 @@ router.get('/', authenticate, authorize('owner', 'manager', 'delivery_partner', 
     sql += ' LIMIT ? OFFSET ?';
     params.push(limit, offset);
 
-    const deliveries = db.prepare(sql).all(...params);
+    const deliveries = await db.prepare(sql).all(...params);
 
-    // Get items for each delivery (include special instructions and image)
-    const getItems = db.prepare('SELECT product_name, quantity, special_instructions as item_special_instructions, image_url as item_image_url, custom_materials FROM sale_items WHERE sale_id = ?');
-    for (const d of deliveries) {
-      d.items = getItems.all(d.sale_id);
+    // Get items for each delivery (include special instructions and image) in one batched query
+    if (deliveries.length > 0) {
+      const saleIds = [...new Set(deliveries.map((d) => d.sale_id))];
+      const placeholders = saleIds.map(() => '?').join(',');
+      const itemRows = await db.prepare(
+        `SELECT sale_id, product_name, quantity, special_instructions as item_special_instructions, image_url as item_image_url, custom_materials
+         FROM sale_items
+         WHERE sale_id IN (${placeholders})`
+      ).all(...saleIds);
+
+      const itemsBySaleId = new Map();
+      for (const row of itemRows) {
+        const current = itemsBySaleId.get(row.sale_id) || [];
+        current.push({
+          product_name: row.product_name,
+          quantity: row.quantity,
+          item_special_instructions: row.item_special_instructions,
+          item_image_url: row.item_image_url,
+          custom_materials: row.custom_materials,
+        });
+        itemsBySaleId.set(row.sale_id, current);
+      }
+
+      for (const delivery of deliveries) {
+        delivery.items = itemsBySaleId.get(delivery.sale_id) || [];
+      }
     }
 
     res.json({ success: true, data: deliveries });
@@ -136,9 +159,9 @@ router.get('/', authenticate, authorize('owner', 'manager', 'delivery_partner', 
 
 // ─── GET /api/deliveries/at-risk ─────────────────────────────
 // Orders/deliveries not ready within 30 min of scheduled time
-router.get('/at-risk', authenticate, authorize('owner', 'manager', 'employee'), (req, res, next) => {
+router.get('/at-risk', authenticate, authorize('owner', 'manager', 'employee'), async (req, res, next) => {
   try {
-    const db = getDb();
+    const db = await getAsyncDb();
     const { location_id } = req.query;
 
     const now = new Date();
@@ -193,7 +216,7 @@ router.get('/at-risk', authenticate, authorize('owner', 'manager', 'employee'), 
 
     sql += ' ORDER BY scheduled_date ASC, scheduled_time ASC';
 
-    const atRisk = db.prepare(sql).all(...params);
+    const atRisk = await db.prepare(sql).all(...params);
 
     res.json({ success: true, data: atRisk });
   } catch (err) { next(err); }
@@ -255,10 +278,10 @@ router.post(
 );
 
 // ─── GET /api/deliveries/:id ─────────────────────────────────
-router.get('/:id(\\d+)', authenticate, (req, res, next) => {
+router.get('/:id(\\d+)', authenticate, async (req, res, next) => {
   try {
-    const db = getDb();
-    const delivery = db.prepare(`
+    const db = await getAsyncDb();
+    const delivery = await db.prepare(`
       SELECT d.*, s.sale_number, s.grand_total, s.payment_status, s.subtotal, s.tax_total,
              s.discount_amount, s.delivery_charges, s.order_type, s.special_instructions,
              s.customer_notes, s.sender_name, s.sender_phone, s.sender_message,
@@ -276,28 +299,28 @@ router.get('/:id(\\d+)', authenticate, (req, res, next) => {
     if (!delivery) return res.status(404).json({ success: false, message: 'Delivery not found' });
 
     // Sale items
-    delivery.items = db.prepare(`
+    delivery.items = await db.prepare(`
       SELECT si.*, p.sku as product_sku
       FROM sale_items si LEFT JOIN products p ON si.product_id = p.id
       WHERE si.sale_id = ?
     `).all(delivery.sale_id);
 
     // Payments on this sale
-    delivery.payments = db.prepare(`
+    delivery.payments = await db.prepare(`
       SELECT p.*, u.name as received_by_name
       FROM payments p LEFT JOIN users u ON p.received_by = u.id
       WHERE p.sale_id = ?
     `).all(delivery.sale_id);
 
     // Delivery proof
-    delivery.proofs = db.prepare(`
+    delivery.proofs = await db.prepare(`
       SELECT dp.*, u.name as created_by_name
       FROM delivery_proofs dp LEFT JOIN users u ON dp.created_by = u.id
       WHERE dp.delivery_id = ?
     `).all(delivery.id);
 
     // COD collections
-    delivery.collections = db.prepare(`
+    delivery.collections = await db.prepare(`
       SELECT dc.*, u.name as collected_by_name
       FROM delivery_collections dc LEFT JOIN users u ON dc.collected_by = u.id
       WHERE dc.delivery_id = ?
@@ -679,15 +702,15 @@ router.post(
 
 // ─── GET /api/deliveries/settlements/unsettled ───────────────
 // Get deliveries with COD that haven't been settled yet (for a partner)
-router.get('/settlements/unsettled', authenticate, authorize('owner', 'manager', 'delivery_partner'), (req, res, next) => {
+router.get('/settlements/unsettled', authenticate, authorize('owner', 'manager', 'delivery_partner'), async (req, res, next) => {
   try {
-    const db = getDb();
+    const db = await getAsyncDb();
     const { delivery_partner_id } = req.query;
     
     const partnerId = req.user.role === 'delivery_partner' ? req.user.id : parseInt(delivery_partner_id);
     if (!partnerId) return res.status(400).json({ success: false, message: 'delivery_partner_id required' });
 
-    const unsettled = db.prepare(`
+    const unsettled = await db.prepare(`
       SELECT d.id, d.sale_id, d.cod_amount, d.cod_collected, d.cod_status, d.delivered_time,
              s.sale_number, d.customer_name, d.customer_phone
       FROM deliveries d
@@ -866,9 +889,9 @@ router.put(
 
 // ─── GET /api/deliveries/settlements ─────────────────────────
 // List settlements
-router.get('/settlements', authenticate, authorize('owner', 'manager'), (req, res, next) => {
+router.get('/settlements', authenticate, authorize('owner', 'manager'), async (req, res, next) => {
   try {
-    const db = getDb();
+    const db = await getAsyncDb();
     const { delivery_partner_id, status, limit: lim } = req.query;
 
     let sql = `
@@ -886,7 +909,7 @@ router.get('/settlements', authenticate, authorize('owner', 'manager'), (req, re
     sql += ' ORDER BY ds.created_at DESC LIMIT ?';
     params.push(parseInt(lim) || 50);
 
-    const settlements = db.prepare(sql).all(...params);
+    const settlements = await db.prepare(sql).all(...params);
     res.json({ success: true, data: settlements });
   } catch (err) { next(err); }
 });
@@ -1098,12 +1121,12 @@ router.put(
 
 // ─── GET /api/deliveries/customer/orders ─────────────────────
 // Customer views their own orders with payment status & dues
-router.get('/customer/orders', authenticate, (req, res, next) => {
+router.get('/customer/orders', authenticate, async (req, res, next) => {
   try {
-    const db = getDb();
+    const db = await getAsyncDb();
     const customerId = req.user.id;
 
-    const orders = db.prepare(`
+    const orders = await db.prepare(`
       SELECT s.id, s.sale_number, s.order_type, s.status, s.grand_total,
              s.payment_status, s.delivery_address, s.scheduled_date, s.scheduled_time,
              s.pickup_status, s.created_at,
@@ -1129,9 +1152,9 @@ router.get('/customer/orders', authenticate, (req, res, next) => {
 
 // ─── GET /api/deliveries/customer/dues ───────────────────────
 // Customer or manager views outstanding dues per order for a customer
-router.get('/customer/dues', authenticate, (req, res, next) => {
+router.get('/customer/dues', authenticate, async (req, res, next) => {
   try {
-    const db = getDb();
+    const db = await getAsyncDb();
     let customerId = req.user.id;
 
     // Manager/owner can query for a specific customer
@@ -1139,7 +1162,7 @@ router.get('/customer/dues', authenticate, (req, res, next) => {
       customerId = parseInt(req.query.customer_id);
     }
 
-    const orders = db.prepare(`
+    const orders = await db.prepare(`
       SELECT s.id, s.sale_number, s.order_type, s.status, s.grand_total,
              s.payment_status, s.created_at,
              COALESCE(SUM(p.amount), 0) as total_paid

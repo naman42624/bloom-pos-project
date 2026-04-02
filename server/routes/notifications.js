@@ -1,5 +1,6 @@
 const express = require('express');
 const { getDb } = require('../config/database');
+const { getDb: getAsyncDb } = require('../config/database-async');
 const { authenticate } = require('../middleware/auth');
 const { nowLocal } = require('../utils/time');
 
@@ -160,9 +161,9 @@ router.delete('/unregister-token', authenticate, (req, res) => {
 });
 
 // ─── GET /api/notifications ─────────────────────────────────
-router.get('/', authenticate, (req, res) => {
+router.get('/', authenticate, async (req, res) => {
   try {
-    const db = getDb();
+    const db = await getAsyncDb();
     const { limit = 50, offset = 0, unread_only } = req.query;
 
     let sql = 'SELECT * FROM notifications WHERE user_id = ?';
@@ -175,8 +176,8 @@ router.get('/', authenticate, (req, res) => {
     sql += ' ORDER BY created_at DESC LIMIT ? OFFSET ?';
     params.push(parseInt(limit), parseInt(offset));
 
-    const notifications = db.prepare(sql).all(...params);
-    const { count } = db.prepare(
+    const notifications = await db.prepare(sql).all(...params);
+    const { count } = await db.prepare(
       'SELECT COUNT(*) as count FROM notifications WHERE user_id = ? AND is_read = 0'
     ).get(req.user.id);
 
@@ -187,10 +188,10 @@ router.get('/', authenticate, (req, res) => {
 });
 
 // ─── GET /api/notifications/unread-count ─────────────────────
-router.get('/unread-count', authenticate, (req, res) => {
+router.get('/unread-count', authenticate, async (req, res) => {
   try {
-    const db = getDb();
-    const { count } = db.prepare(
+    const db = await getAsyncDb();
+    const { count } = await db.prepare(
       'SELECT COUNT(*) as count FROM notifications WHERE user_id = ? AND is_read = 0'
     ).get(req.user.id);
     res.json({ success: true, data: { count } });

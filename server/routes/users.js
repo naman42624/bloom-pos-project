@@ -2,6 +2,7 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const { body, param, query, validationResult } = require('express-validator');
 const { getDb } = require('../config/database');
+const { getDb: getAsyncDb } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
 
 const router = express.Router();
@@ -25,14 +26,14 @@ router.get(
     query('page').optional().isInt({ min: 1 }),
     query('limit').optional().isInt({ min: 1, max: 100 }),
   ],
-  (req, res, next) => {
+  async (req, res, next) => {
     try {
       const errors = validationResult(req);
       if (!errors.isEmpty()) {
         return res.status(400).json({ success: false, errors: errors.array() });
       }
 
-      const db = getDb();
+      const db = await getAsyncDb();
       const { role, location_id, is_active, search } = req.query;
       const page = parseInt(req.query.page) || 1;
       const limit = parseInt(req.query.limit) || 20;
@@ -74,11 +75,11 @@ router.get(
         params.push(parseInt(location_id));
       }
 
-      const countResult = db
+      const countResult = await db
         .prepare(`SELECT COUNT(DISTINCT u.id) as total FROM users u ${joinClause} ${whereClause}`)
         .get(...params);
 
-      const users = db
+      const users = await db
         .prepare(
           `SELECT DISTINCT u.${USER_SELECT_FIELDS.split(', ').join(', u.')},
              (SELECT l.name FROM user_locations ul2
@@ -113,10 +114,10 @@ router.get(
   '/:id',
   authorize('owner', 'manager'),
   param('id').isInt(),
-  (req, res, next) => {
+  async (req, res, next) => {
     try {
-      const db = getDb();
-      const user = db
+      const db = await getAsyncDb();
+      const user = await db
         .prepare(`SELECT ${USER_SELECT_FIELDS} FROM users WHERE id = ?`)
         .get(req.params.id);
 
@@ -129,7 +130,7 @@ router.get(
         return res.status(403).json({ success: false, message: 'Access denied' });
       }
 
-      const locations = db
+      const locations = await db
         .prepare(
           `SELECT l.id, l.name, l.type, ul.is_primary
            FROM locations l

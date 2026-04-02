@@ -29,7 +29,7 @@ export default function QRLabelScreen({ route }) {
     if (!qrData) return;
     try {
       await Share.share({
-        message: `${qrData.product.name}\nSKU: ${qrData.product.sku}\nPrice: ₹${(qrData.product.selling_price || 0).toFixed(2)}`,
+        message: `${qrData.product.name}\nSKU: ${qrData.product.sku}\nPrice: ₹${Number(qrData.product.selling_price || 0).toFixed(2)}`,
         title: `QR Label — ${qrData.product.name}`,
       });
     } catch {}
@@ -71,7 +71,7 @@ export default function QRLabelScreen({ route }) {
 
         <Text style={styles.productName}>{product.name}</Text>
         <Text style={styles.productSku}>SKU: {product.sku}</Text>
-        <Text style={styles.productPrice}>₹{(product.selling_price || 0).toFixed(2)}</Text>
+        <Text style={styles.productPrice}>₹{Number(product.selling_price || 0).toFixed(2)}</Text>
       </View>
 
       {/* Info */}
@@ -117,7 +117,7 @@ export default function QRLabelScreen({ route }) {
                 <img src="${qr_data_url}" width="250" height="250"/>
                 <p class="name">${product.name}</p>
                 <p class="sku">SKU: ${product.sku}</p>
-                <p class="price">₹${(product.selling_price || 0).toFixed(2)}</p>
+                <p class="price">₹${Number(product.selling_price || 0).toFixed(2)}</p>
                 </body></html>
               `);
               printWin.document.close();

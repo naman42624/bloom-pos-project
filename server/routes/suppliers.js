@@ -1,14 +1,15 @@
 const express = require('express');
 const { body, validationResult } = require('express-validator');
 const { getDb } = require('../config/database');
+const { getDb: getAsyncDb } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
 
 const router = express.Router();
 
 // ─── GET /api/suppliers ──────────────────────────────────────
-router.get('/', authenticate, (req, res, next) => {
+router.get('/', authenticate, async (req, res, next) => {
   try {
-    const db = getDb();
+    const db = await getAsyncDb();
     const showAll = req.query.all === '1';
     const where = showAll ? '' : 'WHERE s.is_active = 1';
     const { search } = req.query;
@@ -24,15 +25,29 @@ router.get('/', authenticate, (req, res, next) => {
 
     sql += ' ORDER BY s.name ASC';
 
-    const suppliers = db.prepare(sql).all(...params);
+    const suppliers = await db.prepare(sql).all(...params);
 
-    // Attach material count
+    // Attach material count using one grouped query
     let result;
     try {
-      const countStmt = db.prepare('SELECT COUNT(*) as count FROM supplier_materials WHERE supplier_id = ?');
+      const supplierIds = suppliers.map((s) => s.id);
+      let countBySupplierId = new Map();
+
+      if (supplierIds.length > 0) {
+        const placeholders = supplierIds.map(() => '?').join(',');
+        const countRows = await db.prepare(
+          `SELECT supplier_id, COUNT(*) as count
+           FROM supplier_materials
+           WHERE supplier_id IN (${placeholders})
+           GROUP BY supplier_id`
+        ).all(...supplierIds);
+
+        countBySupplierId = new Map(countRows.map((row) => [row.supplier_id, Number(row.count || 0)]));
+      }
+
       result = suppliers.map((s) => ({
         ...s,
-        material_count: countStmt.get(s.id).count,
+        material_count: countBySupplierId.get(s.id) || 0,
       }));
     } catch (countErr) {
       const msg = String(countErr?.message || '').toLowerCase();
@@ -42,7 +57,7 @@ router.get('/', authenticate, (req, res, next) => {
 
     // Filter fields for non-owner roles
     if (req.user.role !== 'owner') {
-      const setting = db.prepare("SELECT value FROM settings WHERE key = 'supplier_manager_fields'").get();
+      const setting = await db.prepare("SELECT value FROM settings WHERE key = 'supplier_manager_fields'").get();
       const allowed = (setting?.value || 'name').split(',').map((f) => f.trim());
       result = result.map((s) => {
         const filtered = { id: s.id, name: s.name, is_active: s.is_active, material_count: s.material_count };
@@ -62,16 +77,16 @@ router.get('/', authenticate, (req, res, next) => {
 });
 
 // ─── GET /api/suppliers/:id ──────────────────────────────────
-router.get('/:id', authenticate, (req, res, next) => {
+router.get('/:id', authenticate, async (req, res, next) => {
   try {
-    const db = getDb();
-    const supplier = db.prepare('SELECT * FROM suppliers WHERE id = ?').get(req.params.id);
+    const db = await getAsyncDb();
+    const supplier = await db.prepare('SELECT * FROM suppliers WHERE id = ?').get(req.params.id);
     if (!supplier) {
       return res.status(404).json({ success: false, message: 'Supplier not found' });
     }
 
     // Get associated materials
-    const materials = db.prepare(`
+    const materials = await db.prepare(`
       SELECT sm.*, m.name as material_name, m.sku, mc.name as category_name
       FROM supplier_materials sm
       JOIN materials m ON sm.material_id = m.id
@@ -80,7 +95,7 @@ router.get('/:id', authenticate, (req, res, next) => {
     `).all(req.params.id);
 
     // Recent purchase orders
-    const recentOrders = db.prepare(`
+    const recentOrders = await db.prepare(`
       SELECT po.id, po.po_number, po.status, po.total_amount, po.created_at, l.name as location_name
       FROM purchase_orders po
       JOIN locations l ON po.location_id = l.id
@@ -92,7 +107,7 @@ router.get('/:id', authenticate, (req, res, next) => {
 
     // Filter fields for non-owner roles
     if (req.user.role !== 'owner') {
-      const setting = db.prepare("SELECT value FROM settings WHERE key = 'supplier_manager_fields'").get();
+      const setting = await db.prepare("SELECT value FROM settings WHERE key = 'supplier_manager_fields'").get();
       const allowed = (setting?.value || 'name').split(',').map((f) => f.trim());
       const filtered = { id: data.id, name: data.name, is_active: data.is_active, material_count: data.material_count };
       if (allowed.includes('phone')) filtered.phone = data.phone;

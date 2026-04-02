@@ -23,7 +23,7 @@ export default function AddPaymentScreen({ route, navigation }) {
   const handleSubmit = async () => {
     const amt = parseFloat(amount);
     if (!amt || amt <= 0 || amt > due) {
-      Alert.alert('Invalid', `Amount must be between ₹1 and ₹${due.toFixed(2)}`);
+      Alert.alert('Invalid', `Amount must be between ₹1 and ₹${Number(due).toFixed(2)}`);
       return;
     }
 
@@ -35,7 +35,7 @@ export default function AddPaymentScreen({ route, navigation }) {
         reference_number: reference || null,
       });
       if (res.success) {
-        Alert.alert('Success', `₹${amt.toFixed(2)} payment recorded`);
+        Alert.alert('Success', `₹${Number(amt).toFixed(2)} payment recorded`);
         navigation.goBack();
       } else {
         Alert.alert('Error', res.message || 'Failed to add payment');
@@ -49,7 +49,7 @@ export default function AddPaymentScreen({ route, navigation }) {
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       <View style={styles.card}>
         <Text style={styles.title}>Record Payment</Text>
-        <Text style={styles.hint}>Balance due: ₹{(due || 0).toFixed(2)}</Text>
+        <Text style={styles.hint}>Balance due: ₹{Number(due || 0).toFixed(2)}</Text>
 
         <Text style={styles.label}>Amount</Text>
         <TextInput

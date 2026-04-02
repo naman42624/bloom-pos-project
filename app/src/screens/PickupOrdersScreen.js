@@ -107,7 +107,7 @@ export default function PickupOrdersScreen({ navigation }) {
       setSelectedOrder(order);
       const totalPaid = order.total_paid || 0;
       const balance = Math.max(0, (order.grand_total || 0) - totalPaid);
-      setPickupPayAmount(balance > 0 ? balance.toFixed(0) : '');
+      setPickupPayAmount(balance > 0 ? Number(balance).toFixed(0) : '');
       setPickupPayMethod('cash');
       setPickupPayRef('');
       setPaymentModalVisible(true);
@@ -248,7 +248,7 @@ export default function PickupOrdersScreen({ navigation }) {
             </Text>
             <Text style={styles.cardSub}>{item.customer_name || 'Walk-in'}</Text>
           </View>
-          <Text style={styles.amount}>₹{(item.grand_total || 0).toFixed(0)}</Text>
+          <Text style={styles.amount}>₹{Number(item.grand_total || 0).toFixed(0)}</Text>
         </View>
 
         <View style={[styles.row, { marginTop: 4 }]}>
@@ -398,7 +398,7 @@ export default function PickupOrdersScreen({ navigation }) {
                 <View style={styles.balanceBox}>
                   <Text style={styles.balanceLabel}>Balance Due</Text>
                   <Text style={styles.balanceAmount}>
-                    ₹{Math.max(0, (selectedOrder.grand_total || 0) - (selectedOrder.total_paid || 0)).toFixed(0)}
+                    ₹{Number(Math.max(0, (selectedOrder.grand_total || 0) - (selectedOrder.total_paid || 0))).toFixed(0)}
                   </Text>
                 </View>
 

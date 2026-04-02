@@ -52,7 +52,7 @@ export default function CustomerOrdersScreen({ navigation }) {
           <Text style={styles.cardDate}>{formatDate(item.created_at)}</Text>
         </View>
         <View style={{ alignItems: 'flex-end' }}>
-          <Text style={styles.amount}>₹{(item.grand_total || 0).toFixed(0)}</Text>
+          <Text style={styles.amount}>₹{Number(item.grand_total || 0).toFixed(0)}</Text>
           <View style={[styles.badge, { backgroundColor: statusColor(item.status) + '20' }]}>
             <Text style={[styles.badgeText, { color: statusColor(item.status) }]}>
               {(item.status || '').replace(/_/g, ' ').toUpperCase()}
@@ -83,7 +83,7 @@ export default function CustomerOrdersScreen({ navigation }) {
       {item.balance_due > 0 && (
         <View style={styles.dueRow}>
           <Ionicons name="alert-circle-outline" size={14} color="#E65100" />
-          <Text style={styles.dueText}>Balance Due: ₹{item.balance_due.toFixed(0)}</Text>
+          <Text style={styles.dueText}>Balance Due: ₹{Number(item.balance_due).toFixed(0)}</Text>
         </View>
       )}
 
@@ -112,12 +112,12 @@ export default function CustomerOrdersScreen({ navigation }) {
         </View>
         <View style={{ alignItems: 'flex-end' }}>
           <Text style={styles.totalLabel}>Due</Text>
-          <Text style={[styles.amount, { color: '#E65100' }]}>₹{(item.balance_due || 0).toFixed(0)}</Text>
+          <Text style={[styles.amount, { color: '#E65100' }]}>₹{Number(item.balance_due || 0).toFixed(0)}</Text>
         </View>
       </View>
       <View style={styles.cardRow}>
-        <Text style={styles.cardSub}>Total: ₹{(item.grand_total || 0).toFixed(0)}</Text>
-        <Text style={styles.cardSub}>Paid: ₹{(item.total_paid || 0).toFixed(0)}</Text>
+        <Text style={styles.cardSub}>Total: ₹{Number(item.grand_total || 0).toFixed(0)}</Text>
+        <Text style={styles.cardSub}>Paid: ₹{Number(item.total_paid || 0).toFixed(0)}</Text>
       </View>
     </View>
   );
@@ -142,7 +142,7 @@ export default function CustomerOrdersScreen({ navigation }) {
           <Ionicons name="alert-circle" size={24} color="#E65100" />
           <View style={{ marginLeft: 12 }}>
             <Text style={styles.summaryLabel}>Total Outstanding</Text>
-            <Text style={[styles.summaryValue, { color: '#E65100' }]}>₹{totalDue.toFixed(0)}</Text>
+            <Text style={[styles.summaryValue, { color: '#E65100' }]}>₹{Number(totalDue).toFixed(0)}</Text>
           </View>
           <Text style={[styles.cardSub, { marginLeft: 'auto' }]}>{dues.length} order{dues.length > 1 ? 's' : ''}</Text>
         </View>

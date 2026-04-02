@@ -186,7 +186,7 @@ export default function DashboardScreen({ navigation }) {
                 {activeLocation?.name ? `${activeLocation.name} — ` : ''}Register: {registerOpen ? 'Open' : 'Closed'}
               </Text>
               {registerOpen && registerData ? (
-                <Text style={styles.registerSub}>Opening: ₹{(registerData.opening_balance || 0).toFixed(0)}</Text>
+                <Text style={styles.registerSub}>Opening: ₹{Number(registerData.opening_balance || 0).toFixed(0)}</Text>
               ) : (
                 <Text style={[styles.registerSub, { color: Colors.error }]}>Open the register{activeLocation?.name ? ` for ${activeLocation.name}` : ''} before checkout</Text>
               )}
@@ -454,7 +454,7 @@ export default function DashboardScreen({ navigation }) {
                   </View>
                 </View>
                 <Text style={styles.taskMeta}>
-                  {order.customer_name || 'Walk-in'} • ₹{(order.grand_total || 0).toFixed(0)} • Preparing
+                  {order.customer_name || 'Walk-in'} • ₹{Number(order.grand_total || 0).toFixed(0)} • Preparing
                 </Text>
               </View>
               <Ionicons name="chevron-forward" size={18} color={Colors.textLight} />

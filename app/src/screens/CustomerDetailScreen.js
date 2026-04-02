@@ -181,12 +181,12 @@ export default function CustomerDetailScreen({ route, navigation }) {
         {/* Stats */}
         <View style={styles.statsGrid}>
           <View style={styles.statCard}>
-            <Text style={styles.statValue}>₹{(customer.total_spent || 0).toFixed(0)}</Text>
+            <Text style={styles.statValue}>₹{Number(customer.total_spent || 0).toFixed(0)}</Text>
             <Text style={styles.statLabel}>Total Spent</Text>
           </View>
           <View style={styles.statCard}>
             <Text style={[styles.statValue, customer.credit_balance > 0 && { color: Colors.error }]}>
-              ₹{(customer.credit_balance || 0).toFixed(0)}
+              ₹{Number(customer.credit_balance || 0).toFixed(0)}
             </Text>
             <Text style={styles.statLabel}>Due Balance</Text>
           </View>
@@ -208,7 +208,7 @@ export default function CustomerDetailScreen({ route, navigation }) {
             </View>
             <View style={styles.dueCard}>
               <Ionicons name="alert-circle" size={20} color={Colors.error} />
-              <Text style={styles.dueAmount}>₹{customer.credit_balance.toFixed(2)}</Text>
+              <Text style={styles.dueAmount}>₹{Number(customer.credit_balance).toFixed(2)}</Text>
             </View>
             
             {/* Pending Dues Breakup */}
@@ -228,8 +228,8 @@ export default function CustomerDetailScreen({ route, navigation }) {
                       <Text style={styles.orderMeta}>{formatDate(order.created_at)}</Text>
                     </View>
                     <View style={{ alignItems: 'flex-end', marginRight: Spacing.xs }}>
-                      <Text style={[styles.orderTotal, { color: Colors.error }]}>Due: ₹{order.balance_due.toFixed(0)}</Text>
-                      <Text style={styles.orderMeta}>Total: ₹{(order.grand_total || 0).toFixed(0)}</Text>
+                      <Text style={[styles.orderTotal, { color: Colors.error }]}>Due: ₹{Number(order.balance_due).toFixed(0)}</Text>
+                      <Text style={styles.orderMeta}>Total: ₹{Number(order.grand_total || 0).toFixed(0)}</Text>
                     </View>
                     <Ionicons name="chevron-forward" size={16} color={Colors.textLight} />
                   </TouchableOpacity>
@@ -247,7 +247,7 @@ export default function CustomerDetailScreen({ route, navigation }) {
             {customer.credit_payments.map((cp) => (
               <View key={cp.id} style={styles.historyCard}>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.historyAmount}>₹{cp.amount.toFixed(2)} — {cp.method.toUpperCase()}</Text>
+                  <Text style={styles.historyAmount}>₹{Number(cp.amount).toFixed(2)} — {cp.method.toUpperCase()}</Text>
                   <Text style={styles.historyMeta}>
                     {formatDate(cp.created_at)} • by {cp.received_by_name || 'Unknown'}
                   </Text>
@@ -355,7 +355,7 @@ export default function CustomerDetailScreen({ route, navigation }) {
                   <Text style={styles.orderMeta} numberOfLines={1}>Address: {order.delivery_address}</Text>
                 ) : null}
               </View>
-              <Text style={styles.orderTotal}>₹{(order.grand_total || 0).toFixed(0)}</Text>
+              <Text style={styles.orderTotal}>₹{Number(order.grand_total || 0).toFixed(0)}</Text>
               <Ionicons name="chevron-forward" size={16} color={Colors.textLight} />
             </TouchableOpacity>
           ))
@@ -382,7 +382,7 @@ export default function CustomerDetailScreen({ route, navigation }) {
                 <Ionicons name="close" size={24} color={Colors.text} />
               </TouchableOpacity>
             </View>
-            <Text style={styles.modalSubtext}>Outstanding: ₹{(customer.credit_balance || 0).toFixed(2)}</Text>
+            <Text style={styles.modalSubtext}>Outstanding: ₹{Number(customer.credit_balance || 0).toFixed(2)}</Text>
             <Text style={styles.fieldLabel}>Amount (₹)</Text>
             <TextInput style={styles.modalInput} value={creditAmount} onChangeText={setCreditAmount}
               keyboardType="decimal-pad" placeholder="0" placeholderTextColor={Colors.textLight} />

@@ -355,11 +355,11 @@ export default function DeliveriesScreen({ navigation }) {
         )}
 
         <View style={styles.cardFooter}>
-          {isManager && <Text style={styles.amount}>₹{(item.grand_total || 0).toFixed(0)}</Text>}
+          {isManager && <Text style={styles.amount}>₹{Number(item.grand_total || 0).toFixed(0)}</Text>}
           {item.cod_amount > 0 && (
             <View style={[styles.codBadge, item.cod_status === 'collected' ? styles.codCollected : styles.codPending]}>
               <Text style={styles.codText}>
-                {!isManager ? 'Collect' : 'COD'} ₹{item.cod_amount.toFixed(0)} {item.cod_status === 'collected' ? '✓' : item.cod_status === 'settled' ? '$$' : ''}
+                {!isManager ? 'Collect' : 'COD'} ₹{Number(item.cod_amount).toFixed(0)} {item.cod_status === 'collected' ? '✓' : item.cod_status === 'settled' ? '$$' : ''}
               </Text>
             </View>
           )}

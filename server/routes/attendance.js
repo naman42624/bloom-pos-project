@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { getDb } = require('../config/database');
+const { getDb: getAsyncDb } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
 const { todayStr, nowLocal } = require('../utils/time');
 const { safeParseJSON } = require('../utils/json');
@@ -187,13 +188,13 @@ router.post('/clock-out', authorize('manager', 'employee', 'delivery_partner'), 
 // ═══════════════════════════════════════════════════════════════
 // GET TODAY'S ATTENDANCE STATUS (for the logged-in user)
 // ═══════════════════════════════════════════════════════════════
-router.get('/today', authorize('owner', 'manager', 'employee', 'delivery_partner'), (req, res) => {
+router.get('/today', authorize('owner', 'manager', 'employee', 'delivery_partner'), async (req, res) => {
   try {
-    const db = getDb();
+    const db = await getAsyncDb();
     const today = todayStr();
 
     // Get ALL attendance records for today (supports split shifts)
-    const records = db.prepare(`
+    const records = await db.prepare(`
       SELECT a.*, l.name as location_name
       FROM attendance a
       JOIN locations l ON a.location_id = l.id
@@ -207,7 +208,7 @@ router.get('/today', authorize('owner', 'manager', 'employee', 'delivery_partner
     // Also get active outdoor duty from the current unclosed record
     let activeOutdoor = null;
     if (current && !current.clock_out) {
-      activeOutdoor = db.prepare(`
+      activeOutdoor = await db.prepare(`
         SELECT * FROM outdoor_duty_requests
         WHERE user_id = ? AND attendance_id = ? AND status IN ('approved', 'requested')
         ORDER BY created_at DESC LIMIT 1
@@ -242,9 +243,9 @@ router.get('/today', authorize('owner', 'manager', 'employee', 'delivery_partner
 // ═══════════════════════════════════════════════════════════════
 // GET ATTENDANCE HISTORY (own or filtered)
 // ═══════════════════════════════════════════════════════════════
-router.get('/', authorize('owner', 'manager', 'employee', 'delivery_partner'), (req, res) => {
+router.get('/', authorize('owner', 'manager', 'employee', 'delivery_partner'), async (req, res) => {
   try {
-    const db = getDb();
+    const db = await getAsyncDb();
     const { user_id, location_id, start_date, end_date, page = 1, limit = 30 } = req.query;
     const offset = (Number(page) - 1) * Number(limit);
 
@@ -265,7 +266,7 @@ router.get('/', authorize('owner', 'manager', 'employee', 'delivery_partner'), (
       params.push(Number(location_id));
     } else if (req.user.role === 'manager') {
       // Scope to manager's assigned locations
-      const locs = db.prepare('SELECT location_id FROM user_locations WHERE user_id = ?').all(req.user.id).map(l => l.location_id);
+      const locs = (await db.prepare('SELECT location_id FROM user_locations WHERE user_id = ?').all(req.user.id)).map(l => l.location_id);
       if (locs.length > 0) {
         where.push(`a.location_id IN (${locs.map(() => '?').join(',')})`);
         params.push(...locs);
@@ -283,9 +284,9 @@ router.get('/', authorize('owner', 'manager', 'employee', 'delivery_partner'), (
 
     const whereClause = where.join(' AND ');
 
-    const total = db.prepare(`SELECT COUNT(*) as count FROM attendance a WHERE ${whereClause}`).get(...params).count;
+    const total = (await db.prepare(`SELECT COUNT(*) as count FROM attendance a WHERE ${whereClause}`).get(...params)).count;
 
-    const records = db.prepare(`
+    const records = await db.prepare(`
       SELECT a.*, u.name as user_name, u.phone as user_phone, u.role as user_role, l.name as location_name
       FROM attendance a
       JOIN users u ON a.user_id = u.id
@@ -313,9 +314,9 @@ router.get('/', authorize('owner', 'manager', 'employee', 'delivery_partner'), (
 // ═══════════════════════════════════════════════════════════════
 // ATTENDANCE REPORT (summary by date range)
 // ═══════════════════════════════════════════════════════════════
-router.get('/report', authorize('owner', 'manager'), (req, res) => {
+router.get('/report', authorize('owner', 'manager'), async (req, res) => {
   try {
-    const db = getDb();
+    const db = await getAsyncDb();
     const { start_date, end_date, location_id, user_id } = req.query;
 
     if (!start_date || !end_date) {
@@ -329,7 +330,7 @@ router.get('/report', authorize('owner', 'manager'), (req, res) => {
       where.push('a.location_id = ?');
       params.push(Number(location_id));
     } else if (req.user.role === 'manager') {
-      const locs = db.prepare('SELECT location_id FROM user_locations WHERE user_id = ?').all(req.user.id).map(l => l.location_id);
+      const locs = (await db.prepare('SELECT location_id FROM user_locations WHERE user_id = ?').all(req.user.id)).map(l => l.location_id);
       if (locs.length > 0) {
         where.push(`a.location_id IN (${locs.map(() => '?').join(',')})`);
         params.push(...locs);
@@ -344,7 +345,7 @@ router.get('/report', authorize('owner', 'manager'), (req, res) => {
     const whereClause = where.join(' AND ');
 
     // Per-employee summary
-    const summary = db.prepare(`
+    const summary = await db.prepare(`
       SELECT
         a.user_id,
         u.name as user_name,
@@ -368,7 +369,7 @@ router.get('/report', authorize('owner', 'manager'), (req, res) => {
     `).all(...params);
 
     // Daily breakdown
-    const daily = db.prepare(`
+    const daily = await db.prepare(`
       SELECT
         a.date,
         COUNT(DISTINCT a.user_id) as staff_count,
@@ -551,9 +552,9 @@ router.put('/outdoor-duty/:id/complete', authorize('owner', 'manager', 'employee
 // ═══════════════════════════════════════════════════════════════
 // LIST OUTDOOR DUTY REQUESTS (for managers)
 // ═══════════════════════════════════════════════════════════════
-router.get('/outdoor-duty', authorize('owner', 'manager', 'employee', 'delivery_partner'), (req, res) => {
+router.get('/outdoor-duty', authorize('owner', 'manager', 'employee', 'delivery_partner'), async (req, res) => {
   try {
-    const db = getDb();
+    const db = await getAsyncDb();
     const { status, location_id, date } = req.query;
 
     let where = ['1=1'];
@@ -564,7 +565,7 @@ router.get('/outdoor-duty', authorize('owner', 'manager', 'employee', 'delivery_
       where.push('odr.user_id = ?');
       params.push(req.user.id);
     } else if (req.user.role === 'manager') {
-      const locs = db.prepare('SELECT location_id FROM user_locations WHERE user_id = ?').all(req.user.id).map(l => l.location_id);
+      const locs = (await db.prepare('SELECT location_id FROM user_locations WHERE user_id = ?').all(req.user.id)).map(l => l.location_id);
       if (locs.length > 0) {
         where.push(`odr.location_id IN (${locs.map(() => '?').join(',')})`);
         params.push(...locs);
@@ -584,7 +585,7 @@ router.get('/outdoor-duty', authorize('owner', 'manager', 'employee', 'delivery_
       params.push(date);
     }
 
-    const requests = db.prepare(`
+    const requests = await db.prepare(`
       SELECT odr.*, u.name as user_name, u.phone as user_phone, l.name as location_name,
              a.name as approver_name
       FROM outdoor_duty_requests odr
@@ -636,9 +637,9 @@ router.post('/salary-advance', authorize('owner', 'manager', 'employee', 'delive
 });
 
 // List advances
-router.get('/salary-advances', authorize('owner', 'manager', 'employee', 'delivery_partner'), (req, res) => {
+router.get('/salary-advances', authorize('owner', 'manager', 'employee', 'delivery_partner'), async (req, res) => {
   try {
-    const db = getDb();
+    const db = await getAsyncDb();
     const { user_id, status } = req.query;
 
     let where = ['1=1'];
@@ -657,7 +658,7 @@ router.get('/salary-advances', authorize('owner', 'manager', 'employee', 'delive
       params.push(status);
     }
 
-    const advances = db.prepare(`
+    const advances = await db.prepare(`
       SELECT sa.*, u.name as user_name, u.phone as user_phone,
              a.name as approver_name
       FROM salary_advances sa
@@ -745,9 +746,9 @@ router.put('/salary-advance/:id/:action', authorize('owner', 'manager'), (req, r
 // ═══════════════════════════════════════════════════════════════
 // STAFF DUTY SUMMARY (today's attendance for all staff)
 // ═══════════════════════════════════════════════════════════════
-router.get('/staff-today', authorize('owner', 'manager'), (req, res) => {
+router.get('/staff-today', authorize('owner', 'manager'), async (req, res) => {
   try {
-    const db = getDb();
+    const db = await getAsyncDb();
     const today = todayStr();
     const { location_id } = req.query;
 
@@ -758,14 +759,14 @@ router.get('/staff-today', authorize('owner', 'manager'), (req, res) => {
       locFilter = 'AND a.location_id = ?';
       params.push(Number(location_id));
     } else if (req.user.role === 'manager') {
-      const locs = db.prepare('SELECT location_id FROM user_locations WHERE user_id = ?').all(req.user.id).map(l => l.location_id);
+      const locs = (await db.prepare('SELECT location_id FROM user_locations WHERE user_id = ?').all(req.user.id)).map(l => l.location_id);
       if (locs.length > 0) {
         locFilter = `AND a.location_id IN (${locs.map(() => '?').join(',')})`;
         params.push(...locs);
       }
     }
 
-    const staff = db.prepare(`
+    const staff = await db.prepare(`
       SELECT a.*, u.name as user_name, u.phone as user_phone, u.role as user_role, l.name as location_name
       FROM attendance a
       JOIN users u ON a.user_id = u.id
@@ -782,14 +783,14 @@ router.get('/staff-today', authorize('owner', 'manager'), (req, res) => {
       notClockedFilter = 'AND ul.location_id = ?';
       notParams.push(Number(location_id));
     } else if (req.user.role === 'manager') {
-      const locs = db.prepare('SELECT location_id FROM user_locations WHERE user_id = ?').all(req.user.id).map(l => l.location_id);
+      const locs = (await db.prepare('SELECT location_id FROM user_locations WHERE user_id = ?').all(req.user.id)).map(l => l.location_id);
       if (locs.length > 0) {
         notClockedFilter = `AND ul.location_id IN (${locs.map(() => '?').join(',')})`;
         notParams.push(...locs);
       }
     }
 
-    const notClocked = db.prepare(`
+    const notClocked = await db.prepare(`
       SELECT DISTINCT u.id, u.name, u.phone, u.role
       FROM users u
       JOIN user_locations ul ON u.id = ul.user_id

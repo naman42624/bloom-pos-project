@@ -7,14 +7,15 @@ function localDateStr(dt) {
 }
 const { body, validationResult } = require('express-validator');
 const { getDb } = require('../config/database');
+const { getDb: getAsyncDb } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
 const { nowLocal, nowTimeStr, localToday } = require('../utils/time');
 const { safeParseJSON } = require('../utils/json');
 
 // ─── GET /api/recurring-orders ───────────────────────────────
-router.get('/', authenticate, authorize('owner', 'manager'), (req, res, next) => {
+router.get('/', authenticate, authorize('owner', 'manager'), async (req, res, next) => {
   try {
-    const db = getDb();
+    const db = await getAsyncDb();
     const { active_only } = req.query;
 
     let sql = `
@@ -33,7 +34,7 @@ router.get('/', authenticate, authorize('owner', 'manager'), (req, res, next) =>
 
     sql += ' ORDER BY ro.next_run_date ASC, ro.created_at DESC';
 
-    const orders = db.prepare(sql).all(...params);
+    const orders = await db.prepare(sql).all(...params);
     // Parse items JSON
     for (const o of orders) {
       o.items = safeParseJSON(o.items, []);
@@ -45,10 +46,10 @@ router.get('/', authenticate, authorize('owner', 'manager'), (req, res, next) =>
 });
 
 // ─── GET /api/recurring-orders/:id ───────────────────────────
-router.get('/:id', authenticate, authorize('owner', 'manager'), (req, res, next) => {
+router.get('/:id', authenticate, authorize('owner', 'manager'), async (req, res, next) => {
   try {
-    const db = getDb();
-    const order = db.prepare(`
+    const db = await getAsyncDb();
+    const order = await db.prepare(`
       SELECT ro.*, c.name as customer_name, c.phone as customer_phone,
              l.name as location_name, u.name as created_by_name
       FROM recurring_orders ro

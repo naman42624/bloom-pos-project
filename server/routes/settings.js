@@ -1,6 +1,7 @@
 const express = require('express');
 const { body, validationResult } = require('express-validator');
 const { getDb } = require('../config/database');
+const { getDb: getAsyncDb } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
 const { clearTimezoneCache } = require('../utils/time');
 
@@ -9,10 +10,10 @@ router.use(authenticate);
 
 // ─── GET /api/settings ──────────────────────────────────────
 // Owner and Manager can view all settings
-router.get('/', authorize('owner', 'manager'), (req, res, next) => {
+router.get('/', authorize('owner', 'manager'), async (req, res, next) => {
   try {
-    const db = getDb();
-    const settings = db.prepare('SELECT * FROM settings ORDER BY key').all();
+    const db = await getAsyncDb();
+    const settings = await db.prepare('SELECT * FROM settings ORDER BY key').all();
 
     // Convert to key-value object for easier consumption
     const settingsMap = {};
@@ -94,10 +95,10 @@ router.put(
 // ─── Tax Rates ──────────────────────────────────────────────
 
 // GET /api/settings/tax-rates
-router.get('/tax-rates', authorize('owner', 'manager', 'employee'), (req, res, next) => {
+router.get('/tax-rates', authorize('owner', 'manager', 'employee'), async (req, res, next) => {
   try {
-    const db = getDb();
-    const taxRates = db
+    const db = await getAsyncDb();
+    const taxRates = await db
       .prepare('SELECT * FROM tax_rates WHERE is_active = 1 ORDER BY percentage')
       .all();
 

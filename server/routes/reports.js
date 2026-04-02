@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { getDb } = require('../config/database');
+const { getDb: getAsyncDb } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
 const { todayStr: localToday } = require('../utils/time');
 
@@ -11,9 +12,9 @@ function localDateStr(d) {
 // ═══════════════════════════════════════════════════════════════
 // 1. SALES SUMMARY
 // ═══════════════════════════════════════════════════════════════
-router.get('/sales-summary', authenticate, authorize('owner', 'manager'), (req, res, next) => {
+router.get('/sales-summary', authenticate, authorize('owner', 'manager'), async (req, res, next) => {
   try {
-    const db = getDb();
+    const db = await getAsyncDb();
     const { from, to, location_id, group_by } = req.query;
     const today = localToday();
     const dateFrom = from || today;
@@ -34,7 +35,7 @@ router.get('/sales-summary', authenticate, authorize('owner', 'manager'), (req, 
     }
 
     // Overall totals
-    const totals = db.prepare(`
+    const totals = await db.prepare(`
       SELECT
         COUNT(*) as total_orders,
         COALESCE(SUM(s.grand_total), 0) as total_revenue,
@@ -53,7 +54,7 @@ router.get('/sales-summary', authenticate, authorize('owner', 'manager'), (req, 
     `).get(...params);
 
     // Grouped breakdown
-    const breakdown = db.prepare(`
+    const breakdown = await db.prepare(`
       SELECT
         ${dateExpr} as period,
         COUNT(*) as orders,
@@ -65,7 +66,7 @@ router.get('/sales-summary', authenticate, authorize('owner', 'manager'), (req, 
     `).all(...params);
 
     // Payment method breakdown
-    const paymentMethods = db.prepare(`
+    const paymentMethods = await db.prepare(`
       SELECT
         p.method,
         COUNT(*) as count,
@@ -78,7 +79,7 @@ router.get('/sales-summary', authenticate, authorize('owner', 'manager'), (req, 
     `).all(...params);
 
     // Top products
-    const topProducts = db.prepare(`
+    const topProducts = await db.prepare(`
       SELECT
         si.product_name,
         SUM(si.quantity) as total_qty,
@@ -92,7 +93,7 @@ router.get('/sales-summary', authenticate, authorize('owner', 'manager'), (req, 
     `).all(...params);
 
     // By location
-    const byLocation = db.prepare(`
+    const byLocation = await db.prepare(`
       SELECT
         l.name as location_name,
         COUNT(*) as orders,
@@ -105,7 +106,7 @@ router.get('/sales-summary', authenticate, authorize('owner', 'manager'), (req, 
     `).all(...params);
 
     // Refunds
-    const refunds = db.prepare(`
+    const refunds = await db.prepare(`
       SELECT
         COUNT(*) as refund_count,
         COALESCE(SUM(r.amount), 0) as refund_total
@@ -115,7 +116,7 @@ router.get('/sales-summary', authenticate, authorize('owner', 'manager'), (req, 
     `).get(...params);
 
     // Expenses
-    const expenses = db.prepare(`
+    const expenses = await db.prepare(`
       SELECT
         COALESCE(SUM(e.amount), 0) as total_expenses,
         COUNT(*) as expense_count
@@ -141,16 +142,16 @@ router.get('/sales-summary', authenticate, authorize('owner', 'manager'), (req, 
 // ═══════════════════════════════════════════════════════════════
 // 2. INVENTORY REPORT
 // ═══════════════════════════════════════════════════════════════
-router.get('/inventory', authenticate, authorize('owner', 'manager'), (req, res, next) => {
+router.get('/inventory', authenticate, authorize('owner', 'manager'), async (req, res, next) => {
   try {
-    const db = getDb();
+    const db = await getAsyncDb();
     const { location_id } = req.query;
 
     // Material stock levels
     let stockWhere = location_id ? 'WHERE ms.location_id = ?' : '';
     const stockParams = location_id ? [location_id] : [];
 
-    const stockLevels = db.prepare(`
+    const stockLevels = await db.prepare(`
       SELECT
         m.id, m.name, m.min_stock_alert,
         COALESCE(SUM(ms.quantity), 0) as total_stock,
@@ -164,7 +165,7 @@ router.get('/inventory', authenticate, authorize('owner', 'manager'), (req, res,
     `).all(...stockParams);
 
     // Low stock alerts
-    const lowStock = db.prepare(`
+    const lowStock = await db.prepare(`
       SELECT m.id, m.name, m.min_stock_alert,
         COALESCE(SUM(ms.quantity), 0) as total_stock
       FROM materials m
@@ -176,7 +177,7 @@ router.get('/inventory', authenticate, authorize('owner', 'manager'), (req, res,
     `).all(...(location_id ? [location_id] : []));
 
     // Product stock
-    const productStock = db.prepare(`
+    const productStock = await db.prepare(`
       SELECT p.id, p.name,
         COALESCE(SUM(ps.quantity), 0) as total_stock
       FROM products p
@@ -187,7 +188,7 @@ router.get('/inventory', authenticate, authorize('owner', 'manager'), (req, res,
     `).all(...(location_id ? [location_id] : []));
 
     // Recent transactions (wastage, adjustments, etc.)
-    const recentTransactions = db.prepare(`
+    const recentTransactions = await db.prepare(`
       SELECT mt.*, m.name as material_name, l.name as location_name, u.name as user_name
       FROM material_transactions mt
       JOIN materials m ON mt.material_id = m.id
@@ -199,7 +200,7 @@ router.get('/inventory', authenticate, authorize('owner', 'manager'), (req, res,
     `).all();
 
     // Wastage summary (last 30 days)
-    const wastageSummary = db.prepare(`
+    const wastageSummary = await db.prepare(`
       SELECT m.name as material_name,
         SUM(ABS(mt.quantity)) as wasted_qty,
         COUNT(*) as incidents
@@ -229,9 +230,9 @@ router.get('/inventory', authenticate, authorize('owner', 'manager'), (req, res,
 // ═══════════════════════════════════════════════════════════════
 // 3. CUSTOMER INSIGHTS
 // ═══════════════════════════════════════════════════════════════
-router.get('/customer-insights', authenticate, authorize('owner', 'manager'), (req, res, next) => {
+router.get('/customer-insights', authenticate, authorize('owner', 'manager'), async (req, res, next) => {
   try {
-    const db = getDb();
+    const db = await getAsyncDb();
     const { from, to, limit } = req.query;
     const today = localToday();
     const dateFrom = from || (() => { const d = new Date(); d.setDate(d.getDate() - 30); return localDateStr(d); })();
@@ -239,7 +240,7 @@ router.get('/customer-insights', authenticate, authorize('owner', 'manager'), (r
     const topLimit = parseInt(limit) || 10;
 
     // Top customers by revenue
-    const topByRevenue = db.prepare(`
+    const topByRevenue = await db.prepare(`
       SELECT
         s.customer_id, s.customer_name, s.customer_phone,
         COUNT(*) as order_count,
@@ -254,7 +255,7 @@ router.get('/customer-insights', authenticate, authorize('owner', 'manager'), (r
     `).all(dateFrom, dateTo, topLimit);
 
     // Top customers by frequency
-    const topByFrequency = db.prepare(`
+    const topByFrequency = await db.prepare(`
       SELECT
         s.customer_id, s.customer_name, s.customer_phone,
         COUNT(*) as order_count,
@@ -268,7 +269,7 @@ router.get('/customer-insights', authenticate, authorize('owner', 'manager'), (r
     `).all(dateFrom, dateTo, topLimit);
 
     // New vs returning
-    const newVsReturning = db.prepare(`
+    const newVsReturning = await db.prepare(`
       SELECT
         CASE WHEN prev.cnt > 0 THEN 'returning' ELSE 'new' END as type,
         COUNT(DISTINCT COALESCE(s.customer_id::text, s.customer_phone)) as customers,
@@ -284,7 +285,7 @@ router.get('/customer-insights', authenticate, authorize('owner', 'manager'), (r
     `).all(dateFrom, dateFrom, dateTo);
 
     // Credit balances (outstanding)
-    const creditBalances = db.prepare(`
+    const creditBalances = await db.prepare(`
       SELECT id, name, phone, credit_balance
       FROM users
       WHERE credit_balance > 0
@@ -292,12 +293,12 @@ router.get('/customer-insights', authenticate, authorize('owner', 'manager'), (r
       LIMIT 10
     `).all();
 
-    const totalOutstanding = db.prepare(`
+    const totalOutstanding = await db.prepare(`
       SELECT COALESCE(SUM(credit_balance), 0) as total FROM users WHERE credit_balance > 0
     `).get();
 
     // Order type preference
-    const orderTypes = db.prepare(`
+    const orderTypes = await db.prepare(`
       SELECT order_type, COUNT(*) as count, COALESCE(SUM(grand_total), 0) as revenue
       FROM sales
       WHERE date(created_at) BETWEEN ? AND ? AND status != 'cancelled'
@@ -322,9 +323,9 @@ router.get('/customer-insights', authenticate, authorize('owner', 'manager'), (r
 // ═══════════════════════════════════════════════════════════════
 // 4. EMPLOYEE PERFORMANCE
 // ═══════════════════════════════════════════════════════════════
-router.get('/employee-performance', authenticate, authorize('owner', 'manager'), (req, res, next) => {
+router.get('/employee-performance', authenticate, authorize('owner', 'manager'), async (req, res, next) => {
   try {
-    const db = getDb();
+    const db = await getAsyncDb();
     const { from, to, user_id } = req.query;
     const today = localToday();
     const dateFrom = from || (() => { const d = new Date(); d.setDate(d.getDate() - 30); return localDateStr(d); })();
@@ -338,7 +339,7 @@ router.get('/employee-performance', authenticate, authorize('owner', 'manager'),
     }
 
     // Sales performance by employee
-    const salesPerformance = db.prepare(`
+    const salesPerformance = await db.prepare(`
       SELECT
         u.id as user_id, u.name, u.role,
         COUNT(s.id) as total_sales,
@@ -352,7 +353,7 @@ router.get('/employee-performance', authenticate, authorize('owner', 'manager'),
     `).all(...params);
 
     // Production performance
-    const productionPerformance = db.prepare(`
+    const productionPerformance = await db.prepare(`
       SELECT
         u.id as user_id, u.name,
         COUNT(pl.id) as items_produced,
@@ -365,7 +366,7 @@ router.get('/employee-performance', authenticate, authorize('owner', 'manager'),
     `).all(...params);
 
     // Attendance summary
-    const attendanceSummary = db.prepare(`
+    const attendanceSummary = await db.prepare(`
       SELECT
         u.id as user_id, u.name,
         COUNT(DISTINCT a.date) as days_present,
@@ -379,7 +380,7 @@ router.get('/employee-performance', authenticate, authorize('owner', 'manager'),
     `).all(...params);
 
     // Delivery performance (for delivery partners)
-    const deliveryPerformance = db.prepare(`
+    const deliveryPerformance = await db.prepare(`
       SELECT
         u.id as user_id, u.name,
         COUNT(d.id) as total_deliveries,
@@ -413,9 +414,9 @@ router.get('/employee-performance', authenticate, authorize('owner', 'manager'),
 // ═══════════════════════════════════════════════════════════════
 // 5. DASHBOARD OVERVIEW (quick KPIs)
 // ═══════════════════════════════════════════════════════════════
-router.get('/dashboard', authenticate, authorize('owner', 'manager'), (req, res, next) => {
+router.get('/dashboard', authenticate, authorize('owner', 'manager'), async (req, res, next) => {
   try {
-    const db = getDb();
+    const db = await getAsyncDb();
     const today = localToday();
     const { location_id } = req.query;
 
@@ -423,7 +424,7 @@ router.get('/dashboard', authenticate, authorize('owner', 'manager'), (req, res,
     const locParams = location_id ? [location_id] : [];
 
     // Today's sales
-    const todaySales = db.prepare(`
+    const todaySales = await db.prepare(`
       SELECT COUNT(*) as orders, COALESCE(SUM(grand_total), 0) as revenue
       FROM sales s WHERE date(s.created_at) = ? AND s.status != 'cancelled' ${locFilter}
     `).get(today, ...locParams);
@@ -432,7 +433,7 @@ router.get('/dashboard', authenticate, authorize('owner', 'manager'), (req, res,
     const yesterday = new Date();
     yesterday.setDate(yesterday.getDate() - 1);
     const yesterdayStr = `${yesterday.getFullYear()}-${String(yesterday.getMonth()+1).padStart(2,'0')}-${String(yesterday.getDate()).padStart(2,'0')}`;
-    const yesterdaySales = db.prepare(`
+    const yesterdaySales = await db.prepare(`
       SELECT COUNT(*) as orders, COALESCE(SUM(grand_total), 0) as revenue
       FROM sales s WHERE date(s.created_at) = ? AND s.status != 'cancelled' ${locFilter}
     `).get(yesterdayStr, ...locParams);
@@ -441,36 +442,36 @@ router.get('/dashboard', authenticate, authorize('owner', 'manager'), (req, res,
     const weekStart = new Date();
     weekStart.setDate(weekStart.getDate() - weekStart.getDay());
     const weekStartStr = `${weekStart.getFullYear()}-${String(weekStart.getMonth()+1).padStart(2,'0')}-${String(weekStart.getDate()).padStart(2,'0')}`;
-    const weekSales = db.prepare(`
+    const weekSales = await db.prepare(`
       SELECT COUNT(*) as orders, COALESCE(SUM(grand_total), 0) as revenue
       FROM sales s WHERE date(s.created_at) BETWEEN ? AND ? AND s.status != 'cancelled' ${locFilter}
     `).get(weekStartStr, today, ...locParams);
 
     // This month
     const monthStart = `${today.slice(0, 8)}01`;
-    const monthSales = db.prepare(`
+    const monthSales = await db.prepare(`
       SELECT COUNT(*) as orders, COALESCE(SUM(grand_total), 0) as revenue
       FROM sales s WHERE date(s.created_at) BETWEEN ? AND ? AND s.status != 'cancelled' ${locFilter}
     `).get(monthStart, today, ...locParams);
 
     // Pending orders
-    const pendingOrders = db.prepare(`
+    const pendingOrders = await db.prepare(`
       SELECT COUNT(*) as count FROM sales s WHERE s.status IN ('pending', 'preparing') ${locFilter}
     `).get(...locParams);
 
     // Today's expenses
-    const todayExpenses = db.prepare(`
+    const todayExpenses = await db.prepare(`
       SELECT COALESCE(SUM(amount), 0) as total FROM expenses
       WHERE date(created_at) = ? ${location_id ? 'AND location_id = ?' : ''}
     `).get(...(location_id ? [today, location_id] : [today]));
 
     // Staff present today
-    const staffPresent = db.prepare(`
+    const staffPresent = await db.prepare(`
       SELECT COUNT(DISTINCT user_id) as count FROM attendance WHERE date = ? AND clock_in IS NOT NULL AND clock_out IS NULL
     `).get(today);
 
     // Low stock count
-    const lowStockCount = db.prepare(`
+    const lowStockCount = await db.prepare(`
       SELECT COUNT(*) as count FROM (
         SELECT m.id FROM materials m
         LEFT JOIN material_stock ms ON m.id = ms.material_id
@@ -480,7 +481,7 @@ router.get('/dashboard', authenticate, authorize('owner', 'manager'), (req, res,
     `).get();
 
     // Hourly sales today (for chart)
-    const hourlySales = db.prepare(`
+    const hourlySales = await db.prepare(`
       SELECT
         EXTRACT(HOUR FROM s.created_at::timestamp)::INTEGER as hour,
         COUNT(*) as orders,
@@ -492,7 +493,7 @@ router.get('/dashboard', authenticate, authorize('owner', 'manager'), (req, res,
     `).all(today, ...locParams);
 
     // Last 7 days trend
-    const dailyTrend = db.prepare(`
+    const dailyTrend = await db.prepare(`
       SELECT
         date(s.created_at) as day,
         COUNT(*) as orders,

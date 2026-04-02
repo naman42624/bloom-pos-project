@@ -21,8 +21,8 @@ function localDate(offset = 0) {
 }
 
 function fmt(n) {
-  if (n >= 100000) return `₹${(n/100000).toFixed(1)}L`;
-  if (n >= 1000) return `₹${(n/1000).toFixed(1)}K`;
+  if (Number(n) >= 100000) return `₹${(Number(n)/100000).toFixed(1)}L`;
+  if (Number(n) >= 1000) return `₹${(Number(n)/1000).toFixed(1)}K`;
   return `₹${Math.round(n)}`;
 }
 

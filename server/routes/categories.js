@@ -1,19 +1,20 @@
 const express = require('express');
 const { body, param, validationResult } = require('express-validator');
 const { getDb } = require('../config/database');
+const { getDb: getAsyncDb } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
 
 const router = express.Router();
 
 // ─── GET /api/categories ─────────────────────────────────────
 // List all categories (active only by default, ?all=1 for everything)
-router.get('/', authenticate, (req, res, next) => {
+router.get('/', authenticate, async (req, res, next) => {
   try {
-    const db = getDb();
+    const db = await getAsyncDb();
     const showAll = req.query.all === '1';
     const where = showAll ? '' : 'WHERE is_active = 1';
 
-    const categories = db
+    const categories = await db
       .prepare(`SELECT * FROM material_categories ${where} ORDER BY name ASC`)
       .all();
 
@@ -24,10 +25,10 @@ router.get('/', authenticate, (req, res, next) => {
 });
 
 // ─── GET /api/categories/:id ─────────────────────────────────
-router.get('/:id', authenticate, (req, res, next) => {
+router.get('/:id', authenticate, async (req, res, next) => {
   try {
-    const db = getDb();
-    const category = db
+    const db = await getAsyncDb();
+    const category = await db
       .prepare('SELECT * FROM material_categories WHERE id = ?')
       .get(req.params.id);
 
@@ -36,7 +37,7 @@ router.get('/:id', authenticate, (req, res, next) => {
     }
 
     // Count of materials in this category
-    const materialCount = db
+    const materialCount = await db
       .prepare('SELECT COUNT(*) as count FROM materials WHERE category_id = ? AND is_active = 1')
       .get(req.params.id);
 

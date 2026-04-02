@@ -39,9 +39,10 @@ function getDateRange(period) {
 }
 
 function fmt(n) {
-  if (n >= 100000) return `₹${(n/100000).toFixed(1)}L`;
-  if (n >= 1000) return `₹${(n/1000).toFixed(1)}K`;
-  return `₹${Math.round(n)}`;
+  const val = Number(n || 0);
+  if (val >= 100000) return `₹${(val / 100000).toFixed(1)}L`;
+  if (val >= 1000) return `₹${(val / 1000).toFixed(1)}K`;
+  return `₹${Math.round(val)}`;
 }
 
 function BarChart({ data, labelKey, valueKey, color }) {

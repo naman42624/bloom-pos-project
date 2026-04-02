@@ -3,6 +3,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { body, validationResult } = require('express-validator');
 const { getDb } = require('../config/database');
+const { getDb: getAsyncDb } = require('../config/database-async');
 const { authenticate } = require('../middleware/auth');
 
 const router = express.Router();
@@ -204,10 +205,10 @@ router.post(
 );
 
 // ─── GET /api/auth/me ────────────────────────────────────────
-router.get('/me', authenticate, (req, res, next) => {
+router.get('/me', authenticate, async (req, res, next) => {
   try {
-    const db = getDb();
-    const user = db
+    const db = await getAsyncDb();
+    const user = await db
       .prepare('SELECT ' + USER_SELECT_FIELDS + ' FROM users WHERE id = ?')
       .get(req.user.id);
 
@@ -218,7 +219,7 @@ router.get('/me', authenticate, (req, res, next) => {
       });
     }
 
-    const locations = db
+    const locations = await db
       .prepare(
         'SELECT l.id, l.name, l.type, l.address, l.latitude, l.longitude, l.geofence_radius, ul.is_primary FROM locations l JOIN user_locations ul ON ul.location_id = l.id WHERE ul.user_id = ? AND l.is_active = 1'
       )
@@ -456,10 +457,10 @@ router.post(
 );
 
 // ─── GET /api/auth/setup-status ──────────────────────────────
-router.get('/setup-status', (req, res, next) => {
+router.get('/setup-status', async (req, res, next) => {
   try {
-    const db = getDb();
-    const ownerExists = db
+    const db = await getAsyncDb();
+    const ownerExists = await db
       .prepare("SELECT id FROM users WHERE role = 'owner' LIMIT 1")
       .get();
 

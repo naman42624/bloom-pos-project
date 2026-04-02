@@ -1,14 +1,15 @@
 const express = require('express');
 const { body, validationResult } = require('express-validator');
 const { getDb } = require('../config/database');
+const { getDb: getAsyncDb } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
 
 const router = express.Router();
 
 // ─── GET /api/purchase-orders ────────────────────────────────
-router.get('/', authenticate, (req, res, next) => {
+router.get('/', authenticate, async (req, res, next) => {
   try {
-    const db = getDb();
+    const db = await getAsyncDb();
     const { status, supplier_id, location_id, from_date, to_date } = req.query;
 
     let sql = `
@@ -48,18 +49,18 @@ router.get('/', authenticate, (req, res, next) => {
     }
     sql += ' ORDER BY po.created_at DESC';
 
-    const orders = db.prepare(sql).all(...params);
+    const orders = await db.prepare(sql).all(...params);
 
     // Attach item counts
-    const countStmt = db.prepare('SELECT COUNT(*) as count FROM purchase_order_items WHERE purchase_order_id = ?');
+    const countStmt = await db.prepare('SELECT COUNT(*) as count FROM purchase_order_items WHERE purchase_order_id = ?');
     let result = orders.map((o) => ({
       ...o,
-      item_count: countStmt.get(o.id).count,
+      item_count: (countStmt.get ? countStmt.get(o.id) : { count: 0 }).count,
     }));
 
     // Hide pricing for non-owners when 'pricing' is not allowed
     if (req.user.role !== 'owner') {
-      const setting = db.prepare("SELECT value FROM settings WHERE key = 'supplier_manager_fields'").get();
+      const setting = await db.prepare("SELECT value FROM settings WHERE key = 'supplier_manager_fields'").get();
       const allowed = (setting?.value || 'name').split(',').map((f) => f.trim());
       if (!allowed.includes('pricing')) {
         result = result.map(({ total_amount, ...rest }) => rest);
@@ -73,10 +74,10 @@ router.get('/', authenticate, (req, res, next) => {
 });
 
 // ─── GET /api/purchase-orders/:id ────────────────────────────
-router.get('/:id', authenticate, (req, res, next) => {
+router.get('/:id', authenticate, async (req, res, next) => {
   try {
-    const db = getDb();
-    const order = db.prepare(`
+    const db = await getAsyncDb();
+    const order = await db.prepare(`
       SELECT po.*, s.name as supplier_name, s.phone as supplier_phone,
              l.name as location_name, u.name as created_by_name
       FROM purchase_orders po
@@ -91,7 +92,7 @@ router.get('/:id', authenticate, (req, res, next) => {
     }
 
     // Get items
-    let items = db.prepare(`
+    let items = await db.prepare(`
       SELECT poi.*, m.name as material_name, m.sku,
              mc.name as category_name, mc.unit as unit,
              mc.has_bundle, mc.default_bundle_size,
@@ -107,7 +108,7 @@ router.get('/:id', authenticate, (req, res, next) => {
 
     // Hide pricing for non-owners when 'pricing' is not allowed
     if (req.user.role !== 'owner') {
-      const setting = db.prepare("SELECT value FROM settings WHERE key = 'supplier_manager_fields'").get();
+      const setting = await db.prepare("SELECT value FROM settings WHERE key = 'supplier_manager_fields'").get();
       const allowed = (setting?.value || 'name').split(',').map((f) => f.trim());
       if (!allowed.includes('pricing')) {
         const { total_amount, ...orderRest } = orderData;

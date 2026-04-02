@@ -79,11 +79,11 @@ export default function ProductsScreen({ navigation }) {
       <View style={styles.priceRow}>
         <View style={styles.priceItem}>
           <Text style={styles.priceLabel}>Cost</Text>
-          <Text style={styles.priceValue}>₹{(item.estimated_cost || 0).toFixed(2)}</Text>
+          <Text style={styles.priceValue}>₹{Number(item.estimated_cost || 0).toFixed(2)}</Text>
         </View>
         <View style={styles.priceItem}>
           <Text style={styles.priceLabel}>Price</Text>
-          <Text style={[styles.priceValue, { color: Colors.success }]}>₹{(item.selling_price || 0).toFixed(2)}</Text>
+          <Text style={[styles.priceValue, { color: Colors.success }]}>₹{Number(item.selling_price || 0).toFixed(2)}</Text>
         </View>
         {item.tax_percentage > 0 && (
           <View style={styles.priceItem}>

@@ -216,7 +216,7 @@ export default function MaterialDetailScreen({ route, navigation }) {
                 </View>
                 <View style={styles.metaItem}>
                   <Text style={styles.metaLabel}>Selling Price</Text>
-                  <Text style={[styles.metaValue, { color: Colors.success }]}>₹{(material.selling_price || 0).toFixed(2)}</Text>
+                  <Text style={[styles.metaValue, { color: Colors.success }]}>₹{Number(material.selling_price || 0).toFixed(2)}</Text>
                 </View>
               </View>
               {canManage && (

@@ -147,7 +147,7 @@ export default function SalesScreen({ navigation }) {
             <Text style={styles.cardDate}>{formatTime(item.created_at, 'en-IN', { hour: '2-digit', minute: '2-digit', hour12: true })}</Text>
           </View>
           <View style={{ alignItems: 'flex-end' }}>
-            <Text style={styles.cardTotal}>₹{(item.grand_total || 0).toFixed(0)}</Text>
+            <Text style={styles.cardTotal}>₹{Number(item.grand_total || 0).toFixed(0)}</Text>
             <View style={[styles.badge, { backgroundColor: payColor + '20', marginTop: 4 }]}>
               <Text style={[styles.badgeText, { color: payColor }]}>{(item.payment_status || '').toUpperCase()}</Text>
             </View>
@@ -192,11 +192,11 @@ export default function SalesScreen({ navigation }) {
             <Text style={styles.summaryLabel}>Sales</Text>
           </View>
           <View style={styles.summaryItem}>
-            <Text style={styles.summaryVal}>₹{(summary.total_revenue || 0).toFixed(0)}</Text>
+            <Text style={styles.summaryVal}>₹{Number(summary.total_revenue || 0).toFixed(0)}</Text>
             <Text style={styles.summaryLabel}>Revenue</Text>
           </View>
           <View style={styles.summaryItem}>
-            <Text style={styles.summaryVal}>₹{(summary.total_tax || 0).toFixed(0)}</Text>
+            <Text style={styles.summaryVal}>₹{Number(summary.total_tax || 0).toFixed(0)}</Text>
             <Text style={styles.summaryLabel}>Tax</Text>
           </View>
         </View>

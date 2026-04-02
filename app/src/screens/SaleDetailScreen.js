@@ -156,7 +156,7 @@ export default function SaleDetailScreen({ route, navigation }) {
 
     // Guard: pickup orders must be fully paid before completion
     if (nextStatus === 'completed' && sale.order_type === 'pickup' && due > 0.01) {
-      setPickupPayAmount(due.toFixed(0));
+      setPickupPayAmount(Number(due).toFixed(0));
       setPickupPayMethod('cash');
       setPickupPayRef('');
       setPickupPayModalVisible(true);
@@ -384,23 +384,23 @@ export default function SaleDetailScreen({ route, navigation }) {
           <div>
             <p>${item.product_name || item.display_name || 'Item'}</p>
             <div class="row">
-              <span>${item.quantity} x ₹${(item.unit_price || 0).toFixed(2)}</span>
-              <span>₹${resolveItemLineTotal(item).toFixed(2)}</span>
+              <span>${item.quantity} x ₹${Number(item.unit_price || 0).toFixed(2)}</span>
+              <span>₹${Number(resolveItemLineTotal(item)).toFixed(2)}</span>
             </div>
           </div>
         `).join('')}
         <div class="line"></div>
-        <div class="row"><span>Subtotal</span><span>₹${(sale.subtotal || 0).toFixed(2)}</span></div>
-        <div class="row"><span>Tax</span><span>₹${(sale.tax_total || 0).toFixed(2)}</span></div>
-        ${sale.discount_amount > 0 ? `<div class="row"><span>Discount</span><span>-₹${sale.discount_amount.toFixed(2)}</span></div>` : ''}
-        ${sale.delivery_charges > 0 ? `<div class="row"><span>Delivery</span><span>₹${sale.delivery_charges.toFixed(2)}</span></div>` : ''}
+        <div class="row"><span>Subtotal</span><span>₹${Number(sale.subtotal || 0).toFixed(2)}</span></div>
+        <div class="row"><span>Tax</span><span>₹${Number(sale.tax_total || 0).toFixed(2)}</span></div>
+        ${sale.discount_amount > 0 ? `<div class="row"><span>Discount</span><span>-₹${Number(sale.discount_amount).toFixed(2)}</span></div>` : ''}
+        ${sale.delivery_charges > 0 ? `<div class="row"><span>Delivery</span><span>₹${Number(sale.delivery_charges).toFixed(2)}</span></div>` : ''}
         <div class="line"></div>
-        <div class="total-row"><span>TOTAL</span><span>₹${(sale.grand_total || 0).toFixed(2)}</span></div>
+        <div class="total-row"><span>TOTAL</span><span>₹${Number(sale.grand_total || 0).toFixed(2)}</span></div>
         <div class="line"></div>
         ${(sale.payments || []).map(p => `
-          <div class="row"><span>${(p.method || '').toUpperCase()}</span><span>₹${(p.amount || 0).toFixed(2)}</span></div>
+          <div class="row"><span>${(p.method || '').toUpperCase()}</span><span>₹${Number(p.amount || 0).toFixed(2)}</span></div>
         `).join('')}
-        ${dueAmt > 0.01 ? `<div class="row bold"><span>BALANCE DUE</span><span>₹${dueAmt.toFixed(2)}</span></div>` : ''}
+        ${dueAmt > 0.01 ? `<div class="row bold"><span>BALANCE DUE</span><span>₹${Number(dueAmt).toFixed(2)}</span></div>` : ''}
         <div class="line"></div>
         <div class="center"><p>Thank you for your purchase!</p></div>
       </body></html>
@@ -638,7 +638,7 @@ export default function SaleDetailScreen({ route, navigation }) {
                   <View style={{ flex: 1 }}>
                     <Text style={styles.itemName}>{itemName}</Text>
                     <Text style={styles.itemMeta}>
-                      {item.quantity} × ₹{(item.unit_price || 0).toFixed(2)}
+                      {item.quantity} × ₹{Number(item.unit_price || 0).toFixed(2)}
                       {item.tax_rate > 0 ? ` (${item.tax_rate}% tax)` : ''}
                     </Text>
                     {item.special_instructions ? <Text style={{ fontSize: FontSize.xs, color: Colors.textLight, marginTop: 4 }}>Note: {item.special_instructions}</Text> : null}
@@ -765,7 +765,7 @@ export default function SaleDetailScreen({ route, navigation }) {
               </View>
               <View style={{ alignItems: 'flex-end' }}>
                 <Text style={styles.itemTotal}>₹{Number(itemTotal || 0).toFixed(2)}</Text>
-                {item.tax_amount > 0 && <Text style={styles.itemTax}>incl. ₹{item.tax_amount.toFixed(2)} tax</Text>}
+                {item.tax_amount > 0 && <Text style={styles.itemTax}>incl. ₹{Number(item.tax_amount).toFixed(2)} tax</Text>}
               </View>
             </View>
           );
@@ -806,21 +806,21 @@ export default function SaleDetailScreen({ route, navigation }) {
 
       {/* Totals */}
       <View style={styles.totalsBox}>
-        <View style={styles.totalRow}><Text style={styles.totalLabel}>Subtotal</Text><Text style={styles.totalVal}>₹{(sale.subtotal || 0).toFixed(2)}</Text></View>
-        <View style={styles.totalRow}><Text style={styles.totalLabel}>Tax</Text><Text style={styles.totalVal}>₹{(sale.tax_total || 0).toFixed(2)}</Text></View>
+        <View style={styles.totalRow}><Text style={styles.totalLabel}>Subtotal</Text><Text style={styles.totalVal}>₹{Number(sale.subtotal || 0).toFixed(2)}</Text></View>
+        <View style={styles.totalRow}><Text style={styles.totalLabel}>Tax</Text><Text style={styles.totalVal}>₹{Number(sale.tax_total || 0).toFixed(2)}</Text></View>
         {sale.discount_amount > 0 && (
           <View style={styles.totalRow}>
             <Text style={[styles.totalLabel, { color: Colors.error }]}>Discount{sale.discount_type === 'percentage' ? ` (${sale.discount_percentage}%)` : ''}</Text>
-            <Text style={[styles.totalVal, { color: Colors.error }]}>-₹{sale.discount_amount.toFixed(2)}</Text>
+            <Text style={[styles.totalVal, { color: Colors.error }]}>-₹{Number(sale.discount_amount).toFixed(2)}</Text>
           </View>
         )}
         {sale.delivery_charges > 0 && (
-          <View style={styles.totalRow}><Text style={styles.totalLabel}>Delivery</Text><Text style={styles.totalVal}>₹{sale.delivery_charges.toFixed(2)}</Text></View>
+          <View style={styles.totalRow}><Text style={styles.totalLabel}>Delivery</Text><Text style={styles.totalVal}>₹{Number(sale.delivery_charges).toFixed(2)}</Text></View>
         )}
         <View style={styles.divider} />
         <View style={styles.totalRow}>
           <Text style={styles.grandLabel}>Grand Total</Text>
-          <Text style={styles.grandVal}>₹{(sale.grand_total || 0).toFixed(2)}</Text>
+          <Text style={styles.grandVal}>₹{Number(sale.grand_total || 0).toFixed(2)}</Text>
         </View>
       </View>
 
@@ -834,14 +834,14 @@ export default function SaleDetailScreen({ route, navigation }) {
               <Text style={styles.payMethod}>{p.method?.toUpperCase()}</Text>
               {p.reference_number ? <Text style={styles.payRef}>Ref: {p.reference_number}</Text> : null}
             </View>
-            <Text style={styles.payAmount}>₹{(p.amount || 0).toFixed(2)}</Text>
+            <Text style={styles.payAmount}>₹{Number(p.amount || 0).toFixed(2)}</Text>
           </View>
         ))}
         {due > 0.01 && (
           <View style={[styles.paymentRow, { backgroundColor: Colors.warningLight }]}>
             <Ionicons name="alert-circle" size={18} color={Colors.warning} />
             <Text style={[styles.payMethod, { marginLeft: Spacing.sm, color: Colors.warning }]}>Balance Due</Text>
-            <Text style={[styles.payAmount, { color: Colors.warning }]}>₹{due.toFixed(2)}</Text>
+            <Text style={[styles.payAmount, { color: Colors.warning }]}>₹{Number(due).toFixed(2)}</Text>
           </View>
         )}
       </View>
@@ -851,7 +851,7 @@ export default function SaleDetailScreen({ route, navigation }) {
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Pre-order Details</Text>
           <Text style={styles.infoText}>Scheduled: {sale.pre_order.scheduled_date} {sale.pre_order.scheduled_time || ''}</Text>
-          <Text style={styles.infoSubtext}>Advance: ₹{(sale.pre_order.advance_amount || 0).toFixed(2)} | Remaining: ₹{(sale.pre_order.remaining_amount || 0).toFixed(2)}</Text>
+          <Text style={styles.infoSubtext}>Advance: ₹{Number(sale.pre_order.advance_amount || 0).toFixed(2)} | Remaining: ₹{Number(sale.pre_order.remaining_amount || 0).toFixed(2)}</Text>
           {sale.pre_order.delivery_address && <Text style={styles.infoSubtext}>Address: {sale.pre_order.delivery_address}</Text>}
           <View style={[styles.statusBadge, { backgroundColor: sale.pre_order.status === 'delivered' ? Colors.successLight : Colors.warningLight, alignSelf: 'flex-start', marginTop: Spacing.xs }]}>
             <Text style={{ fontSize: FontSize.xs, fontWeight: '600', color: sale.pre_order.status === 'delivered' ? Colors.success : Colors.warning }}>
@@ -865,7 +865,7 @@ export default function SaleDetailScreen({ route, navigation }) {
       {sale.refund && (
         <View style={[styles.section, { borderColor: Colors.error, borderWidth: 1 }]}>
           <Text style={[styles.sectionTitle, { color: Colors.error }]}>Refund</Text>
-          <Text style={styles.infoText}>Amount: ₹{(sale.refund.amount || 0).toFixed(2)} via {sale.refund.refund_method}</Text>
+          <Text style={styles.infoText}>Amount: ₹{Number(sale.refund.amount || 0).toFixed(2)} via {sale.refund.refund_method}</Text>
           <Text style={styles.infoSubtext}>Reason: {sale.refund.reason}</Text>
         </View>
       )}
@@ -1163,7 +1163,7 @@ export default function SaleDetailScreen({ route, navigation }) {
 
             <View style={styles.balanceBox}>
               <Text style={styles.balanceLabel}>Remaining Balance</Text>
-              <Text style={styles.balanceAmount}>₹{due.toFixed(2)}</Text>
+              <Text style={styles.balanceAmount}>₹{Number(due).toFixed(2)}</Text>
             </View>
 
             <Text style={styles.fieldLabel}>Payment Method</Text>
