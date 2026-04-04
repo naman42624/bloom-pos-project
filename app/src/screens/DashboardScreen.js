@@ -18,7 +18,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 import { Colors, FontSize, Spacing } from '../constants/theme';
-import { parseServerDate } from '../utils/datetime';
+import { minutesSinceServerDate, minutesUntilShopDateTime } from '../utils/datetime';
 
 const ORDER_TYPES = ['delivery', 'pickup', 'walk_in'];
 const ORDER_TYPE_LABELS = {
@@ -91,25 +91,23 @@ function getLaneTheme(laneKey) {
   return { border: '#10B98166', background: '#ECFDF5', badge: '#065F46' };
 }
 
-function getOrderLaneSla(order, now) {
+function getOrderLaneSla(order, timezone) {
   if (!order || ['ready', 'completed', 'cancelled', 'draft'].includes(order.status)) return null;
 
   if (order.order_type === 'walk_in') {
-    const created = parseServerDate(order.created_at);
-    if (!created) return null;
-    const diffMins = Math.floor((now.getTime() - created.getTime()) / 60000);
+    const diffMins = minutesSinceServerDate(order.created_at, timezone);
+    if (diffMins == null) return null;
     if (diffMins > 20) return 'overdue';
     if (diffMins > 10) return 'dueSoon';
     return null;
   }
 
-  const schedDate = order.scheduled_date || (order.created_at ? order.created_at.split('T')[0] : null);
-  const schedTime = order.scheduled_time || (order.created_at ? order.created_at.split('T')[1]?.slice(0, 5) : null);
+  const schedDate = order.scheduled_date || null;
+  const schedTime = order.scheduled_time || null;
   if (!schedDate || !schedTime) return null;
 
-  const scheduled = parseServerDate(`${schedDate}T${schedTime}`);
-  if (!scheduled || Number.isNaN(scheduled.getTime())) return null;
-  const remainingMins = Math.floor((scheduled.getTime() - now.getTime()) / 60000);
+  const remainingMins = minutesUntilShopDateTime(schedDate, schedTime, timezone);
+  if (remainingMins == null) return null;
   if (remainingMins < 0) return 'overdue';
   if (remainingMins <= 60) return 'dueSoon';
   return null;
@@ -359,8 +357,8 @@ function OrderCard({ order, tasks, hasPendingProduction, pulseOpacity, onTaskCli
 
 export default function DashboardScreen({ navigation }) {
   const { width } = useWindowDimensions();
-  const { user, activeLocation } = useAuth();
-  const [now, setNow] = useState(new Date());
+  const { user, activeLocation, settings } = useAuth();
+  const timezone = settings?.timezone || 'Asia/Kolkata';
 
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -368,6 +366,7 @@ export default function DashboardScreen({ navigation }) {
   const [selectedTaskModal, setSelectedTaskModal] = useState(null);
 
   const [locations, setLocations] = useState([]);
+  const [locationScope, setLocationScope] = useState(null);
   const [sales, setSales] = useState([]);
   const [taskRows, setTaskRows] = useState([]);
   const [staffPulse, setStaffPulse] = useState([]);
@@ -377,6 +376,7 @@ export default function DashboardScreen({ navigation }) {
   const [taskActionLoading, setTaskActionLoading] = useState({});
 
   const role = user?.role;
+  const isOwner = role === 'owner';
   const isStaff = role === 'owner' || role === 'manager' || role === 'employee';
   const isOwnerOrManager = role === 'owner' || role === 'manager';
   const isDesktop = width >= 1100;
@@ -398,18 +398,20 @@ export default function DashboardScreen({ navigation }) {
     outputRange: [0.1, 0.6],
   });
 
-  useEffect(() => {
-    const timer = setInterval(() => setNow(new Date()), 60000);
-    return () => clearInterval(timer);
-  }, []);
-
   const fetchDashboard = useCallback(async () => {
     try {
       const locationRes = await api.getLocations();
       const locationList = locationRes?.data?.locations || locationRes?.data || [];
       setLocations(Array.isArray(locationList) ? locationList : []);
 
-      const locationId = activeLocation?.id || locationList?.[0]?.id;
+      let locationId;
+      if (locationScope === 'all' && isOwner) {
+        locationId = null;
+      } else if (locationScope != null) {
+        locationId = locationScope;
+      } else {
+        locationId = activeLocation?.id || locationList?.[0]?.id || null;
+      }
       const filters = locationId ? { location_id: locationId } : {};
 
       const reqs = [
@@ -533,7 +535,18 @@ export default function DashboardScreen({ navigation }) {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [activeLocation?.id, isOwnerOrManager, isStaff, role, user?.id, user?.name]);
+  }, [activeLocation?.id, isOwner, isOwnerOrManager, isStaff, locationScope, role, user?.id, user?.name]);
+
+  useEffect(() => {
+    if (locationScope != null) return;
+    if (activeLocation?.id) {
+      setLocationScope(activeLocation.id);
+      return;
+    }
+    if (locations.length > 0) {
+      setLocationScope(locations[0].id);
+    }
+  }, [locationScope, activeLocation?.id, locations]);
 
   useFocusEffect(
     useCallback(() => {
@@ -608,19 +621,19 @@ export default function DashboardScreen({ navigation }) {
       applyId: Date.now(),
       initialViewMode: 'orders',
       initialOrderType: orderType,
-      initialStatus: '',
-      initialLocationId: activeLocation?.id || null,
+      initialStatus: status || '',
+      initialLocationId: locationScope === 'all' ? null : (locationScope || activeLocation?.id || null),
       initialShowFilters: true,
     });
-  }, [navigation, activeLocation?.id]);
+  }, [navigation, activeLocation?.id, locationScope]);
 
   const renderStatusLane = (type, laneKey, laneLabel, orders) => {
     const previewCount = isDesktop ? 2 : 1;
     const previewOrders = orders.slice(0, previewCount);
     const hiddenCount = Math.max(orders.length - previewOrders.length, 0);
     const laneTheme = getLaneTheme(laneKey);
-    const overdueCount = orders.filter((o) => getOrderLaneSla(o, now) === 'overdue').length;
-    const dueSoonCount = orders.filter((o) => getOrderLaneSla(o, now) === 'dueSoon').length;
+    const overdueCount = orders.filter((o) => getOrderLaneSla(o, timezone) === 'overdue').length;
+    const dueSoonCount = orders.filter((o) => getOrderLaneSla(o, timezone) === 'dueSoon').length;
     const lifecycleHint = laneKey === 'pending' ? 'incl. confirmed' : laneKey === 'ready' ? 'incl. completed' : null;
 
     return (
@@ -736,11 +749,36 @@ export default function DashboardScreen({ navigation }) {
               <Text style={styles.heroTitle}>Welcome, {(user?.name || 'Team').split(' ')[0]}</Text>
             </View>
             <View style={styles.heroIcon}>
-              <Ionicons name="activity" size={24} color="#fff" />
+              <Ionicons name="pulse" size={24} color="#fff" />
             </View>
           </View>
           <Text style={styles.heroSub}>Real-time order flow, production pipeline, and operational health metrics</Text>
         </View>
+
+        {locations.length > 0 && (
+          <View style={styles.scopeCard}>
+            <Text style={styles.scopeLabel}>Dashboard Location</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.scopeChipsRow}>
+              {isOwner && (
+                <TouchableOpacity
+                  style={[styles.scopeChip, locationScope === 'all' && styles.scopeChipActive]}
+                  onPress={() => setLocationScope('all')}
+                >
+                  <Text style={[styles.scopeChipText, locationScope === 'all' && styles.scopeChipTextActive]}>All Locations</Text>
+                </TouchableOpacity>
+              )}
+              {locations.map((loc) => (
+                <TouchableOpacity
+                  key={loc.id}
+                  style={[styles.scopeChip, locationScope === loc.id && styles.scopeChipActive]}
+                  onPress={() => setLocationScope(loc.id)}
+                >
+                  <Text style={[styles.scopeChipText, locationScope === loc.id && styles.scopeChipTextActive]}>{loc.name}</Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </View>
+        )}
 
         {loading ? (
           <View style={styles.loadingContainer}>
@@ -981,6 +1019,48 @@ const styles = StyleSheet.create({
     marginTop: 8,
     lineHeight: 18,
     fontFamily: FONT_FAMILY,
+  },
+
+  scopeCard: {
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    marginBottom: 14,
+  },
+  scopeLabel: {
+    fontSize: 12,
+    color: Colors.textSecondary,
+    fontWeight: '700',
+    marginBottom: 8,
+    fontFamily: FONT_FAMILY,
+  },
+  scopeChipsRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  scopeChip: {
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    backgroundColor: Colors.surface,
+  },
+  scopeChipActive: {
+    backgroundColor: Colors.primary,
+    borderColor: Colors.primary,
+  },
+  scopeChipText: {
+    fontSize: 12,
+    color: Colors.textSecondary,
+    fontWeight: '700',
+    fontFamily: FONT_FAMILY,
+  },
+  scopeChipTextActive: {
+    color: '#fff',
   },
 
   layout: { gap: 16 },

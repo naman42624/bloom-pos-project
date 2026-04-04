@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import {
   View, Text, StyleSheet, ScrollView, TextInput, Image,
   TouchableOpacity, Alert, Platform, Modal, ActivityIndicator,
-  KeyboardAvoidingView, Pressable
+  KeyboardAvoidingView, Pressable, useWindowDimensions
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
@@ -25,6 +25,8 @@ const ORDER_TYPES = [
 export default function QuickCheckoutScreen({ navigation, route }) {
   const { user, settings } = useAuth();
   const timezone = settings?.timezone || 'Asia/Kolkata';
+  const { width } = useWindowDimensions();
+  const isNarrowMobile = width < 380;
 
 
   // Customer
@@ -889,6 +891,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
             ? [{ method: payments[0].method, amount: Math.round((parseFloat(advanceAmount) || 0) * 100) / 100, reference_number: payments[0].reference || null }]
             : paymentEntries
         ) : [],
+        is_credit_sale: paymentMode === 'credit',
         advance_amount: paymentMode === 'partial' ? Math.round((parseFloat(advanceAmount) || 0) * 100) / 100 : 0,
       };
 
@@ -1008,11 +1011,24 @@ export default function QuickCheckoutScreen({ navigation, route }) {
             {ORDER_TYPES.map(t => (
               <TouchableOpacity
                 key={t.key}
-                style={[styles.orderTypeBtn, orderType === t.key && { backgroundColor: t.color, borderColor: t.color }]}
+                style={[
+                  styles.orderTypeBtn,
+                  isNarrowMobile && styles.orderTypeBtnCompact,
+                  orderType === t.key && { backgroundColor: t.color, borderColor: t.color }
+                ]}
                 onPress={() => setOrderType(t.key)}
               >
                 <Ionicons name={t.icon} size={24} color={orderType === t.key ? '#fff' : t.color} />
-                <Text style={[styles.orderTypeBtnText, orderType === t.key && { color: '#fff' }]}>{t.label}</Text>
+                <Text
+                  numberOfLines={1}
+                  style={[
+                    styles.orderTypeBtnText,
+                    isNarrowMobile && styles.orderTypeBtnTextCompact,
+                    orderType === t.key && { color: '#fff' }
+                  ]}
+                >
+                  {t.label}
+                </Text>
               </TouchableOpacity>
             ))}
           </View>
@@ -1087,7 +1103,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
         </View>
 
         {/* ── Section 2: Customer / Receiver ── */}
-        <View style={styles.section}>
+        <View style={[styles.section, (showSuggestions || showReceiverSuggestions) && { zIndex: 10 }]}>
           <View style={styles.sectionHeader}>
             <View style={styles.sectionIcon}>
               <Ionicons name="person" size={20} color={Colors.primary} />
@@ -2002,8 +2018,14 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.background, borderWidth: 2, borderColor: Colors.border,
     minHeight: 56,
   },
+  orderTypeBtnCompact: {
+    flexBasis: '48%',
+    maxWidth: '48%',
+    minWidth: 0,
+  },
 
   orderTypeBtnText: { fontSize: FontSize.sm, fontWeight: '700', color: Colors.textSecondary },
+  orderTypeBtnTextCompact: { fontSize: FontSize.xs },
 
   chip: {
     paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm, borderRadius: BorderRadius.full,

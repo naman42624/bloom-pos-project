@@ -11,7 +11,8 @@ import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import { 
   parseServerDate, formatShopDateLabel, 
-  getShopNow, getShopTodayStr, getShopTomorrowStr 
+  getShopNow, getShopTodayStr, getShopTomorrowStr,
+  minutesUntilShopDateTime, minutesSinceServerDate
 } from '../utils/datetime';
 import ImageModal from '../components/ImageModal';
 
@@ -138,20 +139,26 @@ export default function ProductionQueueScreen({ navigation, route }) {
   // Helper: format date label
   const formatDateLabel = (dateStr) => formatShopDateLabel(dateStr, timezone);
 
+  const extractDatePart = useCallback((value) => {
+    if (!value) return null;
+    const raw = String(value).trim();
+    if (!raw) return null;
+    const match = raw.match(/^(\d{4}-\d{2}-\d{2})/);
+    return match ? match[1] : null;
+  }, []);
+
 
   // Helper: check if task is urgent or late
   const getTaskUrgency = useCallback((task) => {
     if (task.status === 'completed' || task.status === 'cancelled') return null;
     
-    // Fallback: If no scheduled date/time, use created_at as scheduled info
-    const schedDate = task.scheduled_date || (task.created_at ? task.created_at.split('T')[0] : null);
-    const schedTime = task.scheduled_time || (task.created_at ? task.created_at.split('T')[1]?.slice(0, 5) : null);
+    const schedDate = task.scheduled_date || null;
+    const schedTime = task.scheduled_time || null;
 
     // Walk-ins: Urgent if pending/assigned > 10-20 mins
     if (task.order_type === 'walk_in') {
-      const created = parseServerDate(task.created_at);
-      if (!created) return null;
-      const diffMins = Math.floor((now - created) / 60000);
+      const diffMins = minutesSinceServerDate(task.created_at, timezone);
+      if (diffMins == null) return null;
       if (diffMins > 20) return 'late';
       if (diffMins > 10) return 'urgent';
       return null;
@@ -159,9 +166,8 @@ export default function ProductionQueueScreen({ navigation, route }) {
 
     // Scheduled: Late if time passed, Urgent if within 60 mins
     if (schedDate && schedTime) {
-      const scheduled = parseServerDate(`${schedDate}T${schedTime}`);
-      if (!scheduled) return null;
-      const diffMins = Math.floor((scheduled - now) / 60000);
+      const diffMins = minutesUntilShopDateTime(schedDate, schedTime, timezone);
+      if (diffMins == null) return null;
       if (diffMins < 0) return 'late';
       if (diffMins < 60) return 'urgent';
 
@@ -176,7 +182,7 @@ export default function ProductionQueueScreen({ navigation, route }) {
     }
 
     return null;
-  }, [now, todayStr]);
+  }, [now, timezone]);
 
 
 
@@ -187,20 +193,18 @@ export default function ProductionQueueScreen({ navigation, route }) {
     const today = getShopTodayStr(timezone);
     
     // Fallback: If no scheduled info, use created_at
-    const schedDate = order.scheduled_date || (order.created_at ? order.created_at.split('T')[0] : null);
-    const schedTime = order.scheduled_time || (order.created_at ? order.created_at.split('T')[1]?.slice(0, 5) : null);
+    const schedDate = order.scheduled_date || null;
+    const schedTime = order.scheduled_time || null;
 
     // 1. Overdue (Past scheduled date)
     if (schedDate && schedDate < today) return 'late';
     
     // 2. Late & Urgent (Today)
     if (schedDate === today && schedTime) {
-      const scheduled = parseServerDate(`${schedDate}T${schedTime}`);
-      if (scheduled) {
-        if (scheduled < now) return 'late';
-        const diffMs = scheduled - now;
-        if (diffMs >= 0 && diffMs < 3600000) return 'urgent'; // < 1 hour
-      }
+      const remainingMins = minutesUntilShopDateTime(schedDate, schedTime, timezone);
+      if (remainingMins == null) return null;
+      if (remainingMins < 0) return 'late';
+      if (remainingMins < 60) return 'urgent';
     }
 
 
@@ -212,17 +216,15 @@ export default function ProductionQueueScreen({ navigation, route }) {
     }
 
     return null;
-  }, [now, todayStr, timezone]);
+  }, [now, timezone]);
 
 
 
   const renderSLA = (item) => {
     if (item.status === 'completed' || item.status === 'cancelled') return null;
 
-    const created = parseServerDate(item.created_at);
-    if (!created) return null;
-
-    const diffMins = Math.floor((now - created) / 60000);
+    const diffMins = minutesSinceServerDate(item.created_at, timezone);
+    if (diffMins == null) return null;
 
     // Walk-in orders: Track "X mins passed"
     if (item.order_type === 'walk_in') {
@@ -236,13 +238,12 @@ export default function ProductionQueueScreen({ navigation, route }) {
     }
 
     // Scheduled orders (pickup/delivery)
-    const schedDate = item.scheduled_date || (item.created_at ? item.created_at.split('T')[0] : null);
-    const schedTime = item.scheduled_time || (item.created_at ? item.created_at.split('T')[1]?.slice(0, 5) : null);
+    const schedDate = item.scheduled_date || null;
+    const schedTime = item.scheduled_time || null;
 
     if (schedDate && schedTime) {
-      const scheduled = parseServerDate(`${schedDate}T${schedTime}`);
-      if (!scheduled) return null;
-      const remainingMins = Math.floor((scheduled - now) / 60000);
+      const remainingMins = minutesUntilShopDateTime(schedDate, schedTime, timezone);
+      if (remainingMins == null) return null;
 
       if (remainingMins < 0) {
         return (
@@ -283,7 +284,7 @@ export default function ProductionQueueScreen({ navigation, route }) {
       }
 
       // Date Filtering applies for the remaining sections
-      const schedDate = item.scheduled_date || (item.created_at ? item.created_at.split('T')[0] : null);
+      const schedDate = item.scheduled_date || extractDatePart(item.created_at);
       if (selectedDate && schedDate !== selectedDate) {
         return;
       }
@@ -549,7 +550,7 @@ export default function ProductionQueueScreen({ navigation, route }) {
   };
 
   const handlePickTask = (task) => {
-    const msg = `Pick up: ${task.quantity}x ${task.product_name}?`;
+    const msg = `Pick up: ${Number(task.quantity)}x ${task.product_name}?`;
     const onConfirm = async () => {
       try {
         await api.pickTask(task.id);
@@ -576,7 +577,7 @@ export default function ProductionQueueScreen({ navigation, route }) {
   };
 
   const handleStartTask = (task) => {
-    const msg = `Start making ${task.quantity}x ${task.product_name}?`;
+    const msg = `Start making ${Number(task.quantity)}x ${task.product_name}?`;
     const onConfirm = async () => {
       try {
         await api.startTask(task.id);
@@ -603,7 +604,7 @@ export default function ProductionQueueScreen({ navigation, route }) {
   };
 
   const handleCompleteTask = (task) => {
-    const msg = `Done making ${task.quantity}x ${task.product_name}?\n\nMaterials will be deducted.`;
+    const msg = `Done making ${Number(task.quantity)}x ${task.product_name}?\n\nMaterials will be deducted.`;
     const onConfirm = async () => {
       try {
         await api.completeTask(task.id);
@@ -732,7 +733,7 @@ export default function ProductionQueueScreen({ navigation, route }) {
               {renderItemImage(imageUrl)}
               <View style={{ flex: 1 }}>
                 <Text style={{ fontSize: 15, fontWeight: '800', color: Colors.text, lineHeight: 20 }} numberOfLines={2}>
-                  {item.quantity}x {item.product_name || item.item_product_name}
+                  {Number(item.quantity)}x {item.product_name || item.item_product_name}
                 </Text>
                 <Text style={{ fontSize: 12, color: Colors.textSecondary, marginTop: 2 }} numberOfLines={1}>
                   {item.assigned_to_name ? `Designer: ${item.assigned_to_name}` : 'Unassigned'}
@@ -791,6 +792,10 @@ export default function ProductionQueueScreen({ navigation, route }) {
     const urgency = getOrderUrgency(item);
     const urgencyColor = urgency === 'late' ? Colors.error : urgency === 'urgent' ? Colors.warning : Colors.border;
     const summary = item.task_summary || { pending_tasks: 0, assigned_tasks: 0, in_progress_tasks: 0, completed_tasks: 0 };
+    const pendingTasks = Number(summary.pending_tasks || 0);
+    const assignedTasks = Number(summary.assigned_tasks || 0);
+    const inProgressTasks = Number(summary.in_progress_tasks || 0);
+    const completedTasks = Number(summary.completed_tasks || 0);
 
     return (
       <View style={[styles.card, { borderLeftWidth: 6, borderLeftColor: urgencyColor, padding: 0, overflow: 'hidden' }]}>
@@ -807,7 +812,10 @@ export default function ProductionQueueScreen({ navigation, route }) {
             </View>
             <View style={{ alignItems: 'flex-end', gap: 2, minWidth: 80 }}>
               {renderSLA(item)}
-              <Text style={{ fontSize: 10, color: Colors.textLight, fontWeight: '700' }}>{item.scheduled_time || 'ASAP'}</Text>
+              <View style={{ gap: 1 }}>
+                <Text style={{ fontSize: 10, color: Colors.textLight, fontWeight: '700' }}>{item.scheduled_time || 'ASAP'}</Text>
+                <Text style={{ fontSize: 9, color: Colors.textLight, fontWeight: '600' }}>{formatDateLabel(item.scheduled_date) || '---'}</Text>
+              </View>
               {item.payment_status && item.payment_status !== 'paid' && (
                 <View style={[styles.statusBadge, { backgroundColor: Colors.error + '15', paddingVertical: 1, marginTop: 2 }]}>
                   <Text style={[styles.statusText, { color: Colors.error, fontSize: 9, fontWeight: '900' }]}>PAYMENT PENDING</Text>
@@ -833,7 +841,7 @@ export default function ProductionQueueScreen({ navigation, route }) {
                     style={{ width: 36, height: 36, borderRadius: 4, backgroundColor: Colors.surfaceAlt, borderWidth: 1, borderColor: Colors.border }} 
                   />
                   <View style={{ flex: 1 }}>
-                    <Text style={{ fontSize: 13, fontWeight: '700', color: Colors.text }} numberOfLines={1}>{si.quantity}x {si.product_name}</Text>
+                    <Text style={{ fontSize: 13, fontWeight: '700', color: Colors.text }} numberOfLines={1}>{Number(si.quantity)}x {si.product_name}</Text>
                   </View>
                 </View>
               ))}
@@ -842,15 +850,15 @@ export default function ProductionQueueScreen({ navigation, route }) {
 
             <View style={{ flexDirection: 'row', gap: 8, marginTop: 8, paddingTop: 8, borderTopWidth: 1, borderTopColor: Colors.border }}>
                <View style={{ flex: 1, alignItems: 'center' }}>
-                  <Text style={{ fontSize: 13, fontWeight: '800', color: Colors.error }}>{summary.pending_tasks + summary.assigned_tasks}</Text>
+                <Text style={{ fontSize: 13, fontWeight: '800', color: Colors.error }}>{pendingTasks + assignedTasks}</Text>
                   <Text style={{ fontSize: 8, color: Colors.textLight, fontWeight: '700' }}>PENDING</Text>
                </View>
                <View style={{ flex: 1, alignItems: 'center' }}>
-                  <Text style={{ fontSize: 13, fontWeight: '800', color: Colors.warning }}>{summary.in_progress_tasks}</Text>
+                <Text style={{ fontSize: 13, fontWeight: '800', color: Colors.warning }}>{inProgressTasks}</Text>
                   <Text style={{ fontSize: 8, color: Colors.textLight, fontWeight: '700' }}>ACTIVE</Text>
                </View>
                <View style={{ flex: 1, alignItems: 'center' }}>
-                  <Text style={{ fontSize: 13, fontWeight: '800', color: Colors.success }}>{summary.completed_tasks}</Text>
+                <Text style={{ fontSize: 13, fontWeight: '800', color: Colors.success }}>{completedTasks}</Text>
                   <Text style={{ fontSize: 8, color: Colors.textLight, fontWeight: '700' }}>DONE</Text>
                </View>
             </View>
@@ -878,7 +886,7 @@ export default function ProductionQueueScreen({ navigation, route }) {
             {item.status !== 'completed' && item.status !== 'cancelled' && (
               <View style={[styles.taskActions, { marginTop: 10 }]}>
                 {(() => {
-                  const hasIncompleteTasks = (summary.pending_tasks || 0) + (summary.assigned_tasks || 0) + (summary.in_progress_tasks || 0) > 0;
+                  const hasIncompleteTasks = (pendingTasks + assignedTasks + inProgressTasks) > 0;
                   const deliveryBlocked = item.order_type === 'delivery' && item.delivery && item.delivery.status !== 'delivered';
                   
                   let nextBlocked = false;
@@ -891,7 +899,7 @@ export default function ProductionQueueScreen({ navigation, route }) {
                     nextAction = { status: 'ready', label: 'Ready', color: Colors.success };
                     if (hasIncompleteTasks) {
                       nextBlocked = true;
-                      blockReason = `${(summary.pending_tasks || 0) + (summary.assigned_tasks || 0) + (summary.in_progress_tasks || 0)} tasks left`;
+                      blockReason = `${pendingTasks + assignedTasks + inProgressTasks} tasks left`;
                     }
                   } else if (item.status === 'ready') {
                     nextAction = { status: 'completed', label: 'Done', color: Colors.primary };
@@ -1140,9 +1148,19 @@ export default function ProductionQueueScreen({ navigation, route }) {
                       </TouchableOpacity>
                     ))}
                   </View>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: Spacing.md, paddingBottom: 8, gap: 10 }}>
+                  <ScrollView
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    contentContainerStyle={{
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      paddingHorizontal: Spacing.md,
+                      paddingBottom: 8,
+                      gap: 10,
+                    }}
+                  >
                     <TouchableOpacity
-                      style={[styles.filterToggleBtn, { height: 40, paddingHorizontal: 0 }]}
+                      style={[styles.filterToggleBtn, { height: 40, paddingHorizontal: 0, minWidth: 70 }]}
                       onPress={() => setShowFilters(!showFilters)}
                     >
                       <Ionicons name={showFilters ? 'options' : 'options-outline'} size={18} color={Colors.primary} />
@@ -1150,7 +1168,7 @@ export default function ProductionQueueScreen({ navigation, route }) {
                     </TouchableOpacity>
 
                     <TouchableOpacity
-                      style={[styles.historyBtn, { height: 40, borderWidth: 0, backgroundColor: 'transparent', paddingHorizontal: 0 }]}
+                      style={[styles.historyBtn, { height: 40, borderWidth: 0, backgroundColor: 'transparent', paddingHorizontal: 0, minWidth: 70 }]}
                       onPress={() => navigation.navigate('CompletedTasks')}
                     >
                       <Ionicons name="checkmark-done-circle-outline" size={20} color={Colors.primary} />
@@ -1158,7 +1176,7 @@ export default function ProductionQueueScreen({ navigation, route }) {
                     </TouchableOpacity>
 
                     {viewMode === 'orders' && (
-                      <View style={[styles.searchBar, { flex: 1, height: 38 }]}>
+                      <View style={[styles.searchBar, { width: 170, height: 38 }]}> 
                         <Ionicons name="search" size={14} color={Colors.textLight} />
                         <TextInput
                           style={[styles.searchInput, { fontSize: 12 }]}
@@ -1168,7 +1186,7 @@ export default function ProductionQueueScreen({ navigation, route }) {
                         />
                       </View>
                     )}
-                  </View>
+                  </ScrollView>
                 </View>
               )}
 
@@ -1276,7 +1294,7 @@ export default function ProductionQueueScreen({ navigation, route }) {
             }}
             contentContainerStyle={styles.listContent}
             refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[Colors.primary]} />}
-            stickySectionHeadersEnabled={true}
+            stickySectionHeadersEnabled={isTablet}
             getItemLayout={getItemLayout}
             onScrollToIndexFailed={(info) => {
 
@@ -1301,8 +1319,8 @@ export default function ProductionQueueScreen({ navigation, route }) {
         <Modal visible={true} transparent animationType="fade">
           <View style={styles.modalOverlay}>
             <View style={styles.modalCard}>
-              <View style={styles.modalHeader}>
-                <Text style={styles.modalTitle}>
+              <View style={styles.assignModalHeader}>
+                <Text style={styles.assignModalTitle}>
                   {assignOrderTasks.length > 0 ? 'Assign Order Tasks' : 'Assign Task'}
                 </Text>
                 <TouchableOpacity onPress={() => { setShowAssign(false); setAssignTask(null); setAssignOrderTasks([]); }}>
@@ -1311,15 +1329,15 @@ export default function ProductionQueueScreen({ navigation, route }) {
               </View>
               {assignOrderTasks.length > 0 ? (
                 <View style={{ marginBottom: Spacing.md }}>
-                  <Text style={styles.modalSubtitle}>Assign all pending tasks to one employee:</Text>
+                  <Text style={styles.assignModalSubtitle}>Assign all pending tasks to one employee:</Text>
                   {assignOrderTasks.map((t) => (
                     <Text key={t.id} style={{ fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: 2 }}>
-                      • {t.quantity}x {t.product_name} ({t.status})
+                      • {Number(t.quantity)}x {t.product_name} ({t.status})
                     </Text>
                   ))}
                 </View>
               ) : assignTask && (
-                <Text style={styles.modalSubtitle}>{assignTask.quantity}x {assignTask.product_name}</Text>
+                <Text style={styles.assignModalSubtitle}>{Number(assignTask.quantity)}x {assignTask.product_name}</Text>
               )}
               <ScrollView style={{ maxHeight: 300 }}>
                 {employees.map((emp) => (
@@ -1386,7 +1404,11 @@ const styles = StyleSheet.create({
   modalHeader: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
     padding: Spacing.lg, borderBottomWidth: 1, borderBottomColor: Colors.border,
+    backgroundColor: Colors.surface,
   },
+  modalTitle: { fontSize: FontSize.xl, fontWeight: '800', color: Colors.text },
+  modalSubtitle: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: 2 },
+  closeModalBtn: { padding: 4 },
   modalFooter: {
     flexDirection: 'row', gap: Spacing.md, padding: Spacing.lg,
     borderTopWidth: 1, borderTopColor: Colors.border,
@@ -1412,13 +1434,16 @@ const styles = StyleSheet.create({
   headerPanel: {
     backgroundColor: Colors.surface,
     borderBottomWidth: 1, borderBottomColor: Colors.border,
+    zIndex: 6,
+    elevation: 6,
   },
   headerRow: {
     paddingVertical: Spacing.xs,
   },
   stickyFiltersWrap: {
-    zIndex: 3,
-    elevation: 3,
+    zIndex: 4,
+    elevation: 4,
+    backgroundColor: Colors.surface,
   },
   filterToggleBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
@@ -1469,6 +1494,8 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.surface,
     borderBottomWidth: 1, borderBottomColor: Colors.border,
     paddingVertical: Spacing.sm,
+    zIndex: 2,
+    elevation: 2,
   },
   activeFiltersBar: {
     flexDirection: 'row',
@@ -1617,11 +1644,11 @@ const styles = StyleSheet.create({
   modalCard: {
     backgroundColor: Colors.surface, borderRadius: BorderRadius.lg, padding: Spacing.lg,
   },
-  modalHeader: {
+  assignModalHeader: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: Spacing.sm,
   },
-  modalTitle: { fontSize: FontSize.lg, fontWeight: '700', color: Colors.text },
-  modalSubtitle: { fontSize: FontSize.md, color: Colors.textSecondary, marginBottom: Spacing.md },
+  assignModalTitle: { fontSize: FontSize.lg, fontWeight: '700', color: Colors.text },
+  assignModalSubtitle: { fontSize: FontSize.md, color: Colors.textSecondary, marginBottom: Spacing.md },
   empRow: {
     flexDirection: 'row', alignItems: 'center', gap: Spacing.md,
     paddingVertical: Spacing.md, borderBottomWidth: 1, borderBottomColor: Colors.border,

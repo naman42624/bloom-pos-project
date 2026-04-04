@@ -18,7 +18,11 @@ try {
   // Add 'assigned' to production_tasks.status
   try { db.prepare("ALTER TABLE production_tasks DROP CONSTRAINT IF EXISTS production_tasks_status_check").run(); } catch {}
   try { db.prepare("ALTER TABLE production_tasks ADD CONSTRAINT production_tasks_status_check CHECK(status IN ('pending','assigned','in_progress','completed','cancelled'))").run(); } catch {}
+
+  // Add is_credit_sale column to sales table
+  try { db.prepare("ALTER TABLE sales ADD COLUMN is_credit_sale INTEGER DEFAULT 0").run(); } catch {}
 } catch (e) { console.log('Sales migration note:', e.message); }
+
 
 
 // ─── Helper: Generate sale number ────────────────────────────
@@ -821,13 +825,21 @@ router.get(
 
         for (const order of orders) {
           order.items = itemsBySaleId.get(order.id) || [];
-          const taskSummary = taskSummaryBySaleId.get(order.id) || {
+          const rawTaskSummary = taskSummaryBySaleId.get(order.id) || {
             pending_tasks: 0,
             assigned_tasks: 0,
             in_progress_tasks: 0,
             completed_tasks: 0,
             cancelled_tasks: 0,
             total_tasks: 0,
+          };
+          const taskSummary = {
+            pending_tasks: Number(rawTaskSummary.pending_tasks || 0),
+            assigned_tasks: Number(rawTaskSummary.assigned_tasks || 0),
+            in_progress_tasks: Number(rawTaskSummary.in_progress_tasks || 0),
+            completed_tasks: Number(rawTaskSummary.completed_tasks || 0),
+            cancelled_tasks: Number(rawTaskSummary.cancelled_tasks || 0),
+            total_tasks: Number(rawTaskSummary.total_tasks || 0),
           };
           order.task_summary = taskSummary;
           order.all_tasks_done = (taskSummary.pending_tasks + taskSummary.assigned_tasks + taskSummary.in_progress_tasks) === 0;
@@ -1018,6 +1030,7 @@ router.post(
         sender_address, sender_address_label, receiver_address_label,
         scheduled_date, scheduled_time, advance_amount,
         sender_name, sender_phone, sender_message,
+        is_credit_sale,
       } = req.body;
       // Mutable alias — may be set by auto-create logic below
       let customer_id = customer_id_from_body || null;
@@ -1275,8 +1288,8 @@ router.post(
             special_instructions, customer_notes,
             sender_customer_id, receiver_customer_id, sender_same_as_receiver,
             sender_name, sender_phone, receiver_name, receiver_phone, sender_message,
-            created_by, created_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            created_by, created_at, is_credit_sale)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           saleNumber, location_id, customer_id || null, saleCustomerName || null, saleCustomerPhone || null,
           subtotal, taxTotal, discountAmount, discount_type || null, discountPercentage, discountApprovedBy,
@@ -1287,7 +1300,7 @@ router.post(
           notes || special_instructions || '', customer_notes || '',
           senderCustomerId || null, receiverCustomerId || null, senderReceiverSame ? 1 : 0,
           senderNameForSale || '', senderPhoneForSale || '', receiverNameForSale || '', receiverPhoneForSale || '', sender_message || '', req.user.id,
-          nowLocal()
+          nowLocal(), is_credit_sale ? 1 : 0
         );
         const saleId = saleResult.lastInsertRowid;
 
@@ -1427,7 +1440,7 @@ router.post(
         // Auto-create delivery record for delivery orders
         const needsDeliveryRecord = order_type === 'delivery' || (order_type === 'pre_order' && delivery_address);
         if (needsDeliveryRecord && delivery_address) {
-          const codAmount = Math.max(0, grandTotal - totalPaid);
+          const codAmount = is_credit_sale ? 0 : Math.max(0, grandTotal - totalPaid);
           db.prepare(`
             INSERT INTO deliveries (sale_id, location_id, delivery_address, customer_name, customer_phone,
               scheduled_date, scheduled_time, cod_amount, cod_status, created_at)
@@ -1719,7 +1732,7 @@ router.put(
       if (status === 'completed' && sale.order_type === 'pickup') {
         const totalPaid = db.prepare('SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE sale_id = ?').get(sale.id).total;
         const balanceDue = sale.grand_total - totalPaid;
-        if (balanceDue > 0.01) {
+        if (balanceDue > 0.01 && !sale.is_credit_sale) {
           return res.status(400).json({
             success: false,
             message: `Cannot complete pickup — balance due: ₹${balanceDue.toFixed(2)}. Please collect payment first.`,

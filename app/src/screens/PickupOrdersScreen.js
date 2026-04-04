@@ -98,8 +98,8 @@ export default function PickupOrdersScreen({ navigation }) {
   };
 
   const handleMarkPickedUp = async (order) => {
-    // If not fully paid, show payment collection modal (manager/owner only)
-    if (order.payment_status !== 'paid') {
+    // If not fully paid AND not a credit sale, show payment collection modal (manager/owner only)
+    if (order.payment_status !== 'paid' && !order.is_credit_sale) {
       if (!isManagerOrOwner) {
         Alert.alert('Permission', 'Only manager/owner can confirm pickup with pending payment.');
         return;

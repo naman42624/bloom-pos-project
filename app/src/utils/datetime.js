@@ -1,5 +1,37 @@
 const DEFAULT_TZ = 'Asia/Kolkata';
 
+const HAS_TZ_RE = /[zZ]$|[+\-]\d{2}:?\d{2}$/;
+
+function shopPartsFromDate(date, timezone = DEFAULT_TZ) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: timezone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).formatToParts(date);
+
+  const map = {};
+  parts.forEach((p) => {
+    if (p.type !== 'literal') map[p.type] = Number(p.value);
+  });
+  return map;
+}
+
+function pseudoUtcMsFromParts(parts) {
+  return Date.UTC(
+    Number(parts.year),
+    Number(parts.month) - 1,
+    Number(parts.day),
+    Number(parts.hour || 0),
+    Number(parts.minute || 0),
+    Number(parts.second || 0)
+  );
+}
+
 export function parseServerDate(value) {
   if (!value) return null;
   if (value instanceof Date) return value;
@@ -12,18 +44,7 @@ export function parseServerDate(value) {
     return new Date(`${raw}T00:00:00`);
   }
 
-  const hasTimezone = /[zZ]$|[+\-]\d{2}:?\d{2}$/.test(raw);
-  let normalized = raw.includes(' ') ? raw.replace(' ', 'T') : raw;
-  
-  // If it's a date-time string without an offset, it's a legacy local string from the server.
-  // We should interpret it in the shop's timezone to avoid device-local shifts.
-  if (!hasTimezone && normalized.includes('T')) {
-    // For Asia/Kolkata (+05:30), we can append the offset if we know the shop's default.
-    // Ideally this would come from AuthContext/Settings, but we can use DEFAULT_TZ for now.
-    // Or better: just let it be parsed as local for now, but new records are fixed.
-    // Wait, let's make it smarter: append +05:30 for legacy Indian strings.
-    normalized = `${normalized}+05:30`;
-  }
+  const normalized = raw.includes(' ') ? raw.replace(' ', 'T') : raw;
 
   const parsed = new Date(normalized);
   if (!Number.isNaN(parsed.getTime())) return parsed;
@@ -143,6 +164,88 @@ export function getShopNow(timezone = DEFAULT_TZ) {
   
   // Create a Date object representing the time in that zone
   return new Date(map.year, map.month - 1, map.day, map.hour, map.minute, map.second);
+}
+
+/**
+ * Minutes from "now" (shop timezone) until a scheduled local date+time.
+ * Properly handles timezone-aware comparison using shop timezone.
+ */
+export function minutesUntilShopDateTime(dateStr, timeStr, timezone = DEFAULT_TZ) {
+  if (!dateStr || !timeStr) return null;
+
+  const dm = String(dateStr).trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const tm = String(timeStr).trim().match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+  if (!dm || !tm) return null;
+
+  // Build scheduled datetime in pseudo-UTC (treating shop-local as UTC)
+  const scheduledMs = Date.UTC(
+    Number(dm[1]),
+    Number(dm[2]) - 1,
+    Number(dm[3]),
+    Number(tm[1]),
+    Number(tm[2]),
+    Number(tm[3] || 0)
+  );
+
+  // Get current time in shop timezone as pseudo-UTC
+  const now = new Date();
+  const shopParts = shopPartsFromDate(now, timezone);
+  if (!shopParts || !shopParts.year || Number.isNaN(shopParts.year)) {
+    // Fallback if Intl fails: use device time (acceptable if device is in shop tz)
+    return Math.floor((scheduledMs - now.getTime()) / 60000);
+  }
+  
+  const nowMs = pseudoUtcMsFromParts(shopParts);
+  const diffMs = scheduledMs - nowMs;
+  
+  return Math.floor(diffMs / 60000);
+}
+
+/**
+ * Minutes elapsed from a server datetime value to "now" (in shop timezone).
+ * Treats server values as shop-local and compares in shop timezone.
+ */
+export function minutesSinceServerDate(value, timezone = DEFAULT_TZ) {
+  if (!value) return null;
+  const raw = String(value).trim();
+  if (!raw) return null;
+
+  let targetMs = null;
+
+  // If it's a plain YYYY-MM-DD or YYYY-MM-DD HH:MM:SS without timezone, treat as shop-local
+  if (!HAS_TZ_RE.test(raw)) {
+    const m = raw.match(/^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?/);
+    if (m) {
+      // Parse as shop-local time in pseudo-UTC
+      targetMs = Date.UTC(
+        Number(m[1]),
+        Number(m[2]) - 1,
+        Number(m[3]),
+        Number(m[4] || 0),
+        Number(m[5] || 0),
+        Number(m[6] || 0)
+      );
+    }
+  }
+
+  if (targetMs == null) {
+    // Fallback: try to parse as ISO string
+    const parsed = parseServerDate(raw);
+    if (!parsed) return null;
+    targetMs = parsed.getTime();
+  }
+
+  // Get current time in shop timezone as pseudo-UTC
+  const now = new Date();
+  const shopParts = shopPartsFromDate(now, timezone);
+  if (!shopParts || !shopParts.year || Number.isNaN(shopParts.year)) {
+    // Fallback if Intl fails: use device time
+    return Math.floor((now.getTime() - targetMs) / 60000);
+  }
+  
+  const nowMs = pseudoUtcMsFromParts(shopParts);
+  const diffMs = nowMs - targetMs;
+  return Math.floor(diffMs / 60000);
 }
 
 /**
