@@ -2,7 +2,7 @@
 -- BloomCart POS — PostgreSQL Schema
 -- ============================================================
 -- This is the production database schema for PostgreSQL
--- Converted from SQLite database.js definitions
+-- Consolidated production schema used by all environments
 
 BEGIN;
 

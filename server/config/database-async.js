@@ -27,11 +27,6 @@ let initialized = false;
 function normalizeSql(sql) {
   let normalized = String(sql || '').trim();
   if (normalized.endsWith(';')) normalized = normalized.slice(0, -1);
-
-  normalized = normalized
-    .replace(/datetime\('now'\)/gi, 'CURRENT_TIMESTAMP')
-    .replace(/date\('now'\)/gi, 'CURRENT_DATE');
-
   return normalized;
 }
 
@@ -165,6 +160,7 @@ function ensureCriticalTimestampColumns() {
   ensureTableTimestampColumns('payments', ['created_at'], ['created_at']);
   ensureTableTimestampColumns('deliveries', ['created_at', 'updated_at', 'assigned_at', 'pickup_time', 'delivered_time'], ['created_at', 'updated_at']);
   ensureTableTimestampColumns('production_logs', ['created_at'], ['created_at']);
+  ensureTableTimestampColumns('attendance', ['clock_in', 'clock_out', 'created_at', 'updated_at'], ['created_at', 'updated_at']);
 }
 
 function ensureCompatibilityColumns() {
@@ -212,12 +208,7 @@ function createPrepared(sql) {
     async run(...params) {
       const normalized = normalizeSql(rawSql);
       const upper = normalized.toUpperCase();
-
-      // Handle INSERT OR IGNORE
-      let statement = normalized.replace(/^\s*INSERT\s+OR\s+IGNORE\s+INTO\s+/i, 'INSERT INTO ');
-      if (/^\s*INSERT\s+OR\s+IGNORE\s+INTO\s+/i.test(normalized)) {
-        statement += ' ON CONFLICT DO NOTHING';
-      }
+      let statement = normalized;
 
       // Add RETURNING for INSERT/UPDATE/DELETE
       if (upper.startsWith('INSERT')) {

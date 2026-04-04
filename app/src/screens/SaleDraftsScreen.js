@@ -17,8 +17,9 @@ import api from '../services/api';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 
 function contextLabel(context) {
+  if (context === 'checkout') return 'Quick Checkout';
   if (context === 'quick_checkout') return 'Quick Checkout';
-  return 'Checkout';
+  return 'Quick Checkout';
 }
 
 export default function SaleDraftsScreen({ navigation, route }) {
@@ -54,8 +55,7 @@ export default function SaleDraftsScreen({ navigation, route }) {
   }, [loadDrafts]);
 
   const handleResume = useCallback((draft) => {
-    const target = draft.context === 'quick_checkout' ? 'QuickCheckout' : 'Checkout';
-    navigation.navigate(target, { draftId: draft.id });
+    navigation.navigate('QuickCheckout', { draftId: draft.id });
   }, [navigation]);
 
   const handleDelete = useCallback((draftId) => {

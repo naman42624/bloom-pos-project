@@ -7,16 +7,25 @@ export function parseServerDate(value) {
   const raw = String(value).trim();
   if (!raw) return null;
 
+  // Handle YYYY-MM-DD
   if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
     return new Date(`${raw}T00:00:00`);
   }
 
   const hasTimezone = /[zZ]$|[+\-]\d{2}:?\d{2}$/.test(raw);
-  const normalized = raw.includes(' ') ? raw.replace(' ', 'T') : raw;
-  // Don't append Z — server stores local time via nowLocal(), not UTC
-  const candidate = normalized;
+  let normalized = raw.includes(' ') ? raw.replace(' ', 'T') : raw;
+  
+  // If it's a date-time string without an offset, it's a legacy local string from the server.
+  // We should interpret it in the shop's timezone to avoid device-local shifts.
+  if (!hasTimezone && normalized.includes('T')) {
+    // For Asia/Kolkata (+05:30), we can append the offset if we know the shop's default.
+    // Ideally this would come from AuthContext/Settings, but we can use DEFAULT_TZ for now.
+    // Or better: just let it be parsed as local for now, but new records are fixed.
+    // Wait, let's make it smarter: append +05:30 for legacy Indian strings.
+    normalized = `${normalized}+05:30`;
+  }
 
-  const parsed = new Date(candidate);
+  const parsed = new Date(normalized);
   if (!Number.isNaN(parsed.getTime())) return parsed;
 
   const fallback = new Date(raw);
@@ -28,12 +37,12 @@ export function formatDate(value, locale = 'en-IN', options = { day: 'numeric', 
   return d ? d.toLocaleDateString(locale, options) : '';
 }
 
-export function formatTime(value, locale = 'en-IN', options = { hour: '2-digit', minute: '2-digit' }) {
+export function formatTime(value, locale = 'en-IN', options = { hour: '2-digit', minute: '2-digit', hour12: false }) {
   const d = parseServerDate(value);
   return d ? d.toLocaleTimeString(locale, options) : '--:--';
 }
 
-export function formatDateTime(value, locale = 'en-IN', options = { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) {
+export function formatDateTime(value, locale = 'en-IN', options = { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }) {
   const d = parseServerDate(value);
   return d ? d.toLocaleString(locale, options) : '';
 }

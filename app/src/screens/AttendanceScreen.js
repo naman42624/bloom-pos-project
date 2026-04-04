@@ -16,11 +16,17 @@ const confirm = (title, msg, onOk) => {
 };
 
 function formatTime(iso) {
-  return formatServerTime(iso, 'en-IN', { hour: '2-digit', minute: '2-digit' });
+  return formatServerTime(iso, 'en-IN', { hour: '2-digit', minute: '2-digit', hour12: false });
 }
 
 function formatHours(h) {
-  if (!h && h !== 0) return '0h 0m';
+  // Handle NaN, null, undefined explicitly
+  if (h === null || h === undefined) return '0h 0m';
+  if (Number.isNaN(h)) {
+    console.warn('⚠️  formatHours received NaN:', h);
+    return 'NaN h'; // Show NaN explicitly to diagnose backend issues
+  }
+  if (h < 0) h = 0; // Prevent negative durations
   const hrs = Math.floor(h);
   const mins = Math.round((h - hrs) * 60);
   return `${hrs}h ${mins}m`;

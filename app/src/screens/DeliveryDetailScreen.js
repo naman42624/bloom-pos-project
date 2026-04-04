@@ -129,6 +129,15 @@ export default function DeliveryDetailScreen({ route, navigation }) {
     }
   };
 
+  const handleViewLivePartner = () => {
+    const partnerId = delivery?.delivery_partner_id || delivery?.partner_id;
+    if (!partnerId) return;
+    navigation.navigate('LiveDeliveryMap', {
+      selectedPartnerId: partnerId,
+      deliveryId,
+    });
+  };
+
   const handleDeliver = async () => {
     const data = {};
     if (delivery.cod_amount > 0) {
@@ -400,6 +409,12 @@ export default function DeliveryDetailScreen({ route, navigation }) {
         {delivery.customer_name && <InfoRow icon="person-outline" label="Customer" value={`${delivery.customer_name} ${delivery.customer_phone ? '• ' + delivery.customer_phone : ''}`} />}
         {delivery.partner_name && <InfoRow icon="bicycle-outline" label="Partner" value={`${delivery.partner_name} ${delivery.partner_phone ? '• ' + delivery.partner_phone : ''}`} />}
         {delivery.scheduled_date && <InfoRow icon="calendar-outline" label="Scheduled" value={`${delivery.scheduled_date} ${delivery.scheduled_time || ''}`} />}
+        {delivery.status === 'in_transit' && (delivery.delivery_partner_id || delivery.partner_id) && (
+          <TouchableOpacity style={styles.liveLocationBtn} onPress={handleViewLivePartner}>
+            <Ionicons name="locate-outline" size={16} color={Colors.primary} />
+            <Text style={styles.liveLocationText}>View Live Location</Text>
+          </TouchableOpacity>
+        )}
 
         {/* Delivery Timeline */}
         {(delivery.assigned_at || delivery.pickup_time || delivery.delivered_time) && (
@@ -818,6 +833,8 @@ const styles = StyleSheet.create({
   saleDetailBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 8, borderRadius: BorderRadius.md, borderWidth: 1, borderColor: Colors.primary + '40', backgroundColor: Colors.primary + '08' },
   convertPickupBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 8, borderRadius: BorderRadius.md, borderWidth: 1, borderColor: Colors.primary + '40', backgroundColor: Colors.primary + '08' },
   saleDetailBtnText: { fontSize: FontSize.sm, color: Colors.primary, fontWeight: '600' },
+  liveLocationBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 10, alignSelf: 'flex-start', borderWidth: 1, borderColor: Colors.secondary + '40', backgroundColor: Colors.secondary + '10', paddingHorizontal: 12, paddingVertical: 8, borderRadius: BorderRadius.md },
+  liveLocationText: { fontSize: FontSize.sm, color: Colors.secondary, fontWeight: '700' },
   stockBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 4 },
   stockBadgeText: { fontSize: FontSize.xs, color: Colors.success, fontWeight: '600' },
   fulfillBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 4, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, backgroundColor: Colors.primary + '10', alignSelf: 'flex-start' },

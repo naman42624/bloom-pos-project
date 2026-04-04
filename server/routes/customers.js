@@ -328,7 +328,7 @@ router.get('/:id', authenticate, async (req, res, next) => {
     const creditPayments = await db.prepare(`
       SELECT cp.*, u.name as received_by_name
       FROM credit_payments cp
-      LEFT JOIN users u ON cp.received_by = u.id
+      LEFT JOIN users u ON cp.recorded_by = u.id
       WHERE cp.customer_id = ?
       ORDER BY cp.created_at DESC LIMIT 20
     `).all(req.params.id);
@@ -562,6 +562,7 @@ router.post(
     body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be positive'),
     body('method').isIn(['cash', 'card', 'upi']).withMessage('Invalid payment method'),
     body('sale_id').optional({ nullable: true }).isInt(),
+    body('location_id').isInt({ min: 1 }).withMessage('Location ID is required'),
     body('notes').optional().trim(),
   ],
   (req, res, next) => {
@@ -575,7 +576,8 @@ router.post(
       const customer = db.prepare("SELECT id, credit_balance FROM users WHERE id = ? AND role = 'customer'").get(customerId);
       if (!customer) return res.status(404).json({ success: false, message: 'Customer not found' });
 
-      const { amount, method, notes, sale_id } = req.body;
+      const { amount, method, notes, sale_id, location_id } = req.body;
+      const numLocationId = parseInt(location_id, 10);
 
       if (amount > customer.credit_balance) {
         return res.status(400).json({ success: false, message: `Payment amount (₹${amount}) exceeds outstanding balance (₹${customer.credit_balance})` });
@@ -584,8 +586,8 @@ router.post(
       const creditTx = db.transaction(() => {
         // Record credit payment
         const result = db.prepare(
-          'INSERT INTO credit_payments (customer_id, amount, method, recorded_by, notes, sale_id) VALUES (?, ?, ?, ?, ?, ?)'
-        ).run(customerId, amount, method, req.user.id, notes || '', sale_id || null);
+          'INSERT INTO credit_payments (customer_id, amount, method, recorded_by, notes, sale_id, location_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
+        ).run(customerId, amount, method, req.user.id, notes || '', sale_id || null, numLocationId);
 
         // Reduce customer credit balance
         db.prepare('UPDATE users SET credit_balance = credit_balance - ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(amount, customerId);
@@ -607,14 +609,28 @@ router.post(
           }
         }
 
+        // Update cash register if payment is cash
+        const register = db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1').get(numLocationId);
+        if (register) {
+          if (method === 'cash') {
+            db.prepare('UPDATE cash_registers SET total_cash_sales = total_cash_sales + ?, expected_cash = expected_cash + ? WHERE id = ?').run(amount, amount, register.id);
+          } else if (method === 'card') {
+            db.prepare('UPDATE cash_registers SET total_card_sales = total_card_sales + ? WHERE id = ?').run(amount, register.id);
+          } else if (method === 'upi') {
+            db.prepare('UPDATE cash_registers SET total_upi_sales = total_upi_sales + ? WHERE id = ?').run(amount, register.id);
+          }
+        }
+
         return result.lastInsertRowid;
       });
 
       const paymentId = creditTx();
 
       const payment = db.prepare(`
-        SELECT cp.*, u.name as received_by_name
-        FROM credit_payments cp LEFT JOIN users u ON cp.recorded_by = u.id
+        SELECT cp.*, u.name as received_by_name, l.name as location_name
+        FROM credit_payments cp
+        LEFT JOIN users u ON cp.recorded_by = u.id
+        LEFT JOIN locations l ON cp.location_id = l.id
         WHERE cp.id = ?
       `).get(paymentId);
 
@@ -630,9 +646,10 @@ router.get('/:id/credits', authenticate, async (req, res, next) => {
   try {
     const db = await getAsyncDb();
     const payments = await db.prepare(`
-      SELECT cp.*, u.name as received_by_name
+      SELECT cp.*, u.name as received_by_name, l.name as location_name
       FROM credit_payments cp
       LEFT JOIN users u ON cp.recorded_by = u.id
+      LEFT JOIN locations l ON cp.location_id = l.id
       WHERE cp.customer_id = ?
       ORDER BY cp.created_at DESC
     `).all(req.params.id);

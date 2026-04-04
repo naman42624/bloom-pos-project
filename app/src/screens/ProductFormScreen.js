@@ -2,10 +2,12 @@ import React, { useState, useEffect } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TextInput,
   TouchableOpacity, Alert, KeyboardAvoidingView, Platform,
-  Modal,
+  Modal, Image,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import * as ImagePicker from 'expo-image-picker';
 import api from '../services/api';
+import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 
 const PRODUCT_TYPES = [
@@ -24,8 +26,10 @@ const PRODUCT_CATEGORIES = [
 ];
 
 export default function ProductFormScreen({ route, navigation }) {
+  const { user } = useAuth();
   const editProduct = route.params?.product;
   const isEdit = !!editProduct;
+  const canManageStock = user?.role === 'owner' || user?.role === 'manager';
 
   const [name, setName] = useState(editProduct?.name || '');
   const [sku, setSku] = useState(editProduct?.sku || '');
@@ -34,6 +38,12 @@ export default function ProductFormScreen({ route, navigation }) {
   const [category, setCategory] = useState(editProduct?.category || null);
   const [sellingPrice, setSellingPrice] = useState(editProduct?.selling_price?.toString() || '');
   const [taxRateId, setTaxRateId] = useState(editProduct?.tax_rate_id || null);
+  const [taxMode, setTaxMode] = useState(
+    editProduct?.tax_rate_id ? 'preset' : (Number(editProduct?.tax_percentage || 0) > 0 ? 'custom' : 'none')
+  );
+  const [customTaxPercentage, setCustomTaxPercentage] = useState(
+    editProduct?.tax_rate_id ? '' : (editProduct?.tax_percentage?.toString() || '')
+  );
   const [locationId, setLocationId] = useState(editProduct?.location_id || null);
   const [taxRates, setTaxRates] = useState([]);
   const [locations, setLocations] = useState([]);
@@ -44,6 +54,11 @@ export default function ProductFormScreen({ route, navigation }) {
   const [showMaterialPicker, setShowMaterialPicker] = useState(false);
   const [allMaterials, setAllMaterials] = useState([]);
   const [materialSearch, setMaterialSearch] = useState('');
+
+  // Create flow extras
+  const [draftImageUri, setDraftImageUri] = useState(null);
+  const [openingStockQty, setOpeningStockQty] = useState('');
+  const [openingStockReason, setOpeningStockReason] = useState('');
 
   useEffect(() => {
     (async () => {
@@ -75,7 +90,7 @@ export default function ProductFormScreen({ route, navigation }) {
       category_name: mat.category_name,
       unit: mat.category_unit,
       quantity: 1,
-      cost_per_unit: mat.avg_cost || 0,
+      cost_per_unit: mat.selling_price || mat.avg_cost || 0,
     }]);
     setShowMaterialPicker(false);
   };
@@ -97,8 +112,39 @@ export default function ProductFormScreen({ route, navigation }) {
     return m.name.toLowerCase().includes(q) || (m.sku && m.sku.toLowerCase().includes(q));
   });
 
+  const pickDraftImage = async () => {
+    try {
+      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission Required', 'Please allow photo library access to add a product image.');
+        return;
+      }
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        quality: 0.8,
+        allowsEditing: true,
+      });
+      if (!result.canceled && result.assets?.[0]?.uri) {
+        setDraftImageUri(result.assets[0].uri);
+      }
+    } catch (err) {
+      Alert.alert('Error', err.message || 'Failed to select image');
+    }
+  };
+
   const handleSave = async () => {
     if (!name.trim()) { Alert.alert('Required', 'Product name is required'); return; }
+    const openingQty = parseFloat(openingStockQty) || 0;
+    if (!isEdit && canManageStock && openingQty > 0 && !locationId) {
+      Alert.alert('Location Required', 'Select a location to set opening stock.');
+      return;
+    }
+
+    const customTaxValue = parseFloat(customTaxPercentage);
+    if (taxMode === 'custom' && (!Number.isFinite(customTaxValue) || customTaxValue < 0)) {
+      Alert.alert('Required', 'Enter a valid custom tax percentage');
+      return;
+    }
 
     setSaving(true);
     try {
@@ -108,7 +154,8 @@ export default function ProductFormScreen({ route, navigation }) {
         type,
         category: category || undefined,
         selling_price: parseFloat(sellingPrice) || 0,
-        tax_rate_id: taxRateId,
+        tax_rate_id: taxMode === 'preset' ? taxRateId : null,
+        tax_percentage: taxMode === 'custom' ? Math.max(0, customTaxValue || 0) : undefined,
         location_id: locationId || undefined,
       };
       if (sku.trim()) data.sku = sku.trim();
@@ -124,7 +171,34 @@ export default function ProductFormScreen({ route, navigation }) {
       if (isEdit) {
         await api.updateProduct(editProduct.id, data);
       } else {
-        await api.createProduct(data);
+        const created = await api.createProduct(data);
+        const createdProductId = created?.data?.id;
+        const warnings = [];
+
+        if (createdProductId && draftImageUri) {
+          try {
+            await api.uploadProductImage(createdProductId, draftImageUri, true);
+          } catch (imgErr) {
+            warnings.push(imgErr.message || 'Image could not be uploaded.');
+          }
+        }
+
+        if (createdProductId && canManageStock && openingQty > 0) {
+          try {
+            await api.adjustProductStock({
+              product_id: createdProductId,
+              location_id: locationId,
+              adjustment: openingQty,
+              reason: openingStockReason.trim() || `Opening stock for ${name.trim()}`,
+            });
+          } catch (stockErr) {
+            warnings.push(stockErr.message || 'Opening stock could not be applied.');
+          }
+        }
+
+        if (warnings.length > 0) {
+          Alert.alert('Product Created With Warnings', warnings.join('\n'));
+        }
       }
       navigation.goBack();
     } catch (err) {
@@ -248,23 +322,39 @@ export default function ProductFormScreen({ route, navigation }) {
         <Text style={styles.label}>Tax Rate</Text>
         <View style={styles.chipRow}>
           <TouchableOpacity
-            style={[styles.taxChip, taxRateId === null && styles.taxChipActive]}
-            onPress={() => setTaxRateId(null)}
+            style={[styles.taxChip, taxMode === 'none' && styles.taxChipActive]}
+            onPress={() => { setTaxMode('none'); setTaxRateId(null); }}
           >
-            <Text style={[styles.taxChipText, taxRateId === null && styles.taxChipTextActive]}>None</Text>
+            <Text style={[styles.taxChipText, taxMode === 'none' && styles.taxChipTextActive]}>None</Text>
           </TouchableOpacity>
           {taxRates.map((tr) => (
             <TouchableOpacity
               key={tr.id}
               style={[styles.taxChip, taxRateId === tr.id && styles.taxChipActive]}
-              onPress={() => setTaxRateId(tr.id)}
+              onPress={() => { setTaxMode('preset'); setTaxRateId(tr.id); }}
             >
               <Text style={[styles.taxChipText, taxRateId === tr.id && styles.taxChipTextActive]}>
                 {tr.name}
               </Text>
             </TouchableOpacity>
           ))}
+          <TouchableOpacity
+            style={[styles.taxChip, taxMode === 'custom' && styles.taxChipActive]}
+            onPress={() => { setTaxMode('custom'); setTaxRateId(null); }}
+          >
+            <Text style={[styles.taxChipText, taxMode === 'custom' && styles.taxChipTextActive]}>Custom</Text>
+          </TouchableOpacity>
         </View>
+        {taxMode === 'custom' && (
+          <TextInput
+            style={[styles.input, { marginTop: Spacing.sm }]}
+            value={customTaxPercentage}
+            onChangeText={setCustomTaxPercentage}
+            placeholder="Enter custom tax %"
+            placeholderTextColor={Colors.textLight}
+            keyboardType="decimal-pad"
+          />
+        )}
 
         {/* Materials (Bill of Materials) — create mode only */}
         {!isEdit && (
@@ -328,6 +418,47 @@ export default function ProductFormScreen({ route, navigation }) {
                   <Text style={styles.costSummaryLabel}>Estimated Cost</Text>
                   <Text style={styles.costSummaryValue}>₹{Number(estimatedCost).toFixed(2)}</Text>
                 </View>
+              </>
+            )}
+
+            <Text style={styles.label}>Product Image</Text>
+            {draftImageUri ? (
+              <View style={styles.createImageWrap}>
+                <Image source={{ uri: draftImageUri }} style={styles.createImagePreview} resizeMode="cover" />
+                <View style={styles.createImageActions}>
+                  <TouchableOpacity style={styles.secondaryBtn} onPress={pickDraftImage}>
+                    <Text style={styles.secondaryBtnText}>Change</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.secondaryBtn} onPress={() => setDraftImageUri(null)}>
+                    <Text style={styles.secondaryBtnText}>Remove</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ) : (
+              <TouchableOpacity style={styles.addImageBtn} onPress={pickDraftImage}>
+                <Ionicons name="image-outline" size={18} color={Colors.primary} />
+                <Text style={styles.addImageBtnText}>Add image during creation</Text>
+              </TouchableOpacity>
+            )}
+
+            {canManageStock && (
+              <>
+                <Text style={styles.label}>Opening Ready Stock</Text>
+                <TextInput
+                  style={styles.input}
+                  value={openingStockQty}
+                  onChangeText={setOpeningStockQty}
+                  placeholder="e.g. 10"
+                  placeholderTextColor={Colors.textLight}
+                  keyboardType="decimal-pad"
+                />
+                <TextInput
+                  style={[styles.input, { marginTop: Spacing.sm }]}
+                  value={openingStockReason}
+                  onChangeText={setOpeningStockReason}
+                  placeholder="Reason (optional)"
+                  placeholderTextColor={Colors.textLight}
+                />
               </>
             )}
           </>
@@ -454,6 +585,41 @@ const styles = StyleSheet.create({
   },
   costSummaryLabel: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.text },
   costSummaryValue: { fontSize: FontSize.md, fontWeight: '700', color: Colors.success },
+
+  addImageBtn: {
+    marginTop: Spacing.xs,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.xs,
+    borderWidth: 1,
+    borderColor: Colors.primary + '66',
+    borderStyle: 'dashed',
+    borderRadius: BorderRadius.md,
+    paddingVertical: Spacing.md,
+    backgroundColor: Colors.primary + '08',
+  },
+  addImageBtnText: { fontSize: FontSize.sm, color: Colors.primary, fontWeight: '600' },
+  createImageWrap: {
+    marginTop: Spacing.xs,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: BorderRadius.md,
+    padding: Spacing.sm,
+    backgroundColor: Colors.surface,
+  },
+  createImagePreview: { width: '100%', height: 170, borderRadius: BorderRadius.md, backgroundColor: Colors.background },
+  createImageActions: { flexDirection: 'row', gap: Spacing.sm, marginTop: Spacing.sm },
+  secondaryBtn: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: BorderRadius.md,
+    paddingVertical: Spacing.sm,
+    alignItems: 'center',
+    backgroundColor: Colors.background,
+  },
+  secondaryBtnText: { fontSize: FontSize.sm, color: Colors.textSecondary, fontWeight: '600' },
 
   // Modal
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' },

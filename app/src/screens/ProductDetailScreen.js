@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useMemo } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
   RefreshControl, Alert, Modal, TextInput, Platform, Image, KeyboardAvoidingView,
@@ -26,6 +26,7 @@ export default function ProductDetailScreen({ route, navigation }) {
   const { user } = useAuth();
   const { productId } = route.params;
   const [product, setProduct] = useState(null);
+  const [locations, setLocations] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -38,12 +39,25 @@ export default function ProductDetailScreen({ route, navigation }) {
   const [addingMaterial, setAddingMaterial] = useState(false);
   const [uploadingImage, setUploadingImage] = useState(false);
 
+  // Quick stock adjust modal state
+  const [showQuickAdjust, setShowQuickAdjust] = useState(false);
+  const [adjustLocationId, setAdjustLocationId] = useState(null);
+  const [adjustType, setAdjustType] = useState('correction');
+  const [adjustQty, setAdjustQty] = useState('');
+  const [adjustNotes, setAdjustNotes] = useState('');
+  const [adjusting, setAdjusting] = useState(false);
+
   const canManage = user?.role === 'owner' || user?.role === 'manager';
+  const canManageStock = canManage;
 
   const fetchData = useCallback(async () => {
     try {
-      const res = await api.getProduct(productId);
-      setProduct(res.data);
+      const [productRes, locationRes] = await Promise.all([
+        api.getProduct(productId),
+        api.getLocations(),
+      ]);
+      setProduct(productRes.data);
+      setLocations(locationRes.data?.locations || locationRes.data || []);
     } catch (err) {
       Alert.alert('Error', err.message || 'Failed to load product');
     } finally {
@@ -53,6 +67,49 @@ export default function ProductDetailScreen({ route, navigation }) {
   }, [productId]);
 
   useFocusEffect(useCallback(() => { fetchData(); }, [fetchData]));
+
+  const openQuickAdjust = () => {
+    setAdjustLocationId(product?.location_id || product?.stock?.[0]?.location_id || locations[0]?.id || null);
+    setAdjustType('correction');
+    setAdjustQty('');
+    setAdjustNotes('');
+    setShowQuickAdjust(true);
+  };
+
+  const handleQuickAdjust = async () => {
+    const qty = parseFloat(adjustQty) || 0;
+    if (!adjustLocationId) {
+      Alert.alert('Location Required', 'Select a location for stock adjustment.');
+      return;
+    }
+    if (qty <= 0) {
+      Alert.alert('Invalid Quantity', 'Enter a quantity greater than 0.');
+      return;
+    }
+    const isDeduction = adjustType === 'wastage' || adjustType === 'damage';
+
+    setAdjusting(true);
+    try {
+      await api.adjustProductStock({
+        product_id: product.id,
+        location_id: adjustLocationId,
+        adjustment: isDeduction ? -qty : qty,
+        reason: adjustNotes.trim() || `${adjustType}: ${qty} ${product.name}`,
+      });
+      setShowQuickAdjust(false);
+      fetchData();
+    } catch (err) {
+      Alert.alert('Adjustment Failed', err.message || 'Failed to adjust stock.');
+    } finally {
+      setAdjusting(false);
+    }
+  };
+
+  const currentStockForAdjustLocation = useMemo(() => {
+    if (!adjustLocationId || !Array.isArray(product?.stock)) return null;
+    const row = product.stock.find((s) => s.location_id === adjustLocationId);
+    return row?.quantity ?? 0;
+  }, [adjustLocationId, product?.stock]);
 
   const confirmDelete = () => {
     const doDelete = async () => {
@@ -259,7 +316,15 @@ export default function ProductDetailScreen({ route, navigation }) {
 
         {/* Pricing card */}
         <View style={styles.sectionCard}>
-          <Text style={styles.sectionTitle}>Pricing</Text>
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>Pricing</Text>
+            {canManageStock && (
+              <TouchableOpacity style={styles.quickAdjustBtn} onPress={openQuickAdjust}>
+                <Ionicons name="swap-vertical" size={14} color={Colors.primary} />
+                <Text style={styles.quickAdjustBtnText}>Adjust Stock</Text>
+              </TouchableOpacity>
+            )}
+          </View>
           <View style={styles.priceGrid}>
             <View style={styles.priceBox}>
               <Text style={styles.priceBoxLabel}>Estimated Cost</Text>
@@ -376,7 +441,10 @@ export default function ProductDetailScreen({ route, navigation }) {
                   <TouchableOpacity
                     key={mat.id}
                     style={[styles.supplierItem, selectedMaterialId === mat.id && styles.supplierItemActive]}
-                    onPress={() => setSelectedMaterialId(mat.id)}
+                    onPress={() => {
+                      setSelectedMaterialId(mat.id);
+                      setMaterialCost(String(mat.selling_price || mat.avg_cost || 0));
+                    }}
                   >
                     <Text style={[styles.supplierItemText, selectedMaterialId === mat.id && { color: Colors.white }]}>
                       {mat.name} ({mat.category_name})
@@ -416,6 +484,76 @@ export default function ProductDetailScreen({ route, navigation }) {
           </View>
         </KeyboardAvoidingView>
       </Modal>
+
+      <Modal visible={showQuickAdjust} transparent animationType="slide" onRequestClose={() => setShowQuickAdjust(false)}>
+        <KeyboardAvoidingView style={styles.modalOverlay} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Adjust Stock</Text>
+              <TouchableOpacity onPress={() => setShowQuickAdjust(false)}>
+                <Ionicons name="close" size={24} color={Colors.text} />
+              </TouchableOpacity>
+            </View>
+
+            <Text style={styles.fieldLabel}>Location</Text>
+            <View style={styles.chipRow}>
+              {locations.map((loc) => (
+                <TouchableOpacity
+                  key={loc.id}
+                  style={[styles.chip, adjustLocationId === loc.id && styles.chipActive]}
+                  onPress={() => setAdjustLocationId(loc.id)}
+                >
+                  <Text style={[styles.chipText, adjustLocationId === loc.id && styles.chipTextActive]}>{loc.name}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            <Text style={[styles.fieldLabel, { marginTop: Spacing.md }]}>Reason</Text>
+            <Text style={styles.currentStockText}>Current ready stock: {currentStockForAdjustLocation ?? '--'}</Text>
+            <View style={styles.chipRow}>
+              <TouchableOpacity style={[styles.chip, adjustType === 'correction' && styles.chipActive]} onPress={() => setAdjustType('correction')}>
+                <Text style={[styles.chipText, adjustType === 'correction' && styles.chipTextActive]}>Correction</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.chip, adjustType === 'wastage' && styles.chipActive]} onPress={() => setAdjustType('wastage')}>
+                <Text style={[styles.chipText, adjustType === 'wastage' && styles.chipTextActive]}>Wastage</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.chip, adjustType === 'damage' && styles.chipActive]} onPress={() => setAdjustType('damage')}>
+                <Text style={[styles.chipText, adjustType === 'damage' && styles.chipTextActive]}>Damage</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.chip, adjustType === 'count' && styles.chipActive]} onPress={() => setAdjustType('count')}>
+                <Text style={[styles.chipText, adjustType === 'count' && styles.chipTextActive]}>Count</Text>
+              </TouchableOpacity>
+            </View>
+
+            <Text style={[styles.fieldLabel, { marginTop: Spacing.md }]}>Quantity</Text>
+            <TextInput
+              style={styles.modalInput}
+              value={adjustQty}
+              onChangeText={setAdjustQty}
+              keyboardType="decimal-pad"
+              placeholder="e.g. 5"
+              placeholderTextColor={Colors.textLight}
+            />
+
+            <Text style={[styles.fieldLabel, { marginTop: Spacing.md }]}>Notes (optional)</Text>
+            <TextInput
+              style={styles.modalInput}
+              value={adjustNotes}
+              onChangeText={setAdjustNotes}
+              placeholder="Reason for adjustment"
+              placeholderTextColor={Colors.textLight}
+            />
+
+            <TouchableOpacity
+              style={[styles.modalBtn, adjusting && { opacity: 0.6 }]}
+              onPress={handleQuickAdjust}
+              disabled={adjusting}
+            >
+              <Text style={styles.modalBtnText}>{adjusting ? 'Applying...' : 'Apply Adjustment'}</Text>
+            </TouchableOpacity>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
     </View>
   );
 }
@@ -446,6 +584,18 @@ const styles = StyleSheet.create({
   sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: Spacing.sm },
   sectionTitle: { fontSize: FontSize.md, fontWeight: '700', color: Colors.text, marginBottom: Spacing.sm },
   addBtn: { padding: 2 },
+  quickAdjustBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    borderWidth: 1,
+    borderColor: Colors.primary + '55',
+    borderRadius: BorderRadius.full,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 4,
+    backgroundColor: Colors.primary + '10',
+  },
+  quickAdjustBtnText: { fontSize: FontSize.xs, fontWeight: '600', color: Colors.primary },
 
   priceGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.md },
   priceBox: { minWidth: '45%' },
@@ -492,6 +642,19 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm, fontSize: FontSize.md,
     color: Colors.text, backgroundColor: Colors.background,
   },
+  chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm },
+  chip: {
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.xs + 2,
+    borderRadius: BorderRadius.full,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.background,
+  },
+  chipActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
+  chipText: { fontSize: FontSize.xs, color: Colors.textSecondary, fontWeight: '600' },
+  chipTextActive: { color: Colors.white },
+  currentStockText: { fontSize: FontSize.xs, color: Colors.textSecondary, marginTop: 2 },
   modalBtn: {
     backgroundColor: Colors.primary, borderRadius: BorderRadius.md,
     paddingVertical: Spacing.md, alignItems: 'center', marginTop: Spacing.lg,

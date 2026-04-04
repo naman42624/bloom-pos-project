@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
   RefreshControl, Alert, Modal, TextInput, Platform, KeyboardAvoidingView,
@@ -10,7 +10,7 @@ import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 
 export default function CustomerDetailScreen({ route, navigation }) {
-  const { user } = useAuth();
+  const { user, activeLocation, locations: assignedLocations } = useAuth();
   const { customerId } = route.params;
   const [customer, setCustomer] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -29,6 +29,8 @@ export default function CustomerDetailScreen({ route, navigation }) {
   const [dateLabel, setDateLabel] = useState('');
   const [dateValue, setDateValue] = useState('');
   const [dateLoading, setDateLoading] = useState(false);
+  const [locations, setLocations] = useState([]);
+  const [selectedLocationId, setSelectedLocationId] = useState(null);
 
   // Address modal
   const [showAddressModal, setShowAddressModal] = useState(false);
@@ -53,12 +55,36 @@ export default function CustomerDetailScreen({ route, navigation }) {
 
   useFocusEffect(useCallback(() => { fetchData(); }, [fetchData]));
 
+  useEffect(() => {
+    const fetchLocations = async () => {
+      try {
+        const res = await api.getLocations();
+        const allLocs = res.data?.locations || res.data || [];
+        setLocations(allLocs.filter(l => l.is_active !== 0));
+      } catch (err) {
+        console.error('Failed to fetch locations:', err);
+      }
+    };
+    fetchLocations();
+  }, []);
+
+  useEffect(() => {
+    if (showCreditModal && !selectedLocationId) {
+      setSelectedLocationId(activeLocation?.id || locations[0]?.id || null);
+    }
+  }, [showCreditModal, activeLocation, locations]);
+
   const handleRecordPayment = async () => {
     const amount = parseFloat(creditAmount);
     if (!amount || amount <= 0) return Alert.alert('Error', 'Enter a valid amount');
     setCreditLoading(true);
     try {
-      await api.addCreditPayment(customerId, { amount, method: creditMethod, notes: creditNotes });
+      await api.addCreditPayment(customerId, {
+        amount,
+        method: creditMethod,
+        notes: creditNotes,
+        location_id: selectedLocationId,
+      });
       setShowCreditModal(false);
       setCreditAmount('');
       setCreditNotes('');
@@ -249,7 +275,7 @@ export default function CustomerDetailScreen({ route, navigation }) {
                 <View style={{ flex: 1 }}>
                   <Text style={styles.historyAmount}>₹{Number(cp.amount).toFixed(2)} — {cp.method.toUpperCase()}</Text>
                   <Text style={styles.historyMeta}>
-                    {formatDate(cp.created_at)} • by {cp.received_by_name || 'Unknown'}
+                    {formatDate(cp.created_at)} • by {cp.received_by_name || 'Unknown'} {cp.location_name ? `• ${cp.location_name}` : ''}
                   </Text>
                   {cp.notes ? <Text style={styles.historyNotes}>{cp.notes}</Text> : null}
                 </View>
@@ -395,6 +421,15 @@ export default function CustomerDetailScreen({ route, navigation }) {
                 </TouchableOpacity>
               ))}
             </View>
+            <Text style={styles.fieldLabel}>Location</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.methodRow}>
+              {locations.map((loc) => (
+                <TouchableOpacity key={loc.id} style={[styles.methodChip, selectedLocationId === loc.id && styles.methodActive]}
+                  onPress={() => setSelectedLocationId(loc.id)}>
+                  <Text style={[styles.methodText, selectedLocationId === loc.id && styles.methodTextActive]}>{loc.name}</Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
             <Text style={styles.fieldLabel}>Notes (optional)</Text>
             <TextInput style={styles.modalInput} value={creditNotes} onChangeText={setCreditNotes}
               placeholder="Payment notes" placeholderTextColor={Colors.textLight} />

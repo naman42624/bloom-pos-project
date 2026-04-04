@@ -133,6 +133,15 @@ export default function SaleDetailScreen({ route, navigation }) {
     navigation.navigate('RefundSale', { saleId, grandTotal: sale.grand_total });
   };
 
+  const handleViewLivePartner = () => {
+    const partnerId = sale?.delivery?.delivery_partner_id || sale?.delivery?.partner_id;
+    if (!partnerId) return;
+    navigation.navigate('LiveDeliveryMap', {
+      selectedPartnerId: partnerId,
+      deliveryId: sale.delivery.id,
+    });
+  };
+
   const handleStatusTransition = (nextStatus, label) => {
     // Guard: delivery orders must be marked 'delivered' before completion
     if (nextStatus === 'completed' && sale.order_type === 'delivery') {
@@ -590,6 +599,12 @@ export default function SaleDetailScreen({ route, navigation }) {
           )}
           {sale.delivery.cod_amount > 0 && (
             <Text style={[styles.infoSubtext, { marginTop: 2 }]}>COD: ₹{sale.delivery.cod_amount} ({sale.delivery.cod_status || 'pending'})</Text>
+          )}
+          {sale.delivery.status === 'in_transit' && (sale.delivery.delivery_partner_id || sale.delivery.partner_id) && (
+            <TouchableOpacity style={styles.liveLocationBtn} onPress={handleViewLivePartner}>
+              <Ionicons name="locate-outline" size={16} color={Colors.primary} />
+              <Text style={styles.liveLocationText}>View Live Location</Text>
+            </TouchableOpacity>
           )}
         </TouchableOpacity>
       )}
@@ -1269,6 +1284,8 @@ const styles = StyleSheet.create({
   stockBadgeText: { fontSize: FontSize.xs, fontWeight: '600', color: Colors.success },
   fulfillBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 4, backgroundColor: Colors.primary + '15', paddingHorizontal: 8, paddingVertical: 4, borderRadius: BorderRadius.sm, alignSelf: 'flex-start' },
   fulfillBtnText: { fontSize: FontSize.xs, fontWeight: '700', color: Colors.primary },
+  liveLocationBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 10, alignSelf: 'flex-start', borderWidth: 1, borderColor: Colors.secondary + '40', backgroundColor: Colors.secondary + '10', paddingHorizontal: 12, paddingVertical: 8, borderRadius: BorderRadius.md },
+  liveLocationText: { fontSize: FontSize.sm, color: Colors.secondary, fontWeight: '700' },
 
   // Production task styles
   taskRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 6, marginTop: 6 },

@@ -135,7 +135,7 @@ router.post('/register-token', authenticate, (req, res) => {
     if (!token) return res.status(400).json({ success: false, message: 'Token required' });
 
     db.prepare(
-      'INSERT OR IGNORE INTO push_tokens (user_id, token, platform) VALUES (?, ?, ?)'
+      'INSERT INTO push_tokens (user_id, token, platform) VALUES (?, ?, ?) ON CONFLICT (user_id, token) DO NOTHING'
     ).run(req.user.id, token, platform || 'expo');
 
     res.json({ success: true });

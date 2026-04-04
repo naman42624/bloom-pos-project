@@ -2,7 +2,7 @@ import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import {
   View, Text, StyleSheet, FlatList, SectionList, TouchableOpacity,
   ActivityIndicator, RefreshControl, Alert, ScrollView, Modal, TextInput, Platform, Image,
-  useWindowDimensions,
+  useWindowDimensions, Animated,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
@@ -40,12 +40,31 @@ const VIEW_TABS = [
 
 const ORDER_STATUS_TABS = [
   { key: '', label: 'All' },
-  { key: 'pending', label: 'Pending' },
+  { key: 'pending', label: 'Pending + Confirmed' },
   { key: 'preparing', label: 'Preparing' },
-  { key: 'ready', label: 'Ready' },
+  { key: 'ready', label: 'Ready + Completed' },
 ];
 
-export default function ProductionQueueScreen({ navigation }) {
+const ORDER_TYPE_TABS = [
+  { key: '', label: 'All Types' },
+  { key: 'delivery', label: 'Delivery' },
+  { key: 'pickup', label: 'Pickup' },
+  { key: 'walk_in', label: 'Walk-in' },
+];
+
+const normalizeOrderLifecycleStatus = (status) => {
+  if (status === 'confirmed') return 'pending';
+  if (status === 'completed') return 'ready';
+  return status;
+};
+
+const matchesOrderStatusFilter = (status, filter) => {
+  if (!filter) return true;
+  const normalized = normalizeOrderLifecycleStatus(status || 'pending');
+  return normalized === filter;
+};
+
+export default function ProductionQueueScreen({ navigation, route }) {
   const { width } = useWindowDimensions();
   const isTablet = width >= 768;
   const numColumns = useMemo(() => {
@@ -65,11 +84,14 @@ export default function ProductionQueueScreen({ navigation }) {
   const [refreshing, setRefreshing] = useState(false);
   const [statusFilter, setStatusFilter] = useState('');
   const [orderStatusFilter, setOrderStatusFilter] = useState('');
+  const [orderTypeFilter, setOrderTypeFilter] = useState('');
   const [showFilters, setShowFilters] = useState(false);
   const [orderSearch, setOrderSearch] = useState('');
   const [locations, setLocations] = useState([]);
   const [selectedLocation, setSelectedLocation] = useState(null);
   const [now, setNow] = useState(getShopNow(timezone));
+  const [incomingSectionFocus, setIncomingSectionFocus] = useState(null);
+  const focusPulseAnim = useMemo(() => new Animated.Value(0), []);
 
   // Update clock every minute for SLA timers (relative to Shop Timezone)
   useEffect(() => {
@@ -91,6 +113,27 @@ export default function ProductionQueueScreen({ navigation }) {
   const todayStr = useMemo(() => getShopTodayStr(timezone), [timezone]);
   const [selectedDate, setSelectedDate] = useState(todayStr); // defaults to today
   const [showDatePicker, setShowDatePicker] = useState(false);
+
+  useEffect(() => {
+    const params = route?.params || {};
+    if (!params.applyId) return;
+
+    const nextSection = params.initialStatus === 'ready'
+      ? 'complete'
+      : params.initialStatus === 'preparing'
+        ? 'active'
+        : params.initialStatus === 'pending'
+          ? 'pending'
+          : null;
+    setIncomingSectionFocus(nextSection);
+
+    if (params.initialViewMode) setViewMode(params.initialViewMode);
+    if (params.initialStatus != null) setOrderStatusFilter(params.initialStatus);
+    if (params.initialOrderType != null) setOrderTypeFilter(params.initialOrderType);
+    if (params.initialLocationId != null) setSelectedLocation(params.initialLocationId);
+    if (params.initialDate !== undefined) setSelectedDate(params.initialDate);
+    if (typeof params.initialShowFilters === 'boolean') setShowFilters(params.initialShowFilters);
+  }, [route?.params?.applyId]);
 
   // Helper: format date label
   const formatDateLabel = (dateStr) => formatShopDateLabel(dateStr, timezone);
@@ -246,8 +289,10 @@ export default function ProductionQueueScreen({ navigation }) {
       }
 
 
-      // Section 2, 3, 4 based on status
-      const status = item.status || 'pending';
+      // Section 2, 3, 4 based on normalized lifecycle status
+      const status = isOrders
+        ? normalizeOrderLifecycleStatus(item.status || 'pending')
+        : (item.status || 'pending');
       if (isOrders) {
          if (status === 'pending') pendingData.push(item);
          else if (status === 'preparing') activeData.push(item);
@@ -261,9 +306,9 @@ export default function ProductionQueueScreen({ navigation }) {
 
     const sections = [];
     if (urgentData.length > 0) sections.push({ title: '🔥 Urgent & Overdue', key: 'urgent', data: urgentData, color: Colors.error });
-    if (pendingData.length > 0) sections.push({ title: '⏳ Pending Queue', key: 'pending', data: pendingData, color: Colors.warning });
-    if (activeData.length > 0) sections.push({ title: '🎨 In Progress', key: 'active', data: activeData, color: Colors.primary });
-    if (completeData.length > 0) sections.push({ title: '✅ Ready / History', key: 'complete', data: completeData, color: Colors.success });
+    if (pendingData.length > 0) sections.push({ title: '⏳ Pending Queue', subtitle: isOrders ? 'Pending + Confirmed' : 'Pending + Assigned', key: 'pending', data: pendingData, color: Colors.warning });
+    if (activeData.length > 0) sections.push({ title: '🎨 In Progress', subtitle: isOrders ? 'Preparing' : 'In Progress', key: 'active', data: activeData, color: Colors.primary });
+    if (completeData.length > 0) sections.push({ title: '✅ Ready / History', subtitle: isOrders ? 'Ready + Completed' : 'Completed', key: 'complete', data: completeData, color: Colors.success });
     
     return sections;
   };
@@ -321,6 +366,32 @@ export default function ProductionQueueScreen({ navigation }) {
     }
   };
 
+  useEffect(() => {
+    if (!incomingSectionFocus || viewMode !== 'orders') return;
+    if (!chunkedOrderSections.some((s) => s.key === incomingSectionFocus)) return;
+
+    scrollToSection(incomingSectionFocus);
+    const timer = setTimeout(() => setIncomingSectionFocus(null), 2500);
+    return () => clearTimeout(timer);
+  }, [incomingSectionFocus, viewMode, chunkedOrderSections]);
+
+  useEffect(() => {
+    if (!incomingSectionFocus) {
+      focusPulseAnim.setValue(0);
+      return;
+    }
+
+    const pulse = Animated.loop(
+      Animated.sequence([
+        Animated.timing(focusPulseAnim, { toValue: 1, duration: 700, useNativeDriver: true }),
+        Animated.timing(focusPulseAnim, { toValue: 0, duration: 700, useNativeDriver: true }),
+      ]),
+      { iterations: 3 }
+    );
+    pulse.start();
+    return () => pulse.stop();
+  }, [incomingSectionFocus, focusPulseAnim]);
+
   // getItemLayout to help SectionList calculate scroll offsets for long lists
   const getItemLayout = useCallback((data, index) => {
     // Estimating row height based on grid items
@@ -363,9 +434,18 @@ export default function ProductionQueueScreen({ navigation }) {
     try {
       const params = {};
       if (selectedLocation) params.location_id = selectedLocation;
-      if (orderStatusFilter) params.status = orderStatusFilter;
+      if (orderTypeFilter) params.order_type = orderTypeFilter;
       const res = await api.getProductionQueue(params);
       let data = res.data || [];
+
+      if (orderTypeFilter) {
+        data = data.filter((o) => o.order_type === orderTypeFilter);
+      }
+
+      if (orderStatusFilter) {
+        data = data.filter((o) => matchesOrderStatusFilter(o.status, orderStatusFilter));
+      }
+
       // Client-side search by sale_number or customer_name
       if (orderSearch.trim()) {
         const q = orderSearch.trim().toLowerCase();
@@ -379,7 +459,7 @@ export default function ProductionQueueScreen({ navigation }) {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [selectedLocation, orderStatusFilter, orderSearch]);
+  }, [selectedLocation, orderStatusFilter, orderTypeFilter, orderSearch]);
 
   const fetchLocations = useCallback(async () => {
     try {
@@ -404,13 +484,67 @@ export default function ProductionQueueScreen({ navigation }) {
       setLoading(true);
       if (viewMode === 'tasks') fetchTasks();
       else fetchOrders();
-    }, [selectedLocation, statusFilter, orderStatusFilter, orderSearch, viewMode])
+    }, [selectedLocation, statusFilter, orderStatusFilter, orderTypeFilter, orderSearch, viewMode])
   );
 
   const onRefresh = () => {
     setRefreshing(true);
     if (viewMode === 'tasks') fetchTasks();
     else fetchOrders();
+  };
+
+  const resetAllFilters = useCallback(() => {
+    setStatusFilter('');
+    setOrderStatusFilter('');
+    setOrderTypeFilter('');
+    setOrderSearch('');
+    setSelectedDate(null);
+  }, []);
+
+  const renderActiveFilters = () => {
+    const chips = [];
+    const selectedLocationName = selectedLocation
+      ? (locations.find((l) => l.id === selectedLocation)?.name || 'Location')
+      : null;
+
+    if (selectedLocationName) {
+      chips.push({ key: 'loc', label: selectedLocationName, clear: () => setSelectedLocation(null) });
+    }
+    if (selectedDate) {
+      chips.push({ key: 'date', label: formatDateLabel(selectedDate), clear: () => setSelectedDate(null) });
+    }
+    if (viewMode === 'tasks' && statusFilter) {
+      chips.push({ key: 'task-status', label: `Task: ${statusFilter.replace('_', ' ')}`, clear: () => setStatusFilter('') });
+    }
+    if (viewMode === 'orders' && orderTypeFilter) {
+      chips.push({ key: 'order-type', label: `Type: ${orderTypeFilter.replace('_', ' ')}`, clear: () => setOrderTypeFilter('') });
+    }
+    if (viewMode === 'orders' && orderStatusFilter) {
+      chips.push({ key: 'order-status', label: `Status: ${orderStatusFilter.replace('_', ' ')}`, clear: () => setOrderStatusFilter('') });
+    }
+    if (viewMode === 'orders' && orderSearch.trim()) {
+      chips.push({ key: 'search', label: `Search: ${orderSearch.trim()}`, clear: () => setOrderSearch('') });
+    }
+
+    if (chips.length === 0) return null;
+
+    return (
+      <View style={styles.activeFiltersBar}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
+          {chips.map((chip) => (
+            <View key={chip.key} style={styles.activeFilterChip}>
+              <Text style={styles.activeFilterText}>{chip.label}</Text>
+              <TouchableOpacity onPress={chip.clear} hitSlop={6}>
+                <Ionicons name="close" size={14} color={Colors.primary} />
+              </TouchableOpacity>
+            </View>
+          ))}
+        </ScrollView>
+        <TouchableOpacity style={styles.clearAllBtn} onPress={resetAllFilters}>
+          <Text style={styles.clearAllBtnText}>Reset</Text>
+        </TouchableOpacity>
+      </View>
+    );
   };
 
   const handlePickTask = (task) => {
@@ -897,15 +1031,26 @@ export default function ProductionQueueScreen({ navigation }) {
         )}
 
         {viewMode === 'orders' && (
-          <FilterWrapper {...wrapperProps}>
-            {ORDER_STATUS_TABS.map((tab) => (
-              <TouchableOpacity key={tab.key}
-                style={[styles.chip, orderStatusFilter === tab.key && styles.chipActive]}
-                onPress={() => setOrderStatusFilter(tab.key)}>
-                <Text style={[styles.chipText, orderStatusFilter === tab.key && styles.chipTextActive]}>{tab.label}</Text>
-              </TouchableOpacity>
-            ))}
-          </FilterWrapper>
+          <View style={{ gap: Spacing.xs }}>
+            <FilterWrapper {...wrapperProps}>
+              {ORDER_TYPE_TABS.map((tab) => (
+                <TouchableOpacity key={tab.key}
+                  style={[styles.chip, orderTypeFilter === tab.key && styles.chipActive]}
+                  onPress={() => setOrderTypeFilter(tab.key)}>
+                  <Text style={[styles.chipText, orderTypeFilter === tab.key && styles.chipTextActive]}>{tab.label}</Text>
+                </TouchableOpacity>
+              ))}
+            </FilterWrapper>
+            <FilterWrapper {...wrapperProps}>
+              {ORDER_STATUS_TABS.map((tab) => (
+                <TouchableOpacity key={tab.key}
+                  style={[styles.chip, orderStatusFilter === tab.key && styles.chipActive]}
+                  onPress={() => setOrderStatusFilter(tab.key)}>
+                  <Text style={[styles.chipText, orderStatusFilter === tab.key && styles.chipTextActive]}>{tab.label}</Text>
+                </TouchableOpacity>
+              ))}
+            </FilterWrapper>
+          </View>
         )}
       </View>
     );
@@ -933,7 +1078,7 @@ export default function ProductionQueueScreen({ navigation }) {
                   {VIEW_TABS.map((tab) => (
                     <TouchableOpacity key={tab.key}
                       style={[styles.viewBtn, viewMode === tab.key && styles.viewBtnActive, { paddingVertical: 8 }]}
-                      onPress={() => { setViewMode(tab.key); setStatusFilter(''); setOrderStatusFilter(''); setOrderSearch(''); }}>
+                      onPress={() => { setViewMode(tab.key); setStatusFilter(''); setOrderStatusFilter(''); setOrderTypeFilter(''); setOrderSearch(''); }}>
                       <Text style={[styles.viewBtnText, viewMode === tab.key && styles.viewBtnTextActive, { fontSize: 13 }]}>{tab.label}</Text>
                     </TouchableOpacity>
                   ))}
@@ -983,7 +1128,7 @@ export default function ProductionQueueScreen({ navigation }) {
                   {VIEW_TABS.map((tab) => (
                     <TouchableOpacity key={tab.key}
                       style={[styles.viewBtn, viewMode === tab.key && styles.viewBtnActive, { paddingVertical: 8 }]}
-                      onPress={() => { setViewMode(tab.key); setStatusFilter(''); setOrderStatusFilter(''); setOrderSearch(''); }}>
+                      onPress={() => { setViewMode(tab.key); setStatusFilter(''); setOrderStatusFilter(''); setOrderTypeFilter(''); setOrderSearch(''); }}>
                       <Text style={[styles.viewBtnText, viewMode === tab.key && styles.viewBtnTextActive, { fontSize: 12 }]}>{tab.key === 'tasks' ? 'Tasks' : 'Orders Queue'}</Text>
                     </TouchableOpacity>
                   ))}
@@ -1015,7 +1160,8 @@ export default function ProductionQueueScreen({ navigation }) {
         </View>
       </View>
 
-      {renderFilters()}
+        {renderFilters()}
+        <View style={styles.stickyFiltersWrap}>{renderActiveFilters()}</View>
       
       <View style={{ flex: 1 }}>
         <View style={styles.summaryBar}>
@@ -1050,11 +1196,19 @@ export default function ProductionQueueScreen({ navigation }) {
                 ))}
               </View>
             )}
-            renderSectionHeader={({ section: { title, data, color } }) => {
+            renderSectionHeader={({ section: { title, subtitle, key, data, color } }) => {
               const count = data.reduce((acc, row) => acc + row.items.length, 0);
+              const isFocused = incomingSectionFocus === key;
+              const pulseOpacity = focusPulseAnim.interpolate({ inputRange: [0, 1], outputRange: [0.12, 0.36] });
               return (
-                <View style={[styles.sectionHeader, { borderLeftWidth: 4, borderLeftColor: color }]}>
-                  <Text style={[styles.sectionTitle, { color: color }]}>{title}</Text>
+                <View style={[styles.sectionHeader, { borderLeftWidth: 4, borderLeftColor: color }, incomingSectionFocus === key && styles.sectionHeaderFocus]}> 
+                  {isFocused && (
+                    <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFillObject, styles.sectionHeaderPulse, { opacity: pulseOpacity }]} />
+                  )}
+                  <View style={{ flex: 1 }}>
+                    <Text style={[styles.sectionTitle, { color: color }]}>{title}</Text>
+                    {!!subtitle && <Text style={styles.sectionSubtitle}>{subtitle}</Text>}
+                  </View>
                   <View style={[styles.sectionBadge, { backgroundColor: color + '20' }]}>
                     <Text style={[styles.sectionCount, { color: color }]}>{count}</Text>
                   </View>
@@ -1153,6 +1307,10 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.xs,
     borderBottomWidth: 1, borderBottomColor: Colors.border,
   },
+  stickyFiltersWrap: {
+    zIndex: 3,
+    elevation: 3,
+  },
   filterToggleBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
     paddingHorizontal: Spacing.md, height: 44,
@@ -1202,6 +1360,48 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1, borderBottomColor: Colors.border,
     paddingVertical: Spacing.sm,
   },
+  activeFiltersBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
+    backgroundColor: Colors.surfaceAlt,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.06,
+    shadowRadius: 2,
+  },
+  activeFilterChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: BorderRadius.full,
+    backgroundColor: Colors.surface,
+    borderWidth: 1,
+    borderColor: Colors.primary + '35',
+  },
+  activeFilterText: {
+    fontSize: 12,
+    color: Colors.primary,
+    fontWeight: '700',
+  },
+  clearAllBtn: {
+    marginLeft: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: Colors.primary,
+  },
+  clearAllBtnText: {
+    color: Colors.white,
+    fontSize: 12,
+    fontWeight: '800',
+  },
   summaryItem: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   summaryCount: { fontSize: FontSize.lg, fontWeight: '800', color: Colors.warning },
   summaryLabel: { fontSize: 10, color: Colors.textSecondary, fontWeight: '600', textTransform: 'uppercase', marginTop: 2 },
@@ -1237,8 +1437,17 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.background,
     borderBottomWidth: 1, borderBottomColor: Colors.border,
     marginBottom: Spacing.xs,
+    position: 'relative',
+    overflow: 'hidden',
+  },
+  sectionHeaderFocus: {
+    backgroundColor: Colors.primary + '10',
+  },
+  sectionHeaderPulse: {
+    backgroundColor: Colors.primary,
   },
   sectionTitle: { fontSize: FontSize.md, fontWeight: '700', color: Colors.text, flex: 1 },
+  sectionSubtitle: { fontSize: FontSize.xs, color: Colors.textSecondary, fontWeight: '600', marginTop: 1 },
   sectionBadge: {
     backgroundColor: Colors.primary + '20', borderRadius: BorderRadius.full,
     paddingHorizontal: 8, paddingVertical: 2,

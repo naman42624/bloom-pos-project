@@ -55,13 +55,13 @@ export default function CustomersScreen({ navigation }) {
           {item.total_spent > 0 && (
             <View style={styles.badge}>
               <Ionicons name="cash" size={11} color={Colors.success} />
-              <Text style={styles.badgeText}>₹{item.total_spent.toFixed(0)}</Text>
+              <Text style={styles.badgeText}>₹{Number(item.total_spent).toFixed(0)}</Text>
             </View>
           )}
           {item.credit_balance > 0 && (
             <View style={[styles.badge, { backgroundColor: Colors.error + '15' }]}>
               <Ionicons name="alert-circle" size={11} color={Colors.error} />
-              <Text style={[styles.badgeText, { color: Colors.error }]}>Due ₹{item.credit_balance.toFixed(0)}</Text>
+              <Text style={[styles.badgeText, { color: Colors.error }]}>Due ₹{Number(item.credit_balance).toFixed(0)}</Text>
             </View>
           )}
         </View>

@@ -53,6 +53,7 @@ function ensureCriticalTimestampColumns() {
   ensureTableTimestampColumns('payments', ['created_at'], ['created_at']);
   ensureTableTimestampColumns('deliveries', ['created_at', 'updated_at', 'assigned_at', 'pickup_time', 'delivered_time'], ['created_at', 'updated_at']);
   ensureTableTimestampColumns('production_logs', ['created_at'], ['created_at']);
+  ensureTableTimestampColumns('attendance', ['clock_in', 'clock_out', 'created_at', 'updated_at'], ['created_at', 'updated_at']);
 }
 
 function hasColumn(tableName, columnName) {
@@ -70,6 +71,12 @@ function hasColumn(tableName, columnName) {
 function ensureColumn(tableName, columnName, definitionSql) {
   if (!hasColumn(tableName, columnName)) {
     runPsql(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definitionSql}`);
+  }
+}
+
+function renameColumn(tableName, oldName, newName) {
+  if (hasColumn(tableName, oldName) && !hasColumn(tableName, newName)) {
+    runPsql(`ALTER TABLE ${tableName} RENAME COLUMN ${oldName} TO ${newName}`);
   }
 }
 
@@ -819,6 +826,10 @@ function ensureCompatibilityColumns() {
   ensureColumn('customer_addresses', 'address_line_1', 'TEXT');
   ensureColumn('customer_addresses', 'address_line_2', 'TEXT');
   ensureColumn('customer_addresses', 'address', 'TEXT');
+
+  // Sync credit_payments column with VPS/schema.sql
+  renameColumn('credit_payments', 'received_by', 'recorded_by');
+  ensureColumn('credit_payments', 'location_id', 'INTEGER REFERENCES locations(id)');
 }
 
 function normalizeSql(sql) {

@@ -42,9 +42,9 @@ router.get(
       let whereClause = 'WHERE 1=1';
       const params = [];
 
-      // Managers can only see employees, delivery partners
+      // Managers can see operational staff including managers for shift setup
       if (req.user.role === 'manager') {
-        whereClause += " AND u.role IN ('employee', 'delivery_partner')";
+        whereClause += " AND u.role IN ('manager', 'employee', 'delivery_partner')";
       }
 
       // Always exclude customers from staff listing (separate page)
@@ -239,7 +239,7 @@ router.post(
         // Assign to locations if provided
         if (location_ids && location_ids.length > 0) {
           const assignLocation = db.prepare(
-            'INSERT OR IGNORE INTO user_locations (user_id, location_id, is_primary) VALUES (?, ?, ?)'
+            'INSERT INTO user_locations (user_id, location_id, is_primary) VALUES (?, ?, ?) ON CONFLICT (user_id, location_id) DO NOTHING'
           );
           for (let i = 0; i < location_ids.length; i++) {
             assignLocation.run(userId, location_ids[i], i === 0 ? 1 : 0);

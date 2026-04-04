@@ -3,8 +3,7 @@ const router = express.Router();
 const { getDb } = require('../config/database');
 const { getDb: getAsyncDb } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
-const { todayStr, nowLocal } = require('../utils/time');
-const { safeParseJSON } = require('../utils/json');
+const { todayStr, nowLocal, parseServerDate } = require('../utils/time');
 
 // All attendance routes require auth
 router.use(authenticate);
@@ -12,35 +11,32 @@ router.use(authenticate);
 
 // ─── Helper: Calculate hours between two ISO timestamps ──────
 function hoursBetween(start, end) {
-  if (!start || !end) return 0;
-  return Math.max(0, (new Date(end) - new Date(start)) / (1000 * 60 * 60));
+  const dStart = parseServerDate(start);
+  const dEnd = parseServerDate(end);
+  if (!dStart || !dEnd) return 0;
+  return Math.max(0, (dEnd - dStart) / (1000 * 60 * 60));
 }
 
 // ─── Helper: Check if time is late based on shift OR operating hours ──
 function isLateArrival(clockIn, operatingHours, userId, locationId) {
   if (!clockIn) return false;
   try {
-    // First check employee_shifts for this user+location
+    // clockIn is e.g. "2026-04-04T07:52:38+05:30"
+    const clockTime = clockIn.split('T')[1].slice(0, 8); // "07:52:38"
+
     const db = getDb();
-    const shift = db.prepare('SELECT * FROM employee_shifts WHERE user_id = ? AND location_id = ? AND is_active = 1').get(userId, locationId);
-    if (shift) {
-      const [shiftH, shiftM] = shift.shift_start.split(':').map(Number);
-      const clockDate = new Date(clockIn);
-      const shiftDate = new Date(clockDate);
-      shiftDate.setHours(shiftH, shiftM, 0, 0);
-      return clockDate > shiftDate;
+    const shift = db.prepare('SELECT shift_start FROM employee_shifts WHERE user_id = ? AND location_id = ? AND is_active = 1').get(userId, locationId);
+    if (shift && shift.shift_start) {
+      return clockTime > shift.shift_start;
     }
+
     // Fallback to location operating_hours
     if (!operatingHours) return false;
     const hours = safeParseJSON(operatingHours, {});
     const dayOfWeek = new Date(clockIn).toLocaleDateString('en-US', { weekday: 'long' }).toLowerCase();
     const dayHours = hours[dayOfWeek];
     if (!dayHours || !dayHours.open) return false;
-    const [openH, openM] = dayHours.open.split(':').map(Number);
-    const clockDate = new Date(clockIn);
-    const openDate = new Date(clockDate);
-    openDate.setHours(openH, openM, 0, 0);
-    return clockDate > openDate;
+    return clockTime > dayHours.open;
   } catch {
     return false;
   }
@@ -50,27 +46,20 @@ function isLateArrival(clockIn, operatingHours, userId, locationId) {
 function isEarlyDeparture(clockOut, operatingHours, userId, locationId) {
   if (!clockOut) return false;
   try {
-    // First check employee_shifts
+    const clockTime = clockOut.split('T')[1].slice(0, 8); // "HH:mm:ss"
+
     const db = getDb();
-    const shift = db.prepare('SELECT * FROM employee_shifts WHERE user_id = ? AND location_id = ? AND is_active = 1').get(userId, locationId);
-    if (shift) {
-      const [endH, endM] = shift.shift_end.split(':').map(Number);
-      const clockDate = new Date(clockOut);
-      const endDate = new Date(clockDate);
-      endDate.setHours(endH, endM, 0, 0);
-      return clockDate < endDate;
+    const shift = db.prepare('SELECT shift_end FROM employee_shifts WHERE user_id = ? AND location_id = ? AND is_active = 1').get(userId, locationId);
+    if (shift && shift.shift_end) {
+      return clockTime < shift.shift_end;
     }
-    // Fallback to location operating_hours
+
     if (!operatingHours) return false;
     const hours = safeParseJSON(operatingHours, {});
     const dayOfWeek = new Date(clockOut).toLocaleDateString('en-US', { weekday: 'long' }).toLowerCase();
     const dayHours = hours[dayOfWeek];
     if (!dayHours || !dayHours.close) return false;
-    const [closeH, closeM] = dayHours.close.split(':').map(Number);
-    const clockDate = new Date(clockOut);
-    const closeDate = new Date(clockDate);
-    closeDate.setHours(closeH, closeM, 0, 0);
-    return clockDate < closeDate;
+    return clockTime < dayHours.close;
   } catch {
     return false;
   }
@@ -219,8 +208,8 @@ router.get('/today', authorize('owner', 'manager', 'employee', 'delivery_partner
     let totalHoursToday = 0;
     let totalOutdoorToday = 0;
     for (const r of records) {
-      totalHoursToday += r.total_hours || 0;
-      totalOutdoorToday += r.outdoor_hours || 0;
+      totalHoursToday += Number(r.total_hours) || 0;
+      totalOutdoorToday += Number(r.outdoor_hours) || 0;
     }
 
     res.json({
@@ -535,7 +524,7 @@ router.put('/outdoor-duty/:id/complete', authorize('owner', 'manager', 'employee
       const att = db.prepare('SELECT * FROM attendance WHERE id = ?').get(request.attendance_id);
       if (att) {
         const outdoor = totalOutdoor.total || 0;
-        const effective = att.total_hours + outdoor;
+        const effective = Number(att.total_hours || 0) + outdoor;
         db.prepare('UPDATE attendance SET outdoor_hours = ?, effective_hours = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
           .run(Math.round(outdoor * 100) / 100, Math.round(effective * 100) / 100, att.id);
       }
@@ -766,14 +755,126 @@ router.get('/staff-today', authorize('owner', 'manager'), async (req, res) => {
       }
     }
 
-    const staff = await db.prepare(`
-      SELECT a.*, u.name as user_name, u.phone as user_phone, u.role as user_role, l.name as location_name
+    const logs = await db.prepare(`
+      SELECT
+        a.*,
+        u.name as user_name,
+        u.phone as user_phone,
+        u.role as user_role,
+        l.name as location_name,
+        COALESCE(
+          es.shift_start,
+          (SELECT es2.shift_start FROM employee_shifts es2 WHERE es2.user_id = a.user_id AND es2.is_active = 1 ORDER BY es2.updated_at DESC, es2.id DESC LIMIT 1)
+        ) as shift_start,
+        COALESCE(
+          es.shift_end,
+          (SELECT es2.shift_end FROM employee_shifts es2 WHERE es2.user_id = a.user_id AND es2.is_active = 1 ORDER BY es2.updated_at DESC, es2.id DESC LIMIT 1)
+        ) as shift_end,
+        COALESCE(
+          es.days_of_week,
+          (SELECT es2.days_of_week FROM employee_shifts es2 WHERE es2.user_id = a.user_id AND es2.is_active = 1 ORDER BY es2.updated_at DESC, es2.id DESC LIMIT 1)
+        ) as days_of_week
       FROM attendance a
       JOIN users u ON a.user_id = u.id
       JOIN locations l ON a.location_id = l.id
+      LEFT JOIN employee_shifts es ON es.user_id = a.user_id AND es.location_id = a.location_id AND es.is_active = 1
       WHERE a.date = ? ${locFilter}
-      ORDER BY a.clock_in ASC
+      ORDER BY a.clock_in ASC, a.id ASC
     `).all(...params);
+
+    // Aggregate split sessions so each staff appears exactly once.
+    const byUser = new Map();
+    for (const row of logs) {
+      const key = row.user_id;
+      const existing = byUser.get(key);
+
+      if (!existing) {
+        byUser.set(key, {
+          id: row.id,
+          user_id: row.user_id,
+          user_name: row.user_name,
+          user_phone: row.user_phone,
+          user_role: row.user_role,
+          location_id: row.location_id,
+          location_name: row.location_name,
+          date: row.date,
+          first_clock_in: row.clock_in,
+          latest_clock_in: row.clock_in,
+          latest_clock_out: row.clock_out,
+          clock_in: row.clock_in,
+          clock_out: row.clock_out,
+          total_hours: Number(row.total_hours || 0),
+          outdoor_hours: Number(row.outdoor_hours || 0),
+          effective_hours: Number(row.effective_hours || 0),
+          late_arrival: row.late_arrival === 1 ? 1 : 0,
+          early_departure: row.early_departure === 1 ? 1 : 0,
+          sessions_count: 1,
+          active_session: !row.clock_out,
+          shift_start: row.shift_start || null,
+          shift_end: row.shift_end || null,
+          days_of_week: row.days_of_week || null,
+          logs: [
+            {
+              id: row.id,
+              location_id: row.location_id,
+              location_name: row.location_name,
+              clock_in: row.clock_in,
+              clock_out: row.clock_out,
+              total_hours: Number(row.total_hours || 0),
+              outdoor_hours: Number(row.outdoor_hours || 0),
+              effective_hours: Number(row.effective_hours || 0),
+            },
+          ],
+        });
+        continue;
+      }
+
+      existing.sessions_count += 1;
+      existing.total_hours += Number(row.total_hours || 0);
+      existing.outdoor_hours += Number(row.outdoor_hours || 0);
+      existing.effective_hours += Number(row.effective_hours || 0);
+      existing.late_arrival = existing.late_arrival || row.late_arrival === 1 ? 1 : 0;
+      existing.early_departure = existing.early_departure || row.early_departure === 1 ? 1 : 0;
+      if (row.clock_in < existing.first_clock_in) existing.first_clock_in = row.clock_in;
+      if (row.clock_in >= existing.latest_clock_in) {
+        existing.latest_clock_in = row.clock_in;
+        existing.latest_clock_out = row.clock_out;
+        existing.clock_in = row.clock_in;
+        existing.clock_out = row.clock_out;
+        existing.location_id = row.location_id;
+        existing.location_name = row.location_name;
+        if (row.shift_start || row.shift_end) {
+          existing.shift_start = row.shift_start || null;
+          existing.shift_end = row.shift_end || null;
+          existing.days_of_week = row.days_of_week || null;
+        }
+      }
+      if (!row.clock_out) {
+        existing.active_session = true;
+        existing.clock_in = row.clock_in;
+        existing.clock_out = null;
+        existing.location_id = row.location_id;
+        existing.location_name = row.location_name;
+      }
+
+      existing.logs.push({
+        id: row.id,
+        location_id: row.location_id,
+        location_name: row.location_name,
+        clock_in: row.clock_in,
+        clock_out: row.clock_out,
+        total_hours: Number(row.total_hours || 0),
+        outdoor_hours: Number(row.outdoor_hours || 0),
+        effective_hours: Number(row.effective_hours || 0),
+      });
+    }
+
+    const staff = Array.from(byUser.values()).map((s) => ({
+      ...s,
+      total_hours: Math.round(s.total_hours * 100) / 100,
+      outdoor_hours: Math.round(s.outdoor_hours * 100) / 100,
+      effective_hours: Math.round(s.effective_hours * 100) / 100,
+    }));
 
     // Also get staff who haven't clocked in
     let notClockedFilter = '';
@@ -791,15 +892,51 @@ router.get('/staff-today', authorize('owner', 'manager'), async (req, res) => {
     }
 
     const notClocked = await db.prepare(`
-      SELECT DISTINCT u.id, u.name, u.phone, u.role
+      SELECT DISTINCT
+        u.id,
+        u.name,
+        u.phone,
+        u.role,
+        COALESCE(
+          es.shift_start,
+          (SELECT es2.shift_start FROM employee_shifts es2 WHERE es2.user_id = u.id AND es2.is_active = 1 ORDER BY es2.updated_at DESC, es2.id DESC LIMIT 1)
+        ) as shift_start,
+        COALESCE(
+          es.shift_end,
+          (SELECT es2.shift_end FROM employee_shifts es2 WHERE es2.user_id = u.id AND es2.is_active = 1 ORDER BY es2.updated_at DESC, es2.id DESC LIMIT 1)
+        ) as shift_end,
+        COALESCE(
+          es.days_of_week,
+          (SELECT es2.days_of_week FROM employee_shifts es2 WHERE es2.user_id = u.id AND es2.is_active = 1 ORDER BY es2.updated_at DESC, es2.id DESC LIMIT 1)
+        ) as days_of_week
       FROM users u
       JOIN user_locations ul ON u.id = ul.user_id
+      LEFT JOIN employee_shifts es ON es.user_id = u.id AND es.location_id = ul.location_id AND es.is_active = 1
       WHERE u.role IN ('employee', 'delivery_partner', 'manager') AND u.is_active = 1
       ${notClockedFilter}
       AND u.id NOT IN (SELECT user_id FROM attendance WHERE date = ?)
     `).all(...notParams, today);
 
-    res.json({ success: true, data: { present: staff, absent: notClocked } });
+    const active = staff.filter((s) => s.active_session);
+    const completed = staff.filter((s) => !s.active_session);
+    const late = staff.filter((s) => s.late_arrival === 1);
+
+    res.json({
+      success: true,
+      data: {
+        present: staff,
+        active,
+        completed,
+        absent: notClocked,
+        summary: {
+          present_count: staff.length,
+          active_count: active.length,
+          completed_count: completed.length,
+          absent_count: notClocked.length,
+          late_count: late.length,
+        },
+      },
+    });
   } catch (error) {
     console.error('Staff today error:', error);
     res.status(500).json({ success: false, message: 'Failed to get staff status.' });

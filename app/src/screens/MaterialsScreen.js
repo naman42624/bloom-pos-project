@@ -74,6 +74,12 @@ export default function MaterialsScreen({ navigation }) {
           </Text>
         </View>
       )}
+      {user?.role === 'owner' && item.avg_purchase_cost !== null && item.avg_purchase_cost !== undefined && (
+        <View style={styles.avgCostRow}>
+          <Ionicons name="analytics-outline" size={14} color={Colors.info} />
+          <Text style={styles.avgCostText}>Avg Cost: ₹{Number(item.avg_purchase_cost || 0).toFixed(2)}</Text>
+        </View>
+      )}
     </TouchableOpacity>
   );
 
@@ -185,6 +191,8 @@ const styles = StyleSheet.create({
   cardMeta: { fontSize: FontSize.xs, color: Colors.textSecondary, marginTop: 2 },
   stockRow: { flexDirection: 'row', alignItems: 'center', marginTop: Spacing.sm, gap: 4 },
   stockText: { fontSize: FontSize.xs, fontWeight: '500' },
+  avgCostRow: { flexDirection: 'row', alignItems: 'center', marginTop: 4, gap: 4 },
+  avgCostText: { fontSize: FontSize.xs, color: Colors.info, fontWeight: '600' },
   empty: { alignItems: 'center', paddingTop: 80 },
   emptyTitle: { fontSize: FontSize.lg, fontWeight: '600', color: Colors.textSecondary, marginTop: Spacing.md },
   emptyText: { fontSize: FontSize.sm, color: Colors.textLight, marginTop: Spacing.xs },

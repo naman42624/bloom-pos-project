@@ -47,7 +47,6 @@ import QRLabelScreen from '../screens/QRLabelScreen';
 // Phase 4 — POS & Sales
 import POSScreen from '../screens/POSScreen';
 import QuickCheckoutScreen from '../screens/QuickCheckoutScreen';
-import CheckoutScreen from '../screens/CheckoutScreen';
 import SaleDraftsScreen from '../screens/SaleDraftsScreen';
 import SaleDetailScreen from '../screens/SaleDetailScreen';
 import SalesScreen from '../screens/SalesScreen';
@@ -130,6 +129,7 @@ function DashboardStack() {
       <Stack.Screen name="SaleDrafts" component={SaleDraftsScreen} options={{ title: 'Saved Drafts' }} />
       <Stack.Screen name="SaleDetail" component={SaleDetailScreen} options={{ title: 'Sale Details' }} />
       <Stack.Screen name="DeliveryDetail" component={DeliveryDetailScreen} options={{ title: 'Delivery' }} />
+      <Stack.Screen name="LiveDeliveryMap" component={LiveDeliveryMapScreen} options={{ title: 'Live Tracking' }} />
       <Stack.Screen name="ProductionQueue" component={ProductionQueueScreen} options={{ title: 'Production Queue' }} />
       <Stack.Screen name="CompletedTasks" component={CompletedTasksScreen} options={{ title: 'Completed Tasks' }} />
       <Stack.Screen name="ProduceProduct" component={ProduceScreen} options={{ title: 'Produce Products' }} />
@@ -294,7 +294,6 @@ function POSStack() {
       <Stack.Screen name="POSHome" component={POSScreen} options={{ title: 'Point of Sale' }} />
       <Stack.Screen name="SaleDrafts" component={SaleDraftsScreen} options={{ title: 'Saved Drafts' }} />
       <Stack.Screen name="QuickCheckout" component={QuickCheckoutScreen} options={{ title: 'Quick Checkout' }} />
-      <Stack.Screen name="Checkout" component={CheckoutScreen} options={{ title: 'Checkout' }} />
       <Stack.Screen name="SaleDetail" component={SaleDetailScreen} options={{ title: 'Sale Details' }} />
       <Stack.Screen name="RefundSale" component={RefundSaleScreen} options={{ title: 'Refund' }} />
       <Stack.Screen name="AddPayment" component={AddPaymentScreen} options={{ title: 'Record Payment' }} />
@@ -305,6 +304,7 @@ function POSStack() {
       <Stack.Screen name="CompletedTasks" component={CompletedTasksScreen} options={{ title: 'Completed Tasks' }} />
       <Stack.Screen name="ProduceProduct" component={ProduceScreen} options={{ title: 'Produce Products' }} />
       <Stack.Screen name="DeliveryDetail" component={DeliveryDetailScreen} options={{ title: 'Delivery' }} />
+      <Stack.Screen name="LiveDeliveryMap" component={LiveDeliveryMapScreen} options={{ title: 'Live Tracking' }} />
     </Stack.Navigator>
   );
 }
@@ -323,6 +323,7 @@ function SalesStack() {
       <Stack.Screen name="CompletedTasks" component={CompletedTasksScreen} options={{ title: 'Completed Tasks' }} />
       <Stack.Screen name="ProduceProduct" component={ProduceScreen} options={{ title: 'Produce Products' }} />
       <Stack.Screen name="DeliveryDetail" component={DeliveryDetailScreen} options={{ title: 'Delivery' }} />
+      <Stack.Screen name="LiveDeliveryMap" component={LiveDeliveryMapScreen} options={{ title: 'Live Tracking' }} />
     </Stack.Navigator>
   );
 }
@@ -345,6 +346,7 @@ function OrdersStack() {
       <Stack.Screen name="ProductionQueue" component={ProductionQueueScreen} options={{ title: 'Production Queue' }} />
       <Stack.Screen name="CompletedTasks" component={CompletedTasksScreen} options={{ title: 'Completed Tasks' }} />
       <Stack.Screen name="ProduceProduct" component={ProduceScreen} options={{ title: 'Produce Products' }} />
+      <Stack.Screen name="LiveDeliveryMap" component={LiveDeliveryMapScreen} options={{ title: 'Live Tracking' }} />
     </Stack.Navigator>
   );
 }
@@ -358,6 +360,7 @@ function PickupsStack() {
       <Stack.Screen name="RefundSale" component={RefundSaleScreen} options={{ title: 'Refund' }} />
       <Stack.Screen name="AddPayment" component={AddPaymentScreen} options={{ title: 'Record Payment' }} />
       <Stack.Screen name="DeliveryDetail" component={DeliveryDetailScreen} options={{ title: 'Delivery' }} />
+      <Stack.Screen name="LiveDeliveryMap" component={LiveDeliveryMapScreen} options={{ title: 'Live Tracking' }} />
     </Stack.Navigator>
   );
 }

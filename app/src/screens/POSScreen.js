@@ -364,8 +364,7 @@ export default function POSScreen({ navigation, route }) {
         return;
       }
 
-      const target = latest.context === 'quick_checkout' ? 'QuickCheckout' : 'Checkout';
-      navigation.navigate(target, { draftId: latest.id });
+      navigation.navigate('QuickCheckout', { draftId: latest.id });
     } catch (err) {
       Alert.alert('Error', err.message || 'Failed to load latest draft');
     } finally {
@@ -764,11 +763,13 @@ export default function POSScreen({ navigation, route }) {
       <ScrollView style={[styles.cartItemsList, isTablet && { maxHeight: 'none', flex: 1 }]} nestedScrollEnabled>
         {cart.map((c) => (
           <View key={cartItemKey(c)} style={styles.cartItem}>
-            <View style={{ flex: 1 }}>
+            <View style={{ flex: 1, minWidth: 0, paddingRight: Spacing.xs }}>
               <Text style={styles.cartItemName} numberOfLines={2}>
                 {c.material_id ? '🌿 ' : ''}{c.product_name}
               </Text>
-              <Text style={styles.cartItemPrice}>₹{c.unit_price} × {c.quantity} = ₹{Number(c.unit_price * c.quantity).toFixed(0)}</Text>
+              <Text style={styles.cartItemPrice} numberOfLines={2}>
+                ₹{Number(c.unit_price || 0).toFixed(2)} × {c.quantity} = ₹{Number(c.line_total || (c.unit_price * c.quantity) || 0).toFixed(2)}
+              </Text>
             </View>
             <View style={styles.qtyControls}>
               <TouchableOpacity style={styles.qtyBtn} onPress={() => updateCartQty(c, -1)}>
@@ -1208,13 +1209,13 @@ const styles = StyleSheet.create({
   clearText: { fontSize: FontSize.sm, color: Colors.error, fontWeight: '700' },
   cartItemsList: { maxHeight: 160, paddingHorizontal: Spacing.md },
   cartItem: {
-    flexDirection: 'row', alignItems: 'flex-start', flexWrap: 'wrap',
+    flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'space-between',
     paddingVertical: Spacing.md, borderBottomWidth: 1, borderBottomColor: Colors.border,
     gap: 12,
   },
   cartItemName: { fontSize: FontSize.md, color: Colors.text, fontWeight: '700', flexShrink: 1 },
   cartItemPrice: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: 4 },
-  qtyControls: { flexDirection: 'row', alignItems: 'center', gap: 6, marginLeft: 'auto' },
+  qtyControls: { flexDirection: 'row', alignItems: 'center', gap: 6, flexShrink: 0 },
   qtyBtn: {
     width: 36, height: 36, borderRadius: 18,
     backgroundColor: Colors.surfaceAlt, 

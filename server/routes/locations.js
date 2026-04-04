@@ -190,7 +190,7 @@ router.post(
 
       // Auto-assign owner to this location
       db.prepare(
-        'INSERT OR IGNORE INTO user_locations (user_id, location_id, is_primary) VALUES (?, ?, 0)'
+        'INSERT INTO user_locations (user_id, location_id, is_primary) VALUES (?, ?, 0) ON CONFLICT (user_id, location_id) DO NOTHING'
       ).run(req.user.id, location.id);
 
       res.status(201).json({
@@ -321,7 +321,7 @@ router.post(
       }
 
       const assign = db.prepare(
-        'INSERT OR IGNORE INTO user_locations (user_id, location_id) VALUES (?, ?)'
+        'INSERT INTO user_locations (user_id, location_id) VALUES (?, ?) ON CONFLICT (user_id, location_id) DO NOTHING'
       );
 
       const tx = db.transaction(() => {

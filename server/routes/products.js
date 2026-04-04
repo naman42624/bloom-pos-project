@@ -81,6 +81,28 @@ function recalcEstimatedCost(db, productId) {
   return total;
 }
 
+function resolveTaxRateId(db, taxRateId, taxPercentage, createdBy) {
+  if (taxRateId !== undefined && taxRateId !== null && taxRateId !== '') {
+    return Number(taxRateId);
+  }
+
+  const percentage = Number(taxPercentage);
+  if (!Number.isFinite(percentage) || percentage <= 0) {
+    return null;
+  }
+
+  const existing = db
+    .prepare('SELECT id FROM tax_rates WHERE percentage = ? AND is_active = 1 ORDER BY id ASC LIMIT 1')
+    .get(percentage);
+  if (existing) return existing.id;
+
+  const label = `Custom ${Number.isInteger(percentage) ? percentage : percentage.toFixed(2)}%`;
+  const result = db.prepare(
+    'INSERT INTO tax_rates (name, percentage, is_default, created_by) VALUES (?, ?, 0, ?)'
+  ).run(label, percentage, createdBy);
+  return result.lastInsertRowid;
+}
+
 // ═══════════════════════════════════════════════════════════════
 // PRODUCT CRUD
 // ═══════════════════════════════════════════════════════════════
@@ -233,6 +255,7 @@ router.post(
     body('category').optional({ nullable: true }).isIn(['bouquet', 'arrangement', 'basket', 'single_stem', 'gift_combo', 'other']),
     body('selling_price').optional().isFloat({ min: 0 }),
     body('tax_rate_id').optional({ nullable: true }).isInt(),
+    body('tax_percentage').optional({ nullable: true }).isFloat({ min: 0, max: 100 }),
     body('location_id').optional({ nullable: true }).isInt(),
     body('materials').optional().isArray(),
     body('materials.*.material_id').optional().isInt(),
@@ -245,13 +268,14 @@ router.post(
       if (!errors.isEmpty()) return res.status(400).json({ success: false, message: 'Validation failed', errors: errors.array() });
 
       const db = getDb();
-      const { name, sku, description, type, category, selling_price, tax_rate_id, location_id, materials } = req.body;
+      const { name, sku, description, type, category, selling_price, tax_rate_id, tax_percentage, location_id, materials } = req.body;
 
       // Check name uniqueness
       const dupName = db.prepare('SELECT id FROM products WHERE LOWER(name) = LOWER(?) AND is_active = 1').get(name);
       if (dupName) return res.status(409).json({ success: false, message: 'A product with this name already exists' });
 
       const finalSku = sku || generateSku(db, name);
+      const resolvedTaxRateId = resolveTaxRateId(db, tax_rate_id, tax_percentage, req.user.id);
 
       // Check SKU uniqueness
       if (sku) {
@@ -262,7 +286,7 @@ router.post(
       const result = db.prepare(
         `INSERT INTO products (name, sku, description, type, category, selling_price, tax_rate_id, location_id, created_by)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      ).run(name, finalSku, description || '', type || 'standard', category || null, selling_price || 0, tax_rate_id || null, location_id || null, req.user.id);
+      ).run(name, finalSku, description || '', type || 'standard', category || null, selling_price || 0, resolvedTaxRateId || null, location_id || null, req.user.id);
 
       const productId = result.lastInsertRowid;
 
@@ -305,6 +329,7 @@ router.put(
     body('category').optional({ nullable: true }).isIn(['bouquet', 'arrangement', 'basket', 'single_stem', 'gift_combo', 'other']),
     body('selling_price').optional().isFloat({ min: 0 }),
     body('tax_rate_id').optional({ nullable: true }).isInt(),
+    body('tax_percentage').optional({ nullable: true }).isFloat({ min: 0, max: 100 }),
     body('location_id').optional({ nullable: true }).isInt(),
     body('is_active').optional().isInt({ min: 0, max: 1 }),
   ],
@@ -316,6 +341,10 @@ router.put(
       const db = getDb();
       const existing = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
       if (!existing) return res.status(404).json({ success: false, message: 'Product not found' });
+
+      if (req.body.tax_percentage !== undefined && (req.body.tax_rate_id === undefined || req.body.tax_rate_id === null || req.body.tax_rate_id === '')) {
+        req.body.tax_rate_id = resolveTaxRateId(db, null, req.body.tax_percentage, req.user.id);
+      }
 
       if (req.body.sku && req.body.sku !== existing.sku) {
         const dupSku = db.prepare('SELECT id FROM products WHERE sku = ? AND id != ?').get(req.body.sku, req.params.id);

@@ -960,6 +960,8 @@ router.post(
     body('items.*.material_id').optional({ nullable: true }).isInt(),
     body('items.*.quantity').isInt({ min: 1 }),
     body('items.*.unit_price').isFloat({ min: 0 }),
+    body('items.*.tax_rate').optional().isFloat({ min: 0, max: 100 }),
+    body('items.*.tax_inclusive').optional().isBoolean().toBoolean(),
     body('payments').optional().isArray(),
     body('payments.*.method').optional().isIn(['cash', 'card', 'upi']),
     body('payments.*.amount').optional().isFloat({ min: 0.01 }),
@@ -1035,6 +1037,9 @@ router.post(
               const tr = db.prepare('SELECT percentage FROM tax_rates WHERE id = ?').get(product.tax_rate_id);
               if (tr) taxRate = tr.percentage;
             }
+            if (item.tax_rate !== undefined && item.tax_rate !== null && !Number.isNaN(Number(item.tax_rate))) {
+              taxRate = Number(item.tax_rate);
+            }
             name = item.product_name || product.name;
             productId = product.id;
           } else {
@@ -1047,12 +1052,25 @@ router.post(
           }
 
           const qty = item.quantity || 1;
-          const taxAmount = (unitPrice * qty * taxRate) / 100;
-          const lineTotal = (unitPrice * qty) + taxAmount;
-          subtotal += unitPrice * qty;
+          const taxInclusive = item.tax_inclusive !== false;
+          let taxableUnitPrice = Number(unitPrice) || 0;
+          let taxAmount = 0;
+
+          if (taxRate > 0) {
+            if (taxInclusive) {
+              const gross = taxableUnitPrice * qty;
+              taxAmount = (gross * taxRate) / (100 + taxRate);
+              taxableUnitPrice = taxableUnitPrice - (taxableUnitPrice * taxRate) / (100 + taxRate);
+            } else {
+              taxAmount = (taxableUnitPrice * qty * taxRate) / 100;
+            }
+          }
+
+          const lineTotal = (taxableUnitPrice * qty) + taxAmount;
+          subtotal += taxableUnitPrice * qty;
           taxTotal += taxAmount;
 
-          return { product_id: productId, material_id: materialId, product_name: name, quantity: qty, unit_price: unitPrice, tax_rate: taxRate, tax_amount: taxAmount, line_total: lineTotal, special_instructions: item.special_instructions || null, image_url: item.image_url || null, custom_materials: item.custom_materials || null, fulfill_from_stock: item.fulfill_from_stock };
+          return { product_id: productId, material_id: materialId, product_name: name, quantity: qty, unit_price: taxableUnitPrice, tax_rate: taxRate, tax_amount: taxAmount, line_total: lineTotal, special_instructions: item.special_instructions || null, image_url: item.image_url || null, custom_materials: item.custom_materials || null, fulfill_from_stock: item.fulfill_from_stock };
         });
 
         // Discount — with threshold enforcement

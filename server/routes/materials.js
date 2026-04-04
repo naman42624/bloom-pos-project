@@ -109,6 +109,32 @@ router.get('/', authenticate, async (req, res, next) => {
       }
     }
 
+    if (materials.length > 0 && req.user?.role === 'owner') {
+      const materialIds = materials.map((m) => m.id);
+      const placeholders = materialIds.map(() => '?').join(',');
+      try {
+        const avgRows = await db.prepare(
+          `SELECT material_id,
+                  COALESCE(SUM(actual_price_per_unit * received_quantity) / NULLIF(SUM(received_quantity), 0), 0) as avg_purchase_cost
+           FROM purchase_order_items
+           WHERE material_id IN (${placeholders})
+             AND actual_price_per_unit > 0
+             AND received_quantity > 0
+           GROUP BY material_id`
+        ).all(...materialIds);
+
+        const avgByMaterialId = new Map(avgRows.map((row) => [row.material_id, Number(row.avg_purchase_cost || 0)]));
+        materials = materials.map((m) => ({
+          ...m,
+          avg_purchase_cost: Math.round((avgByMaterialId.get(m.id) || 0) * 100) / 100,
+        }));
+      } catch {
+        materials = materials.map((m) => ({ ...m, avg_purchase_cost: 0 }));
+      }
+    } else {
+      materials = materials.map((m) => ({ ...m, avg_purchase_cost: null }));
+    }
+
     res.json({ success: true, data: materials });
   } catch (err) {
     next(err);
@@ -299,7 +325,23 @@ router.get('/:id', authenticate, async (req, res, next) => {
       WHERE sm.material_id = ? AND s.is_active = 1
     `).all(req.params.id);
 
-    res.json({ success: true, data: { ...material, stock, suppliers } });
+    let avgPurchaseCost = null;
+    if (req.user?.role === 'owner') {
+      try {
+        const avgRow = await db.prepare(
+          `SELECT COALESCE(SUM(actual_price_per_unit * received_quantity) / NULLIF(SUM(received_quantity), 0), 0) as avg_purchase_cost
+           FROM purchase_order_items
+           WHERE material_id = ?
+             AND actual_price_per_unit > 0
+             AND received_quantity > 0`
+        ).get(req.params.id);
+        avgPurchaseCost = Math.round(Number(avgRow?.avg_purchase_cost || 0) * 100) / 100;
+      } catch {
+        avgPurchaseCost = 0;
+      }
+    }
+
+    res.json({ success: true, data: { ...material, stock, suppliers, avg_purchase_cost: avgPurchaseCost } });
   } catch (err) {
     next(err);
   }

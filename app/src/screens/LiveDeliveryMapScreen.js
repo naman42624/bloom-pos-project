@@ -39,13 +39,14 @@ function batteryColor(level) {
   return Colors.error;
 }
 
-export default function LiveDeliveryMapScreen() {
+export default function LiveDeliveryMapScreen({ route }) {
   const { user, token } = useAuth();
+  const selectedPartnerId = route?.params?.selectedPartnerId ? Number(route.params.selectedPartnerId) : null;
   const [loading, setLoading] = useState(true);
   const [partners, setPartners] = useState([]);
   const [selectedPartner, setSelectedPartner] = useState(null);
   const [dailySummary, setDailySummary] = useState([]);
-  const [viewMode, setViewMode] = useState('map'); // 'map' or 'list'
+  const [viewMode, setViewMode] = useState(Platform.OS === 'web' ? 'list' : 'map'); // 'map' or 'list'
   const [perfModal, setPerfModal] = useState(false);
   const [perfData, setPerfData] = useState(null);
   const [perfLoading, setPerfLoading] = useState(false);
@@ -59,14 +60,18 @@ export default function LiveDeliveryMapScreen() {
         api.getActiveDeliveryPartners(),
         api.getDeliveryDailySummary(),
       ]);
-      setPartners(partnersRes.data?.partners || []);
+      const nextPartners = partnersRes.data?.partners || [];
+      setPartners(nextPartners);
       setDailySummary(summaryRes.data || []);
+      if (selectedPartnerId) {
+        setSelectedPartner(nextPartners.find((partner) => Number(partner.user_id) === selectedPartnerId) || null);
+      }
     } catch (e) {
       console.error('Fetch delivery partners error:', e);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [selectedPartnerId]);
 
   useFocusEffect(useCallback(() => {
     fetchPartners();
@@ -110,6 +115,16 @@ export default function LiveDeliveryMapScreen() {
     });
     return () => { socket.disconnect(); };
   }, [token]);
+
+  useEffect(() => {
+    if (!selectedPartnerId) return;
+    const match = partners.find((partner) => Number(partner.user_id) === selectedPartnerId) || null;
+    if (match) setSelectedPartner(match);
+  }, [partners, selectedPartnerId]);
+
+  const focusedPartner = selectedPartnerId
+    ? partners.find((partner) => Number(partner.user_id) === selectedPartnerId) || selectedPartner
+    : null;
 
   const fitToPartners = useCallback(() => {
     if (!mapRef.current || partners.length === 0) return;
@@ -168,6 +183,26 @@ export default function LiveDeliveryMapScreen() {
           <Text style={styles.countText}>{activePartners.length} active</Text>
         </View>
       </View>
+
+      {focusedPartner && viewMode === 'list' && (
+        <View style={styles.focusedCard}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.focusedName}>{focusedPartner.user_name}</Text>
+            <Text style={styles.focusedMeta}>
+              {focusedPartner.is_moving ? 'Moving' : 'Idle'} • Last seen {timeSince(focusedPartner.recorded_at)}
+            </Text>
+            {focusedPartner.delivery_id && (
+              <Text style={styles.focusedMeta}>Delivery #{focusedPartner.delivery_id}</Text>
+            )}
+          </View>
+          {focusedPartner.battery_level != null && (
+            <View style={styles.focusedBattery}>
+              <Ionicons name={batteryIcon(focusedPartner.battery_level)} size={14} color={batteryColor(focusedPartner.battery_level)} />
+              <Text style={[styles.batteryText, { color: batteryColor(focusedPartner.battery_level) }]}>{Math.round(focusedPartner.battery_level)}%</Text>
+            </View>
+          )}
+        </View>
+      )}
 
       {viewMode === 'map' ? (
         <View style={styles.mapContainer}>
@@ -247,7 +282,7 @@ export default function LiveDeliveryMapScreen() {
                       <Text style={styles.statLabel}>Deliveries</Text>
                     </View>
                     <View style={styles.stat}>
-                      <Text style={styles.statValue}>{(summary.total_distance_km || 0).toFixed(1)}</Text>
+                      <Text style={styles.statValue}>{Number(summary.total_distance_km || 0).toFixed(1)}</Text>
                       <Text style={styles.statLabel}>km</Text>
                     </View>
                     <View style={styles.stat}>
@@ -388,7 +423,7 @@ export default function LiveDeliveryMapScreen() {
                   </View>
                   <View style={styles.detailRow}>
                     <Text style={styles.detailLabel}>Total Distance</Text>
-                    <Text style={styles.detailValue}>{(perfData.total_distance_km || 0).toFixed(1)} km</Text>
+                    <Text style={styles.detailValue}>{Number(perfData.total_distance_km || 0).toFixed(1)} km</Text>
                   </View>
                   <View style={styles.detailRow}>
                     <Text style={styles.detailLabel}>Active Time</Text>
@@ -396,7 +431,7 @@ export default function LiveDeliveryMapScreen() {
                   </View>
                   <View style={styles.detailRow}>
                     <Text style={styles.detailLabel}>COD Collected</Text>
-                    <Text style={styles.detailValue}>₹{(perfData.total_cod_collected || 0).toFixed(0)}</Text>
+                    <Text style={styles.detailValue}>₹{Number(perfData.total_cod_collected || 0).toFixed(0)}</Text>
                   </View>
                 </View>
 
@@ -445,6 +480,21 @@ const styles = StyleSheet.create({
     borderRadius: BorderRadius.sm,
   },
   countText: { fontSize: FontSize.xs, color: Colors.secondary, fontWeight: '600' },
+  focusedCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.md,
+    marginHorizontal: Spacing.md,
+    marginTop: Spacing.sm,
+    padding: Spacing.md,
+    borderRadius: BorderRadius.md,
+    borderWidth: 1,
+    borderColor: Colors.primary + '20',
+    backgroundColor: Colors.primary + '08',
+  },
+  focusedName: { fontSize: FontSize.md, fontWeight: '700', color: Colors.text },
+  focusedMeta: { fontSize: FontSize.xs, color: Colors.textSecondary, marginTop: 2 },
+  focusedBattery: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   // Map
   mapContainer: { flex: 1 },
   map: { flex: 1 },

@@ -22,8 +22,8 @@ router.get('/sales-summary', authenticate, authorize('owner', 'manager'), async 
     const grouping = group_by || 'day'; // day, week, month
 
     let dateExpr;
-    if (grouping === 'month') dateExpr = "strftime('%Y-%m', s.created_at)";
-    else if (grouping === 'week') dateExpr = "strftime('%Y-W%W', s.created_at)";
+    if (grouping === 'month') dateExpr = "to_char(s.created_at, 'YYYY-MM')";
+    else if (grouping === 'week') dateExpr = "to_char(date_trunc('week', s.created_at), 'IYYY-\"W\"IW')";
     else dateExpr = "date(s.created_at)";
 
     let where = "WHERE date(s.created_at) BETWEEN ? AND ? AND s.status != 'cancelled'";

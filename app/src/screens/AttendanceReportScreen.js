@@ -11,8 +11,8 @@ import { getShopNow, getShopTodayStr } from '../utils/datetime';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 
 function formatHours(h) {
-  if (!h && h !== 0) return '0';
-  return h.toFixed(1);
+  const num = Number(h || 0);
+  return num.toFixed(1);
 }
 
 function getDateRange(period, timezone) {
@@ -86,9 +86,9 @@ export default function AttendanceReportScreen() {
   }
 
   // Overall stats
-  const totalPresent = summary.reduce((s, r) => s + (r.present_days || 0), 0);
-  const totalLate = summary.reduce((s, r) => s + (r.late_count || 0), 0);
-  const totalHrs = summary.reduce((s, r) => s + (r.effective_hours || 0), 0);
+  const totalPresent = summary.reduce((s, r) => s + Number(r.present_days || 0), 0);
+  const totalLate = summary.reduce((s, r) => s + Number(r.late_count || 0), 0);
+  const totalHrs = summary.reduce((s, r) => s + Number(r.effective_hours || 0), 0);
   const avgHrs = summary.length > 0 ? (totalHrs / summary.length).toFixed(1) : 0;
 
   return (

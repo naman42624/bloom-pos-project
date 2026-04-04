@@ -1,734 +1,1544 @@
-import React, { useState, useCallback } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  View,
-  Text,
-  StyleSheet,
-  ScrollView,
-  TouchableOpacity,
-  RefreshControl,
   ActivityIndicator,
   Alert,
+  Animated,
+  Modal,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+  useWindowDimensions,
+  Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
-import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
+import { Colors, FontSize, Spacing } from '../constants/theme';
 
-const ROLE_LABELS = {
-  owner: 'Owner',
-  manager: 'Manager',
-  employee: 'Employee',
-  delivery_partner: 'Delivery Partner',
-  customer: 'Customer',
+const ORDER_TYPES = ['delivery', 'pickup', 'walk_in'];
+const ORDER_TYPE_LABELS = {
+  delivery: 'Delivery Orders',
+  pickup: 'Pickup Orders',
+  walk_in: 'Walk-in Orders',
 };
 
-const ROLE_COLORS = {
-  owner: Colors.roleOwner,
-  manager: Colors.roleManager,
-  employee: Colors.roleEmployee,
-  delivery_partner: Colors.roleDelivery,
-  customer: Colors.roleCustomer,
+const ORDER_STATUS_LABELS = {
+  pending: 'Pending',
+  confirmed: 'Confirmed',
+  preparing: 'Preparing',
+  ready: 'Ready',
+  completed: 'Completed',
+  cancelled: 'Cancelled',
+  draft: 'Draft',
 };
 
-function QuickAction({ icon, label, color, onPress }) {
-  return (
-    <TouchableOpacity style={styles.quickAction} onPress={onPress} activeOpacity={0.7}>
-      <View style={[styles.quickActionIcon, { backgroundColor: color + '15' }]}>
-        <Ionicons name={icon} size={24} color={color} />
-      </View>
-      <Text style={styles.quickActionLabel}>{label}</Text>
-    </TouchableOpacity>
-  );
+const TASK_STATUS_LABELS = {
+  pending: 'Queued',
+  assigned: 'Assigned',
+  in_progress: 'In Progress',
+  completed: 'Done',
+  cancelled: 'Cancelled',
+};
+
+const ORDER_PHASE_LABELS = {
+  pending: 'Pending',
+  preparing: 'Preparing',
+  ready: 'Ready',
+};
+
+const FONT_FAMILY = typeof navigator !== 'undefined' && navigator.product === 'ReactNative'
+  ? undefined
+  : 'Inter, Geist, system-ui';
+
+function formatMoney(value) {
+  return `₹${Number(value || 0).toLocaleString('en-IN', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
 }
 
-function StatCard({ title, value, icon, color }) {
+function formatOrderType(value) {
+  return ORDER_TYPE_LABELS[value] || value || 'Order';
+}
+
+function getTaskChipColor(status) {
+  if (status === 'completed') return '#10B981';
+  if (status === 'in_progress') return '#0EA5E9';
+  if (status === 'assigned') return '#6366F1';
+  if (status === 'pending') return '#F59E0B';
+  return '#9CA3AF';
+}
+
+function getOrderStatusTone(status) {
+  if (status === 'ready' || status === 'completed') return '#10B981';
+  if (status === 'preparing') return '#0EA5E9';
+  if (status === 'pending' || status === 'confirmed') return '#F59E0B';
+  if (status === 'cancelled') return '#E11D48';
+  return '#6B7280';
+}
+
+function normalizeOrderPhase(status) {
+  if (status === 'confirmed') return 'pending';
+  if (status === 'completed') return 'ready';
+  return status;
+}
+
+function getLaneTheme(laneKey) {
+  if (laneKey === 'pending') return { border: '#F59E0B66', background: '#FFFBEB', badge: '#B45309' };
+  if (laneKey === 'preparing') return { border: '#0EA5E966', background: '#EFF6FF', badge: '#075985' };
+  return { border: '#10B98166', background: '#ECFDF5', badge: '#065F46' };
+}
+
+function getOrderLaneSla(order, now) {
+  if (!order || ['ready', 'completed', 'cancelled', 'draft'].includes(order.status)) return null;
+
+  if (order.order_type === 'walk_in') {
+    if (!order.created_at) return null;
+    const diffMins = Math.floor((now.getTime() - new Date(order.created_at).getTime()) / 60000);
+    if (diffMins > 20) return 'overdue';
+    if (diffMins > 10) return 'dueSoon';
+    return null;
+  }
+
+  const schedDate = order.scheduled_date || (order.created_at ? order.created_at.split('T')[0] : null);
+  const schedTime = order.scheduled_time || (order.created_at ? order.created_at.split('T')[1]?.slice(0, 5) : null);
+  if (!schedDate || !schedTime) return null;
+
+  const scheduled = new Date(`${schedDate}T${schedTime}`);
+  if (Number.isNaN(scheduled.getTime())) return null;
+  const remainingMins = Math.floor((scheduled.getTime() - now.getTime()) / 60000);
+  if (remainingMins < 0) return 'overdue';
+  if (remainingMins <= 60) return 'dueSoon';
+  return null;
+}
+
+function RegisterCard({ item }) {
+  const { locationName, isOpen, register } = item;
+  const tone = isOpen ? '#10B981' : '#E11D48';
   return (
-    <View style={styles.statCard}>
-      <View style={[styles.statIconWrap, { backgroundColor: color + '15' }]}>
-        <Ionicons name={icon} size={20} color={color} />
+    <View style={[styles.registerCard, { borderLeftColor: tone, borderLeftWidth: 4 }]}>
+      <View style={styles.rowBetween}>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.registerTitle}>{locationName}</Text>
+          <Text style={[styles.registerStatus, { color: tone }]}>
+            {isOpen ? '● OPEN' : '● CLOSED'}
+          </Text>
+        </View>
+        <View style={{ alignItems: 'flex-end' }}>
+          <Text style={styles.registerLabel}>Expected</Text>
+          <Text style={styles.registerValue}>{formatMoney(register?.expected_cash || 0)}</Text>
+        </View>
       </View>
-      <Text style={styles.statValue}>{value}</Text>
-      <Text style={styles.statTitle}>{title}</Text>
+      <View style={[styles.divider, { backgroundColor: tone + '20' }]} />
+      <View style={[styles.rowBetween, { marginTop: 8 }]}>
+        <View>
+          <Text style={styles.registerLabel}>Opening</Text>
+          <Text style={styles.registerValue}>{formatMoney(register?.opening_balance || 0)}</Text>
+        </View>
+        <View style={{ alignItems: 'flex-end' }}>
+          <Text style={styles.registerLabel}>Cash Sales</Text>
+          <Text style={styles.registerValue}>{formatMoney(register?.total_cash_sales || 0)}</Text>
+        </View>
+      </View>
     </View>
   );
 }
 
+function StaffPulseRow({ staff }) {
+  const tone = staff.pulse === 'active' ? '#10B981' : staff.pulse === 'busy' ? '#F59E0B' : '#9CA3AF';
+  const bgTone = staff.pulse === 'active' ? '#F0FDF4' : staff.pulse === 'busy' ? '#FEF3C7' : '#F3F4F6';
+  return (
+    <View style={[styles.staffRow, { backgroundColor: bgTone, borderLeftColor: tone, borderLeftWidth: 3 }]}>
+      <View style={[styles.staffRing, { borderColor: tone, backgroundColor: tone + '1a' }]}>
+        <Ionicons name="person" size={13} color={tone} />
+      </View>
+      <View style={{ flex: 1 }}>
+        <Text style={styles.staffName}>{staff.name}</Text>
+        <Text style={styles.staffMeta}>{staff.roleLabel}</Text>
+        {!!staff.detail && <Text style={styles.staffMetaSub}>{staff.detail}</Text>}
+      </View>
+      <View style={[styles.pulseBadge, { backgroundColor: tone + '20', borderColor: tone }]}>
+        <Text style={[styles.pulseBadgeText, { color: tone }]}>{staff.pulseLabel}</Text>
+      </View>
+    </View>
+  );
+}
+
+function TaskDetailModal({ visible, task, onClose, onAdvance, loading }) {
+  if (!task) return null;
+  
+  const color = getTaskChipColor(task.status);
+  const isFinal = task.status === 'completed' || task.status === 'cancelled';
+  const nextStatus = task.status === 'pending' ? 'Assign' : 
+                     task.status === 'assigned' ? 'Start' : 
+                     task.status === 'in_progress' ? 'Complete' : null;
+
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <TouchableOpacity style={styles.modalBackdrop} activeOpacity={1} onPress={onClose}>
+        <View style={styles.taskModalCard}>
+          <View style={styles.modalHeader}>
+            <View style={[styles.statusDot, { backgroundColor: color }]} />
+            <Text style={styles.modalTitle}>{task.product_name || task.item_product_name || 'Task'}</Text>
+            <TouchableOpacity onPress={onClose} hitSlop={5}>
+              <Ionicons name="close" size={20} color="#6B7280" />
+            </TouchableOpacity>
+          </View>
+
+          <View style={styles.modalContent}>
+            <View style={styles.detailRow}>
+              <Text style={styles.detailLabel}>Current Status</Text>
+              <View style={[styles.statusPill, { backgroundColor: color + '20', borderColor: color }]}>
+                <Text style={[styles.statusPillText, { color }]}>{TASK_STATUS_LABELS[task.status] || task.status}</Text>
+              </View>
+            </View>
+
+            {task.custom_materials && (
+              <View style={styles.detailRow}>
+                <Text style={styles.detailLabel}>Materials</Text>
+                <Text style={styles.detailValue}>{task.custom_materials}</Text>
+              </View>
+            )}
+
+            {task.special_instructions && (
+              <View style={styles.detailRow}>
+                <Text style={styles.detailLabel}>Instructions</Text>
+                <Text style={styles.detailValue}>{task.special_instructions}</Text>
+              </View>
+            )}
+
+            {task.sale_number && (
+              <View style={styles.detailRow}>
+                <Text style={styles.detailLabel}>Order #</Text>
+                <Text style={styles.detailValue}>{task.sale_number}</Text>
+              </View>
+            )}
+          </View>
+
+          {!isFinal && nextStatus && (
+            <TouchableOpacity
+              disabled={loading}
+              onPress={() => onAdvance(task)}
+              style={[styles.advanceButton, { opacity: loading ? 0.6 : 1, backgroundColor: color }]}
+            >
+              {loading ? (
+                <ActivityIndicator color="#fff" size="small" />
+              ) : (
+                <>
+                  <Ionicons name="arrow-forward" size={16} color="#fff" />
+                  <Text style={styles.advanceButtonText}>{nextStatus} Task</Text>
+                </>
+              )}
+            </TouchableOpacity>
+          )}
+
+          {isFinal && (
+            <View style={[styles.advanceButton, { backgroundColor: '#E5E7EB' }]}>
+              <Ionicons name="checkmark-circle" size={16} color="#6B7280" />
+              <Text style={[styles.advanceButtonText, { color: '#6B7280' }]}>Task {task.status === 'completed' ? 'Completed' : 'Cancelled'}</Text>
+            </View>
+          )}
+        </View>
+      </TouchableOpacity>
+    </Modal>
+  );
+}
+
+function TaskPill({ task, onPress, loading }) {
+  const color = getTaskChipColor(task.status);
+  const isFinal = task.status === 'completed' || task.status === 'cancelled';
+  
+  return (
+    <TouchableOpacity
+      disabled={loading}
+      onPress={onPress}
+      style={[styles.taskPill, { borderColor: color + '40', backgroundColor: color + '12', opacity: loading ? 0.7 : 1 }]}
+      activeOpacity={0.7}
+    >
+      <View style={[styles.taskPillDot, { backgroundColor: color }]} />
+      <Text style={[styles.taskPillText, { color }]} numberOfLines={1}>
+        {task.item_product_name || task.product_name || 'Task'}
+      </Text>
+      <Text style={[styles.taskPillStatus, { color }]}>{TASK_STATUS_LABELS[task.status] || task.status}</Text>
+      {!isFinal && <Ionicons name="chevron-forward" size={13} color={color} />}
+      {loading && <ActivityIndicator size="small" color={color} style={{ marginLeft: 4 }} />}
+    </TouchableOpacity>
+  );
+}
+
+function OrderCard({ order, tasks, hasPendingProduction, pulseOpacity, onTaskClick, taskActionLoading, onOpen }) {
+  const phaseStatus = normalizeOrderPhase(order.status);
+  const statusTone = getOrderStatusTone(phaseStatus);
+  const stats = {
+    pending: tasks.filter((t) => t.status === 'pending').length,
+    assigned: tasks.filter((t) => t.status === 'assigned').length,
+    inProgress: tasks.filter((t) => t.status === 'in_progress').length,
+    done: tasks.filter((t) => t.status === 'completed').length,
+  };
+  const totalTasks = tasks.length;
+
+  return (
+    <TouchableOpacity
+      style={[styles.orderCard, { 
+        borderColor: hasPendingProduction ? statusTone : '#E5E7EB',
+        borderLeftColor: statusTone,
+        borderLeftWidth: 3,
+      }]}
+      onPress={onOpen}
+      activeOpacity={0.85}
+    >
+      {hasPendingProduction && (
+        <Animated.View
+          pointerEvents="none"
+          style={[
+            StyleSheet.absoluteFillObject,
+            styles.pulseBorderOverlay,
+            { opacity: pulseOpacity, borderColor: statusTone },
+          ]}
+        />
+      )}
+
+      <View style={styles.orderHeader}>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.orderNumber}>#{order.sale_number}</Text>
+          <Text style={styles.orderMeta}>{order.customer_name || 'Guest'}</Text>
+          <Text style={styles.orderAmount}>{formatMoney(order.grand_total)}</Text>
+        </View>
+        <View style={[styles.statusBadge, { backgroundColor: statusTone + '15', borderColor: statusTone }]}>
+          <Text style={[styles.statusBadgeText, { color: statusTone }]}>{ORDER_PHASE_LABELS[phaseStatus] || ORDER_STATUS_LABELS[order.status] || order.status}</Text>
+        </View>
+      </View>
+
+      {totalTasks > 0 ? (
+        <>
+          <View style={styles.pipelineRow}>
+            <View style={[styles.pipelineStep, { opacity: stats.pending > 0 ? 1 : 0.4 }]}>
+              <Text style={styles.pipelineStepLabel}>Q</Text>
+              <Text style={styles.pipelineStepCount}>{stats.pending}</Text>
+            </View>
+            <View style={styles.pipelineConnector} />
+            <View style={[styles.pipelineStep, { opacity: stats.assigned > 0 ? 1 : 0.4 }]}>
+              <Text style={styles.pipelineStepLabel}>A</Text>
+              <Text style={styles.pipelineStepCount}>{stats.assigned}</Text>
+            </View>
+            <View style={styles.pipelineConnector} />
+            <View style={[styles.pipelineStep, { opacity: stats.inProgress > 0 ? 1 : 0.4 }]}>
+              <Text style={styles.pipelineStepLabel}>IP</Text>
+              <Text style={styles.pipelineStepCount}>{stats.inProgress}</Text>
+            </View>
+            <View style={styles.pipelineConnector} />
+            <View style={[styles.pipelineStep, { opacity: stats.done > 0 ? 1 : 0.4 }]}>
+              <Text style={styles.pipelineStepLabel}>D</Text>
+              <Text style={styles.pipelineStepCount}>{stats.done}</Text>
+            </View>
+          </View>
+
+          <View style={{ gap: 5 }}>
+            {tasks.slice(0, 2).map((task) => (
+              <TaskPill
+                key={task.id}
+                task={task}
+                onPress={() => onTaskClick(task)}
+                loading={!!taskActionLoading[task.id]}
+              />
+            ))}
+            {tasks.length > 2 && (
+              <Text style={styles.moreTasksLabel}>+{tasks.length - 2} more</Text>
+            )}
+          </View>
+        </>
+      ) : (
+        <Text style={styles.noTasksLabel}>No tasks assigned</Text>
+      )}
+    </TouchableOpacity>
+  );
+}
+
 export default function DashboardScreen({ navigation }) {
+  const { width } = useWindowDimensions();
   const { user, activeLocation } = useAuth();
+  const [now, setNow] = useState(new Date());
+
   const [refreshing, setRefreshing] = useState(false);
-  const [locationCount, setLocationCount] = useState(0);
-  const [myTasks, setMyTasks] = useState([]);
-  const [prodStats, setProdStats] = useState(null);
-  const [tasksLoading, setTasksLoading] = useState(false);
-  const [dashSummary, setDashSummary] = useState(null);
-  const [urgentOrders, setUrgentOrders] = useState([]);
-  const [atRiskOrders, setAtRiskOrders] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [fabVisible, setFabVisible] = useState(false);
+  const [selectedTaskModal, setSelectedTaskModal] = useState(null);
+
+  const [locations, setLocations] = useState([]);
+  const [sales, setSales] = useState([]);
+  const [taskRows, setTaskRows] = useState([]);
+  const [staffPulse, setStaffPulse] = useState([]);
+  const [registers, setRegisters] = useState([]);
   const [reportKPIs, setReportKPIs] = useState(null);
-  const [registerOpen, setRegisterOpen] = useState(null); // null = loading, true/false
-  const [registerData, setRegisterData] = useState(null);
+
+  const [taskActionLoading, setTaskActionLoading] = useState({});
+
   const role = user?.role;
   const isStaff = role === 'owner' || role === 'manager' || role === 'employee';
-  const isManagerOrOwner = role === 'owner' || role === 'manager';
+  const isOwnerOrManager = role === 'owner' || role === 'manager';
+  const isDesktop = width >= 1100;
 
-  const fetchDashboardData = useCallback(async () => {
+  const pulseAnim = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulseAnim, { toValue: 1, duration: 1200, useNativeDriver: true }),
+        Animated.timing(pulseAnim, { toValue: 0, duration: 1200, useNativeDriver: true }),
+      ])
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [pulseAnim]);
+
+  const pulseOpacity = pulseAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.1, 0.6],
+  });
+
+  useEffect(() => {
+    const timer = setInterval(() => setNow(new Date()), 60000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const fetchDashboard = useCallback(async () => {
     try {
-      const response = await api.getLocations();
-      setLocationCount(response.data?.locations?.length || 0);
-    } catch {
-      // non-critical
-    }
+      const locationRes = await api.getLocations();
+      const locationList = locationRes?.data?.locations || locationRes?.data || [];
+      setLocations(Array.isArray(locationList) ? locationList : []);
 
-    if (isStaff) {
-      setTasksLoading(true);
-      try {
-        const promises = [
-          api.getMyTasks(),
-          api.getProductionStats({ user_id: user?.id }),
-          api.getDashboardSummary(),
-          api.getSales({ order_type: 'walk_in', status: 'preparing', limit: 10 }),
-        ];
-        if (isManagerOrOwner) {
-          promises.push(api.getAtRiskOrders(activeLocation ? { location_id: activeLocation.id } : {}).catch(() => ({ data: [] })));
-          promises.push(api.getReportsDashboard().catch(() => ({ data: null })));
-        }
-        const results = await Promise.all(promises);
-        const [tasksRes, statsRes, summaryRes, urgentRes] = results;
-        setMyTasks((tasksRes.data || []).filter(t => t.status !== 'completed' && t.status !== 'cancelled'));
-        setProdStats(statsRes.data || null);
-        setDashSummary(summaryRes.data || null);
-        setUrgentOrders((urgentRes.data?.sales || []).slice(0, 5));
-        if (isManagerOrOwner && results[4]) {
-          setAtRiskOrders((results[4].data || []).slice(0, 5));
-        }
-        if (isManagerOrOwner && results[5]) {
-          setReportKPIs(results[5].data || null);
-        }
-      } catch {}
-      setTasksLoading(false);
-    }
+      const locationId = activeLocation?.id || locationList?.[0]?.id;
+      const filters = locationId ? { location_id: locationId } : {};
 
-    setRefreshing(false);
+      const reqs = [
+        api.getSales({ ...filters, limit: 120 }),
+        api.getProductionTasks({ ...filters }),
+      ];
 
-    // Fetch cash register status for active location
-    if (isStaff && activeLocation?.id) {
-      try {
-        const regRes = await api.getRegisterStatus(activeLocation.id);
-        setRegisterOpen(regRes.isOpen === true);
-        setRegisterData(regRes.data || null);
-      } catch {
-        setRegisterOpen(null);
-        setRegisterData(null);
+      if (isOwnerOrManager) {
+        reqs.push(api.getStaffToday(filters));
+        reqs.push(api.getReportsDashboard(filters).catch(() => ({ data: null })));
+      } else if (isStaff) {
+        reqs.push(api.getMyTasks().catch(() => ({ data: [] })));
       }
+
+      const results = await Promise.all(reqs);
+      const salesRes = results[0];
+      const tasksRes = results[1];
+
+      const salesRows = salesRes?.data?.sales || salesRes?.data || [];
+      const tasks = tasksRes?.data || [];
+
+      setSales(Array.isArray(salesRows) ? salesRows.filter((s) => ORDER_TYPES.includes(s.order_type)) : []);
+      setTaskRows(Array.isArray(tasks) ? tasks : []);
+
+      if (isOwnerOrManager) {
+        const staffRes = results[2];
+        const reportsRes = results[3];
+
+        const present = staffRes?.data?.present || [];
+        const absent = staffRes?.data?.absent || [];
+
+        const normalizedPresentRaw = present.map((s) => {
+          let pulse = 'active';
+          let pulseLabel = 'Active';
+          const isActiveSession = typeof s.active_session === 'boolean' ? s.active_session : !s.clock_out;
+          if (isActiveSession && (Number(s.outdoor_hours || 0) > 0 || s.status === 'half_day')) {
+            pulse = 'busy';
+            pulseLabel = 'Busy';
+          } else if (!isActiveSession) {
+            pulse = 'off';
+            pulseLabel = 'Off-shift';
+          }
+
+          return {
+            id: `present-${s.user_id || s.id}`,
+            rawUserId: s.user_id || s.id,
+            name: s.user_name,
+            roleLabel: (s.user_role || '').replace('_', ' '),
+            pulse,
+            pulseLabel,
+            detail: `${Number(s.sessions_count || 1)} session${Number(s.sessions_count || 1) > 1 ? 's' : ''}`,
+          };
+        });
+
+        // Defensive dedupe by user id in case server/client data changes.
+        const presentByUser = new Map();
+        for (const p of normalizedPresentRaw) {
+          const existing = presentByUser.get(p.rawUserId);
+          if (!existing) {
+            presentByUser.set(p.rawUserId, p);
+            continue;
+          }
+          if (existing.pulse === 'off' && p.pulse !== 'off') {
+            presentByUser.set(p.rawUserId, p);
+          }
+        }
+        const normalizedPresent = Array.from(presentByUser.values());
+
+        const normalizedAbsent = absent.map((s) => ({
+          id: `absent-${s.id}`,
+          name: s.name,
+          roleLabel: (s.role || '').replace('_', ' '),
+          pulse: 'off',
+          pulseLabel: 'Off-shift',
+        }));
+
+        setStaffPulse([...normalizedPresent, ...normalizedAbsent].slice(0, 10));
+        setReportKPIs(reportsRes?.data || null);
+      } else {
+        const myTasksRes = results[2];
+        const myRows = myTasksRes?.data || [];
+        setStaffPulse([
+          {
+            id: `self-${user?.id}`,
+            name: user?.name || 'You',
+            roleLabel: (role || '').replace('_', ' '),
+            pulse: myRows.length > 0 ? 'busy' : 'active',
+            pulseLabel: myRows.length > 0 ? 'Busy' : 'Active',
+          },
+        ]);
+      }
+
+      if (locationList.length > 0) {
+        const registerCalls = await Promise.all(
+          locationList.map(async (loc) => {
+            try {
+              const reg = await api.getRegisterStatus(loc.id);
+              return {
+                locationId: loc.id,
+                locationName: loc.name,
+                isOpen: reg?.isOpen === true,
+                register: reg?.data || null,
+              };
+            } catch {
+              return {
+                locationId: loc.id,
+                locationName: loc.name,
+                isOpen: false,
+                register: null,
+              };
+            }
+          })
+        );
+        setRegisters(registerCalls);
+      } else {
+        setRegisters([]);
+      }
+    } catch (err) {
+      Alert.alert('Dashboard', err?.message || 'Failed to load dashboard data.');
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
     }
-  }, [isStaff, isManagerOrOwner, user?.id, activeLocation]);
+  }, [activeLocation?.id, isOwnerOrManager, isStaff, role, user?.id, user?.name]);
 
   useFocusEffect(
     useCallback(() => {
-      fetchDashboardData();
-    }, [fetchDashboardData])
+      setLoading(true);
+      fetchDashboard();
+    }, [fetchDashboard])
   );
 
   const onRefresh = useCallback(() => {
     setRefreshing(true);
-    fetchDashboardData();
-  }, [fetchDashboardData]);
+    fetchDashboard();
+  }, [fetchDashboard]);
 
-  const getGreeting = () => {
-    const hour = new Date().getHours();
-    if (hour < 12) return 'Good Morning';
-    if (hour < 17) return 'Good Afternoon';
-    return 'Good Evening';
+  const tasksBySaleId = useMemo(() => {
+    const map = new Map();
+    for (const t of taskRows) {
+      const arr = map.get(t.sale_id) || [];
+      arr.push(t);
+      map.set(t.sale_id, arr);
+    }
+    return map;
+  }, [taskRows]);
+
+  const ordersByTypeAndStatus = useMemo(() => {
+    const base = {
+      delivery: { pending: [], preparing: [], ready: [], completed: [] },
+      pickup: { pending: [], preparing: [], ready: [], completed: [] },
+      walk_in: { pending: [], preparing: [], ready: [], completed: [] },
+    };
+
+    for (const order of sales) {
+      if (!ORDER_TYPES.includes(order.order_type)) continue;
+      if (order.status === 'cancelled' || order.status === 'draft') continue;
+
+      const normalizedPhase = normalizeOrderPhase(order.status);
+      const bucket = normalizedPhase === 'ready'
+        ? 'ready'
+        : normalizedPhase === 'preparing'
+          ? 'preparing'
+          : 'pending';
+
+      base[order.order_type][bucket].push(order);
+    }
+
+    return base;
+  }, [sales]);
+
+  const advanceTaskStatus = useCallback(async (task) => {
+    if (!task?.id) return;
+    if (task.status === 'completed' || task.status === 'cancelled') return;
+
+    setTaskActionLoading((prev) => ({ ...prev, [task.id]: true }));
+    try {
+      if (task.status === 'pending') {
+        await api.pickTask(task.id);
+      } else if (task.status === 'assigned') {
+        await api.startTask(task.id);
+      } else if (task.status === 'in_progress') {
+        await api.completeTask(task.id);
+      }
+      setSelectedTaskModal(null);
+      await fetchDashboard();
+    } catch (err) {
+      Alert.alert('Task Update', err?.message || 'Unable to update task status.');
+    } finally {
+      setTaskActionLoading((prev) => ({ ...prev, [task.id]: false }));
+    }
+  }, [fetchDashboard]);
+
+  const handleNavigateToQueue = useCallback((orderType, status) => {
+    navigation.navigate('ProductionQueue', {
+      applyId: Date.now(),
+      initialViewMode: 'orders',
+      initialOrderType: orderType,
+      initialStatus: status,
+      initialLocationId: activeLocation?.id || null,
+      initialShowFilters: true,
+    });
+  }, [navigation, activeLocation?.id]);
+
+  const renderStatusLane = (type, laneKey, laneLabel, orders) => {
+    const previewCount = isDesktop ? 2 : 1;
+    const previewOrders = orders.slice(0, previewCount);
+    const hiddenCount = Math.max(orders.length - previewOrders.length, 0);
+    const laneTheme = getLaneTheme(laneKey);
+    const overdueCount = orders.filter((o) => getOrderLaneSla(o, now) === 'overdue').length;
+    const dueSoonCount = orders.filter((o) => getOrderLaneSla(o, now) === 'dueSoon').length;
+    const lifecycleHint = laneKey === 'pending' ? 'incl. confirmed' : laneKey === 'ready' ? 'incl. completed' : null;
+
+    return (
+      <TouchableOpacity
+        key={`${type}-${laneKey}`}
+        style={[styles.statusLaneContainer, { borderColor: laneTheme.border, backgroundColor: laneTheme.background }]}
+        onPress={() => handleNavigateToQueue(type, laneKey)}
+        activeOpacity={0.82}
+      >
+        <View style={styles.laneTitleRow}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.laneTitle}>{laneLabel}</Text>
+            <View style={styles.laneMetaRow}>
+              <Text style={[styles.laneCount, { color: laneTheme.badge }]}>{orders.length} order{orders.length !== 1 ? 's' : ''}</Text>
+              {!!lifecycleHint && <Text style={styles.laneHint}>• {lifecycleHint}</Text>}
+            </View>
+          </View>
+          <Ionicons name="chevron-forward" size={16} color={laneTheme.badge} />
+        </View>
+
+        {(overdueCount > 0 || dueSoonCount > 0) && (
+          <View style={styles.laneBadgesRow}>
+            {overdueCount > 0 && (
+              <View style={styles.laneSlaDangerBadge}>
+                <Ionicons name="alert-circle" size={11} color="#DC2626" />
+                <Text style={styles.laneSlaDangerText}>{overdueCount} overdue</Text>
+              </View>
+            )}
+            {dueSoonCount > 0 && (
+              <View style={styles.laneSlaWarnBadge}>
+                <Ionicons name="time" size={11} color="#B45309" />
+                <Text style={styles.laneSlaWarnText}>{dueSoonCount} due soon</Text>
+              </View>
+            )}
+          </View>
+        )}
+
+        {orders.length === 0 ? (
+          <Text style={styles.laneEmpty}>No orders</Text>
+        ) : (
+          <View style={{ gap: 6 }}>
+            {previewOrders.map((order) => {
+              const orderTasks = tasksBySaleId.get(order.id) || [];
+              const hasPendingProduction = orderTasks.some((t) => ['pending', 'assigned', 'in_progress'].includes(t.status));
+              return (
+                <OrderCard
+                  key={order.id}
+                  order={order}
+                  tasks={orderTasks}
+                  hasPendingProduction={hasPendingProduction}
+                  pulseOpacity={pulseOpacity}
+                  taskActionLoading={taskActionLoading}
+                  onTaskClick={(task) => setSelectedTaskModal(task)}
+                  onOpen={() => navigation.navigate('SaleDetail', { saleId: order.id })}
+                />
+              );
+            })}
+            {hiddenCount > 0 && (
+              <View style={styles.viewMoreRow}>
+                <Ionicons name="arrow-forward" size={14} color="#047857" />
+                <Text style={styles.viewMoreText}>View {hiddenCount} more</Text>
+              </View>
+            )}
+          </View>
+        )}
+      </TouchableOpacity>
+    );
+  };
+
+  const renderOrderTypeSection = (type) => {
+    const groups = ordersByTypeAndStatus[type] || { pending: [], preparing: [], ready: [], completed: [] };
+    const lanes = [
+      { key: 'pending', label: 'Pending', rows: groups.pending },
+      { key: 'preparing', label: 'Preparing', rows: groups.preparing },
+      { key: 'ready', label: 'Ready', rows: groups.ready },
+    ];
+    const totalOrders = lanes.reduce((sum, lane) => sum + lane.rows.length, 0);
+
+    const typeTheme = type === 'delivery'
+      ? { bg: '#F8FAFC', border: '#BFDBFE', icon: '#2563EB' }
+      : type === 'pickup'
+        ? { bg: '#F0FDF4', border: '#BBF7D0', icon: '#047857' }
+        : { bg: '#FFF7ED', border: '#FED7AA', icon: '#C2410C' };
+
+    return (
+      <View key={type} style={[styles.typeCard, { backgroundColor: typeTheme.bg, borderColor: typeTheme.border }]}>
+        <View style={styles.typeCardHeader}>
+          <View>
+            <Text style={styles.typeCardTitle}>{formatOrderType(type)}</Text>
+            <Text style={styles.typeCardSubtitle}>{totalOrders} active order{totalOrders !== 1 ? 's' : ''}</Text>
+          </View>
+          <Ionicons name={type === 'delivery' ? 'bicycle' : type === 'pickup' ? 'bag-handle' : 'storefront'} size={22} color={typeTheme.icon} />
+        </View>
+
+        <View style={{ gap: 8 }}>
+          {lanes.map((lane) => renderStatusLane(type, lane.key, lane.label, lane.rows))}
+        </View>
+      </View>
+    );
   };
 
   return (
-    <View style={{ flex: 1 }}>
+    <View style={styles.root}>
       <ScrollView
         style={styles.container}
         contentContainerStyle={styles.content}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[Colors.primary]} />}
       >
-      {/* Welcome Header */}
-      <View style={styles.welcomeCard}>
-        <View style={styles.welcomeRow}>
-          <View style={styles.welcomeText}>
-            <Text style={styles.greeting}>{getGreeting()}</Text>
-            <Text style={styles.userName}>{user?.name}</Text>
+        <View style={styles.heroCard}>
+          <View style={[styles.rowBetween, { marginBottom: 4 }]}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.heroEyebrow}>Operations Dashboard</Text>
+              <Text style={styles.heroTitle}>Welcome, {(user?.name || 'Team').split(' ')[0]}</Text>
+            </View>
+            <View style={styles.heroIcon}>
+              <Ionicons name="activity" size={24} color="#fff" />
+            </View>
           </View>
-          <View style={[styles.roleBadge, { backgroundColor: ROLE_COLORS[role] + '20' }]}>
-            <Text style={[styles.roleText, { color: ROLE_COLORS[role] }]}>
-              {ROLE_LABELS[role]}
-            </Text>
-          </View>
+          <Text style={styles.heroSub}>Real-time order flow, production pipeline, and operational health metrics</Text>
         </View>
 
-        {activeLocation && (
-          <View style={styles.locationRow}>
-            <Ionicons name="location" size={14} color={Colors.primary} />
-            <Text style={styles.locationText}>{activeLocation.name}</Text>
+        {loading ? (
+          <View style={styles.loadingContainer}>
+            <ActivityIndicator color={Colors.primary} size="large" />
+            <Text style={styles.loadingText}>Loading dashboard...</Text>
           </View>
-        )}
-      </View>
+        ) : (
+          <View style={[styles.layout, isDesktop && styles.layoutDesktop]}>
+            <View style={[styles.feedCol, isDesktop && { flex: 2 }]}>
+              <View style={styles.sectionHeader}>
+                <View>
+                  <Text style={styles.sectionTitle}>Order Management</Text>
+                  <Text style={styles.sectionSubtitle}>Tap on any status lane to view full queue</Text>
+                </View>
+              </View>
 
-      {/* Cash Register Status Widget */}
-      {isStaff && registerOpen !== null && (
-        <TouchableOpacity
-          style={[styles.registerCard, { borderColor: registerOpen ? Colors.success : Colors.error }]}
-          onPress={() => navigation.navigate('POS', { screen: 'CashRegister' })}
-          activeOpacity={0.7}
-        >
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-            <View style={[styles.registerIcon, { backgroundColor: registerOpen ? Colors.success + '15' : Colors.error + '15' }]}>
-              <Ionicons name={registerOpen ? 'lock-open' : 'lock-closed'} size={22} color={registerOpen ? Colors.success : Colors.error} />
+              <View style={{ gap: 12 }}>
+                {ORDER_TYPES.map(renderOrderTypeSection)}
+              </View>
             </View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.registerTitle}>
-                {activeLocation?.name ? `${activeLocation.name} — ` : ''}Register: {registerOpen ? 'Open' : 'Closed'}
-              </Text>
-              {registerOpen && registerData ? (
-                <Text style={styles.registerSub}>Opening: ₹{Number(registerData.opening_balance || 0).toFixed(0)}</Text>
-              ) : (
-                <Text style={[styles.registerSub, { color: Colors.error }]}>Open the register{activeLocation?.name ? ` for ${activeLocation.name}` : ''} before checkout</Text>
+
+            <View style={[styles.healthCol, isDesktop && { flex: 1 }]}>
+              <View style={styles.sectionHeader}>
+                <Text style={styles.sectionTitle}>Team & Finance</Text>
+              </View>
+
+              {/* Staff Pulse Widget */}
+              <View style={styles.widgetCard}>
+                <View style={styles.widgetHeader}>
+                  <Text style={styles.widgetTitle}>Staff Pulse</Text>
+                  <TouchableOpacity onPress={() => isOwnerOrManager ? navigation.navigate('More', { screen: 'Staff', initial: false }) : null}>
+                    <Ionicons name="open" size={14} color="#9CA3AF" />
+                  </TouchableOpacity>
+                </View>
+
+                {staffPulse.length === 0 ? (
+                  <Text style={styles.emptyWidgetText}>No staff data</Text>
+                ) : (
+                  <View style={{ gap: 6 }}>
+                    {staffPulse.map((s) => <StaffPulseRow key={s.id} staff={s} />)}
+                  </View>
+                )}
+              </View>
+
+              {/* Cash Register Widget */}
+              <View style={styles.sectionHeader}>
+                <Text style={styles.sectionTitle}>Registers</Text>
+              </View>
+
+              <View style={{ gap: 8 }}>
+                {registers.length === 0 ? (
+                  <View style={styles.widgetCard}>
+                    <Text style={styles.emptyWidgetText}>No register data</Text>
+                  </View>
+                ) : (
+                  registers.map((r) => <RegisterCard key={r.locationId} item={r} />)
+                )}
+              </View>
+
+              {/* Revenue Snapshot */}
+              {reportKPIs && (
+                <>
+                  <View style={styles.sectionHeader}>
+                    <Text style={styles.sectionTitle}>Revenue</Text>
+                  </View>
+                  <View style={styles.widgetCard}>
+                    <View style={styles.revenueStat}>
+                      <Text style={styles.revenueLabel}>Today</Text>
+                      <Text style={styles.revenueValue}>{formatMoney(reportKPIs?.today?.revenue)}</Text>
+                    </View>
+                    <View style={[styles.divider, { marginVertical: 10 }]} />
+                    <View style={[styles.rowBetween, { marginBottom: 8 }]}>
+                      <View style={styles.revenueStat}>
+                        <Text style={styles.revenueLabel}>Yesterday</Text>
+                        <Text style={styles.revenueValue}>{formatMoney(reportKPIs?.yesterday?.revenue)}</Text>
+                      </View>
+                      <View style={styles.revenueStat}>
+                        <Text style={styles.revenueLabel}>Week</Text>
+                        <Text style={styles.revenueValue}>{formatMoney(reportKPIs?.week?.revenue)}</Text>
+                      </View>
+                    </View>
+                  </View>
+                </>
               )}
             </View>
-            <Ionicons name="chevron-forward" size={18} color={Colors.textLight} />
           </View>
-        </TouchableOpacity>
-      )}
-
-      {/* Owner/Manager Quick Actions */}
-      {(role === 'owner' || role === 'manager') && (
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Quick Actions</Text>
-          <View style={styles.quickActions}>
-            <QuickAction
-              icon="qr-code"
-              label="Scan QR"
-              color="#00BCD4"
-              onPress={() => navigation.navigate('Inventory', { screen: 'QRScanner' })}
-            />
-            <QuickAction
-              icon="leaf"
-              label="Inventory"
-              color={Colors.success}
-              onPress={() => navigation.navigate('Inventory')}
-            />
-            <QuickAction
-              icon="gift"
-              label="Products"
-              color="#9C27B0"
-              onPress={() => navigation.navigate('Inventory', { screen: 'Products' })}
-            />
-            <QuickAction
-              icon="document-text"
-              label="Drafts"
-              color={Colors.warning}
-              onPress={() => navigation.navigate('SaleDrafts', { locationId: activeLocation?.id })}
-            />
-            <QuickAction
-              icon="people"
-              label="Staff"
-              color={Colors.info}
-              onPress={() => navigation.navigate('More', { screen: 'Staff', initial: false })}
-            />
-            <QuickAction
-              icon="location"
-              label="Locations"
-              color={Colors.secondary}
-              onPress={() => navigation.navigate('More', { screen: 'Locations', initial: false })}
-            />
-            <QuickAction
-              icon="settings"
-              label="Settings"
-              color={Colors.warning}
-              onPress={() => navigation.navigate('More', { screen: 'Settings', initial: false })}
-            />
-          </View>
-        </View>
-      )}
-
-      {/* Employee quick actions */}
-      {role === 'employee' && (
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Quick Actions</Text>
-          <View style={styles.quickActions}>
-            <QuickAction
-              icon="qr-code"
-              label="Scan QR"
-              color="#00BCD4"
-              onPress={() => navigation.navigate('Inventory', { screen: 'QRScanner' })}
-            />
-            <QuickAction
-              icon="leaf"
-              label="Inventory"
-              color={Colors.success}
-              onPress={() => navigation.navigate('Inventory')}
-            />
-            <QuickAction
-              icon="construct"
-              label="Produce"
-              color="#9C27B0"
-              onPress={() => navigation.navigate('ProduceProduct')}
-
-            />
-            <QuickAction
-              icon="list"
-              label="My Tasks"
-              color={Colors.info}
-              onPress={() => navigation.navigate('ProductionQueue')}
-
-            />
-            <QuickAction
-              icon="document-text"
-              label="Drafts"
-              color={Colors.warning}
-              onPress={() => navigation.navigate('SaleDrafts', { locationId: activeLocation?.id })}
-            />
-          </View>
-        </View>
-      )}
-
-      {/* Order Status Summary — All Staff */}
-      {isStaff && dashSummary && (
-        <View style={styles.section}>
-          <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>Orders Overview</Text>
-            <TouchableOpacity onPress={() => navigation.navigate('ProductionQueue')}>
-
-              <Text style={styles.seeAll}>View All</Text>
-            </TouchableOpacity>
-          </View>
-          <View style={styles.orderSummaryRow}>
-            <TouchableOpacity
-              style={[styles.orderSummaryCard, { borderLeftColor: Colors.warning || '#FF9800' }]}
-              onPress={() => navigation.navigate('ProductionQueue')}
-
-            >
-              <Text style={[styles.orderSummaryCount, { color: Colors.warning || '#FF9800' }]}>{dashSummary.pending_orders}</Text>
-              <Text style={styles.orderSummaryLabel}>Pending</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.orderSummaryCard, { borderLeftColor: '#2196F3' }]}
-              onPress={() => navigation.navigate('ProductionQueue')}
-
-            >
-              <Text style={[styles.orderSummaryCount, { color: '#2196F3' }]}>{dashSummary.preparing_orders}</Text>
-              <Text style={styles.orderSummaryLabel}>Preparing</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.orderSummaryCard, { borderLeftColor: Colors.success }]}
-              onPress={() => navigation.navigate('ProductionQueue')}
-
-            >
-              <Text style={[styles.orderSummaryCount, { color: Colors.success }]}>{dashSummary.ready_orders}</Text>
-              <Text style={styles.orderSummaryLabel}>Ready</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      )}
-
-      {/* Action Items — Manager/Owner To-Do */}
-      {isManagerOrOwner && dashSummary && (dashSummary.unassigned_tasks > 0 || dashSummary.material_shortages > 0 || dashSummary.pending_tasks > 0) && (
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Action Items</Text>
-          {dashSummary.unassigned_tasks > 0 && (
-            <TouchableOpacity
-              style={styles.actionItemCard}
-              onPress={() => navigation.navigate('ProductionQueue')}
-
-            >
-              <View style={[styles.actionItemIcon, { backgroundColor: '#FF980020' }]}>
-                <Ionicons name="people-outline" size={22} color={Colors.warning || '#FF9800'} />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.actionItemTitle}>{dashSummary.unassigned_tasks} Unassigned Tasks</Text>
-                <Text style={styles.actionItemDesc}>Tasks waiting to be assigned to staff</Text>
-              </View>
-              <Ionicons name="chevron-forward" size={20} color={Colors.textLight} />
-            </TouchableOpacity>
-          )}
-          {dashSummary.material_shortages > 0 && (
-            <TouchableOpacity
-              style={styles.actionItemCard}
-              onPress={() => navigation.navigate('Inventory')}
-            >
-              <View style={[styles.actionItemIcon, { backgroundColor: '#F4433620' }]}>
-                <Ionicons name="warning-outline" size={22} color={Colors.error || '#F44336'} />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.actionItemTitle}>{dashSummary.material_shortages} Material Shortages</Text>
-                <Text style={styles.actionItemDesc}>Materials needed for pending orders are low</Text>
-              </View>
-              <Ionicons name="chevron-forward" size={20} color={Colors.textLight} />
-            </TouchableOpacity>
-          )}
-          {dashSummary.pending_tasks > 0 && (
-            <TouchableOpacity
-              style={styles.actionItemCard}
-              onPress={() => navigation.navigate('ProductionQueue')}
-
-            >
-              <View style={[styles.actionItemIcon, { backgroundColor: Colors.primary + '20' }]}>
-                <Ionicons name="construct-outline" size={22} color={Colors.primary} />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.actionItemTitle}>{dashSummary.pending_tasks} Active Production Tasks</Text>
-                <Text style={styles.actionItemDesc}>Items waiting to be produced</Text>
-              </View>
-              <Ionicons name="chevron-forward" size={20} color={Colors.textLight} />
-            </TouchableOpacity>
-          )}
-        </View>
-      )}
-
-      {/* At-Risk Orders — Manager/Owner: deliveries/pickups not ready near scheduled time */}
-      {isManagerOrOwner && atRiskOrders.length > 0 && (
-        <View style={styles.section}>
-          <View style={styles.sectionHeader}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-              <Ionicons name="warning" size={18} color="#FF6D00" />
-              <Text style={[styles.sectionTitle, { color: '#FF6D00' }]}>At Risk</Text>
-            </View>
-            <TouchableOpacity onPress={() => navigation.navigate('DeliveriesList')}>
-
-              <Text style={styles.seeAll}>View All</Text>
-            </TouchableOpacity>
-          </View>
-          {atRiskOrders.map((order) => (
-            <TouchableOpacity
-              key={`risk-${order.delivery_id || order.sale_id}`}
-              style={[styles.actionItemCard, { borderLeftWidth: 3, borderLeftColor: '#FF6D00' }]}
-              onPress={() => {
-                if (order.type === 'delivery' && order.delivery_id) {
-                  navigation.navigate('DeliveryDetail', { deliveryId: order.delivery_id });
-
-                } else {
-                  navigation.navigate('SaleDetail', { saleId: order.sale_id });
-
-                }
-              }}
-            >
-              <View style={[styles.actionItemIcon, { backgroundColor: '#FFF3E0' }]}>
-                <Ionicons name={order.type === 'delivery' ? 'bicycle' : 'bag-handle'} size={20} color="#FF6D00" />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.actionItemTitle}>{order.sale_number}</Text>
-                <Text style={styles.actionItemDesc}>
-                  {order.type === 'delivery' ? 'Delivery' : 'Pickup'} • Not ready • {order.scheduled_time || order.scheduled_date}
-                </Text>
-              </View>
-              <View style={[styles.lateChip]}>
-                <Text style={styles.lateChipText}>LATE</Text>
-              </View>
-            </TouchableOpacity>
-          ))}
-        </View>
-      )}
-
-      {/* Urgent Walk-in Orders — All Staff */}
-      {isStaff && urgentOrders.length > 0 && (
-        <View style={styles.section}>
-          <View style={styles.sectionHeader}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-              <Ionicons name="flash" size={18} color={Colors.primary} />
-              <Text style={styles.sectionTitle}>Urgent Walk-in Orders</Text>
-            </View>
-            <TouchableOpacity onPress={() => navigation.navigate('ProductionQueue')}>
-
-              <Text style={styles.seeAll}>View All</Text>
-            </TouchableOpacity>
-          </View>
-          {urgentOrders.map((order) => (
-            <TouchableOpacity
-              key={`urgent-${order.id}`}
-              style={[styles.taskCard, styles.taskUrgent]}
-              onPress={() => navigation.navigate('SaleDetail', { saleId: order.id })}
-
-            >
-              <View style={{ flex: 1 }}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                  <Text style={styles.taskProduct}>{order.sale_number}</Text>
-                  <View style={styles.urgentBadge}>
-                    <Ionicons name="flash" size={8} color="#FF6D00" />
-                    <Text style={{ fontSize: 7, fontWeight: '800', color: '#FF6D00' }}>WALK-IN</Text>
-                  </View>
-                </View>
-                <Text style={styles.taskMeta}>
-                  {order.customer_name || 'Walk-in'} • ₹{Number(order.grand_total || 0).toFixed(0)} • Preparing
-                </Text>
-              </View>
-              <Ionicons name="chevron-forward" size={18} color={Colors.textLight} />
-            </TouchableOpacity>
-          ))}
-        </View>
-      )}
-
-      {/* Your Tasks Today — Staff */}
-      {isStaff && (
-        <View style={styles.section}>
-          <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>Your Tasks</Text>
-            <TouchableOpacity onPress={() => navigation.navigate('ProductionQueue')}>
-
-              <Text style={styles.seeAll}>View Queue</Text>
-            </TouchableOpacity>
-          </View>
-          {tasksLoading ? (
-            <ActivityIndicator color={Colors.primary} style={{ paddingVertical: Spacing.lg }} />
-          ) : myTasks.length === 0 ? (
-            <View style={styles.emptyTasks}>
-              <Ionicons name="checkmark-done-circle-outline" size={32} color={Colors.textLight} />
-              <Text style={styles.emptyTasksText}>No pending tasks</Text>
-            </View>
-          ) : (
-            myTasks.slice(0, 5).map((task) => {
-              const statusColors = {
-                pending: Colors.warning || '#FF9800',
-                assigned: '#2196F3',
-                in_progress: Colors.primary,
-              };
-              return (
-                <View key={task.id} style={[styles.taskCard, task.priority === 'urgent' && styles.taskUrgent]}>
-                  <View style={{ flex: 1 }}>
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                      <Text style={styles.taskProduct}>{task.quantity}x {task.product_name}</Text>
-                      {task.priority === 'urgent' && (
-                        <View style={styles.urgentBadge}>
-                          <Ionicons name="flash" size={8} color="#FF6D00" />
-                          <Text style={{ fontSize: 7, fontWeight: '800', color: '#FF6D00' }}>URGENT</Text>
-                        </View>
-                      )}
-                    </View>
-                    <Text style={styles.taskMeta}>{task.sale_number} • {task.order_type?.replace('_', ' ')}</Text>
-                  </View>
-                  <View style={[styles.taskStatus, { backgroundColor: (statusColors[task.status] || Colors.textLight) + '20' }]}>
-                    <Text style={[styles.taskStatusText, { color: statusColors[task.status] || Colors.textLight }]}>
-                      {task.status?.replace('_', ' ')}
-                    </Text>
-                  </View>
-                </View>
-              );
-            })
-          )}
-        </View>
-      )}
-
-      {/* Production Stats — Staff */}
-      {isStaff && prodStats && (
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Your Production</Text>
-          <View style={styles.statsRow}>
-            <StatCard
-              title="Items Made"
-              value={prodStats.byEmployee?.[0]?.total_produced || 0}
-              icon="construct"
-              color={Colors.primary}
-            />
-            <StatCard
-              title="Products"
-              value={prodStats.byEmployee?.[0]?.unique_products || 0}
-              icon="gift"
-              color="#9C27B0"
-            />
-          </View>
-        </View>
-      )}
-
-      {/* Revenue KPIs — Owner/Manager (below operational data) */}
-      {isManagerOrOwner && reportKPIs && (
-        <View style={styles.section}>
-          <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>Today's Revenue</Text>
-            <TouchableOpacity onPress={() => navigation.navigate('More', { screen: 'Reports', initial: false })}>
-              <Text style={styles.seeAll}>Full Reports</Text>
-            </TouchableOpacity>
-          </View>
-          <View style={styles.statsRow}>
-            <StatCard
-              title="Today"
-              value={`₹${Math.round(reportKPIs.today?.revenue || 0).toLocaleString()}`}
-              icon="trending-up"
-              color={Colors.success}
-            />
-            <StatCard
-              title="Orders"
-              value={reportKPIs.today?.orders || 0}
-              icon="receipt"
-              color={Colors.primary}
-            />
-          </View>
-          <View style={[styles.statsRow, { marginTop: Spacing.sm }]}>
-            <StatCard
-              title="Yesterday"
-              value={`₹${Math.round(reportKPIs.yesterday?.revenue || 0).toLocaleString()}`}
-              icon="time"
-              color={Colors.info}
-            />
-            <StatCard
-              title="This Week"
-              value={`₹${Math.round(reportKPIs.week?.revenue || 0).toLocaleString()}`}
-              icon="calendar"
-              color="#9C27B0"
-            />
-          </View>
-        </View>
-      )}
-
-      {/* Overview — Non-owner sees location count & role */}
-      {!isManagerOrOwner && (
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Overview</Text>
-          <View style={styles.statsRow}>
-            <StatCard title="Locations" value={locationCount} icon="storefront" color={Colors.secondary} />
-            <StatCard title="Role" value={ROLE_LABELS[role]} icon="shield" color={Colors.info} />
-          </View>
-        </View>
-      )}
-
+        )}
       </ScrollView>
 
-      {/* Quick Checkout Floating Action Button */}
-      {(isManagerOrOwner || user?.role === 'employee') && (
-        <TouchableOpacity
-          style={styles.fab}
-          onPress={() => {
-            navigation.navigate('POS', { screen: 'QuickCheckout' });
-          }}
-          activeOpacity={0.8}
-        >
-          <Ionicons name="flash" size={24} color={Colors.white} />
-          <Text style={styles.fabText}>Quick</Text>
+      <TouchableOpacity
+        style={styles.fab}
+        onPress={() => setFabVisible(true)}
+        activeOpacity={0.85}
+      >
+        <Ionicons name="add" size={28} color="#fff" />
+      </TouchableOpacity>
+
+      <TaskDetailModal
+        visible={selectedTaskModal !== null}
+        task={selectedTaskModal}
+        onClose={() => setSelectedTaskModal(null)}
+        onAdvance={advanceTaskStatus}
+        loading={selectedTaskModal && taskActionLoading[selectedTaskModal.id]}
+      />
+
+      <Modal visible={fabVisible} transparent animationType="fade" onRequestClose={() => setFabVisible(false)}>
+        <TouchableOpacity style={styles.modalBackdrop} activeOpacity={1} onPress={() => setFabVisible(false)}>
+          <View style={styles.quickActionsCard}>
+            <View style={styles.quickActionsHeader}>
+              <Text style={styles.quickActionsTitle}>Quick Actions</Text>
+              <TouchableOpacity onPress={() => setFabVisible(false)}>
+                <Ionicons name="close" size={20} color="#6B7280" />
+              </TouchableOpacity>
+            </View>
+
+            <TouchableOpacity
+              style={[styles.quickActionItem, { borderLeftColor: '#047857', borderLeftWidth: 3, backgroundColor: '#F0FDF4' }]}
+              onPress={() => {
+                setFabVisible(false);
+                navigation.navigate('POS', { screen: 'QuickCheckout', params: { locationId: activeLocation?.id } });
+              }}
+              activeOpacity={0.8}
+            >
+              <View style={[styles.quickActionIcon, { backgroundColor: '#047857' }]}>
+                <Ionicons name="flash" size={18} color="#fff" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.quickActionName}>Quick Checkout</Text>
+                <Text style={styles.quickActionMeta}>Fast transaction</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={16} color="#9CA3AF" />
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.quickActionItem, { borderLeftColor: '#0EA5E9', borderLeftWidth: 3, backgroundColor: '#F0F9FF' }]}
+              onPress={() => {
+                setFabVisible(false);
+                navigation.navigate('POS', { screen: 'POSHome' });
+              }}
+              activeOpacity={0.8}
+            >
+              <View style={[styles.quickActionIcon, { backgroundColor: '#0EA5E9' }]}>
+                <Ionicons name="cart" size={18} color="#fff" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.quickActionName}>POS Terminal</Text>
+                <Text style={styles.quickActionMeta}>Full checkout</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={16} color="#9CA3AF" />
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.quickActionItem, { borderLeftColor: '#E11D48', borderLeftWidth: 3, backgroundColor: '#FFE4E6' }]}
+              onPress={() => {
+                setFabVisible(false);
+                navigation.navigate('POS', { screen: 'CashRegister' });
+              }}
+              activeOpacity={0.8}
+            >
+              <View style={[styles.quickActionIcon, { backgroundColor: '#E11D48' }]}>
+                <Ionicons name="wallet" size={18} color="#fff" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.quickActionName}>Cash Register</Text>
+                <Text style={styles.quickActionMeta}>Manage balance</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={16} color="#9CA3AF" />
+            </TouchableOpacity>
+          </View>
         </TouchableOpacity>
-      )}
+      </Modal>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: Colors.background },
-  content: { padding: Spacing.md, paddingBottom: Spacing.xxl },
+  root: { flex: 1, backgroundColor: '#EEF4FA' },
+  container: { flex: 1 },
+  content: { padding: 14, paddingBottom: 100 },
 
-  welcomeCard: {
-    backgroundColor: Colors.surface,
-    borderRadius: BorderRadius.xl,
-    padding: Spacing.lg,
-    marginBottom: Spacing.lg,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.03,
-    shadowRadius: 4,
-    elevation: 1,
-  },
-  welcomeRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
-  welcomeText: { flex: 1 },
-  greeting: { fontSize: FontSize.sm, color: Colors.textSecondary },
-  userName: { fontSize: FontSize.xl, fontWeight: '700', color: Colors.text, marginTop: 2 },
-  roleBadge: { paddingHorizontal: Spacing.sm + 2, paddingVertical: Spacing.xs, borderRadius: BorderRadius.full },
-  roleText: { fontSize: FontSize.xs, fontWeight: '600' },
-  locationRow: { flexDirection: 'row', alignItems: 'center', marginTop: Spacing.sm, gap: 4 },
-  locationText: { fontSize: FontSize.sm, color: Colors.primary, fontWeight: '500' },
-
-  section: { marginBottom: Spacing.lg },
-  sectionTitle: { fontSize: FontSize.lg, fontWeight: '600', color: Colors.text, marginBottom: Spacing.md },
-
-  quickActions: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.md },
-  quickAction: { alignItems: 'center', width: 84 },
-  quickActionIcon: {
-    width: 64,
-    height: 64,
-    borderRadius: BorderRadius.full,
-    backgroundColor: Colors.surface,
+  loadingContainer: {
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: Spacing.xs,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.04, shadowRadius: 6, elevation: 2,
+    paddingVertical: 60,
+    gap: 12,
   },
-  quickActionLabel: { fontSize: FontSize.sm, color: Colors.textSecondary, fontWeight: '600', textAlign: 'center' },
+  loadingText: {
+    fontSize: 14,
+    color: '#6B7280',
+    fontFamily: FONT_FAMILY,
+  },
 
-  statsRow: { flexDirection: 'row', gap: Spacing.md },
-  statCard: {
-    flex: 1,
-    backgroundColor: Colors.surface,
-    borderRadius: BorderRadius.xl,
-    padding: Spacing.lg,
-    alignItems: 'center',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.04, shadowRadius: 8, elevation: 2,
+  heroCard: {
+    backgroundColor: '#0B5D4A',
+    borderRadius: 16,
+    paddingHorizontal: 18,
+    paddingVertical: 18,
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: '#0F766E',
+    shadowColor: '#0B5D4A',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.22,
+    shadowRadius: 16,
+    elevation: 8,
   },
-  statIconWrap: { width: 44, height: 44, borderRadius: BorderRadius.md, justifyContent: 'center', alignItems: 'center', marginBottom: Spacing.sm },
-  statValue: { fontSize: FontSize.xxl, fontWeight: '800', color: Colors.text },
-  statTitle: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: 4, fontWeight: '600' },
+  rowBetween: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  heroIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 10,
+    backgroundColor: '#065F46',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  heroEyebrow: {
+    fontSize: 12,
+    color: '#D1FAE5',
+    fontWeight: '600',
+    fontFamily: FONT_FAMILY,
+    letterSpacing: 0.5,
+  },
+  heroTitle: {
+    fontSize: 24,
+    color: '#fff',
+    fontWeight: '800',
+    marginTop: 4,
+    fontFamily: FONT_FAMILY,
+  },
+  heroSub: {
+    fontSize: 13,
+    color: '#CCFBF1',
+    marginTop: 8,
+    lineHeight: 18,
+    fontFamily: FONT_FAMILY,
+  },
+
+  layout: { gap: 16 },
+  layoutDesktop: { flexDirection: 'row', alignItems: 'flex-start' },
+  feedCol: { gap: 8 },
+  healthCol: { gap: 8 },
 
   sectionHeader: {
-    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    marginBottom: Spacing.md,
+    marginBottom: 12,
+    paddingHorizontal: 2,
   },
-  seeAll: { fontSize: FontSize.sm, color: Colors.primary, fontWeight: '600' },
+  sectionTitle: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#111827',
+    fontFamily: FONT_FAMILY,
+  },
+  sectionSubtitle: {
+    fontSize: 12,
+    color: '#9CA3AF',
+    marginTop: 3,
+    fontFamily: FONT_FAMILY,
+  },
 
-  emptyTasks: { alignItems: 'center', paddingVertical: Spacing.lg },
-  emptyTasksText: { fontSize: FontSize.sm, color: Colors.textLight, marginTop: Spacing.xs },
+  typeCard: {
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderWidth: 1,
+    shadowColor: '#0F172A',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.07,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  typeCardHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 9,
+  },
+  typeCardTitle: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#111827',
+    fontFamily: FONT_FAMILY,
+  },
+  typeCardSubtitle: {
+    fontSize: 12,
+    color: '#6B7280',
+    marginTop: 3,
+    fontFamily: FONT_FAMILY,
+  },
 
-  taskCard: {
-    flexDirection: 'row', alignItems: 'center',
-    backgroundColor: Colors.surface, borderRadius: BorderRadius.md,
-    padding: Spacing.sm, marginBottom: Spacing.xs,
-    borderWidth: 1, borderColor: Colors.border,
+  statusLaneContainer: {
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    gap: 6,
   },
-  taskUrgent: { borderColor: '#FF6D00', borderWidth: 2 },
-  taskProduct: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.text },
-  taskMeta: { fontSize: FontSize.xs, color: Colors.textSecondary, marginTop: 1 },
-  urgentBadge: {
-    flexDirection: 'row', alignItems: 'center', gap: 2,
-    backgroundColor: '#FFF3E0', paddingHorizontal: 5, paddingVertical: 1,
-    borderRadius: BorderRadius.sm,
+  laneTitleRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
   },
-  taskStatus: {
-    paddingHorizontal: Spacing.sm, paddingVertical: 3, borderRadius: BorderRadius.full,
+  laneTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#374151',
+    fontFamily: FONT_FAMILY,
   },
-  taskStatusText: { fontSize: 10, fontWeight: '600', textTransform: 'capitalize' },
+  laneCount: {
+    fontSize: 11,
+    fontWeight: '800',
+    fontFamily: FONT_FAMILY,
+  },
+  laneMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 2,
+  },
+  laneHint: {
+    fontSize: 10,
+    color: '#64748B',
+    fontFamily: FONT_FAMILY,
+    fontWeight: '600',
+  },
+  laneBadgesRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    flexWrap: 'wrap',
+  },
+  laneSlaDangerBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: 999,
+    backgroundColor: '#FEE2E2',
+    borderWidth: 1,
+    borderColor: '#FCA5A5',
+  },
+  laneSlaDangerText: {
+    color: '#B91C1C',
+    fontSize: 10,
+    fontWeight: '700',
+    fontFamily: FONT_FAMILY,
+  },
+  laneSlaWarnBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: 999,
+    backgroundColor: '#FEF3C7',
+    borderWidth: 1,
+    borderColor: '#FCD34D',
+  },
+  laneSlaWarnText: {
+    color: '#92400E',
+    fontSize: 10,
+    fontWeight: '700',
+    fontFamily: FONT_FAMILY,
+  },
+  laneEmpty: {
+    fontSize: 12,
+    color: '#9CA3AF',
+    fontStyle: 'italic',
+    fontFamily: FONT_FAMILY,
+  },
 
-  // Order summary cards
-  orderSummaryRow: { flexDirection: 'row', gap: Spacing.md },
-  orderSummaryCard: {
-    flex: 1, backgroundColor: Colors.surface, borderRadius: BorderRadius.xl,
-    padding: Spacing.md, paddingVertical: Spacing.lg, alignItems: 'center',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.03, shadowRadius: 6, elevation: 2,
+  orderCard: {
+    borderRadius: 10,
+    borderWidth: 1,
+    paddingHorizontal: 9,
+    paddingVertical: 7,
+    backgroundColor: '#fff',
+    position: 'relative',
+    overflow: 'hidden',
   },
-  orderSummaryCount: { fontSize: FontSize.hero || 42, fontWeight: '800' },
-  orderSummaryLabel: { fontSize: FontSize.sm, color: Colors.textSecondary, fontWeight: '700', marginTop: 4 },
+  pulseBorderOverlay: {
+    borderRadius: 10,
+    borderWidth: 2,
+  },
 
-  // Action items
-  actionItemCard: {
-    flexDirection: 'row', alignItems: 'center', gap: Spacing.md,
-    backgroundColor: Colors.surface, borderRadius: BorderRadius.xl,
-    padding: Spacing.md, marginBottom: Spacing.md,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.03, shadowRadius: 6, elevation: 2,
+  orderHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    gap: 8,
+    marginBottom: 6,
   },
-  actionItemIcon: {
-    width: 54, height: 54, borderRadius: BorderRadius.md,
-    justifyContent: 'center', alignItems: 'center',
+  orderNumber: {
+    fontSize: 13,
+    color: '#111827',
+    fontWeight: '800',
+    fontFamily: FONT_FAMILY,
   },
-  actionItemDesc: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: 4 },
-  actionItemTitle: { fontSize: FontSize.lg, fontWeight: '700', color: Colors.text },
-  lateChip: { backgroundColor: '#FFF3E0', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 },
-  lateChipText: { fontSize: 9, fontWeight: '800', color: '#FF6D00' },
+  orderMeta: {
+    fontSize: 11,
+    color: '#6B7280',
+    marginTop: 2,
+    fontFamily: FONT_FAMILY,
+  },
+  orderAmount: {
+    fontSize: 12,
+    color: '#047857',
+    fontWeight: '700',
+    marginTop: 2,
+    fontFamily: FONT_FAMILY,
+  },
+
+  statusBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    borderRadius: 8,
+    borderWidth: 1,
+  },
+  statusBadgeText: {
+    fontSize: 10,
+    fontWeight: '800',
+    fontFamily: FONT_FAMILY,
+  },
+
+  pipelineRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginVertical: 5,
+  },
+  pipelineStep: {
+    borderWidth: 1,
+    borderColor: '#D1D5DB',
+    borderRadius: 6,
+    width: 32,
+    height: 32,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#F9FAFB',
+  },
+  pipelineStepLabel: {
+    fontSize: 9,
+    color: '#6B7280',
+    fontWeight: '700',
+    fontFamily: FONT_FAMILY,
+  },
+  pipelineStepCount: {
+    fontSize: 10,
+    color: '#111827',
+    fontWeight: '800',
+    fontFamily: FONT_FAMILY,
+  },
+  pipelineConnector: {
+    flex: 1,
+    height: 1,
+    backgroundColor: '#D1D5DB',
+  },
+
+  taskPill: {
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingVertical: 6,
+    paddingHorizontal: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  taskPillDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  taskPillText: {
+    fontSize: 11,
+    fontWeight: '700',
+    flex: 1,
+    fontFamily: FONT_FAMILY,
+  },
+  taskPillStatus: {
+    fontSize: 9,
+    fontWeight: '800',
+    fontFamily: FONT_FAMILY,
+  },
+  moreTasksLabel: {
+    fontSize: 11,
+    color: '#9CA3AF',
+    fontFamily: FONT_FAMILY,
+    fontStyle: 'italic',
+  },
+  noTasksLabel: {
+    fontSize: 11,
+    color: '#9CA3AF',
+    fontStyle: 'italic',
+    fontFamily: FONT_FAMILY,
+  },
+
+  viewMoreRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 6,
+  },
+  viewMoreText: {
+    fontSize: 11,
+    color: '#047857',
+    fontWeight: '700',
+    fontFamily: FONT_FAMILY,
+  },
+
+  widgetCard: {
+    backgroundColor: '#fff',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.04,
+    shadowRadius: 6,
+    elevation: 1,
+  },
+  widgetHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  widgetTitle: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#111827',
+    fontFamily: FONT_FAMILY,
+  },
+  emptyWidgetText: {
+    fontSize: 12,
+    color: '#9CA3AF',
+    fontStyle: 'italic',
+    fontFamily: FONT_FAMILY,
+  },
+
+  staffRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 9,
+    paddingHorizontal: 9,
+    paddingVertical: 8,
+    borderRadius: 8,
+  },
+  staffRing: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    borderWidth: 2,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  staffName: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#111827',
+    fontFamily: FONT_FAMILY,
+  },
+  staffMeta: {
+    fontSize: 10,
+    color: '#6B7280',
+    marginTop: 1,
+    fontFamily: FONT_FAMILY,
+  },
+  staffMetaSub: {
+    fontSize: 10,
+    color: '#047857',
+    marginTop: 2,
+    fontFamily: FONT_FAMILY,
+    fontWeight: '600',
+  },
+  pulseBadge: {
+    borderWidth: 1,
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  pulseBadgeText: {
+    fontSize: 10,
+    fontWeight: '700',
+    fontFamily: FONT_FAMILY,
+  },
+
+  registerCard: {
+    backgroundColor: '#fff',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.04,
+    shadowRadius: 6,
+    elevation: 1,
+  },
+  registerTitle: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#111827',
+    fontFamily: FONT_FAMILY,
+  },
+  registerStatus: {
+    fontSize: 11,
+    fontWeight: '700',
+    marginTop: 3,
+    fontFamily: FONT_FAMILY,
+  },
+  registerLabel: {
+    fontSize: 10,
+    color: '#6B7280',
+    fontWeight: '700',
+    fontFamily: FONT_FAMILY,
+  },
+  registerValue: {
+    fontSize: 12,
+    color: '#111827',
+    fontWeight: '800',
+    marginTop: 2,
+    fontFamily: FONT_FAMILY,
+  },
+  divider: {
+    height: 1,
+    backgroundColor: '#E5E7EB',
+    marginVertical: 8,
+  },
+
+  revenueStat: {
+    alignItems: 'center',
+  },
+  revenueLabel: {
+    fontSize: 11,
+    color: '#6B7280',
+    fontWeight: '700',
+    fontFamily: FONT_FAMILY,
+  },
+  revenueValue: {
+    fontSize: 14,
+    color: '#047857',
+    fontWeight: '800',
+    marginTop: 3,
+    fontFamily: FONT_FAMILY,
+  },
 
   fab: {
-    position: 'absolute', bottom: 20, right: 20, width: 64, height: 64, borderRadius: 32,
-    backgroundColor: '#FF3D00', justifyContent: 'center', alignItems: 'center',
-    shadowColor: '#FF3D00', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 6,
+    position: 'absolute',
+    right: 20,
+    bottom: 22,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: '#047857',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#047857',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.35,
+    shadowRadius: 12,
+    elevation: 8,
   },
-  fabText: { fontSize: 10, fontWeight: '800', color: Colors.white, marginTop: -2 },
 
-  // Cash Register widget
-  registerCard: {
-    backgroundColor: Colors.surface, borderRadius: BorderRadius.xl,
-    borderWidth: 2, padding: Spacing.md, marginBottom: Spacing.lg,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.04, shadowRadius: 6, elevation: 2,
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(15, 23, 42, 0.5)',
+    justifyContent: 'flex-end',
   },
-  registerIcon: {
-    width: 44, height: 44, borderRadius: BorderRadius.md,
-    justifyContent: 'center', alignItems: 'center',
+  quickActionsCard: {
+    backgroundColor: '#fff',
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 28,
+    gap: 10,
   },
-  registerTitle: { fontSize: FontSize.md, fontWeight: '700', color: Colors.text },
-  registerSub: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: 2 },
+  quickActionsHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 14,
+  },
+  quickActionsTitle: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#111827',
+    fontFamily: FONT_FAMILY,
+  },
+  quickActionItem: {
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  quickActionIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  quickActionName: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#111827',
+    fontFamily: FONT_FAMILY,
+  },
+  quickActionMeta: {
+    fontSize: 11,
+    color: '#6B7280',
+    marginTop: 2,
+    fontFamily: FONT_FAMILY,
+  },
+
+  taskModalCard: {
+    backgroundColor: '#fff',
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    marginTop: 'auto',
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 24,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginBottom: 14,
+    paddingBottom: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E5E7EB',
+  },
+  statusDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+  },
+  modalTitle: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#111827',
+    flex: 1,
+    fontFamily: FONT_FAMILY,
+  },
+  modalContent: {
+    gap: 12,
+    marginBottom: 14,
+  },
+  detailRow: {
+    gap: 8,
+  },
+  detailLabel: {
+    fontSize: 11,
+    color: '#6B7280',
+    fontWeight: '700',
+    fontFamily: FONT_FAMILY,
+  },
+  detailValue: {
+    fontSize: 13,
+    color: '#111827',
+    fontWeight: '600',
+    fontFamily: FONT_FAMILY,
+    lineHeight: 18,
+  },
+  statusPill: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    borderWidth: 1,
+    alignSelf: 'flex-start',
+  },
+  statusPillText: {
+    fontSize: 12,
+    fontWeight: '800',
+    fontFamily: FONT_FAMILY,
+  },
+  advanceButton: {
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  advanceButtonText: {
+    color: '#fff',
+    fontWeight: '800',
+    fontSize: 14,
+    fontFamily: FONT_FAMILY,
+  },
 });

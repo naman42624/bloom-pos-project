@@ -271,6 +271,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
 
   const mapPosCartItemToQuickItem = useCallback((cartItem) => {
     const isMaterialOnly = !!cartItem?.material_id && !cartItem?.product_id;
+    const taxRate = cartItem?.tax_rate ?? cartItem?.tax_percentage ?? null;
     return {
       name: cartItem?.product_name || '',
       baseProduct: cartItem?.product_id ? {
@@ -278,11 +279,13 @@ export default function QuickCheckoutScreen({ navigation, route }) {
         name: cartItem.product_name || '',
         sku: cartItem.product_sku || '',
         selling_price: Number(cartItem.unit_price || 0),
-        tax_percentage: Number(cartItem.tax_rate || 0),
+        tax_percentage: Number(taxRate || 0),
         image_url: cartItem.image_url || '',
         ready_qty: Number(cartItem.stock_quantity || 0),
         stock_quantity: Number(cartItem.stock_quantity || 0),
       } : null,
+      tax_rate: taxRate,
+      tax_percentage: taxRate,
       baseMaterial: isMaterialOnly ? {
         id: cartItem.material_id,
         name: cartItem.product_name || '',
@@ -362,6 +365,8 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     setItems([...items, {
       name: '',
       baseProduct: null, // optional: link to existing product
+      tax_rate: null,
+      tax_percentage: null,
       baseMaterial: null,
       materials: [],
       price: '',
@@ -386,6 +391,8 @@ export default function QuickCheckoutScreen({ navigation, route }) {
         ...updated[idx],
         name: product.name,
         baseProduct: product,
+        tax_rate: product.tax_percentage ?? null,
+        tax_percentage: product.tax_percentage ?? null,
         baseMaterial: null,
         materials: bom,
         price: String(product.selling_price || 0),
@@ -398,6 +405,8 @@ export default function QuickCheckoutScreen({ navigation, route }) {
         ...updated[idx],
         name: product.name,
         baseProduct: product,
+        tax_rate: product.tax_percentage ?? null,
+        tax_percentage: product.tax_percentage ?? null,
         baseMaterial: null,
         price: String(product.selling_price || 0),
         fulfill_from_stock: (product.ready_qty || product.stock_quantity || 0) > 0,
@@ -451,23 +460,41 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     setItems(updated);
   };
 
-  // Calculate totals
-  const getItemTotal = (item) => {
+  const resolveItemTaxRate = useCallback((item) => {
+    const explicitTax = item?.tax_rate ?? item?.tax_percentage;
+    if (explicitTax !== undefined && explicitTax !== null && explicitTax !== '') {
+      return Math.max(0, parseFloat(explicitTax) || 0);
+    }
+    return Math.max(0, parseFloat(item?.baseProduct?.tax_percentage) || 0);
+  }, []);
+
+  // Calculate totals using net subtotal + separate tax so the summary matches backend totals.
+  const getItemGrossTotal = (item) => {
     const price = parseFloat(item.price) || 0;
     const qty = parseInt(item.quantity) || 1;
     return price * qty;
   };
 
-  const itemsSubtotal = items.reduce((sum, it) => sum + getItemTotal(it), 0);
+  const getItemNetUnitPrice = (item) => {
+    const grossUnit = parseFloat(item.price) || 0;
+    const taxRate = resolveItemTaxRate(item);
+    if (taxRate <= 0) return grossUnit;
+    return grossUnit * 100 / (100 + taxRate);
+  };
+
+  const getItemNetTotal = (item) => {
+    const qty = parseInt(item.quantity) || 1;
+    return getItemNetUnitPrice(item) * qty;
+  };
+
+  const getItemTaxAmount = (item) => Math.max(0, getItemGrossTotal(item) - getItemNetTotal(item));
+
+  const itemsSubtotal = items.reduce((sum, it) => sum + getItemNetTotal(it), 0);
 
   const totals = useMemo(() => {
     const subtotal = itemsSubtotal;
-    const taxRate = items[0]?.baseProduct?.tax_percentage || 0;
     const taxTotal = items.reduce((s, it) => {
-      const price = parseFloat(it.price) || 0;
-      const qty = parseInt(it.quantity) || 1;
-      const tax = it.baseProduct?.tax_percentage || 0;
-      return s + (price * qty * tax / 100);
+      return s + getItemTaxAmount(it);
     }, 0);
 
     const discVal = parseFloat(discountValue) || 0;
@@ -477,7 +504,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     const finalTotal = Math.max(0, subtotal - discountAmount) + taxTotal + delivery;
 
     return { subtotal, taxTotal, discountAmount, delivery, finalTotal };
-  }, [items, discountValue, discountType, orderType, preOrderType, deliveryCharges]);
+  }, [items, discountValue, discountType, orderType, preOrderType, deliveryCharges, itemsSubtotal, resolveItemTaxRate]);
 
   const needsDelivery = orderType === 'delivery' || (orderType === 'pre_order' && preOrderType === 'delivery');
 
@@ -779,15 +806,29 @@ export default function QuickCheckoutScreen({ navigation, route }) {
 
       // Build cart items
       const cartItems = processedItems.map(item => ({
+        ...(function() {
+          const grossUnit = parseFloat(item.price) || 0;
+          const effectiveTaxRate = resolveItemTaxRate(item);
+          const baseUnit = effectiveTaxRate > 0
+            ? (grossUnit * 100) / (100 + effectiveTaxRate)
+            : grossUnit;
+          const qty = parseInt(item.quantity) || 1;
+          const taxAmount = effectiveTaxRate > 0
+            ? (grossUnit * qty) - (baseUnit * qty)
+            : 0;
+          return {
+            unit_price: Math.round(baseUnit * 10000) / 10000,
+            tax_rate: effectiveTaxRate,
+            tax_amount: Math.round(taxAmount * 100) / 100,
+            line_total: Math.round((baseUnit * qty + taxAmount) * 100) / 100,
+            tax_inclusive: false,
+          };
+        })(),
         product_id: item.baseProduct?.id || null,
         material_id: item.baseMaterial?.id || null,
         product_name: item.name,
         product_sku: item.baseProduct?.sku || item.baseMaterial?.sku || '',
         quantity: parseInt(item.quantity) || 1,
-        unit_price: parseFloat(item.price) || 0,
-        tax_rate: item.baseProduct?.tax_percentage || 0,
-        tax_amount: (parseFloat(item.price) || 0) * (parseInt(item.quantity) || 1) * (item.baseProduct?.tax_percentage || 0) / 100,
-        line_total: getItemTotal(item) + ((parseFloat(item.price) || 0) * (parseInt(item.quantity) || 1) * (item.baseProduct?.tax_percentage || 0) / 100),
         custom_materials: (item.materials || [])
           .filter(m => m.material_id)
           .map(m => ({ material_id: m.material_id, name: m.name, qty_per_unit: parseFloat(m.qty) || 1 })),
@@ -1340,6 +1381,32 @@ export default function QuickCheckoutScreen({ navigation, route }) {
                 </View>
               </View>
 
+              <View style={styles.fieldRow}>
+                <View style={styles.fieldHalf}>
+                  <Text style={styles.label}>Tax (%)</Text>
+                  <TextInput
+                    style={styles.input}
+                    value={String(resolveItemTaxRate(item))}
+                    onChangeText={(v) => {
+                      setItems((prev) => prev.map((it, i) => (
+                        i === idx ? { ...it, tax_rate: v, tax_percentage: v } : it
+                      )));
+                    }}
+                    placeholder="0"
+                    placeholderTextColor={Colors.textLight}
+                    keyboardType="numeric"
+                  />
+                </View>
+                <View style={styles.fieldHalf}>
+                  <Text style={styles.label}>Tax Amount</Text>
+                  <View style={[styles.input, { justifyContent: 'center' }]}>
+                    <Text style={{ fontSize: FontSize.sm, color: Colors.text, fontWeight: '600' }}>
+                      ₹{Number(getItemTaxAmount(item)).toFixed(2)}
+                    </Text>
+                  </View>
+                </View>
+              </View>
+
               {/* Fulfill From Stock Toggle */}
               {orderType === 'walk_in' && item.baseProduct && (item.baseProduct.ready_qty > 0 || item.baseProduct.stock_quantity > 0) && !item.special_instructions && (
                 <TouchableOpacity
@@ -1441,8 +1508,13 @@ export default function QuickCheckoutScreen({ navigation, route }) {
 
               {/* Item total */}
               <View style={styles.itemTotal}>
-                <Text style={styles.itemTotalLabel}>Item Total</Text>
-                <Text style={styles.itemTotalValue}>₹{Number(getItemTotal(item)).toFixed(0)}</Text>
+                <View style={{ flex: 1, paddingRight: 8 }}>
+                  <Text style={styles.itemTotalLabel}>Item Total</Text>
+                  <Text style={styles.itemTaxMeta}>
+                    Tax {resolveItemTaxRate(item).toFixed(2)}% • ₹{Number(getItemTaxAmount(item)).toFixed(2)}
+                  </Text>
+                </View>
+                <Text style={styles.itemTotalValue}>₹{Number(getItemGrossTotal(item)).toFixed(2)}</Text>
               </View>
             </View>
           ))}
@@ -1493,6 +1565,8 @@ export default function QuickCheckoutScreen({ navigation, route }) {
               </View>
             </View>
           </View>
+
+          <Text style={styles.taxHint}>Tax is calculated from each product's configured tax rate.</Text>
 
           <View style={styles.divider} />
 
@@ -1647,7 +1721,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
             </View>
             <View style={styles.summaryLine}>
               <Text style={styles.summaryLabel}>Tax</Text>
-              <Text style={styles.summaryValue}>+₹{Number(totals.taxTotal).toFixed(2)}</Text>
+              <Text style={styles.summaryValue}>₹{Number(totals.taxTotal).toFixed(2)}</Text>
             </View>
             {orderType === 'delivery' && (
               <View style={styles.summaryLine}>
@@ -1981,6 +2055,7 @@ const styles = StyleSheet.create({
     paddingVertical: 6, borderRadius: BorderRadius.sm, marginTop: Spacing.xs, marginBottom: Spacing.xs,
   },
   baseProductTagText: { fontSize: FontSize.xs, color: Colors.success, fontWeight: '600' },
+  taxHint: { marginTop: Spacing.xs, fontSize: FontSize.xs, color: Colors.textLight, fontStyle: 'italic' },
 
   qtyRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs },
   qtyBtn: {
@@ -1997,11 +2072,12 @@ const styles = StyleSheet.create({
   },
 
   itemTotal: {
-    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end',
     marginTop: Spacing.sm, paddingTop: Spacing.sm,
     borderTopWidth: 1, borderTopColor: Colors.border,
   },
   itemTotalLabel: { fontSize: FontSize.md, fontWeight: '600', color: Colors.text },
+  itemTaxMeta: { fontSize: FontSize.xs, color: Colors.textLight, marginTop: 2 },
   itemTotalValue: { fontSize: FontSize.lg, fontWeight: '700', color: Colors.success },
 
   grandTotalRow: {

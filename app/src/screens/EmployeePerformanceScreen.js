@@ -20,15 +20,16 @@ function localDate(offset = 0) {
 }
 
 function fmt(n) {
-  if (n >= 100000) return `₹${(n/100000).toFixed(1)}L`;
-  if (n >= 1000) return `₹${(n/1000).toFixed(1)}K`;
-  return `₹${Math.round(n)}`;
+  const num = Number(n || 0);
+  if (num >= 100000) return `₹${(num/100000).toFixed(1)}L`;
+  if (num >= 1000) return `₹${(num/1000).toFixed(1)}K`;
+  return `₹${Math.round(num)}`;
 }
 
 function formatHours(h) {
-  if (!h && h !== 0) return '0h';
-  const hrs = Math.floor(h);
-  const mins = Math.round((h - hrs) * 60);
+  const num = Number(h || 0);
+  const hrs = Math.floor(num);
+  const mins = Math.round((num - hrs) * 60);
   return mins > 0 ? `${hrs}h ${mins}m` : `${hrs}h`;
 }
 

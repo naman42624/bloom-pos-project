@@ -218,6 +218,12 @@ export default function MaterialDetailScreen({ route, navigation }) {
                   <Text style={styles.metaLabel}>Selling Price</Text>
                   <Text style={[styles.metaValue, { color: Colors.success }]}>₹{Number(material.selling_price || 0).toFixed(2)}</Text>
                 </View>
+                {user?.role === 'owner' && material.avg_purchase_cost !== null && material.avg_purchase_cost !== undefined && (
+                  <View style={styles.metaItem}>
+                    <Text style={styles.metaLabel}>Avg Cost</Text>
+                    <Text style={[styles.metaValue, { color: Colors.info }]}>₹{Number(material.avg_purchase_cost || 0).toFixed(2)}</Text>
+                  </View>
+                )}
               </View>
               {canManage && (
                 <View style={styles.actionRow}>
