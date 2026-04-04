@@ -41,6 +41,9 @@ export default function ProductsScreen({ navigation }) {
   const [refreshing, setRefreshing] = useState(false);
   const [viewedImage, setViewedImage] = useState(null);
   const [locations, setLocations] = useState([]);
+  const [page, setPage] = useState(1);
+  const [hasMore, setHasMore] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
 
   const [adjustProduct, setAdjustProduct] = useState(null);
   const [adjustQty, setAdjustQty] = useState('');
@@ -62,23 +65,33 @@ export default function ProductsScreen({ navigation }) {
     })();
   }, [canManageStock]);
 
-  const fetchData = useCallback(async () => {
+  const fetchData = useCallback(async (nextPage = 1, reset = false) => {
     try {
-      const params = {};
+      const limit = 20;
+      const params = { limit, offset: (nextPage - 1) * limit };
       if (selectedType) params.type = selectedType;
       if (search.trim()) params.search = search.trim();
 
       const res = await api.getProducts(params);
-      setProducts(res.data || []);
+      const list = res.data || [];
+      setProducts((prev) => (reset ? list : [...prev, ...list]));
+      setHasMore(list.length >= limit);
+      setPage(nextPage);
     } catch (err) {
       Alert.alert('Error', err.message || 'Failed to load products');
     } finally {
       setLoading(false);
       setRefreshing(false);
+      setLoadingMore(false);
     }
   }, [selectedType, search]);
 
-  useFocusEffect(useCallback(() => { fetchData(); }, [fetchData]));
+  useFocusEffect(useCallback(() => { fetchData(1, true); }, [fetchData]));
+
+  useEffect(() => {
+    setLoading(true);
+    fetchData(1, true);
+  }, [selectedType, search]);
 
   const openQuickAdjust = (product) => {
     const defaultLocationId = product.location_id || locations[0]?.id || null;
@@ -126,7 +139,7 @@ export default function ProductsScreen({ navigation }) {
         reason: adjustNotes.trim() || `${adjustReasonType}: ${qty} ${adjustProduct.name}`,
       });
       setAdjustProduct(null);
-      fetchData();
+      fetchData(1, true);
     } catch (err) {
       Alert.alert('Adjustment Failed', err.message || 'Could not update product stock.');
     } finally {
@@ -190,6 +203,12 @@ export default function ProductsScreen({ navigation }) {
     </TouchableOpacity>
   );
 
+  const loadMore = () => {
+    if (!hasMore || loadingMore || loading) return;
+    setLoadingMore(true);
+    fetchData(page + 1, false);
+  };
+
   return (
     <View style={styles.container}>
       {/* Search bar */}
@@ -235,8 +254,11 @@ export default function ProductsScreen({ navigation }) {
         keyExtractor={(item) => String(item.id)}
         renderItem={renderItem}
         contentContainerStyle={styles.listContent}
+        onEndReached={loadMore}
+        onEndReachedThreshold={0.4}
+        ListFooterComponent={loadingMore ? <ActivityIndicator style={{ paddingVertical: Spacing.md }} color={Colors.primary} /> : null}
         refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); fetchData(); }} colors={[Colors.primary]} />
+          <RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); fetchData(1, true); }} colors={[Colors.primary]} />
         }
         ListEmptyComponent={
           !loading && (

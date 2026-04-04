@@ -586,7 +586,7 @@ router.post(
       const creditTx = db.transaction(() => {
         // Record credit payment
         const result = db.prepare(
-          'INSERT INTO credit_payments (customer_id, amount, method, recorded_by, notes, sale_id, location_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
+          'INSERT INTO credit_payments (customer_id, amount, payment_method, recorded_by, notes, sale_id, location_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
         ).run(customerId, amount, method, req.user.id, notes || '', sale_id || null, numLocationId);
 
         // Reduce customer credit balance
@@ -602,9 +602,11 @@ router.post(
           const sale = db.prepare('SELECT grand_total FROM sales WHERE id = ?').get(sale_id);
           if (sale) {
             const totalPaid = db.prepare('SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE sale_id = ?').get(sale_id).total;
+            const roundedGrandTotal = Math.round(Number(sale.grand_total || 0) * 100) / 100;
+            const roundedTotalPaid = Math.round(Number(totalPaid || 0) * 100) / 100;
             let paymentStatus = 'pending';
-            if (totalPaid >= sale.grand_total) paymentStatus = 'paid';
-            else if (totalPaid > 0) paymentStatus = 'partial';
+            if (roundedTotalPaid >= roundedGrandTotal - 0.01) paymentStatus = 'paid';
+            else if (roundedTotalPaid > 0) paymentStatus = 'partial';
             db.prepare('UPDATE sales SET payment_status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(paymentStatus, sale_id);
           }
         }

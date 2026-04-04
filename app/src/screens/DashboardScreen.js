@@ -18,6 +18,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 import { Colors, FontSize, Spacing } from '../constants/theme';
+import { parseServerDate } from '../utils/datetime';
 
 const ORDER_TYPES = ['delivery', 'pickup', 'walk_in'];
 const ORDER_TYPE_LABELS = {
@@ -94,8 +95,9 @@ function getOrderLaneSla(order, now) {
   if (!order || ['ready', 'completed', 'cancelled', 'draft'].includes(order.status)) return null;
 
   if (order.order_type === 'walk_in') {
-    if (!order.created_at) return null;
-    const diffMins = Math.floor((now.getTime() - new Date(order.created_at).getTime()) / 60000);
+    const created = parseServerDate(order.created_at);
+    if (!created) return null;
+    const diffMins = Math.floor((now.getTime() - created.getTime()) / 60000);
     if (diffMins > 20) return 'overdue';
     if (diffMins > 10) return 'dueSoon';
     return null;
@@ -105,8 +107,8 @@ function getOrderLaneSla(order, now) {
   const schedTime = order.scheduled_time || (order.created_at ? order.created_at.split('T')[1]?.slice(0, 5) : null);
   if (!schedDate || !schedTime) return null;
 
-  const scheduled = new Date(`${schedDate}T${schedTime}`);
-  if (Number.isNaN(scheduled.getTime())) return null;
+  const scheduled = parseServerDate(`${schedDate}T${schedTime}`);
+  if (!scheduled || Number.isNaN(scheduled.getTime())) return null;
   const remainingMins = Math.floor((scheduled.getTime() - now.getTime()) / 60000);
   if (remainingMins < 0) return 'overdue';
   if (remainingMins <= 60) return 'dueSoon';
@@ -411,8 +413,8 @@ export default function DashboardScreen({ navigation }) {
       const filters = locationId ? { location_id: locationId } : {};
 
       const reqs = [
-        api.getSales({ ...filters, limit: 120 }),
-        api.getProductionTasks({ ...filters }),
+        api.getSales({ ...filters, limit: 500 }),
+        api.getProductionTasks({}),
       ];
 
       if (isOwnerOrManager) {
@@ -606,7 +608,7 @@ export default function DashboardScreen({ navigation }) {
       applyId: Date.now(),
       initialViewMode: 'orders',
       initialOrderType: orderType,
-      initialStatus: status,
+      initialStatus: '',
       initialLocationId: activeLocation?.id || null,
       initialShowFilters: true,
     });
@@ -850,26 +852,26 @@ export default function DashboardScreen({ navigation }) {
             <View style={styles.quickActionsHeader}>
               <Text style={styles.quickActionsTitle}>Quick Actions</Text>
               <TouchableOpacity onPress={() => setFabVisible(false)}>
-                <Ionicons name="close" size={20} color="#6B7280" />
+                <Ionicons name="close" size={20} color={Colors.textSecondary} />
               </TouchableOpacity>
             </View>
 
             <TouchableOpacity
-              style={[styles.quickActionItem, { borderLeftColor: '#047857', borderLeftWidth: 3, backgroundColor: '#F0FDF4' }]}
+              style={[styles.quickActionItem, { borderLeftColor: Colors.secondary, borderLeftWidth: 3, backgroundColor: '#F0FDF4' }]}
               onPress={() => {
                 setFabVisible(false);
                 navigation.navigate('POS', { screen: 'QuickCheckout', params: { locationId: activeLocation?.id } });
               }}
               activeOpacity={0.8}
             >
-              <View style={[styles.quickActionIcon, { backgroundColor: '#047857' }]}>
+              <View style={[styles.quickActionIcon, { backgroundColor: Colors.secondary }]}>
                 <Ionicons name="flash" size={18} color="#fff" />
               </View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.quickActionName}>Quick Checkout</Text>
                 <Text style={styles.quickActionMeta}>Fast transaction</Text>
               </View>
-              <Ionicons name="chevron-forward" size={16} color="#9CA3AF" />
+              <Ionicons name="chevron-forward" size={16} color={Colors.textLight} />
             </TouchableOpacity>
 
             <TouchableOpacity
@@ -887,7 +889,7 @@ export default function DashboardScreen({ navigation }) {
                 <Text style={styles.quickActionName}>POS Terminal</Text>
                 <Text style={styles.quickActionMeta}>Full checkout</Text>
               </View>
-              <Ionicons name="chevron-forward" size={16} color="#9CA3AF" />
+              <Ionicons name="chevron-forward" size={16} color={Colors.textLight} />
             </TouchableOpacity>
 
             <TouchableOpacity
@@ -905,7 +907,7 @@ export default function DashboardScreen({ navigation }) {
                 <Text style={styles.quickActionName}>Cash Register</Text>
                 <Text style={styles.quickActionMeta}>Manage balance</Text>
               </View>
-              <Ionicons name="chevron-forward" size={16} color="#9CA3AF" />
+              <Ionicons name="chevron-forward" size={16} color={Colors.textLight} />
             </TouchableOpacity>
           </View>
         </TouchableOpacity>
@@ -915,7 +917,7 @@ export default function DashboardScreen({ navigation }) {
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: '#EEF4FA' },
+  root: { flex: 1, backgroundColor: Colors.background },
   container: { flex: 1 },
   content: { padding: 14, paddingBottom: 100 },
 
@@ -927,19 +929,19 @@ const styles = StyleSheet.create({
   },
   loadingText: {
     fontSize: 14,
-    color: '#6B7280',
+    color: Colors.textSecondary,
     fontFamily: FONT_FAMILY,
   },
 
   heroCard: {
-    backgroundColor: '#0B5D4A',
+    backgroundColor: Colors.primary,
     borderRadius: 16,
     paddingHorizontal: 18,
     paddingVertical: 18,
     marginBottom: 20,
     borderWidth: 1,
-    borderColor: '#0F766E',
-    shadowColor: '#0B5D4A',
+    borderColor: Colors.primaryDark,
+    shadowColor: Colors.primary,
     shadowOffset: { width: 0, height: 6 },
     shadowOpacity: 0.22,
     shadowRadius: 16,
@@ -955,13 +957,13 @@ const styles = StyleSheet.create({
     width: 40,
     height: 40,
     borderRadius: 10,
-    backgroundColor: '#065F46',
+    backgroundColor: Colors.primaryDark,
     justifyContent: 'center',
     alignItems: 'center',
   },
   heroEyebrow: {
     fontSize: 12,
-    color: '#D1FAE5',
+    color: Colors.primaryLight,
     fontWeight: '600',
     fontFamily: FONT_FAMILY,
     letterSpacing: 0.5,
@@ -975,7 +977,7 @@ const styles = StyleSheet.create({
   },
   heroSub: {
     fontSize: 13,
-    color: '#CCFBF1',
+    color: Colors.primaryGlow,
     marginTop: 8,
     lineHeight: 18,
     fontFamily: FONT_FAMILY,
@@ -993,12 +995,12 @@ const styles = StyleSheet.create({
   sectionTitle: {
     fontSize: 16,
     fontWeight: '800',
-    color: '#111827',
+    color: Colors.text,
     fontFamily: FONT_FAMILY,
   },
   sectionSubtitle: {
     fontSize: 12,
-    color: '#9CA3AF',
+    color: Colors.textLight,
     marginTop: 3,
     fontFamily: FONT_FAMILY,
   },
@@ -1023,12 +1025,12 @@ const styles = StyleSheet.create({
   typeCardTitle: {
     fontSize: 15,
     fontWeight: '800',
-    color: '#111827',
+    color: Colors.text,
     fontFamily: FONT_FAMILY,
   },
   typeCardSubtitle: {
     fontSize: 12,
-    color: '#6B7280',
+    color: Colors.textSecondary,
     marginTop: 3,
     fontFamily: FONT_FAMILY,
   },
@@ -1110,7 +1112,7 @@ const styles = StyleSheet.create({
   },
   laneEmpty: {
     fontSize: 12,
-    color: '#9CA3AF',
+    color: Colors.textLight,
     fontStyle: 'italic',
     fontFamily: FONT_FAMILY,
   },
@@ -1138,19 +1140,19 @@ const styles = StyleSheet.create({
   },
   orderNumber: {
     fontSize: 13,
-    color: '#111827',
+    color: Colors.text,
     fontWeight: '800',
     fontFamily: FONT_FAMILY,
   },
   orderMeta: {
     fontSize: 11,
-    color: '#6B7280',
+    color: Colors.textSecondary,
     marginTop: 2,
     fontFamily: FONT_FAMILY,
   },
   orderAmount: {
     fontSize: 12,
-    color: '#047857',
+    color: Colors.secondary,
     fontWeight: '700',
     marginTop: 2,
     fontFamily: FONT_FAMILY,
@@ -1186,13 +1188,13 @@ const styles = StyleSheet.create({
   },
   pipelineStepLabel: {
     fontSize: 9,
-    color: '#6B7280',
+    color: Colors.textSecondary,
     fontWeight: '700',
     fontFamily: FONT_FAMILY,
   },
   pipelineStepCount: {
     fontSize: 10,
-    color: '#111827',
+    color: Colors.text,
     fontWeight: '800',
     fontFamily: FONT_FAMILY,
   },
@@ -1229,13 +1231,13 @@ const styles = StyleSheet.create({
   },
   moreTasksLabel: {
     fontSize: 11,
-    color: '#9CA3AF',
+    color: Colors.textLight,
     fontFamily: FONT_FAMILY,
     fontStyle: 'italic',
   },
   noTasksLabel: {
     fontSize: 11,
-    color: '#9CA3AF',
+    color: Colors.textLight,
     fontStyle: 'italic',
     fontFamily: FONT_FAMILY,
   },
@@ -1248,7 +1250,7 @@ const styles = StyleSheet.create({
   },
   viewMoreText: {
     fontSize: 11,
-    color: '#047857',
+    color: Colors.secondary,
     fontWeight: '700',
     fontFamily: FONT_FAMILY,
   },
@@ -1259,7 +1261,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 10,
     borderWidth: 1,
-    borderColor: '#E5E7EB',
+    borderColor: Colors.border,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.04,
@@ -1275,12 +1277,12 @@ const styles = StyleSheet.create({
   widgetTitle: {
     fontSize: 14,
     fontWeight: '800',
-    color: '#111827',
+    color: Colors.text,
     fontFamily: FONT_FAMILY,
   },
   emptyWidgetText: {
     fontSize: 12,
-    color: '#9CA3AF',
+    color: Colors.textLight,
     fontStyle: 'italic',
     fontFamily: FONT_FAMILY,
   },
@@ -1304,18 +1306,18 @@ const styles = StyleSheet.create({
   staffName: {
     fontSize: 12,
     fontWeight: '700',
-    color: '#111827',
+    color: Colors.text,
     fontFamily: FONT_FAMILY,
   },
   staffMeta: {
     fontSize: 10,
-    color: '#6B7280',
+    color: Colors.textSecondary,
     marginTop: 1,
     fontFamily: FONT_FAMILY,
   },
   staffMetaSub: {
     fontSize: 10,
-    color: '#047857',
+    color: Colors.secondary,
     marginTop: 2,
     fontFamily: FONT_FAMILY,
     fontWeight: '600',
@@ -1338,7 +1340,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 10,
     borderWidth: 1,
-    borderColor: '#E5E7EB',
+    borderColor: Colors.border,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.04,
@@ -1348,7 +1350,7 @@ const styles = StyleSheet.create({
   registerTitle: {
     fontSize: 13,
     fontWeight: '800',
-    color: '#111827',
+    color: Colors.text,
     fontFamily: FONT_FAMILY,
   },
   registerStatus: {
@@ -1359,20 +1361,20 @@ const styles = StyleSheet.create({
   },
   registerLabel: {
     fontSize: 10,
-    color: '#6B7280',
+    color: Colors.textSecondary,
     fontWeight: '700',
     fontFamily: FONT_FAMILY,
   },
   registerValue: {
     fontSize: 12,
-    color: '#111827',
+    color: Colors.text,
     fontWeight: '800',
     marginTop: 2,
     fontFamily: FONT_FAMILY,
   },
   divider: {
     height: 1,
-    backgroundColor: '#E5E7EB',
+    backgroundColor: Colors.border,
     marginVertical: 8,
   },
 
@@ -1381,13 +1383,13 @@ const styles = StyleSheet.create({
   },
   revenueLabel: {
     fontSize: 11,
-    color: '#6B7280',
+    color: Colors.textSecondary,
     fontWeight: '700',
     fontFamily: FONT_FAMILY,
   },
   revenueValue: {
     fontSize: 14,
-    color: '#047857',
+    color: Colors.secondary,
     fontWeight: '800',
     marginTop: 3,
     fontFamily: FONT_FAMILY,

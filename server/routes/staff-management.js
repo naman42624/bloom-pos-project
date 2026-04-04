@@ -378,12 +378,20 @@ router.post('/payroll/calculate', authorize('owner'), (req, res) => {
       ORDER BY date
     `).all(user_id, period_start, period_end);
 
-    const daysWorked = attendance.filter(a => a.status === 'present' || a.status === 'half_day').length;
-    const halfDays = attendance.filter(a => a.status === 'half_day').length;
-    const lateDays = attendance.filter(a => a.late_arrival === 1).length;
+    const uniqueByDate = new Map();
+    for (const row of attendance) {
+      const existing = uniqueByDate.get(row.date);
+      if (!existing || (row.clock_in && row.clock_in > (existing.clock_in || ''))) {
+        uniqueByDate.set(row.date, row);
+      }
+    }
+    const uniqueAttendance = Array.from(uniqueByDate.values());
+    const daysWorked = uniqueAttendance.filter(a => a.status === 'present' || a.status === 'half_day').length;
+    const halfDays = uniqueAttendance.filter(a => a.status === 'half_day').length;
+    const lateDays = uniqueAttendance.filter(a => a.late_arrival === 1).length;
     const totalHours = attendance.reduce((sum, a) => sum + (a.effective_hours || 0), 0);
-    const absentDays = daysInPeriod - daysWorked;
-    const leaveDays = attendance.filter(a => a.status === 'on_leave').length;
+    const leaveDays = uniqueAttendance.filter(a => a.status === 'on_leave').length;
+    const absentDays = Math.max(0, daysInPeriod - daysWorked - leaveDays);
 
     // Calculate base pay
     let basePay = 0;

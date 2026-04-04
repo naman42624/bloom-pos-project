@@ -111,7 +111,9 @@ function resolveTaxRateId(db, taxRateId, taxPercentage, createdBy) {
 router.get('/', authenticate, async (req, res, next) => {
   try {
     const db = await getAsyncDb();
-    const { type, category, search, is_active, location_id } = req.query;
+    const { type, category, search, is_active, location_id, limit: rawLimit, offset: rawOffset } = req.query;
+    const limit = Math.max(1, Math.min(parseInt(rawLimit, 10) || 50, 100));
+    const offset = Math.max(0, parseInt(rawOffset, 10) || 0);
 
     let sql = `
       SELECT p.*, tr.name as tax_name, tr.percentage as tax_percentage,
@@ -130,7 +132,8 @@ router.get('/', authenticate, async (req, res, next) => {
     else { sql += ' AND p.is_active = 1'; }
     if (search) { sql += ' AND (p.name LIKE ? OR p.sku LIKE ? OR p.description LIKE ?)'; const s = `%${search}%`; params.push(s, s, s); }
 
-    sql += ' ORDER BY sale_count DESC, p.name ASC';
+    sql += ' ORDER BY sale_count DESC, p.name ASC LIMIT ? OFFSET ?';
+    params.push(limit, offset);
 
     const products = await db.prepare(sql).all(...params);
 

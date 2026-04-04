@@ -838,6 +838,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
       }));
 
       const { subtotal, taxTotal, discountAmount, delivery, finalTotal: finalGrandTotal } = totals;
+      const roundedGrandTotal = Math.round(Number(finalGrandTotal || 0) * 100) / 100;
       const discVal = parseFloat(discountValue) || 0;
 
       // Payment entries
@@ -852,7 +853,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
         } else {
           paymentEntries = [{
             method: paymentMethod,
-            amount: finalGrandTotal,
+            amount: roundedGrandTotal,
             reference_number: paymentReference.trim() || null,
           }];
         }
@@ -885,19 +886,19 @@ export default function QuickCheckoutScreen({ navigation, route }) {
         items: cartItems,
         payments: (paymentMode === 'pay_now' || paymentMode === 'partial') ? (
           paymentMode === 'partial'
-            ? [{ method: payments[0].method, amount: parseFloat(advanceAmount) || 0, reference_number: payments[0].reference || null }]
+            ? [{ method: payments[0].method, amount: Math.round((parseFloat(advanceAmount) || 0) * 100) / 100, reference_number: payments[0].reference || null }]
             : paymentEntries
         ) : [],
-        advance_amount: paymentMode === 'partial' ? (parseFloat(advanceAmount) || 0) : 0,
+        advance_amount: paymentMode === 'partial' ? Math.round((parseFloat(advanceAmount) || 0) * 100) / 100 : 0,
       };
 
       if (orderType === 'pre_order') {
-        const advance = parseFloat(advanceAmount) || 0;
+        const advance = Math.round((parseFloat(advanceAmount) || 0) * 100) / 100;
         saleData.pre_order = {
           scheduled_date: scheduledDate,
           scheduled_time: scheduledTime || null,
           advance_amount: advance,
-          remaining_amount: Math.max(0, finalGrandTotal - advance),
+          remaining_amount: Math.max(0, roundedGrandTotal - advance),
           delivery_address: needsDelivery ? customerAddress.trim() : null,
           special_instructions: orderNotes || null,
         };
@@ -1003,7 +1004,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
             </View>
             <Text style={styles.sectionTitle}>Order Type</Text>
           </View>
-          <View style={styles.orderTypeRow}>
+          <View style={[styles.orderTypeRow, { marginBottom: 2 }] }>
             {ORDER_TYPES.map(t => (
               <TouchableOpacity
                 key={t.key}
@@ -1035,15 +1036,15 @@ export default function QuickCheckoutScreen({ navigation, route }) {
           {orderType === 'pre_order' && (
             <View style={{ marginTop: Spacing.sm }}>
               <Text style={styles.label}>Pre-order Mode</Text>
-              <View style={{ flexDirection: 'row', gap: Spacing.xs }}>
+              <View style={{ flexDirection: 'row', gap: Spacing.xs, flexWrap: 'wrap' }}>
                 <TouchableOpacity
-                  style={[styles.chip, preOrderType === 'pickup' && styles.chipActive]}
+                  style={[styles.chip, { flex: 1, minWidth: 120, alignItems: 'center' }, preOrderType === 'pickup' && styles.chipActive]}
                   onPress={() => setPreOrderType('pickup')}
                 >
                   <Text style={[styles.chipText, preOrderType === 'pickup' && styles.chipTextActive]}>Pickup</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
-                  style={[styles.chip, preOrderType === 'delivery' && styles.chipActive]}
+                  style={[styles.chip, { flex: 1, minWidth: 120, alignItems: 'center' }, preOrderType === 'delivery' && styles.chipActive]}
                   onPress={() => setPreOrderType('delivery')}
                 >
                   <Text style={[styles.chipText, preOrderType === 'delivery' && styles.chipTextActive]}>Delivery</Text>
@@ -1105,7 +1106,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
                 keyboardType="phone-pad"
               />
               {showSuggestions && customerSuggestions.length > 0 && (
-                <View style={styles.suggestionsBox}>
+                <ScrollView style={[styles.suggestionsBox, { maxHeight: 180 }]} nestedScrollEnabled keyboardShouldPersistTaps="handled">
                   {customerSuggestions.map((c, idx) => (
                     <TouchableOpacity key={c.phone + idx} style={styles.suggestionItem} onPress={() => selectCustomer(c)}>
                       <Ionicons name={c.id ? 'person' : 'person-outline'} size={16} color={Colors.primary} />
@@ -1115,7 +1116,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
                       </View>
                     </TouchableOpacity>
                   ))}
-                </View>
+                </ScrollView>
               )}
             </View>
             <View style={styles.fieldHalf}>
@@ -1200,7 +1201,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
                         keyboardType="phone-pad"
                       />
                       {showReceiverSuggestions && receiverSuggestions.length > 0 && (
-                        <View style={styles.suggestionsBox}>
+                        <ScrollView style={[styles.suggestionsBox, { maxHeight: 180 }]} nestedScrollEnabled keyboardShouldPersistTaps="handled">
                           {receiverSuggestions.map((c, idx) => (
                             <TouchableOpacity key={c.phone + idx} style={styles.suggestionItem} onPress={() => selectReceiver(c)}>
                               <Ionicons name={c.id ? 'person' : 'person-outline'} size={16} color={Colors.primary} />
@@ -1210,7 +1211,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
                               </View>
                             </TouchableOpacity>
                           ))}
-                        </View>
+                        </ScrollView>
                       )}
                     </View>
                     <View style={styles.fieldHalf}>
@@ -1996,10 +1997,10 @@ const styles = StyleSheet.create({
 
   orderTypeRow: { flexDirection: 'row', gap: Spacing.sm, flexWrap: 'wrap' },
   orderTypeBtn: {
-    flex: 1, minWidth: 80, alignItems: 'center', justifyContent: 'center', gap: 4,
-    paddingVertical: Spacing.sm, borderRadius: BorderRadius.lg,
+    flex: 1, minWidth: 72, alignItems: 'center', justifyContent: 'center', gap: 4,
+    paddingVertical: Spacing.xs, borderRadius: BorderRadius.lg,
     backgroundColor: Colors.background, borderWidth: 2, borderColor: Colors.border,
-    minHeight: 60,
+    minHeight: 56,
   },
 
   orderTypeBtnText: { fontSize: FontSize.sm, fontWeight: '700', color: Colors.textSecondary },
@@ -2118,6 +2119,7 @@ const styles = StyleSheet.create({
 
   draftActionsRow: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: Spacing.sm,
     marginTop: Spacing.lg,
   },
@@ -2131,7 +2133,8 @@ const styles = StyleSheet.create({
     borderColor: Colors.primary + '55',
     backgroundColor: Colors.primary + '10',
     borderRadius: BorderRadius.md,
-    paddingVertical: Spacing.md,
+    paddingVertical: Spacing.sm,
+    paddingHorizontal: Spacing.xs,
   },
   draftActionText: { fontSize: FontSize.sm, color: Colors.primary, fontWeight: '700' },
 
@@ -2230,6 +2233,8 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: Colors.border,
     zIndex: 1000, elevation: 10,
     shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.1, shadowRadius: 8,
+    overflow: 'hidden',
+    maxHeight: 200,
   },
   suggestionItem: {
     flexDirection: 'row', alignItems: 'center', padding: 12,

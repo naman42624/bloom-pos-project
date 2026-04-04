@@ -651,7 +651,7 @@ router.get('/dashboard-summary', authenticate, authorize('owner', 'manager', 'em
 
     // Pending orders count
     const pendingOrders = await db.prepare(
-      `SELECT COUNT(*) as cnt FROM sales WHERE status = 'pending'${locFilter}`
+      `SELECT COUNT(*) as cnt FROM sales WHERE status IN ('pending', 'confirmed')${locFilter}`
     ).get(...locParams);
 
     // Preparing orders count
@@ -661,7 +661,7 @@ router.get('/dashboard-summary', authenticate, authorize('owner', 'manager', 'em
 
     // Ready orders count
     const readyOrders = await db.prepare(
-      `SELECT COUNT(*) as cnt FROM sales WHERE status = 'ready'${locFilter}`
+      `SELECT COUNT(*) as cnt FROM sales WHERE status IN ('ready', 'completed')${locFilter}`
     ).get(...locParams);
 
     // Unassigned tasks (for managers/owners)

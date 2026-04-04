@@ -1,7 +1,7 @@
 import React, { useState, useCallback } from 'react';
 import {
   View, Text, StyleSheet, FlatList, TouchableOpacity,
-  TextInput, RefreshControl,
+  TextInput, RefreshControl, ActivityIndicator,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
@@ -13,24 +13,39 @@ export default function CustomersScreen({ navigation }) {
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [page, setPage] = useState(1);
+  const [hasMore, setHasMore] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
 
-  const fetchCustomers = useCallback(async (q) => {
+  const fetchCustomers = useCallback(async (q, nextPage = 1, reset = false) => {
     try {
-      const params = {};
+      const limit = 20;
+      const params = { limit, offset: (nextPage - 1) * limit };
       if (q) params.search = q;
       const res = await api.getCustomers(params);
-      setCustomers(res.data || []);
+      const list = res.data || [];
+      setCustomers((prev) => (reset ? list : [...prev, ...list]));
+      setHasMore(list.length >= limit);
+      setPage(nextPage);
     } catch {} finally {
       setLoading(false);
       setRefreshing(false);
+      setLoadingMore(false);
     }
   }, []);
 
-  useFocusEffect(useCallback(() => { fetchCustomers(search); }, [fetchCustomers]));
+  useFocusEffect(useCallback(() => { fetchCustomers(search, 1, true); }, [fetchCustomers, search]));
 
   const handleSearch = (text) => {
     setSearch(text);
-    fetchCustomers(text);
+    setLoading(true);
+    fetchCustomers(text, 1, true);
+  };
+
+  const loadMore = () => {
+    if (!hasMore || loadingMore || loading) return;
+    setLoadingMore(true);
+    fetchCustomers(search, page + 1, false);
   };
 
   const renderCustomer = ({ item }) => (
@@ -96,7 +111,10 @@ export default function CustomersScreen({ navigation }) {
         keyExtractor={(item) => `cust_${item.id}`}
         renderItem={renderCustomer}
         contentContainerStyle={styles.listContent}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); fetchCustomers(search); }} colors={[Colors.primary]} />}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); fetchCustomers(search, 1, true); }} colors={[Colors.primary]} />}
+        onEndReached={loadMore}
+        onEndReachedThreshold={0.4}
+        ListFooterComponent={loadingMore ? <ActivityIndicator style={{ paddingVertical: Spacing.md }} color={Colors.primary} /> : null}
         ListEmptyComponent={
           <View style={styles.empty}>
             <Ionicons name="people-outline" size={48} color={Colors.textLight} />

@@ -712,22 +712,32 @@ router.get(
   async (req, res, next) => {
     try {
       const db = await getAsyncDb();
-      const { location_id, status } = req.query;
+      const { location_id, status, order_type } = req.query;
 
       let sql = `SELECT s.*, l.name as location_name, u.name as created_by_name
-                 FROM sales s
-                 LEFT JOIN locations l ON s.location_id = l.id
-                 LEFT JOIN users u ON s.created_by = u.id
-                 WHERE s.status IN ('pending', 'preparing', 'ready')`;
+             FROM sales s
+             LEFT JOIN locations l ON s.location_id = l.id
+             LEFT JOIN users u ON s.created_by = u.id
+             WHERE s.status IN ('pending', 'confirmed', 'preparing', 'ready', 'completed')`;
       const params = [];
 
       if (location_id) {
         sql += ' AND s.location_id = ?';
         params.push(parseInt(location_id));
       }
+      if (order_type) {
+        sql += ' AND s.order_type = ?';
+        params.push(order_type);
+      }
       if (status) {
-        sql += ' AND s.status = ?';
-        params.push(status);
+        if (status === 'pending') {
+          sql += " AND s.status IN ('pending', 'confirmed')";
+        } else if (status === 'ready') {
+          sql += " AND s.status IN ('ready', 'completed')";
+        } else {
+          sql += ' AND s.status = ?';
+          params.push(status);
+        }
       }
 
       // Scope managers to their assigned locations
@@ -1110,13 +1120,14 @@ router.post(
           }
         }
 
-        const grandTotal = Math.max(0, subtotal - discountAmount) + taxTotal + (delivery_charges || 0);
+        const grandTotal = Math.round((Math.max(0, subtotal - discountAmount) + taxTotal + (delivery_charges || 0)) * 100) / 100;
 
         // Determine payment status
-        const totalPaid = (payments || []).reduce((s, p) => s + (p.amount || 0), 0);
+        const totalPaid = (payments || []).reduce((s, p) => s + (Number(p.amount) || 0), 0);
+        const roundedTotalPaid = Math.round(Number(totalPaid || 0) * 100) / 100;
         let paymentStatus = 'pending';
-        if (totalPaid >= grandTotal) paymentStatus = 'paid';
-        else if (totalPaid > 0) paymentStatus = 'partial';
+        if (roundedTotalPaid >= grandTotal - 0.01) paymentStatus = 'paid';
+        else if (roundedTotalPaid > 0) paymentStatus = 'partial';
 
         const saleNumber = generateSaleNumber(db, location_id);
         let saleCustomerName = customer_name || null;
@@ -1544,9 +1555,11 @@ router.post(
 
       // Recalculate payment status
       const totalPaid = db.prepare('SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE sale_id = ?').get(sale.id).total;
+      const roundedGrandTotal = Math.round(Number(sale.grand_total || 0) * 100) / 100;
+      const roundedTotalPaid = Math.round(Number(totalPaid || 0) * 100) / 100;
       let paymentStatus = 'pending';
-      if (totalPaid >= sale.grand_total) paymentStatus = 'paid';
-      else if (totalPaid > 0) paymentStatus = 'partial';
+      if (roundedTotalPaid >= roundedGrandTotal - 0.01) paymentStatus = 'paid';
+      else if (roundedTotalPaid > 0) paymentStatus = 'partial';
 
       db.prepare('UPDATE sales SET payment_status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(paymentStatus, sale.id);
 

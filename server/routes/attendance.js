@@ -340,12 +340,12 @@ router.get('/report', authorize('owner', 'manager'), async (req, res) => {
         u.name as user_name,
         u.role as user_role,
         COUNT(DISTINCT a.date) as total_days,
-        SUM(CASE WHEN a.status = 'present' THEN 1 ELSE 0 END) as present_days,
-        SUM(CASE WHEN a.status = 'absent' THEN 1 ELSE 0 END) as absent_days,
-        SUM(CASE WHEN a.status = 'half_day' THEN 1 ELSE 0 END) as half_days,
-        SUM(CASE WHEN a.status = 'on_leave' THEN 1 ELSE 0 END) as leave_days,
-        SUM(CASE WHEN a.late_arrival = 1 THEN 1 ELSE 0 END) as late_count,
-        SUM(CASE WHEN a.early_departure = 1 THEN 1 ELSE 0 END) as early_count,
+        COUNT(DISTINCT CASE WHEN a.status = 'present' THEN a.date END) as present_days,
+        COUNT(DISTINCT CASE WHEN a.status = 'absent' THEN a.date END) as absent_days,
+        COUNT(DISTINCT CASE WHEN a.status = 'half_day' THEN a.date END) as half_days,
+        COUNT(DISTINCT CASE WHEN a.status = 'on_leave' THEN a.date END) as leave_days,
+        COUNT(DISTINCT CASE WHEN a.late_arrival = 1 THEN a.date END) as late_count,
+        COUNT(DISTINCT CASE WHEN a.early_departure = 1 THEN a.date END) as early_count,
         ROUND(SUM(a.total_hours), 2) as total_hours,
         ROUND(SUM(a.outdoor_hours), 2) as outdoor_hours,
         ROUND(SUM(a.effective_hours), 2) as effective_hours,
@@ -362,7 +362,7 @@ router.get('/report', authorize('owner', 'manager'), async (req, res) => {
       SELECT
         a.date,
         COUNT(DISTINCT a.user_id) as staff_count,
-        SUM(CASE WHEN a.late_arrival = 1 THEN 1 ELSE 0 END) as late_count,
+        COUNT(DISTINCT CASE WHEN a.late_arrival = 1 THEN a.user_id END) as late_count,
         ROUND(AVG(a.effective_hours), 2) as avg_hours
       FROM attendance a
       WHERE ${whereClause}

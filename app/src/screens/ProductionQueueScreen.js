@@ -435,6 +435,7 @@ export default function ProductionQueueScreen({ navigation, route }) {
       const params = {};
       if (selectedLocation) params.location_id = selectedLocation;
       if (orderTypeFilter) params.order_type = orderTypeFilter;
+      if (orderStatusFilter) params.status = orderStatusFilter;
       const res = await api.getProductionQueue(params);
       let data = res.data || [];
 
@@ -529,8 +530,8 @@ export default function ProductionQueueScreen({ navigation, route }) {
     if (chips.length === 0) return null;
 
     return (
-      <View style={styles.activeFiltersBar}>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
+      <View style={[styles.activeFiltersBar, { flexWrap: 'wrap', gap: 8 }]}>
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, flex: 1 }}>
           {chips.map((chip) => (
             <View key={chip.key} style={styles.activeFilterChip}>
               <Text style={styles.activeFilterText}>{chip.label}</Text>
@@ -539,7 +540,7 @@ export default function ProductionQueueScreen({ navigation, route }) {
               </TouchableOpacity>
             </View>
           ))}
-        </ScrollView>
+        </View>
         <TouchableOpacity style={styles.clearAllBtn} onPress={resetAllFilters}>
           <Text style={styles.clearAllBtnText}>Reset</Text>
         </TouchableOpacity>
@@ -936,30 +937,22 @@ export default function ProductionQueueScreen({ navigation, route }) {
     );
   };
 
-  const renderFilters = () => {
-    if (!showFilters) return null;
-    
-    const filterContainerStyle = isTablet 
-      ? { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm, paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm }
-      : { paddingHorizontal: Spacing.md, gap: Spacing.xs };
-
-    const FilterWrapper = isTablet ? View : ScrollView;
-    const wrapperProps = isTablet ? { style: filterContainerStyle } : { horizontal: true, showsHorizontalScrollIndicator: false, contentContainerStyle: filterContainerStyle };
-
+  const renderFiltersContent = () => {
     const today = getShopTodayStr(timezone);
     const tomorrow = getShopTomorrowStr(timezone);
 
-
     return (
-      <View style={styles.filterPane}>
+      <View style={{ padding: Spacing.md, gap: Spacing.lg }}>
+        {/* Locations */}
         {(locations.length > 1 || isOwner) && (
-          <View style={{ marginBottom: isTablet ? 0 : Spacing.xs }}>
-            <FilterWrapper {...wrapperProps}>
+          <View style={styles.filterGroup}>
+            <Text style={styles.filterGroupTitle}>Location</Text>
+            <View style={styles.filterGroupChips}>
               {isOwner && (
                 <TouchableOpacity
                   style={[styles.chip, selectedLocation === null && styles.chipActive]}
                   onPress={() => setSelectedLocation(null)}>
-                  <Text style={[styles.chipText, selectedLocation === null && styles.chipTextActive]}>All Locations</Text>
+                  <Text style={[styles.chipText, selectedLocation === null && styles.chipTextActive]}>All</Text>
                 </TouchableOpacity>
               )}
               {locations.map((loc) => (
@@ -969,90 +962,152 @@ export default function ProductionQueueScreen({ navigation, route }) {
                   <Text style={[styles.chipText, selectedLocation === loc.id && styles.chipTextActive]}>{loc.name}</Text>
                 </TouchableOpacity>
               ))}
-            </FilterWrapper>
+            </View>
           </View>
         )}
 
-        <View style={{ marginVertical: Spacing.xs, height: 1, backgroundColor: Colors.border + '15' }} />
-
-        <FilterWrapper {...wrapperProps}>
-          <TouchableOpacity
-            style={[styles.dateChip, selectedDate === null && styles.dateChipActive]}
-            onPress={() => { setSelectedDate(null); setShowDatePicker(false); }}>
-            <Text style={[styles.dateChipText, selectedDate === null && styles.dateChipTextActive]}>All Dates</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.dateChip, selectedDate === today && styles.dateChipActive]}
-            onPress={() => { setSelectedDate(today); setShowDatePicker(false); }}>
-            <Text style={[styles.dateChipText, selectedDate === today && styles.dateChipTextActive]}>Today</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.dateChip, selectedDate === tomorrow && styles.dateChipActive]}
-            onPress={() => { setSelectedDate(tomorrow); setShowDatePicker(false); }}>
-            <Text style={[styles.dateChipText, selectedDate === tomorrow && styles.dateChipTextActive]}>Tomorrow</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.dateChip, showDatePicker && styles.dateChipActive, selectedDate && ![today, tomorrow].includes(selectedDate) && styles.dateChipActive]}
-            onPress={() => setShowDatePicker(!showDatePicker)}>
-            <Ionicons name="calendar-outline" size={16} color={(showDatePicker || (selectedDate && ![today, tomorrow].includes(selectedDate))) ? Colors.white : Colors.primary} />
-            <Text style={[styles.dateChipText, (showDatePicker || (selectedDate && ![today, tomorrow].includes(selectedDate))) && styles.dateChipTextActive]}>
-              {selectedDate && ![today, tomorrow].includes(selectedDate) ? formatDateLabel(selectedDate) : 'Custom'}
-            </Text>
-          </TouchableOpacity>
-        </FilterWrapper>
-
-        {showDatePicker && (
-          <View style={styles.customDateWrapper}>
-            <Text style={styles.customDateLabel}>Select from recent dates:</Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: Spacing.xs }}>
-              {availableDates.filter(d => ![today, tomorrow].includes(d)).map(d => (
-                <TouchableOpacity key={d} 
-                  style={[styles.chip, selectedDate === d && styles.chipActive]}
-                  onPress={() => setSelectedDate(d)}>
-                  <Text style={[styles.chipText, selectedDate === d && styles.chipTextActive]}>{formatDateLabel(d)}</Text>
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
-          </View>
-        )}
-
-        <View style={{ marginVertical: Spacing.xs, height: 1, backgroundColor: Colors.border + '15' }} />
-
-        {viewMode === 'tasks' && (
-          <FilterWrapper {...wrapperProps}>
-            {TASK_STATUS_TABS.map((tab) => (
-              <TouchableOpacity key={tab.key}
-                style={[styles.chip, statusFilter === tab.key && styles.chipActive]}
-                onPress={() => setStatusFilter(tab.key)}>
-                <Text style={[styles.chipText, statusFilter === tab.key && styles.chipTextActive]}>{tab.label}</Text>
+        {/* Date Selection */}
+        <View style={styles.filterGroup}>
+           <Text style={styles.filterGroupTitle}>Production Date</Text>
+           <View style={styles.filterGroupChips}>
+              <TouchableOpacity
+                style={[styles.chip, selectedDate === null && styles.chipActive]}
+                onPress={() => { setSelectedDate(null); setShowDatePicker(false); }}>
+                <Text style={[styles.chipText, selectedDate === null && styles.chipTextActive]}>All Dates</Text>
               </TouchableOpacity>
-            ))}
-          </FilterWrapper>
-        )}
+              <TouchableOpacity
+                style={[styles.chip, selectedDate === today && styles.chipActive]}
+                onPress={() => { setSelectedDate(today); setShowDatePicker(false); }}>
+                <Text style={[styles.chipText, selectedDate === today && styles.chipTextActive]}>Today</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.chip, selectedDate === tomorrow && styles.chipActive]}
+                onPress={() => { setSelectedDate(tomorrow); setShowDatePicker(false); }}>
+                <Text style={[styles.chipText, selectedDate === tomorrow && styles.chipTextActive]}>Tomorrow</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.chip, showDatePicker && styles.chipActive, selectedDate && ![today, tomorrow].includes(selectedDate) && styles.chipActive]}
+                onPress={() => setShowDatePicker(!showDatePicker)}>
+                <Ionicons name="calendar-outline" size={14} color={(showDatePicker || (selectedDate && ![today, tomorrow].includes(selectedDate))) ? Colors.white : Colors.primary} />
+                <Text style={[styles.chipText, (showDatePicker || (selectedDate && ![today, tomorrow].includes(selectedDate))) && styles.chipTextActive]}>
+                  {selectedDate && ![today, tomorrow].includes(selectedDate) ? formatDateLabel(selectedDate) : 'Custom Date...'}
+                </Text>
+              </TouchableOpacity>
+           </View>
+           {showDatePicker && (
+             <View style={{ marginTop: 10, padding: 10, backgroundColor: Colors.surfaceAlt, borderRadius: 8 }}>
+               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6 }}>
+                 {availableDates.filter(d => ![today, tomorrow].includes(d)).map(d => (
+                   <TouchableOpacity key={d} 
+                     style={[styles.chip, { minWidth: 80, height: 28 }, selectedDate === d && styles.chipActive]}
+                     onPress={() => setSelectedDate(d)}>
+                     <Text style={[styles.chipText, { fontSize: 10 }, selectedDate === d && styles.chipTextActive]}>{formatDateLabel(d)}</Text>
+                   </TouchableOpacity>
+                 ))}
+               </ScrollView>
+             </View>
+           )}
+        </View>
 
-        {viewMode === 'orders' && (
-          <View style={{ gap: Spacing.xs }}>
-            <FilterWrapper {...wrapperProps}>
-              {ORDER_TYPE_TABS.map((tab) => (
+        {/* View Specific Filters */}
+        {viewMode === 'tasks' ? (
+          <View style={styles.filterGroup}>
+            <Text style={styles.filterGroupTitle}>Task Status</Text>
+            <View style={styles.filterGroupChips}>
+              {TASK_STATUS_TABS.map((tab) => (
                 <TouchableOpacity key={tab.key}
-                  style={[styles.chip, orderTypeFilter === tab.key && styles.chipActive]}
-                  onPress={() => setOrderTypeFilter(tab.key)}>
-                  <Text style={[styles.chipText, orderTypeFilter === tab.key && styles.chipTextActive]}>{tab.label}</Text>
+                  style={[styles.chip, statusFilter === tab.key && styles.chipActive]}
+                  onPress={() => setStatusFilter(tab.key)}>
+                  <Text style={[styles.chipText, statusFilter === tab.key && styles.chipTextActive]}>{tab.label}</Text>
                 </TouchableOpacity>
               ))}
-            </FilterWrapper>
-            <FilterWrapper {...wrapperProps}>
-              {ORDER_STATUS_TABS.map((tab) => (
-                <TouchableOpacity key={tab.key}
-                  style={[styles.chip, orderStatusFilter === tab.key && styles.chipActive]}
-                  onPress={() => setOrderStatusFilter(tab.key)}>
-                  <Text style={[styles.chipText, orderStatusFilter === tab.key && styles.chipTextActive]}>{tab.label}</Text>
-                </TouchableOpacity>
-              ))}
-            </FilterWrapper>
+            </View>
           </View>
+        ) : (
+          <>
+            <View style={styles.filterGroup}>
+              <Text style={styles.filterGroupTitle}>Order Type</Text>
+              <View style={styles.filterGroupChips}>
+                {ORDER_TYPE_TABS.map((tab) => (
+                  <TouchableOpacity key={tab.key}
+                    style={[styles.chip, orderTypeFilter === tab.key && styles.chipActive]}
+                    onPress={() => setOrderTypeFilter(tab.key)}>
+                    <Text style={[styles.chipText, orderTypeFilter === tab.key && styles.chipTextActive]}>{tab.label}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+            <View style={styles.filterGroup}>
+              <Text style={styles.filterGroupTitle}>Order Status</Text>
+              <View style={styles.filterGroupChips}>
+                {ORDER_STATUS_TABS.map((tab) => (
+                  <TouchableOpacity key={tab.key}
+                    style={[styles.chip, orderStatusFilter === tab.key && styles.chipActive]}
+                    onPress={() => setOrderStatusFilter(tab.key)}>
+                    <Text style={[styles.chipText, orderStatusFilter === tab.key && styles.chipTextActive]}>{tab.label}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+          </>
         )}
       </View>
+    );
+  };
+
+  const renderFilters = () => {
+    if (!showFilters) return null;
+
+    if (isTablet) {
+      return (
+        <View style={styles.sidebar}>
+          <View style={styles.sidebarHeader}>
+            <Text style={styles.sidebarTitle}>Filters</Text>
+            <TouchableOpacity onPress={() => setShowFilters(false)}>
+               <Ionicons name="close" size={20} color={Colors.textLight} />
+            </TouchableOpacity>
+          </View>
+          <ScrollView style={{ flex: 1 }}>
+            {renderFiltersContent()}
+          </ScrollView>
+          <View style={styles.sidebarFooter}>
+            <TouchableOpacity style={styles.resetBtn} onPress={resetAllFilters}>
+               <Text style={styles.resetBtnText}>Clear All</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      );
+    }
+
+    return (
+      <Modal visible={true} transparent animationType="slide">
+        <View style={styles.modalOverlay}>
+          <View style={styles.mobileFilterModal}>
+            <View style={styles.modalHeader}>
+              <View>
+                <Text style={styles.modalTitle}>Filter Order Queue</Text>
+                <Text style={styles.modalSubtitle}>Refine the items on display</Text>
+              </View>
+              <TouchableOpacity style={styles.closeModalBtn} onPress={() => setShowFilters(false)}>
+                <Ionicons name="close" size={24} color={Colors.text} />
+              </TouchableOpacity>
+            </View>
+            
+            <ScrollView style={{ flex: 1 }}>
+              {renderFiltersContent()}
+            </ScrollView>
+
+            <View style={styles.modalFooter}>
+              <TouchableOpacity style={styles.resetFullBtn} onPress={resetAllFilters}>
+                <Text style={styles.resetFullBtnText}>Reset</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.applyBtn} onPress={() => setShowFilters(false)}>
+                <Text style={styles.applyBtnText}>Show Results</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     );
   };
 
@@ -1068,99 +1123,103 @@ export default function ProductionQueueScreen({ navigation, route }) {
   const chunkedList = viewMode === 'tasks' ? chunkedTaskSections : chunkedOrderSections;
 
   return (
-    <View style={styles.container}>
-      <View style={styles.headerPanel}>
-        <View style={[styles.headerRow, isTablet && { flexDirection: 'row', alignItems: 'center' }]}>
-          <View style={[{ flexDirection: 'row', alignItems: 'center', flex: isTablet ? 0 : 1 }]}>
-            {!isTablet && (
-              <View style={{ flex: 1 }}>
-                <View style={[styles.viewToggle, { marginHorizontal: Spacing.md }]}>
-                  {VIEW_TABS.map((tab) => (
-                    <TouchableOpacity key={tab.key}
-                      style={[styles.viewBtn, viewMode === tab.key && styles.viewBtnActive, { paddingVertical: 8 }]}
-                      onPress={() => { setViewMode(tab.key); setStatusFilter(''); setOrderStatusFilter(''); setOrderTypeFilter(''); setOrderSearch(''); }}>
-                      <Text style={[styles.viewBtnText, viewMode === tab.key && styles.viewBtnTextActive, { fontSize: 13 }]}>{tab.label}</Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-                <View style={{ flexDirection: 'row', alignItems: 'center', borderTopWidth: 1, borderTopColor: Colors.border + '15' }}>
-                  <TouchableOpacity
-                    style={styles.filterToggleBtn}
-                    onPress={() => setShowFilters(!showFilters)}
-                  >
-                    <Ionicons name={showFilters ? 'options' : 'options-outline'} size={18} color={Colors.primary} />
-                    <Text style={styles.filterToggleText}>{showFilters ? 'Hide' : 'Filter'}</Text>
-                  </TouchableOpacity>
-                  <View style={{ flex: 1 }} />
-                  <TouchableOpacity
-                    style={[styles.historyBtn, { borderWidth: 0, backgroundColor: 'transparent' }]}
-                    onPress={() => navigation.navigate('CompletedTasks')}
-                  >
-                    <Ionicons name="checkmark-done-circle-outline" size={20} color={Colors.primary} />
-                    <Text style={[styles.historyBtnText, { fontSize: 13 }]}>History</Text>
-                  </TouchableOpacity>
-                </View>
-                {viewMode === 'orders' && (
-                  <View style={[styles.searchBar, { marginHorizontal: Spacing.md, marginBottom: Spacing.sm }]}>
-                    <Ionicons name="search" size={16} color={Colors.textLight} />
-                    <TextInput
-                      style={styles.searchInput}
-                      placeholder="Search..."
-                      value={orderSearch}
-                      onChangeText={setOrderSearch}
-                    />
+    <View style={styles.root}>
+      {renderFilters()}
+      <View style={styles.mainView}>
+        <View style={styles.headerPanel}>
+          <View style={[styles.headerRow, isTablet && { flexDirection: 'row', alignItems: 'center' }]}>
+            <View style={[{ flexDirection: 'row', alignItems: 'center', flex: isTablet ? 0 : 1 }]}>
+              {!isTablet && (
+                <View style={{ flex: 1 }}>
+                  <View style={[styles.viewToggle, { marginHorizontal: Spacing.md, marginBottom: 8 }]}>
+                    {VIEW_TABS.map((tab) => (
+                      <TouchableOpacity key={tab.key}
+                        style={[styles.viewBtn, viewMode === tab.key && styles.viewBtnActive, { paddingVertical: 10 }]}
+                        onPress={() => { setViewMode(tab.key); setStatusFilter(''); setOrderStatusFilter(''); setOrderTypeFilter(''); setOrderSearch(''); }}>
+                        <Text style={[styles.viewBtnText, viewMode === tab.key && styles.viewBtnTextActive, { fontSize: 14 }]}>{tab.label}</Text>
+                      </TouchableOpacity>
+                    ))}
                   </View>
-                )}
-              </View>
-            )}
-
-            {isTablet && (
-              <>
-                <TouchableOpacity
-                  style={styles.filterToggleBtn}
-                  onPress={() => setShowFilters(!showFilters)}
-                >
-                  <Ionicons name={showFilters ? 'options' : 'options-outline'} size={18} color={Colors.primary} />
-                  <Text style={styles.filterToggleText}>{showFilters ? 'Hide' : 'Filter'}</Text>
-                </TouchableOpacity>
-                
-                <View style={[styles.viewToggle, { marginVertical: 0, paddingHorizontal: Spacing.sm, width: 280, borderTopWidth: 0 }]}>
-                  {VIEW_TABS.map((tab) => (
-                    <TouchableOpacity key={tab.key}
-                      style={[styles.viewBtn, viewMode === tab.key && styles.viewBtnActive, { paddingVertical: 8 }]}
-                      onPress={() => { setViewMode(tab.key); setStatusFilter(''); setOrderStatusFilter(''); setOrderTypeFilter(''); setOrderSearch(''); }}>
-                      <Text style={[styles.viewBtnText, viewMode === tab.key && styles.viewBtnTextActive, { fontSize: 12 }]}>{tab.key === 'tasks' ? 'Tasks' : 'Orders Queue'}</Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: Spacing.md, paddingBottom: 8, gap: 10 }}>
+                    <TouchableOpacity
+                      style={[styles.filterToggleBtn, { height: 40, paddingHorizontal: 0 }]}
+                      onPress={() => setShowFilters(!showFilters)}
+                    >
+                      <Ionicons name={showFilters ? 'options' : 'options-outline'} size={18} color={Colors.primary} />
+                      <Text style={styles.filterToggleText}>{showFilters ? 'Hide' : 'Filter'}</Text>
                     </TouchableOpacity>
-                  ))}
-                </View>
 
-                <View style={[{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, paddingHorizontal: Spacing.md }]}>
-                  {viewMode === 'orders' && (
-                    <View style={[styles.searchBar, { flex: 1, marginHorizontal: 0 }]}>
-                      <Ionicons name="search" size={16} color={Colors.textLight} />
-                      <TextInput
-                        style={styles.searchInput}
-                        placeholder="Search orders..."
-                        value={orderSearch}
-                        onChangeText={setOrderSearch}
-                      />
-                    </View>
-                  )}
-                  <TouchableOpacity
-                    style={styles.historyBtn}
-                    onPress={() => navigation.navigate('CompletedTasks')}
-                  >
-                    <Ionicons name="checkmark-done-circle-outline" size={20} color={Colors.primary} />
-                    <Text style={styles.historyBtnText}>History</Text>
-                  </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.historyBtn, { height: 40, borderWidth: 0, backgroundColor: 'transparent', paddingHorizontal: 0 }]}
+                      onPress={() => navigation.navigate('CompletedTasks')}
+                    >
+                      <Ionicons name="checkmark-done-circle-outline" size={20} color={Colors.primary} />
+                      <Text style={[styles.historyBtnText, { fontSize: 13 }]}>History</Text>
+                    </TouchableOpacity>
+
+                    {viewMode === 'orders' && (
+                      <View style={[styles.searchBar, { flex: 1, height: 38 }]}>
+                        <Ionicons name="search" size={14} color={Colors.textLight} />
+                        <TextInput
+                          style={[styles.searchInput, { fontSize: 12 }]}
+                          placeholder="Search..."
+                          value={orderSearch}
+                          onChangeText={setOrderSearch}
+                        />
+                      </View>
+                    )}
+                  </View>
                 </View>
-              </>
-            )}
+              )}
+
+              {isTablet && (
+                <>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: Spacing.md, flex: 1 }}>
+                    <TouchableOpacity
+                      style={[styles.filterToggleBtn, { minWidth: 100 }]}
+                      onPress={() => setShowFilters(!showFilters)}
+                    >
+                      <Ionicons name={showFilters ? 'options' : 'options-outline'} size={20} color={Colors.primary} />
+                      <Text style={[styles.filterToggleText, { fontSize: 14 }]}>{showFilters ? 'Hide Filters' : 'Filters'}</Text>
+                    </TouchableOpacity>
+                    
+                    <View style={[styles.viewToggle, { marginVertical: 0, paddingHorizontal: 4, width: 280, height: 42 }]}>
+                      {VIEW_TABS.map((tab) => (
+                        <TouchableOpacity key={tab.key}
+                          style={[styles.viewBtn, viewMode === tab.key && styles.viewBtnActive, { paddingVertical: 8 }]}
+                          onPress={() => { setViewMode(tab.key); setStatusFilter(''); setOrderStatusFilter(''); setOrderTypeFilter(''); setOrderSearch(''); }}>
+                          <Text style={[styles.viewBtnText, viewMode === tab.key && styles.viewBtnTextActive, { fontSize: 13 }]}>{tab.key === 'tasks' ? 'Tasks Output' : 'Orders Queue'}</Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+
+                    <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: Spacing.sm }}>
+                      {viewMode === 'orders' && (
+                        <View style={[styles.searchBar, { flex: 1, height: 42 }]}>
+                          <Ionicons name="search" size={18} color={Colors.textLight} />
+                          <TextInput
+                            style={[styles.searchInput, { fontSize: 14 }]}
+                            placeholder="Search orders..."
+                            value={orderSearch}
+                            onChangeText={setOrderSearch}
+                          />
+                        </View>
+                      )}
+                      <TouchableOpacity
+                        style={[styles.historyBtn, { height: 42, minWidth: 100 }]}
+                        onPress={() => navigation.navigate('CompletedTasks')}
+                      >
+                        <Ionicons name="checkmark-done-circle-outline" size={20} color={Colors.primary} />
+                        <Text style={styles.historyBtnText}>History</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                </>
+              )}
+            </View>
           </View>
         </View>
-      </View>
 
-        {renderFilters()}
         <View style={styles.stickyFiltersWrap}>{renderActiveFilters()}</View>
       
       <View style={{ flex: 1 }}>
@@ -1288,11 +1347,66 @@ export default function ProductionQueueScreen({ navigation, route }) {
           onClose={() => setViewedImage(null)} 
         />
       )}
+      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
+  root: { flex: 1, backgroundColor: Colors.background, flexDirection: 'row' },
+  mainView: { flex: 1 },
+  sidebar: {
+    width: 320,
+    backgroundColor: Colors.surface,
+    borderRightWidth: 1,
+    borderRightColor: Colors.border,
+    paddingTop: Spacing.md,
+  },
+  sidebarHeader: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    paddingHorizontal: Spacing.md, marginBottom: Spacing.md,
+  },
+  sidebarTitle: { fontSize: FontSize.lg, fontWeight: '800', color: Colors.text },
+  sidebarFooter: {
+    padding: Spacing.md, borderTopWidth: 1, borderTopColor: Colors.border,
+  },
+  resetBtn: {
+    backgroundColor: Colors.surfaceAlt,
+    borderWidth: 1, borderColor: Colors.border,
+    paddingVertical: 10, borderRadius: BorderRadius.md,
+    alignItems: 'center',
+  },
+  resetBtnText: { color: Colors.textSecondary, fontWeight: '700' },
+
+  mobileFilterModal: {
+    flex: 1, backgroundColor: Colors.background, marginTop: 40,
+    borderTopLeftRadius: 24, borderTopRightRadius: 24,
+    overflow: 'hidden',
+  },
+  modalHeader: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    padding: Spacing.lg, borderBottomWidth: 1, borderBottomColor: Colors.border,
+  },
+  modalFooter: {
+    flexDirection: 'row', gap: Spacing.md, padding: Spacing.lg,
+    borderTopWidth: 1, borderTopColor: Colors.border,
+    backgroundColor: Colors.surface,
+  },
+  resetFullBtn: {
+    flex: 1, paddingVertical: 14, borderRadius: BorderRadius.md,
+    backgroundColor: Colors.surfaceAlt, alignItems: 'center',
+  },
+  resetFullBtnText: { color: Colors.textSecondary, fontWeight: '700' },
+  applyBtn: {
+    flex: 2, paddingVertical: 14, borderRadius: BorderRadius.md,
+    backgroundColor: Colors.primary, alignItems: 'center',
+  },
+  applyBtnText: { color: Colors.white, fontWeight: '800' },
+
+  filterGroup: { marginBottom: Spacing.md },
+  filterGroupTitle: { fontSize: 11, fontWeight: '800', color: Colors.textLight, textTransform: 'uppercase', marginBottom: 8, letterSpacing: 0.5 },
+  filterGroupChips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+
   container: { flex: 1, backgroundColor: Colors.background },
   centered: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   headerPanel: {
@@ -1301,11 +1415,6 @@ const styles = StyleSheet.create({
   },
   headerRow: {
     paddingVertical: Spacing.xs,
-  },
-  filterPane: {
-    backgroundColor: Colors.background,
-    paddingVertical: Spacing.xs,
-    borderBottomWidth: 1, borderBottomColor: Colors.border,
   },
   stickyFiltersWrap: {
     zIndex: 3,
@@ -1356,6 +1465,7 @@ const styles = StyleSheet.create({
 
   summaryBar: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     backgroundColor: Colors.surface,
     borderBottomWidth: 1, borderBottomColor: Colors.border,
     paddingVertical: Spacing.sm,

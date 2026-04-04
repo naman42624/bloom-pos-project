@@ -371,7 +371,7 @@ router.get('/employee-performance', authenticate, authorize('owner', 'manager'),
         u.id as user_id, u.name,
         COUNT(DISTINCT a.date) as days_present,
         COALESCE(SUM(a.total_hours), 0) as total_hours,
-        SUM(CASE WHEN a.late_arrival = 1 THEN 1 ELSE 0 END) as late_days
+        COUNT(DISTINCT CASE WHEN a.late_arrival = 1 THEN a.date END) as late_days
       FROM users u
       LEFT JOIN attendance a ON a.user_id = u.id AND a.date BETWEEN ? AND ? AND a.clock_in IS NOT NULL
       WHERE u.role IN ('owner', 'manager', 'employee', 'delivery_partner') ${userFilter}

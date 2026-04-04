@@ -39,6 +39,7 @@ export default function POSScreen({ navigation, route }) {
   const [selectedCategory, setSelectedCategory] = useState(null); // null = all
   const [showReadyOnly, setShowReadyOnly] = useState(false);
   const [viewedImage, setViewedImage] = useState(null);
+  const [showMobileFilters, setShowMobileFilters] = useState(false);
 
   // Order type selection (Step 1)
   const [orderType, setOrderType] = useState('walk_in');
@@ -711,8 +712,8 @@ export default function POSScreen({ navigation, route }) {
 
   const renderProductList = () => (
     <View style={{ flex: 1 }}>
-      {!isTablet && renderCategoryList(false)}
-      {!isTablet && activeTab === 'products' && renderReadyFilter(false)}
+      {!isTablet && !showMobileFilters && renderCategoryList(false)}
+      {!isTablet && !showMobileFilters && activeTab === 'products' && renderReadyFilter(false)}
       <FlatList
         data={activeTab === 'products' 
           ? filteredProducts
@@ -851,8 +852,7 @@ export default function POSScreen({ navigation, route }) {
       <View style={[{ flex: 1 }]}>
         {!isTablet ? (
           <View style={styles.headerContainer}>
-            {renderLocationPicker(false)}
-            {renderOrderTypePicker(false)}
+            {/* Search + Filter Toggle row — always visible */}
             <View style={styles.searchRow}>
               <View style={styles.searchWrap}>
                 <Ionicons name="search" size={20} color={Colors.textLight} style={{ marginRight: 6 }} />
@@ -869,21 +869,71 @@ export default function POSScreen({ navigation, route }) {
                   </TouchableOpacity>
                 )}
               </View>
-              <TouchableOpacity style={styles.scanBtn} onPress={handleScanQR}>
-                <Ionicons name="qr-code" size={24} color={Colors.white} />
+              <TouchableOpacity
+                style={[styles.scanBtn, { width: 44, height: 44, backgroundColor: showMobileFilters ? Colors.primary : Colors.surfaceAlt, borderWidth: showMobileFilters ? 0 : 1, borderColor: Colors.border }]}
+                onPress={() => setShowMobileFilters(f => !f)}
+              >
+                <Ionicons name="options" size={20} color={showMobileFilters ? Colors.white : Colors.textSecondary} />
+                {(selectedCategory || showReadyOnly || (locations.length > 1 && selectedLocation)) && !showMobileFilters ? (
+                  <View style={{ position: 'absolute', top: -2, right: -2, width: 14, height: 14, borderRadius: 7, backgroundColor: Colors.primary, justifyContent: 'center', alignItems: 'center' }}>
+                    <Text style={{ fontSize: 8, color: Colors.white, fontWeight: '800' }}>
+                      {(selectedCategory ? 1 : 0) + (showReadyOnly ? 1 : 0) + (locations.length > 1 ? 1 : 0)}
+                    </Text>
+                  </View>
+                ) : null}
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.scanBtn, { width: 44, height: 44 }]} onPress={handleScanQR}>
+                <Ionicons name="qr-code" size={20} color={Colors.white} />
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.scanBtn, { backgroundColor: Colors.warning }]}
+                style={[styles.scanBtn, { backgroundColor: Colors.warning, width: 44, height: 44 }]}
                 onPress={() => navigation.navigate('SaleDrafts', { locationId: selectedLocation })}
               >
-                <Ionicons name="document-text" size={22} color={Colors.white} />
+                <Ionicons name="document-text" size={18} color={Colors.white} />
               </TouchableOpacity>
               {isManager && (
-                <TouchableOpacity style={[styles.scanBtn, { backgroundColor: Colors.success }]} onPress={openQuickAdd}>
-                  <Ionicons name="add" size={24} color={Colors.white} />
+                <TouchableOpacity style={[styles.scanBtn, { backgroundColor: Colors.success, width: 44, height: 44 }]} onPress={openQuickAdd}>
+                  <Ionicons name="add" size={20} color={Colors.white} />
                 </TouchableOpacity>
               )}
             </View>
+
+            {/* Collapsible filters — location, order type, category, ready filter */}
+            {showMobileFilters && (
+              <View style={{ backgroundColor: Colors.surface, borderBottomWidth: 1, borderBottomColor: Colors.border, paddingBottom: Spacing.xs }}>
+                {renderLocationPicker(false)}
+                {renderOrderTypePicker(false)}
+                {renderCategoryList(false)}
+                {activeTab === 'products' && renderReadyFilter(false)}
+              </View>
+            )}
+
+            {/* Order type + active filter chips — compact, always visible */}
+            {!showMobileFilters && (
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ maxHeight: 40, backgroundColor: Colors.surface, borderBottomWidth: 1, borderBottomColor: Colors.border }} contentContainerStyle={{ paddingHorizontal: Spacing.md, gap: Spacing.xs, alignItems: 'center', paddingVertical: 4 }}>
+                {ORDER_TYPES.map((t) => (
+                  <TouchableOpacity
+                    key={t.key}
+                    style={[styles.locChip, { paddingHorizontal: Spacing.sm, paddingVertical: 4, minHeight: 28, flexDirection: 'row', gap: 4 }, orderType === t.key && { backgroundColor: t.color, borderColor: t.color }]}
+                    onPress={() => setOrderType(t.key)}
+                  >
+                    <Ionicons name={t.icon} size={14} color={orderType === t.key ? Colors.white : t.color} />
+                    <Text style={[styles.locChipText, { fontSize: 11 }, orderType === t.key && { color: Colors.white }]}>{t.label}</Text>
+                  </TouchableOpacity>
+                ))}
+                {selectedCategory && (
+                  <TouchableOpacity
+                    style={[styles.locChip, { paddingHorizontal: Spacing.sm, paddingVertical: 4, minHeight: 28, flexDirection: 'row', gap: 4, backgroundColor: Colors.primary + '15', borderColor: Colors.primary + '40' }]}
+                    onPress={() => setSelectedCategory(null)}
+                  >
+                    <Text style={{ fontSize: 11, color: Colors.primary, fontWeight: '600' }}>{PRODUCT_CATEGORIES.find(c => c.key === selectedCategory)?.label}</Text>
+                    <Ionicons name="close" size={12} color={Colors.primary} />
+                  </TouchableOpacity>
+                )}
+              </ScrollView>
+            )}
+
+            {/* Tabs — always visible */}
             <View style={styles.tabRow}>
               <TouchableOpacity
                 style={[styles.tabBtn, activeTab === 'products' && styles.tabBtnActive]}
@@ -1198,14 +1248,15 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.md, paddingTop: Spacing.sm, paddingBottom: Spacing.xs,
   },
   cartPanelTitle: { fontSize: FontSize.lg, fontWeight: '700', color: Colors.text },
-  cartHeaderActions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  cartHeaderActions: { flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end', flexShrink: 1, maxWidth: '60%' },
   resumeDraftBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 4,
     padding: 8, backgroundColor: Colors.warning + '15', borderRadius: BorderRadius.sm,
     borderWidth: 1, borderColor: Colors.warning + '35',
+    flexShrink: 0,
   },
   resumeDraftText: { fontSize: FontSize.sm, color: Colors.warning, fontWeight: '700' },
-  clearBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, padding: 8, backgroundColor: Colors.errorLight, borderRadius: BorderRadius.sm },
+  clearBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, padding: 8, backgroundColor: Colors.errorLight, borderRadius: BorderRadius.sm, flexShrink: 0 },
   clearText: { fontSize: FontSize.sm, color: Colors.error, fontWeight: '700' },
   cartItemsList: { maxHeight: 160, paddingHorizontal: Spacing.md },
   cartItem: {
