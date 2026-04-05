@@ -482,16 +482,16 @@ router.delete('/drafts/:id', authenticate, authorize('owner', 'manager', 'employ
 // ═══════════════════════════════════════════════════════════════
 
 // ─── GET /api/sales/register/status ──────────────────────────
-router.get('/register/status', authenticate, (req, res, next) => {
+router.get('/register/status', authenticate, async (req, res, next) => {
   try {
-    const db = getDb();
+    const db = await getAsyncDb();
     const { location_id } = req.query;
     if (!location_id) return res.status(400).json({ success: false, message: 'location_id is required' });
 
     const today = localToday();
 
     // First check if there is ANY unclosed register for this location (could be from yesterday)
-    let register = db.prepare(`
+    let register = await db.prepare(`
       SELECT cr.*, u1.name as opened_by_name, u2.name as closed_by_name
       FROM cash_registers cr
       LEFT JOIN users u1 ON cr.opened_by = u1.id
@@ -502,7 +502,7 @@ router.get('/register/status', authenticate, (req, res, next) => {
 
     // If no open register exists, get today's most recent closed session (if any)
     if (!register) {
-      register = db.prepare(`
+      register = await db.prepare(`
         SELECT cr.*, u1.name as opened_by_name, u2.name as closed_by_name
         FROM cash_registers cr
         LEFT JOIN users u1 ON cr.opened_by = u1.id
@@ -512,25 +512,26 @@ router.get('/register/status', authenticate, (req, res, next) => {
       `).get(location_id, today);
     }
 
-    // Add today's cash expenses to the response (or the open register's date expenses)
-    if (register) {
-      const expenseTotal = db.prepare(`
+    // Run independent lookups in parallel
+    const [expenseRow, todaySessions] = await Promise.all([
+      db.prepare(`
         SELECT COALESCE(SUM(amount), 0) as total
         FROM expenses
         WHERE location_id = ? AND expense_date = ? AND payment_method = 'cash'
-      `).get(location_id, today).total;
-      register.total_expenses_cash = expenseTotal;
-    }
+      `).get(location_id, today),
+      db.prepare(`
+        SELECT cr.*, u1.name as opened_by_name, u2.name as closed_by_name
+        FROM cash_registers cr
+        LEFT JOIN users u1 ON cr.opened_by = u1.id
+        LEFT JOIN users u2 ON cr.closed_by = u2.id
+        WHERE cr.location_id = ? AND cr.date = ?
+        ORDER BY cr.id DESC
+      `).all(location_id, today),
+    ]);
 
-    // Get all sessions for today (for the log view)
-    const todaySessions = db.prepare(`
-      SELECT cr.*, u1.name as opened_by_name, u2.name as closed_by_name
-      FROM cash_registers cr
-      LEFT JOIN users u1 ON cr.opened_by = u1.id
-      LEFT JOIN users u2 ON cr.closed_by = u2.id
-      WHERE cr.location_id = ? AND cr.date = ?
-      ORDER BY cr.id DESC
-    `).all(location_id, today);
+    if (register) {
+      register.total_expenses_cash = expenseRow?.total || 0;
+    }
 
     res.json({
       success: true,
@@ -856,10 +857,10 @@ router.get(
 );
 
 // ─── GET /api/sales/:id ──────────────────────────────────────
-router.get('/:id', authenticate, (req, res, next) => {
+router.get('/:id', authenticate, async (req, res, next) => {
   try {
-    const db = getDb();
-    const sale = db.prepare(`
+    const db = await getAsyncDb();
+    const sale = await db.prepare(`
       SELECT s.*, l.name as location_name, l.address as location_address,
              l.phone as location_phone,
              u.name as created_by_name,
@@ -877,7 +878,7 @@ router.get('/:id', authenticate, (req, res, next) => {
 
     if (!sale) return res.status(404).json({ success: false, message: 'Sale not found' });
 
-    sale.items = db.prepare(`
+        sale.items = await db.prepare(`
       SELECT si.*, p.sku as product_sku, p.image_url as product_image,
              COALESCE(si.product_name, p.name, m.name, 'Item') as display_name
       FROM sale_items si
@@ -896,7 +897,7 @@ router.get('/:id', authenticate, (req, res, next) => {
       let bomsByProductId = new Map();
       if (productIds.length > 0) {
         const placeholders = productIds.map(() => '?').join(',');
-        const allBoms = db.prepare(`
+        const allBoms = await db.prepare(`
           SELECT pm.product_id, pm.material_id, pm.quantity as qty_per_unit,
                  mat.name as material_name, mat.sku as material_sku,
                  mat.image_url as material_image,
@@ -920,7 +921,7 @@ router.get('/:id', authenticate, (req, res, next) => {
       let tasksBySaleItemId = new Map();
       if (saleItemIds.length > 0) {
         const placeholders = saleItemIds.map(() => '?').join(',');
-        const allTasks = db.prepare(`
+        const allTasks = await db.prepare(`
           SELECT pt.sale_item_id, pt.id, pt.status, pt.quantity, pt.priority, pt.assigned_to, pt.picked_by,
                  pt.completed_at, pt.notes,
                  a.name as assigned_to_name, pk.name as picked_by_name
@@ -961,7 +962,7 @@ router.get('/:id', authenticate, (req, res, next) => {
       completed: 0,
       cancelled: 0,
     };
-    const taskCounts = db.prepare(`
+    const taskCounts = await db.prepare(`
       SELECT status, COUNT(*) as cnt FROM production_tasks WHERE sale_id = ? GROUP BY status
     `).all(req.params.id);
     for (const tc of taskCounts) {
@@ -974,28 +975,31 @@ router.get('/:id', authenticate, (req, res, next) => {
       sale.production_summary.assigned === 0 &&
       sale.production_summary.in_progress === 0;
 
-    sale.payments = db.prepare(`
-      SELECT p.*, u.name as received_by_name
-      FROM payments p
-      LEFT JOIN users u ON p.received_by = u.id
-      WHERE p.sale_id = ?
-      ORDER BY p.created_at ASC
-    `).all(req.params.id);
+    const [payments, preOrder, refund, delivery] = await Promise.all([
+      db.prepare(`
+        SELECT p.*, u.name as received_by_name
+        FROM payments p
+        LEFT JOIN users u ON p.received_by = u.id
+        WHERE p.sale_id = ?
+        ORDER BY p.created_at ASC
+      `).all(req.params.id),
+      sale.order_type === 'pre_order'
+        ? db.prepare('SELECT * FROM pre_orders WHERE sale_id = ?').get(req.params.id)
+        : Promise.resolve(null),
+      db.prepare('SELECT * FROM refunds WHERE sale_id = ?').get(req.params.id),
+      db.prepare(`
+        SELECT d.*, u.name as partner_name, u.phone as partner_phone
+        FROM deliveries d LEFT JOIN users u ON d.delivery_partner_id = u.id
+        WHERE d.sale_id = ?
+      `).get(req.params.id),
+    ]);
 
-    // Pre-order details if applicable
+    sale.payments = payments;
     if (sale.order_type === 'pre_order') {
-      sale.pre_order = db.prepare('SELECT * FROM pre_orders WHERE sale_id = ?').get(req.params.id);
+      sale.pre_order = preOrder;
     }
-
-    // Refund if any
-    sale.refund = db.prepare('SELECT * FROM refunds WHERE sale_id = ?').get(req.params.id);
-
-    // Delivery info if applicable
-    sale.delivery = db.prepare(`
-      SELECT d.*, u.name as partner_name, u.phone as partner_phone
-      FROM deliveries d LEFT JOIN users u ON d.delivery_partner_id = u.id
-      WHERE d.sale_id = ?
-    `).get(req.params.id);
+    sale.refund = refund;
+    sale.delivery = delivery;
 
     res.json({ success: true, data: sale });
   } catch (err) { next(err); }

@@ -151,9 +151,9 @@ router.post(
       }
 
       const { phone, password } = req.body;
-      const db = getDb();
+      const db = await getAsyncDb();
 
-      const user = db.prepare('SELECT * FROM users WHERE phone = ?').get(phone);
+      const user = await db.prepare('SELECT * FROM users WHERE phone = ?').get(phone);
 
       if (!user) {
         return res.status(401).json({
@@ -183,7 +183,7 @@ router.post(
       const { password: _, ...userWithoutPassword } = user;
 
       // Get assigned locations
-      const locations = db
+      const locations = await db
         .prepare(
           'SELECT l.id, l.name, l.type, l.latitude, l.longitude, l.geofence_radius, ul.is_primary FROM locations l JOIN user_locations ul ON ul.location_id = l.id WHERE ul.user_id = ? AND l.is_active = 1'
         )

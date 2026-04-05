@@ -5,6 +5,7 @@
  */
 
 const path = require('path');
+const { runWithRequest } = require('./request-metrics-context');
 
 // Store metrics for analysis
 const metrics = {
@@ -40,6 +41,9 @@ function performanceMonitor(req, res, next) {
     const totalMs = endTime - startTime;
     const cpuMs = (endCpu.user + endCpu.system) / 1000;
     
+    const dbMs = req.dbTime || 0;
+    const ioMs = Math.max(0, totalMs - cpuMs - dbMs);
+
     const metric = {
       timestamp: new Date().toISOString(),
       method: req.method,
@@ -47,8 +51,8 @@ function performanceMonitor(req, res, next) {
       status: res.statusCode,
       totalMs: Math.round(totalMs * 100) / 100,
       cpuMs: Math.round(cpuMs * 100) / 100,
-      dbTimeMs: req.dbTime || 0,
-      ioTimeMs: totalMs - cpuMs - (req.dbTime || 0),
+      dbTimeMs: dbMs,
+      ioTimeMs: ioMs,
       queryCount: req.queryCount || 0,
     };
     
@@ -85,8 +89,8 @@ function performanceMonitor(req, res, next) {
   req.dbTime = 0;
   req.queryCount = 0;
   req.queryTimings = [];
-  
-  next();
+
+  runWithRequest(req, () => next());
 }
 
 /**

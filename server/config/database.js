@@ -1,4 +1,5 @@
 const { spawnSync } = require('child_process');
+const { addDbTiming } = require('../middleware/request-metrics-context');
 
 const DATABASE_URL = process.env.DATABASE_URL;
 
@@ -78,6 +79,70 @@ function renameColumn(tableName, oldName, newName) {
   if (hasColumn(tableName, oldName) && !hasColumn(tableName, newName)) {
     runPsql(`ALTER TABLE ${tableName} RENAME COLUMN ${oldName} TO ${newName}`);
   }
+}
+
+function hasAllColumns(tableName, columnNames = []) {
+  return columnNames.every((columnName) => hasColumn(tableName, columnName));
+}
+
+function ensureIndex(indexName, tableName, indexColumnsSql, requiredColumns = [], whereClause = '') {
+  if (!hasAllColumns(tableName, requiredColumns)) {
+    return;
+  }
+
+  const whereSql = whereClause ? ` WHERE ${whereClause}` : '';
+  runPsql(`CREATE INDEX IF NOT EXISTS ${indexName} ON ${tableName} (${indexColumnsSql})${whereSql}`);
+}
+
+function ensurePerformanceIndexes() {
+  // Notifications
+  ensureIndex('idx_notifications_user_read', 'notifications', 'user_id, is_read', ['user_id', 'is_read']);
+  ensureIndex('idx_notifications_user_created', 'notifications', 'user_id, created_at DESC', ['user_id', 'created_at']);
+  ensureIndex(
+    'idx_notifications_unread_user',
+    'notifications',
+    'user_id, created_at DESC',
+    ['user_id', 'is_read', 'created_at'],
+    'is_read = 0'
+  );
+
+  // Attendance
+  ensureIndex('idx_attendance_user_date', 'attendance', 'user_id, date', ['user_id', 'date']);
+  ensureIndex('idx_attendance_location_date', 'attendance', 'location_id, date', ['location_id', 'date']);
+  ensureIndex('idx_attendance_date', 'attendance', 'date', ['date']);
+
+  // Production tasks
+  ensureIndex('idx_production_tasks_sale', 'production_tasks', 'sale_id', ['sale_id']);
+  ensureIndex('idx_production_tasks_sale_item', 'production_tasks', 'sale_item_id', ['sale_item_id']);
+  ensureIndex(
+    'idx_production_tasks_location_status',
+    'production_tasks',
+    'location_id, status',
+    ['location_id', 'status']
+  );
+
+  // Sales
+  ensureIndex('idx_sales_location_created_at', 'sales', 'location_id, created_at DESC', ['location_id', 'created_at']);
+  ensureIndex('idx_sales_status_created_at', 'sales', 'status, created_at DESC', ['status', 'created_at']);
+  ensureIndex(
+    'idx_sales_payment_status_created_at',
+    'sales',
+    'payment_status, created_at DESC',
+    ['payment_status', 'created_at']
+  );
+
+  // Deliveries
+  ensureIndex('idx_deliveries_location_status', 'deliveries', 'location_id, status', ['location_id', 'status']);
+  ensureIndex(
+    'idx_deliveries_partner_status',
+    'deliveries',
+    'delivery_partner_id, status',
+    ['delivery_partner_id', 'status']
+  );
+
+  // Sale items
+  ensureIndex('idx_sale_items_product', 'sale_items', 'product_id', ['product_id']);
+  ensureIndex('idx_sale_items_material', 'sale_items', 'material_id', ['material_id']);
 }
 
 function ensureCoreTables() {
@@ -834,6 +899,9 @@ function ensureCompatibilityColumns() {
   // Sync credit_payments column with VPS/schema.sql
   renameColumn('credit_payments', 'received_by', 'recorded_by');
   ensureColumn('credit_payments', 'location_id', 'INTEGER REFERENCES locations(id)');
+
+  // Create additional indexes only when required tables/columns exist.
+  ensurePerformanceIndexes();
 }
 
 function normalizeSql(sql) {
@@ -897,9 +965,11 @@ function bindParams(sql, params = []) {
 }
 
 function runPsql(sql) {
+  const startedAt = performance.now();
   const proc = spawnSync('psql', [DATABASE_URL, '-X', '-q', '-t', '-A', '-c', sql], {
     encoding: 'utf8',
   });
+  addDbTiming(performance.now() - startedAt);
 
   if (proc.status !== 0) {
     const stderr = (proc.stderr || '').trim();

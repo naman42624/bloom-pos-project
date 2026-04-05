@@ -423,86 +423,87 @@ router.get('/dashboard', authenticate, authorize('owner', 'manager'), async (req
     const locFilter = location_id ? 'AND s.location_id = ?' : '';
     const locParams = location_id ? [location_id] : [];
 
-    // Today's sales
-    const todaySales = await db.prepare(`
-      SELECT COUNT(*) as orders, COALESCE(SUM(grand_total), 0) as revenue
-      FROM sales s WHERE date(s.created_at) = ? AND s.status != 'cancelled' ${locFilter}
-    `).get(today, ...locParams);
-
     // Yesterday's sales (for comparison)
     const yesterday = new Date();
     yesterday.setDate(yesterday.getDate() - 1);
     const yesterdayStr = `${yesterday.getFullYear()}-${String(yesterday.getMonth()+1).padStart(2,'0')}-${String(yesterday.getDate()).padStart(2,'0')}`;
-    const yesterdaySales = await db.prepare(`
-      SELECT COUNT(*) as orders, COALESCE(SUM(grand_total), 0) as revenue
-      FROM sales s WHERE date(s.created_at) = ? AND s.status != 'cancelled' ${locFilter}
-    `).get(yesterdayStr, ...locParams);
 
     // This week
     const weekStart = new Date();
     weekStart.setDate(weekStart.getDate() - weekStart.getDay());
     const weekStartStr = `${weekStart.getFullYear()}-${String(weekStart.getMonth()+1).padStart(2,'0')}-${String(weekStart.getDate()).padStart(2,'0')}`;
-    const weekSales = await db.prepare(`
-      SELECT COUNT(*) as orders, COALESCE(SUM(grand_total), 0) as revenue
-      FROM sales s WHERE date(s.created_at) BETWEEN ? AND ? AND s.status != 'cancelled' ${locFilter}
-    `).get(weekStartStr, today, ...locParams);
 
     // This month
     const monthStart = `${today.slice(0, 8)}01`;
-    const monthSales = await db.prepare(`
-      SELECT COUNT(*) as orders, COALESCE(SUM(grand_total), 0) as revenue
-      FROM sales s WHERE date(s.created_at) BETWEEN ? AND ? AND s.status != 'cancelled' ${locFilter}
-    `).get(monthStart, today, ...locParams);
 
-    // Pending orders
-    const pendingOrders = await db.prepare(`
-      SELECT COUNT(*) as count FROM sales s WHERE s.status IN ('pending', 'preparing') ${locFilter}
-    `).get(...locParams);
-
-    // Today's expenses
-    const todayExpenses = await db.prepare(`
-      SELECT COALESCE(SUM(amount), 0) as total FROM expenses
-      WHERE date(created_at) = ? ${location_id ? 'AND location_id = ?' : ''}
-    `).get(...(location_id ? [today, location_id] : [today]));
-
-    // Staff present today
-    const staffPresent = await db.prepare(`
-      SELECT COUNT(DISTINCT user_id) as count FROM attendance WHERE date = ? AND clock_in IS NOT NULL AND clock_out IS NULL
-    `).get(today);
-
-    // Low stock count
-    const lowStockCount = await db.prepare(`
-      SELECT COUNT(*) as count FROM (
-        SELECT m.id FROM materials m
-        LEFT JOIN material_stock ms ON m.id = ms.material_id
-        GROUP BY m.id
-        HAVING COALESCE(SUM(ms.quantity), 0) <= m.min_stock_alert AND m.min_stock_alert > 0
-      )
-    `).get();
-
-    // Hourly sales today (for chart)
-    const hourlySales = await db.prepare(`
-      SELECT
-        EXTRACT(HOUR FROM s.created_at::timestamp)::INTEGER as hour,
-        COUNT(*) as orders,
-        COALESCE(SUM(s.grand_total), 0) as revenue
-      FROM sales s
-      WHERE date(s.created_at) = ? AND s.status != 'cancelled' ${locFilter}
-      GROUP BY hour
-      ORDER BY hour
-    `).all(today, ...locParams);
-
-    // Last 7 days trend
-    const dailyTrend = await db.prepare(`
-      SELECT
-        date(s.created_at) as day,
-        COUNT(*) as orders,
-        COALESCE(SUM(s.grand_total), 0) as revenue
-      FROM sales s
-      WHERE date(s.created_at) >= (?::date - INTERVAL '6 days') AND s.status != 'cancelled' ${locFilter}
-      GROUP BY day
-      ORDER BY day
-    `).all(today, ...locParams);
+    // Run all independent dashboard queries in parallel
+    const [
+      todaySales,
+      yesterdaySales,
+      weekSales,
+      monthSales,
+      pendingOrders,
+      todayExpenses,
+      staffPresent,
+      lowStockCount,
+      hourlySales,
+      dailyTrend,
+    ] = await Promise.all([
+      db.prepare(`
+        SELECT COUNT(*) as orders, COALESCE(SUM(grand_total), 0) as revenue
+        FROM sales s WHERE date(s.created_at) = ? AND s.status != 'cancelled' ${locFilter}
+      `).get(today, ...locParams),
+      db.prepare(`
+        SELECT COUNT(*) as orders, COALESCE(SUM(grand_total), 0) as revenue
+        FROM sales s WHERE date(s.created_at) = ? AND s.status != 'cancelled' ${locFilter}
+      `).get(yesterdayStr, ...locParams),
+      db.prepare(`
+        SELECT COUNT(*) as orders, COALESCE(SUM(grand_total), 0) as revenue
+        FROM sales s WHERE date(s.created_at) BETWEEN ? AND ? AND s.status != 'cancelled' ${locFilter}
+      `).get(weekStartStr, today, ...locParams),
+      db.prepare(`
+        SELECT COUNT(*) as orders, COALESCE(SUM(grand_total), 0) as revenue
+        FROM sales s WHERE date(s.created_at) BETWEEN ? AND ? AND s.status != 'cancelled' ${locFilter}
+      `).get(monthStart, today, ...locParams),
+      db.prepare(`
+        SELECT COUNT(*) as count FROM sales s WHERE s.status IN ('pending', 'preparing') ${locFilter}
+      `).get(...locParams),
+      db.prepare(`
+        SELECT COALESCE(SUM(amount), 0) as total FROM expenses
+        WHERE date(created_at) = ? ${location_id ? 'AND location_id = ?' : ''}
+      `).get(...(location_id ? [today, location_id] : [today])),
+      db.prepare(`
+        SELECT COUNT(DISTINCT user_id) as count FROM attendance WHERE date = ? AND clock_in IS NOT NULL AND clock_out IS NULL
+      `).get(today),
+      db.prepare(`
+        SELECT COUNT(*) as count FROM (
+          SELECT m.id FROM materials m
+          LEFT JOIN material_stock ms ON m.id = ms.material_id
+          GROUP BY m.id
+          HAVING COALESCE(SUM(ms.quantity), 0) <= m.min_stock_alert AND m.min_stock_alert > 0
+        )
+      `).get(),
+      db.prepare(`
+        SELECT
+          EXTRACT(HOUR FROM s.created_at::timestamp)::INTEGER as hour,
+          COUNT(*) as orders,
+          COALESCE(SUM(s.grand_total), 0) as revenue
+        FROM sales s
+        WHERE date(s.created_at) = ? AND s.status != 'cancelled' ${locFilter}
+        GROUP BY hour
+        ORDER BY hour
+      `).all(today, ...locParams),
+      db.prepare(`
+        SELECT
+          date(s.created_at) as day,
+          COUNT(*) as orders,
+          COALESCE(SUM(s.grand_total), 0) as revenue
+        FROM sales s
+        WHERE date(s.created_at) >= (?::date - INTERVAL '6 days') AND s.status != 'cancelled' ${locFilter}
+        GROUP BY day
+        ORDER BY day
+      `).all(today, ...locParams),
+    ]);
 
     res.json({
       success: true,

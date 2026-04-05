@@ -6,6 +6,7 @@
 
 const { Pool } = require('pg');
 const { spawnSync } = require('child_process');
+const { addDbTiming } = require('../middleware/request-metrics-context');
 
 const DATABASE_URL = process.env.DATABASE_URL;
 
@@ -96,11 +97,14 @@ function _runSyncQuery(sql) {
 
 // Query execution with connection pooling
 async function executeQuery(sql) {
+  const startedAt = performance.now();
   const client = await pool.connect();
   try {
     const result = await client.query(sql);
+    addDbTiming(performance.now() - startedAt);
     return result;
   } catch (err) {
+    addDbTiming(performance.now() - startedAt);
     throw new Error(err.message);
   } finally {
     client.release();

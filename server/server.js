@@ -34,6 +34,7 @@ const diagnosticsRoutes = require('./routes/diagnostics');
 const { errorHandler, notFound } = require('./middleware/errorHandler');
 const { performanceMonitor } = require('./middleware/performance-monitor');
 const { getDb, closeDb } = require('./config/database');
+const { getDb: getAsyncDb, closeDb: closeAsyncDb } = require('./config/database-async');
 const http = require('http');
 const { Server: SocketServer } = require('socket.io');
 const jwt = require('jsonwebtoken');
@@ -93,6 +94,9 @@ app.use(errorHandler);
 
 // ─── Initialize DB & Start Server ────────────────────────────
 getDb(); // Initialize database and create tables
+getAsyncDb().catch((err) => {
+  console.error('Async DB warm-up failed:', err.message);
+});
 
 const httpServer = http.createServer(app);
 
@@ -239,6 +243,7 @@ const server = httpServer.listen(PORT, () => {
 process.on('SIGINT', () => {
   console.log('\n🔄 Shutting down gracefully...');
   closeDb();
+  closeAsyncDb().catch(() => {});
   server.close(() => {
     console.log('✅ Server closed');
     process.exit(0);
@@ -247,6 +252,7 @@ process.on('SIGINT', () => {
 
 process.on('SIGTERM', () => {
   closeDb();
+  closeAsyncDb().catch(() => {});
   server.close(() => process.exit(0));
 });
 
