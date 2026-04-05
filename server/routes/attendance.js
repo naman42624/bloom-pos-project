@@ -755,6 +755,18 @@ router.get('/staff-today', authorize('owner', 'manager'), async (req, res) => {
       }
     }
 
+    // ─── OPTIMIZED: Fetch all active shifts in ONE query instead of subqueries ───
+    const allShifts = new Map();
+    const shiftsData = await db.prepare(`
+      SELECT DISTINCT ON (user_id, location_id) user_id, location_id, shift_start, shift_end, days_of_week
+      FROM employee_shifts
+      WHERE is_active = 1
+      ORDER BY user_id, location_id, updated_at DESC, id DESC
+    `).all();
+    for (const shift of shiftsData) {
+      allShifts.set(`${shift.user_id}-${shift.location_id}`, shift);
+    }
+
     const logs = await db.prepare(`
       SELECT
         a.*,
@@ -762,18 +774,9 @@ router.get('/staff-today', authorize('owner', 'manager'), async (req, res) => {
         u.phone as user_phone,
         u.role as user_role,
         l.name as location_name,
-        COALESCE(
-          es.shift_start,
-          (SELECT es2.shift_start FROM employee_shifts es2 WHERE es2.user_id = a.user_id AND es2.is_active = 1 ORDER BY es2.updated_at DESC, es2.id DESC LIMIT 1)
-        ) as shift_start,
-        COALESCE(
-          es.shift_end,
-          (SELECT es2.shift_end FROM employee_shifts es2 WHERE es2.user_id = a.user_id AND es2.is_active = 1 ORDER BY es2.updated_at DESC, es2.id DESC LIMIT 1)
-        ) as shift_end,
-        COALESCE(
-          es.days_of_week,
-          (SELECT es2.days_of_week FROM employee_shifts es2 WHERE es2.user_id = a.user_id AND es2.is_active = 1 ORDER BY es2.updated_at DESC, es2.id DESC LIMIT 1)
-        ) as days_of_week
+        es.shift_start,
+        es.shift_end,
+        es.days_of_week
       FROM attendance a
       JOIN users u ON a.user_id = u.id
       JOIN locations l ON a.location_id = l.id
@@ -781,6 +784,18 @@ router.get('/staff-today', authorize('owner', 'manager'), async (req, res) => {
       WHERE a.date = ? ${locFilter}
       ORDER BY a.clock_in ASC, a.id ASC
     `).all(...params);
+
+    // Merge in default shifts where not found
+    for (const log of logs) {
+      if (!log.shift_start && !log.shift_end) {
+        const defaultShift = allShifts.get(`${log.user_id}-${log.location_id}`);
+        if (defaultShift) {
+          log.shift_start = defaultShift.shift_start;
+          log.shift_end = defaultShift.shift_end;
+          log.days_of_week = defaultShift.days_of_week;
+        }
+      }
+    }
 
     // Aggregate split sessions so each staff appears exactly once.
     const byUser = new Map();

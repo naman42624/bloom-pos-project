@@ -188,13 +188,14 @@ router.get('/', authenticate, async (req, res) => {
 });
 
 // ─── GET /api/notifications/unread-count ─────────────────────
-router.get('/unread-count', authenticate, async (req, res) => {
+router.get('/unread-count', authenticate, (req, res) => {
   try {
-    const db = await getAsyncDb();
-    const { count } = await db.prepare(
+    // Use sync db for this simple count query (much faster than async overhead)
+    const db = getDb();
+    const result = db.prepare(
       'SELECT COUNT(*) as count FROM notifications WHERE user_id = ? AND is_read = 0'
     ).get(req.user.id);
-    res.json({ success: true, data: { count } });
+    res.json({ success: true, data: { count: result?.count || 0 } });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }

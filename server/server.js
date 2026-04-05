@@ -30,7 +30,9 @@ const deliveryTrackingRoutes = require('./routes/delivery-tracking');
 const reportsRoutes = require('./routes/reports');
 const notificationsRoutes = require('./routes/notifications');
 const uploadRoutes = require('./routes/upload');
+const diagnosticsRoutes = require('./routes/diagnostics');
 const { errorHandler, notFound } = require('./middleware/errorHandler');
+const { performanceMonitor } = require('./middleware/performance-monitor');
 const { getDb, closeDb } = require('./config/database');
 const http = require('http');
 const { Server: SocketServer } = require('socket.io');
@@ -43,6 +45,7 @@ const PORT = process.env.PORT || 3001;
 app.use(helmet());
 app.use(cors({ origin: '*' })); // Allow all origins in dev; restrict in production
 app.use(morgan('dev'));
+app.use(performanceMonitor); // ⚡ Performance tracking middleware
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
@@ -82,6 +85,7 @@ app.use('/api/delivery-tracking', deliveryTrackingRoutes);
 app.use('/api/reports', reportsRoutes);
 app.use('/api/notifications', notificationsRoutes);
 app.use('/api/upload', uploadRoutes);
+app.use('/api/diagnostics', diagnosticsRoutes); // ⚡ Performance metrics API
 
 // ─── Error Handling ──────────────────────────────────────────
 app.use(notFound);

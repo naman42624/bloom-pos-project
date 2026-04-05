@@ -314,51 +314,83 @@ router.get('/tasks', authenticate, authorize('owner', 'manager', 'employee'), as
 
     const tasks = await db.prepare(sql).all(...params);
 
-    const getBOM = db.prepare(`
-      SELECT pm.material_id, pm.quantity as qty_per_unit,
-             mat.name as material_name, mat.sku as material_sku,
-             mat.image_url as material_image,
-             mc.name as category_name, mc.unit
-      FROM product_materials pm
-      JOIN materials mat ON pm.material_id = mat.id
-      LEFT JOIN material_categories mc ON mat.category_id = mc.id
-      WHERE pm.product_id = ?
-      ORDER BY mat.name
-    `);
-    const getStock = db.prepare(
-      'SELECT quantity FROM material_stock WHERE material_id = ? AND location_id = ?'
-    );
+    // ⚡ OPTIMIZATION: Batch fetch all BOMs at once (not per task)
+    const productIds = [...new Set(tasks.filter(t => t.product_id).map(t => t.product_id))];
+    const allBomsData = {};
+    if (productIds.length > 0) {
+      const placeholders = productIds.map(() => '?').join(',');
+      const boms = await db.prepare(`
+        SELECT pm.product_id, pm.material_id, pm.quantity as qty_per_unit,
+               mat.name as material_name, mat.sku as material_sku,
+               mat.image_url as material_image,
+               mc.name as category_name, mc.unit
+        FROM product_materials pm
+        JOIN materials mat ON pm.material_id = mat.id
+        LEFT JOIN material_categories mc ON mat.category_id = mc.id
+        WHERE pm.product_id IN (${placeholders})
+        ORDER BY mat.name
+      `).all(...productIds);
+      
+      for (const bom of boms) {
+        if (!allBomsData[bom.product_id]) allBomsData[bom.product_id] = [];
+        allBomsData[bom.product_id].push(bom);
+      }
+    }
 
+    // ⚡ OPTIMIZATION: Batch fetch ALL material stock at once (not per task per material)
+    const materialIds = new Set();
     for (const task of tasks) {
-      // Parse custom_materials JSON if present
+      if (task.custom_materials) {
+        for (const cm of task.custom_materials) materialIds.add(cm.material_id);
+      }
+    }
+    for (const bom of Object.values(allBomsData).flat()) {
+      materialIds.add(bom.material_id);
+    }
+    
+    const stockMap = new Map(); // Key: "materialId-locationId"
+    if (materialIds.size > 0) {
+      const locationIds = [...new Set(tasks.map(t => t.location_id))];
+      const matPlaceholders = [...materialIds].map(() => '?').join(',');
+      const locPlaceholders = locationIds.map(() => '?').join(',');
+      const stocks = await db.prepare(`
+        SELECT material_id, location_id, quantity
+        FROM material_stock
+        WHERE material_id IN (${matPlaceholders}) AND location_id IN (${locPlaceholders})
+      `).all(...materialIds, ...locationIds);
+      
+      for (const stock of stocks) {
+        stockMap.set(`${stock.material_id}-${stock.location_id}`, stock.quantity);
+      }
+    }
+
+    // Attach materials to tasks with O(1) lookups
+    for (const task of tasks) {
       task.custom_materials = safeParseJSON(task.custom_materials_json, null);
       delete task.custom_materials_json;
 
-      // If custom_materials exist, show those instead of standard BOM
       if (task.custom_materials && task.custom_materials.length > 0) {
         task.materials = task.custom_materials.map(cm => {
-          const stock = (getStock.get && typeof getStock.get === 'function') ? getStock.get(cm.material_id, task.location_id) : null;
+          const quantity = stockMap.get(`${cm.material_id}-${task.location_id}`) || 0;
           const needed = (cm.qty_per_unit || cm.qty || cm.quantity || 1) * task.quantity;
           return {
             material_id: cm.material_id,
             material_name: cm.name || cm.material_name || 'Material',
             qty_per_unit: cm.qty_per_unit || cm.qty || cm.quantity || 1,
             total_needed: needed,
-            in_stock: stock ? stock.quantity : 0,
-            sufficient: stock ? stock.quantity >= needed : false,
+            in_stock: quantity,
+            sufficient: quantity >= needed,
           };
         });
-      } else if (task.product_id) {
-        // Standard BOM
-        const bom = await getBOM.all(task.product_id);
-        task.materials = (Array.isArray(bom) ? bom : []).map(b => {
-          const stock =  (getStock.get && typeof getStock.get === 'function') ? getStock.get(b.material_id, task.location_id) : null;
+      } else if (task.product_id && allBomsData[task.product_id]) {
+        task.materials = allBomsData[task.product_id].map(b => {
+          const quantity = stockMap.get(`${b.material_id}-${task.location_id}`) || 0;
           const needed = b.qty_per_unit * task.quantity;
           return {
             ...b,
             total_needed: needed,
-            in_stock: stock ? stock.quantity : 0,
-            sufficient: stock ? stock.quantity >= needed : false,
+            in_stock: quantity,
+            sufficient: quantity >= needed,
           };
         });
       } else {
@@ -539,16 +571,26 @@ router.put(
       const completeTx = db.transaction(() => {
         // 1. Deduct materials (custom or standard BOM)
         if (materialsToDeduct.length > 0) {
-          const deductStock = db.prepare('UPDATE material_stock SET quantity = GREATEST(0, quantity - ?), updated_at = CURRENT_TIMESTAMP WHERE material_id = ? AND location_id = ?');
-          const logMaterialTx = db.prepare(
-            `INSERT INTO material_transactions (material_id, location_id, type, quantity, reference_type, reference_id, notes, created_by, created_at)
-             VALUES (?, ?, 'usage', ?, 'sale', ?, ?, ?, ?)`
-          );
+          // --- BATCH INSERT MATERIAL TRANSACTIONS ---
+          const logPlaceholders = materialsToDeduct.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
+          const logParams = [];
           for (const b of materialsToDeduct) {
-            const usedQty = b.qty_needed * task.quantity;
-            deductStock.run(usedQty, b.material_id, task.location_id);
-            logMaterialTx.run(b.material_id, task.location_id, usedQty, task.sale_id, `Task #${task.id} for ${sale?.sale_number || ''}`, req.user.id, nowLocal());
+             const usedQty = b.qty_needed * task.quantity;
+             logParams.push(b.material_id, task.location_id, 'usage', usedQty, 'sale', task.sale_id, `Task #${task.id} for ${sale?.sale_number || ''}`, req.user.id, nowLocal());
           }
+          db.prepare(`INSERT INTO material_transactions (material_id, location_id, type, quantity, reference_type, reference_id, notes, created_by, created_at) VALUES ${logPlaceholders}`).run(...logParams);
+
+          // --- BATCH UPDATE MATERIAL STOCK ---
+          let updateCases = '';
+          const updateParams = [];
+          for (const b of materialsToDeduct) {
+             const usedQty = b.qty_needed * task.quantity;
+             updateCases += ' WHEN material_id = ? THEN ?';
+             updateParams.push(b.material_id, usedQty);
+          }
+          const matIdPlaceholders = materialsToDeduct.map(() => '?').join(',');
+          const caseQuery = `UPDATE material_stock SET quantity = GREATEST(0, quantity - CASE ${updateCases} ELSE 0 END), updated_at = CURRENT_TIMESTAMP WHERE location_id = ? AND material_id IN (${matIdPlaceholders})`;
+          db.prepare(caseQuery).run(...updateParams, task.location_id, ...materialsToDeduct.map(b => b.material_id));
         }
 
         // 2. Mark sale_item as materials_deducted
@@ -564,41 +606,47 @@ router.put(
         // 4. Mark task complete
         db.prepare("UPDATE production_tasks SET status = 'completed', completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(task.id);
 
-        // 5. Update sale stock_deducted and check if ALL tasks for this sale are done
-        const remaining = db.prepare(
-          "SELECT COUNT(*) as cnt FROM production_tasks WHERE sale_id = ? AND status NOT IN ('completed', 'cancelled')"
-        ).get(task.sale_id);
-
-        if (remaining.cnt === 0) {
-          // All tasks done — mark sale as ready
-          db.prepare("UPDATE sales SET status = 'ready', stock_deducted = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(task.sale_id);
-        } else {
-          // At least some materials deducted
-          db.prepare("UPDATE sales SET stock_deducted = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND stock_deducted = 0").run(task.sale_id);
-        }
+        // 5. ⚡ OPTIMIZED: Use single JOIN query instead of COUNT subquery + multiple updates
+        //    Determine sale status in one query: if any tasks remain (not completed/cancelled)
+        const sql = `
+          UPDATE sales SET 
+            status = CASE 
+              WHEN NOT EXISTS (
+                SELECT 1 FROM production_tasks 
+                WHERE sale_id = ? AND status NOT IN ('completed', 'cancelled')
+              ) THEN 'ready'
+              ELSE status
+            END,
+            stock_deducted = 1,
+            updated_at = CURRENT_TIMESTAMP
+          WHERE id = ?
+        `;
+        db.prepare(sql).run(task.sale_id, task.sale_id);
       });
 
       completeTx();
       res.json({ success: true, message: 'Task completed' });
 
-      // Check for low stock alerts after material deduction
+      // Check for low stock alerts after material deduction (BATCHED)
       try {
         const db2 = getDb();
-        const bom = db2.prepare('SELECT material_id, quantity as qty_per FROM product_materials WHERE product_id = ?').all(task.product_id);
-        for (const b of bom) {
-          const lowStock = db2.prepare(`
-            SELECT ms.quantity, m.min_stock_alert, m.name
+        const matIds = materialsToDeduct.map(m => m.material_id);
+        if (matIds.length > 0) {
+          const placeholders = matIds.map(() => '?').join(',');
+          const lowStocks = db2.prepare(`
+            SELECT ms.quantity, m.min_stock_alert, m.name, ms.material_id
             FROM material_stock ms JOIN materials m ON ms.material_id = m.id
-            WHERE ms.material_id = ? AND ms.location_id = ? AND ms.quantity <= m.min_stock_alert AND m.min_stock_alert > 0
-          `).get(b.material_id, task.location_id);
-          if (lowStock) {
+            WHERE ms.material_id IN (${placeholders}) AND ms.location_id = ? AND ms.quantity <= m.min_stock_alert AND m.min_stock_alert > 0
+          `).all(...matIds, task.location_id);
+          
+          for (const lowStock of lowStocks) {
             notifyByRole({
               roles: ['owner', 'manager'],
               locationId: task.location_id,
               title: 'Low Stock Alert',
               body: `${lowStock.name} is low: ${lowStock.quantity} remaining (alert threshold: ${lowStock.min_stock_alert})`,
               type: 'low_stock',
-              data: { materialId: b.material_id, screen: 'MaterialDetail' },
+              data: { materialId: lowStock.material_id, screen: 'MaterialDetail' },
             });
           }
         }
@@ -696,20 +744,59 @@ router.get('/dashboard-summary', authenticate, authorize('owner', 'manager', 'em
           AND si.product_id IS NOT NULL AND si.materials_deducted = 0
       `).all(...orderLocParams);
 
-      const materialNeeds = {};
-      const getBOM = db.prepare('SELECT material_id, quantity as qty_needed FROM product_materials WHERE product_id = ?');
+      // ⚡ OPTIMIZATION: Batch fetch ALL BOMs at once (not per product)
+      const productIds = [...new Set(pendingItems.map(item => item.product_id))];
+      const bomsMap = {}; // Key: product_id, Value: array of BOM items
+      if (productIds.length > 0) {
+        const placeholders = productIds.map(() => '?').join(',');
+        const boms = await db.prepare(`
+          SELECT product_id, material_id, quantity as qty_needed
+          FROM product_materials
+          WHERE product_id IN (${placeholders})
+        `).all(...productIds);
+        
+        for (const b of boms) {
+          if (!bomsMap[b.product_id]) bomsMap[b.product_id] = [];
+          bomsMap[b.product_id].push(b);
+        }
+      }
+
+      // Calculate total material needs per location/material combo
+      const materialNeeds = {}; // Key: "material_id_location_id"
       for (const item of pendingItems) {
-        const bom = await getBOM.all(item.product_id);
+        const bom = bomsMap[item.product_id] || [];
         for (const b of bom) {
           const key = `${b.material_id}_${item.location_id}`;
           if (!materialNeeds[key]) materialNeeds[key] = { material_id: b.material_id, location_id: item.location_id, needed: 0 };
           materialNeeds[key].needed += b.qty_needed * item.quantity;
         }
       }
-      for (const key of Object.keys(materialNeeds)) {
-        const need = materialNeeds[key];
-        const stock = await db.prepare('SELECT quantity FROM material_stock WHERE material_id = ? AND location_id = ?').get(need.material_id, need.location_id);
-        if (!stock || stock.quantity < need.needed) materialShortages++;
+
+      // ⚡ OPTIMIZATION: Batch fetch ALL stock at once (not per material)
+      const stockNeeds = Object.values(materialNeeds);
+      if (stockNeeds.length > 0) {
+        // Fetch all material_stock records in one query
+        const pairs = stockNeeds.map(need => [need.material_id, need.location_id]);
+        const stockPlaceholders = pairs.map(() => '(?,?)').join(',');
+        const stockParams = pairs.flat();
+        
+        const stocks = await db.prepare(`
+          SELECT material_id, location_id, quantity
+          FROM material_stock
+          WHERE (material_id, location_id) IN (${stockPlaceholders})
+        `).all(...stockParams);
+        
+        const stockMap = new Map();
+        for (const stock of stocks) {
+          stockMap.set(`${stock.material_id}_${stock.location_id}`, stock.quantity || 0);
+        }
+        
+        // Count shortages with O(1) lookups
+        for (const need of stockNeeds) {
+          const key = `${need.material_id}_${need.location_id}`;
+          const quantity = stockMap.get(key) || 0;
+          if (quantity < need.needed) materialShortages++;
+        }
       }
     }
 
