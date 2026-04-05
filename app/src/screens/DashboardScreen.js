@@ -113,11 +113,15 @@ function getOrderLaneSla(order, timezone) {
   return null;
 }
 
-function RegisterCard({ item }) {
+function RegisterCard({ item, onPress }) {
   const { locationName, isOpen, register } = item;
   const tone = isOpen ? '#10B981' : '#E11D48';
   return (
-    <View style={[styles.registerCard, { borderLeftColor: tone, borderLeftWidth: 4 }]}>
+    <TouchableOpacity
+      style={[styles.registerCard, { borderLeftColor: tone, borderLeftWidth: 4 }]}
+      onPress={onPress}
+      activeOpacity={0.7}
+    >
       <View style={styles.rowBetween}>
         <View style={{ flex: 1 }}>
           <Text style={styles.registerTitle}>{locationName}</Text>
@@ -141,7 +145,7 @@ function RegisterCard({ item }) {
           <Text style={styles.registerValue}>{formatMoney(register?.total_cash_sales || 0)}</Text>
         </View>
       </View>
-    </View>
+    </TouchableOpacity>
   );
 }
 
@@ -580,6 +584,9 @@ export default function DashboardScreen({ navigation }) {
     for (const order of sales) {
       if (!ORDER_TYPES.includes(order.order_type)) continue;
       if (order.status === 'cancelled' || order.status === 'draft') continue;
+      
+      // Do not show completed orders for walkin, pickup, and delivery order types
+      if (order.status === 'completed' && ['walk_in', 'pickup', 'delivery'].includes(order.order_type)) continue;
 
       const normalizedPhase = normalizeOrderPhase(order.status);
       const bucket = normalizedPhase === 'ready'
@@ -834,7 +841,16 @@ export default function DashboardScreen({ navigation }) {
                     <Text style={styles.emptyWidgetText}>No register data</Text>
                   </View>
                 ) : (
-                  registers.map((r) => <RegisterCard key={r.locationId} item={r} />)
+                  registers.map((r) => (
+                    <RegisterCard
+                      key={r.locationId}
+                      item={r}
+                      onPress={() => navigation.navigate('POS', {
+                        screen: 'CashRegister',
+                        params: { locationId: r.locationId }
+                      })}
+                    />
+                  ))
                 )}
               </View>
 

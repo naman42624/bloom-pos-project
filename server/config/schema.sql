@@ -141,6 +141,8 @@ CREATE TABLE IF NOT EXISTS material_stock (
 );
 
 CREATE INDEX IF NOT EXISTS idx_material_stock_location ON material_stock(location_id);
+CREATE INDEX IF NOT EXISTS idx_material_stock_material ON material_stock(material_id);
+CREATE INDEX IF NOT EXISTS idx_material_stock_material_location ON material_stock(material_id, location_id);
 
 -- ─── Suppliers ────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS suppliers (
@@ -285,6 +287,8 @@ CREATE INDEX IF NOT EXISTS idx_sales_receiver_customer ON sales(receiver_custome
 CREATE INDEX IF NOT EXISTS idx_sales_date ON sales(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sales_status ON sales(status);
 CREATE INDEX IF NOT EXISTS idx_sales_payment_status ON sales(payment_status);
+CREATE INDEX IF NOT EXISTS idx_sales_status ON sales(status);
+CREATE INDEX IF NOT EXISTS idx_sales_payment_status ON sales(payment_status);
 CREATE INDEX IF NOT EXISTS idx_sales_order_type ON sales(order_type);
 
 -- ─── Sale Drafts (incomplete checkout snapshots) ───────────
@@ -413,6 +417,9 @@ CREATE TABLE IF NOT EXISTS production_tasks (
 CREATE INDEX IF NOT EXISTS idx_production_tasks_location ON production_tasks(location_id);
 CREATE INDEX IF NOT EXISTS idx_production_tasks_status ON production_tasks(status);
 CREATE INDEX IF NOT EXISTS idx_production_tasks_priority ON production_tasks(priority);
+CREATE INDEX IF NOT EXISTS idx_production_tasks_sale ON production_tasks(sale_id);
+CREATE INDEX IF NOT EXISTS idx_production_tasks_sale_item ON production_tasks(sale_item_id);
+CREATE INDEX IF NOT EXISTS idx_production_tasks_assigned ON production_tasks(assigned_to);
 
 -- ─── Production Logs ───────────────────────────────────────
 CREATE TABLE IF NOT EXISTS production_logs (

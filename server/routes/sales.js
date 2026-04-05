@@ -887,36 +887,69 @@ router.get('/:id', authenticate, (req, res, next) => {
       ORDER BY si.id ASC
     `).all(req.params.id);
 
-    // Attach material composition (BOM) and production task for each item
-    const getBOM = db.prepare(`
-      SELECT pm.material_id, pm.quantity as qty_per_unit,
-             mat.name as material_name, mat.sku as material_sku,
-             mat.image_url as material_image,
-             mc.name as category_name, mc.unit
-      FROM product_materials pm
-      JOIN materials mat ON pm.material_id = mat.id
-      LEFT JOIN material_categories mc ON mat.category_id = mc.id
-      WHERE pm.product_id = ?
-      ORDER BY mat.name
-    `);
-    const getTask = db.prepare(`
-      SELECT pt.id, pt.status, pt.quantity, pt.priority, pt.assigned_to, pt.picked_by,
-             pt.completed_at, pt.notes,
-             a.name as assigned_to_name, pk.name as picked_by_name
-      FROM production_tasks pt
-      LEFT JOIN users a ON pt.assigned_to = a.id
-      LEFT JOIN users pk ON pt.picked_by = pk.id
-      WHERE pt.sale_item_id = ? AND pt.status != 'cancelled'
-      ORDER BY pt.id DESC LIMIT 1
-    `);
+    // ─── BATCH QUERY OPTIMIZATION: Fetch all BOMs and tasks at once (eliminates N+1) ─────
+    if (sale.items.length > 0) {
+      const productIds = [...new Set(sale.items.map(i => i.product_id).filter(Boolean))];
+      const saleItemIds = sale.items.map(i => i.id);
 
-    for (const item of sale.items) {
-      // Parse custom_materials if stored as JSON string
-      item.custom_materials = safeParseJSON(item.custom_materials, null);
-      // Fetch material composition (BOM) for standard products
-      item.materials = item.product_id ? getBOM.all(item.product_id) : [];
-      // Fetch production task for ALL items (including ad-hoc)
-      item.production_task = getTask.get(item.id) || null;
+      // Batch fetch all BOMs at once instead of looping
+      let bomsByProductId = new Map();
+      if (productIds.length > 0) {
+        const placeholders = productIds.map(() => '?').join(',');
+        const allBoms = db.prepare(`
+          SELECT pm.product_id, pm.material_id, pm.quantity as qty_per_unit,
+                 mat.name as material_name, mat.sku as material_sku,
+                 mat.image_url as material_image,
+                 mc.name as category_name, mc.unit
+          FROM product_materials pm
+          JOIN materials mat ON pm.material_id = mat.id
+          LEFT JOIN material_categories mc ON mat.category_id = mc.id
+          WHERE pm.product_id IN (${placeholders})
+          ORDER BY mat.name
+        `).all(...productIds);
+        
+        for (const bom of allBoms) {
+          if (!bomsByProductId.has(bom.product_id)) {
+            bomsByProductId.set(bom.product_id, []);
+          }
+          bomsByProductId.get(bom.product_id).push(bom);
+        }
+      }
+
+      // Batch fetch all production tasks at once instead of looping
+      let tasksBySaleItemId = new Map();
+      if (saleItemIds.length > 0) {
+        const placeholders = saleItemIds.map(() => '?').join(',');
+        const allTasks = db.prepare(`
+          SELECT pt.sale_item_id, pt.id, pt.status, pt.quantity, pt.priority, pt.assigned_to, pt.picked_by,
+                 pt.completed_at, pt.notes,
+                 a.name as assigned_to_name, pk.name as picked_by_name
+          FROM production_tasks pt
+          LEFT JOIN users a ON pt.assigned_to = a.id
+          LEFT JOIN users pk ON pt.picked_by = pk.id
+          WHERE pt.sale_item_id IN (${placeholders}) AND pt.status != 'cancelled'
+          ORDER BY pt.id DESC
+        `).all(...saleItemIds);
+        
+        for (const task of allTasks) {
+          if (!tasksBySaleItemId.has(task.sale_item_id)) {
+            tasksBySaleItemId.set(task.sale_item_id, task);
+          }
+        }
+      }
+
+      // Attach materials and tasks to items (now in O(1) lookups)
+      for (const item of sale.items) {
+        item.custom_materials = safeParseJSON(item.custom_materials, null);
+        item.materials = bomsByProductId.get(item.product_id) || [];
+        item.production_task = tasksBySaleItemId.get(item.id) || null;
+      }
+    } else {
+      for (const item of sale.items) {
+        item.custom_materials = safeParseJSON(item.custom_materials, null);
+        item.materials = [];
+        item.production_task = null;
+      }
     }
 
     // Production task summary for the entire sale

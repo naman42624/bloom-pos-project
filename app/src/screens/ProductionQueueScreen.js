@@ -43,7 +43,7 @@ const ORDER_STATUS_TABS = [
   { key: '', label: 'All' },
   { key: 'pending', label: 'Pending + Confirmed' },
   { key: 'preparing', label: 'Preparing' },
-  { key: 'ready', label: 'Ready + Completed' },
+  { key: 'ready', label: 'Ready' },
 ];
 
 const ORDER_TYPE_TABS = [
@@ -59,9 +59,17 @@ const normalizeOrderLifecycleStatus = (status) => {
   return status;
 };
 
-const matchesOrderStatusFilter = (status, filter) => {
+const matchesOrderStatusFilter = (order, filter) => {
   if (!filter) return true;
-  const normalized = normalizeOrderLifecycleStatus(status || 'pending');
+  const status = order.status || 'pending';
+  
+  if (filter === 'ready' && status === 'completed') {
+    if (['walk_in', 'pickup', 'delivery'].includes(order.order_type)) {
+      return false;
+    }
+  }
+
+  const normalized = normalizeOrderLifecycleStatus(status);
   return normalized === filter;
 };
 
@@ -445,7 +453,7 @@ export default function ProductionQueueScreen({ navigation, route }) {
       }
 
       if (orderStatusFilter) {
-        data = data.filter((o) => matchesOrderStatusFilter(o.status, orderStatusFilter));
+        data = data.filter((o) => matchesOrderStatusFilter(o, orderStatusFilter));
       }
 
       // Client-side search by sale_number or customer_name

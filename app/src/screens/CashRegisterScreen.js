@@ -9,12 +9,13 @@ import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 
-export default function CashRegisterScreen({ navigation }) {
+export default function CashRegisterScreen({ navigation, route }) {
   const { user } = useAuth();
+  const initialLocationId = route.params?.locationId;
   const canManage = user?.role === 'owner' || user?.role === 'manager';
 
   const [locations, setLocations] = useState([]);
-  const [selectedLocation, setSelectedLocation] = useState(null);
+  const [selectedLocation, setSelectedLocation] = useState(initialLocationId || null);
   const [register, setRegister] = useState(null);
   const [isOpen, setIsOpen] = useState(false);
   const [loading, setLoading] = useState(true);
