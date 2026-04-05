@@ -535,6 +535,109 @@ function ensureCoreTables() {
   runPsql('CREATE INDEX IF NOT EXISTS idx_sale_drafts_location ON sale_drafts(location_id)');
   runPsql('CREATE INDEX IF NOT EXISTS idx_sale_drafts_updated_at ON sale_drafts(updated_at DESC)');
 
+  // ─── Additional Indexes (Auto-migration from schema.sql) ────
+  // Users indexes
+  runPsql('CREATE INDEX IF NOT EXISTS idx_users_phone ON users(phone)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_users_role ON users(role)');
+
+  // Locations indexes
+  runPsql('CREATE INDEX IF NOT EXISTS idx_locations_active ON locations(is_active)');
+
+  // User_locations indexes
+  runPsql('CREATE INDEX IF NOT EXISTS idx_user_locations_user ON user_locations(user_id)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_user_locations_location ON user_locations(location_id)');
+
+  // Materials indexes
+  runPsql('CREATE INDEX IF NOT EXISTS idx_materials_category ON materials(category_id)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_materials_sku ON materials(sku)');
+
+  // Purchase orders indexes
+  runPsql('CREATE INDEX IF NOT EXISTS idx_purchase_orders_supplier ON purchase_orders(supplier_id)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_purchase_orders_status ON purchase_orders(status)');
+
+  // Products indexes
+  runPsql('CREATE INDEX IF NOT EXISTS idx_products_category ON products(category_id)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_products_sku ON products(sku)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_products_active ON products(is_active)');
+
+  // Sales indexes (query filters & sorting)
+  runPsql('CREATE INDEX IF NOT EXISTS idx_sales_location ON sales(location_id)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_sales_customer ON sales(customer_id)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_sales_sender_customer ON sales(sender_customer_id)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_sales_receiver_customer ON sales(receiver_customer_id)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_sales_date ON sales(created_at DESC)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_sales_status ON sales(status)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_sales_payment_status ON sales(payment_status)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_sales_order_type ON sales(order_type)');
+
+  // Sale items indexes
+  runPsql('CREATE INDEX IF NOT EXISTS idx_sale_items_sale ON sale_items(sale_id)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_sale_items_product ON sale_items(product_id)');
+
+  // Deliveries indexes
+  runPsql('CREATE INDEX IF NOT EXISTS idx_deliveries_location ON deliveries(location_id)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_deliveries_partner ON deliveries(partner_id)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_deliveries_partner_new ON deliveries(delivery_partner_id)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_deliveries_status ON deliveries(status)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_deliveries_date ON deliveries(scheduled_date)');
+
+  // Production tasks indexes (PERFORMANCE CRITICAL - optimize task queries)
+  runPsql('CREATE INDEX IF NOT EXISTS idx_production_tasks_location ON production_tasks(location_id)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_production_tasks_status ON production_tasks(status)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_production_tasks_priority ON production_tasks(priority)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_production_tasks_sale ON production_tasks(sale_id)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_production_tasks_sale_item ON production_tasks(sale_item_id)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_production_tasks_assigned ON production_tasks(assigned_to)');
+
+  // Expenses indexes
+  runPsql('CREATE INDEX IF NOT EXISTS idx_expenses_location ON expenses(location_id)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_expenses_date ON expenses(expense_date)');
+
+  // Pre-orders indexes
+  runPsql('CREATE INDEX IF NOT EXISTS idx_pre_orders_customer ON pre_orders(customer_id)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_pre_orders_delivery_date ON pre_orders(delivery_date)');
+
+  // Recurring orders indexes
+  runPsql('CREATE INDEX IF NOT EXISTS idx_recurring_active ON recurring_orders(is_active, next_run_date)');
+
+  // Employee shifts indexes
+  runPsql('CREATE INDEX IF NOT EXISTS idx_employee_shifts_user ON employee_shifts(user_id)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_employee_shifts_location ON employee_shifts(location_id)');
+
+  // Attendance indexes
+  runPsql('CREATE INDEX IF NOT EXISTS idx_attendance_user ON attendance(user_id)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_attendance_date ON attendance(date)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_attendance_location ON attendance(location_id)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_attendance_user_date ON attendance(user_id, date)');
+
+  // Geofence events indexes
+  runPsql('CREATE INDEX IF NOT EXISTS idx_geofence_events_user ON geofence_events(user_id)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_geofence_events_processed ON geofence_events(processed)');
+
+  // Outdoor duty requests indexes
+  runPsql('CREATE INDEX IF NOT EXISTS idx_outdoor_duty_requests_user ON outdoor_duty_requests(user_id)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_outdoor_duty_requests_status ON outdoor_duty_requests(status)');
+
+  // Salary advances indexes
+  runPsql('CREATE INDEX IF NOT EXISTS idx_salary_advances_user ON salary_advances(user_id)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_salary_advances_status ON salary_advances(status)');
+
+  // Cash registers indexes
+  runPsql('CREATE INDEX IF NOT EXISTS idx_cash_registers_location ON cash_registers(location_id)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_cash_registers_status ON cash_registers(status)');
+
+  // Delivery settlements indexes
+  runPsql('CREATE INDEX IF NOT EXISTS idx_delivery_settlements_partner ON delivery_settlements(partner_id)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_delivery_settlements_date ON delivery_settlements(settlement_date)');
+
+  // Credit payments indexes
+  runPsql('CREATE INDEX IF NOT EXISTS idx_credit_payments_customer ON credit_payments(customer_id)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_credit_payments_sale ON credit_payments(sale_id)');
+
+  // Push tokens indexes
+  runPsql('CREATE INDEX IF NOT EXISTS idx_push_tokens_user ON push_tokens(user_id)');
+
   // Seed default material categories if table is empty
   const catCount = runPsql("SELECT COUNT(*) FROM material_categories");
   if (catCount.trim() === '0') {
