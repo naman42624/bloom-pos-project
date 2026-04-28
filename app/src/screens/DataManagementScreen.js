@@ -125,33 +125,55 @@ export default function DataManagementScreen({ navigation }) {
 
   const handleReset = () => {
     if (resetText !== 'RESET') {
-      Alert.alert('Confirmation Required', 'Type "RESET" in the text field to confirm data reset.');
+      if (Platform.OS === 'web') {
+        window.alert('Type "RESET" in the text field to confirm data reset.');
+      } else {
+        Alert.alert('Confirmation Required', 'Type "RESET" in the text field to confirm data reset.');
+      }
       return;
     }
 
-    Alert.alert(
-      '⚠️ DANGER: Reset All Data',
-      'This will permanently delete ALL sales, orders, deliveries, production tasks, payments, attendance records, and settlements.\n\nProducts, materials, locations, and staff will be kept.\n\nThis CANNOT be undone!',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Reset Everything', style: 'destructive',
-          onPress: async () => {
-            setResetting(true);
-            try {
-              await api.request('/sales/admin/reset', { method: 'POST', body: JSON.stringify({ confirm: true }) });
-              setResetText('');
-              setSectionData({});
-              Alert.alert('Reset Complete', 'All transactional data has been deleted.');
-            } catch (e) {
-              Alert.alert('Error', e.message || 'Failed to reset');
-            } finally {
-              setResetting(false);
-            }
+    const confirmReset = async () => {
+      setResetting(true);
+      try {
+        await api.request('/sales/admin/reset', { method: 'POST', body: JSON.stringify({ confirm: true }) });
+        setResetText('');
+        setSectionData({});
+        if (Platform.OS === 'web') {
+          window.alert('Reset Complete - All transactional data has been deleted.');
+        } else {
+          Alert.alert('Reset Complete', 'All transactional data has been deleted.');
+        }
+      } catch (e) {
+        if (Platform.OS === 'web') {
+          window.alert('Error: ' + (e.message || 'Failed to reset'));
+        } else {
+          Alert.alert('Error', e.message || 'Failed to reset');
+        }
+      } finally {
+        setResetting(false);
+      }
+    };
+
+    if (Platform.OS === 'web') {
+      // Use browser confirm for web
+      if (window.confirm('⚠️ DANGER: Reset All Data\n\nThis will permanently delete ALL sales, orders, deliveries, production tasks, payments, attendance records, and settlements.\n\nProducts, materials, locations, and staff will be kept.\n\nThis CANNOT be undone!\n\nClick OK to proceed.')) {
+        confirmReset();
+      }
+    } else {
+      // Use React Native Alert for mobile
+      Alert.alert(
+        '⚠️ DANGER: Reset All Data',
+        'This will permanently delete ALL sales, orders, deliveries, production tasks, payments, attendance records, and settlements.\n\nProducts, materials, locations, and staff will be kept.\n\nThis CANNOT be undone!',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Reset Everything', style: 'destructive',
+            onPress: confirmReset,
           },
-        },
-      ]
-    );
+        ]
+      );
+    }
   };
 
   const renderItem = (section, item) => {

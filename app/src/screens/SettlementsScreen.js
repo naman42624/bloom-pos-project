@@ -54,7 +54,7 @@ export default function SettlementsScreen({ navigation }) {
 
   const handleCreateSettlement = async () => {
     if (!selectedPartner || unsettled.length === 0) return;
-    const totalAmount = unsettled.reduce((sum, d) => sum + (d.cod_collected || 0), 0);
+    const totalAmount = unsettled.reduce((sum, d) => sum + Number(d.cod_collected || 0), 0);
     const deliveryIds = unsettled.map(d => d.id);
 
     try {
@@ -90,13 +90,13 @@ export default function SettlementsScreen({ navigation }) {
     }
   };
 
-  const totalUnsettled = unsettled.reduce((sum, d) => sum + (d.cod_collected || 0), 0);
+  const totalUnsettled = unsettled.reduce((sum, d) => sum + Number(d.cod_collected || 0), 0);
 
   const renderUnsettled = ({ item }) => (
     <View style={styles.card}>
       <View style={styles.cardRow}>
         <Text style={styles.orderNum}>{item.sale_number}</Text>
-        <Text style={styles.amount}>₹{(item.cod_collected || 0).toFixed(0)}</Text>
+        <Text style={styles.amount}>₹{Number(item.cod_collected || 0).toFixed(0)}</Text>
       </View>
       <View style={styles.cardRow}>
         <Text style={styles.cardSub}>{item.customer_name || 'Customer'}</Text>
@@ -116,7 +116,7 @@ export default function SettlementsScreen({ navigation }) {
           <Text style={styles.cardSub}>{item.total_deliveries} deliveries</Text>
         </View>
         <View style={{ alignItems: 'flex-end' }}>
-          <Text style={styles.amount}>₹{(item.total_amount || 0).toFixed(0)}</Text>
+          <Text style={styles.amount}>₹{Number(item.total_amount || 0).toFixed(0)}</Text>
           <View style={[styles.statusBadge, { backgroundColor: item.status === 'verified' ? '#E8F5E9' : '#FFF3E0' }]}>
             <Text style={[styles.statusText, { color: item.status === 'verified' ? '#2E7D32' : '#E65100' }]}>
               {item.status === 'verified' ? '✓ Verified' : 'Pending'}

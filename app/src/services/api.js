@@ -787,6 +787,10 @@ class ApiService {
     return this.request(`/deliveries/${deliveryId}/cancel`, { method: 'PUT', body: JSON.stringify(data) });
   }
 
+  convertDeliveryPayment(deliveryId, data) {
+    return this.request(`/deliveries/${deliveryId}/convert-payment`, { method: 'POST', body: JSON.stringify(data) });
+  }
+
   uploadDeliveryProof(deliveryId, formData) {
     return this.request(`/deliveries/${deliveryId}/proof`, {
       method: 'POST',

@@ -80,7 +80,7 @@ export default function InventoryReportScreen() {
                 styles.stockQty,
                 s.total_stock <= (s.reorder_level || 0) && s.reorder_level > 0 && { color: Colors.error },
               ]}>
-                {s.location_stock != null ? s.location_stock : s.total_stock} {s.unit}
+                {s.location_stock != null ? Number(s.location_stock) : Number(s.total_stock)} {s.unit}
               </Text>
             </View>
           ))}
@@ -102,8 +102,8 @@ export default function InventoryReportScreen() {
                   </View>
                 </View>
                 <View style={{ alignItems: 'flex-end', marginLeft: 12 }}>
-                  <Text style={[styles.stockQty, { color: Colors.error }]}>{s.total_stock} {s.unit}</Text>
-                  <Text style={styles.stockLoc}>Min: {s.reorder_level}</Text>
+                  <Text style={[styles.stockQty, { color: Colors.error }]}>{Number(s.total_stock)} {s.unit}</Text>
+                  <Text style={styles.stockLoc}>Min: {Number(s.reorder_level)}</Text>
                 </View>
               </View>
             );
@@ -121,7 +121,7 @@ export default function InventoryReportScreen() {
                 <Text style={styles.stockName}>{w.material_name}</Text>
                 <Text style={styles.stockLoc}>{w.incidents} incident{w.incidents !== 1 ? 's' : ''}</Text>
               </View>
-              <Text style={[styles.stockQty, { color: Colors.error }]}>-{w.wasted_qty} {w.unit}</Text>
+              <Text style={[styles.stockQty, { color: Colors.error }]}>-{Number(w.wasted_qty)} {w.unit}</Text>
             </View>
           ))}
         </View>
@@ -133,7 +133,7 @@ export default function InventoryReportScreen() {
           {data.productStock.map((p, i) => (
             <View key={`prod-${p.id}`} style={styles.stockRow}>
               <Text style={[styles.stockName, { flex: 1 }]}>{p.name}</Text>
-              <Text style={styles.stockQty}>{p.total_stock}</Text>
+              <Text style={styles.stockQty}>{Number(p.total_stock)}</Text>
             </View>
           ))}
         </View>

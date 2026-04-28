@@ -15,6 +15,25 @@ const STATUS_LABELS = { pending: 'Pending', assigned: 'Assigned', picked_up: 'Pi
 const STATUS_ICONS = { pending: 'time-outline', assigned: 'person-add-outline', picked_up: 'cube-outline', in_transit: 'bicycle-outline', delivered: 'checkmark-circle-outline', failed: 'close-circle-outline', cancelled: 'ban-outline' };
 const STATUS_COLORS = { pending: '#FF9800', assigned: '#2196F3', picked_up: '#9C27B0', in_transit: '#00BCD4', delivered: '#4CAF50', failed: '#F44336', cancelled: '#9E9E9E' };
 
+/** Format a scheduled_date (ISO or YYYY-MM-DD) + time into readable string */
+function formatScheduled(dateStr, timeStr) {
+  if (!dateStr) return '';
+  try {
+    let localDate = dateStr;
+    if (dateStr.includes('T') || dateStr.includes('Z') || dateStr.includes('+')) {
+      const d = new Date(dateStr);
+      if (!isNaN(d.getTime())) localDate = d.toLocaleDateString('en-CA');
+    }
+    const [, month, day] = localDate.split('-').map(Number);
+    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    const datePart = `${day} ${months[month - 1]}`;
+    if (!timeStr) return datePart;
+    const [hh, mm] = String(timeStr).split(':').map(Number);
+    const ampm = hh >= 12 ? 'PM' : 'AM';
+    return `${datePart}, ${hh % 12 || 12}:${String(mm || 0).padStart(2, '0')} ${ampm}`;
+  } catch { return dateStr; }
+}
+
 export default function DeliveryDetailScreen({ route, navigation }) {
   const { deliveryId } = route.params;
   const { user } = useAuth();
@@ -136,6 +155,35 @@ export default function DeliveryDetailScreen({ route, navigation }) {
       selectedPartnerId: partnerId,
       deliveryId,
     });
+  };
+
+  const handleConvertPayment = async (action) => {
+    if (!delivery) return;
+    const msg = action === 'to_cod' 
+      ? 'Convert this credit order to Cash on Delivery?'
+      : 'Convert this COD order to a Credit Sale? (Requires customer details)';
+      
+    const confirmConversion = async () => {
+      setActionLoading(true);
+      try {
+        await api.convertDeliveryPayment(delivery.id, { action });
+        await fetchDelivery();
+      } catch (err) {
+        const errorMsg = err.response?.data?.message || err.message || 'Failed to convert payment';
+        Platform.OS === 'web' ? window.alert(errorMsg) : Alert.alert('Error', errorMsg);
+      } finally {
+        setActionLoading(false);
+      }
+    };
+
+    if (Platform.OS === 'web') {
+      if (window.confirm(msg)) confirmConversion();
+    } else {
+      Alert.alert('Confirm Conversion', msg, [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Convert', style: 'default', onPress: confirmConversion }
+      ]);
+    }
   };
 
   const handleDeliver = async () => {
@@ -283,7 +331,7 @@ export default function DeliveryDetailScreen({ route, navigation }) {
           <span><strong>Order:</strong> ${orderNo}</span>
           <span><strong>Date:</strong> ${date}</span>
         </div>
-        ${scheduledDate ? `<div style="font-size:10px;margin-bottom:3px;"><strong>Scheduled:</strong> ${scheduledDate} ${scheduledTime || ''}</div>` : ''}
+        ${scheduledDate ? `<div style="font-size:10px;margin-bottom:3px;"><strong>Scheduled:</strong> ${formatScheduled(scheduledDate, scheduledTime)}</div>` : ''}
         <div style="display:flex;gap:12px;font-size:10px;margin-bottom:2px;">
           <div style="flex:1;"><strong>Customer:</strong> ${customerName}${customerPhone ? ' • ' + customerPhone : ''}</div>
         </div>
@@ -408,7 +456,7 @@ export default function DeliveryDetailScreen({ route, navigation }) {
         <InfoRow icon="location-outline" label="Address" value={delivery.delivery_address} />
         {delivery.customer_name && <InfoRow icon="person-outline" label="Customer" value={`${delivery.customer_name} ${delivery.customer_phone ? '• ' + delivery.customer_phone : ''}`} />}
         {delivery.partner_name && <InfoRow icon="bicycle-outline" label="Partner" value={`${delivery.partner_name} ${delivery.partner_phone ? '• ' + delivery.partner_phone : ''}`} />}
-        {delivery.scheduled_date && <InfoRow icon="calendar-outline" label="Scheduled" value={`${delivery.scheduled_date} ${delivery.scheduled_time || ''}`} />}
+        {delivery.scheduled_date && <InfoRow icon="calendar-outline" label="Scheduled" value={formatScheduled(delivery.scheduled_date, delivery.scheduled_time)} />}
         {delivery.status === 'in_transit' && (delivery.delivery_partner_id || delivery.partner_id) && (
           <TouchableOpacity style={styles.liveLocationBtn} onPress={handleViewLivePartner}>
             <Ionicons name="locate-outline" size={16} color={Colors.primary} />
@@ -532,7 +580,11 @@ export default function DeliveryDetailScreen({ route, navigation }) {
         {!isPartner && (
           <>
             <InfoRow icon="cash-outline" label="Grand Total" value={`₹${Number(delivery.grand_total || 0).toFixed(0)}`} />
-            <InfoRow icon="wallet-outline" label="Paid at Shop" value={`₹${Number((delivery.grand_total || 0) - (delivery.cod_amount || 0)).toFixed(0)}`} />
+            {delivery.is_credit_sale === 1 ? (
+              <InfoRow icon="document-text-outline" label="On Credit" value={`₹${Number(delivery.grand_total || 0).toFixed(0)}`} />
+            ) : (
+              <InfoRow icon="wallet-outline" label="Paid at Shop" value={`₹${Number((delivery.grand_total || 0) - (delivery.cod_amount || 0)).toFixed(0)}`} />
+            )}
           </>
         )}
         {delivery.cod_amount > 0 && (
@@ -551,7 +603,9 @@ export default function DeliveryDetailScreen({ route, navigation }) {
         )}
         {delivery.cod_amount === 0 && isPartner && (
           <View style={[styles.codStatusBadge, { backgroundColor: '#E8F5E9' }]}>
-            <Text style={styles.codStatusText}>No amount to collect — Fully prepaid</Text>
+            <Text style={styles.codStatusText}>
+              {delivery.is_credit_sale === 1 ? 'Credit Sale — No amount to collect' : 'No amount to collect — Fully prepaid'}
+            </Text>
           </View>
         )}
         {!isPartner && delivery.payments?.length > 0 && (
@@ -584,6 +638,30 @@ export default function DeliveryDetailScreen({ route, navigation }) {
       {!isFinal && (
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Actions</Text>
+
+          {isManager && (
+            <View style={{ flexDirection: 'row', gap: 8, marginBottom: 12 }}>
+              {delivery.is_credit_sale === 1 ? (
+                <TouchableOpacity 
+                  style={[styles.actionBtn, { flex: 1, backgroundColor: '#E5E7EB' }]} 
+                  onPress={() => handleConvertPayment('to_cod')}
+                  disabled={actionLoading}
+                >
+                  <Ionicons name="cash-outline" size={20} color="#374151" />
+                  <Text style={[styles.actionBtnText, { color: '#374151' }]}>Convert to COD</Text>
+                </TouchableOpacity>
+              ) : (
+                <TouchableOpacity 
+                  style={[styles.actionBtn, { flex: 1, backgroundColor: '#E5E7EB' }]} 
+                  onPress={() => handleConvertPayment('to_credit')}
+                  disabled={actionLoading}
+                >
+                  <Ionicons name="document-text-outline" size={20} color="#374151" />
+                  <Text style={[styles.actionBtnText, { color: '#374151' }]}>Convert to Credit</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          )}
 
           {/* Print challan — available to all roles */}
           <TouchableOpacity style={[styles.actionBtn, { backgroundColor: Colors.primary, marginBottom: 8 }]} onPress={generateChallan}>

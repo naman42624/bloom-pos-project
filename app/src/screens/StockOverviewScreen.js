@@ -5,6 +5,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
+import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 
@@ -22,6 +23,9 @@ const QUICK_LINKS = [
 ];
 
 export default function StockOverviewScreen({ navigation }) {
+  const { user } = useAuth();
+  const isEmployee = user?.role === 'employee';
+
   const [stock, setStock] = useState([]);
   const [locations, setLocations] = useState([]);
   const [selectedLocation, setSelectedLocation] = useState(null);
@@ -64,7 +68,7 @@ export default function StockOverviewScreen({ navigation }) {
           </View>
           <View style={styles.qtyBox}>
             <Text style={[styles.qtyText, { color: isLow ? Colors.error : Colors.success }]}>
-              {item.quantity}
+              {Number(item.quantity)}
             </Text>
             <Text style={styles.unitText}>{item.unit}</Text>
           </View>
@@ -72,7 +76,7 @@ export default function StockOverviewScreen({ navigation }) {
         {isLow && (
           <View style={styles.alertRow}>
             <Ionicons name="warning" size={14} color={Colors.error} />
-            <Text style={styles.alertText}>Below minimum ({item.min_stock_alert})</Text>
+            <Text style={styles.alertText}>Below minimum ({Number(item.min_stock_alert)})</Text>
           </View>
         )}
       </TouchableOpacity>
@@ -83,7 +87,7 @@ export default function StockOverviewScreen({ navigation }) {
     <View>
       {/* Quick links grid */}
       <View style={styles.quickGrid}>
-        {QUICK_LINKS.map((link) => (
+        {QUICK_LINKS.filter(l => !(isEmployee && l.screen === 'Suppliers')).map((link) => (
           <TouchableOpacity
             key={link.screen}
             style={styles.quickItem}

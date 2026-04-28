@@ -74,7 +74,7 @@ router.get('/', authenticate, authorize('owner', 'manager', 'delivery_partner', 
 
     let sql = `
       SELECT d.*, s.sale_number, s.grand_total, s.payment_status, s.order_type,
-             s.special_instructions,
+             s.status as order_status, s.special_instructions, s.is_credit_sale,
              u.name as partner_name, u.phone as partner_phone,
              l.name as location_name,
              ab.name as assigned_by_name
@@ -284,7 +284,7 @@ router.get('/:id(\\d+)', authenticate, async (req, res, next) => {
     const delivery = await db.prepare(`
       SELECT d.*, s.sale_number, s.grand_total, s.payment_status, s.subtotal, s.tax_total,
              s.discount_amount, s.delivery_charges, s.order_type, s.special_instructions,
-             s.customer_notes, s.sender_name, s.sender_phone, s.sender_message,
+             s.customer_notes, s.sender_name, s.sender_phone, s.sender_message, s.is_credit_sale,
              u.name as partner_name, u.phone as partner_phone,
              l.name as location_name, l.address as location_address, l.phone as location_phone,
              ab.name as assigned_by_name
@@ -616,6 +616,111 @@ router.put('/:id(\\d+)/reattempt', authenticate, authorize('owner', 'manager'), 
 
     const updated = db.prepare('SELECT * FROM deliveries WHERE id = ?').get(delivery.id);
     res.json({ success: true, data: updated, message: 'Delivery reset for reattempt' });
+  } catch (err) { next(err); }
+});
+
+// ─── POST /api/deliveries/:id/convert-payment ─────────────────
+// Convert a delivery payment method (Credit <-> COD)
+router.post('/:id(\\d+)/convert-payment', authenticate, authorize('owner', 'manager'), (req, res, next) => {
+  try {
+    const db = getDb();
+    const delivery = db.prepare('SELECT * FROM deliveries WHERE id = ?').get(req.params.id);
+    if (!delivery) return res.status(404).json({ success: false, message: 'Delivery not found' });
+    if (['delivered', 'cancelled'].includes(delivery.status)) {
+      return res.status(400).json({ success: false, message: `Cannot modify a ${delivery.status} delivery` });
+    }
+
+    const sale = db.prepare('SELECT * FROM sales WHERE id = ?').get(delivery.sale_id);
+    if (!sale) return res.status(404).json({ success: false, message: 'Sale not found' });
+
+    const tx = db.transaction(() => {
+      const { action } = req.body; // 'to_cod' or 'to_credit'
+
+      if (action === 'to_cod') {
+        if (!sale.is_credit_sale) throw new Error('Sale is not a credit sale');
+
+        // Total paid on the sale via other methods
+        const totalPaid = db.prepare('SELECT SUM(amount) as sum FROM payments WHERE sale_id = ?').get(sale.id).sum || 0;
+        const unpaidAmount = Math.max(0, sale.grand_total - totalPaid);
+
+        // Deduct from customer credit balance
+        if (sale.customer_id) {
+          db.prepare('UPDATE users SET credit_balance = GREATEST(0, credit_balance - ?), updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+            .run(unpaidAmount, sale.customer_id);
+        }
+
+        // Update sale to NOT credit
+        const newPaymentStatus = unpaidAmount > 0 ? (totalPaid > 0 ? 'partial' : 'pending') : 'paid';
+        db.prepare('UPDATE sales SET is_credit_sale = 0, payment_status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+          .run(newPaymentStatus, sale.id);
+
+        // Update delivery COD amount
+        db.prepare('UPDATE deliveries SET cod_amount = ?, cod_status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+          .run(unpaidAmount, unpaidAmount > 0 ? 'pending' : 'collected', delivery.id);
+
+      } else if (action === 'to_credit') {
+        if (sale.is_credit_sale) throw new Error('Sale is already a credit sale');
+        
+        // Find customer
+        let customerId = sale.customer_id;
+        if (!customerId) {
+          if (!delivery.customer_name && !delivery.customer_phone && !sale.customer_name && !sale.customer_phone) {
+            throw new Error('Customer details required to convert to credit');
+          }
+          const cName = sale.customer_name || delivery.customer_name || 'Guest';
+          const cPhone = sale.customer_phone || delivery.customer_phone || null;
+          
+          let existing;
+          if (cPhone) {
+            existing = db.prepare('SELECT id FROM users WHERE role = ? AND phone = ?').get('customer', cPhone);
+          } else {
+            existing = db.prepare('SELECT id FROM users WHERE role = ? AND name = ?').get('customer', cName);
+          }
+
+          if (existing) {
+            customerId = existing.id;
+          } else {
+            const ins = db.prepare(`
+              INSERT INTO users (role, name, phone, password_hash, created_at)
+              VALUES (?, ?, ?, 'NOPASSWORD', CURRENT_TIMESTAMP)
+            `).run('customer', cName, cPhone);
+            customerId = ins.lastInsertRowid;
+          }
+          // Link customer to sale
+          db.prepare('UPDATE sales SET customer_id = ? WHERE id = ?').run(customerId, sale.id);
+        }
+
+        const totalPaid = db.prepare('SELECT SUM(amount) as sum FROM payments WHERE sale_id = ?').get(sale.id).sum || 0;
+        const unpaidAmount = Math.max(0, sale.grand_total - totalPaid);
+
+        // Add to customer credit balance
+        db.prepare('UPDATE users SET credit_balance = credit_balance + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+          .run(unpaidAmount, customerId);
+
+        // Update sale
+        db.prepare('UPDATE sales SET is_credit_sale = 1, payment_status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+          .run('pending', sale.id); // technically pending payment since it's on credit
+
+        // Update delivery COD
+        db.prepare("UPDATE deliveries SET cod_amount = 0, cod_status = 'collected', updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+          .run(delivery.id);
+
+      } else {
+        throw new Error('Invalid action. Use to_cod or to_credit');
+      }
+    });
+
+    tx();
+
+    const updated = db.prepare(`
+      SELECT d.*, s.sale_number, s.grand_total, s.payment_status, s.order_type,
+             s.status as order_status, s.special_instructions, s.is_credit_sale
+      FROM deliveries d
+      JOIN sales s ON d.sale_id = s.id
+      WHERE d.id = ?
+    `).get(req.params.id);
+
+    res.json({ success: true, data: updated, message: 'Payment method converted' });
   } catch (err) { next(err); }
 });
 

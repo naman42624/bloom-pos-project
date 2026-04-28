@@ -176,7 +176,7 @@ export default function ProductStockScreen({ navigation }) {
           <Text style={styles.cardName} numberOfLines={1}>{item.name}</Text>
           <Text style={styles.cardSku}>{item.sku} • {item.category || 'other'}</Text>
           {hasStock && (
-            <Text style={styles.canMakeLabel}>Can make: {avail}</Text>
+            <Text style={styles.canMakeLabel}>Can make: {Number(avail)}</Text>
           )}
         </View>
         <View style={styles.cardRight}>
@@ -192,7 +192,7 @@ export default function ProductStockScreen({ navigation }) {
               lowStock && { color: '#FF9800' },
               !outOfStock && !lowStock && { color: Colors.success },
             ]}>
-              {ready}
+              {Number(ready)}
             </Text>
             <Text style={styles.stockBadgeLabel}>ready</Text>
           </View>
@@ -325,7 +325,7 @@ export default function ProductStockScreen({ navigation }) {
                       <View key={m.material_id || m.id} style={styles.bomRow}>
                         <Text style={styles.bomName}>{m.material_name || m.name}</Text>
                         <Text style={styles.bomStock}>
-                          BOM: {m.quantity}/unit • Stock: {m.stock_qty}
+                          BOM: {Number(m.quantity)}/unit • Stock: {Number(m.stock_qty)}
                         </Text>
                       </View>
                     ))}
@@ -341,7 +341,7 @@ export default function ProductStockScreen({ navigation }) {
                       >
                         <Text style={styles.bomName}>{m.material_name || m.name}</Text>
                         <Text style={styles.bomStock}>
-                          BOM: {m.quantity} • Stock: {m.stock_qty}
+                          BOM: {Number(m.quantity)} • Stock: {Number(m.stock_qty)}
                         </Text>
                       </TouchableOpacity>
                     ))}

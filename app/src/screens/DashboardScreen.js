@@ -10,6 +10,8 @@ import {
   Text,
   TouchableOpacity,
   View,
+  Image,
+  Linking,
   useWindowDimensions,
   Platform,
 } from 'react-native';
@@ -19,6 +21,7 @@ import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 import { Colors, FontSize, Spacing } from '../constants/theme';
 import { minutesSinceServerDate, minutesUntilShopDateTime } from '../utils/datetime';
+import { OrderQuickModal, DeliveryQuickModal } from '../components/QuickModals';
 
 const ORDER_TYPES = ['delivery', 'pickup', 'walk_in'];
 const ORDER_TYPE_LABELS = {
@@ -51,6 +54,45 @@ const ORDER_PHASE_LABELS = {
   ready: 'Ready',
 };
 
+const PICKUP_STATUS_COLORS = {
+  waiting: '#F59E0B',
+  ready_for_pickup: '#10B981',
+  picked_up: '#6366F1',
+};
+
+const PICKUP_STATUS_LABELS = {
+  waiting: 'Waiting',
+  ready_for_pickup: 'Ready to Collect',
+  picked_up: 'Picked Up',
+};
+
+const DELIVERY_STATUS_COLORS = {
+  pending: '#9CA3AF',
+  assigned: '#6366F1',
+  picked_up: '#F59E0B',
+  in_transit: '#0EA5E9',
+  delivered: '#10B981',
+  failed: '#E11D48',
+  cancelled: '#9CA3AF',
+};
+
+const DELIVERY_STATUS_LABELS = {
+  pending: 'Pending',
+  assigned: 'Assigned',
+  picked_up: 'Picked Up',
+  in_transit: 'In Transit',
+  delivered: 'Delivered',
+  failed: 'Failed',
+  cancelled: 'Cancelled',
+};
+
+const PAYMENT_STATUS_COLORS = {
+  paid: '#10B981',
+  partial: '#F59E0B',
+  pending: '#E11D48',
+  refunded: '#9CA3AF',
+};
+
 const FONT_FAMILY = typeof navigator !== 'undefined' && navigator.product === 'ReactNative'
   ? undefined
   : 'Inter, Geist, system-ui';
@@ -61,6 +103,40 @@ function formatMoney(value) {
 
 function formatOrderType(value) {
   return ORDER_TYPE_LABELS[value] || value || 'Order';
+}
+
+/**
+ * Formats a date+time for display on order cards.
+ * Handles both plain date strings (YYYY-MM-DD) and ISO datetime strings.
+ * Returns e.g. "23 Apr, 3:40 PM" or "23 Apr" if no time.
+ */
+function formatCardDateTime(dateStr, timeStr, timezone) {
+  try {
+    // Build a clear local datetime from the date + time parts
+    if (dateStr) {
+      // If dateStr is a full ISO string, extract the local date using the shop timezone
+      let localDate = dateStr;
+      if (dateStr.includes('T') || dateStr.includes('Z') || dateStr.includes('+')) {
+        const d = new Date(dateStr);
+        if (!isNaN(d.getTime())) {
+          localDate = d.toLocaleDateString('en-CA', { timeZone: timezone || 'Asia/Kolkata' });
+        }
+      }
+      // Format the date part
+      const [year, month, day] = localDate.split('-').map(Number);
+      const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+      const datePart = `${day} ${months[month - 1]}`;
+
+      if (!timeStr) return datePart;
+
+      // Format the time part (HH:MM)
+      const [hh, mm] = String(timeStr).split(':').map(Number);
+      const ampm = hh >= 12 ? 'PM' : 'AM';
+      const h12 = hh % 12 || 12;
+      return `${datePart}, ${h12}:${String(mm || 0).padStart(2, '0')} ${ampm}`;
+    }
+  } catch {}
+  return dateStr || '';
 }
 
 function getTaskChipColor(status) {
@@ -271,7 +347,7 @@ function TaskPill({ task, onPress, loading }) {
   );
 }
 
-function OrderCard({ order, tasks, hasPendingProduction, pulseOpacity, onTaskClick, taskActionLoading, onOpen }) {
+function OrderCard({ order, tasks, hasPendingProduction, pulseOpacity, onTaskClick, taskActionLoading, onOpen, timezone }) {
   const phaseStatus = normalizeOrderPhase(order.status);
   const statusTone = getOrderStatusTone(phaseStatus);
   const stats = {
@@ -282,9 +358,20 @@ function OrderCard({ order, tasks, hasPendingProduction, pulseOpacity, onTaskCli
   };
   const totalTasks = tasks.length;
 
+  // Delivery / pickup sub-status
+  const pickupColor = order.pickup_status ? (PICKUP_STATUS_COLORS[order.pickup_status] || '#9CA3AF') : null;
+  const pickupLabel = order.pickup_status ? (PICKUP_STATUS_LABELS[order.pickup_status] || order.pickup_status) : null;
+  const delivStatus = order.delivery_status; // available if API includes it
+  const delivColor = delivStatus ? (DELIVERY_STATUS_COLORS[delivStatus] || '#9CA3AF') : null;
+  const delivLabel = delivStatus ? (DELIVERY_STATUS_LABELS[delivStatus] || delivStatus) : null;
+
+  // Payment status
+  const isCredit = order.is_credit_sale === 1;
+  const payColor = isCredit ? '#8B5CF6' : (PAYMENT_STATUS_COLORS[order.payment_status] || '#9CA3AF');
+
   return (
     <TouchableOpacity
-      style={[styles.orderCard, { 
+      style={[styles.orderCard, {
         borderColor: hasPendingProduction ? statusTone : '#E5E7EB',
         borderLeftColor: statusTone,
         borderLeftWidth: 3,
@@ -309,10 +396,60 @@ function OrderCard({ order, tasks, hasPendingProduction, pulseOpacity, onTaskCli
           <Text style={styles.orderMeta}>{order.customer_name || 'Guest'}</Text>
           <Text style={styles.orderAmount}>{formatMoney(order.grand_total)}</Text>
         </View>
-        <View style={[styles.statusBadge, { backgroundColor: statusTone + '15', borderColor: statusTone }]}>
-          <Text style={[styles.statusBadgeText, { color: statusTone }]}>{ORDER_PHASE_LABELS[phaseStatus] || ORDER_STATUS_LABELS[order.status] || order.status}</Text>
+        <View style={{ alignItems: 'flex-end', gap: 4 }}>
+          <View style={[styles.statusBadge, { backgroundColor: statusTone + '15', borderColor: statusTone }]}>
+            <Text style={[styles.statusBadgeText, { color: statusTone }]}>
+              {ORDER_PHASE_LABELS[phaseStatus] || ORDER_STATUS_LABELS[order.status] || order.status}
+            </Text>
+          </View>
+          {/* Payment status badge */}
+          {(isCredit || (order.payment_status && order.payment_status !== 'paid')) && (
+            <View style={[styles.statusBadge, { backgroundColor: payColor + '15', borderColor: payColor }]}>
+              <Text style={[styles.statusBadgeText, { color: payColor }]}>
+                {isCredit ? 'CREDIT' : 
+                 order.payment_status === 'pending' ? 'PAY: UNPAID' :
+                 order.payment_status === 'partial' ? 'PAY: PARTIAL' :
+                 ('PAY: ' + (order.payment_status || '').toUpperCase())}
+              </Text>
+            </View>
+          )}
         </View>
       </View>
+
+      {/* Delivery sub-status */}
+      {order.order_type === 'delivery' && delivLabel && (
+        <View style={[styles.subStatusRow, { backgroundColor: delivColor + '10' }]}>
+          <View style={[styles.subStatusDot, { backgroundColor: delivColor }]} />
+          <Text style={[styles.subStatusText, { color: delivColor }]}>{delivLabel}</Text>
+        </View>
+      )}
+
+      {/* Pickup sub-status */}
+      {order.order_type === 'pickup' && pickupLabel && (
+        <View style={[styles.subStatusRow, { backgroundColor: pickupColor + '10' }]}>
+          <View style={[styles.subStatusDot, { backgroundColor: pickupColor }]} />
+          <Text style={[styles.subStatusText, { color: pickupColor }]}>{pickupLabel}</Text>
+        </View>
+      )}
+
+      {/* Scheduled date — delivery/pickup */}
+      {order.scheduled_date && (
+        <View style={styles.scheduledRow}>
+          <Ionicons name="calendar-outline" size={11} color="#6366F1" />
+          <Text style={styles.scheduledText}>
+            {formatCardDateTime(order.scheduled_date, order.scheduled_time, timezone)}
+          </Text>
+        </View>
+      )}
+      {/* Walk-in: show creation time */}
+      {!order.scheduled_date && order.order_type === 'walk_in' && order.created_at && (
+        <View style={styles.scheduledRow}>
+          <Ionicons name="time-outline" size={11} color="#9CA3AF" />
+          <Text style={[styles.scheduledText, { color: '#9CA3AF' }]}>
+            {formatCardDateTime(order.created_at, null, timezone)}
+          </Text>
+        </View>
+      )}
 
       {totalTasks > 0 ? (
         <>
@@ -353,7 +490,10 @@ function OrderCard({ order, tasks, hasPendingProduction, pulseOpacity, onTaskCli
           </View>
         </>
       ) : (
-        <Text style={styles.noTasksLabel}>No tasks assigned</Text>
+        <View style={styles.noTasksRow}>
+          <Ionicons name="checkmark-done-outline" size={13} color={Colors.textLight} />
+          <Text style={styles.noTasksLabel}>No production tasks</Text>
+        </View>
       )}
     </TouchableOpacity>
   );
@@ -368,6 +508,9 @@ export default function DashboardScreen({ navigation }) {
   const [loading, setLoading] = useState(true);
   const [fabVisible, setFabVisible] = useState(false);
   const [selectedTaskModal, setSelectedTaskModal] = useState(null);
+  const [selectedOrderModal, setSelectedOrderModal] = useState(null); // { order, tasks }
+  const [selectedDeliveryId, setSelectedDeliveryId] = useState(null);
+  const savedOrderForDelivery = useRef(null); // stores order context for back-navigation from delivery modal
 
   const [locations, setLocations] = useState([]);
   const [locationScope, setLocationScope] = useState(null);
@@ -379,10 +522,16 @@ export default function DashboardScreen({ navigation }) {
 
   const [taskActionLoading, setTaskActionLoading] = useState({});
 
+  // Role-specific dashboard state
+  const [myTasks, setMyTasks] = useState([]); // employee's own tasks
+  const [myDeliveries, setMyDeliveries] = useState([]); // delivery partner's own deliveries
+
   const role = user?.role;
   const isOwner = role === 'owner';
   const isStaff = role === 'owner' || role === 'manager' || role === 'employee';
   const isOwnerOrManager = role === 'owner' || role === 'manager';
+  const isEmployee = role === 'employee';
+  const isDeliveryPartner = role === 'delivery_partner';
   const isDesktop = width >= 1100;
 
   const pulseAnim = useRef(new Animated.Value(0)).current;
@@ -404,6 +553,34 @@ export default function DashboardScreen({ navigation }) {
 
   const fetchDashboard = useCallback(async () => {
     try {
+      // ─── Delivery Partner: lightweight fetch ─────────────────
+      if (isDeliveryPartner) {
+        const [delivRes, unsettledRes] = await Promise.all([
+          api.getDeliveries({ status: 'active' }).catch(() => ({ data: [] })),
+          api.getUnsettledDeliveries({}).catch(() => ({ data: { deliveries: [], total_unsettled: 0 } })),
+        ]);
+        setMyDeliveries(delivRes?.data || []);
+        const unsettledData = unsettledRes?.data || {};
+        setReportKPIs({ unsettledTotal: Number(unsettledData.total_unsettled || 0), unsettledCount: (unsettledData.deliveries || []).length });
+        setLoading(false);
+        setRefreshing(false);
+        return;
+      }
+
+      // ─── Employee: task-focused fetch ────────────────────────
+      if (isEmployee) {
+        const [myTasksRes, allTasksRes] = await Promise.all([
+          api.getMyTasks().catch(() => ({ data: [] })),
+          api.getProductionTasks({}).catch(() => ({ data: [] })),
+        ]);
+        setMyTasks(myTasksRes?.data || []);
+        setTaskRows(allTasksRes?.data || []);
+        setLoading(false);
+        setRefreshing(false);
+        return;
+      }
+
+      // ─── Owner / Manager: full fetch ─────────────────────────
       const locationRes = await api.getLocations();
       const locationList = locationRes?.data?.locations || locationRes?.data || [];
       setLocations(Array.isArray(locationList) ? locationList : []);
@@ -539,7 +716,7 @@ export default function DashboardScreen({ navigation }) {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [activeLocation?.id, isOwner, isOwnerOrManager, isStaff, locationScope, role, user?.id, user?.name]);
+  }, [activeLocation?.id, isOwner, isOwnerOrManager, isStaff, isEmployee, isDeliveryPartner, locationScope, role, user?.id, user?.name]);
 
   useEffect(() => {
     if (locationScope != null) return;
@@ -643,6 +820,29 @@ export default function DashboardScreen({ navigation }) {
     const dueSoonCount = orders.filter((o) => getOrderLaneSla(o, timezone) === 'dueSoon').length;
     const lifecycleHint = laneKey === 'pending' ? 'incl. confirmed' : laneKey === 'ready' ? 'incl. completed' : null;
 
+    // Delivery sub-status summary for delivery lane
+    let deliverySubHint = null;
+    if (type === 'delivery' && orders.length > 0) {
+      const assignedCount = orders.filter((o) => o.delivery_status === 'assigned').length;
+      const inTransitCount = orders.filter((o) => o.delivery_status === 'in_transit').length;
+      const failedCount = orders.filter((o) => o.delivery_status === 'failed').length;
+      const parts = [];
+      if (assignedCount > 0) parts.push(`${assignedCount} assigned`);
+      if (inTransitCount > 0) parts.push(`${inTransitCount} in transit`);
+      if (failedCount > 0) parts.push(`${failedCount} failed`);
+      if (parts.length > 0) deliverySubHint = parts.join(' · ');
+    }
+    // Pickup sub-status summary
+    let pickupSubHint = null;
+    if (type === 'pickup' && orders.length > 0) {
+      const readyCount = orders.filter((o) => o.pickup_status === 'ready_for_pickup').length;
+      const waitingCount = orders.filter((o) => o.pickup_status === 'waiting').length;
+      const parts = [];
+      if (readyCount > 0) parts.push(`${readyCount} ready to collect`);
+      if (waitingCount > 0) parts.push(`${waitingCount} waiting`);
+      if (parts.length > 0) pickupSubHint = parts.join(' · ');
+    }
+
     return (
       <TouchableOpacity
         key={`${type}-${laneKey}`}
@@ -657,6 +857,9 @@ export default function DashboardScreen({ navigation }) {
               <Text style={[styles.laneCount, { color: laneTheme.badge }]}>{orders.length} order{orders.length !== 1 ? 's' : ''}</Text>
               {!!lifecycleHint && <Text style={styles.laneHint}>• {lifecycleHint}</Text>}
             </View>
+            {!!(deliverySubHint || pickupSubHint) && (
+              <Text style={styles.laneSubHint}>{deliverySubHint || pickupSubHint}</Text>
+            )}
           </View>
           <Ionicons name="chevron-forward" size={16} color={laneTheme.badge} />
         </View>
@@ -694,7 +897,8 @@ export default function DashboardScreen({ navigation }) {
                   pulseOpacity={pulseOpacity}
                   taskActionLoading={taskActionLoading}
                   onTaskClick={(task) => setSelectedTaskModal(task)}
-                  onOpen={() => navigation.navigate('SaleDetail', { saleId: order.id })}
+                  onOpen={() => setSelectedOrderModal({ order, tasks: orderTasks })}
+                  timezone={timezone}
                 />
               );
             })}
@@ -759,10 +963,15 @@ export default function DashboardScreen({ navigation }) {
               <Ionicons name="pulse" size={24} color="#fff" />
             </View>
           </View>
-          <Text style={styles.heroSub}>Real-time order flow, production pipeline, and operational health metrics</Text>
+          <Text style={styles.heroSub}>
+            {isDeliveryPartner ? 'Your active deliveries and earnings at a glance'
+              : isEmployee ? 'Your production tasks and work queue'
+              : 'Real-time order flow, production pipeline, and operational health metrics'}
+          </Text>
         </View>
 
-        {locations.length > 0 && (
+        {/* Location picker — owner/manager only */}
+        {!isEmployee && !isDeliveryPartner && locations.length > 0 && (
           <View style={styles.scopeCard}>
             <Text style={styles.scopeLabel}>Dashboard Location</Text>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.scopeChipsRow}>
@@ -792,7 +1001,299 @@ export default function DashboardScreen({ navigation }) {
             <ActivityIndicator color={Colors.primary} size="large" />
             <Text style={styles.loadingText}>Loading dashboard...</Text>
           </View>
+        ) : isDeliveryPartner ? (
+          /* ═══ DELIVERY PARTNER DASHBOARD ═══ */
+          <View style={{ gap: 12 }}>
+            {/* Stats row */}
+            <View style={styles.roleStatsRow}>
+              <View style={[styles.roleStatCard, { borderLeftColor: '#0EA5E9' }]}>
+                <Ionicons name="bicycle-outline" size={20} color="#0EA5E9" />
+                <Text style={styles.roleStatCount}>{myDeliveries.filter(d => ['assigned','picked_up','in_transit'].includes(d.status)).length}</Text>
+                <Text style={styles.roleStatLabel}>Active</Text>
+              </View>
+              <View style={[styles.roleStatCard, { borderLeftColor: '#F59E0B' }]}>
+                <Ionicons name="time-outline" size={20} color="#F59E0B" />
+                <Text style={styles.roleStatCount}>{myDeliveries.filter(d => d.status === 'pending').length}</Text>
+                <Text style={styles.roleStatLabel}>Pending</Text>
+              </View>
+              <View style={[styles.roleStatCard, { borderLeftColor: '#10B981' }]}>
+                <Ionicons name="wallet-outline" size={20} color="#10B981" />
+                <Text style={styles.roleStatCount}>₹{reportKPIs?.unsettledTotal || 0}</Text>
+                <Text style={styles.roleStatLabel}>Unsettled COD</Text>
+              </View>
+            </View>
+
+            {/* Active deliveries */}
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>Your Deliveries</Text>
+              <TouchableOpacity onPress={() => navigation.navigate('Deliveries')}>
+                <Text style={{ color: Colors.primary, fontWeight: '600', fontSize: 13 }}>View All →</Text>
+              </TouchableOpacity>
+            </View>
+
+            {myDeliveries.length === 0 ? (
+              <View style={styles.roleEmptyCard}>
+                <Ionicons name="checkmark-circle-outline" size={40} color="#10B981" />
+                <Text style={styles.roleEmptyTitle}>All clear!</Text>
+                <Text style={styles.roleEmptyText}>No active deliveries right now.</Text>
+              </View>
+            ) : (
+              myDeliveries.map((d) => {
+                const statusColor = DELIVERY_STATUS_COLORS[d.status] || '#9CA3AF';
+                const statusLabel = DELIVERY_STATUS_LABELS[d.status] || d.status;
+                const orderStatus = ORDER_STATUS_LABELS[d.order_status] || (d.order_status ? d.order_status.toUpperCase() : 'Unknown');
+                const orderStatusColor = d.order_status === 'ready' || d.order_status === 'completed' ? '#10B981' : '#F59E0B';
+                
+                let dateStr = 'No Date';
+                if (d.scheduled_date) {
+                   const dt = new Date(d.scheduled_date);
+                   dateStr = dt.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+                   if (d.scheduled_time) {
+                     dateStr += `, ${d.scheduled_time.slice(0, 5)}`;
+                   }
+                }
+
+                return (
+                  <TouchableOpacity
+                    key={d.id}
+                    style={[styles.roleTaskCard, { borderLeftColor: statusColor }]}
+                    onPress={() => navigation.navigate('DeliveryDetail', { deliveryId: d.id })}
+                    activeOpacity={0.8}
+                  >
+                    <View style={styles.roleTaskHeader}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                        <Text style={styles.roleTaskName} numberOfLines={1}>#{d.sale_number}</Text>
+                        <Text style={[styles.roleTaskMeta, { color: '#0EA5E9', fontWeight: '700', marginTop: 0 }]}>
+                          {dateStr}
+                        </Text>
+                      </View>
+                      <View style={[styles.roleTaskBadge, { backgroundColor: statusColor + '20' }]}>
+                        <Text style={[styles.roleTaskBadgeText, { color: statusColor }]}>{statusLabel.toUpperCase()}</Text>
+                      </View>
+                    </View>
+
+                    <Text style={[styles.roleTaskMeta, { marginBottom: 6 }]} numberOfLines={2}>
+                      <Ionicons name="location-outline" size={12} color="#9CA3AF" /> {d.delivery_address || 'No address'}
+                    </Text>
+                    
+                    {d.special_instructions && (
+                      <View style={{ backgroundColor: '#FEF3C7', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, marginBottom: 8 }}>
+                        <Text style={{ fontSize: 12, fontWeight: '500', color: '#B45309' }}>⚡ {d.special_instructions}</Text>
+                      </View>
+                    )}
+
+                    {d.items && d.items.length > 0 && (
+                      <View style={{ backgroundColor: '#F9FAFB', padding: 8, borderRadius: 6, marginBottom: 8, borderWidth: 1, borderColor: '#F3F4F6' }}>
+                        {d.items.map((item, idx) => (
+                          <Text key={idx} style={{ fontSize: 12, color: '#4B5563', marginBottom: idx === d.items.length - 1 ? 0 : 2 }}>
+                            {Number(item.quantity || 1)}× {item.product_name}
+                          </Text>
+                        ))}
+                      </View>
+                    )}
+
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                        <Ionicons name="cube-outline" size={14} color={orderStatusColor} />
+                        <Text style={[styles.roleTaskMeta, { color: orderStatusColor, fontWeight: '600', marginTop: 0 }]}>
+                          Order: {orderStatus}
+                        </Text>
+                      </View>
+                      {d.payment_status === 'paid' ? (
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 2 }}>
+                          <Ionicons name="checkmark-circle" size={14} color="#10B981" />
+                          <Text style={[styles.roleTaskMeta, { color: '#10B981', fontWeight: '700', marginTop: 0 }]}>PAID</Text>
+                        </View>
+                      ) : d.is_credit_sale === 1 ? (
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 2 }}>
+                          <Ionicons name="document-text" size={14} color="#8B5CF6" />
+                          <Text style={[styles.roleTaskMeta, { color: '#8B5CF6', fontWeight: '700', marginTop: 0 }]}>CREDIT</Text>
+                        </View>
+                      ) : (
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 2 }}>
+                          <Ionicons name="warning" size={14} color="#EF4444" />
+                          <Text style={[styles.roleTaskMeta, { color: '#EF4444', fontWeight: '700', marginTop: 0 }]}>UNPAID</Text>
+                        </View>
+                      )}
+                    </View>
+
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingTop: 8, borderTopWidth: 1, borderTopColor: '#F3F4F6' }}>
+                      <View>
+                        <Text style={[styles.roleTaskMeta, { color: '#111827', fontWeight: '600' }]}>{d.customer_name || 'Customer'}</Text>
+                        {d.customer_phone ? (
+                          <TouchableOpacity onPress={() => Linking.openURL(`tel:${d.customer_phone}`)} style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 }}>
+                            <Ionicons name="call" size={12} color={Colors.primary} />
+                            <Text style={[styles.roleTaskMeta, { color: Colors.primary, marginTop: 0 }]}>{d.customer_phone}</Text>
+                          </TouchableOpacity>
+                        ) : null}
+                      </View>
+                      {Number(d.cod_amount) > 0 && (
+                        <View style={{ backgroundColor: '#FEF3C7', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, alignItems: 'center' }}>
+                          <Text style={{ fontSize: 10, color: '#92400E', fontWeight: '600', textTransform: 'uppercase' }}>To Collect</Text>
+                          <Text style={{ fontSize: 13, fontWeight: '800', color: '#B45309' }}>₹{Number(d.cod_amount).toFixed(0)}</Text>
+                        </View>
+                      )}
+                    </View>
+                  </TouchableOpacity>
+                );
+              })
+            )}
+          </View>
+        ) : isEmployee ? (
+          /* ═══ EMPLOYEE DASHBOARD ═══ */
+          <View style={{ gap: 12 }}>
+            {/* Stats row */}
+            <View style={styles.roleStatsRow}>
+              <View style={[styles.roleStatCard, { borderLeftColor: '#F59E0B' }]}>
+                <Ionicons name="hourglass-outline" size={20} color="#F59E0B" />
+                <Text style={styles.roleStatCount}>{myTasks.filter(t => t.status === 'assigned').length}</Text>
+                <Text style={styles.roleStatLabel}>Assigned</Text>
+              </View>
+              <View style={[styles.roleStatCard, { borderLeftColor: '#0EA5E9' }]}>
+                <Ionicons name="construct-outline" size={20} color="#0EA5E9" />
+                <Text style={styles.roleStatCount}>{myTasks.filter(t => t.status === 'in_progress').length}</Text>
+                <Text style={styles.roleStatLabel}>In Progress</Text>
+              </View>
+              <View style={[styles.roleStatCard, { borderLeftColor: '#10B981' }]}>
+                <Ionicons name="checkmark-done-outline" size={20} color="#10B981" />
+                <Text style={styles.roleStatCount}>{myTasks.filter(t => t.status === 'completed').length}</Text>
+                <Text style={styles.roleStatLabel}>Done Today</Text>
+              </View>
+            </View>
+
+            {/* My assigned tasks */}
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>My Tasks</Text>
+              <TouchableOpacity onPress={() => navigation.navigate('ProductionQueue')}>
+                <Text style={{ color: Colors.primary, fontWeight: '600', fontSize: 13 }}>Full Queue →</Text>
+              </TouchableOpacity>
+            </View>
+
+            {myTasks.filter(t => t.status !== 'completed' && t.status !== 'cancelled').length === 0 ? (
+              <View style={styles.roleEmptyCard}>
+                <Ionicons name="checkmark-circle-outline" size={40} color="#10B981" />
+                <Text style={styles.roleEmptyTitle}>All caught up!</Text>
+                <Text style={styles.roleEmptyText}>No pending tasks assigned to you.</Text>
+              </View>
+            ) : (
+              myTasks
+                .filter(t => t.status !== 'completed' && t.status !== 'cancelled')
+                .map((task) => {
+                  const tColor = getTaskChipColor(task.status);
+                  const tLabel = TASK_STATUS_LABELS[task.status] || task.status;
+                  const isTaskLoading = !!taskActionLoading[task.id];
+                  
+                  const isUrgent = task.priority === 'urgent';
+                  const notes = task.item_special_instructions || task.order_special_instructions || task.special_instructions;
+                  
+                  let deadlineStr = null;
+                  if (task.scheduled_date) {
+                    const dt = new Date(task.scheduled_date);
+                    deadlineStr = dt.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+                    if (task.scheduled_time) deadlineStr += `, ${task.scheduled_time.slice(0, 5)}`;
+                  }
+
+                  const imageUri = task.product_image || task.item_image_url;
+
+                  return (
+                    <TouchableOpacity
+                      key={task.id}
+                      style={[styles.roleTaskCard, { borderLeftColor: isUrgent ? '#EF4444' : tColor }]}
+                      onPress={() => setSelectedTaskModal(task)}
+                      activeOpacity={0.8}
+                    >
+                      <View style={{ flexDirection: 'row', gap: 12 }}>
+                        {imageUri ? (
+                          <Image source={{ uri: api.getMediaUrl(imageUri) }} style={{ width: 60, height: 60, borderRadius: 8, backgroundColor: '#F3F4F6' }} />
+                        ) : (
+                          <View style={{ width: 60, height: 60, borderRadius: 8, backgroundColor: '#F3F4F6', alignItems: 'center', justifyContent: 'center' }}>
+                            <Ionicons name="image-outline" size={24} color="#D1D5DB" />
+                          </View>
+                        )}
+                        
+                        <View style={{ flex: 1 }}>
+                          <View style={styles.roleTaskHeader}>
+                            <Text style={styles.roleTaskName} numberOfLines={2}>
+                              {Number(task.quantity || 1)}× {task.product_name || task.item_product_name || 'Task'}
+                            </Text>
+                            <View style={[styles.roleTaskBadge, { backgroundColor: (isUrgent ? '#EF4444' : tColor) + '20' }]}>
+                              <Text style={[styles.roleTaskBadgeText, { color: isUrgent ? '#EF4444' : tColor }]}>
+                                {isUrgent ? 'URGENT' : tLabel}
+                              </Text>
+                            </View>
+                          </View>
+                          
+                          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 2 }}>
+                            {task.sale_number && <Text style={[styles.roleTaskMeta, { color: '#4B5563', fontWeight: '600' }]}>Order #{task.sale_number}</Text>}
+                            {deadlineStr && (
+                              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                                <Ionicons name="time-outline" size={12} color={isUrgent ? '#EF4444' : '#6B7280'} />
+                                <Text style={[styles.roleTaskMeta, { marginTop: 0, color: isUrgent ? '#EF4444' : '#6B7280', fontWeight: isUrgent ? '700' : '500' }]}>
+                                  Due: {deadlineStr}
+                                </Text>
+                              </View>
+                            )}
+                          </View>
+                        </View>
+                      </View>
+
+                      {notes && (
+                        <View style={{ marginTop: 10, backgroundColor: '#FEF3C7', padding: 8, borderRadius: 6 }}>
+                          <Text style={{ color: '#B45309', fontSize: 12, fontWeight: '500' }}>⚡ {notes}</Text>
+                        </View>
+                      )}
+
+                      <View style={{ flexDirection: 'row', justifyContent: 'flex-end', marginTop: 12, borderTopWidth: 1, borderTopColor: '#F3F4F6', paddingTop: 10 }}>
+                        {task.status === 'assigned' && (
+                          <TouchableOpacity
+                            style={[styles.roleActionBtn, { backgroundColor: '#0EA5E9' }]}
+                            onPress={() => advanceTaskStatus(task)}
+                            disabled={isTaskLoading}
+                          >
+                            {isTaskLoading ? <ActivityIndicator size="small" color="#fff" /> : (
+                              <Text style={styles.roleActionBtnText}>Start Working →</Text>
+                            )}
+                          </TouchableOpacity>
+                        )}
+                        {task.status === 'in_progress' && (
+                          <TouchableOpacity
+                            style={[styles.roleActionBtn, { backgroundColor: '#10B981' }]}
+                            onPress={() => advanceTaskStatus(task)}
+                            disabled={isTaskLoading}
+                          >
+                            {isTaskLoading ? <ActivityIndicator size="small" color="#fff" /> : (
+                              <Text style={styles.roleActionBtnText}>Complete Task ✓</Text>
+                            )}
+                          </TouchableOpacity>
+                        )}
+                      </View>
+                    </TouchableOpacity>
+                  );
+                })
+            )}
+
+            {/* Completed today */}
+            {myTasks.filter(t => t.status === 'completed').length > 0 && (
+              <>
+                <View style={styles.sectionHeader}>
+                  <Text style={[styles.sectionTitle, { color: '#10B981' }]}>Completed Today</Text>
+                </View>
+                {myTasks.filter(t => t.status === 'completed').slice(0, 5).map((task) => (
+                  <View key={task.id} style={[styles.roleTaskCard, { borderLeftColor: '#10B981', opacity: 0.7 }]}>
+                    <View style={styles.roleTaskHeader}>
+                      <Text style={[styles.roleTaskName, { textDecorationLine: 'line-through' }]} numberOfLines={1}>
+                        {Number(task.quantity || 1)}× {task.product_name || task.item_product_name || 'Task'}
+                      </Text>
+                      <Ionicons name="checkmark-circle" size={18} color="#10B981" />
+                    </View>
+                    {task.sale_number && <Text style={styles.roleTaskMeta}>Order #{task.sale_number}</Text>}
+                  </View>
+                ))}
+              </>
+            )}
+          </View>
         ) : (
+          /* ═══ OWNER / MANAGER DASHBOARD ═══ */
           <View style={[styles.layout, isDesktop && styles.layoutDesktop]}>
             <View style={[styles.feedCol, isDesktop && { flex: 2 }]}>
               <View style={styles.sectionHeader}>
@@ -898,6 +1399,36 @@ export default function DashboardScreen({ navigation }) {
         onClose={() => setSelectedTaskModal(null)}
         onAdvance={advanceTaskStatus}
         loading={selectedTaskModal && taskActionLoading[selectedTaskModal.id]}
+      />
+
+      <OrderQuickModal
+        visible={selectedOrderModal !== null}
+        order={selectedOrderModal?.order || null}
+        tasks={selectedOrderModal?.tasks || []}
+        onClose={() => setSelectedOrderModal(null)}
+        onRefresh={fetchDashboard}
+        navigation={navigation}
+        canManage={isOwnerOrManager}
+        onOpenDelivery={(deliveryId) => {
+          // Save context so user can return to this order modal
+          savedOrderForDelivery.current = selectedOrderModal;
+          setSelectedOrderModal(null);
+          setSelectedDeliveryId(deliveryId);
+        }}
+      />
+
+      <DeliveryQuickModal
+        visible={selectedDeliveryId !== null}
+        deliveryId={selectedDeliveryId}
+        onClose={() => setSelectedDeliveryId(null)}
+        onRefresh={fetchDashboard}
+        navigation={navigation}
+        canManage={isOwnerOrManager}
+        onBackToSale={savedOrderForDelivery.current ? () => {
+          setSelectedDeliveryId(null);
+          setSelectedOrderModal(savedOrderForDelivery.current);
+          savedOrderForDelivery.current = null;
+        } : undefined}
       />
 
       <Modal visible={fabVisible} transparent animationType="fade" onRequestClose={() => setFabVisible(false)}>
@@ -1331,11 +1862,56 @@ const styles = StyleSheet.create({
     fontFamily: FONT_FAMILY,
     fontStyle: 'italic',
   },
+  noTasksRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    marginTop: 4,
+  },
   noTasksLabel: {
     fontSize: 11,
     color: Colors.textLight,
     fontStyle: 'italic',
     fontFamily: FONT_FAMILY,
+  },
+  subStatusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: 6,
+    alignSelf: 'flex-start',
+    marginBottom: 4,
+  },
+  subStatusDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  subStatusText: {
+    fontSize: 10,
+    fontWeight: '700',
+    fontFamily: FONT_FAMILY,
+  },
+  scheduledRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginBottom: 4,
+  },
+  scheduledText: {
+    fontSize: 10,
+    color: '#6366F1',
+    fontWeight: '600',
+    fontFamily: FONT_FAMILY,
+  },
+  laneSubHint: {
+    fontSize: 10,
+    color: '#64748B',
+    fontFamily: FONT_FAMILY,
+    fontWeight: '600',
+    marginTop: 1,
   },
 
   viewMoreRow: {
@@ -1637,6 +2213,110 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontWeight: '800',
     fontSize: 14,
+    fontFamily: FONT_FAMILY,
+  },
+
+  // ─── Role-based dashboard styles ──────────────────────────
+  roleStatsRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  roleStatCard: {
+    flex: 1,
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    padding: 12,
+    borderLeftWidth: 4,
+    alignItems: 'center',
+    gap: 4,
+    shadowColor: '#000',
+    shadowOpacity: 0.04,
+    shadowRadius: 4,
+    elevation: 1,
+  },
+  roleStatCount: {
+    fontSize: 22,
+    fontWeight: '800',
+    color: '#111827',
+    fontFamily: FONT_FAMILY,
+  },
+  roleStatLabel: {
+    fontSize: 11,
+    color: '#6B7280',
+    fontWeight: '600',
+    fontFamily: FONT_FAMILY,
+  },
+  roleTaskCard: {
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    padding: 14,
+    borderLeftWidth: 4,
+    shadowColor: '#000',
+    shadowOpacity: 0.04,
+    shadowRadius: 4,
+    elevation: 1,
+  },
+  roleTaskHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  roleTaskName: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#111827',
+    flex: 1,
+    marginRight: 8,
+    fontFamily: FONT_FAMILY,
+  },
+  roleTaskBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+  },
+  roleTaskBadgeText: {
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+    fontFamily: FONT_FAMILY,
+  },
+  roleTaskMeta: {
+    fontSize: 12,
+    color: '#6B7280',
+    marginTop: 2,
+    fontFamily: FONT_FAMILY,
+  },
+  roleActionBtn: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minWidth: 80,
+  },
+  roleActionBtnText: {
+    color: '#fff',
+    fontWeight: '700',
+    fontSize: 13,
+    fontFamily: FONT_FAMILY,
+  },
+  roleEmptyCard: {
+    backgroundColor: '#F0FDF4',
+    borderRadius: 16,
+    padding: 32,
+    alignItems: 'center',
+    gap: 8,
+  },
+  roleEmptyTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#065F46',
+    fontFamily: FONT_FAMILY,
+  },
+  roleEmptyText: {
+    fontSize: 13,
+    color: '#6B7280',
     fontFamily: FONT_FAMILY,
   },
 });

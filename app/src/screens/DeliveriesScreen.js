@@ -36,6 +36,18 @@ export default function DeliveriesScreen({ navigation }) {
   const { user, activeLocation, settings } = useAuth();
   const timezone = settings?.timezone || 'Asia/Kolkata';
 
+  /** Convert ISO datetime or YYYY-MM-DD to shop-local YYYY-MM-DD */
+  const extractLocalDate = (value) => {
+    if (!value) return '';
+    const raw = String(value).trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+    try {
+      const d = new Date(raw);
+      if (!isNaN(d.getTime())) return d.toLocaleDateString('en-CA', { timeZone: timezone });
+    } catch {}
+    return raw.split('T')[0] || '';
+  };
+
   const [deliveries, setDeliveries] = useState([]);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState('active');
@@ -177,8 +189,8 @@ export default function DeliveriesScreen({ navigation }) {
 
   // Sort by scheduled date+time (earliest first, no-date last)
   const sortedDeliveries = [...filteredDeliveries].sort((a, b) => {
-    const dA = (a.scheduled_date || '').split('T')[0];
-    const dB = (b.scheduled_date || '').split('T')[0];
+    const dA = extractLocalDate(a.scheduled_date);
+    const dB = extractLocalDate(b.scheduled_date);
     const dtA = dA ? `${dA} ${a.scheduled_time || '00:00'}` : 'zzzz';
     const dtB = dB ? `${dB} ${b.scheduled_time || '00:00'}` : 'zzzz';
     return dtA.localeCompare(dtB);
@@ -191,7 +203,7 @@ export default function DeliveriesScreen({ navigation }) {
   const sections = [];
   const grouped = {};
   for (const item of sortedDeliveries) {
-    const key = (item.scheduled_date || '').split('T')[0] || '_unscheduled';
+    const key = extractLocalDate(item.scheduled_date) || '_unscheduled';
     if (!grouped[key]) {
       grouped[key] = { title: getDateLabel(key), data: [] };
       sections.push(grouped[key]);
@@ -214,7 +226,7 @@ export default function DeliveriesScreen({ navigation }) {
     }
 
     if (!item.scheduled_date) return { label: null, countdown: null, isOverdue: false };
-    const dateStr = (item.scheduled_date || '').split('T')[0];
+    const dateStr = extractLocalDate(item.scheduled_date);
     if (!dateStr) return { label: null, countdown: null, isOverdue: false };
     // PostgreSQL TIME returns HH:MM:SS — only take HH:MM for display
     const rawTime = (item.scheduled_time || '').split('.')[0]; // strip fractional seconds
