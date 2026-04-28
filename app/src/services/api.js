@@ -6,7 +6,13 @@ import { Platform } from 'react-native';
 // const LAN_IP = '159.89.173.40';
 
 function getBaseUrl() {
-  if (Platform.OS === 'web') return 'http://localhost:3001/api';
+  if (process.env.EXPO_PUBLIC_API_URL) {
+    return process.env.EXPO_PUBLIC_API_URL;
+  }
+  // Fallback for local development
+  if (Platform.OS === 'web' && __DEV__) {
+    return 'http://localhost:3001/api';
+  }
   return `https://api.gifttojalandhar.com/api`;
 }
 
