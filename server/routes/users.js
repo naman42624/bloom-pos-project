@@ -431,7 +431,59 @@ router.put(
   }
 );
 
-// ─── DELETE /api/users/:id — Deactivate/delete user (owner only) ──
+// ─── PUT /api/users/:id/change-role ─────────────────────────
+// Owner-only: change the role of any staff member
+router.put(
+  '/:id/change-role',
+  authorize('owner'),
+  [
+    param('id').isInt(),
+    body('role')
+      .isIn(['manager', 'employee', 'delivery_partner', 'customer'])
+      .withMessage('Role must be manager, employee, delivery_partner, or customer'),
+  ],
+  (req, res, next) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({ success: false, errors: errors.array() });
+      }
+
+      const db = getDb();
+      const targetId = parseInt(req.params.id);
+      const { role } = req.body;
+
+      // Cannot change your own role
+      if (targetId === req.user.id) {
+        return res.status(400).json({ success: false, message: 'You cannot change your own role' });
+      }
+
+      const targetUser = db.prepare('SELECT id, role, name FROM users WHERE id = ?').get(targetId);
+      if (!targetUser) {
+        return res.status(404).json({ success: false, message: 'User not found' });
+      }
+
+      // Cannot reassign another owner's role (protect the owner account)
+      if (targetUser.role === 'owner') {
+        return res.status(403).json({ success: false, message: 'Cannot change the role of another owner' });
+      }
+
+      db.prepare('UPDATE users SET role = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(role, targetId);
+
+      const updatedUser = db.prepare(`SELECT ${USER_SELECT_FIELDS} FROM users WHERE id = ?`).get(targetId);
+
+      res.json({
+        success: true,
+        message: `${targetUser.name}'s role changed to ${role.replace('_', ' ')}`,
+        data: { user: updatedUser },
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+
 router.delete('/:id', authorize('owner'), (req, res, next) => {
   try {
     const db = getDb();

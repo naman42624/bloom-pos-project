@@ -155,6 +155,13 @@ class ApiService {
     });
   }
 
+  changeUserRole(id, role) {
+    return this.request(`/users/${id}/change-role`, {
+      method: 'PUT',
+      body: JSON.stringify({ role }),
+    });
+  }
+
   // ─── Locations ───────────────────────────────────────────
   getLocations() {
     return this.request('/locations');
@@ -483,12 +490,20 @@ class ApiService {
 
   // ─── Sales ──────────────────────────────────────────────
   getSales(params = {}) {
-    const query = new URLSearchParams(params).toString();
+      const query = new URLSearchParams(params).toString();
     return this.request(`/sales${query ? `?${query}` : ''}`);
   }
 
   getSale(id) {
     return this.request(`/sales/${id}`);
+  }
+
+  getSaleAuditLogs(id) {
+    return this.request(`/sales/${id}/audit-logs`);
+  }
+
+  updateSale(id, data) {
+    return this.request(`/sales/${id}`, { method: 'PUT', body: JSON.stringify(data) });
   }
 
   getTodaySummary(locationId) {
@@ -529,6 +544,9 @@ class ApiService {
   }
 
   updateOrderStatus(saleId, status) {
+    if (status === 'cancelled') {
+      return this.cancelSale(saleId);
+    }
     return this.request(`/sales/${saleId}/status`, { method: 'PUT', body: JSON.stringify({ status }) });
   }
 

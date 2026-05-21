@@ -5,6 +5,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
+import { formatDate } from '../utils/datetime';
 
 export default function SettlementsScreen({ navigation }) {
   const { user, activeLocation } = useAuth();
@@ -100,7 +101,7 @@ export default function SettlementsScreen({ navigation }) {
       </View>
       <View style={styles.cardRow}>
         <Text style={styles.cardSub}>{item.customer_name || 'Customer'}</Text>
-        <Text style={styles.cardSub}>{item.delivered_time ? new Date(item.delivered_time).toLocaleDateString() : ''}</Text>
+        <Text style={styles.cardSub}>{item.delivered_time ? formatDate(item.delivered_time) : ''}</Text>
       </View>
     </View>
   );
@@ -124,7 +125,7 @@ export default function SettlementsScreen({ navigation }) {
           </View>
         </View>
       </View>
-      <Text style={styles.cardDate}>{new Date(item.created_at).toLocaleDateString()}</Text>
+      <Text style={styles.cardDate}>{formatDate(item.created_at)}</Text>
       {isManager && item.status === 'pending' && (
         <TouchableOpacity style={styles.verifyBtn} onPress={() => setConfirmModal(item)}>
           <Ionicons name="checkmark-done" size={16} color="#fff" />

@@ -1,36 +1,14 @@
-const DEFAULT_TZ = 'Asia/Kolkata';
+export const DEFAULT_TZ = 'Asia/Kolkata';
 
-const HAS_TZ_RE = /[zZ]$|[+\-]\d{2}:?\d{2}$/;
-
-function shopPartsFromDate(date, timezone = DEFAULT_TZ) {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: timezone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
-  }).formatToParts(date);
-
-  const map = {};
-  parts.forEach((p) => {
-    if (p.type !== 'literal') map[p.type] = Number(p.value);
-  });
-  return map;
+function getDeviceTimezone() {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || undefined;
+  } catch {
+    return undefined;
+  }
 }
 
-function pseudoUtcMsFromParts(parts) {
-  return Date.UTC(
-    Number(parts.year),
-    Number(parts.month) - 1,
-    Number(parts.day),
-    Number(parts.hour || 0),
-    Number(parts.minute || 0),
-    Number(parts.second || 0)
-  );
-}
+
 
 export function parseServerDate(value) {
   if (!value) return null;
@@ -41,31 +19,74 @@ export function parseServerDate(value) {
 
   // Handle YYYY-MM-DD
   if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
-    return new Date(`${raw}T00:00:00`);
+    return new Date(`${raw}T00:00:00Z`);
   }
 
   const normalized = raw.includes(' ') ? raw.replace(' ', 'T') : raw;
 
-  const parsed = new Date(normalized);
+  // Enforce UTC standard: if there's no timezone info (Z or +/-), treat it as UTC by appending 'Z'
+  const finalStr = (normalized.includes('T') && !/[zZ]$|[+\-]\d{2}:?\d{2}$/.test(normalized)) 
+    ? `${normalized}Z` 
+    : normalized;
+
+  const parsed = new Date(finalStr);
   if (!Number.isNaN(parsed.getTime())) return parsed;
 
   const fallback = new Date(raw);
   return Number.isNaN(fallback.getTime()) ? null : fallback;
 }
 
-export function formatDate(value, locale = 'en-IN', options = { day: 'numeric', month: 'short', year: 'numeric' }) {
+export function formatDate(value, locale = 'en-IN', options = {}) {
   const d = parseServerDate(value);
-  return d ? d.toLocaleDateString(locale, options) : '';
+  const opts = { day: 'numeric', month: 'short', year: 'numeric', timeZone: DEFAULT_TZ, ...options };
+  return d ? d.toLocaleDateString(locale, opts) : '';
 }
 
-export function formatTime(value, locale = 'en-IN', options = { hour: '2-digit', minute: '2-digit', hour12: false }) {
+export function formatTime(value, locale = 'en-IN', options = {}) {
   const d = parseServerDate(value);
-  return d ? d.toLocaleTimeString(locale, options) : '--:--';
+  const opts = { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: DEFAULT_TZ, ...options };
+  return d ? d.toLocaleTimeString(locale, opts) : '--:--';
 }
 
-export function formatDateTime(value, locale = 'en-IN', options = { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }) {
+export function formatDateTime(value, locale = 'en-IN', options = {}) {
   const d = parseServerDate(value);
-  return d ? d.toLocaleString(locale, options) : '';
+  const opts = { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true, timeZone: DEFAULT_TZ, ...options };
+  return d ? d.toLocaleString(locale, opts) : '';
+}
+
+/**
+ * Formats a date + time pair for display without shifting the wall-clock time.
+ * Intended for shop-scheduled dates where the date and time are stored separately.
+ */
+export function formatCardDateTime(dateStr, timeStr, timezone = DEFAULT_TZ) {
+  try {
+    if (dateStr) {
+      let localDate = dateStr;
+      if (dateStr.includes('T') || dateStr.includes('Z') || dateStr.includes('+')) {
+        const d = new Date(dateStr);
+        if (!Number.isNaN(d.getTime())) {
+          localDate = d.toLocaleDateString('en-CA', { timeZone: timezone || DEFAULT_TZ });
+        }
+      }
+
+      const parts = String(localDate).split('-').map(Number);
+      if (parts.length < 3 || parts.some((part) => Number.isNaN(part))) return dateStr || '';
+
+      const [year, month, day] = parts;
+      const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      const datePart = `${day} ${months[month - 1]}`;
+
+      if (!timeStr) return datePart;
+
+      const [hh, mm] = String(timeStr).split(':').map(Number);
+      if (Number.isNaN(hh) || Number.isNaN(mm)) return datePart;
+
+      return `${datePart}, ${formatTimeString(timeStr)}`;
+    }
+  } catch {
+    // fall through to return the original input
+  }
+  return dateStr || '';
 }
 
 /**
@@ -96,8 +117,14 @@ export function formatDateLabel(value) {
   const d = parseServerDate(value);
   if (!d) return '';
   const now = new Date();
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const target = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  
+  const tzOpts = { timeZone: DEFAULT_TZ, year: 'numeric', month: '2-digit', day: '2-digit' };
+  const dParts = new Intl.DateTimeFormat('en-CA', tzOpts).format(d).split('-');
+  const nowParts = new Intl.DateTimeFormat('en-CA', tzOpts).format(now).split('-');
+  
+  const today = new Date(nowParts[0], nowParts[1] - 1, nowParts[2]);
+  const target = new Date(dParts[0], dParts[1] - 1, dParts[2]);
+  
   const diffDays = Math.round((today - target) / (1000 * 60 * 60 * 24));
   if (diffDays === 0) return 'Today';
   if (diffDays === 1) return 'Yesterday';
@@ -112,7 +139,12 @@ export function isToday(value) {
   const d = parseServerDate(value);
   if (!d) return false;
   const now = new Date();
-  return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+  
+  const tzOpts = { timeZone: DEFAULT_TZ, year: 'numeric', month: '2-digit', day: '2-digit' };
+  const dStr = new Intl.DateTimeFormat('en-CA', tzOpts).format(d);
+  const nowStr = new Intl.DateTimeFormat('en-CA', tzOpts).format(now);
+  
+  return dStr === nowStr;
 }
 
 /**
@@ -167,85 +199,24 @@ export function getShopNow(timezone = DEFAULT_TZ) {
 }
 
 /**
- * Minutes from "now" (shop timezone) until a scheduled local date+time.
- * Properly handles timezone-aware comparison using shop timezone.
+ * Minutes from "now" until a scheduled local date+time.
  */
-export function minutesUntilShopDateTime(dateStr, timeStr, timezone = DEFAULT_TZ) {
+export function minutesUntilShopDateTime(dateStr, timeStr) {
   if (!dateStr || !timeStr) return null;
-
-  const dm = String(dateStr).trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  const tm = String(timeStr).trim().match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?/);
-  if (!dm || !tm) return null;
-
-  // Build scheduled datetime in pseudo-UTC (treating shop-local as UTC)
-  const scheduledMs = Date.UTC(
-    Number(dm[1]),
-    Number(dm[2]) - 1,
-    Number(dm[3]),
-    Number(tm[1]),
-    Number(tm[2]),
-    Number(tm[3] || 0)
-  );
-
-  // Get current time in shop timezone as pseudo-UTC
+  const scheduled = new Date(`${dateStr}T${timeStr}`);
+  if (Number.isNaN(scheduled.getTime())) return null;
   const now = new Date();
-  const shopParts = shopPartsFromDate(now, timezone);
-  if (!shopParts || !shopParts.year || Number.isNaN(shopParts.year)) {
-    // Fallback if Intl fails: use device time (acceptable if device is in shop tz)
-    return Math.floor((scheduledMs - now.getTime()) / 60000);
-  }
-  
-  const nowMs = pseudoUtcMsFromParts(shopParts);
-  const diffMs = scheduledMs - nowMs;
-  
-  return Math.floor(diffMs / 60000);
+  return Math.floor((scheduled.getTime() - now.getTime()) / 60000);
 }
 
 /**
- * Minutes elapsed from a server datetime value to "now" (in shop timezone).
- * Treats server values as shop-local and compares in shop timezone.
+ * Minutes elapsed from a server datetime value to "now".
  */
-export function minutesSinceServerDate(value, timezone = DEFAULT_TZ) {
-  if (!value) return null;
-  const raw = String(value).trim();
-  if (!raw) return null;
-
-  let targetMs = null;
-
-  // If it's a plain YYYY-MM-DD or YYYY-MM-DD HH:MM:SS without timezone, treat as shop-local
-  if (!HAS_TZ_RE.test(raw)) {
-    const m = raw.match(/^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?/);
-    if (m) {
-      // Parse as shop-local time in pseudo-UTC
-      targetMs = Date.UTC(
-        Number(m[1]),
-        Number(m[2]) - 1,
-        Number(m[3]),
-        Number(m[4] || 0),
-        Number(m[5] || 0),
-        Number(m[6] || 0)
-      );
-    }
-  }
-
-  if (targetMs == null) {
-    // Fallback: try to parse as ISO string
-    const parsed = parseServerDate(raw);
-    if (!parsed) return null;
-    targetMs = parsed.getTime();
-  }
-
-  // Get current time in shop timezone as pseudo-UTC
+export function minutesSinceServerDate(value) {
+  const d = parseServerDate(value);
+  if (!d) return null;
   const now = new Date();
-  const shopParts = shopPartsFromDate(now, timezone);
-  if (!shopParts || !shopParts.year || Number.isNaN(shopParts.year)) {
-    // Fallback if Intl fails: use device time
-    return Math.floor((now.getTime() - targetMs) / 60000);
-  }
-  
-  const nowMs = pseudoUtcMsFromParts(shopParts);
-  const diffMs = nowMs - targetMs;
-  return Math.floor(diffMs / 60000);
+  return Math.floor((now.getTime() - d.getTime()) / 60000);
 }
 
 /**

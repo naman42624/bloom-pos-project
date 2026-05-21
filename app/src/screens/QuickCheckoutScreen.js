@@ -92,6 +92,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
 
   // Submitting
   const [submitting, setSubmitting] = useState(false);
+  const [skipAssignment, setSkipAssignment] = useState(true);
   const [submitErrors, setSubmitErrors] = useState([]);
   const [savingDraft, setSavingDraft] = useState(false);
   const [draftPickerVisible, setDraftPickerVisible] = useState(false);
@@ -344,6 +345,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     if (route.params?.locationId) setSelectedLocation(route.params.locationId);
     if (route.params?.orderType) {
       setOrderType(route.params.orderType);
+      setSkipAssignment(route.params.orderType === 'walk_in');
     }
     setActiveDraftId(null);
 
@@ -540,6 +542,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     enableSplitPayment,
     paymentMode,
     advanceAmount,
+    skipAssignment,
   }), [
     customerName,
     customerPhone,
@@ -570,6 +573,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     enableSplitPayment,
     paymentMode,
     advanceAmount,
+    skipAssignment,
   ]);
 
   const applyDraftPayload = useCallback((payload, draftId = null) => {
@@ -603,6 +607,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     setEnableSplitPayment(!!p.enableSplitPayment);
     setPaymentMode(p.paymentMode || 'pay_now');
     setAdvanceAmount(p.advanceAmount || '');
+    setSkipAssignment(p.skipAssignment !== false);
     setActiveDraftId(draftId);
   }, []);
 
@@ -893,6 +898,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
         ) : [],
         is_credit_sale: paymentMode === 'credit',
         advance_amount: paymentMode === 'partial' ? Math.round((parseFloat(advanceAmount) || 0) * 100) / 100 : 0,
+        skip_assignment: skipAssignment,
       };
 
       if (orderType === 'pre_order') {
@@ -1016,7 +1022,10 @@ export default function QuickCheckoutScreen({ navigation, route }) {
                   isNarrowMobile && styles.orderTypeBtnCompact,
                   orderType === t.key && { backgroundColor: t.color, borderColor: t.color }
                 ]}
-                onPress={() => setOrderType(t.key)}
+                onPress={() => {
+                  setOrderType(t.key);
+                  setSkipAssignment(t.key === 'walk_in');
+                }}
               >
                 <Ionicons name={t.icon} size={24} color={orderType === t.key ? '#fff' : t.color} />
                 <Text
@@ -1334,9 +1343,20 @@ export default function QuickCheckoutScreen({ navigation, route }) {
                     placeholder="e.g. Custom Bouquet"
                     placeholderTextColor={Colors.textLight}
                   />
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 6 }} contentContainerStyle={{ gap: 6 }}>
+                    {['Bouquet', 'Bunch', 'Box', 'Basket', 'Vase', 'Garland', 'Arrangement'].map((sug) => (
+                      <TouchableOpacity 
+                        key={sug}
+                        style={{ backgroundColor: Colors.textLight + '10', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12, borderWidth: 1, borderColor: Colors.textLight + '30' }}
+                        onPress={() => updateItem(idx, 'name', item.name && !item.name.endsWith(' ') ? `${item.name} ${sug}` : `${item.name || ''}${sug}`)}
+                      >
+                        <Text style={{ fontSize: 11, color: Colors.textSecondary }}>{sug}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </ScrollView>
                 </View>
                 <TouchableOpacity
-                  style={styles.pickProductBtn}
+                  style={[styles.pickProductBtn, { alignSelf: 'flex-start', marginTop: 26 }]}
                   onPress={() => {
                     setEditingItemIdx(idx);
                     setProductSearch('');
@@ -1752,6 +1772,14 @@ export default function QuickCheckoutScreen({ navigation, route }) {
               <Text style={styles.grandTotalValue}>₹{Number(totals.finalTotal).toFixed(2)}</Text>
             </View>
           </View>
+
+          <TouchableOpacity 
+            style={[styles.checkRow, { marginTop: Spacing.md }]} 
+            onPress={() => setSkipAssignment(!skipAssignment)}
+          >
+            <Ionicons name={skipAssignment ? 'checkbox' : 'square-outline'} size={24} color={skipAssignment ? Colors.primary : Colors.textLight} />
+            <Text style={styles.checkLabel}>Auto-Complete Out-of-Stock Items (Skip Assignment)</Text>
+          </TouchableOpacity>
 
           <View style={styles.draftActionsRow}>
             <TouchableOpacity

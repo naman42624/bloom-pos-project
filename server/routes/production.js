@@ -652,12 +652,14 @@ router.put(
         }
       } catch (e) { console.error('Low stock check error:', e.message); }
 
-      // Notify if all tasks done → sale is ready
+      // Post-completion checks (notifications + auto-complete walk-in)
       try {
         const db2 = getDb();
         const remaining = db2.prepare("SELECT COUNT(*) as cnt FROM production_tasks WHERE sale_id = ? AND status NOT IN ('completed','cancelled')").get(task.sale_id);
         if (remaining.cnt === 0) {
-          const sale = db2.prepare('SELECT customer_id, sale_number, order_type FROM sales WHERE id = ?').get(task.sale_id);
+          const sale = db2.prepare('SELECT customer_id, sale_number, order_type, status FROM sales WHERE id = ?').get(task.sale_id);
+
+          // ─── Notify customer order is ready ───────────────────────
           if (sale?.customer_id) {
             createNotification({
               userIds: sale.customer_id,
@@ -667,8 +669,17 @@ router.put(
               data: { saleId: task.sale_id, screen: 'CustomerOrderDetail' },
             });
           }
+
+          // ─── Auto-complete walk-in orders if preference is enabled ─
+          if (sale?.order_type === 'walk_in' && sale?.status === 'ready') {
+            const prefRow = db2.prepare("SELECT value FROM settings WHERE key = 'pref_walkin_auto_complete'").get();
+            if (prefRow?.value === '1') {
+              db2.prepare("UPDATE sales SET status = 'completed', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(task.sale_id);
+              console.log(`[AutoComplete] Walk-in order ${sale.sale_number} auto-completed`);
+            }
+          }
         }
-      } catch (e) { console.error('Ready notification error:', e.message); }
+      } catch (e) { console.error('Post-completion check error:', e.message); }
     } catch (err) { next(err); }
   }
 );

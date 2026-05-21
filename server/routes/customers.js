@@ -15,62 +15,63 @@ const { safeParseJSON } = require('../utils/json');
 router.get('/', authenticate, authorize('owner', 'manager', 'employee', 'delivery_partner'), async (req, res, next) => {
   try {
     const db = await getAsyncDb();
-    const { search, limit = 50, offset = 0 } = req.query;
+    const { search, limit = 50, offset = 0, sort = 'name_asc', has_due } = req.query;
 
-    let sql = `
-      SELECT id, name, phone, email, birthday, anniversary, custom_dates,
-             total_spent, credit_balance, notes, is_active, created_at,
-             1 as is_registered
-      FROM users
-      WHERE role = 'customer'
-    `;
-    const params = [];
-
-    if (search) {
-      sql += ` AND (name ILIKE ? OR phone ILIKE ? OR email ILIKE ?)`;
-      params.push(`%${search}%`, `%${search}%`, `%${search}%`);
-    }
-
-    sql += ` ORDER BY name ASC LIMIT ? OFFSET ?`;
-    params.push(parseInt(limit), parseInt(offset));
-
-    let customers = await db.prepare(sql).all(...params);
-
-    // If initial results are few and no search, or if we want to fulfill the "any unique phones" requirement:
-    // Only add unregistered customers if we are on the first page and search is flexible
-    if (customers.length < limit && (!offset || offset === 0)) {
-      let unregSql = `
-        SELECT NULL as id, MAX(customer_name) as name, customer_phone as phone, NULL as email,
-               NULL as birthday, NULL as anniversary, '[]' as custom_dates,
-               SUM(grand_total) as total_spent, 0 as credit_balance, '' as notes, 1 as is_active,
+    let baseSql = `
+      WITH registered AS (
+        SELECT id, name, phone, email, birthday, anniversary, custom_dates,
+               total_spent, credit_balance, notes, is_active, created_at,
+               1 as is_registered
+        FROM users
+        WHERE role = 'customer'
+      ),
+      unregistered AS (
+        SELECT NULL::integer as id, MAX(customer_name) as name, customer_phone as phone, NULL::varchar as email,
+               NULL::date as birthday, NULL::date as anniversary, '[]'::text as custom_dates,
+               SUM(grand_total) as total_spent, 0::numeric as credit_balance, '' as notes, 1 as is_active,
                MIN(created_at) as created_at, 0 as is_registered
         FROM sales
         WHERE customer_id IS NULL AND customer_phone IS NOT NULL AND status != 'cancelled'
-      `;
-      const unregParams = [];
-      if (search) {
-        unregSql += ` AND (customer_name ILIKE ? OR customer_phone ILIKE ?)`;
-        unregParams.push(`%${search}%`, `%${search}%`);
-      }
-      unregSql += ` GROUP BY customer_phone ORDER BY total_spent DESC LIMIT ?`;
-      unregParams.push(limit - customers.length);
+          AND customer_phone NOT IN (SELECT phone FROM registered WHERE phone IS NOT NULL)
+        GROUP BY customer_phone
+      ),
+      combined AS (
+        SELECT * FROM registered
+        UNION ALL
+        SELECT * FROM unregistered
+      )
+    `;
 
-      try {
-        const unregistered = await db.prepare(unregSql).all(...unregParams);
-        customers = [...customers, ...unregistered];
-      } catch (e) {
-        console.error("Error fetching unregistered customers:", e.message);
-      }
-    }
+    let sql = `${baseSql} SELECT * FROM combined WHERE 1=1`;
+    let countSql = `${baseSql} SELECT COUNT(*) as total FROM combined WHERE 1=1`;
+    const params = [];
 
-    // Get total count
-    let countSql = `SELECT COUNT(*) as total FROM users WHERE role = 'customer'`;
-    const countParams = [];
     if (search) {
-      countSql += ` AND (name ILIKE ? OR phone ILIKE ? OR email ILIKE ?)`;
-      countParams.push(`%${search}%`, `%${search}%`, `%${search}%`);
+      const searchClause = ` AND (name ILIKE ? OR phone ILIKE ? OR email ILIKE ?)`;
+      sql += searchClause;
+      countSql += searchClause;
+      params.push(`%${search}%`, `%${search}%`, `%${search}%`);
     }
-    const { total } = await db.prepare(countSql).get(...countParams);
+
+    if (has_due === 'true') {
+      const dueClause = ` AND credit_balance > 0`;
+      sql += dueClause;
+      countSql += dueClause;
+    }
+
+    let sortCol = 'name';
+    let sortDir = 'ASC';
+    if (sort === 'name_desc') { sortCol = 'name'; sortDir = 'DESC'; }
+    else if (sort === 'spent_desc') { sortCol = 'total_spent'; sortDir = 'DESC'; }
+    else if (sort === 'due_desc') { sortCol = 'credit_balance'; sortDir = 'DESC'; }
+    else if (sort === 'recent_desc') { sortCol = 'created_at'; sortDir = 'DESC'; }
+
+    sql += ` ORDER BY ${sortCol} ${sortDir} NULLS LAST LIMIT ? OFFSET ?`;
+    
+    const queryParams = [...params, parseInt(limit), parseInt(offset)];
+    
+    let customers = await db.prepare(sql).all(...queryParams);
+    const { total } = await db.prepare(countSql).get(...params);
 
     // Attach order count for each customer using batched lookups
     const registeredIds = customers.filter((customer) => customer.is_registered && customer.id).map((customer) => customer.id);

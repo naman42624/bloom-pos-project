@@ -8,6 +8,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
+import { formatDate } from '../utils/datetime';
 
 export default function SupplierDetailScreen({ route, navigation }) {
   const { user } = useAuth();
@@ -175,7 +176,7 @@ export default function SupplierDetailScreen({ route, navigation }) {
                 >
                   <View style={styles.orderInfo}>
                     <Text style={styles.orderNum}>{o.po_number}</Text>
-                    <Text style={styles.orderMeta}>{o.location_name} · {new Date(o.created_at).toLocaleDateString()}</Text>
+                    <Text style={styles.orderMeta}>{o.location_name} · {formatDate(o.created_at)}</Text>
                   </View>
                   <View style={styles.orderRight}>
                     {o.total_amount !== undefined && <Text style={styles.orderAmount}>₹{o.total_amount}</Text>}

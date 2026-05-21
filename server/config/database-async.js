@@ -4,7 +4,7 @@
  * Maintains same interface: prepare(sql).all()/get()/run() returning promises
  */
 
-const { Pool } = require('pg');
+const { Pool, types } = require('pg');
 const { spawnSync } = require('child_process');
 const { addDbTiming } = require('../middleware/request-metrics-context');
 
@@ -14,12 +14,23 @@ if (!DATABASE_URL) {
   throw new Error('DATABASE_URL is required in .env');
 }
 
+// Override DATE type parser (OID 1082) to return plain YYYY-MM-DD strings
+// instead of JS Date objects that get timezone-shifted.
+types.setTypeParser(1082, (val) => val); // DATE → 'YYYY-MM-DD'
+
+// Override TIMESTAMP type parser (OID 1114) to append 'Z' so it is parsed
+// as UTC rather than the Node server's local timezone.
+types.setTypeParser(1114, (val) => new Date(val + 'Z')); // TIMESTAMP → UTC Date
+
 // Connection pool with optimized settings
+// options '-c timezone=UTC' ensures every connection interprets timestamps as UTC,
+// matching the PGTZ=UTC set on the sync psql wrapper in database.js.
 const pool = new Pool({
   connectionString: DATABASE_URL,
   max: 20,
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 2000,
+  options: '-c timezone=UTC',
 });
 
 let initialized = false;

@@ -73,8 +73,11 @@ export default function ExpensesScreen() {
       const today = getShopTodayStr(timezone);
       const res = await api.getExpenses({ location_id: selectedLocation, start_date: today, end_date: today });
 
-      setExpenses(res.data || []);
-      setTotal(res.total || 0);
+      setExpenses((res.data || []).map((expense) => ({
+        ...expense,
+        amount: Number(expense.amount) || 0,
+      })));
+      setTotal(Number(res.total || 0));
     } catch {} finally {
       setLoading(false);
     }
@@ -108,7 +111,7 @@ export default function ExpensesScreen() {
   };
 
   const handleDelete = (expense) => {
-    Alert.alert('Delete Expense', `Delete ₹${expense.amount.toFixed(0)} — ${expense.description}?`, [
+    Alert.alert('Delete Expense', `Delete ₹${Number(expense.amount || 0).toFixed(0)} — ${expense.description}?`, [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Delete', style: 'destructive',
@@ -146,7 +149,7 @@ export default function ExpensesScreen() {
         </Text>
       </View>
       <View style={styles.cardRight}>
-        <Text style={styles.cardAmount}>₹{item.amount.toFixed(0)}</Text>
+        <Text style={styles.cardAmount}>₹{Number(item.amount || 0).toFixed(0)}</Text>
         <TouchableOpacity onPress={() => handleDelete(item)}>
           <Ionicons name="trash-outline" size={16} color={Colors.error} />
         </TouchableOpacity>

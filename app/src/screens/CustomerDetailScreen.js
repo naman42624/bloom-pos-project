@@ -8,6 +8,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
+import { formatDate as formatTimestampDate } from '../utils/datetime';
 
 export default function CustomerDetailScreen({ route, navigation }) {
   const { user, activeLocation, locations: assignedLocations } = useAuth();
@@ -163,7 +164,7 @@ export default function CustomerDetailScreen({ route, navigation }) {
 
   const formatDate = (d) => {
     if (!d) return '';
-    return new Date(d).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+    return formatTimestampDate(d);
   };
 
   if (loading) {

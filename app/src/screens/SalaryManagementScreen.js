@@ -8,6 +8,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
+import { formatDate } from '../utils/datetime';
 
 const SALARY_TYPES = [
   { label: 'Monthly', value: 'monthly' },
@@ -385,7 +386,7 @@ export default function SalaryManagementScreen() {
                     </Text>
                     {p.paid_at && (
                       <Text style={{ fontSize: FontSize.xs, color: Colors.textLight, marginTop: 2 }}>
-                        Paid on {new Date(p.paid_at).toLocaleDateString()} via {p.payment_method} • by {p.paid_by_name}
+                        Paid on {formatDate(p.paid_at)} via {p.payment_method} • by {p.paid_by_name}
                       </Text>
                     )}
                   </View>
@@ -470,7 +471,7 @@ export default function SalaryManagementScreen() {
                       </Text>
                       {h.reason ? <Text style={styles.historyReason}>{h.reason}</Text> : null}
                       <Text style={styles.historyMeta}>
-                        by {h.changed_by_name} • {new Date(h.created_at).toLocaleDateString()}
+                        by {h.changed_by_name} • {formatDate(h.created_at)}
                       </Text>
                     </View>
                   </View>

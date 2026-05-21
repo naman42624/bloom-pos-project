@@ -212,6 +212,8 @@ export function OrderQuickModal({
   const [showEmployeePicker, setShowEmployeePicker] = useState(null); // taskId being assigned
   const [employees, setEmployees] = useState([]);
   const [employeesLoading, setEmployeesLoading] = useState(false);
+  const [confirmingStatus, setConfirmingStatus] = useState(null);
+  const [confirmingTask, setConfirmingTask] = useState(null);
 
   // Sync localTasks when tasks prop changes (e.g. on reopen)
   useEffect(() => {
@@ -236,6 +238,8 @@ export function OrderQuickModal({
       setActionLoading(false);
       setTaskLoading({});
       setShowEmployeePicker(null);
+      setConfirmingStatus(null);
+      setConfirmingTask(null);
       return;
     }
     if (order?.order_type === 'delivery' && order?.id) {
@@ -263,16 +267,14 @@ export function OrderQuickModal({
   }, [order?.id, onRefresh, onClose]);
 
   const confirmAction = useCallback((label, nextStatus, msg) => {
-    const message = msg || `${label} this order?`;
-    if (Platform.OS === 'web') {
-      if (window.confirm(message)) doStatusChange(nextStatus);
+    if (confirmingStatus === nextStatus) {
+      setConfirmingStatus(null);
+      doStatusChange(nextStatus);
     } else {
-      Alert.alert(label, message, [
-        { text: 'Cancel', style: 'cancel' },
-        { text: label, onPress: () => doStatusChange(nextStatus) },
-      ]);
+      setConfirmingStatus(nextStatus);
+      setTimeout(() => setConfirmingStatus(null), 3000);
     }
-  }, [doStatusChange]);
+  }, [doStatusChange, confirmingStatus]);
 
   // Task actions
   const openEmployeePicker = useCallback(async (taskId) => {
@@ -316,7 +318,8 @@ export function OrderQuickModal({
   }, [onRefresh, refreshLocalTasks]);
 
   const handleTaskComplete = useCallback(async (taskId) => {
-    const doComplete = async () => {
+    if (confirmingTask === taskId) {
+      setConfirmingTask(null);
       setTaskLoading((p) => ({ ...p, [taskId]: true }));
       try {
         await api.completeTask(taskId);
@@ -328,19 +331,11 @@ export function OrderQuickModal({
       } finally {
         setTaskLoading((p) => ({ ...p, [taskId]: false }));
       }
-    };
-
-    if (Platform.OS === 'web') {
-      if (window.confirm('Mark this task as done? Materials will be deducted.')) {
-        doComplete();
-      }
     } else {
-      Alert.alert('Complete Task', 'Mark this task as done? Materials will be deducted.', [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Complete', onPress: doComplete },
-      ]);
+      setConfirmingTask(taskId);
+      setTimeout(() => setConfirmingTask(null), 3000);
     }
-  }, [onRefresh, refreshLocalTasks]);
+  }, [confirmingTask, onRefresh, refreshLocalTasks]);
 
   if (!order) return null;
 
@@ -582,7 +577,7 @@ export function OrderQuickModal({
                           disabled={isLoading}
                         >
                           {isLoading ? <ActivityIndicator size="small" color="#fff" /> : (
-                            <Text style={styles.taskActionBtnText}>Done</Text>
+                            <Text style={styles.taskActionBtnText}>{confirmingTask === task.id ? 'Confirm?' : 'Done'}</Text>
                           )}
                         </TouchableOpacity>
                       )}
@@ -611,7 +606,7 @@ export function OrderQuickModal({
                   ) : (
                     <>
                       <Ionicons name={action.icon} size={16} color="#fff" />
-                      <Text style={styles.actionBtnText}>{action.label}</Text>
+                      <Text style={styles.actionBtnText}>{confirmingStatus === action.next ? 'Tap again to confirm' : action.label}</Text>
                     </>
                   )}
                 </TouchableOpacity>
@@ -665,6 +660,7 @@ export function DeliveryQuickModal({
   const [delivery, setDelivery] = useState(null);
   const [loading, setLoading] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
+  const [confirmingConversion, setConfirmingConversion] = useState(null);
 
   // Partner assignment
   const [showAssign, setShowAssign] = useState(false);
@@ -709,6 +705,7 @@ export function DeliveryQuickModal({
       setShowAssign(false);
       setShowCodForm(false);
       setShowFailForm(false);
+      setConfirmingConversion(null);
     }
   }, [visible, deliveryId, fetchDelivery]);
 
@@ -791,12 +788,8 @@ export function DeliveryQuickModal({
   const isCredit = delivery?.is_credit_sale === 1;
 
   const handleConvertPayment = async (action) => {
-    if (!delivery) return;
-    const msg = action === 'to_cod' 
-      ? 'Convert this credit order to Cash on Delivery?'
-      : 'Convert this COD order to a Credit Sale? (Requires customer details)';
-      
-    const confirmConversion = async () => {
+    if (confirmingConversion === action) {
+      setConfirmingConversion(null);
       setActionLoading(true);
       try {
         await api.convertDeliveryPayment(delivery.id, { action });
@@ -808,15 +801,9 @@ export function DeliveryQuickModal({
       } finally {
         setActionLoading(false);
       }
-    };
-
-    if (Platform.OS === 'web') {
-      if (window.confirm(msg)) confirmConversion();
     } else {
-      Alert.alert('Confirm Conversion', msg, [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Convert', style: 'default', onPress: confirmConversion }
-      ]);
+      setConfirmingConversion(action);
+      setTimeout(() => setConfirmingConversion(null), 3000);
     }
   };
 
@@ -951,7 +938,7 @@ export function DeliveryQuickModal({
                   disabled={actionLoading}
                 >
                   <Ionicons name="cash-outline" size={16} color="#374151" />
-                  <Text style={[styles.actionBtnText, { color: '#374151' }]}>Convert to COD</Text>
+                  <Text style={[styles.actionBtnText, { color: '#374151' }]}>{confirmingConversion === 'to_cod' ? 'Confirm?' : 'Convert to COD'}</Text>
                 </TouchableOpacity>
               ) : (
                 <TouchableOpacity 
@@ -960,7 +947,7 @@ export function DeliveryQuickModal({
                   disabled={actionLoading}
                 >
                   <Ionicons name="document-text-outline" size={16} color="#374151" />
-                  <Text style={[styles.actionBtnText, { color: '#374151' }]}>Convert to Credit</Text>
+                  <Text style={[styles.actionBtnText, { color: '#374151' }]}>{confirmingConversion === 'to_credit' ? 'Confirm?' : 'Convert to Credit'}</Text>
                 </TouchableOpacity>
               )}
             </View>

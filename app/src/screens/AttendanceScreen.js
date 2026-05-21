@@ -8,7 +8,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
-import { formatTime as formatServerTime, parseServerDate } from '../utils/datetime';
+import { formatTime as formatServerTime, parseServerDate, DEFAULT_TZ } from '../utils/datetime';
 
 const confirm = (title, msg, onOk) => {
   if (Platform.OS === 'web') { if (window.confirm(`${title}\n${msg}`)) onOk(); }
@@ -16,7 +16,7 @@ const confirm = (title, msg, onOk) => {
 };
 
 function formatTime(iso) {
-  return formatServerTime(iso, 'en-IN', { hour: '2-digit', minute: '2-digit', hour12: false });
+  return formatServerTime(iso, 'en-IN', { hour: '2-digit', minute: '2-digit', hour12: true });
 }
 
 function formatHours(h) {
@@ -245,10 +245,10 @@ export default function AttendanceScreen({ navigation }) {
         {/* Live Device Time */}
         <View style={styles.liveTimeContainer}>
           <Text style={styles.liveTimeText}>
-            {currentTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+            {currentTime.toLocaleTimeString([], { timeZone: DEFAULT_TZ, hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true })}
           </Text>
           <Text style={styles.liveDateText}>
-            {currentTime.toLocaleDateString([], { weekday: 'long', year: 'numeric', month: 'short', day: 'numeric' })}
+            {currentTime.toLocaleDateString([], { timeZone: DEFAULT_TZ, weekday: 'long', year: 'numeric', month: 'short', day: 'numeric' })}
           </Text>
         </View>
 
@@ -503,8 +503,8 @@ export default function AttendanceScreen({ navigation }) {
           history.map(h => (
             <View key={h.id} style={styles.historyRow}>
               <View style={styles.historyDate}>
-                <Text style={styles.historyDay}>{new Date(h.date).toLocaleDateString([], { weekday: 'short' })}</Text>
-                <Text style={styles.historyDateText}>{new Date(h.date).toLocaleDateString([], { day: 'numeric', month: 'short' })}</Text>
+                <Text style={styles.historyDay}>{new Date(h.date).toLocaleDateString([], { timeZone: DEFAULT_TZ, weekday: 'short' })}</Text>
+                <Text style={styles.historyDateText}>{new Date(h.date).toLocaleDateString([], { timeZone: DEFAULT_TZ, day: 'numeric', month: 'short' })}</Text>
               </View>
               <View style={styles.historyInfo}>
                 <Text style={styles.historyTime}>

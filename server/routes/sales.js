@@ -9,6 +9,8 @@ const { safeParseJSON } = require('../utils/json');
 
 const router = express.Router();
 
+const { normalizeDateFields } = require('../utils/normalizeDates');
+
 // ─── Auto-migration: expand schema CHECK constraints ─────────
 try {
   const db = getDb();
@@ -157,13 +159,15 @@ router.get('/', authenticate, async (req, res, next) => {
              c.name as customer_display_name, c.phone as customer_display_phone,
               snd.name as sender_display_name, snd.phone as sender_display_phone,
               rcv.name as receiver_display_name, rcv.phone as receiver_display_phone,
-             COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.sale_id = s.id), 0) as total_paid
+             COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.sale_id = s.id), 0) as total_paid,
+             d.status as delivery_status
       FROM sales s
       LEFT JOIN locations l ON s.location_id = l.id
       LEFT JOIN users u ON s.created_by = u.id
       LEFT JOIN users c ON s.customer_id = c.id
             LEFT JOIN users snd ON s.sender_customer_id = snd.id
             LEFT JOIN users rcv ON s.receiver_customer_id = rcv.id
+            LEFT JOIN deliveries d ON d.sale_id = s.id
       WHERE 1=1
     `;
     const params = [];
@@ -257,7 +261,14 @@ router.get('/', authenticate, async (req, res, next) => {
     if (date_to) { countSql += " AND s.created_at < (?::date + INTERVAL '1 day')"; countParams.push(date_to); }
     const { total } = await db.prepare(countSql).get(...countParams);
 
-    res.json({ success: true, data: { sales, total, limit, offset } });
+    // Normalize sales and nested items/payments before returning
+    const normalizedSales = (sales || []).map(s => {
+      s.items = s.items || [];
+      s.items = s.items.map(normalizeDateFields);
+      return normalizeDateFields(s);
+    });
+
+    res.json({ success: true, data: { sales: normalizedSales, total, limit, offset } });
   } catch (err) { next(err); }
 });
 
@@ -855,6 +866,100 @@ router.get(
     } catch (err) { next(err); }
   }
 );
+// ─── GET /api/sales/:id/audit-logs ───────────────────────────
+router.get('/:id/audit-logs', authenticate, authorize('owner', 'manager'), async (req, res, next) => {
+  try {
+    const db = await getAsyncDb();
+    const logs = await db.prepare(`
+      SELECT a.*, u.name as user_name 
+      FROM audit_logs a
+      LEFT JOIN users u ON a.user_id = u.id
+      WHERE a.entity_type = 'sale' AND a.entity_id = ?
+      ORDER BY a.created_at DESC
+    `).all(req.params.id);
+    
+    res.json({ success: true, data: logs });
+  } catch (err) { next(err); }
+});
+
+// ─── PUT /api/sales/:id ──────────────────────────────────────
+router.put('/:id', authenticate, authorize('owner', 'manager', 'employee'), async (req, res, next) => {
+  try {
+    const db = await getAsyncDb();
+    const saleId = req.params.id;
+
+    // Fetch existing sale state for the audit log
+    const oldSale = await db.prepare('SELECT * FROM sales WHERE id = ?').get(saleId);
+    if (!oldSale) return res.status(404).json({ success: false, message: 'Sale not found' });
+    
+    // 1. Permission Check
+    if (req.user.role === 'employee' && oldSale.created_by !== req.user.id) {
+      return res.status(403).json({ success: false, message: 'Employees can only edit sales they created' });
+    }
+
+    // 2. Time/Register Check
+    const saleDate = String(oldSale.created_at).split(' ')[0] || String(oldSale.created_at).split('T')[0];
+    const today = localToday();
+    
+    if (saleDate !== today) {
+      return res.status(400).json({ success: false, message: 'Sales can only be edited on the same day they were created' });
+    }
+
+    const closedRegister = await db.prepare(`
+      SELECT id FROM cash_registers 
+      WHERE location_id = ? AND date = ? AND closed_at IS NOT NULL
+    `).get(oldSale.location_id, saleDate);
+
+    if (closedRegister) {
+      return res.status(400).json({ success: false, message: 'Sale cannot be edited because the cash register for that day is already closed' });
+    }
+
+    const oldPayments = await db.prepare('SELECT * FROM payments WHERE sale_id = ?').all(saleId);
+    const oldState = { ...oldSale, payments: oldPayments };
+
+    // We allow updating limited fields in this MVP
+    const { 
+      customer_name, customer_phone, 
+      payment_status, payments, order_notes 
+    } = req.body;
+
+    const updates = [];
+    const params = [];
+
+    if (customer_name !== undefined) { updates.push('customer_name = ?'); params.push(customer_name); }
+    if (customer_phone !== undefined) { updates.push('customer_phone = ?'); params.push(customer_phone); }
+    if (payment_status !== undefined) { updates.push('payment_status = ?'); params.push(payment_status); }
+    if (order_notes !== undefined) { updates.push('order_notes = ?'); params.push(order_notes); }
+
+    if (updates.length > 0) {
+      params.push(saleId);
+      await db.prepare(`UPDATE sales SET ${updates.join(', ')}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(...params);
+    }
+
+    // Update payments if provided
+    if (payments && Array.isArray(payments)) {
+      await db.prepare('DELETE FROM payments WHERE sale_id = ?').run(saleId);
+      const insertPayment = db.prepare('INSERT INTO payments (sale_id, method, amount, reference_number, received_by, created_at) VALUES (?, ?, ?, ?, ?, ?)');
+      for (const pmt of payments) {
+        await insertPayment.run(saleId, pmt.method, pmt.amount, pmt.reference_number || null, req.user.id, nowLocal());
+      }
+    }
+
+    // Fetch new sale state for the audit log
+    const newSale = await db.prepare('SELECT * FROM sales WHERE id = ?').get(saleId);
+    const newPayments = await db.prepare('SELECT * FROM payments WHERE sale_id = ?').all(saleId);
+    const newState = { ...newSale, payments: newPayments };
+
+    // Record audit log
+    await db.prepare(`
+      INSERT INTO audit_logs (entity_type, entity_id, user_id, action, previous_state, new_state, created_at)
+      VALUES ('sale', ?, ?, 'update', ?, ?, CURRENT_TIMESTAMP)
+    `).run(saleId, req.user.id, JSON.stringify(oldState), JSON.stringify(newState));
+
+    res.json({ success: true, message: 'Sale updated successfully', data: newState });
+  } catch (err) { next(err); }
+});
+
 
 // ─── GET /api/sales/:id ──────────────────────────────────────
 router.get('/:id', authenticate, async (req, res, next) => {
@@ -995,6 +1100,10 @@ router.get('/:id', authenticate, async (req, res, next) => {
     ]);
 
     sale.payments = payments;
+    // Normalize before returning single sale
+    sale.items = (sale.items || []).map(normalizeDateFields);
+    sale.payments = (sale.payments || []).map(normalizeDateFields);
+    normalizeDateFields(sale);
     if (sale.order_type === 'pre_order') {
       sale.pre_order = preOrder;
     }
@@ -1049,6 +1158,7 @@ router.post(
     body('sender_name').optional({ nullable: true }).trim(),
     body('sender_phone').optional({ nullable: true }).trim(),
     body('sender_message').optional({ nullable: true }).trim(),
+    body('skip_assignment').optional().isBoolean().toBoolean(),
   ],
   (req, res, next) => {
     try {
@@ -1067,7 +1177,7 @@ router.post(
         sender_address, sender_address_label, receiver_address_label,
         scheduled_date, scheduled_time, advance_amount,
         sender_name, sender_phone, sender_message,
-        is_credit_sale,
+        is_credit_sale, skip_assignment,
       } = req.body;
       // Mutable alias — may be set by auto-create logic below
       let customer_id = customer_id_from_body || null;
@@ -1371,10 +1481,19 @@ router.post(
         const logMaterialTx = db.prepare(`INSERT INTO material_transactions (material_id, location_id, type, quantity, reference_type, reference_id, notes, created_by) VALUES (?, ?, 'usage', ?, 'sale', ?, ?, ?)`);
         const getBOM = db.prepare('SELECT material_id, quantity FROM product_materials WHERE product_id = ?');
         const getReadyStock = db.prepare('SELECT quantity FROM product_stock WHERE product_id = ? AND location_id = ?');
-        const insertTask = db.prepare(
-          `INSERT INTO production_tasks (sale_id, sale_item_id, product_id, location_id, quantity, priority, notes, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-        );
+        const insertTaskToDb = (saleId, saleItemId, productId, locId, qty, priority, notes, createdAt) => {
+          if (skip_assignment) {
+            db.prepare(
+              `INSERT INTO production_tasks (sale_id, sale_item_id, product_id, location_id, quantity, priority, notes, status, assigned_to, picked_by, completed_at, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?, ?, ?)`
+            ).run(saleId, saleItemId, productId, locId, qty, priority, notes, req.user.id, req.user.id, createdAt, createdAt, createdAt);
+          } else {
+            db.prepare(
+              `INSERT INTO production_tasks (sale_id, sale_item_id, product_id, location_id, quantity, priority, notes, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+            ).run(saleId, saleItemId, productId, locId, qty, priority, notes, createdAt);
+          }
+        };
 
         if (stockDeducted && !needsProduction) {
           // Walk-in, all products in stock: deduct from product_stock
@@ -1416,12 +1535,12 @@ router.post(
 
               if (toMake > 0) {
                 const priority = order_type === 'walk_in' ? 'urgent' : 'medium';
-                insertTask.run(saleId, item.sale_item_id, item.product_id, location_id, toMake, priority, '', nowLocal());
+                insertTaskToDb(saleId, item.sale_item_id, item.product_id, location_id, toMake, priority, '', nowLocal());
               }
             } else {
               // Ad-hoc item (no product_id) — still create a production task
               const priority = order_type === 'walk_in' ? 'urgent' : 'medium';
-              insertTask.run(saleId, item.sale_item_id, item.product_id || null, location_id, item.quantity, priority, item.special_instructions || '', nowLocal());
+              insertTaskToDb(saleId, item.sale_item_id, item.product_id || null, location_id, item.quantity, priority, item.special_instructions || '', nowLocal());
             }
           }
         }
@@ -1432,7 +1551,7 @@ router.post(
           const taskCount = db.prepare("SELECT COUNT(*) as cnt FROM production_tasks WHERE sale_id = ? AND status NOT IN ('completed', 'cancelled')").get(saleId).cnt;
           const unfulfilledItems = db.prepare("SELECT COUNT(*) as cnt FROM sale_items WHERE sale_id = ? AND product_id IS NOT NULL AND from_product_stock = 0").get(saleId).cnt;
 
-          if (taskCount === 0 && unfulfilledItems === 0) {
+          if (taskCount === 0 && (unfulfilledItems === 0 || skip_assignment)) {
             const finalStatus = order_type === 'walk_in' ? 'completed' : 'ready';
             db.prepare("UPDATE sales SET status = ?, stock_deducted = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(finalStatus, saleId);
             if (order_type === 'pickup') {
@@ -1548,6 +1667,12 @@ router.post(
       // Attach items & payments for response
       sale.items = db.prepare('SELECT * FROM sale_items WHERE sale_id = ?').all(sale.id);
       sale.payments = db.prepare('SELECT * FROM payments WHERE sale_id = ?').all(sale.id);
+
+      // Normalize date/time fields for consistent API output (uses shared normalizeDateFields from utils)
+
+      normalizeDateFields(sale);
+      sale.items = (sale.items || []).map(normalizeDateFields);
+      sale.payments = (sale.payments || []).map(normalizeDateFields);
       if (sale.order_type === 'pre_order') {
         sale.pre_order = db.prepare('SELECT * FROM pre_orders WHERE sale_id = ?').get(sale.id);
       }
@@ -2117,7 +2242,7 @@ router.post(
       if (existing) return res.status(409).json({ success: false, message: 'Refund already exists for this sale' });
 
       const { amount, reason, refund_method } = req.body;
-      if (amount > sale.grand_total) return res.status(400).json({ success: false, message: 'Refund amount cannot exceed sale total' });
+      if (Number(amount) > Number(sale.grand_total)) return res.status(400).json({ success: false, message: 'Refund amount cannot exceed sale total' });
 
       // Enforce refund limit for managers
       if (req.user.role === 'manager') {
@@ -2141,9 +2266,32 @@ router.post(
 
       // Update cash register if cash refund
       if (refund_method === 'cash') {
-        const register = db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1').get(sale.location_id);
-        if (register) {
-          db.prepare('UPDATE cash_registers SET total_refunds_cash = total_refunds_cash + ?, expected_cash = expected_cash - ? WHERE id = ?').run(amount, amount, register.id);
+        const saleDate = String(sale.created_at).split(' ')[0] || String(sale.created_at).split('T')[0];
+        const today = localToday();
+        
+        if (saleDate === today) {
+          // Sale was made today. Log as normal cash refund on today's register.
+          const register = db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1').get(sale.location_id);
+          if (register) {
+            db.prepare('UPDATE cash_registers SET total_refunds_cash = total_refunds_cash + ?, expected_cash = expected_cash - ? WHERE id = ?').run(amount, amount, register.id);
+          }
+        } else {
+          // Sale was made on a previous day. Log as an expense for today.
+          try {
+            db.prepare(
+              `INSERT INTO expenses (location_id, category, amount, description, payment_method, expense_date, created_by)
+               VALUES (?, 'other', ?, ?, 'cash', ?, ?)`
+            ).run(sale.location_id, amount, `Refund for past sale ${sale.sale_number}`, today, req.user.id);
+          } catch (e) {
+            // Ignore if expenses table has strict constraints not met here
+            console.error('Failed to insert refund expense:', e);
+          }
+
+          // Deduct from today's register expected_cash
+          const register = db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1').get(sale.location_id);
+          if (register) {
+            db.prepare('UPDATE cash_registers SET expected_cash = expected_cash - ? WHERE id = ?').run(amount, register.id);
+          }
         }
       }
 
@@ -2218,14 +2366,14 @@ router.post(
             delivery_address, scheduled_date, scheduled_time,
             grand_total, payment_status, order_type, status, stock_deducted,
             special_instructions, customer_notes, sender_name, sender_phone, sender_message, created_by, created_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, 'pending', ?, 'pending', 0, '', ?, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, 'pending', ?, 'pending', 0, '', ?, ?, ?, ?, ?, ?, ?)
         `).run(
           saleNumber, location_id, req.user.id, req.user.name, req.user.phone,
           subtotal, taxTotal,
           delivery_address || null, scheduled_date || null, scheduled_time || null,
           grandTotal, order_type,
           notes || '',
-          sender_name || '', sender_phone || '', sender_message || '', req.user.id
+          sender_name || '', sender_phone || '', sender_message || '', req.user.id, nowLocal()
         );
         const saleId = saleResult.lastInsertRowid;
 

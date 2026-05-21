@@ -4,25 +4,23 @@ const { getDb } = require('../config/database');
 const { getDb: getAsyncDb } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
 const { createNotification, notifyByRole } = require('./notifications');
-const { nowLocal } = require('../utils/time');
+const { nowLocal, todayStr, nowTimeStr } = require('../utils/time');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 
 const router = express.Router();
+const { normalizeDateFields } = require('../utils/normalizeDates');
 
-function localDateStr(dt) {
-  const d = dt || new Date();
-  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-}
+// Use todayStr() from time.js for timezone-aware date strings
 
 // Generate unique settlement number: SETL-DDMMYY-{seq}
 function generateSettlementNumber(db, locationId) {
   const db2 = db;
-  const today = new Date();
-  const dd = String(today.getDate()).padStart(2, '0');
-  const mm = String(today.getMonth() + 1).padStart(2, '0');
-  const yy = String(today.getFullYear()).slice(-2);
+  const todayDate = todayStr(); // YYYY-MM-DD in shop timezone
+  const dd = todayDate.slice(8, 10);
+  const mm = todayDate.slice(5, 7);
+  const yy = todayDate.slice(2, 4);
   const dateCode = `${dd}${mm}${yy}`;
   
   // Get max sequence number for today
@@ -30,7 +28,7 @@ function generateSettlementNumber(db, locationId) {
     `SELECT MAX(CAST(RIGHT(settlement_number, 3) AS INTEGER)) as max_seq
      FROM delivery_settlements
      WHERE location_id = ? AND settlement_date = ?`
-  ).get(locationId, localDateStr());
+  ).get(locationId, todayStr());
   
   const nextSeq = (maxSeq?.max_seq || 0) + 1;
   return `SETL-${dateCode}-${String(nextSeq).padStart(3, '0')}`;
@@ -153,7 +151,13 @@ router.get('/', authenticate, authorize('owner', 'manager', 'delivery_partner', 
       }
     }
 
-    res.json({ success: true, data: deliveries });
+    // Normalize date/time fields
+    const normalized = (deliveries || []).map(d => {
+      d.items = d.items || [];
+      d.items = d.items.map(normalizeDateFields);
+      return normalizeDateFields(d);
+    });
+    res.json({ success: true, data: normalized });
   } catch (err) { next(err); }
 });
 
@@ -164,10 +168,8 @@ router.get('/at-risk', authenticate, authorize('owner', 'manager', 'employee'), 
     const db = await getAsyncDb();
     const { location_id } = req.query;
 
-    const now = new Date();
-    const today = localDateStr(now);
-    const in30Min = new Date(now.getTime() + 30 * 60 * 1000);
-    const threshold = in30Min.toTimeString().slice(0, 5);
+    const today = todayStr();
+    const threshold = nowTimeStr();  // current shop-local time as HH:mm:ss
 
     let sql = `
       SELECT d.id as delivery_id, d.sale_id, d.scheduled_date, d.scheduled_time,
@@ -386,13 +388,13 @@ router.put(
 router.put(
   '/:id(\\d+)/pickup',
   authenticate,
-  authorize('delivery_partner'),
+  authorize('delivery_partner', 'owner', 'manager'),
   (req, res, next) => {
     try {
       const db = getDb();
       const delivery = db.prepare('SELECT * FROM deliveries WHERE id = ?').get(req.params.id);
       if (!delivery) return res.status(404).json({ success: false, message: 'Delivery not found' });
-      if (delivery.delivery_partner_id !== req.user.id) {
+      if (delivery.delivery_partner_id !== req.user.id && req.user.role !== 'owner' && req.user.role !== 'manager') {
         return res.status(403).json({ success: false, message: 'Not assigned to you' });
       }
       if (delivery.status !== 'assigned') {
@@ -421,13 +423,13 @@ router.put(
 router.put(
   '/:id(\\d+)/in-transit',
   authenticate,
-  authorize('delivery_partner'),
+  authorize('delivery_partner', 'owner', 'manager'),
   (req, res, next) => {
     try {
       const db = getDb();
       const delivery = db.prepare('SELECT * FROM deliveries WHERE id = ?').get(req.params.id);
       if (!delivery) return res.status(404).json({ success: false, message: 'Delivery not found' });
-      if (delivery.delivery_partner_id !== req.user.id) {
+      if (delivery.delivery_partner_id !== req.user.id && req.user.role !== 'owner' && req.user.role !== 'manager') {
         return res.status(403).json({ success: false, message: 'Not assigned to you' });
       }
       if (delivery.status !== 'picked_up') {
@@ -447,7 +449,7 @@ router.put(
 router.put(
   '/:id(\\d+)/deliver',
   authenticate,
-  authorize('delivery_partner'),
+  authorize('delivery_partner', 'owner', 'manager'),
   [
     body('delivery_notes').optional().trim(),
     body('cod_collected').optional().isFloat({ min: 0 }),
@@ -464,7 +466,7 @@ router.put(
       const db = getDb();
       const delivery = db.prepare('SELECT * FROM deliveries WHERE id = ?').get(req.params.id);
       if (!delivery) return res.status(404).json({ success: false, message: 'Delivery not found' });
-      if (delivery.delivery_partner_id !== req.user.id) {
+      if (delivery.delivery_partner_id !== req.user.id && req.user.role !== 'owner' && req.user.role !== 'manager') {
         return res.status(403).json({ success: false, message: 'Not assigned to you' });
       }
       if (!['picked_up', 'in_transit'].includes(delivery.status)) {
@@ -563,7 +565,7 @@ router.put(
 router.put(
   '/:id(\\d+)/fail',
   authenticate,
-  authorize('delivery_partner'),
+  authorize('delivery_partner', 'owner', 'manager'),
   [body('failure_reason').trim().notEmpty().withMessage('Reason required')],
   (req, res, next) => {
     try {
@@ -573,7 +575,7 @@ router.put(
       const db = getDb();
       const delivery = db.prepare('SELECT * FROM deliveries WHERE id = ?').get(req.params.id);
       if (!delivery) return res.status(404).json({ success: false, message: 'Delivery not found' });
-      if (delivery.delivery_partner_id !== req.user.id) {
+      if (delivery.delivery_partner_id !== req.user.id && req.user.role !== 'owner' && req.user.role !== 'manager') {
         return res.status(403).json({ success: false, message: 'Not assigned to you' });
       }
       if (!['picked_up', 'in_transit'].includes(delivery.status)) {
@@ -777,14 +779,14 @@ router.put('/:id(\\d+)/cancel', authenticate, authorize('owner', 'manager'), (re
 router.post(
   '/:id(\\d+)/proof',
   authenticate,
-  authorize('delivery_partner'),
+  authorize('delivery_partner', 'owner', 'manager'),
   upload.single('photo'),
   (req, res, next) => {
     try {
       const db = getDb();
       const delivery = db.prepare('SELECT * FROM deliveries WHERE id = ?').get(req.params.id);
       if (!delivery) return res.status(404).json({ success: false, message: 'Delivery not found' });
-      if (delivery.delivery_partner_id !== req.user.id) {
+      if (delivery.delivery_partner_id !== req.user.id && req.user.role !== 'owner' && req.user.role !== 'manager') {
         return res.status(403).json({ success: false, message: 'Not assigned to you' });
       }
 
@@ -880,7 +882,7 @@ router.post(
         const commissionPercentage = 5.0; // 5% standard commission
         const commissionAmount = totalAmount * (commissionPercentage / 100);
         const netAmount = totalAmount - commissionAmount;
-        const today = localDateStr();
+        const today = todayStr();
 
         // Create settlement with new fields — include partner_id (NOT NULL in schema)
         const result = db.prepare(
@@ -969,7 +971,7 @@ router.put(
         );
 
         // Add the settled cash to the cash register
-        const today = localDateStr();
+        const today = todayStr();
         const register = db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND date = ?').get(settlement.location_id, today);
         if (register) {
           db.prepare('UPDATE cash_registers SET total_cash_sales = total_cash_sales + ?, expected_cash = opening_balance + total_cash_sales + ? - total_refunds_cash WHERE id = ?')
@@ -1176,7 +1178,7 @@ router.put(
           ).run(sale.id, payment_method || 'cash', paidNow, payment_reference ? `PICKUP-${payment_reference}` : 'PICKUP', req.user.id);
 
           // Update cash register
-          const today = localDateStr();
+          const today = todayStr();
           const register = db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND date = ?').get(sale.location_id, today);
           if (register) {
             if ((payment_method || 'cash') === 'cash') {

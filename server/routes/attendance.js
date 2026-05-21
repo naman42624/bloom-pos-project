@@ -3,7 +3,7 @@ const router = express.Router();
 const { getDb } = require('../config/database');
 const { getDb: getAsyncDb } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
-const { todayStr, nowLocal, parseServerDate } = require('../utils/time');
+const { todayStr, nowLocal, parseServerDate, getTimezone } = require('../utils/time');
 
 // All attendance routes require auth
 router.use(authenticate);
@@ -21,8 +21,14 @@ function hoursBetween(start, end) {
 function isLateArrival(clockIn, operatingHours, userId, locationId) {
   if (!clockIn) return false;
   try {
-    // clockIn is e.g. "2026-04-04T07:52:38+05:30"
-    const clockTime = clockIn.split('T')[1].slice(0, 8); // "07:52:38"
+    const tz = getTimezone();
+    const d = new Date(clockIn);
+    if (Number.isNaN(d.getTime())) return false;
+    
+    // Extract local time string HH:mm:ss for comparison
+    const clockTime = new Intl.DateTimeFormat('en-GB', { 
+      timeZone: tz, hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false 
+    }).format(d);
 
     const db = getDb();
     const shift = db.prepare('SELECT shift_start FROM employee_shifts WHERE user_id = ? AND location_id = ? AND is_active = 1').get(userId, locationId);
@@ -33,11 +39,12 @@ function isLateArrival(clockIn, operatingHours, userId, locationId) {
     // Fallback to location operating_hours
     if (!operatingHours) return false;
     const hours = safeParseJSON(operatingHours, {});
-    const dayOfWeek = new Date(clockIn).toLocaleDateString('en-US', { weekday: 'long' }).toLowerCase();
+    const dayOfWeek = d.toLocaleDateString('en-US', { timeZone: tz, weekday: 'long' }).toLowerCase();
     const dayHours = hours[dayOfWeek];
     if (!dayHours || !dayHours.open) return false;
     return clockTime > dayHours.open;
-  } catch {
+  } catch (err) {
+    console.error(err);
     return false;
   }
 }
@@ -46,7 +53,13 @@ function isLateArrival(clockIn, operatingHours, userId, locationId) {
 function isEarlyDeparture(clockOut, operatingHours, userId, locationId) {
   if (!clockOut) return false;
   try {
-    const clockTime = clockOut.split('T')[1].slice(0, 8); // "HH:mm:ss"
+    const tz = getTimezone();
+    const d = new Date(clockOut);
+    if (Number.isNaN(d.getTime())) return false;
+    
+    const clockTime = new Intl.DateTimeFormat('en-GB', { 
+      timeZone: tz, hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false 
+    }).format(d);
 
     const db = getDb();
     const shift = db.prepare('SELECT shift_end FROM employee_shifts WHERE user_id = ? AND location_id = ? AND is_active = 1').get(userId, locationId);
@@ -56,11 +69,12 @@ function isEarlyDeparture(clockOut, operatingHours, userId, locationId) {
 
     if (!operatingHours) return false;
     const hours = safeParseJSON(operatingHours, {});
-    const dayOfWeek = new Date(clockOut).toLocaleDateString('en-US', { weekday: 'long' }).toLowerCase();
+    const dayOfWeek = d.toLocaleDateString('en-US', { timeZone: tz, weekday: 'long' }).toLowerCase();
     const dayHours = hours[dayOfWeek];
     if (!dayHours || !dayHours.close) return false;
     return clockTime < dayHours.close;
-  } catch {
+  } catch (err) {
+    console.error(err);
     return false;
   }
 }

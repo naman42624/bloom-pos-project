@@ -19,44 +19,41 @@ export default function RefundSaleScreen({ route, navigation }) {
   const [reason, setReason] = useState('');
   const [method, setMethod] = useState('cash');
   const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState(null);
 
   const handleRefund = async () => {
+    setError(null);
     const refundAmt = parseFloat(amount);
     if (!refundAmt || refundAmt <= 0 || refundAmt > grandTotal) {
-      Alert.alert('Invalid', `Amount must be between ₹1 and ₹${grandTotal}`);
+      setError(`Amount must be between ₹1 and ₹${grandTotal}`);
       return;
     }
     if (!reason.trim()) {
-      Alert.alert('Required', 'Please provide a reason for the refund');
+      setError('Please provide a reason for the refund');
       return;
     }
 
-    const doRefund = async () => {
-      setSubmitting(true);
-      try {
-        const res = await api.refundSale(saleId, {
-          amount: refundAmt,
-          reason: reason.trim(),
-          refund_method: method,
-        });
-        if (res.success) {
-          Alert.alert('Refunded', `₹${Number(refundAmt).toFixed(2)} refunded successfully`);
-          navigation.goBack();
+    setSubmitting(true);
+    try {
+      const res = await api.refundSale(saleId, {
+        amount: refundAmt,
+        reason: reason.trim(),
+        refund_method: method,
+      });
+      if (res.success) {
+        if (Platform.OS === 'web') {
+          window.alert(`₹${Number(refundAmt).toFixed(2)} refunded successfully`);
         } else {
-          Alert.alert('Error', res.message || 'Refund failed');
+          Alert.alert('Refunded', `₹${Number(refundAmt).toFixed(2)} refunded successfully`);
         }
-      } catch (err) {
-        Alert.alert('Error', err.message || 'Something went wrong');
-      } finally { setSubmitting(false); }
-    };
-
-    if (Platform.OS === 'web') {
-      if (window.confirm(`Refund ₹${Number(refundAmt).toFixed(2)} via ${method}?`)) doRefund();
-    } else {
-      Alert.alert('Confirm Refund', `Refund ₹${Number(refundAmt).toFixed(2)} via ${method}?`, [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Refund', style: 'destructive', onPress: doRefund },
-      ]);
+        navigation.goBack();
+      } else {
+        setError(res.message || 'Refund failed');
+      }
+    } catch (err) {
+      setError(err.message || 'Something went wrong');
+    } finally { 
+      setSubmitting(false); 
     }
   };
 
@@ -65,6 +62,12 @@ export default function RefundSaleScreen({ route, navigation }) {
       <View style={styles.card}>
         <Text style={styles.title}>Process Refund</Text>
         <Text style={styles.hint}>Sale total: ₹{Number(grandTotal || 0).toFixed(2)}</Text>
+
+        {error ? (
+          <View style={{ backgroundColor: Colors.error + '20', padding: 12, borderRadius: 8, marginBottom: 16 }}>
+            <Text style={{ color: Colors.error, fontSize: FontSize.sm }}>{error}</Text>
+          </View>
+        ) : null}
 
         <Text style={styles.label}>Refund Amount</Text>
         <TextInput

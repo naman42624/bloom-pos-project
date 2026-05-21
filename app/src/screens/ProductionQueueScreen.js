@@ -9,8 +9,8 @@ import { useFocusEffect } from '@react-navigation/native';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
-import { 
-  parseServerDate, formatShopDateLabel, 
+import {
+  parseServerDate, formatShopDateLabel,
   getShopNow, getShopTodayStr, getShopTomorrowStr,
   minutesUntilShopDateTime, minutesSinceServerDate
 } from '../utils/datetime';
@@ -44,6 +44,7 @@ const ORDER_STATUS_TABS = [
   { key: 'pending', label: 'Pending + Confirmed' },
   { key: 'preparing', label: 'Preparing' },
   { key: 'ready', label: 'Ready' },
+  { key: 'in_transit', label: 'In Transit' },
 ];
 
 const ORDER_TYPE_TABS = [
@@ -61,8 +62,22 @@ const normalizeOrderLifecycleStatus = (status) => {
 
 const matchesOrderStatusFilter = (order, filter) => {
   if (!filter) return true;
+
+  if (filter === 'in_transit') {
+    const delStatus = order.delivery_status ?? order.delivery?.status;
+    return order.order_type === 'delivery' && ['picked_up', 'in_transit'].includes(delStatus);
+  }
+
   const status = order.status || 'pending';
-  
+
+  // If order is dispatched, it should ONLY appear in the 'in_transit' tab, not 'ready'
+  if (order.order_type === 'delivery') {
+    const delStatus = order.delivery_status ?? order.delivery?.status;
+    if (['picked_up', 'in_transit'].includes(delStatus)) {
+      return false; // hide from ready/pending/preparing if it's picked up or in transit
+    }
+  }
+
   if (filter === 'ready' && status === 'completed') {
     if (['walk_in', 'pickup', 'delivery'].includes(order.order_type)) {
       return false;
@@ -159,8 +174,8 @@ export default function ProductionQueueScreen({ navigation, route }) {
   // Helper: check if task is urgent or late
   const getTaskUrgency = useCallback((task) => {
     if (task.status === 'completed' || task.status === 'cancelled') return null;
-    
-    const schedDate = task.scheduled_date || null;
+
+    const schedDate = extractDatePart(task.scheduled_date) || null;
     const schedTime = task.scheduled_time || null;
 
     // Walk-ins: Urgent if pending/assigned > 10-20 mins
@@ -197,16 +212,16 @@ export default function ProductionQueueScreen({ navigation, route }) {
   // Helper: check if order is urgent or late
   const getOrderUrgency = useCallback((order) => {
     if (order.status === 'ready' || order.status === 'completed' || order.status === 'cancelled') return null;
-    
+
     const today = getShopTodayStr(timezone);
-    
+
     // Fallback: If no scheduled info, use created_at
-    const schedDate = order.scheduled_date || null;
+    const schedDate = extractDatePart(order.scheduled_date) || null;
     const schedTime = order.scheduled_time || null;
 
     // 1. Overdue (Past scheduled date)
     if (schedDate && schedDate < today) return 'late';
-    
+
     // 2. Late & Urgent (Today)
     if (schedDate === today && schedTime) {
       const remainingMins = minutesUntilShopDateTime(schedDate, schedTime, timezone);
@@ -292,7 +307,7 @@ export default function ProductionQueueScreen({ navigation, route }) {
       }
 
       // Date Filtering applies for the remaining sections
-      const schedDate = item.scheduled_date || extractDatePart(item.created_at);
+      const schedDate = extractDatePart(item.scheduled_date) || extractDatePart(item.created_at);
       if (selectedDate && schedDate !== selectedDate) {
         return;
       }
@@ -303,13 +318,13 @@ export default function ProductionQueueScreen({ navigation, route }) {
         ? normalizeOrderLifecycleStatus(item.status || 'pending')
         : (item.status || 'pending');
       if (isOrders) {
-         if (status === 'pending') pendingData.push(item);
-         else if (status === 'preparing') activeData.push(item);
-         else if (status === 'ready' || status === 'completed') completeData.push(item);
+        if (status === 'pending') pendingData.push(item);
+        else if (status === 'preparing') activeData.push(item);
+        else if (status === 'ready' || status === 'completed') completeData.push(item);
       } else {
-         if (status === 'pending' || status === 'assigned') pendingData.push(item);
-         else if (status === 'in_progress') activeData.push(item);
-         else if (status === 'completed') completeData.push(item);
+        if (status === 'pending' || status === 'assigned') pendingData.push(item);
+        else if (status === 'in_progress') activeData.push(item);
+        else if (status === 'completed') completeData.push(item);
       }
     });
 
@@ -318,7 +333,7 @@ export default function ProductionQueueScreen({ navigation, route }) {
     if (pendingData.length > 0) sections.push({ title: '⏳ Pending Queue', subtitle: isOrders ? 'Pending + Confirmed' : 'Pending + Assigned', key: 'pending', data: pendingData, color: Colors.warning });
     if (activeData.length > 0) sections.push({ title: '🎨 In Progress', subtitle: isOrders ? 'Preparing' : 'In Progress', key: 'active', data: activeData, color: Colors.primary });
     if (completeData.length > 0) sections.push({ title: '✅ Ready / History', subtitle: isOrders ? 'Ready + Completed' : 'Completed', key: 'complete', data: completeData, color: Colors.success });
-    
+
     return sections;
   };
 
@@ -351,11 +366,11 @@ export default function ProductionQueueScreen({ navigation, route }) {
   const sectionListRef = React.useRef(null);
   const scrollToSection = (sectionKey) => {
     if (!sectionListRef.current) return;
-    
+
     // Find index in the current active list
     const list = viewMode === 'tasks' ? chunkedTaskSections : chunkedOrderSections;
     const index = list.findIndex(s => s.key === sectionKey);
-    
+
     if (index !== -1) {
       // Small delay to ensure the VirtualizedList has updated its internals
       setTimeout(() => {
@@ -407,7 +422,7 @@ export default function ProductionQueueScreen({ navigation, route }) {
     // task rows are ~220, order rows are ~180, plus padding/gap
     const rowHeight = viewMode === 'tasks' ? 240 : 210;
     const headerHeight = 60;
-    
+
     return {
       length: rowHeight,
       offset: rowHeight * index,
@@ -420,9 +435,16 @@ export default function ProductionQueueScreen({ navigation, route }) {
   // Available dates for the date picker
   const availableDates = useMemo(() => {
     const dateSet = new Set();
-    tasks.forEach(t => { if (t.scheduled_date) dateSet.add(t.scheduled_date); });
+    tasks.forEach(t => {
+      const d = extractDatePart(t.scheduled_date) || extractDatePart(t.created_at);
+      if (d) dateSet.add(d);
+    });
+    orders.forEach(o => {
+      const d = extractDatePart(o.scheduled_date) || extractDatePart(o.created_at);
+      if (d) dateSet.add(d);
+    });
     return Array.from(dateSet).sort();
-  }, [tasks]);
+  }, [tasks, orders, extractDatePart]);
 
   const fetchTasks = useCallback(async () => {
     try {
@@ -444,7 +466,13 @@ export default function ProductionQueueScreen({ navigation, route }) {
       const params = {};
       if (selectedLocation) params.location_id = selectedLocation;
       if (orderTypeFilter) params.order_type = orderTypeFilter;
-      if (orderStatusFilter) params.status = orderStatusFilter;
+
+      // The backend expects global order status. For in_transit, we fetch all active orders 
+      // and let the client-side filter handle it using delivery_status.
+      if (orderStatusFilter && orderStatusFilter !== 'in_transit') {
+        params.status = orderStatusFilter;
+      }
+
       const res = await api.getProductionQueue(params);
       let data = res.data || [];
 
@@ -465,7 +493,7 @@ export default function ProductionQueueScreen({ navigation, route }) {
         );
       }
       setOrders(data);
-    } catch {} finally {
+    } catch { } finally {
       setLoading(false);
       setRefreshing(false);
     }
@@ -482,7 +510,7 @@ export default function ProductionQueueScreen({ navigation, route }) {
           : locs[0].id;
         setSelectedLocation(defaultLoc);
       }
-    } catch {}
+    } catch { }
   }, [activeLocation, isOwner, selectedLocation]);
 
   useFocusEffect(
@@ -646,7 +674,7 @@ export default function ProductionQueueScreen({ navigation, route }) {
       const allUsers = res.data?.users || res.data || [];
       const staffList = (Array.isArray(allUsers) ? allUsers : []).filter(u => ['owner', 'manager', 'employee'].includes(u.role));
       setEmployees(staffList);
-    } catch {}
+    } catch { }
     setShowAssign(true);
   };
 
@@ -704,10 +732,10 @@ export default function ProductionQueueScreen({ navigation, route }) {
     );
     return (
       <TouchableOpacity onPress={() => setViewedImage(api.getMediaUrl(imageUrl))}>
-        <Image 
-          source={{ uri: api.getMediaUrl(imageUrl) }} 
-          style={{ width: 80, height: 80, borderRadius: 8, backgroundColor: Colors.surfaceAlt, borderWidth: 1, borderColor: Colors.border }} 
-          resizeMode="cover" 
+        <Image
+          source={{ uri: api.getMediaUrl(imageUrl) }}
+          style={{ width: 80, height: 80, borderRadius: 8, backgroundColor: Colors.surfaceAlt, borderWidth: 1, borderColor: Colors.border }}
+          resizeMode="cover"
         />
       </TouchableOpacity>
     );
@@ -746,22 +774,22 @@ export default function ProductionQueueScreen({ navigation, route }) {
                 <Text style={{ fontSize: 12, color: Colors.textSecondary, marginTop: 2 }} numberOfLines={1}>
                   {item.assigned_to_name ? `Designer: ${item.assigned_to_name}` : 'Unassigned'}
                 </Text>
-                
+
                 {/* Order Level Instructions */}
                 {(item.order_special_instructions || item.order_notes || item.special_instructions || item.notes) ? (
-                   <View style={{ backgroundColor: '#FFEBEE', padding: 6, borderRadius: 4, marginTop: 8, borderLeftWidth: 2, borderLeftColor: Colors.error }}>
-                     <Text style={{ fontSize: 10, color: Colors.error, fontWeight: '800', textTransform: 'uppercase', marginBottom: 2 }}>Order Note:</Text>
-                     <Text style={{ fontSize: 11, color: Colors.error, fontWeight: '600' }} numberOfLines={4}>{item.order_special_instructions || item.order_notes || item.special_instructions || item.notes}</Text>
-                   </View>
+                  <View style={{ backgroundColor: '#FFEBEE', padding: 6, borderRadius: 4, marginTop: 8, borderLeftWidth: 2, borderLeftColor: Colors.error }}>
+                    <Text style={{ fontSize: 10, color: Colors.error, fontWeight: '800', textTransform: 'uppercase', marginBottom: 2 }}>Order Note:</Text>
+                    <Text style={{ fontSize: 11, color: Colors.error, fontWeight: '600' }} numberOfLines={4}>{item.order_special_instructions || item.order_notes || item.special_instructions || item.notes}</Text>
+                  </View>
                 ) : null}
 
 
                 {/* Item Level Instructions */}
                 {item.item_special_instructions ? (
-                   <View style={{ backgroundColor: '#FFF9C4', padding: 6, borderRadius: 4, marginTop: 6, borderLeftWidth: 2, borderLeftColor: Colors.warning }}>
-                     <Text style={{ fontSize: 10, color: '#F57F17', fontWeight: '800', textTransform: 'uppercase', marginBottom: 2 }}>Item Note:</Text>
-                     <Text style={{ fontSize: 11, color: '#F57F17', fontWeight: '600' }} numberOfLines={3}>{item.item_special_instructions}</Text>
-                   </View>
+                  <View style={{ backgroundColor: '#FFF9C4', padding: 6, borderRadius: 4, marginTop: 6, borderLeftWidth: 2, borderLeftColor: Colors.warning }}>
+                    <Text style={{ fontSize: 10, color: '#F57F17', fontWeight: '800', textTransform: 'uppercase', marginBottom: 2 }}>Item Note:</Text>
+                    <Text style={{ fontSize: 11, color: '#F57F17', fontWeight: '600' }} numberOfLines={3}>{item.item_special_instructions}</Text>
+                  </View>
                 ) : null}
               </View>
             </View>
@@ -782,8 +810,8 @@ export default function ProductionQueueScreen({ navigation, route }) {
                 )}
 
                 {(item.status === 'assigned' || item.status === 'in_progress') && (
-                  <TouchableOpacity 
-                    style={[styles.actionBtn, { backgroundColor: item.status === 'in_progress' ? Colors.success : Colors.primary }]} 
+                  <TouchableOpacity
+                    style={[styles.actionBtn, { backgroundColor: item.status === 'in_progress' ? Colors.success : Colors.primary }]}
                     onPress={() => item.status === 'in_progress' ? handleCompleteTask(item) : handleStartTask(item)}>
                     <Text style={[styles.actionBtnText, { fontSize: 13 }]}>{item.status === 'in_progress' ? 'Done' : 'Start'}</Text>
                   </TouchableOpacity>
@@ -813,7 +841,7 @@ export default function ProductionQueueScreen({ navigation, route }) {
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                 <Text style={[styles.orderNum, { fontSize: 14 }]} numberOfLines={1}>#{item.sale_number}</Text>
                 <View style={{ backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.border, paddingHorizontal: 4, paddingVertical: 1, borderRadius: 4 }}>
-                   <Text style={{ fontSize: 8, fontWeight: '800', textTransform: 'uppercase' }}>{item.order_type?.replace('_', ' ')}</Text>
+                  <Text style={{ fontSize: 8, fontWeight: '800', textTransform: 'uppercase' }}>{item.order_type?.replace('_', ' ')}</Text>
                 </View>
               </View>
               <Text style={[styles.customerName, { fontSize: 11, marginTop: 2 }]} numberOfLines={1}>{item.customer_name || ''}</Text>
@@ -835,18 +863,18 @@ export default function ProductionQueueScreen({ navigation, route }) {
 
           <View style={{ padding: 12, flex: 1 }}>
             {(item.special_instructions || item.notes || item.order_special_instructions || item.order_notes) ? (
-               <View style={{ backgroundColor: '#FFEBEE', padding: 6, borderRadius: 4, marginBottom: 10, borderLeftWidth: 2, borderLeftColor: Colors.error }}>
-                 <Text style={{ fontSize: 11, color: Colors.error, fontWeight: '600' }} numberOfLines={3}>{item.special_instructions || item.notes || item.order_special_instructions || item.order_notes}</Text>
-               </View>
+              <View style={{ backgroundColor: '#FFEBEE', padding: 6, borderRadius: 4, marginBottom: 10, borderLeftWidth: 2, borderLeftColor: Colors.error }}>
+                <Text style={{ fontSize: 11, color: Colors.error, fontWeight: '600' }} numberOfLines={3}>{item.special_instructions || item.notes || item.order_special_instructions || item.order_notes}</Text>
+              </View>
             ) : null}
 
 
             <View style={{ flex: 1 }}>
               {(item.items || []).slice(0, 2).map((si, idx) => (
                 <View key={idx} style={{ flexDirection: 'row', gap: 8, alignItems: 'center', marginBottom: 6 }}>
-                  <Image 
-                    source={{ uri: api.getMediaUrl(si.item_image_url || si.product_image) }} 
-                    style={{ width: 36, height: 36, borderRadius: 4, backgroundColor: Colors.surfaceAlt, borderWidth: 1, borderColor: Colors.border }} 
+                  <Image
+                    source={{ uri: api.getMediaUrl(si.item_image_url || si.product_image) }}
+                    style={{ width: 36, height: 36, borderRadius: 4, backgroundColor: Colors.surfaceAlt, borderWidth: 1, borderColor: Colors.border }}
                   />
                   <View style={{ flex: 1 }}>
                     <Text style={{ fontSize: 13, fontWeight: '700', color: Colors.text }} numberOfLines={1}>{Number(si.quantity)}x {si.product_name}</Text>
@@ -857,18 +885,18 @@ export default function ProductionQueueScreen({ navigation, route }) {
             </View>
 
             <View style={{ flexDirection: 'row', gap: 8, marginTop: 8, paddingTop: 8, borderTopWidth: 1, borderTopColor: Colors.border }}>
-               <View style={{ flex: 1, alignItems: 'center' }}>
+              <View style={{ flex: 1, alignItems: 'center' }}>
                 <Text style={{ fontSize: 13, fontWeight: '800', color: Colors.error }}>{pendingTasks + assignedTasks}</Text>
-                  <Text style={{ fontSize: 8, color: Colors.textLight, fontWeight: '700' }}>PENDING</Text>
-               </View>
-               <View style={{ flex: 1, alignItems: 'center' }}>
+                <Text style={{ fontSize: 8, color: Colors.textLight, fontWeight: '700' }}>PENDING</Text>
+              </View>
+              <View style={{ flex: 1, alignItems: 'center' }}>
                 <Text style={{ fontSize: 13, fontWeight: '800', color: Colors.warning }}>{inProgressTasks}</Text>
-                  <Text style={{ fontSize: 8, color: Colors.textLight, fontWeight: '700' }}>ACTIVE</Text>
-               </View>
-               <View style={{ flex: 1, alignItems: 'center' }}>
+                <Text style={{ fontSize: 8, color: Colors.textLight, fontWeight: '700' }}>ACTIVE</Text>
+              </View>
+              <View style={{ flex: 1, alignItems: 'center' }}>
                 <Text style={{ fontSize: 13, fontWeight: '800', color: Colors.success }}>{completedTasks}</Text>
-                  <Text style={{ fontSize: 8, color: Colors.textLight, fontWeight: '700' }}>DONE</Text>
-               </View>
+                <Text style={{ fontSize: 8, color: Colors.textLight, fontWeight: '700' }}>DONE</Text>
+              </View>
             </View>
 
             {item.delivery && (
@@ -896,7 +924,7 @@ export default function ProductionQueueScreen({ navigation, route }) {
                 {(() => {
                   const hasIncompleteTasks = (pendingTasks + assignedTasks + inProgressTasks) > 0;
                   const deliveryBlocked = item.order_type === 'delivery' && item.delivery && item.delivery.status !== 'delivered';
-                  
+
                   let nextBlocked = false;
                   let blockReason = '';
                   let nextAction = null;
@@ -936,8 +964,8 @@ export default function ProductionQueueScreen({ navigation, route }) {
                   }
 
                   return (
-                    <TouchableOpacity 
-                      style={[styles.actionBtn, { backgroundColor: nextAction.color }]} 
+                    <TouchableOpacity
+                      style={[styles.actionBtn, { backgroundColor: nextAction.color }]}
                       onPress={() => handleOrderStatus(item, nextAction.status, `Mark ${nextAction.label}`)}
                     >
                       <Text style={[styles.actionBtnText, { fontSize: 13 }]}>{nextAction.label}</Text>
@@ -984,45 +1012,45 @@ export default function ProductionQueueScreen({ navigation, route }) {
 
         {/* Date Selection */}
         <View style={styles.filterGroup}>
-           <Text style={styles.filterGroupTitle}>Production Date</Text>
-           <View style={styles.filterGroupChips}>
-              <TouchableOpacity
-                style={[styles.chip, selectedDate === null && styles.chipActive]}
-                onPress={() => { setSelectedDate(null); setShowDatePicker(false); }}>
-                <Text style={[styles.chipText, selectedDate === null && styles.chipTextActive]}>All Dates</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.chip, selectedDate === today && styles.chipActive]}
-                onPress={() => { setSelectedDate(today); setShowDatePicker(false); }}>
-                <Text style={[styles.chipText, selectedDate === today && styles.chipTextActive]}>Today</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.chip, selectedDate === tomorrow && styles.chipActive]}
-                onPress={() => { setSelectedDate(tomorrow); setShowDatePicker(false); }}>
-                <Text style={[styles.chipText, selectedDate === tomorrow && styles.chipTextActive]}>Tomorrow</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.chip, showDatePicker && styles.chipActive, selectedDate && ![today, tomorrow].includes(selectedDate) && styles.chipActive]}
-                onPress={() => setShowDatePicker(!showDatePicker)}>
-                <Ionicons name="calendar-outline" size={14} color={(showDatePicker || (selectedDate && ![today, tomorrow].includes(selectedDate))) ? Colors.white : Colors.primary} />
-                <Text style={[styles.chipText, (showDatePicker || (selectedDate && ![today, tomorrow].includes(selectedDate))) && styles.chipTextActive]}>
-                  {selectedDate && ![today, tomorrow].includes(selectedDate) ? formatDateLabel(selectedDate) : 'Custom Date...'}
-                </Text>
-              </TouchableOpacity>
-           </View>
-           {showDatePicker && (
-             <View style={{ marginTop: 10, padding: 10, backgroundColor: Colors.surfaceAlt, borderRadius: 8 }}>
-               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6 }}>
-                 {availableDates.filter(d => ![today, tomorrow].includes(d)).map(d => (
-                   <TouchableOpacity key={d} 
-                     style={[styles.chip, { minWidth: 80, height: 28 }, selectedDate === d && styles.chipActive]}
-                     onPress={() => setSelectedDate(d)}>
-                     <Text style={[styles.chipText, { fontSize: 10 }, selectedDate === d && styles.chipTextActive]}>{formatDateLabel(d)}</Text>
-                   </TouchableOpacity>
-                 ))}
-               </ScrollView>
-             </View>
-           )}
+          <Text style={styles.filterGroupTitle}>Production Date</Text>
+          <View style={styles.filterGroupChips}>
+            <TouchableOpacity
+              style={[styles.chip, selectedDate === null && styles.chipActive]}
+              onPress={() => { setSelectedDate(null); setShowDatePicker(false); }}>
+              <Text style={[styles.chipText, selectedDate === null && styles.chipTextActive]}>All Dates</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.chip, selectedDate === today && styles.chipActive]}
+              onPress={() => { setSelectedDate(today); setShowDatePicker(false); }}>
+              <Text style={[styles.chipText, selectedDate === today && styles.chipTextActive]}>Today</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.chip, selectedDate === tomorrow && styles.chipActive]}
+              onPress={() => { setSelectedDate(tomorrow); setShowDatePicker(false); }}>
+              <Text style={[styles.chipText, selectedDate === tomorrow && styles.chipTextActive]}>Tomorrow</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.chip, showDatePicker && styles.chipActive, selectedDate && ![today, tomorrow].includes(selectedDate) && styles.chipActive]}
+              onPress={() => setShowDatePicker(!showDatePicker)}>
+              <Ionicons name="calendar-outline" size={14} color={(showDatePicker || (selectedDate && ![today, tomorrow].includes(selectedDate))) ? Colors.white : Colors.primary} />
+              <Text style={[styles.chipText, (showDatePicker || (selectedDate && ![today, tomorrow].includes(selectedDate))) && styles.chipTextActive]}>
+                {selectedDate && ![today, tomorrow].includes(selectedDate) ? formatDateLabel(selectedDate) : 'Custom Date...'}
+              </Text>
+            </TouchableOpacity>
+          </View>
+          {showDatePicker && (
+            <View style={{ marginTop: 10, padding: 10, backgroundColor: Colors.surfaceAlt, borderRadius: 8 }}>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6 }}>
+                {availableDates.filter(d => ![today, tomorrow].includes(d)).map(d => (
+                  <TouchableOpacity key={d}
+                    style={[styles.chip, { minWidth: 80, height: 28 }, selectedDate === d && styles.chipActive]}
+                    onPress={() => setSelectedDate(d)}>
+                    <Text style={[styles.chipText, { fontSize: 10 }, selectedDate === d && styles.chipTextActive]}>{formatDateLabel(d)}</Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </View>
+          )}
         </View>
 
         {/* View Specific Filters */}
@@ -1080,7 +1108,7 @@ export default function ProductionQueueScreen({ navigation, route }) {
           <View style={styles.sidebarHeader}>
             <Text style={styles.sidebarTitle}>Filters</Text>
             <TouchableOpacity onPress={() => setShowFilters(false)}>
-               <Ionicons name="close" size={20} color={Colors.textLight} />
+              <Ionicons name="close" size={20} color={Colors.textLight} />
             </TouchableOpacity>
           </View>
           <ScrollView style={{ flex: 1 }}>
@@ -1088,7 +1116,7 @@ export default function ProductionQueueScreen({ navigation, route }) {
           </ScrollView>
           <View style={styles.sidebarFooter}>
             <TouchableOpacity style={styles.resetBtn} onPress={resetAllFilters}>
-               <Text style={styles.resetBtnText}>Clear All</Text>
+              <Text style={styles.resetBtnText}>Clear All</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -1108,7 +1136,7 @@ export default function ProductionQueueScreen({ navigation, route }) {
                 <Ionicons name="close" size={24} color={Colors.text} />
               </TouchableOpacity>
             </View>
-            
+
             <ScrollView style={{ flex: 1 }}>
               {renderFiltersContent()}
             </ScrollView>
@@ -1184,7 +1212,7 @@ export default function ProductionQueueScreen({ navigation, route }) {
                     </TouchableOpacity>
 
                     {viewMode === 'orders' && (
-                      <View style={[styles.searchBar, { width: 170, height: 38 }]}> 
+                      <View style={[styles.searchBar, { width: 170, height: 38 }]}>
                         <Ionicons name="search" size={14} color={Colors.textLight} />
                         <TextInput
                           style={[styles.searchInput, { fontSize: 12 }]}
@@ -1208,7 +1236,7 @@ export default function ProductionQueueScreen({ navigation, route }) {
                       <Ionicons name={showFilters ? 'options' : 'options-outline'} size={20} color={Colors.primary} />
                       <Text style={[styles.filterToggleText, { fontSize: 14 }]}>{showFilters ? 'Hide Filters' : 'Filters'}</Text>
                     </TouchableOpacity>
-                    
+
                     <View style={[styles.viewToggle, { marginVertical: 0, paddingHorizontal: 4, width: 280, height: 42 }]}>
                       {VIEW_TABS.map((tab) => (
                         <TouchableOpacity key={tab.key}
@@ -1247,25 +1275,25 @@ export default function ProductionQueueScreen({ navigation, route }) {
         </View>
 
         <View style={styles.stickyFiltersWrap}>{renderActiveFilters()}</View>
-      
-      <View style={{ flex: 1 }}>
-        <View style={styles.summaryBar}>
-           {(activeSections || []).map((section) => (
-             <TouchableOpacity 
-               key={section.key} 
-               style={[styles.summaryItem, { paddingVertical: 12 }]} 
-               onPress={() => scrollToSection(section.key)}
-               activeOpacity={0.6}
-             >
+
+        <View style={{ flex: 1 }}>
+          <View style={styles.summaryBar}>
+            {(activeSections || []).map((section) => (
+              <TouchableOpacity
+                key={section.key}
+                style={[styles.summaryItem, { paddingVertical: 12 }]}
+                onPress={() => scrollToSection(section.key)}
+                activeOpacity={0.6}
+              >
                 <Text style={[styles.summaryCount, { color: section.color }]}>{section.data?.length || 0}</Text>
                 <Text style={styles.summaryLabel}>{section.title.split(' ')[1] || section.title}</Text>
-             </TouchableOpacity>
+              </TouchableOpacity>
 
-           ))}
-        </View>
+            ))}
+          </View>
 
 
-        <SectionList
+          <SectionList
             ref={sectionListRef}
             sections={chunkedList}
             keyExtractor={(item) => item.id}
@@ -1286,7 +1314,7 @@ export default function ProductionQueueScreen({ navigation, route }) {
               const isFocused = incomingSectionFocus === key;
               const pulseOpacity = focusPulseAnim.interpolate({ inputRange: [0, 1], outputRange: [0.12, 0.36] });
               return (
-                <View style={[styles.sectionHeader, { borderLeftWidth: 4, borderLeftColor: color }, incomingSectionFocus === key && styles.sectionHeaderFocus]}> 
+                <View style={[styles.sectionHeader, { borderLeftWidth: 4, borderLeftColor: color }, incomingSectionFocus === key && styles.sectionHeaderFocus]}>
                   {isFocused && (
                     <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFillObject, styles.sectionHeaderPulse, { opacity: pulseOpacity }]} />
                   )}
@@ -1306,12 +1334,12 @@ export default function ProductionQueueScreen({ navigation, route }) {
             getItemLayout={getItemLayout}
             onScrollToIndexFailed={(info) => {
 
-               sectionListRef.current?.scrollToLocation({
-                 sectionIndex: info.index,
-                 itemIndex: 0,
-                 animated: true,
-                 viewPosition: 0
-               });
+              sectionListRef.current?.scrollToLocation({
+                sectionIndex: info.index,
+                itemIndex: 0,
+                animated: true,
+                viewPosition: 0
+              });
             }}
 
             ListEmptyComponent={
@@ -1321,58 +1349,58 @@ export default function ProductionQueueScreen({ navigation, route }) {
               </View>
             }
           />
-      </View>
+        </View>
 
-      {showAssign && (
-        <Modal visible={true} transparent animationType="fade">
-          <View style={styles.modalOverlay}>
-            <View style={styles.modalCard}>
-              <View style={styles.assignModalHeader}>
-                <Text style={styles.assignModalTitle}>
-                  {assignOrderTasks.length > 0 ? 'Assign Order Tasks' : 'Assign Task'}
-                </Text>
-                <TouchableOpacity onPress={() => { setShowAssign(false); setAssignTask(null); setAssignOrderTasks([]); }}>
-                  <Ionicons name="close" size={24} color={Colors.text} />
-                </TouchableOpacity>
-              </View>
-              {assignOrderTasks.length > 0 ? (
-                <View style={{ marginBottom: Spacing.md }}>
-                  <Text style={styles.assignModalSubtitle}>Assign all pending tasks to one employee:</Text>
-                  {assignOrderTasks.map((t) => (
-                    <Text key={t.id} style={{ fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: 2 }}>
-                      • {Number(t.quantity)}x {t.product_name} ({t.status})
-                    </Text>
-                  ))}
-                </View>
-              ) : assignTask && (
-                <Text style={styles.assignModalSubtitle}>{Number(assignTask.quantity)}x {assignTask.product_name}</Text>
-              )}
-              <ScrollView style={{ maxHeight: 300 }}>
-                {employees.map((emp) => (
-                  <TouchableOpacity key={emp.id} style={styles.empRow} onPress={() => handleAssign(emp.id)}>
-                    <Ionicons name="person-circle" size={28} color={Colors.primary} />
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.empName}>{emp.name}</Text>
-                      <Text style={styles.empRole}>{emp.role}</Text>
-                    </View>
-                    {assignTask?.assigned_to === emp.id && (
-                      <Ionicons name="checkmark-circle" size={20} color={Colors.success} />
-                    )}
+        {showAssign && (
+          <Modal visible={true} transparent animationType="fade">
+            <View style={styles.modalOverlay}>
+              <View style={styles.modalCard}>
+                <View style={styles.assignModalHeader}>
+                  <Text style={styles.assignModalTitle}>
+                    {assignOrderTasks.length > 0 ? 'Assign Order Tasks' : 'Assign Task'}
+                  </Text>
+                  <TouchableOpacity onPress={() => { setShowAssign(false); setAssignTask(null); setAssignOrderTasks([]); }}>
+                    <Ionicons name="close" size={24} color={Colors.text} />
                   </TouchableOpacity>
-                ))}
-              </ScrollView>
+                </View>
+                {assignOrderTasks.length > 0 ? (
+                  <View style={{ marginBottom: Spacing.md }}>
+                    <Text style={styles.assignModalSubtitle}>Assign all pending tasks to one employee:</Text>
+                    {assignOrderTasks.map((t) => (
+                      <Text key={t.id} style={{ fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: 2 }}>
+                        • {Number(t.quantity)}x {t.product_name} ({t.status})
+                      </Text>
+                    ))}
+                  </View>
+                ) : assignTask && (
+                  <Text style={styles.assignModalSubtitle}>{Number(assignTask.quantity)}x {assignTask.product_name}</Text>
+                )}
+                <ScrollView style={{ maxHeight: 300 }}>
+                  {employees.map((emp) => (
+                    <TouchableOpacity key={emp.id} style={styles.empRow} onPress={() => handleAssign(emp.id)}>
+                      <Ionicons name="person-circle" size={28} color={Colors.primary} />
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.empName}>{emp.name}</Text>
+                        <Text style={styles.empRole}>{emp.role}</Text>
+                      </View>
+                      {assignTask?.assigned_to === emp.id && (
+                        <Ionicons name="checkmark-circle" size={20} color={Colors.success} />
+                      )}
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+              </View>
             </View>
-          </View>
-        </Modal>
-      )}
+          </Modal>
+        )}
 
-      {!!viewedImage && (
-        <ImageModal 
-          visible={true} 
-          imageUrl={viewedImage} 
-          onClose={() => setViewedImage(null)} 
-        />
-      )}
+        {!!viewedImage && (
+          <ImageModal
+            visible={true}
+            imageUrl={viewedImage}
+            onClose={() => setViewedImage(null)}
+          />
+        )}
       </View>
     </View>
   );
@@ -1472,12 +1500,12 @@ const styles = StyleSheet.create({
   },
   viewBtn: {
     flex: 1, alignItems: 'center', paddingVertical: Spacing.sm,
-    borderRadius: BorderRadius.md, 
+    borderRadius: BorderRadius.md,
   },
   viewBtnActive: { backgroundColor: Colors.surface, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.1, shadowRadius: 2, elevation: 2 },
   viewBtnText: { fontSize: FontSize.sm, color: Colors.textSecondary, fontWeight: '600' },
   viewBtnTextActive: { color: Colors.primary, fontWeight: '800' },
-  
+
   chip: {
     paddingHorizontal: Spacing.md, paddingVertical: 6,
     borderRadius: BorderRadius.full, borderWidth: 1,

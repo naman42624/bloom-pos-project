@@ -55,6 +55,7 @@ function ensureCriticalTimestampColumns() {
   ensureTableTimestampColumns('deliveries', ['created_at', 'updated_at', 'assigned_at', 'pickup_time', 'delivered_time'], ['created_at', 'updated_at']);
   ensureTableTimestampColumns('production_logs', ['created_at'], ['created_at']);
   ensureTableTimestampColumns('attendance', ['clock_in', 'clock_out', 'created_at', 'updated_at'], ['created_at', 'updated_at']);
+  ensureTableTimestampColumns('notifications', ['created_at'], ['created_at']);
 }
 
 function hasColumn(tableName, columnName) {
@@ -600,6 +601,21 @@ function ensureCoreTables() {
   runPsql('CREATE INDEX IF NOT EXISTS idx_sale_drafts_location ON sale_drafts(location_id)');
   runPsql('CREATE INDEX IF NOT EXISTS idx_sale_drafts_updated_at ON sale_drafts(updated_at DESC)');
 
+  runPsql(`
+    CREATE TABLE IF NOT EXISTS audit_logs (
+      id SERIAL PRIMARY KEY,
+      entity_type VARCHAR(50) NOT NULL,
+      entity_id INTEGER NOT NULL,
+      user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      action VARCHAR(50) NOT NULL,
+      previous_state JSONB,
+      new_state JSONB,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  runPsql('CREATE INDEX IF NOT EXISTS idx_audit_logs_entity ON audit_logs(entity_type, entity_id)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at DESC)');
+
   // ⚡ Note: All other indexes for base tables (products, sales, deliveries, production_tasks, etc.)
   //    are already defined in schema.sql and auto-created via psql migrations.
   //    Only indexes for NEW tables created in ensureCoreTables() are needed here.
@@ -968,6 +984,7 @@ function runPsql(sql) {
   const startedAt = performance.now();
   const proc = spawnSync('psql', [DATABASE_URL, '-X', '-q', '-t', '-A', '-c', sql], {
     encoding: 'utf8',
+    env: { ...process.env, PGTZ: 'UTC' },
   });
   addDbTiming(performance.now() - startedAt);
 
@@ -1081,6 +1098,11 @@ function getDb() {
     runPsql('SELECT 1');
     ensureCriticalTimestampColumns();
     ensureCompatibilityColumns();
+
+    // ─── Seed preference settings (idempotent) ────────────────
+    runPsql('CREATE UNIQUE INDEX IF NOT EXISTS settings_key_idx ON settings(key)');
+    runPsql(`INSERT INTO settings (key, value, description) VALUES ('pref_walkin_auto_complete', '0', 'Auto-complete walk-in orders when all production tasks are marked done') ON CONFLICT (key) DO NOTHING`);
+
     initialized = true;
     console.log('✅ Connected to PostgreSQL');
   }

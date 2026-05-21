@@ -7,7 +7,7 @@ import api from '../services/api';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import { 
   parseServerDate, formatDateTime, formatShopDateLabel, 
-  getShopNow, getShopTodayStr, getShopTomorrowStr 
+  getShopNow, getShopTodayStr, getShopTomorrowStr, DEFAULT_TZ 
 } from '../utils/datetime';
 
 
@@ -233,7 +233,9 @@ export default function DeliveriesScreen({ navigation }) {
     const timeStr = rawTime || '00:00';
     // Build ISO string: if timeStr is HH:MM:SS, don't append :00
     const isoTime = timeStr.length <= 5 ? `${timeStr}:00` : timeStr;
-    const target = parseServerDate(`${dateStr}T${isoTime}`);
+    const [year, month, day] = dateStr.split('-').map(Number);
+    const [hr, min, sec] = isoTime.split(':').map(Number);
+    const target = new Date(year, month - 1, day, hr, min, sec || 0);
 
     if (isNaN(target.getTime())) return { label: dateStr, countdown: null, isOverdue: false };
     const diffMs = target - now;
@@ -248,7 +250,6 @@ export default function DeliveriesScreen({ navigation }) {
     else {
       dateLabel = target.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
     }
-
 
     const formattedTime = rawTime ? target.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true }) : '';
     const label = formattedTime ? `${dateLabel}, ${formattedTime}` : dateLabel;
@@ -463,6 +464,7 @@ export default function DeliveriesScreen({ navigation }) {
 
       {/* List — grouped by date */}
       <SectionList
+        style={{ flex: 1 }}
         sections={sections}
         renderItem={renderDelivery}
         renderSectionHeader={({ section: { title } }) => (
@@ -524,14 +526,14 @@ export default function DeliveriesScreen({ navigation }) {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
-  searchRow: { flexDirection: 'row', alignItems: 'center', margin: Spacing.md, marginBottom: 0, backgroundColor: Colors.surface, borderRadius: BorderRadius.md, paddingHorizontal: 12, paddingVertical: 8 },
+  searchRow: { flexDirection: 'row', alignItems: 'center', margin: Spacing.md, marginBottom: 0, backgroundColor: Colors.surface, borderRadius: BorderRadius.md, paddingHorizontal: 12, paddingVertical: 8, flexShrink: 0 },
   searchInput: { flex: 1, fontSize: FontSize.md, color: Colors.text },
-  tabsRow: { flexGrow: 0, paddingHorizontal: Spacing.md, paddingTop: Spacing.sm },
+  tabsRow: { flexGrow: 0, flexShrink: 0, paddingHorizontal: Spacing.md, paddingTop: Spacing.sm },
   tab: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, backgroundColor: Colors.surface, marginRight: 8, borderWidth: 1, borderColor: Colors.border },
   tabActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
   tabText: { fontSize: FontSize.sm, color: Colors.textLight },
   tabTextActive: { color: '#fff', fontWeight: '600' },
-  locationTabsRow: { flexGrow: 0, paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm, marginBottom: Spacing.sm },
+  locationTabsRow: { flexGrow: 0, flexShrink: 0, paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm, marginBottom: Spacing.sm },
   locationChip: { paddingHorizontal: 16, paddingVertical: 6, borderRadius: 20, backgroundColor: Colors.surface, marginRight: 8, borderWidth: 1, borderColor: Colors.border, borderStyle: 'dashed' },
   locationChipActive: { backgroundColor: Colors.primary + '15', borderColor: Colors.primary, borderStyle: 'solid' },
   locationChipText: { fontSize: FontSize.sm, color: Colors.textSecondary },
@@ -584,6 +586,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
     paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm,
     backgroundColor: Colors.primary + '15', borderBottomWidth: 1, borderBottomColor: Colors.primary + '30',
+    flexShrink: 0
   },
   batchBarText: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.primary },
   batchAssignBtn: {

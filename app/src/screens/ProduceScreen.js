@@ -9,6 +9,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
+import { formatTime } from '../utils/datetime';
 
 export default function ProduceScreen({ navigation }) {
   const { user } = useAuth();
@@ -343,7 +344,7 @@ export default function ProduceScreen({ navigation }) {
               <View key={log.id} style={styles.recentCard}>
                 <Text style={styles.recentProduct} numberOfLines={1}>{log.product_name}</Text>
                 <Text style={styles.recentQty}>{log.quantity}x</Text>
-                <Text style={styles.recentTime}>{new Date(log.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
+                <Text style={styles.recentTime}>{formatTime(log.created_at)}</Text>
               </View>
             ))}
           </ScrollView>

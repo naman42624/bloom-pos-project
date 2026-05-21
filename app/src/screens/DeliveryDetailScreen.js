@@ -253,25 +253,35 @@ export default function DeliveryDetailScreen({ route, navigation }) {
   };
 
   const handleFulfillFromStock = (saleItemId, productName) => {
-    Alert.alert(
-      'Fulfill from Stock',
-      `Use ready stock for "${productName}"? This will deduct from product inventory.`,
-      [
+    const msg = `Use ready stock for "${productName}"? This will deduct from product inventory.`;
+    const onConfirm = async () => {
+      try {
+        await api.fulfillFromStock(delivery.sale_id, saleItemId);
+        fetchDelivery();
+        if (Platform.OS === 'web') {
+          window.alert(`"${productName}" fulfilled from stock`);
+        } else {
+          Alert.alert('Done', `"${productName}" fulfilled from stock`);
+        }
+      } catch (err) {
+        if (Platform.OS === 'web') {
+          window.alert('Error: ' + (err.message || 'Failed to fulfill from stock'));
+        } else {
+          Alert.alert('Error', err.message || 'Failed to fulfill from stock');
+        }
+      }
+    };
+
+    if (Platform.OS === 'web') {
+      setTimeout(() => {
+        if (window.confirm(msg)) onConfirm();
+      }, 50);
+    } else {
+      Alert.alert('Fulfill from Stock', msg, [
         { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Fulfill',
-          onPress: async () => {
-            try {
-              await api.fulfillFromStock(delivery.sale_id, saleItemId);
-              fetchDelivery();
-              Alert.alert('Done', `"${productName}" fulfilled from stock`);
-            } catch (err) {
-              Alert.alert('Error', err.message || 'Failed to fulfill from stock');
-            }
-          },
-        },
-      ]
-    );
+        { text: 'Fulfill', onPress: onConfirm },
+      ]);
+    }
   };
 
   const generateChallan = async () => {
@@ -676,21 +686,21 @@ export default function DeliveryDetailScreen({ route, navigation }) {
             </TouchableOpacity>
           )}
 
-          {isPartner && delivery.status === 'assigned' && (
+          {(isPartner || isManager) && delivery.status === 'assigned' && (
             <TouchableOpacity style={[styles.actionBtn, { backgroundColor: '#9C27B0' }]} onPress={() => doAction('pickup')} disabled={actionLoading}>
               <Ionicons name="cube" size={20} color="#fff" />
               <Text style={styles.actionBtnText}>Pick Up Order</Text>
             </TouchableOpacity>
           )}
 
-          {isPartner && delivery.status === 'picked_up' && (
+          {(isPartner || isManager) && delivery.status === 'picked_up' && (
             <TouchableOpacity style={[styles.actionBtn, { backgroundColor: '#00BCD4' }]} onPress={() => doAction('in_transit')} disabled={actionLoading}>
               <Ionicons name="bicycle" size={20} color="#fff" />
               <Text style={styles.actionBtnText}>Start Delivery</Text>
             </TouchableOpacity>
           )}
 
-          {isPartner && delivery.status === 'in_transit' && (
+          {(isPartner || isManager) && delivery.status === 'in_transit' && (
             <>
               {!showCodForm ? (
                 <TouchableOpacity style={[styles.actionBtn, { backgroundColor: '#4CAF50' }]} onPress={() => setShowCodForm(true)} disabled={actionLoading}>

@@ -7,7 +7,7 @@ import api from '../services/api';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import { 
   parseServerDate, formatDateTime, formatShopDateLabel, 
-  getShopNow, getShopTodayStr, getShopTomorrowStr 
+  getShopNow, getShopTodayStr, getShopTomorrowStr, DEFAULT_TZ 
 } from '../utils/datetime';
 
 
@@ -163,7 +163,9 @@ export default function PickupOrdersScreen({ navigation }) {
     const rawTime = (item.scheduled_time || '').split('.')[0];
     const timeStr = rawTime || '00:00';
     const isoTime = timeStr.length <= 5 ? `${timeStr}:00` : timeStr;
-    const target = parseServerDate(`${dateStr}T${isoTime}`);
+    const [year, month, day] = dateStr.split('-').map(Number);
+    const [hr, min, sec] = isoTime.split(':').map(Number);
+    const target = new Date(year, month - 1, day, hr, min, sec || 0);
 
     if (isNaN(target.getTime())) return { label: dateStr, countdown: null, isOverdue: false };
     const diffMs = target - now;
@@ -178,7 +180,6 @@ export default function PickupOrdersScreen({ navigation }) {
     else {
       dateLabel = target.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
     }
-
 
     const formattedTime = rawTime ? target.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true }) : '';
     const label = formattedTime ? `${dateLabel}, ${formattedTime}` : dateLabel;

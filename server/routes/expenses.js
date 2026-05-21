@@ -70,10 +70,15 @@ router.get('/', authenticate, async (req, res, next) => {
 
     const expenses = await db.prepare(sql).all(...params);
 
-    // Calculate totals
-    const total = expenses.reduce((s, e) => s + e.amount, 0);
+    const normalizedExpenses = expenses.map((expense) => ({
+      ...expense,
+      amount: Number(expense.amount) || 0,
+    }));
 
-    res.json({ success: true, data: expenses, total });
+    // Calculate totals using numeric amounts so the client always receives numbers.
+    const total = normalizedExpenses.reduce((sum, expense) => sum + expense.amount, 0);
+
+    res.json({ success: true, data: normalizedExpenses, total });
   } catch (err) {
     next(err);
   }
@@ -186,9 +191,14 @@ router.get('/summary', authenticate, async (req, res, next) => {
     sql += ' GROUP BY category ORDER BY total DESC';
 
     const summary = await db.prepare(sql).all(...params);
-    const grandTotal = summary.reduce((s, r) => s + r.total, 0);
+    const normalizedSummary = summary.map((row) => ({
+      ...row,
+      total: Number(row.total) || 0,
+      count: Number(row.count) || 0,
+    }));
+    const grandTotal = normalizedSummary.reduce((sum, row) => sum + row.total, 0);
 
-    res.json({ success: true, data: summary, total: grandTotal });
+    res.json({ success: true, data: normalizedSummary, total: grandTotal });
   } catch (err) {
     next(err);
   }

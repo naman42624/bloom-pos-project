@@ -9,6 +9,7 @@ import * as ImagePicker from 'expo-image-picker';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
+import { formatDate } from '../utils/datetime';
 
 const TXN_CONFIG = {
   purchase: { icon: 'arrow-down-circle', color: Colors.success, label: 'Purchase', sign: '+' },
@@ -120,7 +121,7 @@ export default function MaterialDetailScreen({ route, navigation }) {
   const formatTxnDate = (dateStr) => {
     const d = new Date(dateStr);
     return d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) + ' ' +
-      d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+      d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true });
   };
 
   if (!material && !loading) {
@@ -254,7 +255,7 @@ export default function MaterialDetailScreen({ route, navigation }) {
                   <View style={styles.stockInfo}>
                     <Text style={styles.stockLocation}>{s.location_name}</Text>
                     <Text style={styles.stockDate}>
-                      {s.last_counted_at ? `Counted: ${new Date(s.last_counted_at).toLocaleDateString()}` : 'Never counted'}
+                      {s.last_counted_at ? `Counted: ${formatDate(s.last_counted_at)}` : 'Never counted'}
                     </Text>
                   </View>
                   <Text style={[styles.stockQty, { color: s.quantity < material.min_stock_alert ? Colors.error : Colors.success }]}>

@@ -24,6 +24,14 @@ const ROLES = [
   { key: 'customer', label: 'Customer', icon: 'cart', color: Colors.roleCustomer },
 ];
 
+const ROLE_LABELS = {
+  owner: 'Owner',
+  manager: 'Manager',
+  employee: 'Employee',
+  delivery_partner: 'Delivery Partner',
+  customer: 'Customer',
+};
+
 export default function UserFormScreen({ route, navigation }) {
   const existingUser = route.params?.user;
   const isEditing = !!existingUser;
@@ -38,8 +46,14 @@ export default function UserFormScreen({ route, navigation }) {
   const [locations, setLocations] = useState([]);
   const [selectedLocationIds, setSelectedLocationIds] = useState([]);
 
+  // Role change state (edit mode, owner only)
+  const [selectedNewRole, setSelectedNewRole] = useState(null);
+
+  const isOwner = currentUser?.role === 'owner';
+  const canChangeRole = isEditing && isOwner && existingUser?.role !== 'owner';
+
   // Manager can only create employee/delivery_partner/customer
-  const availableRoles = currentUser?.role === 'owner'
+  const availableRoles = isOwner
     ? ROLES
     : ROLES.filter((r) => ['employee', 'delivery_partner', 'customer'].includes(r.key));
 
@@ -48,6 +62,7 @@ export default function UserFormScreen({ route, navigation }) {
       setName(existingUser.name || '');
       setPhone(existingUser.phone || '');
       setRole(existingUser.role || 'employee');
+      setSelectedNewRole(existingUser.role || 'employee');
       fetchUserLocations(existingUser.id);
     }
     fetchLocations();
@@ -93,12 +108,7 @@ export default function UserFormScreen({ route, navigation }) {
     if (!validate()) return;
     setLoading(true);
     try {
-      const data = {
-        name: name.trim(),
-        phone: phone.trim(),
-        role,
-      };
-
+      const data = { name: name.trim(), phone: phone.trim(), role };
       if (isEditing) {
         await api.updateUser(existingUser.id, { ...data, location_ids: selectedLocationIds });
       } else {
@@ -106,12 +116,51 @@ export default function UserFormScreen({ route, navigation }) {
         data.location_ids = selectedLocationIds;
         await api.createUser(data);
       }
-
       navigation.goBack();
     } catch (err) {
       Alert.alert('Error', err.message || 'Failed to save user');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleChangeRole = () => {
+    if (!selectedNewRole || selectedNewRole === existingUser?.role) {
+      Alert.alert('No Change', 'Please select a different role first.');
+      return;
+    }
+    const newRoleLabel = ROLE_LABELS[selectedNewRole] || selectedNewRole;
+    const currentRoleLabel = ROLE_LABELS[existingUser?.role] || existingUser?.role;
+
+    const doChange = async () => {
+      setLoading(true);
+      try {
+        await api.changeUserRole(existingUser.id, selectedNewRole);
+        Alert.alert(
+          'Role Updated',
+          `${existingUser.name}'s role has been changed from ${currentRoleLabel} to ${newRoleLabel}.`,
+          [{ text: 'OK', onPress: () => navigation.goBack() }]
+        );
+      } catch (err) {
+        Alert.alert('Error', err.message || 'Failed to change role');
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    if (Platform.OS === 'web') {
+      if (window.confirm(`Change ${existingUser?.name}'s role from ${currentRoleLabel} to ${newRoleLabel}?\n\nThis will affect their access permissions immediately.`)) {
+        doChange();
+      }
+    } else {
+      Alert.alert(
+        'Change Role?',
+        `Change ${existingUser?.name}'s role from ${currentRoleLabel} to ${newRoleLabel}?\n\nThis will affect their access permissions immediately.`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Change Role', style: 'destructive', onPress: doChange },
+        ]
+      );
     }
   };
 
@@ -163,127 +212,171 @@ export default function UserFormScreen({ route, navigation }) {
 
   return (
     <DismissKeyboard>
-    <KeyboardAvoidingView
-      style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-    >
-      <ScrollView
-        contentContainerStyle={styles.scrollContent}
-        keyboardShouldPersistTaps="handled"
-        keyboardDismissMode="on-drag"
-        showsVerticalScrollIndicator={false}
+      <KeyboardAvoidingView
+        style={styles.container}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
-        {/* Role selector (not for editing) */}
-        {!isEditing && (
-          <>
-            <Text style={styles.label}>Role</Text>
-            <View style={styles.roleGrid}>
-              {availableRoles.map((r) => (
+        <ScrollView
+          contentContainerStyle={styles.scrollContent}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
+          showsVerticalScrollIndicator={false}
+        >
+          {/* Role selector (create mode only) */}
+          {!isEditing && (
+            <>
+              <Text style={styles.label}>Role</Text>
+              <View style={styles.roleGrid}>
+                {availableRoles.map((r) => (
+                  <TouchableOpacity
+                    key={r.key}
+                    style={[styles.roleOption, role === r.key && { borderColor: r.color, backgroundColor: r.color + '10' }]}
+                    onPress={() => setRole(r.key)}
+                  >
+                    <Ionicons name={r.icon} size={20} color={role === r.key ? r.color : Colors.textLight} />
+                    <Text style={[styles.roleOptionText, role === r.key && { color: r.color }]}>
+                      {r.label}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </>
+          )}
+
+          <Input
+            label="Full Name"
+            value={name}
+            onChangeText={(t) => { setName(t); clearError('name'); }}
+            placeholder="Staff member's name"
+            autoCapitalize="words"
+            error={errors.name}
+            leftIcon={<Ionicons name="person-outline" size={20} color={Colors.textSecondary} />}
+          />
+
+          <Input
+            label="Phone Number"
+            value={phone}
+            onChangeText={(t) => { setPhone(t); clearError('phone'); }}
+            placeholder="10-digit mobile number"
+            keyboardType="phone-pad"
+            maxLength={10}
+            error={errors.phone}
+            editable={!isEditing}
+            leftIcon={<Ionicons name="call-outline" size={20} color={Colors.textSecondary} />}
+          />
+
+          <Input
+            label={isEditing ? 'New Password (leave blank to keep current)' : 'Password'}
+            value={password}
+            onChangeText={(t) => { setPassword(t); clearError('password'); }}
+            placeholder={isEditing ? 'Enter new password' : 'At least 6 characters'}
+            secureTextEntry
+            error={errors.password}
+            leftIcon={<Ionicons name="lock-closed-outline" size={20} color={Colors.textSecondary} />}
+          />
+
+          {isEditing && password.length > 0 && (
+            <Button
+              title="Reset Password"
+              variant="outline"
+              onPress={handleResetPassword}
+              loading={loading}
+              style={styles.resetButton}
+            />
+          )}
+
+          {/* Location assignment */}
+          {locations.length > 0 && (
+            <>
+              <Text style={[styles.label, { marginTop: Spacing.md }]}>Assign to Locations</Text>
+              {locations.map((loc) => (
                 <TouchableOpacity
-                  key={r.key}
-                  style={[styles.roleOption, role === r.key && { borderColor: r.color, backgroundColor: r.color + '10' }]}
-                  onPress={() => setRole(r.key)}
+                  key={loc.id}
+                  style={[styles.locationOption, selectedLocationIds.includes(loc.id) && styles.locationSelected]}
+                  onPress={() => toggleLocation(loc.id)}
                 >
-                  <Ionicons name={r.icon} size={20} color={role === r.key ? r.color : Colors.textLight} />
-                  <Text style={[styles.roleOptionText, role === r.key && { color: r.color }]}>
-                    {r.label}
-                  </Text>
+                  <Ionicons
+                    name={selectedLocationIds.includes(loc.id) ? 'checkbox' : 'square-outline'}
+                    size={22}
+                    color={selectedLocationIds.includes(loc.id) ? Colors.primary : Colors.textLight}
+                  />
+                  <View style={styles.locationInfo}>
+                    <Text style={styles.locationName}>{loc.name}</Text>
+                    <Text style={styles.locationType}>{loc.type}</Text>
+                  </View>
                 </TouchableOpacity>
               ))}
+            </>
+          )}
+
+          {/* ─── Change Role Section (Owner editing non-owner only) ─── */}
+          {canChangeRole && (
+            <View style={styles.changeRoleCard}>
+              <View style={styles.changeRoleHeader}>
+                <Ionicons name="shield-half-outline" size={18} color="#7C3AED" />
+                <Text style={styles.changeRoleTitle}>Change Role</Text>
+              </View>
+              <Text style={styles.changeRoleHint}>
+                Current: <Text style={styles.changeRoleCurrent}>{ROLE_LABELS[existingUser?.role] || existingUser?.role}</Text>
+                {'  '}·{'  '}Select a new role below to change access permissions.
+              </Text>
+              <View style={styles.roleGrid}>
+                {ROLES.map((r) => (
+                  <TouchableOpacity
+                    key={r.key}
+                    style={[
+                      styles.roleOption,
+                      selectedNewRole === r.key && { borderColor: r.color, backgroundColor: r.color + '10' },
+                    ]}
+                    onPress={() => setSelectedNewRole(r.key)}
+                  >
+                    <Ionicons name={r.icon} size={18} color={selectedNewRole === r.key ? r.color : Colors.textLight} />
+                    <Text style={[styles.roleOptionText, selectedNewRole === r.key && { color: r.color }]}>
+                      {r.label}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+              {selectedNewRole && selectedNewRole !== existingUser?.role && (
+                <TouchableOpacity
+                  style={styles.changeRoleBtn}
+                  onPress={handleChangeRole}
+                  disabled={loading}
+                >
+                  <Ionicons name="swap-horizontal" size={16} color="#fff" />
+                  <Text style={styles.changeRoleBtnText}>
+                    Change to {ROLE_LABELS[selectedNewRole]}
+                  </Text>
+                </TouchableOpacity>
+              )}
             </View>
-          </>
-        )}
+          )}
 
-        <Input
-          label="Full Name"
-          value={name}
-          onChangeText={(t) => { setName(t); clearError('name'); }}
-          placeholder="Staff member's name"
-          autoCapitalize="words"
-          error={errors.name}
-          leftIcon={<Ionicons name="person-outline" size={20} color={Colors.textSecondary} />}
-        />
-
-        <Input
-          label="Phone Number"
-          value={phone}
-          onChangeText={(t) => { setPhone(t); clearError('phone'); }}
-          placeholder="10-digit mobile number"
-          keyboardType="phone-pad"
-          maxLength={10}
-          error={errors.phone}
-          editable={!isEditing}
-          leftIcon={<Ionicons name="call-outline" size={20} color={Colors.textSecondary} />}
-        />
-
-        <Input
-          label={isEditing ? 'New Password (leave blank to keep current)' : 'Password'}
-          value={password}
-          onChangeText={(t) => { setPassword(t); clearError('password'); }}
-          placeholder={isEditing ? 'Enter new password' : 'At least 6 characters'}
-          secureTextEntry
-          error={errors.password}
-          leftIcon={<Ionicons name="lock-closed-outline" size={20} color={Colors.textSecondary} />}
-        />
-
-        {isEditing && password.length > 0 && (
           <Button
-            title="Reset Password"
-            variant="outline"
-            onPress={handleResetPassword}
+            title={isEditing ? 'Update Staff' : 'Add Staff'}
+            onPress={handleSubmit}
             loading={loading}
-            style={styles.resetButton}
+            style={styles.submitButton}
           />
-        )}
 
-        {/* Location assignment */}
-        {locations.length > 0 && (
-          <>
-            <Text style={[styles.label, { marginTop: Spacing.md }]}>Assign to Locations</Text>
-            {locations.map((loc) => (
-              <TouchableOpacity
-                key={loc.id}
-                style={[styles.locationOption, selectedLocationIds.includes(loc.id) && styles.locationSelected]}
-                onPress={() => toggleLocation(loc.id)}
-              >
-                <Ionicons
-                  name={selectedLocationIds.includes(loc.id) ? 'checkbox' : 'square-outline'}
-                  size={22}
-                  color={selectedLocationIds.includes(loc.id) ? Colors.primary : Colors.textLight}
-                />
-                <View style={styles.locationInfo}>
-                  <Text style={styles.locationName}>{loc.name}</Text>
-                  <Text style={styles.locationType}>{loc.type}</Text>
-                </View>
-              </TouchableOpacity>
-            ))}
-          </>
-        )}
-
-        <Button
-          title={isEditing ? 'Update Staff' : 'Add Staff'}
-          onPress={handleSubmit}
-          loading={loading}
-          style={styles.submitButton}
-        />
-        {isEditing && currentUser?.role === 'owner' && (
-          <TouchableOpacity
-            style={[styles.deactivateBtn, !existingUser.is_active && styles.reactivateBtn]}
-            onPress={handleToggleActive}
-            disabled={loading}
-          >
-            <Ionicons
-              name={existingUser.is_active ? 'person-remove-outline' : 'person-add-outline'}
-              size={18}
-              color={existingUser.is_active ? Colors.error : Colors.success}
-            />
-            <Text style={[styles.deactivateBtnText, !existingUser.is_active && { color: Colors.success }]}>
-              {existingUser.is_active ? 'Deactivate Staff' : 'Reactivate Staff'}
-            </Text>
-          </TouchableOpacity>
-        )}
-      </ScrollView>
-    </KeyboardAvoidingView>
+          {isEditing && isOwner && (
+            <TouchableOpacity
+              style={[styles.deactivateBtn, !existingUser.is_active && styles.reactivateBtn]}
+              onPress={handleToggleActive}
+              disabled={loading}
+            >
+              <Ionicons
+                name={existingUser.is_active ? 'person-remove-outline' : 'person-add-outline'}
+                size={18}
+                color={existingUser.is_active ? Colors.error : Colors.success}
+              />
+              <Text style={[styles.deactivateBtnText, !existingUser.is_active && { color: Colors.success }]}>
+                {existingUser.is_active ? 'Deactivate Staff' : 'Reactivate Staff'}
+              </Text>
+            </TouchableOpacity>
+          )}
+        </ScrollView>
+      </KeyboardAvoidingView>
     </DismissKeyboard>
   );
 }
@@ -326,6 +419,35 @@ const styles = StyleSheet.create({
   locationInfo: { flex: 1 },
   locationName: { fontSize: FontSize.sm, fontWeight: '500', color: Colors.text },
   locationType: { fontSize: FontSize.xs, color: Colors.textSecondary, textTransform: 'capitalize' },
+
+  // Change Role
+  changeRoleCard: {
+    marginTop: Spacing.lg,
+    padding: Spacing.md,
+    backgroundColor: '#F5F3FF',
+    borderRadius: BorderRadius.lg,
+    borderWidth: 1.5,
+    borderColor: '#DDD6FE',
+  },
+  changeRoleHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xs,
+    marginBottom: 6,
+  },
+  changeRoleTitle: { fontSize: FontSize.sm, fontWeight: '700', color: '#7C3AED' },
+  changeRoleHint: { fontSize: FontSize.xs, color: Colors.textSecondary, marginBottom: Spacing.md, lineHeight: 17 },
+  changeRoleCurrent: { fontWeight: '700', color: '#7C3AED' },
+  changeRoleBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.sm,
+    paddingVertical: Spacing.sm + 2,
+    borderRadius: BorderRadius.md,
+    backgroundColor: '#7C3AED',
+  },
+  changeRoleBtnText: { fontSize: FontSize.sm, fontWeight: '700', color: '#fff' },
 
   submitButton: { marginTop: Spacing.xl },
   deactivateBtn: {

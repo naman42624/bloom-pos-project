@@ -308,11 +308,11 @@ router.post('/geofence-event', authorize('manager', 'employee', 'delivery_partne
         const shift = db.prepare('SELECT * FROM employee_shifts WHERE user_id = ? AND location_id = ? AND is_active = 1').get(req.user.id, location_id);
         let late = 0;
         if (shift) {
-          const [shiftH, shiftM] = shift.shift_start.split(':').map(Number);
-          const clockDate = new Date(now);
-          const shiftDate = new Date(clockDate);
-          shiftDate.setHours(shiftH, shiftM, 0, 0);
-          late = clockDate > shiftDate ? 1 : 0;
+          const tz = require('../utils/time').getTimezone();
+          const clockTime = new Intl.DateTimeFormat('en-GB', { 
+            timeZone: tz, hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false 
+          }).format(new Date(now));
+          late = clockTime > shift.shift_start ? 1 : 0;
         }
 
         if (!existing) {

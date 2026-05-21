@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef } from 'react';
 import {
   View, Text, StyleSheet, SectionList, TextInput,
   TouchableOpacity, ActivityIndicator,
@@ -8,8 +8,9 @@ import { useFocusEffect } from '@react-navigation/native';
 import api from '../services/api';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import { useAuth } from '../context/AuthContext';
-import { parseServerDate, formatDate, formatTime, formatShopDateLabel } from '../utils/datetime';
+import { parseServerDate, formatDateLabel, formatTime } from '../utils/datetime';
 
+const LIMIT = 20;
 
 const STATUS_COLORS = { completed: Colors.success, cancelled: Colors.error, draft: Colors.warning, pending: Colors.warning, preparing: Colors.info, ready: Colors.success };
 const PAY_COLORS = { paid: Colors.success, partial: Colors.warning, pending: Colors.error, refunded: Colors.textLight };
@@ -22,40 +23,36 @@ const FILTERS = [
   { key: 'pre_order', label: 'Pre-order' },
 ];
 
-// Helper: Group sales by date (newest first)
-function groupSalesByDate(salesList, timezone) {
+function groupSalesByDate(salesList) {
   if (!salesList.length) return [];
-
-  // Sort by created_at (newest first)
-  const sorted = [...salesList].sort((a, b) => 
+  const sorted = [...salesList].sort((a, b) =>
     parseServerDate(b.created_at) - parseServerDate(a.created_at)
   );
-
   const grouped = {};
   sorted.forEach(sale => {
-    const date = formatShopDateLabel(sale.created_at, timezone);
+    const date = formatDateLabel(sale.created_at);
     if (!grouped[date]) grouped[date] = [];
     grouped[date].push(sale);
   });
-
-  return Object.entries(grouped).map(([date, items]) => ({
-    title: date,
-    data: items,
-  }));
+  return Object.entries(grouped).map(([date, items]) => ({ title: date, data: items }));
 }
-
 
 export default function SalesScreen({ navigation }) {
   const { settings } = useAuth();
-  const timezone = settings?.timezone || 'Asia/Kolkata';
   const [sales, setSales] = useState([]);
-
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(false);
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState('');
-  const [page, setPage] = useState(1);
-  const [hasMore, setHasMore] = useState(true);
   const [summary, setSummary] = useState(null);
+
+  // ─── All pagination state in refs — immune to stale closures ─────────────
+  const pageRef = useRef(1);
+  const hasMoreRef = useRef(false);
+  const isFetchingRef = useRef(false);
+  const searchRef = useRef('');
+  const filterRef = useRef('');
 
   React.useLayoutEffect(() => {
     navigation.setOptions({
@@ -80,48 +77,80 @@ export default function SalesScreen({ navigation }) {
     });
   }, [navigation]);
 
-  useFocusEffect(
-    useCallback(() => {
-      fetchSales(1, true);
-      fetchSummary();
-    }, [filter])
-  );
+  // ─── Core fetch ───────────────────────────────────────────────────────────
+  const fetchSales = useCallback(async (opts = {}) => {
+    const {
+      page = 1,
+      reset = false,
+      q = searchRef.current,
+      f = filterRef.current,
+    } = opts;
 
-  const fetchSales = async (pg = 1, reset = false) => {
+    isFetchingRef.current = true;
+
     try {
-      const limit = 20;
-      const params = { limit, offset: (pg - 1) * limit };
-      if (search) params.search = search;
-      if (filter) params.order_type = filter;
+      const params = { limit: LIMIT, offset: (page - 1) * LIMIT };
+      if (q) params.search = q;
+      if (f) params.order_type = f;
+
       const res = await api.getSales(params);
       const list = res.data?.sales || res.data || [];
-      if (reset) {
-        setSales(list);
-      } else {
-        setSales((prev) => [...prev, ...list]);
-      }
-      setHasMore(list.length >= limit);
-      setPage(pg);
-    } catch {} finally { setLoading(false); }
-  };
 
-  const fetchSummary = async () => {
+      const more = list.length >= LIMIT;
+      hasMoreRef.current = more;
+      pageRef.current = page;
+
+      setSales(prev => reset ? list : [...prev, ...list]);
+      setHasMore(more);
+    } catch (err) {
+      console.error('[SalesScreen] fetchSales error:', err);
+    } finally {
+      isFetchingRef.current = false;
+      setLoading(false);
+      setLoadingMore(false);
+    }
+  }, []);
+
+  const fetchSummary = useCallback(async () => {
     try {
       const res = await api.getTodaySummary();
       setSummary(res.data);
     } catch {}
-  };
+  }, []);
 
-  const handleSearch = (text) => {
+  // ─── Load next page ───────────────────────────────────────────────────────
+  const loadMore = useCallback(() => {
+    if (!hasMoreRef.current || isFetchingRef.current) return;
+    setLoadingMore(true);
+    fetchSales({ page: pageRef.current + 1, reset: false });
+  }, [fetchSales]);
+
+  // ─── Initial + focus load ─────────────────────────────────────────────────
+  useFocusEffect(
+    useCallback(() => {
+      setLoading(true);
+      fetchSales({ page: 1, reset: true });
+      fetchSummary();
+    }, [fetchSales, fetchSummary, filter])
+  );
+
+  // ─── Search ───────────────────────────────────────────────────────────────
+  const handleSearch = useCallback((text) => {
     setSearch(text);
+    searchRef.current = text;
     setLoading(true);
-    fetchSales(1, true);
-  };
+    fetchSales({ page: 1, reset: true, q: text });
+  }, [fetchSales]);
 
-  const loadMore = () => {
-    if (hasMore && !loading) fetchSales(page + 1);
-  };
+  // ─── Filter chip ──────────────────────────────────────────────────────────
+  const handleFilter = useCallback((key) => {
+    setFilter(key);
+    filterRef.current = key;
+    setLoading(true);
+    fetchSales({ page: 1, reset: true, f: key });
+  }, [fetchSales]);
 
+  // ─── Render sale row ──────────────────────────────────────────────────────
   const renderSale = ({ item }) => {
     const statusColor = STATUS_COLORS[item.status] || Colors.textLight;
     const payColor = PAY_COLORS[item.payment_status] || Colors.textLight;
@@ -129,11 +158,11 @@ export default function SalesScreen({ navigation }) {
       <TouchableOpacity style={styles.card} onPress={() => navigation.navigate('SaleDetail', { saleId: item.id })} activeOpacity={0.7}>
         <View style={styles.cardHeader}>
           <Text style={styles.saleNo}>{item.sale_number}</Text>
-          {item.source === 'recurring' && (
+          {item.source === 'recurring' ? (
             <View style={[styles.badge, { backgroundColor: '#9C27B0' + '20', marginRight: 4 }]}>
               <Text style={[styles.badgeText, { color: '#9C27B0' }]}>RECURRING</Text>
             </View>
-          )}
+          ) : null}
           <View style={[styles.badge, { backgroundColor: statusColor + '20' }]}>
             <Text style={[styles.badgeText, { color: statusColor }]}>{item.status?.toUpperCase()}</Text>
           </View>
@@ -143,8 +172,8 @@ export default function SalesScreen({ navigation }) {
             <Text style={styles.cardMeta}>
               {(item.order_type || '').replace('_', ' ')} • {item.location_name || 'N/A'}
             </Text>
-            {item.customer_name && <Text style={styles.cardCustomer}>{item.customer_name}</Text>}
-            <Text style={styles.cardDate}>{formatTime(item.created_at, 'en-IN', { hour: '2-digit', minute: '2-digit', hour12: true })}</Text>
+            {item.customer_name ? <Text style={styles.cardCustomer}>{item.customer_name}</Text> : null}
+            <Text style={styles.cardDate}>{formatTime(item.created_at)}</Text>
           </View>
           <View style={{ alignItems: 'flex-end' }}>
             <Text style={styles.cardTotal}>₹{Number(item.grand_total || 0).toFixed(0)}</Text>
@@ -153,14 +182,12 @@ export default function SalesScreen({ navigation }) {
             </View>
           </View>
         </View>
-
-        {(item.special_instructions || item.notes) && (
+        {(item.special_instructions || item.notes) ? (
           <Text style={{ fontSize: FontSize.xs, color: '#D32F2F', marginTop: 8, fontWeight: '600' }}>
             Order Note: {item.special_instructions || item.notes}
           </Text>
-        )}
-        
-        {(item.items && item.items.length > 0) && (
+        ) : null}
+        {(item.items && item.items.length > 0) ? (
           <View style={{ marginTop: 8, backgroundColor: Colors.background, padding: 8, borderRadius: 6 }}>
             {item.items.map((it, idx) => (
               <View key={idx} style={{ marginBottom: idx === item.items.length - 1 ? 0 : 4 }}>
@@ -171,7 +198,7 @@ export default function SalesScreen({ navigation }) {
               </View>
             ))}
           </View>
-        )}
+        ) : null}
       </TouchableOpacity>
     );
   };
@@ -182,10 +209,38 @@ export default function SalesScreen({ navigation }) {
     </View>
   );
 
+  // Footer with load-more button — reliable on both native and web
+  const ListFooter = () => {
+    if (loading) return null;
+    if (loadingMore) {
+      return (
+        <View style={styles.footer}>
+          <ActivityIndicator color={Colors.primary} />
+        </View>
+      );
+    }
+    if (hasMore) {
+      return (
+        <TouchableOpacity style={styles.loadMoreBtn} onPress={loadMore} activeOpacity={0.7}>
+          <Ionicons name="chevron-down" size={16} color={Colors.primary} />
+          <Text style={styles.loadMoreText}>Load More</Text>
+        </TouchableOpacity>
+      );
+    }
+    if (sales.length > 0) {
+      return (
+        <View style={styles.footer}>
+          <Text style={styles.endText}>All sales loaded</Text>
+        </View>
+      );
+    }
+    return null;
+  };
+
   return (
     <View style={styles.container}>
       {/* Today summary */}
-      {summary && (
+      {summary ? (
         <View style={styles.summaryBar}>
           <View style={styles.summaryItem}>
             <Text style={styles.summaryVal}>{summary.total_sales}</Text>
@@ -200,7 +255,7 @@ export default function SalesScreen({ navigation }) {
             <Text style={styles.summaryLabel}>Tax</Text>
           </View>
         </View>
-      )}
+      ) : null}
 
       {/* Search */}
       <View style={styles.searchRow}>
@@ -213,6 +268,11 @@ export default function SalesScreen({ navigation }) {
             placeholder="Search invoice, customer..."
             placeholderTextColor={Colors.textLight}
           />
+          {search.length > 0 ? (
+            <TouchableOpacity onPress={() => handleSearch('')}>
+              <Ionicons name="close-circle" size={16} color={Colors.textLight} />
+            </TouchableOpacity>
+          ) : null}
         </View>
       </View>
 
@@ -222,7 +282,7 @@ export default function SalesScreen({ navigation }) {
           <TouchableOpacity
             key={f.key}
             style={[styles.filterChip, filter === f.key && styles.filterChipActive]}
-            onPress={() => setFilter(f.key)}
+            onPress={() => handleFilter(f.key)}
           >
             <Text style={[styles.filterChipText, filter === f.key && styles.filterChipTextActive]}>{f.label}</Text>
           </TouchableOpacity>
@@ -230,29 +290,35 @@ export default function SalesScreen({ navigation }) {
       </View>
 
       {/* List */}
-      <SectionList
-        sections={groupSalesByDate(sales, timezone)}
-
-        keyExtractor={(item) => String(item.id)}
-        renderItem={({ item }) => renderSale({ item })}
-        renderSectionHeader={renderSectionHeader}
-        contentContainerStyle={styles.listContent}
-        onEndReached={loadMore}
-        onEndReachedThreshold={0.3}
-        ListEmptyComponent={
-          <View style={styles.empty}>
-            <Ionicons name="receipt-outline" size={48} color={Colors.textLight} />
-            <Text style={styles.emptyText}>{loading ? 'Loading...' : 'No sales found'}</Text>
-          </View>
-        }
-        ListFooterComponent={loading && sales.length > 0 ? <ActivityIndicator style={{ margin: Spacing.md }} color={Colors.primary} /> : null}
-      />
+      {loading ? (
+        <View style={styles.centered}>
+          <ActivityIndicator size="large" color={Colors.primary} />
+        </View>
+      ) : (
+        <SectionList
+          sections={groupSalesByDate(sales)}
+          keyExtractor={(item) => String(item.id)}
+          renderItem={({ item }) => renderSale({ item })}
+          renderSectionHeader={renderSectionHeader}
+          contentContainerStyle={styles.listContent}
+          onEndReached={loadMore}
+          onEndReachedThreshold={0.5}
+          ListEmptyComponent={
+            <View style={styles.empty}>
+              <Ionicons name="receipt-outline" size={48} color={Colors.textLight} />
+              <Text style={styles.emptyText}>No sales found</Text>
+            </View>
+          }
+          ListFooterComponent={<ListFooter />}
+        />
+      )}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
+  centered: { flex: 1, justifyContent: 'center', alignItems: 'center' },
 
   summaryBar: {
     flexDirection: 'row', backgroundColor: Colors.primary,
@@ -301,18 +367,22 @@ const styles = StyleSheet.create({
 
   sectionHeader: {
     backgroundColor: Colors.primary + '15',
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.sm,
-    marginTop: Spacing.md,
-    marginBottom: Spacing.sm,
-    borderLeftWidth: 3,
-    borderLeftColor: Colors.primary,
+    paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm,
+    marginTop: Spacing.md, marginBottom: Spacing.sm,
+    borderLeftWidth: 3, borderLeftColor: Colors.primary,
   },
-  sectionTitle: {
-    fontSize: FontSize.sm,
-    fontWeight: '700',
-    color: Colors.primary,
+  sectionTitle: { fontSize: FontSize.sm, fontWeight: '700', color: Colors.primary },
+
+  footer: { alignItems: 'center', paddingVertical: Spacing.md },
+  endText: { fontSize: FontSize.xs, color: Colors.textLight },
+  loadMoreBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    gap: Spacing.xs, paddingVertical: Spacing.md,
+    marginTop: Spacing.xs,
+    borderWidth: 1, borderColor: Colors.primary + '40',
+    borderRadius: BorderRadius.md, backgroundColor: Colors.primary + '08',
   },
+  loadMoreText: { fontSize: FontSize.sm, color: Colors.primary, fontWeight: '600' },
 
   empty: { alignItems: 'center', paddingTop: 80 },
   emptyText: { color: Colors.textLight, marginTop: Spacing.sm, fontSize: FontSize.sm },

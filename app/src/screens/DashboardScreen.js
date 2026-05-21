@@ -20,7 +20,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 import { Colors, FontSize, Spacing } from '../constants/theme';
-import { minutesSinceServerDate, minutesUntilShopDateTime } from '../utils/datetime';
+import { formatDateTime, parseServerDate, getShopNow, DEFAULT_TZ, minutesSinceServerDate, minutesUntilShopDateTime, formatTimeString } from '../utils/datetime';
 import { OrderQuickModal, DeliveryQuickModal } from '../components/QuickModals';
 
 const ORDER_TYPES = ['delivery', 'pickup', 'walk_in'];
@@ -129,11 +129,7 @@ function formatCardDateTime(dateStr, timeStr, timezone) {
 
       if (!timeStr) return datePart;
 
-      // Format the time part (HH:MM)
-      const [hh, mm] = String(timeStr).split(':').map(Number);
-      const ampm = hh >= 12 ? 'PM' : 'AM';
-      const h12 = hh % 12 || 12;
-      return `${datePart}, ${h12}:${String(mm || 0).padStart(2, '0')} ${ampm}`;
+      return `${datePart}, ${formatTimeString(timeStr)}`;
     }
   } catch {}
   return dateStr || '';
@@ -164,6 +160,7 @@ function normalizeOrderPhase(status) {
 function getLaneTheme(laneKey) {
   if (laneKey === 'pending') return { border: '#F59E0B66', background: '#FFFBEB', badge: '#B45309' };
   if (laneKey === 'preparing') return { border: '#0EA5E966', background: '#EFF6FF', badge: '#075985' };
+  if (laneKey === 'in_transit') return { border: '#6366F166', background: '#EEF2FF', badge: '#4338CA' };
   return { border: '#10B98166', background: '#ECFDF5', badge: '#065F46' };
 }
 
@@ -432,21 +429,22 @@ function OrderCard({ order, tasks, hasPendingProduction, pulseOpacity, onTaskCli
         </View>
       )}
 
+      {/* Created time — keep consistent across screens */}
+      {order.created_at && (
+        <View style={styles.scheduledRow}>
+          <Ionicons name="time-outline" size={11} color="#9CA3AF" />
+          <Text style={[styles.scheduledText, { color: '#9CA3AF' }]}>\
+            Placed: {formatDateTime(order.created_at)}
+          </Text>
+        </View>
+      )}
+
       {/* Scheduled date — delivery/pickup */}
       {order.scheduled_date && (
         <View style={styles.scheduledRow}>
           <Ionicons name="calendar-outline" size={11} color="#6366F1" />
           <Text style={styles.scheduledText}>
-            {formatCardDateTime(order.scheduled_date, order.scheduled_time, timezone)}
-          </Text>
-        </View>
-      )}
-      {/* Walk-in: show creation time */}
-      {!order.scheduled_date && order.order_type === 'walk_in' && order.created_at && (
-        <View style={styles.scheduledRow}>
-          <Ionicons name="time-outline" size={11} color="#9CA3AF" />
-          <Text style={[styles.scheduledText, { color: '#9CA3AF' }]}>
-            {formatCardDateTime(order.created_at, null, timezone)}
+            Scheduled: {formatCardDateTime(order.scheduled_date, order.scheduled_time, timezone)}
           </Text>
         </View>
       )}
@@ -753,7 +751,7 @@ export default function DashboardScreen({ navigation }) {
 
   const ordersByTypeAndStatus = useMemo(() => {
     const base = {
-      delivery: { pending: [], preparing: [], ready: [], completed: [] },
+      delivery: { pending: [], preparing: [], ready: [], in_transit: [], completed: [] },
       pickup: { pending: [], preparing: [], ready: [], completed: [] },
       walk_in: { pending: [], preparing: [], ready: [], completed: [] },
     };
@@ -761,7 +759,18 @@ export default function DashboardScreen({ navigation }) {
     for (const order of sales) {
       if (!ORDER_TYPES.includes(order.order_type)) continue;
       if (order.status === 'cancelled' || order.status === 'draft') continue;
-      
+
+      // For delivery orders: route dispatched ones to in_transit bucket
+      if (order.order_type === 'delivery') {
+        // delivery_status may be a flat field or nested under order.delivery.status
+        const delStatus = order.delivery_status ?? order.delivery?.status;
+        const isDispatched = ['picked_up', 'in_transit'].includes(delStatus);
+        if (isDispatched) {
+          base.delivery.in_transit.push(order);
+          continue;
+        }
+      }
+
       // Do not show completed orders for walkin, pickup, and delivery order types
       if (order.status === 'completed' && ['walk_in', 'pickup', 'delivery'].includes(order.order_type)) continue;
 
@@ -915,12 +924,22 @@ export default function DashboardScreen({ navigation }) {
   };
 
   const renderOrderTypeSection = (type) => {
-    const groups = ordersByTypeAndStatus[type] || { pending: [], preparing: [], ready: [], completed: [] };
-    const lanes = [
-      { key: 'pending', label: 'Pending', rows: groups.pending },
-      { key: 'preparing', label: 'Preparing', rows: groups.preparing },
-      { key: 'ready', label: 'Ready', rows: groups.ready },
-    ];
+    const groups = ordersByTypeAndStatus[type] || { pending: [], preparing: [], ready: [], in_transit: [], completed: [] };
+
+    // Build lanes — delivery gets 4 lanes including In Transit
+    const lanes = type === 'delivery'
+      ? [
+          { key: 'pending',    label: 'Pending',            rows: groups.pending },
+          { key: 'preparing',  label: 'Preparing',          rows: groups.preparing },
+          { key: 'ready',      label: 'Ready to Dispatch',  rows: groups.ready },
+          { key: 'in_transit', label: 'In Transit',         rows: groups.in_transit || [] },
+        ]
+      : [
+          { key: 'pending',   label: 'Pending',   rows: groups.pending },
+          { key: 'preparing', label: 'Preparing', rows: groups.preparing },
+          { key: 'ready',     label: 'Ready',     rows: groups.ready },
+        ];
+
     const totalOrders = lanes.reduce((sum, lane) => sum + lane.rows.length, 0);
 
     const typeTheme = type === 'delivery'
@@ -1046,10 +1065,11 @@ export default function DashboardScreen({ navigation }) {
                 
                 let dateStr = 'No Date';
                 if (d.scheduled_date) {
-                   const dt = new Date(d.scheduled_date);
+                   const [y, m, dayNum] = String(d.scheduled_date).split('-');
+                   const dt = new Date(y, m - 1, dayNum);
                    dateStr = dt.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
                    if (d.scheduled_time) {
-                     dateStr += `, ${d.scheduled_time.slice(0, 5)}`;
+                     dateStr += `, ${formatTimeString(d.scheduled_time)}`;
                    }
                 }
 
@@ -1188,9 +1208,10 @@ export default function DashboardScreen({ navigation }) {
                   
                   let deadlineStr = null;
                   if (task.scheduled_date) {
-                    const dt = new Date(task.scheduled_date);
+                    const [y, m, dayNum] = String(task.scheduled_date).split('-');
+                    const dt = new Date(y, m - 1, dayNum);
                     deadlineStr = dt.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
-                    if (task.scheduled_time) deadlineStr += `, ${task.scheduled_time.slice(0, 5)}`;
+                    if (task.scheduled_time) deadlineStr += `, ${formatTimeString(task.scheduled_time)}`;
                   }
 
                   const imageUri = task.product_image || task.item_image_url;

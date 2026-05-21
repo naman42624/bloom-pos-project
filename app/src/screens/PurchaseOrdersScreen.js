@@ -8,6 +8,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
+import { formatDate } from '../utils/datetime';
 
 const STATUS_CONFIG = {
   pending: { color: Colors.warning, icon: 'time-outline' },
@@ -78,7 +79,7 @@ export default function PurchaseOrdersScreen({ navigation }) {
           {item.expected_date && (
             <Text style={styles.footerText}>Due: {item.expected_date}</Text>
           )}
-          <Text style={styles.footerText}>{new Date(item.created_at).toLocaleDateString()}</Text>
+          <Text style={styles.footerText}>{formatDate(item.created_at)}</Text>
         </View>
       </TouchableOpacity>
     );

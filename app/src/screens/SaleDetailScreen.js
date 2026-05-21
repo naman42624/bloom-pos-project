@@ -9,7 +9,7 @@ import * as Sharing from 'expo-sharing';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
-import { formatDateTime } from '../utils/datetime';
+import { formatDateTime, formatCardDateTime } from '../utils/datetime';
 import { Image } from 'react-native';
 import ImageModal from '../components/ImageModal';
 
@@ -45,7 +45,7 @@ const PAYMENT_METHODS = [
 
 export default function SaleDetailScreen({ route, navigation }) {
   const { saleId } = route.params;
-  const { user } = useAuth();
+  const { user, settings } = useAuth();
   const [sale, setSale] = useState(null);
   const [loading, setLoading] = useState(true);
   const [expandedItems, setExpandedItems] = useState({});
@@ -73,6 +73,7 @@ export default function SaleDetailScreen({ route, navigation }) {
 
 
   const canManage = user?.role === 'owner' || user?.role === 'manager';
+  const canEdit = canManage || (sale?.created_by === user?.id);
 
   // Convert order type state
   const [convertModalVisible, setConvertModalVisible] = useState(false);
@@ -100,13 +101,67 @@ export default function SaleDetailScreen({ route, navigation }) {
   const [pickupPayRef, setPickupPayRef] = useState('');
   const [confirmingPickup, setConfirmingPickup] = useState(false);
 
+  // Edit Sale & Audit Logs
+  const [auditLogs, setAuditLogs] = useState([]);
+  const [editModalVisible, setEditModalVisible] = useState(false);
+  const [editError, setEditError] = useState(null);
+  const [editCustomerName, setEditCustomerName] = useState('');
+  const [editCustomerPhone, setEditCustomerPhone] = useState('');
+  const [editPaymentStatus, setEditPaymentStatus] = useState('');
+  const [editPaymentMethod, setEditPaymentMethod] = useState('cash');
+  const [savingEdit, setSavingEdit] = useState(false);
+
   useEffect(() => { fetchSale(); }, [saleId]);
 
   const fetchSale = async () => {
     try {
       const res = await api.getSale(saleId);
       setSale(res.data);
+      if (canManage) {
+        const auditRes = await api.getSaleAuditLogs(saleId);
+        setAuditLogs(auditRes.data || []);
+      }
     } catch {} finally { setLoading(false); }
+  };
+
+  const openEditModal = () => {
+    setEditCustomerName(sale.customer_name || sale.customer_display_name || '');
+    setEditCustomerPhone(sale.customer_phone || sale.customer_display_phone || '');
+    setEditPaymentStatus(sale.payment_status || 'pending');
+    setEditPaymentMethod(sale.payments && sale.payments[0] ? sale.payments[0].method : 'cash');
+    setEditError(null);
+    setEditModalVisible(true);
+  };
+
+  const handleSaveEdit = async () => {
+    setSavingEdit(true);
+    try {
+      // Calculate current paid amount to retain the amount but change the method
+      const currentPaid = (sale.payments || []).reduce((sum, p) => sum + p.amount, 0);
+      
+      const payload = {
+        customer_name: editCustomerName,
+        customer_phone: editCustomerPhone,
+        payment_status: editPaymentStatus,
+      };
+
+      if (currentPaid > 0) {
+        // Just replacing the method of the existing payments
+        payload.payments = [{ method: editPaymentMethod, amount: currentPaid }];
+      } else if (editPaymentStatus === 'paid') {
+        // If changed from pending to paid and no previous payments exist, insert full amount
+        payload.payments = [{ method: editPaymentMethod, amount: sale.grand_total }];
+      }
+
+      await api.updateSale(saleId, payload);
+      setEditModalVisible(false);
+      fetchSale();
+      Alert.alert('Success', 'Sale updated successfully.');
+    } catch (err) {
+      setEditError(err.message || 'Failed to update sale');
+    } finally {
+      setSavingEdit(false);
+    }
   };
 
   const handleCancel = () => {
@@ -228,25 +283,35 @@ export default function SaleDetailScreen({ route, navigation }) {
   };
 
   const handleFulfillFromStock = (saleItemId, productName) => {
-    Alert.alert(
-      'Fulfill from Stock',
-      `Use ready stock for "${productName}"? This will deduct from product inventory.`,
-      [
+    const msg = `Use ready stock for "${productName}"? This will deduct from product inventory.`;
+    const onConfirm = async () => {
+      try {
+        await api.fulfillFromStock(saleId, saleItemId);
+        fetchSale();
+        if (Platform.OS === 'web') {
+          window.alert(`"${productName}" fulfilled from stock`);
+        } else {
+          Alert.alert('Done', `"${productName}" fulfilled from stock`);
+        }
+      } catch (err) {
+        if (Platform.OS === 'web') {
+          window.alert('Error: ' + (err.message || 'Failed to fulfill from stock'));
+        } else {
+          Alert.alert('Error', err.message || 'Failed to fulfill from stock');
+        }
+      }
+    };
+
+    if (Platform.OS === 'web') {
+      setTimeout(() => {
+        if (window.confirm(msg)) onConfirm();
+      }, 50);
+    } else {
+      Alert.alert('Fulfill from Stock', msg, [
         { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Fulfill',
-          onPress: async () => {
-            try {
-              await api.fulfillFromStock(saleId, saleItemId);
-              fetchSale();
-              Alert.alert('Done', `"${productName}" fulfilled from stock`);
-            } catch (err) {
-              Alert.alert('Error', err.message || 'Failed to fulfill from stock');
-            }
-          },
-        },
-      ]
-    );
+        { text: 'Fulfill', onPress: onConfirm },
+      ]);
+    }
   };
 
   // Production task actions
@@ -506,6 +571,12 @@ export default function SaleDetailScreen({ route, navigation }) {
               <Text style={[styles.typeText, { color: '#9C27B0' }]}>RECURRING</Text>
             </View>
           )}
+          {canEdit && sale.status !== 'cancelled' && (
+            <TouchableOpacity style={[styles.convertBtn, { marginRight: 6 }]} onPress={openEditModal}>
+              <Ionicons name="pencil" size={14} color={Colors.primary} />
+              <Text style={styles.convertBtnText}>Edit</Text>
+            </TouchableOpacity>
+          )}
           {canManage && sale.status !== 'cancelled' && (sale.order_type === 'pickup' || sale.order_type === 'delivery') && (
             <TouchableOpacity
               style={styles.convertBtn}
@@ -574,7 +645,7 @@ export default function SaleDetailScreen({ route, navigation }) {
           <Text style={styles.sectionTitle}>Delivery Address</Text>
           <Text style={styles.infoText}>{sale.delivery_address}</Text>
           {sale.scheduled_date && (
-            <Text style={styles.infoSubtext}>Scheduled: {sale.scheduled_date} {sale.scheduled_time || ''}</Text>
+            <Text style={styles.infoSubtext}>Scheduled: {formatCardDateTime(sale.scheduled_date, sale.scheduled_time)}</Text>
           )}
         </View>
       )}
@@ -861,11 +932,27 @@ export default function SaleDetailScreen({ route, navigation }) {
         )}
       </View>
 
+      {/* Refund Details */}
+      {sale.refund && (
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Refund Details</Text>
+          <View style={[styles.paymentRow, { backgroundColor: Colors.error + '10' }]}>
+            <Ionicons name="return-down-back" size={18} color={Colors.error} />
+            <View style={{ flex: 1, marginLeft: Spacing.sm }}>
+              <Text style={[styles.payMethod, { color: Colors.error }]}>REFUNDED VIA {sale.refund.refund_method?.toUpperCase() || 'CASH'}</Text>
+              {sale.refund.reason ? <Text style={styles.payRef}>Reason: {sale.refund.reason}</Text> : null}
+              <Text style={[styles.payRef, { marginTop: 2, fontSize: FontSize.xs }]}>{formatDateTime(sale.refund.created_at)}</Text>
+            </View>
+            <Text style={[styles.payAmount, { color: Colors.error }]}>-₹{Number(sale.refund.amount || 0).toFixed(2)}</Text>
+          </View>
+        </View>
+      )}
+
       {/* Pre-order info */}
       {sale.pre_order && (
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Pre-order Details</Text>
-          <Text style={styles.infoText}>Scheduled: {sale.pre_order.scheduled_date} {sale.pre_order.scheduled_time || ''}</Text>
+          <Text style={styles.infoText}>Scheduled: {formatCardDateTime(sale.pre_order.scheduled_date, sale.pre_order.scheduled_time)}</Text>
           <Text style={styles.infoSubtext}>Advance: ₹{Number(sale.pre_order.advance_amount || 0).toFixed(2)} | Remaining: ₹{Number(sale.pre_order.remaining_amount || 0).toFixed(2)}</Text>
           {sale.pre_order.delivery_address && <Text style={styles.infoSubtext}>Address: {sale.pre_order.delivery_address}</Text>}
           <View style={[styles.statusBadge, { backgroundColor: sale.pre_order.status === 'delivered' ? Colors.successLight : Colors.warningLight, alignSelf: 'flex-start', marginTop: Spacing.xs }]}>
@@ -948,9 +1035,9 @@ export default function SaleDetailScreen({ route, navigation }) {
       {canManage && sale.status === 'completed' && (
         <View style={styles.actions}>
           {!sale.refund && (
-            <TouchableOpacity style={[styles.actionBtn, { backgroundColor: Colors.warning }]} onPress={handleRefund}>
-              <Ionicons name="return-down-back" size={18} color={Colors.white} />
-              <Text style={styles.actionBtnText}>Refund</Text>
+            <TouchableOpacity style={[styles.actionBtn, { backgroundColor: Colors.error }]} onPress={handleRefund}>
+              <Ionicons name="arrow-undo" size={18} color={Colors.white} />
+              <Text style={styles.actionBtnText}>Refund Sale</Text>
             </TouchableOpacity>
           )}
           <TouchableOpacity style={[styles.actionBtn, { backgroundColor: Colors.error }]} onPress={handleCancel}>
@@ -971,6 +1058,22 @@ export default function SaleDetailScreen({ route, navigation }) {
         </TouchableOpacity>
       )}
 
+      {/* Audit Logs / Revision History */}
+      {auditLogs && auditLogs.length > 0 && (
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Revision History</Text>
+          {auditLogs.map((log, idx) => (
+            <View key={idx} style={{ paddingVertical: 8, borderBottomWidth: idx < auditLogs.length - 1 ? 1 : 0, borderBottomColor: Colors.border }}>
+              <Text style={{ fontSize: FontSize.sm, color: Colors.text }}>
+                <Text style={{ fontWeight: '600' }}>{log.user_name || 'System'}</Text> edited sale ({log.action})
+              </Text>
+              <Text style={{ fontSize: FontSize.xs, color: Colors.textLight, marginTop: 4 }}>
+                {formatDateTime(log.created_at)}
+              </Text>
+            </View>
+          ))}
+        </View>
+      )}
 
       {/* Navigation Shortcut */}
       <View style={{ marginTop: Spacing.xl, gap: Spacing.md }}>
@@ -1235,6 +1338,91 @@ export default function SaleDetailScreen({ route, navigation }) {
           </View>
         </KeyboardAvoidingView>
       </Modal>
+      {/* Edit Sale Modal */}
+      <Modal visible={editModalVisible} transparent animationType="slide">
+        <KeyboardAvoidingView style={styles.modalOverlay} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Edit Sale details</Text>
+              <TouchableOpacity onPress={() => setEditModalVisible(false)}>
+                <Ionicons name="close" size={24} color={Colors.text} />
+              </TouchableOpacity>
+            </View>
+
+            {editError ? (
+              <View style={{ backgroundColor: Colors.error + '20', padding: 12, borderRadius: 8, marginBottom: 16 }}>
+                <Text style={{ color: Colors.error, fontSize: FontSize.sm }}>{editError}</Text>
+              </View>
+            ) : null}
+
+            <ScrollView>
+              <Text style={styles.fieldLabel}>Customer Name</Text>
+              <TextInput
+                style={styles.modalInput}
+                value={editCustomerName}
+                onChangeText={setEditCustomerName}
+                placeholder="Customer name"
+                placeholderTextColor={Colors.textLight}
+              />
+
+              <Text style={styles.fieldLabel}>Customer Phone</Text>
+              <TextInput
+                style={styles.modalInput}
+                value={editCustomerPhone}
+                onChangeText={setEditCustomerPhone}
+                placeholder="Customer phone"
+                placeholderTextColor={Colors.textLight}
+                keyboardType="phone-pad"
+              />
+
+              <Text style={styles.fieldLabel}>Payment Method</Text>
+              <View style={styles.chipRow}>
+                {PAYMENT_METHODS.map(m => (
+                  <TouchableOpacity
+                    key={m.key}
+                    style={[styles.methodChip, editPaymentMethod === m.key && styles.methodChipActive]}
+                    onPress={() => setEditPaymentMethod(m.key)}
+                  >
+                    <Ionicons name={m.icon} size={16} color={editPaymentMethod === m.key ? '#fff' : Colors.textSecondary} />
+                    <Text style={[styles.methodChipText, editPaymentMethod === m.key && styles.methodChipTextActive]}>{m.label}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              <Text style={styles.fieldLabel}>Payment Status</Text>
+              <View style={styles.chipRow}>
+                {['pending', 'paid'].map(status => (
+                  <TouchableOpacity
+                    key={status}
+                    style={[styles.methodChip, editPaymentStatus === status && styles.methodChipActive]}
+                    onPress={() => setEditPaymentStatus(status)}
+                  >
+                    <Text style={[styles.methodChipText, editPaymentStatus === status && styles.methodChipTextActive]}>
+                      {status.toUpperCase()}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              <TouchableOpacity
+                style={[styles.confirmBtn, savingEdit && { opacity: 0.6 }]}
+                onPress={handleSaveEdit}
+                disabled={savingEdit}
+              >
+                {savingEdit ? (
+                  <ActivityIndicator color="#fff" size="small" />
+                ) : (
+                  <>
+                    <Ionicons name="save" size={20} color="#fff" />
+                    <Text style={styles.confirmBtnText}>Save Changes</Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            </ScrollView>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
     </ScrollView>
   );
 }

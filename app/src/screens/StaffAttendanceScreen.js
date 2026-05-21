@@ -6,7 +6,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
-import { parseServerDate, formatTime as formatServerTime } from '../utils/datetime';
+import { parseServerDate, formatTime as formatServerTime, formatTimeString } from '../utils/datetime';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 
 function formatTime(iso) {
@@ -14,7 +14,7 @@ function formatTime(iso) {
   // Use proper parseServerDate + toLocaleTimeString for timezone-aware parsing
   const d = parseServerDate(iso);
   if (!d) return '--:--';
-  return d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false });
+  return d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true });
 }
 
 function formatHours(h) {
@@ -32,7 +32,7 @@ function formatHours(h) {
 
 function formatShiftWindow(start, end) {
   if (!start || !end) return 'Shift not set';
-  return `${start.slice(0, 5)} - ${end.slice(0, 5)}`;
+  return `${formatTimeString(start)} - ${formatTimeString(end)}`;
 }
 
 function calculateBreakGapHours(logs = []) {

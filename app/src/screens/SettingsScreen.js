@@ -48,6 +48,18 @@ const SUPPLIER_FIELD_OPTIONS = [
   { key: 'pricing', label: 'Pricing & Orders' },
 ];
 
+// Owner-only boolean preference toggles
+const PREFERENCE_SETTINGS = [
+  {
+    key: 'pref_walkin_auto_complete',
+    label: 'Auto-Complete Walk-in Orders',
+    description: 'Automatically mark a walk-in order as completed when all its production tasks are finished.',
+    icon: 'checkmark-circle-outline',
+    iconColor: '#10B981',
+  },
+];
+
+
 export default function SettingsScreen() {
   const { user } = useAuth();
   const [settings, setSettings] = useState({});
@@ -94,7 +106,23 @@ export default function SettingsScreen() {
   };
 
   const hasChanges = Object.keys(editedValues).length > 0;
-  const sortedKeys = Object.keys(settings).sort();
+  const sortedKeys = Object.keys(settings)
+    .filter((k) => !PREFERENCE_SETTINGS.some((p) => p.key === k))
+    .sort();
+
+  const handlePrefToggle = async (key, currentValue) => {
+    if (!isOwner) return;
+    const newValue = currentValue === '1' ? '0' : '1';
+    try {
+      await api.updateSettings({ [key]: newValue });
+      setSettings((prev) => ({
+        ...prev,
+        [key]: { ...prev[key], value: newValue },
+      }));
+    } catch (err) {
+      Alert.alert('Error', err.message || 'Failed to update preference');
+    }
+  };
 
   return (
     <DismissKeyboard>
@@ -109,6 +137,39 @@ export default function SettingsScreen() {
         <Text style={styles.loadingText}>Loading settings...</Text>
       ) : (
         <>
+          {/* ─── Preferences Section (Owner only) ─── */}
+          {isOwner && PREFERENCE_SETTINGS.some((p) => settings[p.key] !== undefined) && (
+            <View style={styles.prefSection}>
+              <View style={styles.prefSectionHeader}>
+                <Ionicons name="options-outline" size={16} color="#7C3AED" />
+                <Text style={styles.prefSectionTitle}>Preferences</Text>
+              </View>
+              {PREFERENCE_SETTINGS.map((pref) => {
+                const val = settings[pref.key]?.value;
+                if (val === undefined) return null;
+                const isOn = val === '1';
+                return (
+                  <View key={pref.key} style={styles.prefCard}>
+                    <View style={[styles.prefIconWrap, { backgroundColor: pref.iconColor + '18' }]}>
+                      <Ionicons name={pref.icon} size={20} color={pref.iconColor} />
+                    </View>
+                    <View style={styles.prefInfo}>
+                      <Text style={styles.prefLabel}>{pref.label}</Text>
+                      <Text style={styles.prefDesc}>{pref.description}</Text>
+                    </View>
+                    <Switch
+                      value={isOn}
+                      onValueChange={() => handlePrefToggle(pref.key, val)}
+                      trackColor={{ false: Colors.border, true: pref.iconColor + '80' }}
+                      thumbColor={isOn ? pref.iconColor : Colors.textLight}
+                    />
+                  </View>
+                );
+              })}
+            </View>
+          )}
+
+          {/* ─── General Settings ─── */}
           {sortedKeys.map((key) => {
             const setting = settings[key];
             const currentValue = editedValues[key] !== undefined ? editedValues[key] : setting.value;
@@ -189,6 +250,45 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
   content: { padding: Spacing.md, paddingBottom: Spacing.xxl },
   loadingText: { textAlign: 'center', color: Colors.textSecondary, marginTop: Spacing.xl },
+
+  // Preference toggles
+  prefSection: {
+    marginBottom: Spacing.lg,
+    backgroundColor: '#F5F3FF',
+    borderRadius: BorderRadius.lg,
+    borderWidth: 1.5,
+    borderColor: '#DDD6FE',
+    overflow: 'hidden',
+  },
+  prefSectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xs,
+    paddingHorizontal: Spacing.md,
+    paddingTop: Spacing.md,
+    paddingBottom: Spacing.sm,
+  },
+  prefSectionTitle: { fontSize: FontSize.sm, fontWeight: '700', color: '#7C3AED' },
+  prefCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.md,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm + 2,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#DDD6FE',
+    backgroundColor: '#FAFAFF',
+  },
+  prefIconWrap: {
+    width: 38,
+    height: 38,
+    borderRadius: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  prefInfo: { flex: 1 },
+  prefLabel: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.text },
+  prefDesc: { fontSize: FontSize.xs, color: Colors.textSecondary, marginTop: 2, lineHeight: 16 },
 
   settingRow: {
     backgroundColor: Colors.surface,
