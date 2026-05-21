@@ -43,7 +43,7 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 
 // ─── Middleware ───────────────────────────────────────────────
-app.use(helmet());
+app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }));
 app.use(cors({ origin: '*' })); // Allow all origins in dev; restrict in production
 app.use(morgan('dev'));
 app.use(performanceMonitor); // ⚡ Performance tracking middleware
