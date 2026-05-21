@@ -19,7 +19,7 @@ router.get('/', authenticate, authorize('owner', 'manager', 'employee', 'deliver
 
     let baseSql = `
       WITH registered AS (
-        SELECT id, name, phone, email, birthday, anniversary, custom_dates,
+        SELECT id, name, phone, email, birthday, anniversary, custom_dates::text as custom_dates,
                total_spent, credit_balance, notes, is_active, created_at,
                1 as is_registered
         FROM users
