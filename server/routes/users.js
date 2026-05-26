@@ -167,8 +167,8 @@ router.post(
       .isLength({ min: 6 })
       .withMessage('Password must be at least 6 characters'),
     body('role')
-      .isIn(VALID_ROLES)
-      .withMessage('Role must be manager, employee, delivery_partner, or customer'),
+      .isIn([...VALID_ROLES, 'owner'])
+      .withMessage('Role must be owner, manager, employee, delivery_partner, or customer'),
     body('location_ids')
       .optional()
       .isArray()
@@ -187,11 +187,11 @@ router.post(
 
       const { name, phone, email, password, role, location_ids } = req.body;
 
-      // Only Owner can create managers
-      if (role === 'manager' && req.user.role !== 'owner') {
+      // Only Owner can create managers and owners
+      if ((role === 'manager' || role === 'owner') && req.user.role !== 'owner') {
         return res.status(403).json({
           success: false,
-          message: 'Only the owner can create manager accounts',
+          message: 'Only the owner can create manager or owner accounts',
         });
       }
 
@@ -439,8 +439,8 @@ router.put(
   [
     param('id').isInt(),
     body('role')
-      .isIn(['manager', 'employee', 'delivery_partner', 'customer'])
-      .withMessage('Role must be manager, employee, delivery_partner, or customer'),
+      .isIn([...VALID_ROLES, 'owner'])
+      .withMessage('Role must be owner, manager, employee, delivery_partner, or customer'),
   ],
   (req, res, next) => {
     try {
@@ -463,10 +463,7 @@ router.put(
         return res.status(404).json({ success: false, message: 'User not found' });
       }
 
-      // Cannot reassign another owner's role (protect the owner account)
-      if (targetUser.role === 'owner') {
-        return res.status(403).json({ success: false, message: 'Cannot change the role of another owner' });
-      }
+      // Cannot reassign another owner's role (removed to allow multiple owners managing each other)
 
       db.prepare('UPDATE users SET role = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(role, targetId);
 

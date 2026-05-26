@@ -1377,7 +1377,7 @@ export default function DashboardScreen({ navigation }) {
               </View>
 
               {/* Revenue Snapshot */}
-              {reportKPIs && (
+              {isOwner && reportKPIs && (
                 <>
                   <View style={styles.sectionHeader}>
                     <Text style={styles.sectionTitle}>Revenue</Text>

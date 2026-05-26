@@ -207,7 +207,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
             setReceiverSuggestions([]);
             setShowReceiverSuggestions(false);
           }
-        } catch {}
+        } catch { }
       }, 300);
     } else {
       setReceiverSuggestions([]);
@@ -220,7 +220,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
               setReceiverName(res.data.name);
             }
           }
-        }).catch(() => {});
+        }).catch(() => { });
       } else {
         setReceiverHistory(null);
         if (!senderSameAsReceiver) setReceiverId(null);
@@ -296,10 +296,10 @@ export default function QuickCheckoutScreen({ navigation, route }) {
       } : null,
       materials: Array.isArray(cartItem?.custom_materials)
         ? cartItem.custom_materials.map((m) => ({
-            material_id: m.material_id,
-            name: m.name || '',
-            qty: String(m.qty_per_unit || m.qty || 1),
-          }))
+          material_id: m.material_id,
+          name: m.name || '',
+          qty: String(m.qty_per_unit || m.qty || 1),
+        }))
         : [],
       price: String(cartItem?.unit_price ?? 0),
       quantity: String(cartItem?.quantity ?? 1),
@@ -813,7 +813,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
 
       // Build cart items
       const cartItems = processedItems.map(item => ({
-        ...(function() {
+        ...(function () {
           const grossUnit = parseFloat(item.price) || 0;
           const effectiveTaxRate = resolveItemTaxRate(item);
           const baseUnit = effectiveTaxRate > 0
@@ -919,7 +919,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
         if (activeDraftId) {
           try {
             await api.deleteSaleDraft(activeDraftId);
-          } catch (_) {}
+          } catch (_) { }
           setActiveDraftId(null);
         }
         navigation.dispatch(
@@ -981,7 +981,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
         allowsEditing: true,
         quality: 0.8,
       });
-      
+
       if (!result.canceled && result.assets && result.assets.length > 0) {
         updateItem(idx, 'image_url', result.assets[0].uri);
       }
@@ -1013,7 +1013,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
             </View>
             <Text style={styles.sectionTitle}>Order Type</Text>
           </View>
-          <View style={[styles.orderTypeRow, { marginBottom: 2 }] }>
+          <View style={[styles.orderTypeRow, { marginBottom: 2 }]}>
             {ORDER_TYPES.map(t => (
               <TouchableOpacity
                 key={t.key}
@@ -1344,8 +1344,8 @@ export default function QuickCheckoutScreen({ navigation, route }) {
                     placeholderTextColor={Colors.textLight}
                   />
                   <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 6 }} contentContainerStyle={{ gap: 6 }}>
-                    {['Bouquet', 'Bunch', 'Box', 'Basket', 'Vase', 'Garland', 'Arrangement'].map((sug) => (
-                      <TouchableOpacity 
+                    {['Fresh Flowers', 'Bouquet', 'Bunch', 'Box', 'Basket', 'Vase', 'Garland', 'Arrangement'].map((sug) => (
+                      <TouchableOpacity
                         key={sug}
                         style={{ backgroundColor: Colors.textLight + '10', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12, borderWidth: 1, borderColor: Colors.textLight + '30' }}
                         onPress={() => updateItem(idx, 'name', item.name && !item.name.endsWith(' ') ? `${item.name} ${sug}` : `${item.name || ''}${sug}`)}
@@ -1516,12 +1516,12 @@ export default function QuickCheckoutScreen({ navigation, route }) {
                 <Pressable
                   style={({ pressed }) => [
                     styles.pickProductBtn,
-                    { 
-                      minWidth: 90, 
-                      marginLeft: 10, 
-                      justifyContent: 'center', 
-                      height: 50, 
-                      marginTop: 10, 
+                    {
+                      minWidth: 90,
+                      marginLeft: 10,
+                      justifyContent: 'center',
+                      height: 50,
+                      marginTop: 10,
                       zIndex: 1000,
                       opacity: pressed ? 0.6 : 1,
                       borderWidth: 1,
@@ -1773,8 +1773,8 @@ export default function QuickCheckoutScreen({ navigation, route }) {
             </View>
           </View>
 
-          <TouchableOpacity 
-            style={[styles.checkRow, { marginTop: Spacing.md }]} 
+          <TouchableOpacity
+            style={[styles.checkRow, { marginTop: Spacing.md }]}
             onPress={() => setSkipAssignment(!skipAssignment)}
           >
             <Ionicons name={skipAssignment ? 'checkbox' : 'square-outline'} size={24} color={skipAssignment ? Colors.primary : Colors.textLight} />

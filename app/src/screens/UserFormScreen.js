@@ -18,6 +18,7 @@ import DismissKeyboard from '../components/DismissKeyboard';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 
 const ROLES = [
+  { key: 'owner', label: 'Owner', icon: 'key', color: Colors.roleOwner || '#EAB308' },
   { key: 'manager', label: 'Manager', icon: 'shield', color: Colors.roleManager },
   { key: 'employee', label: 'Employee', icon: 'person', color: Colors.roleEmployee },
   { key: 'delivery_partner', label: 'Delivery Partner', icon: 'bicycle', color: Colors.roleDelivery },
@@ -50,7 +51,7 @@ export default function UserFormScreen({ route, navigation }) {
   const [selectedNewRole, setSelectedNewRole] = useState(null);
 
   const isOwner = currentUser?.role === 'owner';
-  const canChangeRole = isEditing && isOwner && existingUser?.role !== 'owner';
+  const canChangeRole = isEditing && isOwner && existingUser?.id !== currentUser?.id;
 
   // Manager can only create employee/delivery_partner/customer
   const availableRoles = isOwner
