@@ -136,7 +136,14 @@ router.get('/', authenticate, async (req, res, next) => {
     if (category) { sql += ' AND p.category = ?'; params.push(category); }
     if (is_active !== undefined) { sql += ' AND p.is_active = ?'; params.push(Number(is_active)); }
     else { sql += ' AND p.is_active = 1'; }
-    if (search) { sql += ' AND (p.name LIKE ? OR p.sku LIKE ? OR p.description LIKE ?)'; const s = `%${search}%`; params.push(s, s, s); }
+    if (search) { 
+      const terms = search.toLowerCase().split(/\\s+/).filter(Boolean);
+      for (const term of terms) {
+        sql += ' AND (LOWER(p.name) LIKE ? OR LOWER(p.sku) LIKE ? OR LOWER(p.description) LIKE ?)';
+        const s = `%${term}%`;
+        params.push(s, s, s);
+      }
+    }
 
     sql += ' ORDER BY sale_count DESC, p.name ASC LIMIT ? OFFSET ?';
     params.push(limit, offset);

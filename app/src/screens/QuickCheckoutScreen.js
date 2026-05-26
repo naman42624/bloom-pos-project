@@ -1827,7 +1827,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
 
       <Modal visible={draftPickerVisible} transparent animationType="slide" onRequestClose={() => setDraftPickerVisible(false)}>
         <View style={styles.modalOverlay}>
-          <View style={styles.modalCard}>
+          <View style={[styles.modalCard, { alignSelf: 'center', paddingBottom: Platform.OS === 'ios' ? 40 : 20 }]}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Saved Drafts</Text>
               <TouchableOpacity onPress={() => setDraftPickerVisible(false)}>
@@ -1863,10 +1863,10 @@ export default function QuickCheckoutScreen({ navigation, route }) {
       <Modal visible={showProductPicker} transparent animationType="slide">
         <View style={styles.modalOverlay}>
           <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
             style={{ width: '100%', alignItems: 'center' }}
           >
-            <View style={styles.modalCard}>
+            <View style={[styles.modalCard, { paddingBottom: Platform.OS === 'ios' ? 40 : 20 }]}>
               <View style={styles.modalHeader}>
                 <Text style={styles.modalTitle}>Select Product</Text>
                 <TouchableOpacity onPress={() => setShowProductPicker(false)}>
@@ -1878,7 +1878,13 @@ export default function QuickCheckoutScreen({ navigation, route }) {
                 <TextInput
                   style={styles.searchInput}
                   value={productSearch}
-                  onChangeText={(v) => { setProductSearch(v); fetchProducts(v); }}
+                  onChangeText={(v) => {
+                    setProductSearch(v);
+                    if (searchTimer.current) clearTimeout(searchTimer.current);
+                    searchTimer.current = setTimeout(() => {
+                      fetchProducts(v);
+                    }, 300);
+                  }}
                   placeholder="Search products..."
                   placeholderTextColor={Colors.textLight}
                   autoFocus
@@ -1915,13 +1921,13 @@ export default function QuickCheckoutScreen({ navigation, route }) {
       </Modal>
 
       {/* Material Picker Modal */}
-      <Modal visible={showMaterialPicker} animationType="fade" transparent>
+      <Modal visible={showMaterialPicker} animationType="slide" transparent>
         <View style={styles.modalOverlay}>
           <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
             style={{ width: '100%', alignItems: 'center' }}
           >
-            <View style={[styles.modalCard, { width: '90%', maxWidth: 500, paddingBottom: 20 }]}>
+            <View style={[styles.modalCard, { paddingBottom: Platform.OS === 'ios' ? 40 : 20 }]}>
               <View style={styles.modalHeader}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                   <View style={[styles.sectionIcon, { width: 32, height: 32 }]}>
@@ -2222,7 +2228,8 @@ const styles = StyleSheet.create({
   },
   modalCard: {
     backgroundColor: Colors.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20,
-    padding: Spacing.lg, maxHeight: '80%',
+    padding: Spacing.lg, maxHeight: '85%', minHeight: 500,
+    width: '100%', maxWidth: 600,
   },
   modalHeader: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
