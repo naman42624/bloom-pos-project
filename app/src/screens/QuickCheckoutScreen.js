@@ -627,6 +627,77 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     }
   }, [selectedLocation]);
 
+  useFocusEffect(
+    useCallback(() => {
+      loadDrafts();
+    }, [loadDrafts])
+  );
+
+  const resetForm = useCallback(() => {
+    setCustomerName('');
+    setCustomerPhone('');
+    setCustomerAddress('');
+    setItems([]);
+    setScheduledDate('');
+    setScheduledTime('');
+    setOrderType('walk_in');
+    setPreOrderType('pickup');
+    setUseCustomerAsSender(true);
+    setSenderSameAsReceiver(false);
+    setSenderName('');
+    setSenderPhone('');
+    setSenderMessage('');
+    setSenderAddress('');
+    setReceiverName('');
+    setReceiverPhone('');
+    setReceiverId(null);
+    setOrderNotes('');
+    setDeliveryCharges('');
+    setDiscountValue('');
+    setDiscountType('fixed');
+    setCustomerId(null);
+    setCustomerHistory(null);
+    setCustomerSuggestions([]);
+    setReceiverHistory(null);
+    setReceiverSuggestions([]);
+    setPaymentMethod('cash');
+    setPaymentReference('');
+    setPayments([{ method: 'cash', amount: '', reference: '' }]);
+    setEnableSplitPayment(false);
+    setPaymentMode('pay_now');
+    setAdvanceAmount('');
+    setSkipAssignment(true);
+    setActiveDraftId(null);
+    setSubmitErrors([]);
+  }, []);
+
+  const handleNewSale = useCallback(async () => {
+    const hasAnyData = items.length > 0 || customerName.trim() || customerPhone.trim() || orderNotes.trim();
+    if (hasAnyData) {
+      setSavingDraft(true);
+      try {
+        await api.saveSaleDraft({
+          id: activeDraftId,
+          location_id: selectedLocation || null,
+          context: 'quick_checkout',
+          order_type: orderType,
+          customer_name: customerName || null,
+          customer_phone: customerPhone || null,
+          customer_address: customerAddress || null,
+          item_count: items.length,
+          grand_total: totals.finalTotal,
+          payload: buildDraftPayload(),
+        });
+      } catch (err) {
+        // ignore errors on auto-save
+      } finally {
+        setSavingDraft(false);
+      }
+    }
+    resetForm();
+    loadDrafts();
+  }, [items.length, customerName, customerPhone, orderNotes, activeDraftId, selectedLocation, orderType, customerAddress, totals.finalTotal, buildDraftPayload, resetForm, loadDrafts]);
+
   const handleSaveDraft = useCallback(async () => {
     if (savingDraft || submitting) return;
     const hasAnyData = items.length > 0 || customerName.trim() || customerPhone.trim() || orderNotes.trim();
@@ -637,7 +708,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
 
     setSavingDraft(true);
     try {
-      const res = await api.saveSaleDraft({
+      await api.saveSaleDraft({
         id: activeDraftId,
         location_id: selectedLocation || null,
         context: 'quick_checkout',
@@ -649,14 +720,14 @@ export default function QuickCheckoutScreen({ navigation, route }) {
         grand_total: totals.finalTotal,
         payload: buildDraftPayload(),
       });
-      setActiveDraftId(res?.data?.id || null);
-      Alert.alert('Draft Saved', 'You can resume this order from drafts.');
+      resetForm();
+      loadDrafts();
     } catch (err) {
       Alert.alert('Error', err.message || 'Failed to save draft');
     } finally {
       setSavingDraft(false);
     }
-  }, [savingDraft, submitting, items.length, customerName, customerPhone, orderNotes, activeDraftId, selectedLocation, orderType, customerAddress, totals.finalTotal, buildDraftPayload]);
+  }, [savingDraft, submitting, items.length, customerName, customerPhone, orderNotes, activeDraftId, selectedLocation, orderType, customerAddress, totals.finalTotal, buildDraftPayload, resetForm, loadDrafts]);
 
   const handleOpenDraftPicker = useCallback(async () => {
     setDraftPickerVisible(true);
@@ -1006,6 +1077,44 @@ export default function QuickCheckoutScreen({ navigation, route }) {
         contentContainerStyle={[styles.content, { alignSelf: 'center', maxWidth: 800, width: '100%' }]}
         keyboardShouldPersistTaps="handled"
       >
+
+        {/* ── Top Section: Drafts ── */}
+        <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: Spacing.md, width: '100%' }}>
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flex: 1 }} contentContainerStyle={{ gap: 8, paddingBottom: 4 }}>
+              {drafts.map(draft => {
+                 let timeStr = '';
+                 if (draft.created_at) {
+                   const d = new Date(draft.created_at);
+                   timeStr = d.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+                 }
+                 const isActive = activeDraftId === draft.id;
+                 return (
+                   <TouchableOpacity 
+                     key={draft.id} 
+                     style={[styles.draftChipTop, isActive && { backgroundColor: Colors.primary }]} 
+                     onPress={() => {
+                       if (activeDraftId !== draft.id) {
+                         handleResumeDraft(draft.id);
+                       }
+                     }}
+                   >
+                     <Text style={styles.draftChipTopText}>
+                       Sale {timeStr ? `• ${timeStr}` : ''} • {draft.item_count} items
+                     </Text>
+                     <TouchableOpacity onPress={() => handleDeleteDraft(draft.id)} style={{marginLeft: 4, padding: 2}}>
+                       <Ionicons name="close" size={16} color="#fff" />
+                     </TouchableOpacity>
+                   </TouchableOpacity>
+                 );
+              })}
+            </ScrollView>
+          </View>
+          <TouchableOpacity style={styles.newSaleBtnTop} onPress={handleNewSale}>
+            <Ionicons name="add" size={16} color={Colors.primary} style={{ marginRight: 2 }} />
+            <Text style={styles.newSaleBtnTopText}>New sale</Text>
+          </TouchableOpacity>
+        </View>
 
         {/* ── Section 1: Order Type (Moved to Top) ── */}
         <View style={styles.section}>
@@ -1792,11 +1901,6 @@ export default function QuickCheckoutScreen({ navigation, route }) {
               {savingDraft ? <ActivityIndicator color={Colors.primary} size="small" /> : <Ionicons name="save-outline" size={16} color={Colors.primary} />}
               <Text style={styles.draftActionText}>{activeDraftId ? 'Update Draft' : 'Save Draft'}</Text>
             </TouchableOpacity>
-
-            <TouchableOpacity style={styles.draftActionBtn} onPress={handleOpenDraftPicker}>
-              <Ionicons name="folder-open-outline" size={16} color={Colors.primary} />
-              <Text style={styles.draftActionText}>Resume Draft</Text>
-            </TouchableOpacity>
           </View>
 
           {submitErrors.length > 0 && (
@@ -2195,6 +2299,26 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.xs,
   },
   draftActionText: { fontSize: FontSize.sm, color: Colors.primary, fontWeight: '700' },
+  
+  draftChipTop: {
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: Colors.primary + 'E6',
+    paddingHorizontal: 12, paddingVertical: 8,
+    borderRadius: 20,
+  },
+  draftChipTopText: {
+    color: '#fff', fontSize: FontSize.sm, fontWeight: '600'
+  },
+  newSaleBtnTop: {
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: Colors.background,
+    borderWidth: 1, borderColor: Colors.border,
+    paddingHorizontal: 12, paddingVertical: 8,
+    borderRadius: 20, marginLeft: 8
+  },
+  newSaleBtnTopText: {
+    color: Colors.primary, fontSize: FontSize.sm, fontWeight: '600'
+  },
 
   submitErrorsBox: {
     marginTop: Spacing.md,
