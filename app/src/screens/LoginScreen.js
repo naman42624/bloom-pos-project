@@ -8,6 +8,7 @@ import {
   ScrollView,
   TouchableOpacity,
   Alert,
+  Image,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../context/AuthContext';
@@ -61,7 +62,11 @@ export default function LoginScreen({ navigation }) {
       >
         <View style={styles.header}>
           <View style={styles.iconContainer}>
-            <Ionicons name="flower" size={64} color={Colors.primary} />
+            <Image 
+              source={require('../../assets/favicon.png')} 
+              style={{ width: 64, height: 64 }} 
+              resizeMode="contain" 
+            />
           </View>
           <Text style={styles.title}>Flower point</Text>
           <Text style={styles.subtitle}>Sign in to your account</Text>
