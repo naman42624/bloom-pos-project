@@ -905,12 +905,13 @@ router.put('/:id', authenticate, authorize('owner', 'manager', 'employee'), asyn
       return res.status(400).json({ success: false, message: 'Sales can only be edited on the same day they were created' });
     }
 
-    const closedRegister = await db.prepare(`
-      SELECT id FROM cash_registers 
-      WHERE location_id = ? AND date = ? AND closed_at IS NOT NULL
+    const latestRegister = await db.prepare(`
+      SELECT closed_at FROM cash_registers 
+      WHERE location_id = ? AND date = ?
+      ORDER BY id DESC LIMIT 1
     `).get(oldSale.location_id, saleDate);
 
-    if (closedRegister) {
+    if (latestRegister && latestRegister.closed_at !== null) {
       return res.status(400).json({ success: false, message: 'Sale cannot be edited because the cash register for that day is already closed' });
     }
 
