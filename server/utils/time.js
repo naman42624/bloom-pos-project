@@ -32,9 +32,9 @@ function clearTimezoneCache() {
 /**
  * Get current date string (YYYY-MM-DD) in shop timezone.
  */
-function todayStr() {
+function todayStr(dateObj) {
   const tz = getTimezone();
-  const now = new Date();
+  const now = (dateObj instanceof Date && !Number.isNaN(dateObj.getTime())) ? dateObj : new Date();
   const parts = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
   return parts; // en-CA gives YYYY-MM-DD format
 }

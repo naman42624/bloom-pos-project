@@ -4,7 +4,7 @@ const { getDb } = require('../config/database');
 const { getDb: getAsyncDb } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
 const { notifyByRole, createNotification } = require('./notifications');
-const { todayStr: localToday, nowLocal, nowTimeStr } = require('../utils/time');
+const { todayStr: localToday, nowLocal, nowTimeStr, parseServerDate } = require('../utils/time');
 const { safeParseJSON } = require('../utils/json');
 
 const router = express.Router();
@@ -898,7 +898,7 @@ router.put('/:id', authenticate, authorize('owner', 'manager', 'employee'), asyn
     }
 
     // 2. Time/Register Check
-    const saleDate = String(oldSale.created_at).split(' ')[0] || String(oldSale.created_at).split('T')[0];
+    const saleDate = localToday(parseServerDate(oldSale.created_at));
     const today = localToday();
     
     if (saleDate !== today) {
@@ -2266,7 +2266,7 @@ router.post(
 
       // Update cash register if cash refund
       if (refund_method === 'cash') {
-        const saleDate = String(sale.created_at).split(' ')[0] || String(sale.created_at).split('T')[0];
+        const saleDate = localToday(parseServerDate(sale.created_at));
         const today = localToday();
         
         if (saleDate === today) {
