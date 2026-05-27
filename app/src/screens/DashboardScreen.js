@@ -513,7 +513,7 @@ export default function DashboardScreen({ navigation }) {
 
   const [locations, setLocations] = useState([]);
   const [locationScope, setLocationScope] = useState(null);
-  const [dateScope, setDateScope] = useState(null);
+  const [dateScope, setDateScope] = useState(new Date());
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [sales, setSales] = useState([]);
   const [taskRows, setTaskRows] = useState([]);
