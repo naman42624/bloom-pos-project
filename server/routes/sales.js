@@ -346,9 +346,7 @@ router.get('/drafts', authenticate, authorize('owner', 'manager', 'employee'), a
     const { location_id, context, search } = req.query;
 
     let sql = `
-      SELECT id, location_id, context, order_type, customer_name, customer_phone,
-             customer_address, item_count, grand_total, created_by, updated_by,
-             created_at, updated_at
+      SELECT *
       FROM sale_drafts
       WHERE created_by = ?
     `;
@@ -364,8 +362,9 @@ router.get('/drafts', authenticate, authorize('owner', 'manager', 'employee'), a
 
     sql += ' ORDER BY updated_at DESC LIMIT 100';
     const drafts = await db.prepare(sql).all(...params);
+    const mappedDrafts = drafts.map(mapSaleDraftRow);
 
-    res.json({ success: true, data: drafts });
+    res.json({ success: true, data: mappedDrafts });
   } catch (err) { next(err); }
 });
 

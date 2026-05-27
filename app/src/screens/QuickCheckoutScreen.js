@@ -735,16 +735,39 @@ export default function QuickCheckoutScreen({ navigation, route }) {
   }, [loadDrafts]);
 
   const handleResumeDraft = useCallback(async (draftId) => {
+    const hasAnyData = items.length > 0 || customerName.trim() || customerPhone.trim() || orderNotes.trim();
+    if (hasAnyData || activeDraftId) {
+      setSavingDraft(true);
+      try {
+        await api.saveSaleDraft({
+          id: activeDraftId,
+          location_id: selectedLocation || null,
+          context: 'quick_checkout',
+          order_type: orderType,
+          customer_name: customerName || null,
+          customer_phone: customerPhone || null,
+          customer_address: customerAddress || null,
+          item_count: items.length,
+          grand_total: totals.finalTotal,
+          payload: buildDraftPayload(),
+        });
+      } catch (err) {
+        // ignore errors on auto-save
+      } finally {
+        setSavingDraft(false);
+      }
+    }
+
     try {
       const res = await api.getSaleDraft(draftId);
       const draft = res.data;
       applyDraftPayload(draft.payload, draft.id);
       setDraftPickerVisible(false);
-      Alert.alert('Draft Loaded', 'Draft has been restored.');
+      loadDrafts();
     } catch (err) {
       Alert.alert('Error', err.message || 'Failed to load draft');
     }
-  }, [applyDraftPayload]);
+  }, [items.length, customerName, customerPhone, orderNotes, activeDraftId, selectedLocation, orderType, customerAddress, totals.finalTotal, buildDraftPayload, applyDraftPayload, loadDrafts]);
 
   const handleDeleteDraft = useCallback(async (draftId) => {
     try {
@@ -1082,28 +1105,42 @@ export default function QuickCheckoutScreen({ navigation, route }) {
         <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: Spacing.md, width: '100%' }}>
           <View style={{ flex: 1, minWidth: 0 }}>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flex: 1 }} contentContainerStyle={{ gap: 8, paddingBottom: 4 }}>
-              {drafts.map(draft => {
-                 let timeStr = '';
-                 if (draft.created_at) {
-                   const d = new Date(draft.created_at);
-                   timeStr = d.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-                 }
+              {!activeDraftId && (
+                <TouchableOpacity style={[styles.draftChipTop, styles.draftChipTopActive]}>
+                  <Text style={[styles.draftChipTopText, styles.draftChipTopTextActive]}>
+                    * Current Sale {items.length > 0 ? `• ${items.length} items` : ''}
+                  </Text>
+                </TouchableOpacity>
+              )}
+              {drafts.map((draft, index) => {
                  const isActive = activeDraftId === draft.id;
+                 let title = `Sale ${index + 1}`;
+                 if (draft.customer_name || draft.payload?.customerName) {
+                   title = draft.customer_name || draft.payload.customerName;
+                 } else if (draft.payload?.items && draft.payload.items.length > 0) {
+                   const firstItem = draft.payload.items[0];
+                   title = firstItem.product_name || firstItem.name || `Sale ${index + 1}`;
+                   if (title.length > 18) title = title.substring(0, 15) + '...';
+                 } else if (draft.created_at) {
+                   const d = new Date(draft.created_at);
+                   title = `Sale ${d.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}`;
+                 }
+
                  return (
                    <TouchableOpacity 
                      key={draft.id} 
-                     style={[styles.draftChipTop, isActive && { backgroundColor: Colors.primary }]} 
+                     style={[styles.draftChipTop, isActive && styles.draftChipTopActive]} 
                      onPress={() => {
                        if (activeDraftId !== draft.id) {
                          handleResumeDraft(draft.id);
                        }
                      }}
                    >
-                     <Text style={styles.draftChipTopText}>
-                       Sale {timeStr ? `• ${timeStr}` : ''} • {draft.item_count} items
+                     <Text style={[styles.draftChipTopText, isActive && styles.draftChipTopTextActive]}>
+                       {isActive ? '* ' : ''}{title} • {draft.item_count} items
                      </Text>
                      <TouchableOpacity onPress={() => handleDeleteDraft(draft.id)} style={{marginLeft: 4, padding: 2}}>
-                       <Ionicons name="close" size={16} color="#fff" />
+                       <Ionicons name="close" size={16} color={isActive ? '#fff' : Colors.textLight} />
                      </TouchableOpacity>
                    </TouchableOpacity>
                  );
@@ -2302,12 +2339,20 @@ const styles = StyleSheet.create({
   
   draftChipTop: {
     flexDirection: 'row', alignItems: 'center',
-    backgroundColor: Colors.primary + 'E6',
+    backgroundColor: Colors.surface,
+    borderWidth: 1, borderColor: Colors.border,
     paddingHorizontal: 12, paddingVertical: 8,
     borderRadius: 20,
   },
+  draftChipTopActive: {
+    backgroundColor: Colors.primary,
+    borderWidth: 1, borderColor: Colors.primary,
+  },
   draftChipTopText: {
-    color: '#fff', fontSize: FontSize.sm, fontWeight: '600'
+    color: Colors.textSecondary, fontSize: FontSize.sm, fontWeight: '600'
+  },
+  draftChipTopTextActive: {
+    color: '#fff', fontSize: FontSize.sm, fontWeight: '700'
   },
   newSaleBtnTop: {
     flexDirection: 'row', alignItems: 'center',
