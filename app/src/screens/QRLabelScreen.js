@@ -59,7 +59,7 @@ export default function QRLabelScreen({ route }) {
     <ScrollView contentContainerStyle={styles.scrollContent}>
       {/* Label preview */}
       <View style={styles.labelCard}>
-        <Text style={styles.shopName}>BloomCart</Text>
+        <Text style={styles.shopName}>Flower point</Text>
 
         <View style={styles.qrContainer}>
           <Image
@@ -76,7 +76,7 @@ export default function QRLabelScreen({ route }) {
 
       {/* Info */}
       <Text style={styles.hintText}>
-        Scan this QR code with the BloomCart app to quickly look up product details.
+        Scan this QR code with the Flower point app to quickly look up product details.
       </Text>
 
       {/* Actions */}
@@ -113,7 +113,7 @@ export default function QRLabelScreen({ route }) {
                 .name{font-size:18px;font-weight:bold;margin:8px 0 4px}
                 .sku{color:#666;font-size:12px} .price{font-size:20px;font-weight:bold;margin-top:8px;color:#4CAF50}</style>
                 </head><body>
-                <p style="font-size:14px;color:#E91E63;font-weight:bold">BloomCart</p>
+                <p style="font-size:14px;color:#E91E63;font-weight:bold">Flower point</p>
                 <img src="${qr_data_url}" width="250" height="250"/>
                 <p class="name">${product.name}</p>
                 <p class="sku">SKU: ${product.sku}</p>

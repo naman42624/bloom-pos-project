@@ -129,7 +129,8 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     } catch { }
   };
 
-  const handlePhoneChange = useCallback((text) => {
+  const handlePhoneChange = useCallback((rawText) => {
+    const text = rawText.replace(/[^0-9+\-\s()]/g, '');
     setCustomerPhone(text);
     setShowSuggestions(false);
     if (senderSameAsReceiver && useCustomerAsSender) {
@@ -191,7 +192,8 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     setCustomerSuggestions([]);
   }, [senderSameAsReceiver, useCustomerAsSender]);
 
-  const handleReceiverPhoneChange = useCallback((text) => {
+  const handleReceiverPhoneChange = useCallback((rawText) => {
+    const text = rawText.replace(/[^0-9+\-\s()]/g, '');
     setReceiverPhone(text);
     setShowReceiverSuggestions(false);
 
@@ -1202,7 +1204,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
                       <TextInput
                         style={styles.input}
                         value={senderPhone}
-                        onChangeText={setSenderPhone}
+                        onChangeText={(v) => setSenderPhone(v.replace(/[^0-9+\-\s()]/g, ''))}
                         placeholder="Sender phone"
                         placeholderTextColor={Colors.textLight}
                         keyboardType="phone-pad"

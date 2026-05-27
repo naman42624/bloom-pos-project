@@ -63,7 +63,7 @@ export default function LoginScreen({ navigation }) {
           <View style={styles.iconContainer}>
             <Ionicons name="flower" size={64} color={Colors.primary} />
           </View>
-          <Text style={styles.title}>BloomCart</Text>
+          <Text style={styles.title}>Flower point</Text>
           <Text style={styles.subtitle}>Sign in to your account</Text>
         </View>
 

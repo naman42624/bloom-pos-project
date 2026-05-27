@@ -9,7 +9,7 @@ export default function RootNavigator() {
   const { isAuthenticated, isLoading, isSetupComplete } = useAuth();
 
   if (isLoading) {
-    return <LoadingScreen message="Starting BloomCart..." />;
+    return <LoadingScreen message="Starting Flower point..." />;
   }
 
   return (

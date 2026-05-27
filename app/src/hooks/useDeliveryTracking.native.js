@@ -95,7 +95,7 @@ export default function useDeliveryTracking({ user, enabled = false, socketRef }
           timeInterval: LOCATION_INTERVAL,
           distanceInterval: 10,
           foregroundService: Platform.OS === 'android' ? {
-            notificationTitle: 'BloomCart Delivery',
+            notificationTitle: 'Flower point Delivery',
             notificationBody: 'Tracking your location for delivery',
             notificationColor: '#E91E63',
           } : undefined,

@@ -58,7 +58,7 @@ export default function SaleDetailScreen({ route, navigation }) {
       navigation.setOptions({
         headerLeft: () => null, // Hide back button if we want to force "Done"
         headerRight: () => (
-          <TouchableOpacity 
+          <TouchableOpacity
             onPress={() => navigation.navigate('POS', { screen: 'POSHome', params: { clearCart: true } })}
 
 
@@ -121,7 +121,7 @@ export default function SaleDetailScreen({ route, navigation }) {
         const auditRes = await api.getSaleAuditLogs(saleId);
         setAuditLogs(auditRes.data || []);
       }
-    } catch {} finally { setLoading(false); }
+    } catch { } finally { setLoading(false); }
   };
 
   const openEditModal = () => {
@@ -138,7 +138,7 @@ export default function SaleDetailScreen({ route, navigation }) {
     try {
       // Calculate current paid amount to retain the amount but change the method
       const currentPaid = (sale.payments || []).reduce((sum, p) => sum + p.amount, 0);
-      
+
       const payload = {
         customer_name: editCustomerName,
         customer_phone: editCustomerPhone,
@@ -372,7 +372,7 @@ export default function SaleDetailScreen({ route, navigation }) {
     if (target === 'delivery' && sale?.customer_id) {
       api.getCustomerAddresses(sale.customer_id).then(res => {
         setConvertSavedAddresses(res.data || []);
-      }).catch(() => {});
+      }).catch(() => { });
     }
     setConvertModalVisible(true);
   };
@@ -446,7 +446,7 @@ export default function SaleDetailScreen({ route, navigation }) {
         p { margin: 2px 0; }
       </style></head><body>
         <div class="center">
-          <h2>BloomCart POS</h2>
+          <h2>Flower point</h2>
           <p>${sale.location_name || ''}</p>
           <p>Invoice: <strong>${sale.sale_number}</strong></p>
           <p>${formatDateTime(sale.created_at)}</p>
@@ -601,30 +601,30 @@ export default function SaleDetailScreen({ route, navigation }) {
         ? (sale.sender_name || sale.sender_display_name || sale.customer_name || sale.customer_display_name)
         : (sale.customer_name || sale.customer_display_name)
       ) && (
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>{sale.order_type === 'delivery' ? 'Sender' : 'Customer'}</Text>
-          <Text style={styles.infoText}>
-            {sale.order_type === 'delivery'
-              ? (sale.sender_name || sale.sender_display_name || sale.customer_name || sale.customer_display_name)
-              : (sale.customer_name || sale.customer_display_name)
-            }
-          </Text>
-          {(sale.order_type === 'delivery'
-            ? (sale.sender_phone || sale.sender_display_phone || sale.customer_phone || sale.customer_display_phone)
-            : (sale.customer_phone || sale.customer_display_phone)
-          ) && (
-            <Text style={styles.infoSubtext}>
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>{sale.order_type === 'delivery' ? 'Sender' : 'Customer'}</Text>
+            <Text style={styles.infoText}>
               {sale.order_type === 'delivery'
-                ? (sale.sender_phone || sale.sender_display_phone || sale.customer_phone || sale.customer_display_phone)
-                : (sale.customer_phone || sale.customer_display_phone)
+                ? (sale.sender_name || sale.sender_display_name || sale.customer_name || sale.customer_display_name)
+                : (sale.customer_name || sale.customer_display_name)
               }
             </Text>
-          )}
-          {sale.order_type === 'delivery' && sale.sender_message ? (
-            <Text style={styles.infoSubtext}>Message: {sale.sender_message}</Text>
-          ) : null}
-        </View>
-      )}
+            {(sale.order_type === 'delivery'
+              ? (sale.sender_phone || sale.sender_display_phone || sale.customer_phone || sale.customer_display_phone)
+              : (sale.customer_phone || sale.customer_display_phone)
+            ) && (
+                <Text style={styles.infoSubtext}>
+                  {sale.order_type === 'delivery'
+                    ? (sale.sender_phone || sale.sender_display_phone || sale.customer_phone || sale.customer_display_phone)
+                    : (sale.customer_phone || sale.customer_display_phone)
+                  }
+                </Text>
+              )}
+            {sale.order_type === 'delivery' && sale.sender_message ? (
+              <Text style={styles.infoSubtext}>Message: {sale.sender_message}</Text>
+            ) : null}
+          </View>
+        )}
 
       {sale.order_type === 'delivery' && (sale.receiver_name || sale.receiver_phone || sale.delivery?.customer_name || sale.delivery?.customer_phone || sale.delivery_address) && (
         <View style={styles.section}>
@@ -731,7 +731,7 @@ export default function SaleDetailScreen({ route, navigation }) {
                     {/* Show custom image_url only if different from product_image */}
                     {item.image_url && item.product_image && item.image_url !== item.product_image ? (
                       <TouchableOpacity onPress={(e) => { e.stopPropagation(); setViewedImage(api.getMediaUrl(item.image_url)); }} style={{ marginTop: 8 }}>
-                         <Image source={{ uri: api.getMediaUrl(item.image_url) }} style={{ width: 60, height: 60, borderRadius: 6 }} />
+                        <Image source={{ uri: api.getMediaUrl(item.image_url) }} style={{ width: 60, height: 60, borderRadius: 6 }} />
                       </TouchableOpacity>
                     ) : null}
                   </View>
@@ -1077,8 +1077,8 @@ export default function SaleDetailScreen({ route, navigation }) {
 
       {/* Navigation Shortcut */}
       <View style={{ marginTop: Spacing.xl, gap: Spacing.md }}>
-        <TouchableOpacity 
-          style={[styles.actionBtn, { backgroundColor: Colors.primary, paddingVertical: 16 }]} 
+        <TouchableOpacity
+          style={[styles.actionBtn, { backgroundColor: Colors.primary, paddingVertical: 16 }]}
           onPress={() => navigation.navigate('POS', { screen: 'POSHome', params: { clearCart: true } })}
         >
           <Ionicons name="cart" size={20} color={Colors.white} />
@@ -1086,8 +1086,8 @@ export default function SaleDetailScreen({ route, navigation }) {
         </TouchableOpacity>
 
 
-        <TouchableOpacity 
-          style={[styles.actionBtn, { backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.border, paddingVertical: 12 }]} 
+        <TouchableOpacity
+          style={[styles.actionBtn, { backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.border, paddingVertical: 12 }]}
           onPress={() => navigation.navigate('Dashboard', { screen: 'DashboardHome' })}
 
 
@@ -1263,7 +1263,7 @@ export default function SaleDetailScreen({ route, navigation }) {
           </View>
         </View>
       </Modal>
-      
+
       {/* Pickup Payment Modal */}
       <Modal visible={pickupPayModalVisible} transparent animationType="slide">
         <KeyboardAvoidingView style={styles.modalOverlay} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>

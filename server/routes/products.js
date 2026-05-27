@@ -641,7 +641,7 @@ router.post('/scan', authenticate, (req, res, next) => {
     try { parsed = JSON.parse(payload); } catch { return res.status(400).json({ success: false, message: 'Invalid QR code' }); }
 
     if (parsed.type !== 'bloomcart_product') {
-      return res.status(400).json({ success: false, message: 'Not a BloomCart product QR code' });
+      return res.status(400).json({ success: false, message: 'Not a Flower point product QR code' });
     }
 
     const db = getDb();
