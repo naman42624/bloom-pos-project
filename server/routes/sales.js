@@ -152,7 +152,7 @@ function mapSaleDraftRow(draft) {
 router.get('/', authenticate, async (req, res, next) => {
   try {
     const db = await getAsyncDb();
-    const { location_id, order_type, payment_status, status, pickup_status, date_from, date_to, search, limit: lim, offset: off } = req.query;
+    const { location_id, order_type, payment_status, status, pickup_status, date_from, date_to, filter_date, search, limit: lim, offset: off } = req.query;
 
     let sql = `
       SELECT s.*, l.name as location_name, u.name as created_by_name,
@@ -180,6 +180,10 @@ router.get('/', authenticate, async (req, res, next) => {
     else { sql += " AND s.status != 'cancelled'"; }
     if (date_from) { sql += ' AND s.created_at >= (?::date)'; params.push(date_from); }
     if (date_to) { sql += " AND s.created_at < (?::date + INTERVAL '1 day')"; params.push(date_to); }
+    if (filter_date) {
+      sql += " AND (s.scheduled_date = ? OR (s.scheduled_date IS NULL AND s.created_at >= (?::date) AND s.created_at < (?::date + INTERVAL '1 day')))";
+      params.push(filter_date, filter_date, filter_date);
+    }
     if (search) {
       const s = `%${search}%`;
       sql += ` AND (
@@ -259,6 +263,10 @@ router.get('/', authenticate, async (req, res, next) => {
     else { countSql += " AND s.status != 'cancelled'"; }
     if (date_from) { countSql += ' AND s.created_at >= (?::date)'; countParams.push(date_from); }
     if (date_to) { countSql += " AND s.created_at < (?::date + INTERVAL '1 day')"; countParams.push(date_to); }
+    if (filter_date) {
+      countSql += " AND (s.scheduled_date = ? OR (s.scheduled_date IS NULL AND s.created_at >= (?::date) AND s.created_at < (?::date + INTERVAL '1 day')))";
+      countParams.push(filter_date, filter_date, filter_date);
+    }
     const { total } = await db.prepare(countSql).get(...countParams);
 
     // Normalize sales and nested items/payments before returning

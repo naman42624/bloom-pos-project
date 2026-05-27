@@ -22,6 +22,7 @@ import api from '../services/api';
 import { Colors, FontSize, Spacing } from '../constants/theme';
 import { formatDateTime, parseServerDate, getShopNow, DEFAULT_TZ, minutesSinceServerDate, minutesUntilShopDateTime, formatTimeString } from '../utils/datetime';
 import { OrderQuickModal, DeliveryQuickModal } from '../components/QuickModals';
+import DateTimePickerModal from '../components/DateTimePickerModal';
 
 const ORDER_TYPES = ['delivery', 'pickup', 'walk_in'];
 const ORDER_TYPE_LABELS = {
@@ -512,6 +513,8 @@ export default function DashboardScreen({ navigation }) {
 
   const [locations, setLocations] = useState([]);
   const [locationScope, setLocationScope] = useState(null);
+  const [dateScope, setDateScope] = useState(null);
+  const [showDatePicker, setShowDatePicker] = useState(false);
   const [sales, setSales] = useState([]);
   const [taskRows, setTaskRows] = useState([]);
   const [staffPulse, setStaffPulse] = useState([]);
@@ -592,6 +595,10 @@ export default function DashboardScreen({ navigation }) {
         locationId = activeLocation?.id || locationList?.[0]?.id || null;
       }
       const filters = locationId ? { location_id: locationId } : {};
+      if (dateScope) {
+        const pad = n => String(n).padStart(2, '0');
+        filters.filter_date = `${dateScope.getFullYear()}-${pad(dateScope.getMonth() + 1)}-${pad(dateScope.getDate())}`;
+      }
 
       const reqs = [
         api.getSales({ ...filters, limit: 500 }),
@@ -714,7 +721,7 @@ export default function DashboardScreen({ navigation }) {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [activeLocation?.id, isOwner, isOwnerOrManager, isStaff, isEmployee, isDeliveryPartner, locationScope, role, user?.id, user?.name]);
+  }, [activeLocation?.id, isOwner, isOwnerOrManager, isStaff, isEmployee, isDeliveryPartner, locationScope, dateScope, role, user?.id, user?.name]);
 
   useEffect(() => {
     if (locationScope != null) return;
@@ -989,10 +996,26 @@ export default function DashboardScreen({ navigation }) {
           </Text>
         </View>
 
-        {/* Location picker — owner/manager only */}
-        {!isEmployee && !isDeliveryPartner && locations.length > 0 && (
+        {/* Location & Date picker — owner/manager only */}
+        {!isEmployee && !isDeliveryPartner && (locations.length > 0 || isOwnerOrManager) && (
           <View style={styles.scopeCard}>
-            <Text style={styles.scopeLabel}>Dashboard Location</Text>
+            <View style={[styles.rowBetween, { marginBottom: 8 }]}>
+              <Text style={styles.scopeLabel}>Dashboard Filter</Text>
+              <TouchableOpacity
+                style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: Colors.primary + '15', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12, gap: 4 }}
+                onPress={() => setShowDatePicker(true)}
+              >
+                <Ionicons name="calendar" size={14} color={Colors.primary} />
+                <Text style={{ fontSize: 13, fontWeight: '600', color: Colors.primary }}>
+                  {dateScope ? dateScope.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) : 'All Time'}
+                </Text>
+                {dateScope && (
+                  <TouchableOpacity onPress={() => setDateScope(null)} hitSlop={10} style={{ marginLeft: 4 }}>
+                    <Ionicons name="close-circle" size={16} color={Colors.primary} />
+                  </TouchableOpacity>
+                )}
+              </TouchableOpacity>
+            </View>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.scopeChipsRow}>
               {isOwner && (
                 <TouchableOpacity
@@ -1413,6 +1436,15 @@ export default function DashboardScreen({ navigation }) {
       >
         <Ionicons name="add" size={28} color="#fff" />
       </TouchableOpacity>
+
+      <DateTimePickerModal
+        visible={showDatePicker}
+        mode="date"
+        value={dateScope || new Date()}
+        onConfirm={(d) => { setDateScope(d); setShowDatePicker(false); }}
+        onCancel={() => setShowDatePicker(false)}
+        title="Select Dashboard Date"
+      />
 
       <TaskDetailModal
         visible={selectedTaskModal !== null}
