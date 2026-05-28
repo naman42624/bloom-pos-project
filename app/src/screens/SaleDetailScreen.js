@@ -1079,10 +1079,10 @@ export default function SaleDetailScreen({ route, navigation }) {
       <View style={{ marginTop: Spacing.xl, gap: Spacing.md }}>
         <TouchableOpacity
           style={[styles.actionBtn, { backgroundColor: Colors.primary, paddingVertical: 16 }]}
-          onPress={() => navigation.navigate('POS', { screen: 'POSHome', params: { clearCart: true } })}
+          onPress={() => navigation.navigate('POS', { screen: 'QuickCheckout', params: { clearCart: true } })}
         >
           <Ionicons name="cart" size={20} color={Colors.white} />
-          <Text style={[styles.actionBtnText, { fontSize: FontSize.md }]}>Return to POS</Text>
+          <Text style={[styles.actionBtnText, { fontSize: FontSize.md }]}>Return to Quick Checkout</Text>
         </TouchableOpacity>
 
 

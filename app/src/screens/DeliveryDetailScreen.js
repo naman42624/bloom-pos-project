@@ -286,7 +286,7 @@ export default function DeliveryDetailScreen({ route, navigation }) {
 
   const generateChallan = async () => {
     // Fetch shop settings for shop name / contact
-    let shopName = 'BloomPOS', shopContact = '';
+    let shopName = 'Flower point', shopContact = '';
     try {
       const settingsRes = await api.getSettings();
       if (settingsRes.data) {

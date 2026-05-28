@@ -24,7 +24,7 @@ export default function POSScreen({ navigation, route }) {
 
   const { user } = useAuth();
   const isManager = user?.role === 'owner' || user?.role === 'manager';
-  
+
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
 
   const [products, setProducts] = useState([]);
@@ -141,7 +141,7 @@ export default function POSScreen({ navigation, route }) {
       if (q) params.search = q;
       const res = await api.getMaterials(params);
       setMaterials(res.data || []);
-    } catch {}
+    } catch { }
   };
 
   const fetchLocations = async () => {
@@ -152,7 +152,7 @@ export default function POSScreen({ navigation, route }) {
       if (locs.length > 0 && !selectedLocation) {
         setSelectedLocation(locs[0].id);
       }
-    } catch {}
+    } catch { }
   };
 
   const handleSearch = (text) => {
@@ -292,7 +292,7 @@ export default function POSScreen({ navigation, route }) {
                 material_id: m.material_id,
                 quantity: parseFloat(m.qty),
               });
-            } catch {}
+            } catch { }
           }
         }
         addToCart(res.data);
@@ -312,7 +312,7 @@ export default function POSScreen({ navigation, route }) {
     try {
       const res = await api.getMaterials({ location_id: selectedLocation });
       setAllMaterialsList(res.data || []);
-    } catch {}
+    } catch { }
   };
 
   const addQaMaterial = () => {
@@ -393,12 +393,12 @@ export default function POSScreen({ navigation, route }) {
     const inCart = cart.find((c) => c.product_id === item.id && !c.material_id);
     const readyQty = item.ready_qty || 0;
     const canMakeQty = item.available_qty;
-    
+
     // On tablet grid, use a tile design (vertical)
     if (numColumns > 1) {
       return (
         <TouchableOpacity style={styles.productTile} onPress={() => addToCart(item)} activeOpacity={0.7}>
-          <TouchableOpacity 
+          <TouchableOpacity
             style={styles.tileIconWrap}
             onPress={(e) => { e.stopPropagation(); if (item.image_url) setViewedImage(api.getMediaUrl(item.image_url)); }}
           >
@@ -426,7 +426,7 @@ export default function POSScreen({ navigation, route }) {
 
     return (
       <TouchableOpacity style={[styles.productCard]} onPress={() => addToCart(item)} activeOpacity={0.7}>
-        <TouchableOpacity 
+        <TouchableOpacity
           style={styles.productIconWrap}
           onPress={(e) => { e.stopPropagation(); if (item.image_url) setViewedImage(api.getMediaUrl(item.image_url)); }}
         >
@@ -470,12 +470,12 @@ export default function POSScreen({ navigation, route }) {
     // Use tile design on grid views for consistency
     if (numColumns > 1) {
       return (
-        <TouchableOpacity 
-          style={[styles.productTile, outOfStock && { opacity: 0.6 }]} 
-          onPress={() => addMaterialToCart(item)} 
+        <TouchableOpacity
+          style={[styles.productTile, outOfStock && { opacity: 0.6 }]}
+          onPress={() => addMaterialToCart(item)}
           activeOpacity={0.7}
         >
-          <TouchableOpacity 
+          <TouchableOpacity
             style={[styles.tileIconWrap, { backgroundColor: Colors.success + '12' }]}
             onPress={(e) => { e.stopPropagation(); if (item.image_url) setViewedImage(api.getMediaUrl(item.image_url)); }}
           >
@@ -507,7 +507,7 @@ export default function POSScreen({ navigation, route }) {
 
     return (
       <TouchableOpacity style={[styles.productCard, outOfStock && styles.productCardDimmed]} onPress={() => addMaterialToCart(item)} activeOpacity={0.7}>
-        <TouchableOpacity 
+        <TouchableOpacity
           style={[styles.productIconWrap, { backgroundColor: Colors.success + '12' }]}
           onPress={(e) => { e.stopPropagation(); if (item.image_url) setViewedImage(api.getMediaUrl(item.image_url)); }}
         >
@@ -539,10 +539,10 @@ export default function POSScreen({ navigation, route }) {
     <View style={vertical ? { gap: Spacing.xs, paddingHorizontal: Spacing.sm } : null}>
       {vertical && <Text style={styles.sidebarSectionTitle}>Locations</Text>}
       {locations.length > 1 ? (
-        <ScrollView 
-          horizontal={!vertical} 
-          showsHorizontalScrollIndicator={false} 
-          style={!vertical && styles.locRow} 
+        <ScrollView
+          horizontal={!vertical}
+          showsHorizontalScrollIndicator={false}
+          style={!vertical && styles.locRow}
           contentContainerStyle={!vertical ? { paddingHorizontal: Spacing.md, gap: Spacing.xs } : { gap: Spacing.xs }}
         >
           {locations.map((loc) => (
@@ -562,17 +562,17 @@ export default function POSScreen({ navigation, route }) {
   const renderOrderTypePicker = (vertical = false) => (
     <View style={vertical ? { gap: Spacing.xs, paddingHorizontal: Spacing.sm, marginTop: Spacing.md } : null}>
       {vertical && <Text style={styles.sidebarSectionTitle}>Order Type</Text>}
-      <ScrollView 
-        horizontal={!vertical} 
-        showsHorizontalScrollIndicator={false} 
-        style={!vertical && styles.orderTypeRow} 
+      <ScrollView
+        horizontal={!vertical}
+        showsHorizontalScrollIndicator={false}
+        style={!vertical && styles.orderTypeRow}
         contentContainerStyle={!vertical ? { paddingHorizontal: Spacing.md, gap: Spacing.sm } : { gap: Spacing.xs }}
       >
         {ORDER_TYPES.map((t) => (
           <TouchableOpacity
             key={t.key}
             style={[
-              styles.orderTypeBtn, 
+              styles.orderTypeBtn,
               orderType === t.key && { backgroundColor: t.color, borderColor: t.color, elevation: 4, shadowOpacity: 0.2 },
               vertical && { width: '100%', minHeight: 44, justifyContent: 'flex-start', paddingHorizontal: Spacing.md }
             ]}
@@ -589,17 +589,17 @@ export default function POSScreen({ navigation, route }) {
   const renderCategoryList = (vertical = false) => (
     <View style={vertical ? { gap: Spacing.xs, paddingHorizontal: Spacing.sm, marginTop: Spacing.md, flex: 1 } : null}>
       {vertical && <Text style={styles.sidebarSectionTitle}>Categories</Text>}
-      <ScrollView 
-        horizontal={!vertical} 
-        showsHorizontalScrollIndicator={false} 
-        style={!vertical && styles.catFilterRow} 
+      <ScrollView
+        horizontal={!vertical}
+        showsHorizontalScrollIndicator={false}
+        style={!vertical && styles.catFilterRow}
         contentContainerStyle={!vertical ? { paddingHorizontal: Spacing.md, gap: Spacing.xs } : { gap: Spacing.xs }}
       >
         {PRODUCT_CATEGORIES.map((cat) => (
           <TouchableOpacity
             key={cat.key || 'all'}
             style={[
-              styles.locChip, 
+              styles.locChip,
               selectedCategory === cat.key && styles.locChipActive,
               vertical && { width: '100%', minHeight: 40, justifyContent: 'flex-start' }
             ]}
@@ -682,25 +682,25 @@ export default function POSScreen({ navigation, route }) {
 
       {/* Quick shortcuts on tablet */}
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, marginLeft: Spacing.md }}>
-        <TouchableOpacity 
+        <TouchableOpacity
           style={styles.headerShortCut}
           onPress={() => navigation.navigate('QuickCheckout')}
         >
           <Ionicons name="flash" size={18} color={Colors.warning} />
         </TouchableOpacity>
-        <TouchableOpacity 
+        <TouchableOpacity
           style={styles.headerShortCut}
           onPress={() => navigation.navigate('SaleDrafts', { locationId: selectedLocation })}
         >
           <Ionicons name="document-text" size={18} color={Colors.warning} />
         </TouchableOpacity>
-        <TouchableOpacity 
+        <TouchableOpacity
           style={styles.headerShortCut}
           onPress={() => navigation.navigate('ProduceProduct')}
         >
           <Ionicons name="hammer" size={18} color={Colors.success} />
         </TouchableOpacity>
-        <TouchableOpacity 
+        <TouchableOpacity
           style={styles.headerShortCut}
           onPress={() => navigation.navigate('ProductionQueue')}
         >
@@ -715,7 +715,7 @@ export default function POSScreen({ navigation, route }) {
       {!isTablet && !showMobileFilters && renderCategoryList(false)}
       {!isTablet && !showMobileFilters && activeTab === 'products' && renderReadyFilter(false)}
       <FlatList
-        data={activeTab === 'products' 
+        data={activeTab === 'products'
           ? filteredProducts
           : materials
         }
@@ -823,13 +823,13 @@ export default function POSScreen({ navigation, route }) {
       {/* Tablet Left Sidebar */}
       {isTablet && (
         <View style={[styles.sideFilters, isSidebarCollapsed && { width: 60 }]}>
-          <TouchableOpacity 
-            style={styles.collapseToggle} 
+          <TouchableOpacity
+            style={styles.collapseToggle}
             onPress={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
           >
             <Ionicons name={isSidebarCollapsed ? "chevron-forward" : "chevron-back"} size={20} color={Colors.textSecondary} />
           </TouchableOpacity>
-          
+
           {!isSidebarCollapsed && (
             <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 40 }}>
               {renderLocationPicker(true)}
@@ -1088,10 +1088,10 @@ export default function POSScreen({ navigation, route }) {
         </KeyboardAvoidingView>
       </Modal>
 
-      <ImageModal 
-        visible={!!viewedImage} 
-        imageUrl={viewedImage} 
-        onClose={() => setViewedImage(null)} 
+      <ImageModal
+        visible={!!viewedImage}
+        imageUrl={viewedImage}
+        onClose={() => setViewedImage(null)}
       />
     </View>
   );
@@ -1113,7 +1113,7 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: Colors.border,
     justifyContent: 'center', alignItems: 'center', minHeight: 32,
   },
-  locChipActive: { 
+  locChipActive: {
     backgroundColor: Colors.primary, borderColor: Colors.primary,
     shadowColor: Colors.primary, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.3, shadowRadius: 4, elevation: 4,
   },
@@ -1208,7 +1208,7 @@ const styles = StyleSheet.create({
   qtyBadgeText: { color: Colors.white, fontSize: 11, fontWeight: '700' },
 
   cartPanel: {
-    backgroundColor: Colors.surface, 
+    backgroundColor: Colors.surface,
     borderTopLeftRadius: BorderRadius.xl, borderTopRightRadius: BorderRadius.xl,
     shadowColor: '#000', shadowOffset: { width: 0, height: -4 }, shadowOpacity: 0.05, shadowRadius: 12, elevation: 12,
     maxHeight: 360, paddingBottom: Spacing.sm,
@@ -1239,7 +1239,7 @@ const styles = StyleSheet.create({
   },
   headerShortCut: {
     width: 40, height: 40, borderRadius: 20,
-    backgroundColor: Colors.surfaceAlt, 
+    backgroundColor: Colors.surfaceAlt,
     justifyContent: 'center', alignItems: 'center',
     borderWidth: 1, borderColor: Colors.border,
   },
@@ -1269,7 +1269,7 @@ const styles = StyleSheet.create({
   qtyControls: { flexDirection: 'row', alignItems: 'center', gap: 6, flexShrink: 0 },
   qtyBtn: {
     width: 36, height: 36, borderRadius: 18,
-    backgroundColor: Colors.surfaceAlt, 
+    backgroundColor: Colors.surfaceAlt,
     justifyContent: 'center', alignItems: 'center',
   },
   qtyText: { fontSize: FontSize.md, fontWeight: '700', color: Colors.text, minWidth: 24, textAlign: 'center' },

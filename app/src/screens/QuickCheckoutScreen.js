@@ -78,9 +78,11 @@ export default function QuickCheckoutScreen({ navigation, route }) {
   const [customerHistory, setCustomerHistory] = useState(null);
   const [customerSuggestions, setCustomerSuggestions] = useState([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
+  const [customerSearchTarget, setCustomerSearchTarget] = useState('phone');
   const [receiverHistory, setReceiverHistory] = useState(null);
   const [receiverSuggestions, setReceiverSuggestions] = useState([]);
   const [showReceiverSuggestions, setShowReceiverSuggestions] = useState(false);
+  const [receiverSearchTarget, setReceiverSearchTarget] = useState('phone');
 
   // Payment
   const [paymentMethod, setPaymentMethod] = useState('cash'); // Legacy single selection
@@ -129,6 +131,33 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     } catch { }
   };
 
+  const handleNameChange = useCallback((text) => {
+    setCustomerName(text);
+    setShowSuggestions(false);
+    if (senderSameAsReceiver && useCustomerAsSender) {
+      setReceiverName(text);
+    }
+
+    if (searchTimer.current) clearTimeout(searchTimer.current);
+    if (text.length >= 3) {
+      searchTimer.current = setTimeout(async () => {
+        try {
+          const res = await api.customerSearch(text);
+          if (res.data && res.data.length > 0) {
+            setCustomerSearchTarget('name');
+            setCustomerSuggestions(res.data);
+            setShowSuggestions(true);
+          } else {
+            setCustomerSuggestions([]);
+            setShowSuggestions(false);
+          }
+        } catch { /* ignore */ }
+      }, 300);
+    } else {
+      setCustomerSuggestions([]);
+    }
+  }, [senderSameAsReceiver, useCustomerAsSender]);
+
   const handlePhoneChange = useCallback((rawText) => {
     const text = rawText.replace(/[^0-9+\-\s()]/g, '');
     setCustomerPhone(text);
@@ -144,6 +173,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
         try {
           const res = await api.customerSearch(text);
           if (res.data && res.data.length > 0) {
+            setCustomerSearchTarget('phone');
             setCustomerSuggestions(res.data);
             setShowSuggestions(true);
           } else {
@@ -192,6 +222,30 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     setCustomerSuggestions([]);
   }, [senderSameAsReceiver, useCustomerAsSender]);
 
+  const handleReceiverNameChange = useCallback((text) => {
+    setReceiverName(text);
+    setShowReceiverSuggestions(false);
+
+    if (searchTimer.current) clearTimeout(searchTimer.current);
+    if (text.length >= 3) {
+      searchTimer.current = setTimeout(async () => {
+        try {
+          const res = await api.customerSearch(text);
+          if (res.data && res.data.length > 0) {
+            setReceiverSearchTarget('name');
+            setReceiverSuggestions(res.data);
+            setShowReceiverSuggestions(true);
+          } else {
+            setReceiverSuggestions([]);
+            setShowReceiverSuggestions(false);
+          }
+        } catch { }
+      }, 300);
+    } else {
+      setReceiverSuggestions([]);
+    }
+  }, []);
+
   const handleReceiverPhoneChange = useCallback((rawText) => {
     const text = rawText.replace(/[^0-9+\-\s()]/g, '');
     setReceiverPhone(text);
@@ -203,6 +257,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
         try {
           const res = await api.customerSearch(text);
           if (res.data && res.data.length > 0) {
+            setReceiverSearchTarget('phone');
             setReceiverSuggestions(res.data);
             setShowReceiverSuggestions(true);
           } else {
@@ -1278,7 +1333,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
                 placeholderTextColor={Colors.textLight}
                 keyboardType="phone-pad"
               />
-              {showSuggestions && customerSuggestions.length > 0 && (
+              {showSuggestions && customerSearchTarget === 'phone' && customerSuggestions.length > 0 && (
                 <ScrollView style={[styles.suggestionsBox, { maxHeight: 180 }]} nestedScrollEnabled keyboardShouldPersistTaps="handled">
                   {customerSuggestions.map((c, idx) => (
                     <TouchableOpacity key={c.phone + idx} style={styles.suggestionItem} onPress={() => selectCustomer(c)}>
@@ -1297,10 +1352,23 @@ export default function QuickCheckoutScreen({ navigation, route }) {
               <TextInput
                 style={styles.input}
                 value={customerName}
-                onChangeText={setCustomerName}
+                onChangeText={handleNameChange}
                 placeholder="Name"
                 placeholderTextColor={Colors.textLight}
               />
+              {showSuggestions && customerSearchTarget === 'name' && customerSuggestions.length > 0 && (
+                <ScrollView style={[styles.suggestionsBox, { maxHeight: 180 }]} nestedScrollEnabled keyboardShouldPersistTaps="handled">
+                  {customerSuggestions.map((c, idx) => (
+                    <TouchableOpacity key={c.phone + idx} style={styles.suggestionItem} onPress={() => selectCustomer(c)}>
+                      <Ionicons name={c.id ? 'person' : 'person-outline'} size={16} color={Colors.primary} />
+                      <View style={{ flex: 1, marginLeft: 8 }}>
+                        <Text style={styles.suggestionName}>{c.name || 'Unknown'}</Text>
+                        <Text style={styles.suggestionPhone}>{c.phone}{c.total_spent > 0 ? ` • ₹${Math.round(c.total_spent)}` : ''}</Text>
+                      </View>
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+              )}
             </View>
           </View>
           {customerHistory && (
@@ -1373,7 +1441,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
                         placeholderTextColor={Colors.textLight}
                         keyboardType="phone-pad"
                       />
-                      {showReceiverSuggestions && receiverSuggestions.length > 0 && (
+                      {showReceiverSuggestions && receiverSearchTarget === 'phone' && receiverSuggestions.length > 0 && (
                         <ScrollView style={[styles.suggestionsBox, { maxHeight: 180 }]} nestedScrollEnabled keyboardShouldPersistTaps="handled">
                           {receiverSuggestions.map((c, idx) => (
                             <TouchableOpacity key={c.phone + idx} style={styles.suggestionItem} onPress={() => selectReceiver(c)}>
@@ -1391,10 +1459,23 @@ export default function QuickCheckoutScreen({ navigation, route }) {
                       <TextInput
                         style={styles.input}
                         value={receiverName}
-                        onChangeText={setReceiverName}
+                        onChangeText={handleReceiverNameChange}
                         placeholder="Receiver name"
                         placeholderTextColor={Colors.textLight}
                       />
+                      {showReceiverSuggestions && receiverSearchTarget === 'name' && receiverSuggestions.length > 0 && (
+                        <ScrollView style={[styles.suggestionsBox, { maxHeight: 180 }]} nestedScrollEnabled keyboardShouldPersistTaps="handled">
+                          {receiverSuggestions.map((c, idx) => (
+                            <TouchableOpacity key={c.phone + idx} style={styles.suggestionItem} onPress={() => selectReceiver(c)}>
+                              <Ionicons name={c.id ? 'person' : 'person-outline'} size={16} color={Colors.primary} />
+                              <View style={{ flex: 1, marginLeft: 8 }}>
+                                <Text style={styles.suggestionName}>{c.name || 'Unknown'}</Text>
+                                <Text style={styles.suggestionPhone}>{c.phone}{c.total_spent > 0 ? ` • ₹${Math.round(c.total_spent)}` : ''}</Text>
+                              </View>
+                            </TouchableOpacity>
+                          ))}
+                        </ScrollView>
+                      )}
                     </View>
                   </View>
                   {receiverHistory && (

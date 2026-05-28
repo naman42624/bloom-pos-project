@@ -30,6 +30,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import api from '../services/api';
 import { Colors } from '../constants/theme';
+import { generateDeliverySlip, generatePickupSlip } from '../utils/printHelpers';
 
 // ─── Shared constants ────────────────────────────────────────────────────────
 
@@ -616,8 +617,26 @@ export function OrderQuickModal({
         )}
       </ScrollView>
 
-      {/* Sticky footer — Open Full Details */}
+      {/* Sticky footer — Open Full Details & Print */}
       <View style={styles.sheetFooter}>
+        {orderType === 'delivery' && (
+          <TouchableOpacity
+            style={[styles.fullDetailsBtn, { marginBottom: 8, backgroundColor: '#EFF6FF', borderColor: '#BFDBFE' }]}
+            onPress={() => generateDeliverySlip(order, localTasks)}
+          >
+            <Ionicons name="print-outline" size={17} color="#2563EB" />
+            <Text style={[styles.fullDetailsBtnText, { color: '#2563EB' }]}>Print Delivery Slip</Text>
+          </TouchableOpacity>
+        )}
+        {orderType === 'pickup' && (
+          <TouchableOpacity
+            style={[styles.fullDetailsBtn, { marginBottom: 8, backgroundColor: '#F0FDF4', borderColor: '#BBF7D0' }]}
+            onPress={() => generatePickupSlip(order, localTasks)}
+          >
+            <Ionicons name="print-outline" size={17} color="#047857" />
+            <Text style={[styles.fullDetailsBtnText, { color: '#047857' }]}>Print Pickup Slip</Text>
+          </TouchableOpacity>
+        )}
         <TouchableOpacity
           style={styles.fullDetailsBtn}
           onPress={() => {
