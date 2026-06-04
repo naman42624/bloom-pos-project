@@ -610,6 +610,33 @@ router.post(
             else if (roundedTotalPaid > 0) paymentStatus = 'partial';
             db.prepare('UPDATE sales SET payment_status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(paymentStatus, sale_id);
           }
+        } else {
+          // Auto-allocate general credit payment to the oldest unpaid sales
+          let remainingAmount = amount;
+          const unpaidSales = db.prepare(`
+            SELECT s.id, s.grand_total, COALESCE((SELECT SUM(amount) FROM payments WHERE sale_id = s.id), 0) as total_paid
+            FROM sales s
+            WHERE (s.customer_id = ? OR s.sender_customer_id = ?) AND s.status != 'cancelled' AND s.payment_status != 'paid'
+            ORDER BY s.created_at ASC
+          `).all(customerId, customerId);
+
+          for (const s of unpaidSales) {
+            if (remainingAmount <= 0.01) break;
+            const saleUnpaid = Math.max(0, s.grand_total - s.total_paid);
+            if (saleUnpaid > 0) {
+              const allocation = Math.min(saleUnpaid, remainingAmount);
+              db.prepare('INSERT INTO payments (sale_id, method, amount, reference_number, received_by) VALUES (?, ?, ?, ?, ?)').run(s.id, method, allocation, `Credit-${result.lastInsertRowid}`, req.user.id);
+              remainingAmount -= allocation;
+              
+              const newTotalPaid = s.total_paid + allocation;
+              const roundedGrandTotal = Math.round(Number(s.grand_total || 0) * 100) / 100;
+              const roundedTotalPaid = Math.round(Number(newTotalPaid || 0) * 100) / 100;
+              let paymentStatus = 'pending';
+              if (roundedTotalPaid >= roundedGrandTotal - 0.01) paymentStatus = 'paid';
+              else if (roundedTotalPaid > 0) paymentStatus = 'partial';
+              db.prepare('UPDATE sales SET payment_status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(paymentStatus, s.id);
+            }
+          }
         }
 
         // Update cash register if payment is cash

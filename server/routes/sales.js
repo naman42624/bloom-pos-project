@@ -1784,6 +1784,15 @@ router.put(
       const cancelTx = db.transaction(() => {
         db.prepare("UPDATE sales SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(req.params.id);
 
+        // Revert customer total_spent and credit_balance
+        const duesCustomerId = (sale.order_type === 'delivery' && sale.sender_customer_id) ? sale.sender_customer_id : sale.customer_id;
+        if (duesCustomerId) {
+          const totalPaidObj = db.prepare('SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE sale_id = ?').get(sale.id);
+          const totalPaid = totalPaidObj ? totalPaidObj.total : 0;
+          const unpaid = Math.max(0, sale.grand_total - totalPaid);
+          db.prepare('UPDATE users SET total_spent = GREATEST(0, total_spent - ?), credit_balance = GREATEST(0, credit_balance - ?), updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(sale.grand_total, unpaid, duesCustomerId);
+        }
+
         // Update cash register (decrement totals) if there's an open session
         const register = db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1').get(sale.location_id);
         if (register) {

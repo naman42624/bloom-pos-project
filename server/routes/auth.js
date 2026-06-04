@@ -447,7 +447,7 @@ router.post(
 
       res.status(201).json({
         success: true,
-        message: 'Owner account created. Welcome to BloomPOS!',
+        message: 'Owner account created. Welcome to Flower point!',
         data: { user, token },
       });
     } catch (error) {
