@@ -184,7 +184,7 @@ export default function CustomerDetailScreen({ route, navigation }) {
         {/* Header */}
         <View style={styles.header}>
           <View style={styles.avatarLarge}>
-            <Text style={styles.avatarLargeText}>{customer.name[0].toUpperCase()}</Text>
+            <Text style={styles.avatarLargeText}>{(customer.name?.[0] || '?').toUpperCase()}</Text>
           </View>
           <Text style={styles.name}>{customer.name}</Text>
           <View style={styles.contactRow}>
@@ -274,7 +274,7 @@ export default function CustomerDetailScreen({ route, navigation }) {
             {customer.credit_payments.map((cp) => (
               <View key={cp.id} style={styles.historyCard}>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.historyAmount}>₹{Number(cp.amount).toFixed(2)} — {cp.method.toUpperCase()}</Text>
+                  <Text style={styles.historyAmount}>₹{Number(cp.amount).toFixed(2)} — {(cp.method || 'cash').toUpperCase()}</Text>
                   <Text style={styles.historyMeta}>
                     {formatDate(cp.created_at)} • by {cp.received_by_name || 'Unknown'} {cp.location_name ? `• ${cp.location_name}` : ''}
                   </Text>
