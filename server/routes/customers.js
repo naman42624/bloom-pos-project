@@ -327,7 +327,7 @@ router.get('/:id', authenticate, async (req, res, next) => {
 
     // Credit payments
     const creditPayments = await db.prepare(`
-      SELECT cp.*, u.name as received_by_name
+      SELECT cp.*, cp.method as payment_method, u.name as received_by_name
       FROM credit_payments cp
       LEFT JOIN users u ON cp.recorded_by = u.id
       WHERE cp.customer_id = ?
@@ -587,7 +587,7 @@ router.post(
       const creditTx = db.transaction(() => {
         // Record credit payment
         const result = db.prepare(
-          'INSERT INTO credit_payments (customer_id, amount, payment_method, recorded_by, notes, sale_id, location_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
+          'INSERT INTO credit_payments (customer_id, amount, method, recorded_by, notes, sale_id, location_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
         ).run(customerId, amount, method, req.user.id, notes || '', sale_id || null, numLocationId);
 
         // Reduce customer credit balance
