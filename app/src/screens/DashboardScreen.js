@@ -1376,28 +1376,32 @@ export default function DashboardScreen({ navigation }) {
               </View>
 
               {/* Cash Register Widget */}
-              <View style={styles.sectionHeader}>
-                <Text style={styles.sectionTitle}>Registers</Text>
-              </View>
-
-              <View style={{ gap: 8 }}>
-                {registers.length === 0 ? (
-                  <View style={styles.widgetCard}>
-                    <Text style={styles.emptyWidgetText}>No register data</Text>
+              {isOwner && (
+                <>
+                  <View style={styles.sectionHeader}>
+                    <Text style={styles.sectionTitle}>Registers</Text>
                   </View>
-                ) : (
-                  registers.map((r) => (
-                    <RegisterCard
-                      key={r.locationId}
-                      item={r}
-                      onPress={() => navigation.navigate('POS', {
-                        screen: 'CashRegister',
-                        params: { locationId: r.locationId }
-                      })}
-                    />
-                  ))
-                )}
-              </View>
+
+                  <View style={{ gap: 8 }}>
+                    {registers.length === 0 ? (
+                      <View style={styles.widgetCard}>
+                        <Text style={styles.emptyWidgetText}>No register data</Text>
+                      </View>
+                    ) : (
+                      registers.map((r) => (
+                        <RegisterCard
+                          key={r.locationId}
+                          item={r}
+                          onPress={() => navigation.navigate('POS', {
+                            screen: 'CashRegister',
+                            params: { locationId: r.locationId }
+                          })}
+                        />
+                      ))
+                    )}
+                  </View>
+                </>
+              )}
 
               {/* Revenue Snapshot */}
               {isOwner && reportKPIs && (
