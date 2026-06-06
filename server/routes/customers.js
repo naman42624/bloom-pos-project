@@ -327,7 +327,7 @@ router.get('/:id', authenticate, async (req, res, next) => {
 
     // Credit payments
     const creditPayments = await db.prepare(`
-      SELECT cp.*, cp.method as payment_method, u.name as received_by_name
+      SELECT cp.*, cp.payment_method as method, u.name as received_by_name
       FROM credit_payments cp
       LEFT JOIN users u ON cp.recorded_by = u.id
       WHERE cp.customer_id = ?
@@ -587,7 +587,7 @@ router.post(
       const creditTx = db.transaction(() => {
         // Record credit payment
         const result = db.prepare(
-          'INSERT INTO credit_payments (customer_id, amount, method, recorded_by, notes, sale_id, location_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
+          'INSERT INTO credit_payments (customer_id, amount, payment_method, recorded_by, notes, sale_id, location_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
         ).run(customerId, amount, method, req.user.id, notes || '', sale_id || null, numLocationId);
 
         // Reduce customer credit balance
@@ -657,7 +657,7 @@ router.post(
       const paymentId = creditTx();
 
       const payment = db.prepare(`
-        SELECT cp.*, u.name as received_by_name, l.name as location_name
+        SELECT cp.*, cp.payment_method as method, u.name as received_by_name, l.name as location_name
         FROM credit_payments cp
         LEFT JOIN users u ON cp.recorded_by = u.id
         LEFT JOIN locations l ON cp.location_id = l.id
@@ -699,12 +699,12 @@ router.post(
 
       const dueTx = db.transaction(() => {
         // Insert record into credit_payments to log the addition of dues
-        // Using method = 'previous_due'
-        let insertQuery = 'INSERT INTO credit_payments (customer_id, amount, method, recorded_by, notes) VALUES (?, ?, ?, ?, ?)';
+        // Using payment_method = 'previous_due'
+        let insertQuery = 'INSERT INTO credit_payments (customer_id, amount, payment_method, recorded_by, notes) VALUES (?, ?, ?, ?, ?)';
         const params = [customerId, negativeAmount, 'previous_due', req.user.id, notes || 'Added previous due'];
         
         if (date) {
-           insertQuery = 'INSERT INTO credit_payments (customer_id, amount, method, recorded_by, notes, created_at) VALUES (?, ?, ?, ?, ?, ?)';
+           insertQuery = 'INSERT INTO credit_payments (customer_id, amount, payment_method, recorded_by, notes, created_at) VALUES (?, ?, ?, ?, ?, ?)';
            params.push(date + (date.length === 10 ? ' 00:00:00' : ''));
         }
 
@@ -719,7 +719,7 @@ router.post(
       const paymentId = dueTx();
 
       const payment = db.prepare(`
-        SELECT cp.*, u.name as received_by_name, l.name as location_name
+        SELECT cp.*, cp.payment_method as method, u.name as received_by_name, l.name as location_name
         FROM credit_payments cp
         LEFT JOIN users u ON cp.recorded_by = u.id
         LEFT JOIN locations l ON cp.location_id = l.id
@@ -738,7 +738,7 @@ router.get('/:id/credits', authenticate, async (req, res, next) => {
   try {
     const db = await getAsyncDb();
     const payments = await db.prepare(`
-      SELECT cp.*, u.name as received_by_name, l.name as location_name
+      SELECT cp.*, cp.payment_method as method, u.name as received_by_name, l.name as location_name
       FROM credit_payments cp
       LEFT JOIN users u ON cp.recorded_by = u.id
       LEFT JOIN locations l ON cp.location_id = l.id
