@@ -9,6 +9,7 @@ import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import { formatDate as formatTimestampDate } from '../utils/datetime';
+import DateTimePickerModal from '../components/DateTimePickerModal';
 
 export default function CustomerDetailScreen({ route, navigation }) {
   const { user, activeLocation, locations: assignedLocations } = useAuth();
@@ -24,6 +25,26 @@ export default function CustomerDetailScreen({ route, navigation }) {
   const [creditMethod, setCreditMethod] = useState('cash');
   const [creditNotes, setCreditNotes] = useState('');
   const [creditLoading, setCreditLoading] = useState(false);
+
+  // Add previous due modal
+  const [showAddDueModal, setShowAddDueModal] = useState(false);
+  const [dueAmount, setDueAmount] = useState('');
+  const [dueDate, setDueDate] = useState('');
+  const [dueNotes, setDueNotes] = useState('');
+  const [dueLoading, setDueLoading] = useState(false);
+  const [showDueDatePicker, setShowDueDatePicker] = useState(false);
+  const [dueDatePickerValue, setDueDatePickerValue] = useState(new Date());
+
+  const handleDueDateConfirm = (selectedDate) => {
+    setShowDueDatePicker(false);
+    if (selectedDate) {
+      const yyyy = selectedDate.getFullYear();
+      const mm = String(selectedDate.getMonth() + 1).padStart(2, '0');
+      const dd = String(selectedDate.getDate()).padStart(2, '0');
+      setDueDate(`${yyyy}-${mm}-${dd}`);
+      setDueDatePickerValue(selectedDate);
+    }
+  };
 
   // Special date modal
   const [showDateModal, setShowDateModal] = useState(false);
@@ -93,6 +114,26 @@ export default function CustomerDetailScreen({ route, navigation }) {
     } catch (err) {
       Alert.alert('Error', err.message || 'Failed to record payment');
     } finally { setCreditLoading(false); }
+  };
+
+  const handleAddPreviousDue = async () => {
+    const amount = parseFloat(dueAmount);
+    if (!amount || amount <= 0) return Alert.alert('Error', 'Enter a valid amount');
+    setDueLoading(true);
+    try {
+      await api.addPreviousDue(customerId, {
+        amount,
+        date: dueDate.trim() || undefined,
+        notes: dueNotes.trim(),
+      });
+      setShowAddDueModal(false);
+      setDueAmount('');
+      setDueDate('');
+      setDueNotes('');
+      fetchData();
+    } catch (err) {
+      Alert.alert('Error', err.message || 'Failed to add previous due');
+    } finally { setDueLoading(false); }
   };
 
   const handleAddSpecialDate = async () => {
@@ -224,14 +265,24 @@ export default function CustomerDetailScreen({ route, navigation }) {
         </View>
 
         {/* Credit Balance Section */}
-        {customer.credit_balance > 0 && (
+        {(customer.credit_balance > 0 || canManage) && (
           <View style={styles.creditSection}>
             <View style={styles.sectionHeader}>
               <Text style={styles.sectionTitle}>Outstanding Dues</Text>
-              <TouchableOpacity style={styles.addBtn} onPress={() => setShowCreditModal(true)}>
-                <Ionicons name="cash" size={16} color={Colors.success} />
-                <Text style={[styles.addBtnText, { color: Colors.success }]}>Record Payment</Text>
-              </TouchableOpacity>
+              <View style={{ flexDirection: 'row', gap: Spacing.sm }}>
+                {canManage && (
+                  <TouchableOpacity style={styles.addBtn} onPress={() => setShowAddDueModal(true)}>
+                    <Ionicons name="add-circle" size={16} color={Colors.warning} />
+                    <Text style={[styles.addBtnText, { color: Colors.warning }]}>Add Past Due</Text>
+                  </TouchableOpacity>
+                )}
+                {customer.credit_balance > 0 && (
+                  <TouchableOpacity style={styles.addBtn} onPress={() => setShowCreditModal(true)}>
+                    <Ionicons name="cash" size={16} color={Colors.success} />
+                    <Text style={[styles.addBtnText, { color: Colors.success }]}>Record Payment</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
             </View>
             <View style={styles.dueCard}>
               <Ionicons name="alert-circle" size={20} color={Colors.error} />
@@ -272,15 +323,27 @@ export default function CustomerDetailScreen({ route, navigation }) {
           <>
             <Text style={styles.sectionTitle}>Payment History</Text>
             {customer.credit_payments.map((cp) => (
-              <View key={cp.id} style={styles.historyCard}>
+              <View key={cp.id} style={[styles.historyCard, cp.amount < 0 && { borderColor: Colors.warning + '50', backgroundColor: Colors.warning + '05' }]}>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.historyAmount}>₹{Number(cp.amount).toFixed(2)} — {(cp.method || 'cash').toUpperCase()}</Text>
+                  {cp.amount < 0 ? (
+                    <Text style={[styles.historyAmount, { color: Colors.warning }]}>
+                      ₹{Math.abs(Number(cp.amount)).toFixed(2)} — PAST DUE ADDED
+                    </Text>
+                  ) : (
+                    <Text style={styles.historyAmount}>
+                      ₹{Number(cp.amount).toFixed(2)} — {(cp.method || 'cash').toUpperCase()}
+                    </Text>
+                  )}
                   <Text style={styles.historyMeta}>
                     {formatDate(cp.created_at)} • by {cp.received_by_name || 'Unknown'} {cp.location_name ? `• ${cp.location_name}` : ''}
                   </Text>
                   {cp.notes ? <Text style={styles.historyNotes}>{cp.notes}</Text> : null}
                 </View>
-                <Ionicons name="checkmark-circle" size={18} color={Colors.success} />
+                {cp.amount < 0 ? (
+                  <Ionicons name="alert-circle" size={18} color={Colors.warning} />
+                ) : (
+                  <Ionicons name="checkmark-circle" size={18} color={Colors.success} />
+                )}
               </View>
             ))}
           </>
@@ -441,6 +504,95 @@ export default function CustomerDetailScreen({ route, navigation }) {
           </View>
         </KeyboardAvoidingView>
       </Modal>
+
+      {/* Add Previous Due Modal */}
+      <Modal visible={showAddDueModal} transparent animationType="fade">
+        <KeyboardAvoidingView style={styles.modalOverlay} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          <View style={[styles.modalCard, { padding: 0, overflow: 'hidden' }]}>
+            <View style={{ backgroundColor: Colors.warning + '15', padding: Spacing.lg, borderBottomWidth: 1, borderBottomColor: Colors.warning + '30', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: Spacing.sm }}>
+                <View style={{ backgroundColor: Colors.warning + '30', padding: 8, borderRadius: 12 }}>
+                  <Ionicons name="document-text" size={20} color={Colors.warning} />
+                </View>
+                <View>
+                  <Text style={[styles.modalTitle, { marginBottom: 0, color: Colors.warning }]}>Add Past Due</Text>
+                  <Text style={[styles.modalSubtext, { marginBottom: 0, color: Colors.textSecondary, fontSize: FontSize.xs }]}>Add historical dues from paper records</Text>
+                </View>
+              </View>
+              <TouchableOpacity onPress={() => setShowAddDueModal(false)} style={{ padding: 4 }}>
+                <Ionicons name="close" size={24} color={Colors.textLight} />
+              </TouchableOpacity>
+            </View>
+
+            <View style={{ padding: Spacing.lg, gap: Spacing.md }}>
+              <View>
+                <Text style={styles.fieldLabel}>Amount (₹) *</Text>
+                <View style={[styles.modalInput, { flexDirection: 'row', alignItems: 'center', paddingHorizontal: Spacing.md, height: 60, backgroundColor: Colors.background, borderColor: Colors.border, borderWidth: 1, borderRadius: BorderRadius.md }]}>
+                  <Text style={{ fontSize: 24, color: Colors.textLight, marginRight: 8, fontWeight: '600' }}>₹</Text>
+                  <TextInput 
+                    style={{ flex: 1, fontSize: 24, fontWeight: '700', color: Colors.text }}
+                    value={dueAmount} 
+                    onChangeText={setDueAmount}
+                    keyboardType="decimal-pad" 
+                    placeholder="0" 
+                    placeholderTextColor={Colors.textLight} 
+                  />
+                </View>
+              </View>
+
+              <View>
+                <Text style={styles.fieldLabel}>Date of Record</Text>
+                <TouchableOpacity 
+                  style={[styles.modalInput, { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }]}
+                  onPress={() => setShowDueDatePicker(true)}
+                >
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                    <Ionicons name="calendar-outline" size={18} color={dueDate ? Colors.primary : Colors.textLight} />
+                    <Text style={{ color: dueDate ? Colors.text : Colors.textLight, fontSize: FontSize.md }}>
+                      {dueDate ? formatTimestampDate(dueDate) : 'Today (Default)'}
+                    </Text>
+                  </View>
+                  <Ionicons name="chevron-down" size={16} color={Colors.textLight} />
+                </TouchableOpacity>
+              </View>
+
+              <View>
+                <Text style={styles.fieldLabel}>Notes / Details</Text>
+                <View style={[styles.modalInput, { height: 90, paddingVertical: Spacing.sm, flexDirection: 'row' }]}>
+                  <Ionicons name="pencil-outline" size={16} color={Colors.textLight} style={{ marginTop: 2, marginRight: 8 }} />
+                  <TextInput 
+                    style={{ flex: 1, textAlignVertical: 'top', color: Colors.text, fontSize: FontSize.md }}
+                    value={dueNotes} 
+                    onChangeText={setDueNotes}
+                    placeholder="Items, details from paper ledger..." 
+                    placeholderTextColor={Colors.textLight} 
+                    multiline 
+                  />
+                </View>
+              </View>
+
+              <TouchableOpacity 
+                style={[styles.submitBtn, { backgroundColor: Colors.warning, marginTop: Spacing.sm, height: 50, borderRadius: BorderRadius.md, elevation: 2, shadowColor: Colors.warning, shadowOffset: {width:0, height:2}, shadowOpacity: 0.2, shadowRadius: 4 }, dueLoading && { opacity: 0.7 }]}
+                onPress={handleAddPreviousDue} 
+                disabled={dueLoading}
+              >
+                <Ionicons name="save-outline" size={18} color={Colors.white} style={{ marginRight: 8 }} />
+                <Text style={[styles.submitText, { color: Colors.white, fontSize: FontSize.md, fontWeight: '600' }]}>
+                  {dueLoading ? 'Saving...' : 'Save Record'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      <DateTimePickerModal
+        visible={showDueDatePicker}
+        mode="date"
+        value={dueDatePickerValue}
+        onConfirm={handleDueDateConfirm}
+        onCancel={() => setShowDueDatePicker(false)}
+      />
 
       {/* Special Date Modal */}
       <Modal visible={showDateModal} transparent animationType="slide">

@@ -57,11 +57,32 @@ const PREFERENCE_SETTINGS = [
     icon: 'checkmark-circle-outline',
     iconColor: '#10B981',
   },
+  {
+    key: 'pref_pickup_auto_complete',
+    label: 'Auto-Complete Pickup Orders',
+    description: 'Automatically mark a pickup order as completed when all its production tasks are finished.',
+    icon: 'cube-outline',
+    iconColor: '#F59E0B',
+  },
+  {
+    key: 'pref_delivery_auto_complete',
+    label: 'Auto-Complete Delivery Orders',
+    description: 'Automatically mark a delivery order as completed when all its production tasks are finished.',
+    icon: 'bicycle-outline',
+    iconColor: '#3B82F6',
+  },
+  {
+    key: 'pref_new_v2_ui',
+    label: 'New V2 Dashboard UI ✦',
+    description: 'Enable the redesigned dashboard with a unified order+delivery panel, inline task management, and a refreshed visual experience.',
+    icon: 'sparkles-outline',
+    iconColor: '#7C3AED',
+  },
 ];
 
 
 export default function SettingsScreen() {
-  const { user } = useAuth();
+  const { user, refreshSettings } = useAuth();
   const [settings, setSettings] = useState({});
   const [editedValues, setEditedValues] = useState({});
   const [loading, setLoading] = useState(true);
@@ -97,6 +118,7 @@ export default function SettingsScreen() {
     try {
       await api.updateSettings(editedValues);
       await fetchSettings();
+      if (refreshSettings) await refreshSettings();
       Alert.alert('Success', 'Settings updated');
     } catch (err) {
       Alert.alert('Error', err.message || 'Failed to save settings');
@@ -119,6 +141,7 @@ export default function SettingsScreen() {
         ...prev,
         [key]: { ...prev[key], value: newValue },
       }));
+      if (refreshSettings) await refreshSettings();
     } catch (err) {
       Alert.alert('Error', err.message || 'Failed to update preference');
     }

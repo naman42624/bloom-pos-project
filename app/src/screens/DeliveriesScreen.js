@@ -5,9 +5,9 @@ import { useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
-import { 
-  parseServerDate, formatDateTime, formatShopDateLabel, 
-  getShopNow, getShopTodayStr, getShopTomorrowStr, DEFAULT_TZ 
+import {
+  parseServerDate, formatDateTime, formatShopDateLabel,
+  getShopNow, getShopTodayStr, getShopTomorrowStr, DEFAULT_TZ
 } from '../utils/datetime';
 
 
@@ -34,7 +34,7 @@ const STATUS_COLORS = {
 
 export default function DeliveriesScreen({ navigation }) {
   const { user, activeLocation, settings } = useAuth();
-  const timezone = settings?.timezone || 'Asia/Kolkata';
+  const timezone = settings?.timezone?.value || 'Asia/Kolkata';
 
   /** Convert ISO datetime or YYYY-MM-DD to shop-local YYYY-MM-DD */
   const extractLocalDate = (value) => {
@@ -44,7 +44,7 @@ export default function DeliveriesScreen({ navigation }) {
     try {
       const d = new Date(raw);
       if (!isNaN(d.getTime())) return d.toLocaleDateString('en-CA', { timeZone: timezone });
-    } catch {}
+    } catch { }
     return raw.split('T')[0] || '';
   };
 
@@ -181,10 +181,10 @@ export default function DeliveriesScreen({ navigation }) {
 
   const filteredDeliveries = search
     ? deliveries.filter(d =>
-        (d.sale_number || '').toLowerCase().includes(search.toLowerCase()) ||
-        (d.customer_name || '').toLowerCase().includes(search.toLowerCase()) ||
-        (d.partner_name || '').toLowerCase().includes(search.toLowerCase())
-      )
+      (d.sale_number || '').toLowerCase().includes(search.toLowerCase()) ||
+      (d.customer_name || '').toLowerCase().includes(search.toLowerCase()) ||
+      (d.partner_name || '').toLowerCase().includes(search.toLowerCase())
+    )
     : deliveries;
 
   // Sort by scheduled date+time (earliest first, no-date last)
@@ -353,7 +353,7 @@ export default function DeliveriesScreen({ navigation }) {
             Order Note: {item.special_instructions || item.notes}
           </Text>
         )}
-        
+
         {(item.items && item.items.length > 0) && (
           <View style={{ marginHorizontal: Spacing.md, marginTop: 8, backgroundColor: Colors.background, padding: 8, borderRadius: 6 }}>
             {item.items.map((it, idx) => (

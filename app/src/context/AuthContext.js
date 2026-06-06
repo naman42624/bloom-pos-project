@@ -96,7 +96,7 @@ export function AuthProvider({ children }) {
               locations: response.data.locations || [],
               activeLocation,
             });
-            dispatch({ type: 'SET_SETTINGS', settings: settingsRes.data || {} });
+            dispatch({ type: 'SET_SETTINGS', settings: settingsRes.data?.settings || {} });
           } catch {
             await AsyncStorage.multiRemove([STORAGE_KEY_TOKEN, STORAGE_KEY_USER, STORAGE_KEY_LOCATION]);
             api.clearToken();
@@ -145,7 +145,7 @@ export function AuthProvider({ children }) {
     
     try {
       const settingsRes = await api.getSettings();
-      dispatch({ type: 'SET_SETTINGS', settings: settingsRes.data || {} });
+      dispatch({ type: 'SET_SETTINGS', settings: settingsRes.data?.settings || {} });
     } catch (e) {
       console.log('Failed to fetch settings after login:', e);
     }
@@ -197,6 +197,15 @@ export function AuthProvider({ children }) {
     dispatch({ type: 'SET_ACTIVE_LOCATION', location });
   };
 
+  const refreshSettings = async () => {
+    try {
+      const settingsRes = await api.getSettings();
+      dispatch({ type: 'SET_SETTINGS', settings: settingsRes.data?.settings || {} });
+    } catch (e) {
+      console.log('Failed to refresh settings:', e);
+    }
+  };
+
   const value = {
     ...state,
     login,
@@ -205,6 +214,7 @@ export function AuthProvider({ children }) {
     logout,
     updateUser,
     setActiveLocation,
+    refreshSettings,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

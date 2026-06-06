@@ -671,6 +671,68 @@ router.post(
   }
 );
 
+// ─── POST /api/customers/:id/add-due ─────────────────────────
+// Add previous/historical dues for a customer
+router.post(
+  '/:id/add-due',
+  authenticate,
+  authorize('owner', 'manager'),
+  [
+    body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be positive'),
+    body('date').optional().trim(),
+    body('notes').optional().trim(),
+  ],
+  (req, res, next) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) return res.status(400).json({ success: false, message: 'Validation failed', errors: errors.array() });
+
+      const db = getDb();
+      const customerId = req.params.id;
+
+      const customer = db.prepare("SELECT id FROM users WHERE id = ? AND role = 'customer'").get(customerId);
+      if (!customer) return res.status(404).json({ success: false, message: 'Customer not found' });
+
+      const { amount, date, notes } = req.body;
+      const parsedAmount = parseFloat(amount);
+      const negativeAmount = -Math.abs(parsedAmount);
+
+      const dueTx = db.transaction(() => {
+        // Insert record into credit_payments to log the addition of dues
+        // Using method = 'previous_due'
+        let insertQuery = 'INSERT INTO credit_payments (customer_id, amount, method, recorded_by, notes) VALUES (?, ?, ?, ?, ?)';
+        const params = [customerId, negativeAmount, 'previous_due', req.user.id, notes || 'Added previous due'];
+        
+        if (date) {
+           insertQuery = 'INSERT INTO credit_payments (customer_id, amount, method, recorded_by, notes, created_at) VALUES (?, ?, ?, ?, ?, ?)';
+           params.push(date + (date.length === 10 ? ' 00:00:00' : ''));
+        }
+
+        const result = db.prepare(insertQuery).run(...params);
+
+        // Increase customer credit balance
+        db.prepare('UPDATE users SET credit_balance = credit_balance + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(parsedAmount, customerId);
+
+        return result.lastInsertRowid;
+      });
+
+      const paymentId = dueTx();
+
+      const payment = db.prepare(`
+        SELECT cp.*, u.name as received_by_name, l.name as location_name
+        FROM credit_payments cp
+        LEFT JOIN users u ON cp.recorded_by = u.id
+        LEFT JOIN locations l ON cp.location_id = l.id
+        WHERE cp.id = ?
+      `).get(paymentId);
+
+      const updated = db.prepare('SELECT credit_balance FROM users WHERE id = ?').get(customerId);
+
+      res.status(201).json({ success: true, data: payment, new_balance: updated.credit_balance });
+    } catch (err) { next(err); }
+  }
+);
+
 // ─── GET /api/customers/:id/credits ──────────────────────────
 router.get('/:id/credits', authenticate, async (req, res, next) => {
   try {

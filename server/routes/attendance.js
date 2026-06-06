@@ -82,10 +82,15 @@ function isEarlyDeparture(clockOut, operatingHours, userId, locationId) {
 // ═══════════════════════════════════════════════════════════════
 // CLOCK IN
 // ═══════════════════════════════════════════════════════════════
-router.post('/clock-in', authorize('manager', 'employee', 'delivery_partner'), (req, res) => {
+router.post('/clock-in', authorize('owner', 'manager', 'employee', 'delivery_partner'), (req, res) => {
   try {
     const db = getDb();
-    const userId = req.user.id;
+    let userId = req.user.id;
+    if (req.body.user_id && ['owner', 'manager'].includes(req.user.role)) {
+      userId = req.body.user_id;
+    } else if (req.user.role === 'owner') {
+      return res.status(403).json({ success: false, message: 'Owners do not clock in.' });
+    }
     const { location_id, latitude, longitude, method } = req.body;
 
     if (!location_id) {
@@ -136,10 +141,15 @@ router.post('/clock-in', authorize('manager', 'employee', 'delivery_partner'), (
 // ═══════════════════════════════════════════════════════════════
 // CLOCK OUT
 // ═══════════════════════════════════════════════════════════════
-router.post('/clock-out', authorize('manager', 'employee', 'delivery_partner'), (req, res) => {
+router.post('/clock-out', authorize('owner', 'manager', 'employee', 'delivery_partner'), (req, res) => {
   try {
     const db = getDb();
-    const userId = req.user.id;
+    let userId = req.user.id;
+    if (req.body.user_id && ['owner', 'manager'].includes(req.user.role)) {
+      userId = req.body.user_id;
+    } else if (req.user.role === 'owner') {
+      return res.status(403).json({ success: false, message: 'Owners do not clock out.' });
+    }
     const { latitude, longitude, method } = req.body;
 
     const today = todayStr();
@@ -926,6 +936,7 @@ router.get('/staff-today', authorize('owner', 'manager'), async (req, res) => {
         u.name,
         u.phone,
         u.role,
+        ul.location_id,
         COALESCE(
           es.shift_start,
           (SELECT es2.shift_start FROM employee_shifts es2 WHERE es2.user_id = u.id AND es2.is_active = 1 ORDER BY es2.updated_at DESC, es2.id DESC LIMIT 1)

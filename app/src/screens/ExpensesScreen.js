@@ -30,7 +30,7 @@ const PAYMENT_METHODS = [
 
 export default function ExpensesScreen() {
   const { settings } = useAuth();
-  const timezone = settings?.timezone || 'Asia/Kolkata';
+  const timezone = settings?.timezone?.value || 'Asia/Kolkata';
   const [expenses, setExpenses] = useState([]);
 
   const [total, setTotal] = useState(0);

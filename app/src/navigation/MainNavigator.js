@@ -8,6 +8,7 @@ import useGeofence from '../hooks/useGeofence';
 import useDeliveryTracking from '../hooks/useDeliveryTracking';
 
 import DashboardScreen from '../screens/DashboardScreen';
+import DashboardScreenV2 from '../screens/DashboardScreenV2';
 import LocationsScreen from '../screens/LocationsScreen';
 import LocationDetailScreen from '../screens/LocationDetailScreen';
 import LocationFormScreen from '../screens/LocationFormScreen';
@@ -115,13 +116,17 @@ const stackScreenOptions = {
 
 // ─── Dashboard Stack ────────────────────────────────────────
 function DashboardStack() {
+  const { settings } = useAuth();
+  const useV2 = settings?.pref_new_v2_ui?.value === '1';
+  const DashComponent = useV2 ? DashboardScreenV2 : DashboardScreen;
+
   return (
     <Stack.Navigator screenOptions={stackScreenOptions}>
       <Stack.Screen
         name="DashboardHome"
-        component={DashboardScreen}
+        component={DashComponent}
         options={({ navigation }) => ({
-          title: 'Dashboard',
+          title: useV2 ? 'Dashboard V2' : 'Dashboard',
           headerRight: () => <NotificationBell navigation={navigation} />,
         })}
       />
@@ -136,7 +141,6 @@ function DashboardStack() {
       <Stack.Screen name="RefundSale" component={RefundSaleScreen} options={{ title: 'Refund' }} />
       <Stack.Screen name="MaterialDetail" component={MaterialDetailScreen} options={{ title: 'Material Details' }} />
     </Stack.Navigator>
-
   );
 }
 

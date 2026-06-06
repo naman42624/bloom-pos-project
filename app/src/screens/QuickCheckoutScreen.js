@@ -24,7 +24,7 @@ const ORDER_TYPES = [
 
 export default function QuickCheckoutScreen({ navigation, route }) {
   const { user, settings } = useAuth();
-  const timezone = settings?.timezone || 'Asia/Kolkata';
+  const timezone = settings?.timezone?.value || 'Asia/Kolkata';
   const { width } = useWindowDimensions();
   const isNarrowMobile = width < 380;
 
@@ -220,6 +220,20 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     }
     setShowSuggestions(false);
     setCustomerSuggestions([]);
+
+    if (c.phone && c.phone.length >= 10) {
+      api.customerLookupEnhanced(c.phone).then(res => {
+        if (res.data) {
+          setCustomerHistory(res.data);
+          if (senderSameAsReceiver && useCustomerAsSender) {
+             setReceiverHistory(res.data);
+          }
+        }
+      }).catch(() => {});
+    } else if (c.credit_balance !== undefined) {
+      // Fallback if not 10 digits but has data from search
+      setCustomerHistory({ ...c, order_count: 0 });
+    }
   }, [senderSameAsReceiver, useCustomerAsSender]);
 
   const handleReceiverNameChange = useCallback((text) => {
@@ -1227,7 +1241,6 @@ export default function QuickCheckoutScreen({ navigation, route }) {
                 ]}
                 onPress={() => {
                   setOrderType(t.key);
-                  setSkipAssignment(t.key === 'walk_in');
                 }}
               >
                 <Ionicons name={t.icon} size={24} color={orderType === t.key ? '#fff' : t.color} />
@@ -1376,6 +1389,14 @@ export default function QuickCheckoutScreen({ navigation, route }) {
               <Ionicons name="person-circle" size={16} color={Colors.primary} />
               <Text style={styles.customerHintText}>
                 {customerId ? '✓ Registered' : 'Returning'} customer • {customerHistory.order_count} orders • ₹{Number(customerHistory.total_spent || 0).toFixed(0)} total
+              </Text>
+            </View>
+          )}
+          {customerHistory && customerHistory.credit_balance > 0 && (
+            <View style={[styles.customerHint, { backgroundColor: Colors.error + '10', borderColor: Colors.error + '30', marginTop: 4 }]}>
+              <Ionicons name="alert-circle" size={16} color={Colors.error} />
+              <Text style={[styles.customerHintText, { color: Colors.error, fontWeight: '600' }]}>
+                Previous Dues Pending: ₹{Number(customerHistory.credit_balance).toFixed(2)}
               </Text>
             </View>
           )}
@@ -1920,7 +1941,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
                             setPayments(newP);
                           }}
                         >
-                          <Text style={{ fontSize: 12, textAlign: 'center' }}>{pmt.method.toUpperCase()}</Text>
+                          <Text style={{ fontSize: 12, textAlign: 'center' }}>{(pmt.method || 'cash').toUpperCase()}</Text>
                         </TouchableOpacity>
                       </View>
                       <TextInput

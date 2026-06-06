@@ -1102,6 +1102,9 @@ function getDb() {
     // ─── Seed preference settings (idempotent) ────────────────
     runPsql('CREATE UNIQUE INDEX IF NOT EXISTS settings_key_idx ON settings(key)');
     runPsql(`INSERT INTO settings (key, value, description) VALUES ('pref_walkin_auto_complete', '0', 'Auto-complete walk-in orders when all production tasks are marked done') ON CONFLICT (key) DO NOTHING`);
+    runPsql(`INSERT INTO settings (key, value, description) VALUES ('pref_pickup_auto_complete', '0', 'Auto-complete pickup orders when all production tasks are marked done') ON CONFLICT (key) DO NOTHING`);
+    runPsql(`INSERT INTO settings (key, value, description) VALUES ('pref_delivery_auto_complete', '0', 'Auto-complete delivery orders when all production tasks are marked done') ON CONFLICT (key) DO NOTHING`);
+    runPsql(`INSERT INTO settings (key, value, description) VALUES ('pref_new_v2_ui', '0', 'Enable the redesigned V2 Dashboard UI with unified order panels and inline task management') ON CONFLICT (key) DO NOTHING`);
 
     initialized = true;
     console.log('✅ Connected to PostgreSQL');

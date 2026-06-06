@@ -670,12 +670,19 @@ router.put(
             });
           }
 
-          // ─── Auto-complete walk-in orders if preference is enabled ─
-          if (sale?.order_type === 'walk_in' && sale?.status === 'ready') {
-            const prefRow = db2.prepare("SELECT value FROM settings WHERE key = 'pref_walkin_auto_complete'").get();
-            if (prefRow?.value === '1') {
-              db2.prepare("UPDATE sales SET status = 'completed', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(task.sale_id);
-              console.log(`[AutoComplete] Walk-in order ${sale.sale_number} auto-completed`);
+          // ─── Auto-complete orders if preference is enabled ─
+          if (sale?.status === 'ready') {
+            let prefKey = null;
+            if (sale.order_type === 'walk_in') prefKey = 'pref_walkin_auto_complete';
+            else if (sale.order_type === 'pickup') prefKey = 'pref_pickup_auto_complete';
+            else if (sale.order_type === 'delivery') prefKey = 'pref_delivery_auto_complete';
+
+            if (prefKey) {
+              const prefRow = db2.prepare("SELECT value FROM settings WHERE key = ?").get(prefKey);
+              if (prefRow?.value === '1') {
+                db2.prepare("UPDATE sales SET status = 'completed', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(task.sale_id);
+                console.log(`[AutoComplete] ${sale.order_type} order ${sale.sale_number} auto-completed`);
+              }
             }
           }
         }

@@ -5,9 +5,9 @@ import { useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
-import { 
-  parseServerDate, formatDateTime, formatShopDateLabel, 
-  getShopNow, getShopTodayStr, getShopTomorrowStr, DEFAULT_TZ 
+import {
+  parseServerDate, formatDateTime, formatShopDateLabel,
+  getShopNow, getShopTodayStr, getShopTomorrowStr, DEFAULT_TZ
 } from '../utils/datetime';
 
 
@@ -25,7 +25,7 @@ const PAYMENT_METHODS = [
 
 export default function PickupOrdersScreen({ navigation }) {
   const { user, activeLocation, settings } = useAuth();
-  const timezone = settings?.timezone || 'Asia/Kolkata';
+  const timezone = settings?.timezone?.value || 'Asia/Kolkata';
 
   const [tab, setTab] = useState('waiting');
   const [orders, setOrders] = useState([]);
@@ -265,7 +265,7 @@ export default function PickupOrdersScreen({ navigation }) {
             Order Note: {item.special_instructions || item.notes}
           </Text>
         )}
-        
+
         {(item.items && item.items.length > 0) && (
           <View style={{ marginTop: 8, backgroundColor: Colors.background, padding: 8, borderRadius: 6 }}>
             {item.items.map((it, idx) => (

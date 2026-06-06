@@ -1,6 +1,6 @@
 import React, { useState, useCallback } from 'react';
 import {
-  View, Text, StyleSheet, ScrollView, RefreshControl, ActivityIndicator, TouchableOpacity,
+  View, Text, StyleSheet, ScrollView, RefreshControl, ActivityIndicator, TouchableOpacity, Alert, Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
@@ -112,6 +112,17 @@ function normalizePresentRows(rows = []) {
   });
 }
 
+const confirmAction = (title, msg, onOk) => {
+  if (Platform.OS === 'web') {
+    if (window.confirm(`${title}\n${msg}`)) onOk();
+  } else {
+    Alert.alert(title, msg, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'OK', onPress: onOk }
+    ]);
+  }
+};
+
 export default function StaffAttendanceScreen() {
   const { user } = useAuth();
   const [loading, setLoading] = useState(true);
@@ -122,6 +133,45 @@ export default function StaffAttendanceScreen() {
   const [locations, setLocations] = useState([]);
   const [selectedLoc, setSelectedLoc] = useState(null);
   const [expandedUsers, setExpandedUsers] = useState({});
+  const [actionLoading, setActionLoading] = useState(false);
+
+  const handleClockIn = async (staffId, locId) => {
+    setActionLoading(true);
+    try {
+      await api.clockIn({
+        user_id: staffId,
+        location_id: locId || selectedLoc || (locations.length > 0 ? locations[0].id : null),
+        method: 'manual',
+      });
+      await fetchData();
+    } catch (e) {
+      if (Platform.OS === 'web') {
+        window.alert(e.message || 'Failed to clock in staff.');
+      } else {
+        Alert.alert('Error', e.message || 'Failed to clock in staff.');
+      }
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleClockOut = async (staffId) => {
+    confirmAction('Clock Out', 'Are you sure you want to clock out this staff member?', async () => {
+      setActionLoading(true);
+      try {
+        await api.clockOut({ user_id: staffId, method: 'manual' });
+        await fetchData();
+      } catch (e) {
+        if (Platform.OS === 'web') {
+          window.alert(e.message || 'Failed to clock out staff.');
+        } else {
+          Alert.alert('Error', e.message || 'Failed to clock out staff.');
+        }
+      } finally {
+        setActionLoading(false);
+      }
+    });
+  };
 
   const fetchData = useCallback(async () => {
     try {
@@ -253,6 +303,15 @@ export default function StaffAttendanceScreen() {
                     {s.early_departure === 1 && <Text style={styles.earlyTag}>EARLY</Text>}
                     {isActive && <Text style={styles.activeTag}>ACTIVE</Text>}
                   </View>
+                  {isActive && (
+                    <TouchableOpacity
+                      style={styles.actionBtnOut}
+                      onPress={() => handleClockOut(userKey)}
+                      disabled={actionLoading}
+                    >
+                      <Text style={styles.actionBtnTextOut}>Clock Out</Text>
+                    </TouchableOpacity>
+                  )}
                 </View>
                 {canExpand && (
                   <TouchableOpacity style={styles.expandToggle} onPress={() => toggleExpanded(userKey)}>
@@ -309,6 +368,15 @@ export default function StaffAttendanceScreen() {
                 <Text style={styles.staffName}>{s.name}</Text>
                 <Text style={styles.staffMeta}>{s.phone} • {s.role.replace('_', ' ')}</Text>
                 <Text style={styles.staffShiftMeta}>{formatShiftWindow(s.shift_start, s.shift_end)}</Text>
+              </View>
+              <View style={styles.staffRight}>
+                <TouchableOpacity
+                  style={styles.actionBtnIn}
+                  onPress={() => handleClockIn(s.id, s.location_id)}
+                  disabled={actionLoading}
+                >
+                  <Text style={styles.actionBtnTextIn}>Clock In</Text>
+                </TouchableOpacity>
               </View>
             </View>
           ))}
@@ -439,5 +507,29 @@ const styles = StyleSheet.create({
   activeTag: {
     fontSize: 9, fontWeight: '700', color: '#fff', backgroundColor: Colors.secondary,
     paddingHorizontal: 5, paddingVertical: 1, borderRadius: 3, overflow: 'hidden',
+  },
+  actionBtnIn: {
+    backgroundColor: Colors.secondary,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: BorderRadius.sm,
+    marginTop: 4,
+  },
+  actionBtnTextIn: {
+    color: '#fff',
+    fontSize: FontSize.xs,
+    fontWeight: '600',
+  },
+  actionBtnOut: {
+    backgroundColor: Colors.danger,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: BorderRadius.sm,
+    marginTop: 6,
+  },
+  actionBtnTextOut: {
+    color: '#fff',
+    fontSize: FontSize.xs,
+    fontWeight: '600',
   },
 });

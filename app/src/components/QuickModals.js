@@ -231,6 +231,15 @@ export function OrderQuickModal({
     } catch {}
   }, [order?.id]);
 
+  const refreshDelivery = useCallback(() => {
+    if (!order?.id || order?.order_type !== 'delivery') return;
+    setDeliveryLoading(true);
+    api.getSale(order.id)
+      .then((res) => setDeliveryInfo(res?.data?.delivery || null))
+      .catch(() => setDeliveryInfo(null))
+      .finally(() => setDeliveryLoading(false));
+  }, [order?.id, order?.order_type]);
+
   // Reset all local state whenever the modal opens for a new order
   useEffect(() => {
     if (!visible) {
@@ -243,14 +252,8 @@ export function OrderQuickModal({
       setConfirmingTask(null);
       return;
     }
-    if (order?.order_type === 'delivery' && order?.id) {
-      setDeliveryLoading(true);
-      api.getSale(order.id)
-        .then((res) => setDeliveryInfo(res?.data?.delivery || null))
-        .catch(() => setDeliveryInfo(null))
-        .finally(() => setDeliveryLoading(false));
-    }
-  }, [visible, order?.id, order?.order_type]);
+    refreshDelivery();
+  }, [visible, refreshDelivery]);
 
   const doStatusChange = useCallback(async (nextStatus) => {
     if (!order?.id) return;
@@ -421,44 +424,15 @@ export function OrderQuickModal({
 
         {/* Delivery status block */}
         {orderType === 'delivery' && (
-          <View style={[styles.subCard, { borderLeftColor: delivColor || '#9CA3AF' }]}>
-            <View style={styles.subCardHeader}>
-              <Ionicons name="bicycle-outline" size={16} color={delivColor || '#9CA3AF'} />
-              <Text style={[styles.subCardTitle, { color: delivColor || '#9CA3AF' }]}>Delivery Status</Text>
-              {deliveryLoading && <ActivityIndicator size="small" color="#9CA3AF" style={{ marginLeft: 8 }} />}
-            </View>
-            {deliveryInfo ? (
-              <>
-                <BadgePill
-                  label={DELIVERY_STATUS_LABELS[deliveryInfo.status] || deliveryInfo.status}
-                  color={delivColor || '#9CA3AF'}
-                />
-                {deliveryInfo.partner_name && (
-                  <Text style={styles.subCardMeta}>Partner: {deliveryInfo.partner_name}</Text>
-                )}
-                {deliveryInfo.cod_amount > 0 && (
-                  <Text style={styles.subCardMeta}>
-                    COD: {formatMoney(deliveryInfo.cod_amount)} ({(deliveryInfo.cod_status || 'pending').replace(/_/g, ' ')})
-                  </Text>
-                )}
-                {canManage && (
-                  <TouchableOpacity
-                    style={[styles.subCardLinkBtn, { marginTop: 8 }]}
-                    onPress={() => {
-                      // Close this modal first, then tell the parent to open DeliveryQuickModal
-                      onClose();
-                      onOpenDelivery?.(deliveryInfo.id);
-                    }}
-                  >
-                    <Ionicons name="pencil-outline" size={13} color={Colors.primary} />
-                    <Text style={styles.subCardLinkText}>Manage Delivery →</Text>
-                  </TouchableOpacity>
-                )}
-              </>
-            ) : !deliveryLoading ? (
-              <Text style={styles.subCardMeta}>No delivery record found</Text>
-            ) : null}
-          </View>
+          <DeliverySection
+            deliveryInfo={deliveryInfo}
+            loading={deliveryLoading}
+            onRefreshDelivery={() => {
+              refreshDelivery();
+              if (onRefresh) onRefresh();
+            }}
+            canManage={canManage}
+          />
         )}
 
         {/* Production task list */}
@@ -654,30 +628,15 @@ export function OrderQuickModal({
   );
 }
 
-// ─── DeliveryQuickModal ──────────────────────────────────────────────────────
+// ─── DeliverySection ────────────────────────────────────────────────────────
 
-/**
- * @param {object} props
- * @param {boolean} props.visible
- * @param {number|string} props.deliveryId
- * @param {Function} props.onClose
- * @param {Function} props.onRefresh — called after an action
- * @param {object} props.navigation
- * @param {boolean} props.canManage
- * @param {boolean} [props.isPartner]
- */
-export function DeliveryQuickModal({
-  visible,
-  deliveryId,
-  onClose,
-  onRefresh,
-  onBackToSale,
-  navigation,
+function DeliverySection({
+  deliveryInfo: delivery,
+  loading,
+  onRefreshDelivery: onRefresh,
   canManage,
   isPartner = false,
 }) {
-  const [delivery, setDelivery] = useState(null);
-  const [loading, setLoading] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
   const [confirmingConversion, setConfirmingConversion] = useState(null);
 
@@ -693,51 +652,23 @@ export function DeliveryQuickModal({
   const [codMethod, setCodMethod] = useState('cash');
   const [failReason, setFailReason] = useState('');
 
-  const fetchDelivery = useCallback(async () => {
-    if (!deliveryId) return;
-    setLoading(true);
-    try {
-      const res = await api.getDelivery(deliveryId);
-      const d = res?.data;
-      setDelivery(d || null);
-      if (d?.cod_amount) {
-        const remaining = Math.max(Number(d.cod_amount) - Number(d.cod_collected || 0), 0);
-        setCodAmount(String(Math.round(remaining)));
-      }
-    } catch {
-      setDelivery(null);
-    } finally {
-      setLoading(false);
-    }
-  }, [deliveryId]);
-
   useEffect(() => {
-    if (visible && deliveryId) {
-      setShowAssign(false);
-      setShowCodForm(false);
-      setShowFailForm(false);
-      setFailReason('');
-      fetchDelivery();
-    } else if (!visible) {
-      // Reset on close
-      setDelivery(null);
-      setShowAssign(false);
-      setShowCodForm(false);
-      setShowFailForm(false);
-      setConfirmingConversion(null);
+    if (delivery?.cod_amount) {
+      const remaining = Math.max(Number(delivery.cod_amount) - Number(delivery.cod_collected || 0), 0);
+      setCodAmount(String(Math.round(remaining)));
     }
-  }, [visible, deliveryId, fetchDelivery]);
+  }, [delivery]);
 
   const doAction = useCallback(async (action, data = {}) => {
+    if (!delivery?.id) return;
     setActionLoading(true);
     try {
-      if (action === 'pickup') await api.pickupDelivery(deliveryId);
-      else if (action === 'in_transit') await api.markInTransit(deliveryId);
-      else if (action === 'deliver') await api.deliverOrder(deliveryId, data);
-      else if (action === 'fail') await api.failDelivery(deliveryId, data);
-      else if (action === 'reattempt') await api.reattemptDelivery(deliveryId);
-      await fetchDelivery();
-      onRefresh?.();
+      if (action === 'pickup') await api.pickupDelivery(delivery.id);
+      else if (action === 'in_transit') await api.markInTransit(delivery.id);
+      else if (action === 'deliver') await api.deliverOrder(delivery.id, data);
+      else if (action === 'fail') await api.failDelivery(delivery.id, data);
+      else if (action === 'reattempt') await api.reattemptDelivery(delivery.id);
+      await onRefresh?.();
       setShowCodForm(false);
       setShowFailForm(false);
     } catch (err) {
@@ -746,7 +677,7 @@ export function DeliveryQuickModal({
     } finally {
       setActionLoading(false);
     }
-  }, [deliveryId, fetchDelivery, onRefresh]);
+  }, [delivery?.id, onRefresh]);
 
   const openAssign = async () => {
     setPartnersLoading(true);
@@ -763,12 +694,12 @@ export function DeliveryQuickModal({
   };
 
   const handleAssign = async (partnerId) => {
+    if (!delivery?.id) return;
     setActionLoading(true);
     try {
-      await api.assignDelivery(deliveryId, { delivery_partner_id: partnerId });
+      await api.assignDelivery(delivery.id, { delivery_partner_id: partnerId });
       setShowAssign(false);
-      await fetchDelivery();
-      onRefresh?.();
+      await onRefresh?.();
     } catch (err) {
       Alert.alert('Error', err?.message || 'Failed to assign partner');
     } finally {
@@ -812,8 +743,7 @@ export function DeliveryQuickModal({
       setActionLoading(true);
       try {
         await api.convertDeliveryPayment(delivery.id, { action });
-        await fetchDelivery();
-        if (onRefresh) onRefresh();
+        if (onRefresh) await onRefresh();
       } catch (err) {
         const errorMsg = err.response?.data?.message || err.message || 'Failed to convert payment';
         Platform.OS === 'web' ? window.alert(errorMsg) : Alert.alert('Error', errorMsg);
@@ -827,39 +757,15 @@ export function DeliveryQuickModal({
   };
 
   return (
-    <SheetWrapper visible={visible} onClose={onClose}>
-      {/* Header */}
-      <View style={styles.sheetHeader}>
-        {/* Back to sale button */}
-        {onBackToSale && (
-          <TouchableOpacity
-            onPress={() => { onClose(); onBackToSale(); }}
-            hitSlop={8}
-            style={styles.backBtn}
-          >
-            <Ionicons name="arrow-back" size={18} color={Colors.primary} />
-          </TouchableOpacity>
-        )}
-        <View style={{ flex: 1 }}>
-          <Text style={styles.sheetTitle}>
-            Delivery {delivery?.sale_number ? `#${delivery.sale_number}` : ''}
-          </Text>
-          <Text style={styles.sheetSubtitle}>
-            {delivery?.customer_name || delivery?.receiver_name || 'Customer'} • Quick View
-          </Text>
-        </View>
-        <TouchableOpacity onPress={onClose} hitSlop={10} style={styles.closeBtn}>
-          <Ionicons name="close" size={20} color="#6B7280" />
-        </TouchableOpacity>
+    <View style={[styles.subCard, { borderLeftColor: delivColor || '#9CA3AF' }]}>
+      <View style={styles.subCardHeader}>
+        <Ionicons name="bicycle-outline" size={16} color={delivColor || '#9CA3AF'} />
+        <Text style={[styles.subCardTitle, { color: delivColor || '#9CA3AF' }]}>Delivery Status</Text>
+        {loading && <ActivityIndicator size="small" color="#9CA3AF" style={{ marginLeft: 8 }} />}
       </View>
 
-      {/* Body */}
-      {loading ? (
-        <View style={styles.loadingBox}>
-          <ActivityIndicator color={Colors.primary} />
-        </View>
-      ) : !delivery ? (
-        <Text style={styles.emptyText}>Delivery not found</Text>
+      {loading ? null : !delivery ? (
+        <Text style={styles.subCardMeta}>No delivery record found</Text>
       ) : showAssign ? (
         /* ── Partner list ─────────────────────────────────────────── */
         <View style={{ flex: 1, minHeight: 200 }}>
@@ -901,7 +807,7 @@ export function DeliveryQuickModal({
           </TouchableOpacity>
         </View>
       ) : (
-        <ScrollView showsVerticalScrollIndicator={false} style={styles.sheetBody} keyboardShouldPersistTaps="handled">
+        <View>
           {/* Status badges */}
           <View style={styles.badgesRow}>
             <BadgePill
@@ -1130,24 +1036,9 @@ export function DeliveryQuickModal({
               </View>
             </View>
           )}
-        </ScrollView>
+        </View>
       )}
-
-      {/* Sticky footer — Full Details */}
-      <View style={styles.sheetFooter}>
-        <TouchableOpacity
-          style={styles.fullDetailsBtn}
-          onPress={() => {
-            onClose();
-            setTimeout(() => navigation.navigate('DeliveryDetail', { deliveryId: delivery?.id || deliveryId }), 200);
-          }}
-        >
-          <Ionicons name="car-outline" size={17} color={Colors.primary} />
-          <Text style={styles.fullDetailsBtnText}>Open Full Delivery Details</Text>
-          <Ionicons name="chevron-forward" size={15} color={Colors.primary} />
-        </TouchableOpacity>
-      </View>
-    </SheetWrapper>
+    </View>
   );
 }
 

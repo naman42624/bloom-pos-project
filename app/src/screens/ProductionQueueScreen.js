@@ -99,7 +99,7 @@ export default function ProductionQueueScreen({ navigation, route }) {
   }, [width]);
 
   const { user, activeLocation, settings } = useAuth();
-  const timezone = settings?.timezone || 'Asia/Kolkata';
+  const timezone = settings?.timezone?.value || 'Asia/Kolkata';
 
   const [viewMode, setViewMode] = useState('tasks');
   const [tasks, setTasks] = useState([]);

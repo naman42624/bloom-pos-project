@@ -17,7 +17,7 @@ import DateTimePickerModal from '../components/DateTimePickerModal';
 
 export default function PurchaseOrderFormScreen({ route, navigation }) {
   const { settings } = useAuth();
-  const timezone = settings?.timezone || 'Asia/Kolkata';
+  const timezone = settings?.timezone?.value || 'Asia/Kolkata';
   const existingOrder = route.params?.order;
 
   const isEditing = !!existingOrder;

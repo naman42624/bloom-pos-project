@@ -22,14 +22,14 @@ function generateSettlementNumber(db, locationId) {
   const mm = todayDate.slice(5, 7);
   const yy = todayDate.slice(2, 4);
   const dateCode = `${dd}${mm}${yy}`;
-  
+
   // Get max sequence number for today
   const maxSeq = db2.prepare(
     `SELECT MAX(CAST(RIGHT(settlement_number, 3) AS INTEGER)) as max_seq
      FROM delivery_settlements
      WHERE location_id = ? AND settlement_date = ?`
   ).get(locationId, todayStr());
-  
+
   const nextSeq = (maxSeq?.max_seq || 0) + 1;
   return `SETL-${dateCode}-${String(nextSeq).padStart(3, '0')}`;
 }
@@ -662,7 +662,7 @@ router.post('/:id(\\d+)/convert-payment', authenticate, authorize('owner', 'mana
 
       } else if (action === 'to_credit') {
         if (sale.is_credit_sale) throw new Error('Sale is already a credit sale');
-        
+
         // Find customer
         let customerId = sale.customer_id;
         if (!customerId) {
@@ -671,7 +671,7 @@ router.post('/:id(\\d+)/convert-payment', authenticate, authorize('owner', 'mana
           }
           const cName = sale.customer_name || delivery.customer_name || 'Guest';
           const cPhone = sale.customer_phone || delivery.customer_phone || null;
-          
+
           let existing;
           if (cPhone) {
             existing = db.prepare('SELECT id FROM users WHERE role = ? AND phone = ?').get('customer', cPhone);
@@ -813,7 +813,7 @@ router.get('/settlements/unsettled', authenticate, authorize('owner', 'manager',
   try {
     const db = await getAsyncDb();
     const { delivery_partner_id } = req.query;
-    
+
     const partnerId = req.user.role === 'delivery_partner' ? req.user.id : parseInt(delivery_partner_id);
     if (!partnerId) return res.status(400).json({ success: false, message: 'delivery_partner_id required' });
 
@@ -964,7 +964,7 @@ router.put(
               failed_deliveries = ?
           WHERE id = ?
         `).run(
-          req.user.id, 
+          req.user.id,
           deliveryStats?.successful || 0,
           deliveryStats?.failed || 0,
           settlement.id

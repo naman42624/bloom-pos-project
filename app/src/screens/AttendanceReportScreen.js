@@ -47,7 +47,7 @@ const PERIODS = [
 
 export default function AttendanceReportScreen() {
   const { settings } = useAuth();
-  const timezone = settings?.timezone || 'Asia/Kolkata';
+  const timezone = settings?.timezone?.value || 'Asia/Kolkata';
   const [loading, setLoading] = useState(true);
 
   const [refreshing, setRefreshing] = useState(false);

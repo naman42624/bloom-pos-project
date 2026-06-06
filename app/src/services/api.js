@@ -670,6 +670,10 @@ class ApiService {
     return this.request(`/customers/${customerId}/credits`, { method: 'POST', body: JSON.stringify(data) });
   }
 
+  addPreviousDue(customerId, data) {
+    return this.request(`/customers/${customerId}/add-due`, { method: 'POST', body: JSON.stringify(data) });
+  }
+
   // Special dates
   addSpecialDate(customerId, data) {
     return this.request(`/customers/${customerId}/special-dates`, { method: 'POST', body: JSON.stringify(data) });

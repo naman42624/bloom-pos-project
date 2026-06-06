@@ -21,7 +21,7 @@ import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 import { Colors, FontSize, Spacing } from '../constants/theme';
 import { formatDateTime, parseServerDate, getShopNow, DEFAULT_TZ, minutesSinceServerDate, minutesUntilShopDateTime, formatTimeString } from '../utils/datetime';
-import { OrderQuickModal, DeliveryQuickModal } from '../components/QuickModals';
+import { OrderQuickModal } from '../components/QuickModals';
 import DateTimePickerModal from '../components/DateTimePickerModal';
 
 const ORDER_TYPES = ['delivery', 'pickup', 'walk_in'];
@@ -501,15 +501,13 @@ function OrderCard({ order, tasks, hasPendingProduction, pulseOpacity, onTaskCli
 export default function DashboardScreen({ navigation }) {
   const { width } = useWindowDimensions();
   const { user, activeLocation, settings } = useAuth();
-  const timezone = settings?.timezone || 'Asia/Kolkata';
+  const timezone = settings?.timezone?.value || 'Asia/Kolkata';
 
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
   const [fabVisible, setFabVisible] = useState(false);
   const [selectedTaskModal, setSelectedTaskModal] = useState(null);
   const [selectedOrderModal, setSelectedOrderModal] = useState(null); // { order, tasks }
-  const [selectedDeliveryId, setSelectedDeliveryId] = useState(null);
-  const savedOrderForDelivery = useRef(null); // stores order context for back-navigation from delivery modal
 
   const [locations, setLocations] = useState([]);
   const [locationScope, setLocationScope] = useState(null);
@@ -823,7 +821,7 @@ export default function DashboardScreen({ navigation }) {
       initialOrderType: orderType,
       initialStatus: status || '',
       initialLocationId: locationScope === 'all' ? null : (locationScope || activeLocation?.id || null),
-      initialShowFilters: true,
+      initialShowFilters: false,
     });
   }, [navigation, activeLocation?.id, locationScope]);
 
@@ -1466,26 +1464,6 @@ export default function DashboardScreen({ navigation }) {
         onRefresh={fetchDashboard}
         navigation={navigation}
         canManage={isOwnerOrManager}
-        onOpenDelivery={(deliveryId) => {
-          // Save context so user can return to this order modal
-          savedOrderForDelivery.current = selectedOrderModal;
-          setSelectedOrderModal(null);
-          setSelectedDeliveryId(deliveryId);
-        }}
-      />
-
-      <DeliveryQuickModal
-        visible={selectedDeliveryId !== null}
-        deliveryId={selectedDeliveryId}
-        onClose={() => setSelectedDeliveryId(null)}
-        onRefresh={fetchDashboard}
-        navigation={navigation}
-        canManage={isOwnerOrManager}
-        onBackToSale={savedOrderForDelivery.current ? () => {
-          setSelectedDeliveryId(null);
-          setSelectedOrderModal(savedOrderForDelivery.current);
-          savedOrderForDelivery.current = null;
-        } : undefined}
       />
 
       <Modal visible={fabVisible} transparent animationType="fade" onRequestClose={() => setFabVisible(false)}>
