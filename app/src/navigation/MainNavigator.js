@@ -295,9 +295,9 @@ function ProfileStack() {
 function POSStack() {
   return (
     <Stack.Navigator screenOptions={stackScreenOptions}>
+      <Stack.Screen name="QuickCheckout" component={QuickCheckoutScreen} options={{ title: 'Quick Checkout' }} />
       <Stack.Screen name="POSHome" component={POSScreen} options={{ title: 'Point of Sale' }} />
       <Stack.Screen name="SaleDrafts" component={SaleDraftsScreen} options={{ title: 'Saved Drafts' }} />
-      <Stack.Screen name="QuickCheckout" component={QuickCheckoutScreen} options={{ title: 'Quick Checkout' }} />
       <Stack.Screen name="SaleDetail" component={SaleDetailScreen} options={{ title: 'Sale Details' }} />
       <Stack.Screen name="RefundSale" component={RefundSaleScreen} options={{ title: 'Refund' }} />
       <Stack.Screen name="AddPayment" component={AddPaymentScreen} options={{ title: 'Record Payment' }} />
@@ -557,7 +557,7 @@ export default function MainNavigator() {
           options={{ tabBarLabel: 'POS' }}
           listeners={({ navigation }) => ({
             tabPress: () => {
-              navigation.navigate('POS', { screen: 'POSHome' });
+              navigation.navigate('POS', { screen: 'QuickCheckout' });
             },
           })}
         />
