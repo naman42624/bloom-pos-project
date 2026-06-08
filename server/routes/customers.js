@@ -737,17 +737,251 @@ router.post(
 router.get('/:id/credits', authenticate, async (req, res, next) => {
   try {
     const db = await getAsyncDb();
-    const payments = await db.prepare(`
-      SELECT cp.*, cp.payment_method as method, u.name as received_by_name, l.name as location_name
-      FROM credit_payments cp
-      LEFT JOIN users u ON cp.recorded_by = u.id
-      LEFT JOIN locations l ON cp.location_id = l.id
-      WHERE cp.customer_id = ?
-      ORDER BY cp.created_at DESC
-    `).all(req.params.id);
+    const { limit = 50, offset = 0, search, startDate, endDate, method, type, sort = 'date_desc', includeAllOrders = 'false' } = req.query;
+    const includeAll = includeAllOrders === 'true';
 
-    const customer = await db.prepare("SELECT credit_balance FROM users WHERE id = ? AND role = 'customer'").get(req.params.id);
-    res.json({ success: true, data: payments, credit_balance: customer?.credit_balance || 0 });
+    const customerId = req.params.id;
+
+    // The sales filter ensures that if we don't include all orders, we only include credit orders.
+    const saleFilter = !includeAll 
+      ? `AND (s.is_credit_sale = 1 OR s.payment_status != 'paid')` 
+      : ``;
+
+    let baseSql = `
+      WITH combined_ledger AS (
+        -- 1. Manual Credit Payments & Generic Payments
+        SELECT 
+          cp.id as id,
+          cp.customer_id,
+          cp.sale_id,
+          cp.amount,
+          cp.payment_method as method,
+          NULL as reference_number,
+          cp.notes,
+          cp.recorded_by,
+          cp.created_at,
+          (
+            SELECT string_agg('Applied ₹' || p.amount || ' to Order #' || s.sale_number, ', ') 
+            FROM payments p JOIN sales s ON p.sale_id = s.id 
+            WHERE p.reference_number = 'Credit-' || cp.id
+          ) as allocation_details,
+          NULL as remaining_due,
+          NULL as sale_number,
+          'credit_payment' as source_table,
+          u.name as received_by_name,
+          l.name as location_name
+        FROM credit_payments cp
+        LEFT JOIN users u ON cp.recorded_by = u.id
+        LEFT JOIN locations l ON cp.location_id = l.id
+        WHERE cp.customer_id = ?
+        
+        UNION ALL
+        
+        -- 2. Sales Invoices (Debts)
+        SELECT 
+          s.id as id,
+          ? as customer_id,
+          s.id as sale_id,
+          -(s.grand_total) as amount,
+          'order_debt' as method,
+          s.sale_number as reference_number,
+          'Order Placed' as notes,
+          s.created_by as recorded_by,
+          s.created_at,
+          NULL as allocation_details,
+          -(s.grand_total - (SELECT COALESCE(SUM(amount), 0) FROM payments WHERE sale_id = s.id)) as remaining_due,
+          s.sale_number as sale_number,
+          'sales' as source_table,
+          u.name as received_by_name,
+          l.name as location_name
+        FROM sales s
+        LEFT JOIN users u ON s.created_by = u.id
+        LEFT JOIN locations l ON s.location_id = l.id
+        WHERE (s.customer_id = ? OR s.sender_customer_id = ?) AND s.status != 'cancelled'
+          ${saleFilter}
+
+        UNION ALL
+        
+        -- 3. Payments for Sales
+        SELECT 
+          p.id as id,
+          ? as customer_id,
+          p.sale_id,
+          p.amount,
+          p.method,
+          p.reference_number,
+          'Order Payment' as notes,
+          p.received_by as recorded_by,
+          p.created_at,
+          NULL as allocation_details,
+          NULL as remaining_due,
+          s.sale_number as sale_number,
+          'payments' as source_table,
+          u.name as received_by_name,
+          l.name as location_name
+        FROM payments p
+        JOIN sales s ON p.sale_id = s.id
+        LEFT JOIN users u ON p.received_by = u.id
+        LEFT JOIN locations l ON s.location_id = l.id
+        WHERE (s.customer_id = ? OR s.sender_customer_id = ?) AND s.status != 'cancelled'
+          AND (p.reference_number IS NULL OR p.reference_number NOT LIKE 'Credit-%')
+          ${saleFilter}
+      )
+      SELECT * FROM combined_ledger
+    `;
+
+    // 7 question marks in baseSql
+    let baseParams = [customerId, customerId, customerId, customerId, customerId, customerId, customerId];
+
+    let whereFilters = [];
+    if (search) {
+      whereFilters.push(`(notes ILIKE ? OR received_by_name ILIKE ?)`);
+      baseParams.push(`%${search}%`, `%${search}%`);
+    }
+    if (startDate) {
+      whereFilters.push(`DATE(created_at) >= ?`);
+      baseParams.push(startDate);
+    }
+    if (endDate) {
+      whereFilters.push(`DATE(created_at) <= ?`);
+      baseParams.push(endDate);
+    }
+    
+    if (method && method !== 'all') {
+      if (method === 'previous_due') whereFilters.push(`method = 'previous_due'`);
+      else {
+        whereFilters.push(`method = ?`);
+        baseParams.push(method);
+      }
+    }
+
+    if (type === 'payment') whereFilters.push(`amount > 0`);
+    else if (type === 'due') whereFilters.push(`amount < 0 AND (remaining_due IS NULL OR ROUND(remaining_due::numeric, 2) != 0)`);
+
+    const whereClause = whereFilters.length > 0 ? `WHERE ${whereFilters.join(' AND ')}` : '';
+
+    let sortClause = 'ORDER BY created_at DESC';
+    if (sort === 'date_asc') sortClause = 'ORDER BY created_at ASC';
+    else if (sort === 'amount_desc') sortClause = 'ORDER BY ABS(amount) DESC';
+
+    const countSql = `SELECT COUNT(*) as total FROM (${baseSql}) as t ${whereClause}`;
+    const dataSql = `${baseSql} ${whereClause} ${sortClause} LIMIT ? OFFSET ?`;
+
+    const dataParams = [...baseParams, parseInt(limit), parseInt(offset)];
+
+    console.log("SQL:", countSql);
+    console.log("PARAMS:", baseParams);
+
+    const { total } = await db.prepare(countSql).get(...baseParams);
+    const payments = await db.prepare(dataSql).all(...dataParams);
+
+    const customer = await db.prepare("SELECT credit_balance FROM users WHERE id = ? AND role = 'customer'").get(customerId);
+    res.json({ success: true, data: payments, total, credit_balance: customer?.credit_balance || 0, limit: parseInt(limit), offset: parseInt(offset) });
+  } catch (err) { next(err); }
+});
+
+// ─── PUT /api/customers/:id/credits/:creditId ─────────────────
+router.put(
+  '/:id/credits/:creditId',
+  authenticate,
+  authorize('owner'),
+  [
+    body('amount').optional().isFloat().withMessage('Invalid amount'),
+    body('method').optional().isIn(['cash', 'card', 'upi', 'previous_due']).withMessage('Invalid method'),
+    body('notes').optional().trim(),
+    body('date').optional().trim()
+  ],
+  (req, res, next) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) return res.status(400).json({ success: false, message: 'Validation failed', errors: errors.array() });
+
+      const db = getDb();
+      const { id: customerId, creditId } = req.params;
+      const { amount, method, notes, date } = req.body;
+
+      const record = db.prepare('SELECT * FROM credit_payments WHERE id = ? AND customer_id = ?').get(creditId, customerId);
+      if (!record) return res.status(404).json({ success: false, message: 'Credit record not found' });
+
+      if (record.sale_id && (amount !== undefined && Number(amount) !== Number(record.amount) || method !== undefined && method !== record.payment_method)) {
+        return res.status(400).json({ success: false, message: 'Cannot edit amount or method for payments linked to a sale. Edit the sale instead.' });
+      }
+
+      const editTx = db.transaction(() => {
+        let updates = [];
+        let params = [];
+        
+        let amountDelta = 0;
+        let newAmount = record.amount;
+
+        if (amount !== undefined && Number(amount) !== Number(record.amount)) {
+          newAmount = Number(amount);
+          amountDelta = Number(record.amount) - newAmount;
+          updates.push('amount = ?');
+          params.push(newAmount);
+        }
+
+        if (method !== undefined) {
+          updates.push('payment_method = ?');
+          params.push(method);
+        }
+        if (notes !== undefined) {
+          updates.push('notes = ?');
+          params.push(notes);
+        }
+        if (date !== undefined) {
+          updates.push('created_at = ?');
+          params.push(date + (date.length === 10 ? ' 00:00:00' : ''));
+        }
+
+        if (updates.length > 0) {
+          params.push(creditId);
+          db.prepare(`UPDATE credit_payments SET ${updates.join(', ')} WHERE id = ?`).run(...params);
+
+          if (amountDelta !== 0) {
+            db.prepare('UPDATE users SET credit_balance = credit_balance + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(amountDelta, customerId);
+          }
+        }
+      });
+
+      editTx();
+
+      const updatedRecord = db.prepare(`
+        SELECT cp.*, cp.payment_method as method, u.name as received_by_name, l.name as location_name
+        FROM credit_payments cp
+        LEFT JOIN users u ON cp.recorded_by = u.id
+        LEFT JOIN locations l ON cp.location_id = l.id
+        WHERE cp.id = ?
+      `).get(creditId);
+
+      const customer = db.prepare('SELECT credit_balance FROM users WHERE id = ?').get(customerId);
+      res.json({ success: true, data: updatedRecord, new_balance: customer.credit_balance });
+    } catch (err) { next(err); }
+  }
+);
+
+// ─── DELETE /api/customers/:id/credits/:creditId ──────────────
+router.delete('/:id/credits/:creditId', authenticate, authorize('owner'), (req, res, next) => {
+  try {
+    const db = getDb();
+    const { id: customerId, creditId } = req.params;
+
+    const record = db.prepare('SELECT * FROM credit_payments WHERE id = ? AND customer_id = ?').get(creditId, customerId);
+    if (!record) return res.status(404).json({ success: false, message: 'Credit record not found' });
+
+    if (record.sale_id) {
+      return res.status(400).json({ success: false, message: 'Cannot delete payments linked to a sale directly. Modify the sale instead.' });
+    }
+
+    const deleteTx = db.transaction(() => {
+      db.prepare('UPDATE users SET credit_balance = credit_balance + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(record.amount, customerId);
+      db.prepare('DELETE FROM credit_payments WHERE id = ?').run(creditId);
+    });
+
+    deleteTx();
+
+    const customer = db.prepare('SELECT credit_balance FROM users WHERE id = ?').get(customerId);
+    res.json({ success: true, message: 'Record deleted successfully', new_balance: customer.credit_balance });
   } catch (err) { next(err); }
 });
 

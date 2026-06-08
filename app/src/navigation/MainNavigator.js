@@ -60,6 +60,7 @@ import ExpensesScreen from '../screens/ExpensesScreen';
 import CustomersScreen from '../screens/CustomersScreen';
 import CustomerDetailScreen from '../screens/CustomerDetailScreen';
 import CustomerFormScreen from '../screens/CustomerFormScreen';
+import CustomerCreditRecordsScreen from '../screens/CustomerCreditRecordsScreen';
 
 // Production Queue
 import ProductionQueueScreen from '../screens/ProductionQueueScreen';
@@ -268,6 +269,7 @@ function CustomersStack() {
         component={CustomerFormScreen}
         options={({ route }) => ({ title: route.params?.customer ? 'Edit Customer' : 'New Customer', presentation: 'modal' })}
       />
+      <Stack.Screen name="CustomerCreditRecords" component={CustomerCreditRecordsScreen} options={{ title: 'Credit Records' }} />
       <Stack.Screen name="SaleDetail" component={SaleDetailScreen} options={{ title: 'Sale Details' }} />
     </Stack.Navigator>
   );
@@ -381,6 +383,7 @@ function MoreStack() {
         component={CustomerFormScreen}
         options={({ route }) => ({ title: route.params?.customer ? 'Edit Customer' : 'New Customer', presentation: 'modal' })}
       />
+      <Stack.Screen name="CustomerCreditRecords" component={CustomerCreditRecordsScreen} options={{ title: 'Credit Records' }} />
       <Stack.Screen name="Locations" component={LocationsScreen} options={{ title: 'Locations' }} />
       <Stack.Screen name="LocationDetail" component={LocationDetailScreen} options={{ title: 'Location Details' }} />
       <Stack.Screen

@@ -215,6 +215,10 @@ export default function CustomerDetailScreen({ route, navigation }) {
     return <View style={styles.container}><Text style={styles.loadingText}>Customer not found</Text></View>;
   }
 
+  const unpaidOrdersSum = (customer.orders || []).reduce((acc, o) => acc + (o.balance_due > 0.01 ? o.balance_due : 0), 0);
+  const manualPreviousDue = Math.max(0, (customer.credit_balance || 0) - unpaidOrdersSum);
+  const hasPendingBreakup = unpaidOrdersSum > 0.01 || manualPreviousDue > 0.01;
+
   return (
     <>
       <ScrollView
@@ -290,11 +294,27 @@ export default function CustomerDetailScreen({ route, navigation }) {
             </View>
             
             {/* Pending Dues Breakup */}
-            {(customer.orders || []).filter(o => o.balance_due > 0.01).length > 0 && (
+            {hasPendingBreakup && (
               <View style={{ marginTop: Spacing.sm }}>
                 <Text style={[styles.sectionTitle, { marginTop: 0, paddingHorizontal: 0, fontSize: FontSize.sm, color: Colors.textSecondary }]}>
                   Pending Dues Breakup:
                 </Text>
+                
+                {manualPreviousDue > 0.01 && (
+                  <View style={[styles.orderCard, { marginHorizontal: 0, borderColor: Colors.warning + '30', backgroundColor: Colors.warning + '05', paddingVertical: Spacing.md }]}>
+                    <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center' }}>
+                      <Ionicons name="time" size={18} color={Colors.warning} style={{ marginRight: Spacing.sm }} />
+                      <View>
+                        <Text style={[styles.orderNumber, { color: Colors.warning }]}>Legacy / Manual Pending Dues</Text>
+                        <Text style={styles.orderMeta}>Accumulated from past records</Text>
+                      </View>
+                    </View>
+                    <View style={{ alignItems: 'flex-end', marginRight: Spacing.xs }}>
+                      <Text style={[styles.orderTotal, { color: Colors.warning }]}>Due: ₹{Number(manualPreviousDue).toFixed(0)}</Text>
+                    </View>
+                  </View>
+                )}
+
                 {(customer.orders || []).filter(o => o.balance_due > 0.01).map(order => (
                   <TouchableOpacity
                     key={`due-${order.id}`}
@@ -321,8 +341,10 @@ export default function CustomerDetailScreen({ route, navigation }) {
         {/* Credit payment history */}
         {(customer.credit_payments || []).length > 0 && (
           <>
-            <Text style={styles.sectionTitle}>Payment History</Text>
-            {customer.credit_payments.map((cp) => (
+            <View style={[styles.sectionHeader, { marginBottom: Spacing.xs }]}>
+              <Text style={[styles.sectionTitle, { marginTop: 0, paddingHorizontal: 0 }]}>Payment History</Text>
+            </View>
+            {customer.credit_payments.slice(0, 5).map((cp) => (
               <View key={cp.id} style={[styles.historyCard, cp.amount < 0 && { borderColor: Colors.warning + '50', backgroundColor: Colors.warning + '05' }]}>
                 <View style={{ flex: 1 }}>
                   {cp.amount < 0 ? (
@@ -346,6 +368,14 @@ export default function CustomerDetailScreen({ route, navigation }) {
                 )}
               </View>
             ))}
+            {(customer.credit_payments || []).length > 5 && (
+              <TouchableOpacity 
+                style={{ alignItems: 'center', paddingVertical: Spacing.md }}
+                onPress={() => navigation.navigate('CustomerCreditRecords', { customerId: customer.id, customerName: customer.name })}
+              >
+                <Text style={{ color: Colors.primary, fontSize: FontSize.sm, fontWeight: '600' }}>View All Records</Text>
+              </TouchableOpacity>
+            )}
           </>
         )}
 

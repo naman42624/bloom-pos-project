@@ -3,6 +3,7 @@ import React, { useState, useEffect, useLayoutEffect, useCallback } from 'react'
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, Platform, ActivityIndicator, Modal, TextInput, KeyboardAvoidingView,
 } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
@@ -111,7 +112,11 @@ export default function SaleDetailScreen({ route, navigation }) {
   const [editPaymentMethod, setEditPaymentMethod] = useState('cash');
   const [savingEdit, setSavingEdit] = useState(false);
 
-  useEffect(() => { fetchSale(); }, [saleId]);
+  useFocusEffect(
+    useCallback(() => {
+      fetchSale();
+    }, [saleId])
+  );
 
   const fetchSale = async () => {
     try {
@@ -137,7 +142,7 @@ export default function SaleDetailScreen({ route, navigation }) {
     setSavingEdit(true);
     try {
       // Calculate current paid amount to retain the amount but change the method
-      const currentPaid = (sale.payments || []).reduce((sum, p) => sum + p.amount, 0);
+      const currentPaid = (sale.payments || []).reduce((sum, p) => sum + Number(p.amount || 0), 0);
 
       const payload = {
         customer_name: editCustomerName,
@@ -432,8 +437,8 @@ export default function SaleDetailScreen({ route, navigation }) {
   }, []);
 
   const generateReceipt = async () => {
-    const paidAmt = (sale.payments || []).reduce((s, p) => s + p.amount, 0);
-    const dueAmt = sale.grand_total - paidAmt;
+    const paidAmt = (sale.payments || []).reduce((s, p) => s + Number(p.amount || 0), 0);
+    const dueAmt = Number(sale.grand_total || 0) - paidAmt;
     const receiptHtml = `
       <html><head><meta charset="utf-8"><style>
         body { font-family: 'Courier New', monospace; max-width: 300px; margin: 0 auto; padding: 16px; font-size: 12px; }
@@ -532,8 +537,8 @@ export default function SaleDetailScreen({ route, navigation }) {
     return <View style={styles.center}><Text style={styles.emptyText}>Sale not found</Text></View>;
   }
 
-  const paidAmount = (sale.payments || []).reduce((s, p) => s + p.amount, 0);
-  const due = sale.grand_total - paidAmount;
+  const paidAmount = (sale.payments || []).reduce((s, p) => s + Number(p.amount || 0), 0);
+  const due = Number(sale.grand_total || 0) - paidAmount;
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
@@ -1048,7 +1053,7 @@ export default function SaleDetailScreen({ route, navigation }) {
       )}
 
       {/* Pay balance */}
-      {sale.status === 'completed' && due > 0.01 && (
+      {sale.status !== 'cancelled' && due > 0.01 && (
         <TouchableOpacity
           style={[styles.actionBtn, { backgroundColor: Colors.success, alignSelf: 'stretch', marginHorizontal: 0 }]}
           onPress={() => navigation.navigate('AddPayment', { saleId, due })}
