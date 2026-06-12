@@ -642,6 +642,7 @@ function ensureCompatibilityColumns() {
   ensureCoreTables();
 
   ensureColumn('settings', 'updated_by', 'INTEGER REFERENCES users(id) ON DELETE SET NULL');
+  ensureColumn('expenses', 'is_return', 'INTEGER DEFAULT 0');
   ensureColumn('locations', 'gst_number', 'VARCHAR(50)');
   ensureColumn('locations', 'geofence_radius', 'INTEGER DEFAULT 500');
   ensureColumn('user_locations', 'is_primary', 'INTEGER DEFAULT 0');
@@ -913,6 +914,7 @@ function ensureCompatibilityColumns() {
   ensureColumn('customer_addresses', 'address', 'TEXT');
 
   // Sync credit_payments column with VPS/schema.sql
+  renameColumn('credit_payments', 'method', 'payment_method');
   renameColumn('credit_payments', 'received_by', 'recorded_by');
   ensureColumn('credit_payments', 'location_id', 'INTEGER REFERENCES locations(id)');
 

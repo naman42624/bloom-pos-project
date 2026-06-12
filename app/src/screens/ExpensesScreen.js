@@ -44,6 +44,7 @@ export default function ExpensesScreen() {
   const [description, setDescription] = useState('');
   const [category, setCategory] = useState('petty_cash');
   const [paymentMethod, setPaymentMethod] = useState('cash');
+  const [isReturn, setIsReturn] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
   useFocusEffect(
@@ -99,9 +100,10 @@ export default function ExpensesScreen() {
         description: description.trim(),
         payment_method: paymentMethod,
         expense_date: today,
+        is_return: isReturn,
       });
       setShowAdd(false);
-      setAmount(''); setDescription(''); setCategory('petty_cash'); setPaymentMethod('cash');
+      setAmount(''); setDescription(''); setCategory('petty_cash'); setPaymentMethod('cash'); setIsReturn(false);
       fetchExpenses();
     } catch (err) {
       Alert.alert('Error', err.message || 'Failed to add expense');
@@ -127,6 +129,15 @@ export default function ExpensesScreen() {
     ]);
   };
 
+  const handleInitiateReturn = (expense) => {
+    setIsReturn(true);
+    setCategory(expense.category);
+    setDescription(`Return: ${expense.description}`);
+    setPaymentMethod('cash');
+    setAmount(String(expense.amount || ''));
+    setShowAdd(true);
+  };
+
   const getCatIcon = (cat) => {
     const found = EXPENSE_CATEGORIES.find((c) => c.key === cat);
     return found ? found.icon : 'ellipsis-horizontal';
@@ -138,21 +149,30 @@ export default function ExpensesScreen() {
   };
 
   const renderExpense = ({ item }) => (
-    <View style={styles.card}>
-      <View style={styles.cardIcon}>
-        <Ionicons name={getCatIcon(item.category)} size={22} color={Colors.primary} />
+    <View style={[styles.card, item.is_return && styles.cardReturn]}>
+      <View style={[styles.cardIcon, item.is_return && styles.cardIconReturn]}>
+        <Ionicons name={item.is_return ? 'arrow-undo' : getCatIcon(item.category)} size={22} color={item.is_return ? Colors.success : Colors.primary} />
       </View>
       <View style={styles.cardCenter}>
         <Text style={styles.cardDesc} numberOfLines={1}>{item.description}</Text>
         <Text style={styles.cardMeta}>
-          {getCatLabel(item.category)} • {item.payment_method.toUpperCase()} • {item.created_by_name}
+          {item.is_return ? 'RETURN • ' : ''}{getCatLabel(item.category)} • {item.payment_method.toUpperCase()} • {item.created_by_name}
         </Text>
       </View>
       <View style={styles.cardRight}>
-        <Text style={styles.cardAmount}>₹{Number(item.amount || 0).toFixed(0)}</Text>
-        <TouchableOpacity onPress={() => handleDelete(item)}>
-          <Ionicons name="trash-outline" size={16} color={Colors.error} />
-        </TouchableOpacity>
+        <Text style={[styles.cardAmount, item.is_return && styles.cardAmountReturn]}>
+          {item.is_return ? '+' : '-'}₹{Number(item.amount || 0).toFixed(0)}
+        </Text>
+        <View style={styles.actionRow}>
+          {!item.is_return && item.payment_method === 'cash' && (
+            <TouchableOpacity onPress={() => handleInitiateReturn(item)} style={styles.iconBtn}>
+              <Ionicons name="arrow-undo-outline" size={16} color={Colors.textSecondary} />
+            </TouchableOpacity>
+          )}
+          <TouchableOpacity onPress={() => handleDelete(item)} style={styles.iconBtn}>
+            <Ionicons name="trash-outline" size={16} color={Colors.error} />
+          </TouchableOpacity>
+        </View>
       </View>
     </View>
   );
@@ -213,6 +233,21 @@ export default function ExpensesScreen() {
               </View>
 
               <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+                <View style={styles.typeToggle}>
+                  <TouchableOpacity
+                    style={[styles.typeBtn, !isReturn && styles.typeBtnActiveOut]}
+                    onPress={() => setIsReturn(false)}
+                  >
+                    <Text style={[styles.typeBtnText, !isReturn && styles.typeBtnTextActive]}>Expense Out</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.typeBtn, isReturn && styles.typeBtnActiveIn]}
+                    onPress={() => setIsReturn(true)}
+                  >
+                    <Text style={[styles.typeBtnText, isReturn && styles.typeBtnTextActive]}>Return In</Text>
+                  </TouchableOpacity>
+                </View>
+
                 <Text style={styles.fieldLabel}>Amount (₹) *</Text>
                 <TextInput
                   style={styles.input}
@@ -270,8 +305,8 @@ export default function ExpensesScreen() {
                     <ActivityIndicator color={Colors.white} />
                   ) : (
                     <>
-                      <Ionicons name="add-circle" size={18} color={Colors.white} />
-                      <Text style={styles.submitBtnText}>Add Expense</Text>
+                      <Ionicons name={isReturn ? "arrow-undo" : "add-circle"} size={18} color={Colors.white} />
+                      <Text style={styles.submitBtnText}>{isReturn ? "Save Return" : "Add Expense"}</Text>
                     </>
                   )}
                 </TouchableOpacity>
@@ -328,6 +363,11 @@ const styles = StyleSheet.create({
   cardMeta: { fontSize: FontSize.xs, color: Colors.textLight, marginTop: 2 },
   cardRight: { alignItems: 'flex-end', gap: Spacing.xs },
   cardAmount: { fontSize: FontSize.md, fontWeight: '700', color: Colors.error },
+  cardAmountReturn: { color: Colors.success },
+  cardReturn: { borderColor: Colors.success + '40', backgroundColor: Colors.success + '08' },
+  cardIconReturn: { backgroundColor: Colors.success + '12' },
+  actionRow: { flexDirection: 'row', gap: Spacing.md, marginTop: 4 },
+  iconBtn: { padding: 4 },
 
   empty: { alignItems: 'center', paddingTop: 80 },
   emptyText: { color: Colors.textLight, marginTop: Spacing.sm, fontSize: FontSize.sm },
@@ -342,6 +382,16 @@ const styles = StyleSheet.create({
     marginBottom: Spacing.md,
   },
   modalTitle: { fontSize: FontSize.md, fontWeight: '700', color: Colors.text },
+
+  typeToggle: {
+    flexDirection: 'row', backgroundColor: Colors.background, borderRadius: BorderRadius.md,
+    padding: 2, marginBottom: Spacing.sm,
+  },
+  typeBtn: { flex: 1, paddingVertical: Spacing.sm, alignItems: 'center', borderRadius: BorderRadius.sm },
+  typeBtnActiveOut: { backgroundColor: Colors.error },
+  typeBtnActiveIn: { backgroundColor: Colors.success },
+  typeBtnText: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.textSecondary },
+  typeBtnTextActive: { color: Colors.white },
 
   fieldLabel: { fontSize: FontSize.xs, fontWeight: '600', color: Colors.text, marginTop: Spacing.md, marginBottom: Spacing.xs },
   input: {

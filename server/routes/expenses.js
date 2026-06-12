@@ -73,10 +73,11 @@ router.get('/', authenticate, async (req, res, next) => {
     const normalizedExpenses = expenses.map((expense) => ({
       ...expense,
       amount: Number(expense.amount) || 0,
+      is_return: !!expense.is_return,
     }));
 
     // Calculate totals using numeric amounts so the client always receives numbers.
-    const total = normalizedExpenses.reduce((sum, expense) => sum + expense.amount, 0);
+    const total = normalizedExpenses.reduce((sum, expense) => sum + (expense.is_return ? -expense.amount : expense.amount), 0);
 
     res.json({ success: true, data: normalizedExpenses, total });
   } catch (err) {
@@ -96,6 +97,7 @@ router.post(
     body('description').optional().trim(),
     body('payment_method').isIn(['cash', 'card', 'upi']),
     body('expense_date').notEmpty(),
+    body('is_return').optional().isBoolean(),
   ],
   (req, res, next) => {
     try {
@@ -103,30 +105,31 @@ router.post(
       if (!errors.isEmpty()) return res.status(400).json({ success: false, message: 'Validation failed', errors: errors.array() });
 
       const db = getDb();
-      const { location_id, category, amount, description, payment_method, expense_date } = req.body;
+      const { location_id, category, amount, description, payment_method, expense_date, is_return } = req.body;
 
       const expense_number = generateExpenseNumber(db, location_id);
 
       let result;
+      const isReturnInt = is_return ? 1 : 0;
       try {
         if (expense_number) {
           result = db.prepare(
-            `INSERT INTO expenses (expense_number, location_id, category, amount, description, payment_method, expense_date, created_by)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-          ).run(expense_number, location_id, category, amount, description || '', payment_method, expense_date, req.user.id);
+            `INSERT INTO expenses (expense_number, location_id, category, amount, description, payment_method, expense_date, created_by, is_return)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          ).run(expense_number, location_id, category, amount, description || '', payment_method, expense_date, req.user.id, isReturnInt);
         } else {
           result = db.prepare(
-            `INSERT INTO expenses (location_id, category, amount, description, payment_method, expense_date, created_by)
-             VALUES (?, ?, ?, ?, ?, ?, ?)`
-          ).run(location_id, category, amount, description || '', payment_method, expense_date, req.user.id);
+            `INSERT INTO expenses (location_id, category, amount, description, payment_method, expense_date, created_by, is_return)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+          ).run(location_id, category, amount, description || '', payment_method, expense_date, req.user.id, isReturnInt);
         }
       } catch (err) {
         const msg = String(err?.message || '').toLowerCase();
         if (!msg.includes('expense_number')) throw err;
         result = db.prepare(
-          `INSERT INTO expenses (location_id, category, amount, description, payment_method, expense_date, created_by)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`
-        ).run(location_id, category, amount, description || '', payment_method, expense_date, req.user.id);
+          `INSERT INTO expenses (location_id, category, amount, description, payment_method, expense_date, created_by, is_return)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+        ).run(location_id, category, amount, description || '', payment_method, expense_date, req.user.id, isReturnInt);
       }
 
       // If cash expense, deduct from cash register expected_cash
@@ -134,7 +137,11 @@ router.post(
         const today = localToday();
         const register = db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND date = ?').get(location_id, today);
         if (register) {
-          db.prepare('UPDATE cash_registers SET expected_cash = expected_cash - ? WHERE id = ?').run(amount, register.id);
+          if (is_return) {
+            db.prepare('UPDATE cash_registers SET expected_cash = expected_cash + ? WHERE id = ?').run(amount, register.id);
+          } else {
+            db.prepare('UPDATE cash_registers SET expected_cash = expected_cash - ? WHERE id = ?').run(amount, register.id);
+          }
         }
       }
 
@@ -164,7 +171,11 @@ router.delete('/:id', authenticate, authorize('owner', 'manager'), (req, res, ne
     if (expense.payment_method === 'cash') {
       const register = db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND date = ?').get(expense.location_id, expense.expense_date);
       if (register) {
-        db.prepare('UPDATE cash_registers SET expected_cash = expected_cash + ? WHERE id = ?').run(expense.amount, register.id);
+        if (expense.is_return) {
+          db.prepare('UPDATE cash_registers SET expected_cash = expected_cash - ? WHERE id = ?').run(expense.amount, register.id);
+        } else {
+          db.prepare('UPDATE cash_registers SET expected_cash = expected_cash + ? WHERE id = ?').run(expense.amount, register.id);
+        }
       }
     }
 
@@ -181,7 +192,7 @@ router.get('/summary', authenticate, async (req, res, next) => {
     const db = await getAsyncDb();
     const { location_id, start_date, end_date } = req.query;
 
-    let sql = 'SELECT category, SUM(amount) as total, COUNT(*) as count FROM expenses WHERE 1=1';
+    let sql = 'SELECT category, SUM(CASE WHEN is_return = 1 THEN -amount ELSE amount END) as total, COUNT(*) as count FROM expenses WHERE 1=1';
     const params = [];
 
     if (location_id) { sql += ' AND location_id = ?'; params.push(location_id); }
