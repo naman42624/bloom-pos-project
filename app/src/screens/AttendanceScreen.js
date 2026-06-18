@@ -33,7 +33,7 @@ function formatHours(h) {
 }
 
 export default function AttendanceScreen({ navigation }) {
-  const { user, activeLocation, locations: assignedLocations } = useAuth();
+  const { user, activeLocation, locations: assignedLocations, settings } = useAuth();
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [attendance, setAttendance] = useState(null);
@@ -52,7 +52,10 @@ export default function AttendanceScreen({ navigation }) {
   const isOwner = role === 'owner';
   const isStaff = role === 'owner' || role === 'manager' || role === 'employee' || role === 'delivery_partner';
   const isManagerOrOwner = role === 'owner' || role === 'manager';
-  const canClockInOut = isStaff && !isOwner; // owners don't clock in/out
+  
+  const managerOverrideOn = settings?.pref_manager_override?.value === '1';
+  // Owners don't clock in/out. If manager override is ON, regular staff cannot clock in/out either.
+  const canClockInOut = isStaff && !isOwner && !(managerOverrideOn && role !== 'manager');
 
   const fetchData = useCallback(async () => {
     try {
@@ -223,6 +226,15 @@ export default function AttendanceScreen({ navigation }) {
       contentContainerStyle={styles.content}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); fetchData(); }} colors={[Colors.primary]} />}
     >
+      {/* ─── Manager Override Banner ──────────────────────── */}
+      {managerOverrideOn && role !== 'manager' && role !== 'owner' && (
+        <View style={[styles.statusCard, { alignItems: 'center', backgroundColor: '#FFF3E0' }]}>
+          <Ionicons name="shield-checkmark" size={40} color={Colors.warning} />
+          <Text style={[styles.statusTitle, { marginTop: 8 }]}>Manager Override Active</Text>
+          <Text style={[styles.statusSubtitle, { textAlign: 'center' }]}>Your attendance is currently being managed by the store manager. You do not need to clock in/out manually.</Text>
+        </View>
+      )}
+
       {/* ─── Today's Status Card ──────────────────────────── */}
       {canClockInOut && (
       <View style={styles.statusCard}>

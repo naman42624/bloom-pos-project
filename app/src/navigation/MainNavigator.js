@@ -134,6 +134,7 @@ function DashboardStack() {
       <Stack.Screen name="Notifications" component={NotificationCenterScreen} options={{ title: 'Notifications' }} />
       <Stack.Screen name="SaleDrafts" component={SaleDraftsScreen} options={{ title: 'Saved Drafts' }} />
       <Stack.Screen name="SaleDetail" component={SaleDetailScreen} options={{ title: 'Sale Details' }} />
+      <Stack.Screen name="AddPayment" component={AddPaymentScreen} options={{ title: 'Record Payment' }} />
       <Stack.Screen name="DeliveryDetail" component={DeliveryDetailScreen} options={{ title: 'Delivery' }} />
       <Stack.Screen name="LiveDeliveryMap" component={LiveDeliveryMapScreen} options={{ title: 'Live Tracking' }} />
       <Stack.Screen name="ProductionQueue" component={ProductionQueueScreen} options={{ title: 'Production Queue' }} />
@@ -271,6 +272,8 @@ function CustomersStack() {
       />
       <Stack.Screen name="CustomerCreditRecords" component={CustomerCreditRecordsScreen} options={{ title: 'Credit Records' }} />
       <Stack.Screen name="SaleDetail" component={SaleDetailScreen} options={{ title: 'Sale Details' }} />
+      <Stack.Screen name="RefundSale" component={RefundSaleScreen} options={{ title: 'Refund' }} />
+      <Stack.Screen name="AddPayment" component={AddPaymentScreen} options={{ title: 'Record Payment' }} />
     </Stack.Navigator>
   );
 }

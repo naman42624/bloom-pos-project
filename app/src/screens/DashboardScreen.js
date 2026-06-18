@@ -970,6 +970,13 @@ export default function DashboardScreen({ navigation }) {
     );
   };
 
+  const activeOrderModalData = useMemo(() => {
+    if (!selectedOrderModal) return null;
+    const freshOrder = sales.find(s => s.id === selectedOrderModal.order.id) || selectedOrderModal.order;
+    const freshTasks = tasksBySaleId.get(selectedOrderModal.order.id) || selectedOrderModal.tasks;
+    return { order: freshOrder, tasks: freshTasks };
+  }, [selectedOrderModal, sales, tasksBySaleId]);
+
   return (
     <View style={styles.root}>
       <ScrollView
@@ -1457,9 +1464,9 @@ export default function DashboardScreen({ navigation }) {
       />
 
       <OrderQuickModal
-        visible={selectedOrderModal !== null}
-        order={selectedOrderModal?.order || null}
-        tasks={selectedOrderModal?.tasks || []}
+        visible={activeOrderModalData !== null}
+        order={activeOrderModalData?.order || null}
+        tasks={activeOrderModalData?.tasks || []}
         onClose={() => setSelectedOrderModal(null)}
         onRefresh={fetchDashboard}
         navigation={navigation}

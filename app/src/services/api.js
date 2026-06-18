@@ -543,6 +543,10 @@ class ApiService {
     return this.request(`/sales/${saleId}/cancel`, { method: 'PUT' });
   }
 
+  resolveSaleBalance(saleId, actionData) {
+    return this.request(`/sales/${saleId}/resolve-balance`, { method: 'POST', body: JSON.stringify(actionData) });
+  }
+
   updateOrderStatus(saleId, status) {
     if (status === 'cancelled') {
       return this.cancelSale(saleId);

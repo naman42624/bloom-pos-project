@@ -336,32 +336,71 @@ function DetailPanel({ order, tasks, onClose, onRefresh, navigation, canManage, 
   const [codAmount, setCodAmount] = useState('');
   const [codMethod, setCodMethod] = useState('cash');
   const [failReason, setFailReason] = useState('');
+  const [showPayForm, setShowPayForm] = useState(false);
+  const [payAmount, setPayAmount] = useState('');
+  const [payMethod, setPayMethod] = useState('cash');
+  const [payLoading, setPayLoading] = useState(false);
 
   useEffect(()=>{setLocalTasks(tasks||[]);},[tasks]);
   useEffect(()=>{
     if(order?.order_type==='delivery'&&order?.id){setDelivLoading(true);api.getSale(order.id).then(r=>setDelivInfo(r?.data?.delivery||null)).catch(()=>setDelivInfo(null)).finally(()=>setDelivLoading(false));}
     else setDelivInfo(null);
-    setShowAssign(null);setConfirmStatus(null);setConfirmTask(null);setShowPartnerPick(false);setShowCodForm(false);setShowFailForm(false);setFailReason('');
+    setShowAssign(null);setConfirmStatus(null);setConfirmTask(null);setShowPartnerPick(false);setShowCodForm(false);setShowFailForm(false);setFailReason('');setShowPayForm(false);setPayAmount('');
   },[order?.id,order?.order_type]);
 
   const refreshTasks=useCallback(async()=>{if(!order?.id)return;try{const r=await api.getProductionTasks({sale_id:order.id});setLocalTasks(r?.data||[]);}catch{}},[order?.id]);
-  const doStatus=useCallback(async(next)=>{if(!order?.id)return;setActionLoading(true);try{await api.updateOrderStatus(order.id,next);onRefresh?.();onClose();}catch(e){Alert.alert('Error',e?.message||'Failed');}finally{setActionLoading(false);}},[order?.id,onRefresh,onClose]);
-  const confirmAction=useCallback((next)=>{if(confirmStatus===next){setConfirmStatus(null);doStatus(next);}else{setConfirmStatus(next);setTimeout(()=>setConfirmStatus(null),3000);}},[doStatus,confirmStatus]);
+  const doStatus=useCallback(async(next)=>{if(!order?.id)return;setActionLoading(true);try{await api.updateOrderStatus(order.id,next);onRefresh?.();onClose();}catch(e){const msg=e?.message||"Failed";Platform.OS==="web"?window.alert(msg):Alert.alert("Error",msg);}finally{setActionLoading(false);}},[order?.id,onRefresh,onClose]);
+  const confirmAction=useCallback((next)=>{if(next==='pay'){setShowPayForm(true); setPayAmount(dueAmt > 0 ? dueAmt.toString() : ''); return;}if(confirmStatus===next){setConfirmStatus(null);doStatus(next);}else{setConfirmStatus(next);setTimeout(()=>setConfirmStatus(null),3000);}},[doStatus,confirmStatus]);
 
   const openEmpPicker=useCallback(async(tid)=>{setShowAssign(tid);setEmpLoading(true);try{const r=await api.getUsers();const a=r?.data?.users||r?.data||[];setEmployees(Array.isArray(a)?a.filter(u=>['owner','manager','employee'].includes(u.role)):[]);}catch{setEmployees([]);}finally{setEmpLoading(false);}},[]);
-  const doTaskAssign=useCallback(async(tid,eid)=>{setTaskLoading(p=>({...p,[tid]:true}));try{await api.assignTask(tid,{assigned_to:eid});setShowAssign(null);await refreshTasks();onRefresh?.();}catch(e){Alert.alert('Error',e?.message||'Failed');}finally{setTaskLoading(p=>({...p,[tid]:false}));}},[onRefresh,refreshTasks]);
-  const doTaskStart=useCallback(async(tid)=>{setTaskLoading(p=>({...p,[tid]:true}));try{await api.startTask(tid);await refreshTasks();onRefresh?.();}catch(e){Alert.alert('Error',e?.message||'Failed');}finally{setTaskLoading(p=>({...p,[tid]:false}));}},[onRefresh,refreshTasks]);
-  const doTaskComplete=useCallback(async(tid)=>{if(confirmTask===tid){setConfirmTask(null);setTaskLoading(p=>({...p,[tid]:true}));try{await api.completeTask(tid);await refreshTasks();onRefresh?.();}catch(e){Alert.alert('Error',e?.message||'Failed');}finally{setTaskLoading(p=>({...p,[tid]:false}));}}else{setConfirmTask(tid);setTimeout(()=>setConfirmTask(null),3000);}},[confirmTask,onRefresh,refreshTasks]);
+  const doTaskAssign=useCallback(async(tid,eid)=>{setTaskLoading(p=>({...p,[tid]:true}));try{await api.assignTask(tid,{assigned_to:eid});setShowAssign(null);await refreshTasks();onRefresh?.();}catch(e){const msg=e?.message||"Failed";Platform.OS==="web"?window.alert(msg):Alert.alert("Error",msg);}finally{setTaskLoading(p=>({...p,[tid]:false}));}},[onRefresh,refreshTasks]);
+  const doTaskStart=useCallback(async(tid)=>{setTaskLoading(p=>({...p,[tid]:true}));try{await api.startTask(tid);await refreshTasks();onRefresh?.();}catch(e){const msg=e?.message||"Failed";Platform.OS==="web"?window.alert(msg):Alert.alert("Error",msg);}finally{setTaskLoading(p=>({...p,[tid]:false}));}},[onRefresh,refreshTasks]);
+  const doTaskComplete=useCallback(async(tid)=>{if(confirmTask===tid){setConfirmTask(null);setTaskLoading(p=>({...p,[tid]:true}));try{await api.completeTask(tid);await refreshTasks();onRefresh?.();}catch(e){const msg=e?.message||"Failed";Platform.OS==="web"?window.alert(msg):Alert.alert("Error",msg);}finally{setTaskLoading(p=>({...p,[tid]:false}));}}else{setConfirmTask(tid);setTimeout(()=>setConfirmTask(null),3000);}},[confirmTask,onRefresh,refreshTasks]);
 
   const openPartnerPick=async()=>{setPartnersLoading(true);setShowPartnerPick(true);try{const r=await api.getUsers({role:'delivery_partner',limit:100});const u=r?.data?.users||r?.data||[];setPartners(Array.isArray(u)?u.filter(x=>x.is_active):[]);}catch{setPartners([]);}finally{setPartnersLoading(false);}};
-  const doPartnerAssign=async(pid)=>{if(!delivInfo?.id)return;setDelivActionLoading(true);try{await api.assignDelivery(delivInfo.id,{delivery_partner_id:pid});setShowPartnerPick(false);const r=await api.getSale(order.id);setDelivInfo(r?.data?.delivery||null);onRefresh?.();}catch(e){Alert.alert('Error',e?.message||'Failed');}finally{setDelivActionLoading(false);}};
-  const doDelivAction=async(action,data={})=>{if(!delivInfo?.id)return;setDelivActionLoading(true);try{if(action==='pickup')await api.pickupDelivery(delivInfo.id);else if(action==='in_transit')await api.markInTransit(delivInfo.id);else if(action==='deliver')await api.deliverOrder(delivInfo.id,data);else if(action==='fail')await api.failDelivery(delivInfo.id,data);else if(action==='reattempt')await api.reattemptDelivery(delivInfo.id);const r=await api.getSale(order.id);setDelivInfo(r?.data?.delivery||null);onRefresh?.();setShowCodForm(false);setShowFailForm(false);}catch(e){Alert.alert('Error',e?.message||'Failed');}finally{setDelivActionLoading(false);}};
+  const doPartnerAssign=async(pid)=>{if(!delivInfo?.id)return;setDelivActionLoading(true);try{await api.assignDelivery(delivInfo.id,{delivery_partner_id:pid});setShowPartnerPick(false);const r=await api.getSale(order.id);setDelivInfo(r?.data?.delivery||null);onRefresh?.();}catch(e){const msg=e?.message||"Failed";Platform.OS==="web"?window.alert(msg):Alert.alert("Error",msg);}finally{setDelivActionLoading(false);}};
+  const doDelivAction=async(action,data={})=>{if(!delivInfo?.id)return;setDelivActionLoading(true);try{if(action==='pickup')await api.pickupDelivery(delivInfo.id);else if(action==='in_transit')await api.markInTransit(delivInfo.id);else if(action==='deliver')await api.deliverOrder(delivInfo.id,data);else if(action==='fail')await api.failDelivery(delivInfo.id,data);else if(action==='reattempt')await api.reattemptDelivery(delivInfo.id);const r=await api.getSale(order.id);setDelivInfo(r?.data?.delivery||null);onRefresh?.();setShowCodForm(false);setShowFailForm(false);}catch(e){const msg=e?.message||"Failed";Platform.OS==="web"?window.alert(msg):Alert.alert("Error",msg);}finally{setDelivActionLoading(false);}};
   const handleDeliver=()=>{const data={};if(delivInfo?.cod_amount>0){const a=parseFloat(codAmount);if(isNaN(a)||a<0){Alert.alert('Error','Enter valid COD amount');return;}data.cod_collected=a;data.cod_method=codMethod;}doDelivAction('deliver',data);};
+  
+  const handleCollectPayment=async()=>{
+    const a = parseFloat(payAmount);
+    if(isNaN(a)||a<=0){ Platform.OS==='web'?window.alert('Enter valid amount'):Alert.alert('Error','Enter valid amount'); return; }
+    setPayLoading(true);
+    try {
+      await api.addPaymentToSale(order.id, { amount: a, method: payMethod, location_id: order.location_id });
+      setShowPayForm(false);
+      setPayAmount('');
+      onRefresh?.();
+      // Optional: Close or refresh the panel. The parent list will refresh.
+    } catch(e) {
+      const msg=e?.message||'Failed';
+      Platform.OS==='web'?window.alert(msg):Alert.alert('Error',msg);
+    } finally {
+      setPayLoading(false);
+    }
+  };
+
+  
+  const handleResolveBalance=async(action)=>{
+    setPayLoading(true);
+    try {
+      await api.resolveSaleBalance(order.id, { action });
+      setShowPayForm(false);
+      onRefresh?.();
+      Platform.OS==='web'?window.alert('Success!'):Alert.alert('Success','Balance resolved.');
+    } catch(e) {
+      const msg=e?.message||'Failed';
+      Platform.OS==='web'?window.alert(msg):Alert.alert('Error',msg);
+    } finally {
+      setPayLoading(false);
+    }
+  };
+
   const handleFail=()=>{if(!failReason.trim()){Alert.alert('Error','Enter failure reason');return;}doDelivAction('fail',{failure_reason:failReason.trim()});};
 
   if(!order)return null;
   const st=order.status||'pending';const ot=order.order_type||'walk_in';const sc=STATUS_COLOR[st]||P.textMuted;const isFinal=['completed','cancelled'].includes(st);
-  const isCredit=order.is_credit_sale===1;const payC=isCredit?P.blue:(PAY_COLOR[order.payment_status]||P.textMuted);
+  const isCredit=order.is_credit_sale===1; const dueAmt=(order.grand_total||0)-(order.total_paid||0);const payC=isCredit?P.blue:(PAY_COLOR[order.payment_status]||P.textMuted);
   const tDone=localTasks.filter(t=>t.status==='completed').length;const tTotal=localTasks.length;
   const dC=delivInfo?(DELIV_COLOR[delivInfo.status]||P.textMuted):null;
 
@@ -370,6 +409,7 @@ function DetailPanel({ order, tasks, onClose, onRefresh, navigation, canManage, 
     if(st==='pending'||st==='confirmed')acts.push({label:'Mark Preparing',next:'preparing',color:P.blue,icon:'construct-outline'});
     if(st==='preparing')acts.push({label:'Mark Ready',next:'ready',color:P.green,icon:'checkmark-circle-outline'});
     if(st==='ready'&&ot!=='delivery')acts.push({label:'Complete Order',next:'completed',color:P.pink,icon:'bag-check-outline'});
+    if(order.payment_status==='pending'||order.payment_status==='partial')acts.push({label:'Collect Payment',next:'pay',color:P.blue,icon:'wallet-outline'});
     if(canManage)acts.push({label:'Cancel Order',next:'cancelled',color:P.red,icon:'close-circle-outline'});
   }
 
@@ -432,6 +472,31 @@ function DetailPanel({ order, tasks, onClose, onRefresh, navigation, canManage, 
             </View>;
           })}
         </View>}
+
+        
+        {/* Payment Form */}
+        {showPayForm && (
+          <View style={[dp.block, { borderColor: P.blue }]}>
+            <View style={{flexDirection:"row",justifyContent:"space-between",alignItems:"center"}}><Text style={dp.blockTitle}>Collect Payment</Text><Text style={{fontSize:11,fontWeight:"700",color:P.red}}>Due: {fmt(dueAmt)}</Text></View>
+            <TextInput style={[dp.input, {marginTop: 6}]} value={payAmount} onChangeText={setPayAmount} placeholder="Amount" placeholderTextColor={P.textMuted} keyboardType="numeric"/>
+            <View style={{flexDirection:'row',gap:5, marginTop: 6}}>
+              {['cash','upi','card'].map(m=><TouchableOpacity key={m} style={[dp.methodChip,payMethod===m&&{backgroundColor:P.pink+'20',borderColor:P.pink}]} onPress={()=>setPayMethod(m)}><Text style={[dp.methodTxt,payMethod===m&&{color:P.pink}]}>{m.toUpperCase()}</Text></TouchableOpacity>)}
+            </View>
+            
+            <View style={{flexDirection:'row',gap:6,marginTop:8}}>
+              <Btn label="Submit Payment" color={P.green} icon="checkmark" onPress={handleCollectPayment} loading={payLoading} small/>
+              <TouchableOpacity onPress={()=>setShowPayForm(false)} style={{justifyContent: 'center'}}><Text style={{color:P.textMuted,fontSize:11}}>Cancel</Text></TouchableOpacity>
+            </View>
+            <View style={{marginTop: 10, paddingTop: 10, borderTopWidth: 1, borderTopColor: P.border}}>
+              <Text style={{fontSize: 10, fontWeight: '700', color: P.textSec, marginBottom: 6}}>Or resolve balance:</Text>
+              <View style={{flexDirection:'row',gap:6}}>
+                <Btn label="Write-off" color={P.amber} icon="cut-outline" onPress={()=>handleResolveBalance('write_off')} loading={payLoading} small/>
+                <Btn label="Credit Sale" color={P.blue} icon="swap-horizontal-outline" onPress={()=>handleResolveBalance('credit')} loading={payLoading} small/>
+              </View>
+            </View>
+
+          </View>
+        )}
 
         {/* Status actions */}
         {!isFinal&&acts.length>0&&canManage&&<View style={dp.block}><Text style={[dp.blockTitle,{marginBottom:6}]}>Actions</Text>{acts.map(a=><View key={a.next} style={{marginBottom:5}}><Btn label={confirmStatus===a.next?'Tap to confirm':a.label} color={a.color} icon={a.icon} onPress={()=>confirmAction(a.next)} loading={actionLoading}/></View>)}</View>}
@@ -547,6 +612,13 @@ export default function DashboardScreenV2({ navigation }) {
 
   const tasksBySaleId=useMemo(()=>{const m=new Map();for(const t of taskRows){const a=m.get(t.sale_id)||[];a.push(t);m.set(t.sale_id,a);}return m;},[taskRows]);
 
+  const activeOrderModalData = useMemo(() => {
+    if (!selectedOrder) return null;
+    const freshOrder = sales.find(s => s.id === selectedOrder.order.id) || selectedOrder.order;
+    const freshTasks = tasksBySaleId.get(selectedOrder.order.id) || selectedOrder.tasks;
+    return { order: freshOrder, tasks: freshTasks };
+  }, [selectedOrder, sales, tasksBySaleId]);
+
   const ordersByTypeAndStatus=useMemo(()=>{
     const base={delivery:{pending:[],preparing:[],ready:[],in_transit:[]},pickup:{pending:[],preparing:[],ready:[]},walk_in:{pending:[],preparing:[],ready:[]}};
     for(const order of sales){
@@ -564,7 +636,7 @@ export default function DashboardScreenV2({ navigation }) {
     return {active,overdue,inTransit,revenue:reportKPIs?.today?.revenue||0};
   },[ordersByTypeAndStatus,timezone,reportKPIs]);
 
-  const advanceTask=useCallback(async(task)=>{if(!task?.id||task.status==='completed'||task.status==='cancelled')return;setTaskActionLoading(p=>({...p,[task.id]:true}));try{if(task.status==='pending')await api.pickTask(task.id);else if(task.status==='assigned')await api.startTask(task.id);else if(task.status==='in_progress')await api.completeTask(task.id);await fetchDashboard();}catch(e){Alert.alert('Error',e?.message||'Failed');}finally{setTaskActionLoading(p=>({...p,[task.id]:false}));};},[fetchDashboard]);
+  const advanceTask=useCallback(async(task)=>{if(!task?.id||task.status==='completed'||task.status==='cancelled')return;setTaskActionLoading(p=>({...p,[task.id]:true}));try{if(task.status==='pending')await api.pickTask(task.id);else if(task.status==='assigned')await api.startTask(task.id);else if(task.status==='in_progress')await api.completeTask(task.id);await fetchDashboard();}catch(e){const msg=e?.message||"Failed";Platform.OS==="web"?window.alert(msg):Alert.alert("Error",msg);}finally{setTaskActionLoading(p=>({...p,[task.id]:false}));};},[fetchDashboard]);
 
   const handleNavigateToQueue=useCallback((orderType,status)=>{navigation.navigate('ProductionQueue',{applyId:Date.now(),initialViewMode:'orders',initialOrderType:orderType,initialStatus:status||'',initialLocationId:locationScope==='all'?null:(locationScope||activeLocation?.id||null),initialShowFilters:true});},[navigation,activeLocation?.id,locationScope]);
 
@@ -634,14 +706,14 @@ export default function DashboardScreenV2({ navigation }) {
         </ScrollView>
 
         {/* Side panel (desktop) */}
-        {showPanel&&isDesktop&&<View style={ms.sidePanel}><DetailPanel order={selectedOrder.order} tasks={selectedOrder.tasks} onClose={()=>setSelectedOrder(null)} onRefresh={fetchDashboard} navigation={navigation} canManage={isOwnerOrManager} tz={timezone}/></View>}
+        {showPanel&&isDesktop&&<View style={ms.sidePanel}><DetailPanel order={activeOrderModalData.order} tasks={activeOrderModalData.tasks} onClose={()=>setSelectedOrder(null)} onRefresh={fetchDashboard} navigation={navigation} canManage={isOwnerOrManager} tz={timezone}/></View>}
       </View>
 
       {/* Bottom sheet (mobile) */}
       <Modal visible={showPanel&&!isDesktop} transparent animationType="slide" onRequestClose={()=>setSelectedOrder(null)}>
         <KeyboardAvoidingView style={{flex:1}} behavior={Platform.OS==='ios'?'padding':'height'}>
           <TouchableOpacity style={ms.sheetBg} activeOpacity={1} onPress={()=>setSelectedOrder(null)}>
-            <TouchableOpacity activeOpacity={1} style={ms.sheetWrap}><View style={ms.sheetHandle}/>{selectedOrder&&<DetailPanel order={selectedOrder.order} tasks={selectedOrder.tasks} onClose={()=>setSelectedOrder(null)} onRefresh={fetchDashboard} navigation={navigation} canManage={isOwnerOrManager} tz={timezone}/>}</TouchableOpacity>
+            <TouchableOpacity activeOpacity={1} style={ms.sheetWrap}><View style={ms.sheetHandle}/>{activeOrderModalData&&<DetailPanel order={activeOrderModalData.order} tasks={activeOrderModalData.tasks} onClose={()=>setSelectedOrder(null)} onRefresh={fetchDashboard} navigation={navigation} canManage={isOwnerOrManager} tz={timezone}/>}</TouchableOpacity>
           </TouchableOpacity>
         </KeyboardAvoidingView>
       </Modal>

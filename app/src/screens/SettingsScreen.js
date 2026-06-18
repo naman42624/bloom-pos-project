@@ -58,25 +58,18 @@ const PREFERENCE_SETTINGS = [
     iconColor: '#10B981',
   },
   {
-    key: 'pref_pickup_auto_complete',
-    label: 'Auto-Complete Pickup Orders',
-    description: 'Automatically mark a pickup order as completed when all its production tasks are finished.',
-    icon: 'cube-outline',
-    iconColor: '#F59E0B',
-  },
-  {
-    key: 'pref_delivery_auto_complete',
-    label: 'Auto-Complete Delivery Orders',
-    description: 'Automatically mark a delivery order as completed when all its production tasks are finished.',
-    icon: 'bicycle-outline',
-    iconColor: '#3B82F6',
-  },
-  {
     key: 'pref_new_v2_ui',
     label: 'New V2 Dashboard UI ✦',
     description: 'Enable the redesigned dashboard with a unified order+delivery panel, inline task management, and a refreshed visual experience.',
     icon: 'sparkles-outline',
     iconColor: '#7C3AED',
+  },
+  {
+    key: 'pref_manager_override',
+    label: 'Manager Override',
+    description: 'Assume only manager and owner are operating the system. Automatically manage pickup order tasks and staff attendance.',
+    icon: 'shield-checkmark-outline',
+    iconColor: '#F59E0B',
   },
 ];
 

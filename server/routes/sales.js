@@ -1489,12 +1489,21 @@ router.post(
         const logMaterialTx = db.prepare(`INSERT INTO material_transactions (material_id, location_id, type, quantity, reference_type, reference_id, notes, created_by) VALUES (?, ?, 'usage', ?, 'sale', ?, ?, ?)`);
         const getBOM = db.prepare('SELECT material_id, quantity FROM product_materials WHERE product_id = ?');
         const getReadyStock = db.prepare('SELECT quantity FROM product_stock WHERE product_id = ? AND location_id = ?');
+        
+        let assignedTaskIds = [];
+
         const insertTaskToDb = (saleId, saleItemId, productId, locId, qty, priority, notes, createdAt) => {
           if (skip_assignment) {
             db.prepare(
               `INSERT INTO production_tasks (sale_id, sale_item_id, product_id, location_id, quantity, priority, notes, status, assigned_to, picked_by, completed_at, created_at, updated_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?, ?, ?)`
             ).run(saleId, saleItemId, productId, locId, qty, priority, notes, req.user.id, req.user.id, createdAt, createdAt, createdAt);
+          } else if (req.body.assigned_to) {
+            const res = db.prepare(
+              `INSERT INTO production_tasks (sale_id, sale_item_id, product_id, location_id, quantity, priority, notes, status, assigned_to, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 'assigned', ?, ?)`
+            ).run(saleId, saleItemId, productId, locId, qty, priority, notes, req.body.assigned_to, createdAt);
+            assignedTaskIds.push(res.lastInsertRowid);
           } else {
             db.prepare(
               `INSERT INTO production_tasks (sale_id, sale_item_id, product_id, location_id, quantity, priority, notes, created_at)
@@ -1561,21 +1570,6 @@ router.post(
 
           if (taskCount === 0 && (unfulfilledItems === 0 || skip_assignment)) {
             let finalStatus = order_type === 'walk_in' ? 'completed' : 'ready';
-
-            // Check preferences for auto-completion at checkout
-            if (finalStatus === 'ready') {
-              let prefKey = null;
-              if (order_type === 'pickup') prefKey = 'pref_pickup_auto_complete';
-              else if (order_type === 'delivery') prefKey = 'pref_delivery_auto_complete';
-
-              if (prefKey) {
-                const prefRow = db.prepare("SELECT value FROM settings WHERE key = ?").get(prefKey);
-                if (prefRow?.value === '1') {
-                  finalStatus = 'completed';
-                  console.log(`[AutoComplete] ${order_type} order ${saleNumber} auto-completed at checkout (skip_assignment)`);
-                }
-              }
-            }
 
             db.prepare("UPDATE sales SET status = ?, stock_deducted = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(finalStatus, saleId);
             if (order_type === 'pickup' && finalStatus === 'ready') {
@@ -1680,17 +1674,30 @@ router.post(
           }
         }
 
-        // Return created sale
-        return db.prepare(`
+        // Return created sale along with assigned tasks
+        const newSale = db.prepare(`
           SELECT s.*, l.name as location_name, u.name as created_by_name
           FROM sales s
           LEFT JOIN locations l ON s.location_id = l.id
           LEFT JOIN users u ON s.created_by = u.id
           WHERE s.id = ?
         `).get(saleId);
+        
+        return { sale: newSale, assignedTaskIds };
       });
 
-      const sale = createSale();
+      const { sale, assignedTaskIds: createdTaskIds } = createSale();
+      
+      if (createdTaskIds && createdTaskIds.length > 0 && req.body.assigned_to) {
+        createNotification({
+          userIds: req.body.assigned_to,
+          title: 'New Tasks Assigned',
+          body: `You've been assigned ${createdTaskIds.length} new task(s) for order ${sale.sale_number}`,
+          type: 'production',
+          data: { taskId: createdTaskIds[0], screen: 'ProductionQueue' },
+        });
+      }
+
       // Attach items & payments for response
       sale.items = db.prepare('SELECT * FROM sale_items WHERE sale_id = ?').all(sale.id);
       sale.payments = db.prepare('SELECT * FROM payments WHERE sale_id = ?').all(sale.id);
@@ -1900,6 +1907,18 @@ router.put(
       const allowed = validTransitions[sale.status] || [];
       if (!allowed.includes(status)) {
         return res.status(400).json({ success: false, message: `Cannot transition from ${sale.status} to ${status}` });
+      }
+
+      // ── Manager Override Auto-Complete for Pickup Orders ──
+      const overrideSetting = db.prepare("SELECT value FROM settings WHERE key = 'pref_manager_override'").get();
+      const managerOverrideOn = overrideSetting && overrideSetting.value === '1';
+
+      if (managerOverrideOn && sale.order_type === 'pickup') {
+        if (status === 'preparing') {
+          db.prepare("UPDATE production_tasks SET status = 'in_progress', picked_by = COALESCE(picked_by, ?), updated_at = CURRENT_TIMESTAMP WHERE sale_id = ? AND status IN ('pending', 'assigned')").run(req.user.id, sale.id);
+        } else if (status === 'ready') {
+          db.prepare("UPDATE production_tasks SET status = 'completed', picked_by = COALESCE(picked_by, ?), updated_at = CURRENT_TIMESTAMP WHERE sale_id = ? AND status NOT IN ('completed', 'cancelled')").run(req.user.id, sale.id);
+        }
       }
 
       // ── Enforce production task completion before marking 'ready' ──
@@ -2599,6 +2618,47 @@ router.post('/admin/reset', authenticate, authorize('owner'), (req, res, next) =
 
     res.json({ success: true, message: 'All transactional data reset.' });
   } catch (err) { next(err); }
+});
+
+
+// ─── Resolve Balance (Write-off or Credit) ───────────────
+router.post('/:id/resolve-balance', authenticate, authorize('owner', 'manager'), (req, res, next) => {
+  try {
+    const db = getDb();
+    const { action } = req.body;
+    const sale = db.prepare('SELECT * FROM sales WHERE id = ?').get(req.params.id);
+    if (!sale) return res.status(404).json({ success: false, message: 'Sale not found' });
+
+    const totalPaid = db.prepare('SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE sale_id = ?').get(sale.id).total;
+    const balanceDue = sale.grand_total - totalPaid;
+
+    if (balanceDue <= 0.01) {
+      return res.status(400).json({ success: false, message: 'No balance due on this sale' });
+    }
+
+    if (action === 'credit') {
+      if (!sale.customer_id) {
+        return res.status(400).json({ success: false, message: 'Cannot convert to credit sale: No customer attached to this order. Please edit the sale to add a customer first.' });
+      }
+      db.prepare('UPDATE sales SET is_credit_sale = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(sale.id);
+      return res.json({ success: true, message: 'Converted to Credit Sale successfully' });
+    } else if (action === 'write_off') {
+      db.transaction(() => {
+        db.prepare('UPDATE sales SET discount_amount = COALESCE(discount_amount, 0) + ?, grand_total = grand_total - ?, payment_status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+          .run(balanceDue, balanceDue, 'paid', sale.id);
+
+        if (sale.customer_id) {
+          db.prepare('UPDATE users SET credit_balance = GREATEST(0, credit_balance - ?), total_spent = GREATEST(0, total_spent - ?), updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+            .run(balanceDue, balanceDue, sale.customer_id);
+        }
+      })();
+      return res.json({ success: true, message: 'Balance written off successfully' });
+    } else {
+      return res.status(400).json({ success: false, message: 'Invalid action' });
+    }
+  } catch (error) {
+    next(error);
+  }
 });
 
 module.exports = router;

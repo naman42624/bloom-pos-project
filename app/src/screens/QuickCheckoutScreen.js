@@ -114,13 +114,24 @@ export default function QuickCheckoutScreen({ navigation, route }) {
   const [editingMaterialIdx, setEditingMaterialIdx] = useState(null);
   const searchTimer = useRef(null);
   const prefillAppliedRef = useRef(null);
+  const [employees, setEmployees] = useState([]);
+  const [assignedTo, setAssignedTo] = useState(null);
 
   useFocusEffect(
     useCallback(() => {
       fetchLocations();
       fetchMaterials();
+      fetchEmployees();
     }, [])
   );
+
+  const fetchEmployees = async () => {
+    try {
+      const res = await api.getUsers();
+      const users = res.data?.users || res.data || [];
+      setEmployees(users.filter(u => ['owner', 'manager', 'employee'].includes(u.role)));
+    } catch (e) { console.log(e); }
+  };
 
   const fetchLocations = async () => {
     try {
@@ -614,6 +625,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     paymentMode,
     advanceAmount,
     skipAssignment,
+    assignedTo,
   }), [
     customerName,
     customerPhone,
@@ -645,6 +657,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     paymentMode,
     advanceAmount,
     skipAssignment,
+    assignedTo,
   ]);
 
   const applyDraftPayload = useCallback((payload, draftId = null) => {
@@ -679,6 +692,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     setPaymentMode(p.paymentMode || 'pay_now');
     setAdvanceAmount(p.advanceAmount || '');
     setSkipAssignment(p.skipAssignment !== false);
+    setAssignedTo(p.assignedTo || null);
     setActiveDraftId(draftId);
   }, []);
 
@@ -1064,6 +1078,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
         is_credit_sale: paymentMode === 'credit',
         advance_amount: paymentMode === 'partial' ? Math.round((parseFloat(advanceAmount) || 0) * 100) / 100 : 0,
         skip_assignment: skipAssignment,
+        assigned_to: !skipAssignment ? assignedTo : null,
       };
 
       if (orderType === 'pre_order') {
@@ -2030,6 +2045,29 @@ export default function QuickCheckoutScreen({ navigation, route }) {
             <Ionicons name={skipAssignment ? 'checkbox' : 'square-outline'} size={24} color={skipAssignment ? Colors.primary : Colors.textLight} />
             <Text style={styles.checkLabel}>Auto-Complete Out-of-Stock Items (Skip Assignment)</Text>
           </TouchableOpacity>
+
+          {!skipAssignment && employees.length > 0 && (
+            <View style={{ marginTop: Spacing.md }}>
+              <Text style={styles.label}>Assign Production To (Optional)</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
+                {employees.map(emp => (
+                  <TouchableOpacity
+                    key={emp.id}
+                    style={[
+                      styles.orderTypeBtn,
+                      { flex: 0, paddingHorizontal: 16, minHeight: 44, paddingVertical: 8 },
+                      assignedTo === emp.id && { backgroundColor: Colors.primary, borderColor: Colors.primary }
+                    ]}
+                    onPress={() => setAssignedTo(assignedTo === emp.id ? null : emp.id)}
+                  >
+                    <Text style={{ fontSize: 13, fontWeight: '600', color: assignedTo === emp.id ? '#fff' : Colors.textSecondary }}>
+                      {emp.name}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </View>
+          )}
 
           <View style={styles.draftActionsRow}>
             <TouchableOpacity

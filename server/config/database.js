@@ -717,6 +717,7 @@ function ensureCompatibilityColumns() {
   
   // Support ad-hoc items without a product_id
   try { runPsql('ALTER TABLE production_tasks ALTER COLUMN product_id DROP NOT NULL'); } catch (_) {}
+  try { runPsql('ALTER TABLE production_logs ALTER COLUMN product_id DROP NOT NULL'); } catch (_) {}
   ensureColumn('products', 'tax_rate_id', 'INTEGER REFERENCES tax_rates(id) ON DELETE SET NULL');
   ensureColumn('products', 'type', "VARCHAR(50) DEFAULT 'standard'");
   ensureColumn('products', 'category', 'VARCHAR(100)');
@@ -1107,6 +1108,7 @@ function getDb() {
     runPsql(`INSERT INTO settings (key, value, description) VALUES ('pref_pickup_auto_complete', '0', 'Auto-complete pickup orders when all production tasks are marked done') ON CONFLICT (key) DO NOTHING`);
     runPsql(`INSERT INTO settings (key, value, description) VALUES ('pref_delivery_auto_complete', '0', 'Auto-complete delivery orders when all production tasks are marked done') ON CONFLICT (key) DO NOTHING`);
     runPsql(`INSERT INTO settings (key, value, description) VALUES ('pref_new_v2_ui', '0', 'Enable the redesigned V2 Dashboard UI with unified order panels and inline task management') ON CONFLICT (key) DO NOTHING`);
+    runPsql(`INSERT INTO settings (key, value, description) VALUES ('pref_manager_override', '0', 'Manager Override: Assume only manager/owner are operating, auto-managing tasks and attendance') ON CONFLICT (key) DO NOTHING`);
 
     initialized = true;
     console.log('✅ Connected to PostgreSQL');
