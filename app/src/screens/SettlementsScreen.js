@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
 import {
   View, Text, FlatList, TouchableOpacity, StyleSheet, Alert,
   Platform, Modal, ScrollView, ActivityIndicator, Animated,
@@ -12,8 +12,20 @@ import { formatDate } from '../utils/datetime';
 
 const fmt = (n) => Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 });
 
-export default function SettlementsScreen({ navigation }) {
+export default function SettlementsScreen({ navigation, route }) {
   const { user, activeLocation } = useAuth();
+  const initialLocationId = route.params?.locationId;
+  const isManager = user?.role === 'owner' || user?.role === 'manager';
+
+  const [locations, setLocations] = useState([]);
+  const [selectedLocation, setSelectedLocation] = useState(initialLocationId || activeLocation?.id || null);
+  const selectedLocRef = useRef(initialLocationId || activeLocation?.id || null);
+
+  const updateSelectedLocation = useCallback((locId) => {
+    setSelectedLocation(locId);
+    selectedLocRef.current = locId;
+  }, []);
+
   const [tab, setTab] = useState('pending'); // pending | history
   const [partners, setPartners] = useState([]);          // pending COD grouped by partner
   const [history, setHistory] = useState([]);            // past settlement records
@@ -32,13 +44,10 @@ export default function SettlementsScreen({ navigation }) {
   // Confirm modal
   const [confirmData, setConfirmData] = useState(null); // { partnerId, partnerName, amount, deliveryIds }
 
-  const isManager = user?.role === 'owner' || user?.role === 'manager';
-
-  const fetchData = useCallback(async () => {
+  const fetchData = useCallback(async (locId) => {
     setLoading(true);
     try {
       if (tab === 'pending') {
-        const locId = activeLocation?.id;
         const res = await api.getPendingCodSummary(locId);
         setPartners(res.data?.partners || []);
         setExpandedPartner(null);
@@ -46,7 +55,7 @@ export default function SettlementsScreen({ navigation }) {
         setSelection({});
       } else {
         const params = {};
-        if (activeLocation) params.location_id = activeLocation.id;
+        if (locId) params.location_id = locId;
         const res = await api.getSettlements(params);
         setHistory(res.data || []);
       }
@@ -55,9 +64,49 @@ export default function SettlementsScreen({ navigation }) {
     } finally {
       setLoading(false);
     }
-  }, [tab, activeLocation]);
+  }, [tab]);
 
-  useFocusEffect(useCallback(() => { fetchData(); }, [fetchData]));
+  // Handle route param changes
+  useEffect(() => {
+    if (route.params?.locationId && route.params.locationId !== selectedLocRef.current) {
+      updateSelectedLocation(route.params.locationId);
+      fetchData(route.params.locationId);
+    }
+  }, [route.params?.locationId, updateSelectedLocation, fetchData]);
+
+  // Handle focus
+  useFocusEffect(
+    useCallback(() => {
+      let isMounted = true;
+      if (!isManager) {
+        const locId = selectedLocRef.current || activeLocation?.id;
+        if (!selectedLocRef.current && locId) updateSelectedLocation(locId);
+        fetchData(locId);
+      } else {
+        api.getLocations().then(res => {
+          if (!isMounted) return;
+          const locs = res.data?.locations || res.data || [];
+          setLocations(locs);
+          
+          let currentLoc = selectedLocRef.current;
+          if (!currentLoc && locs.length > 0) {
+            currentLoc = locs[0].id;
+            updateSelectedLocation(currentLoc);
+          }
+          fetchData(currentLoc);
+        }).catch(err => {
+          console.error(err);
+          setLoading(false);
+        });
+      }
+      return () => { isMounted = false; };
+    }, [isManager, activeLocation?.id, updateSelectedLocation, fetchData])
+  );
+
+  const handleLocationChange = (locId) => {
+    updateSelectedLocation(locId);
+    fetchData(locId);
+  };
 
   // Expand/collapse a partner card and lazy-load their individual deliveries
   const togglePartner = async (partner) => {
@@ -142,12 +191,12 @@ export default function SettlementsScreen({ navigation }) {
       await api.settleNow({
         delivery_partner_id: confirmData.partnerId,
         delivery_ids: confirmData.deliveryIds || undefined,
-        location_id: activeLocation?.id,
+        location_id: selectedLocation,
       });
       setConfirmData(null);
       const msg = `₹${fmt(confirmData.amount)} settled and added to cash register.`;
       Platform.OS === 'web' ? window.alert(msg) : Alert.alert('✓ Settled', msg);
-      fetchData();
+      fetchData(selectedLocation);
     } catch (err) {
       const msg = err.message || 'Settlement failed';
       Platform.OS === 'web' ? window.alert(msg) : Alert.alert('Error', msg);
@@ -309,6 +358,23 @@ export default function SettlementsScreen({ navigation }) {
 
   return (
     <View style={styles.container}>
+      {/* Location Selector */}
+      {isManager && locations.length > 1 && (
+        <View style={styles.locRow}>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
+            {locations.map((loc) => (
+              <TouchableOpacity
+                key={loc.id}
+                style={[styles.locChip, selectedLocation === loc.id && styles.locChipActive]}
+                onPress={() => handleLocationChange(loc.id)}
+              >
+                <Text style={[styles.locChipText, selectedLocation === loc.id && styles.locChipTextActive]}>{loc.name}</Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        </View>
+      )}
+
       {/* Tab Row */}
       <View style={styles.tabRow}>
         <TouchableOpacity
@@ -356,7 +422,7 @@ export default function SettlementsScreen({ navigation }) {
               keyExtractor={item => String(item.delivery_partner_id)}
               contentContainerStyle={styles.listContent}
               refreshing={loading}
-              onRefresh={fetchData}
+              onRefresh={() => fetchData(selectedLocation)}
               ListEmptyComponent={
                 <View style={styles.empty}>
                   <Ionicons name="checkmark-circle" size={56} color={Colors.success} />
@@ -380,7 +446,7 @@ export default function SettlementsScreen({ navigation }) {
             keyExtractor={item => String(item.id)}
             contentContainerStyle={styles.listContent}
             refreshing={loading}
-            onRefresh={fetchData}
+            onRefresh={() => fetchData(selectedLocation)}
             ListEmptyComponent={
               <View style={styles.empty}>
                 <Ionicons name="document-text-outline" size={56} color={Colors.textLight} />
@@ -453,6 +519,19 @@ export default function SettlementsScreen({ navigation }) {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
+
+  locRow: { 
+    flexDirection: 'row', paddingHorizontal: Spacing.md, 
+    paddingTop: Spacing.md, paddingBottom: 0,
+  },
+  locChip: {
+    paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm,
+    borderRadius: BorderRadius.full, backgroundColor: Colors.surface,
+    borderWidth: 1, borderColor: Colors.border,
+  },
+  locChipActive: { backgroundColor: Colors.text, borderColor: Colors.text },
+  locChipText: { fontSize: FontSize.sm, color: Colors.textSecondary, fontWeight: '500' },
+  locChipTextActive: { color: Colors.white },
 
   tabRow: {
     flexDirection: 'row', gap: 8,

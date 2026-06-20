@@ -307,7 +307,7 @@ export default function CashRegisterScreen({ navigation, route }) {
       {canManage && pendingCodTotal > 0 && (
         <TouchableOpacity
           style={styles.codBanner}
-          onPress={() => navigation.navigate('Settlements')}
+          onPress={() => navigation.navigate('Settlements', { locationId: selectedLocation })}
           activeOpacity={0.85}
         >
           <View style={styles.codBannerLeft}>
