@@ -21,10 +21,22 @@ export default function CustomerDetailScreen({ route, navigation }) {
 
   // Credit payment modal
   const [showCreditModal, setShowCreditModal] = useState(false);
-  const [creditAmount, setCreditAmount] = useState('');
-  const [creditMethod, setCreditMethod] = useState('cash');
+  const [payments, setPayments] = useState([{ method: 'cash', amount: '' }]);
+  const [writeOffAmount, setWriteOffAmount] = useState('');
   const [creditNotes, setCreditNotes] = useState('');
   const [creditLoading, setCreditLoading] = useState(false);
+
+  const handleAddPaymentLine = () => {
+    setPayments([...payments, { method: 'cash', amount: '' }]);
+  };
+  const updatePaymentLine = (index, field, value) => {
+    const updated = [...payments];
+    updated[index][field] = value;
+    setPayments(updated);
+  };
+  const removePaymentLine = (index) => {
+    setPayments(payments.filter((_, i) => i !== index));
+  };
 
   // Add previous due modal
   const [showAddDueModal, setShowAddDueModal] = useState(false);
@@ -97,18 +109,28 @@ export default function CustomerDetailScreen({ route, navigation }) {
   }, [showCreditModal, activeLocation, locations]);
 
   const handleRecordPayment = async () => {
-    const amount = parseFloat(creditAmount);
-    if (!amount || amount <= 0) return Alert.alert('Error', 'Enter a valid amount');
+    const totalPayments = payments.reduce((sum, p) => sum + (parseFloat(p.amount) || 0), 0);
+    const woAmount = parseFloat(writeOffAmount) || 0;
+    const totalReduction = totalPayments + woAmount;
+
+    if (totalReduction <= 0) return Alert.alert('Error', 'Enter a valid amount');
+    if (totalReduction > customer.credit_balance + 0.01) return Alert.alert('Error', 'Amount exceeds outstanding balance.');
+
     setCreditLoading(true);
     try {
+      const formattedPayments = payments
+        .map(p => ({ ...p, amount: parseFloat(p.amount) || 0 }))
+        .filter(p => p.amount > 0);
+
       await api.addCreditPayment(customerId, {
-        amount,
-        method: creditMethod,
+        payments: formattedPayments,
+        write_off_amount: woAmount > 0 ? woAmount : undefined,
         notes: creditNotes,
         location_id: selectedLocationId,
       });
       setShowCreditModal(false);
-      setCreditAmount('');
+      setPayments([{ method: 'cash', amount: '' }]);
+      setWriteOffAmount('');
       setCreditNotes('');
       fetchData();
     } catch (err) {
@@ -495,43 +517,68 @@ export default function CustomerDetailScreen({ route, navigation }) {
       {/* Credit Payment Modal */}
       <Modal visible={showCreditModal} transparent animationType="slide">
         <KeyboardAvoidingView style={styles.modalOverlay} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-          <View style={styles.modalCard}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Record Payment</Text>
-              <TouchableOpacity onPress={() => setShowCreditModal(false)}>
-                <Ionicons name="close" size={24} color={Colors.text} />
+          <ScrollView contentContainerStyle={{flexGrow: 1, justifyContent: 'center'}} keyboardShouldPersistTaps="handled">
+            <View style={styles.modalCard}>
+              <View style={styles.modalHeader}>
+                <Text style={styles.modalTitle}>Record Payment</Text>
+                <TouchableOpacity onPress={() => setShowCreditModal(false)}>
+                  <Ionicons name="close" size={24} color={Colors.text} />
+                </TouchableOpacity>
+              </View>
+              <Text style={[styles.modalSubtext, { marginBottom: Spacing.md }]}>
+                Outstanding: ₹{Number(customer?.credit_balance || 0).toFixed(2)}
+              </Text>
+              
+              {payments.map((p, index) => (
+                <View key={index} style={{ marginBottom: Spacing.md }}>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                    <Text style={styles.fieldLabel}>Payment {index + 1}</Text>
+                    {payments.length > 1 && (
+                      <TouchableOpacity onPress={() => removePaymentLine(index)}>
+                        <Ionicons name="trash-outline" size={18} color={Colors.error} />
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                  <TextInput style={styles.modalInput} value={p.amount} onChangeText={(val) => updatePaymentLine(index, 'amount', val)}
+                    keyboardType="decimal-pad" placeholder="Amount (₹)" placeholderTextColor={Colors.textLight} />
+                  <View style={[styles.methodRow, { marginTop: Spacing.sm }]}>
+                    {['cash', 'card', 'upi'].map((m) => (
+                      <TouchableOpacity key={m} style={[styles.methodChip, p.method === m && styles.methodActive]}
+                        onPress={() => updatePaymentLine(index, 'method', m)}>
+                        <Text style={[styles.methodText, p.method === m && styles.methodTextActive]}>{m.toUpperCase()}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                </View>
+              ))}
+
+              <TouchableOpacity style={{ flexDirection: 'row', alignItems: 'center', marginBottom: Spacing.md }} onPress={handleAddPaymentLine}>
+                <Ionicons name="add-circle-outline" size={18} color={Colors.primary} />
+                <Text style={{ color: Colors.primary, marginLeft: 4, fontWeight: '600', fontSize: FontSize.sm }}>Add Split Payment</Text>
+              </TouchableOpacity>
+
+              <Text style={styles.fieldLabel}>Write-off Amount (Optional)</Text>
+              <TextInput style={styles.modalInput} value={writeOffAmount} onChangeText={setWriteOffAmount}
+                keyboardType="decimal-pad" placeholder="₹ Small discrepancy amount" placeholderTextColor={Colors.textLight} />
+
+              <Text style={[styles.fieldLabel, { marginTop: Spacing.sm }]}>Location</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={[styles.methodRow, { marginBottom: Spacing.md }]}>
+                {locations.map((loc) => (
+                  <TouchableOpacity key={loc.id} style={[styles.methodChip, selectedLocationId === loc.id && styles.methodActive]}
+                    onPress={() => setSelectedLocationId(loc.id)}>
+                    <Text style={[styles.methodText, selectedLocationId === loc.id && styles.methodTextActive]}>{loc.name}</Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+              <Text style={styles.fieldLabel}>Notes (optional)</Text>
+              <TextInput style={styles.modalInput} value={creditNotes} onChangeText={setCreditNotes}
+                placeholder="Payment notes" placeholderTextColor={Colors.textLight} />
+              <TouchableOpacity style={[styles.submitBtn, creditLoading && { opacity: 0.6 }, { marginTop: Spacing.lg }]}
+                onPress={handleRecordPayment} disabled={creditLoading}>
+                <Text style={styles.submitText}>{creditLoading ? 'Recording...' : 'Record Payment'}</Text>
               </TouchableOpacity>
             </View>
-            <Text style={styles.modalSubtext}>Outstanding: ₹{Number(customer.credit_balance || 0).toFixed(2)}</Text>
-            <Text style={styles.fieldLabel}>Amount (₹)</Text>
-            <TextInput style={styles.modalInput} value={creditAmount} onChangeText={setCreditAmount}
-              keyboardType="decimal-pad" placeholder="0" placeholderTextColor={Colors.textLight} />
-            <Text style={styles.fieldLabel}>Method</Text>
-            <View style={styles.methodRow}>
-              {['cash', 'card', 'upi'].map((m) => (
-                <TouchableOpacity key={m} style={[styles.methodChip, creditMethod === m && styles.methodActive]}
-                  onPress={() => setCreditMethod(m)}>
-                  <Text style={[styles.methodText, creditMethod === m && styles.methodTextActive]}>{m.toUpperCase()}</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-            <Text style={styles.fieldLabel}>Location</Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.methodRow}>
-              {locations.map((loc) => (
-                <TouchableOpacity key={loc.id} style={[styles.methodChip, selectedLocationId === loc.id && styles.methodActive]}
-                  onPress={() => setSelectedLocationId(loc.id)}>
-                  <Text style={[styles.methodText, selectedLocationId === loc.id && styles.methodTextActive]}>{loc.name}</Text>
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
-            <Text style={styles.fieldLabel}>Notes (optional)</Text>
-            <TextInput style={styles.modalInput} value={creditNotes} onChangeText={setCreditNotes}
-              placeholder="Payment notes" placeholderTextColor={Colors.textLight} />
-            <TouchableOpacity style={[styles.submitBtn, creditLoading && { opacity: 0.6 }]}
-              onPress={handleRecordPayment} disabled={creditLoading}>
-              <Text style={styles.submitText}>{creditLoading ? 'Recording...' : 'Record Payment'}</Text>
-            </TouchableOpacity>
-          </View>
+          </ScrollView>
         </KeyboardAvoidingView>
       </Modal>
 

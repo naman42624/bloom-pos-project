@@ -309,6 +309,7 @@ function POSStack() {
       <Stack.Screen name="QRScanner" component={QRScannerScreen} options={{ title: 'Scan QR' }} />
       <Stack.Screen name="CashRegister" component={CashRegisterScreen} options={{ title: 'Cash Register' }} />
       <Stack.Screen name="Expenses" component={ExpensesScreen} options={{ title: 'Expenses' }} />
+      <Stack.Screen name="Settlements" component={SettlementsScreen} options={{ title: 'Settlements' }} />
       <Stack.Screen name="ProductionQueue" component={ProductionQueueScreen} options={{ title: 'Production Queue' }} />
       <Stack.Screen name="CompletedTasks" component={CompletedTasksScreen} options={{ title: 'Completed Tasks' }} />
       <Stack.Screen name="ProduceProduct" component={ProduceScreen} options={{ title: 'Produce Products' }} />
@@ -328,6 +329,7 @@ function SalesStack() {
       <Stack.Screen name="AddPayment" component={AddPaymentScreen} options={{ title: 'Record Payment' }} />
       <Stack.Screen name="CashRegister" component={CashRegisterScreen} options={{ title: 'Cash Register' }} />
       <Stack.Screen name="Expenses" component={ExpensesScreen} options={{ title: 'Expenses' }} />
+      <Stack.Screen name="Settlements" component={SettlementsScreen} options={{ title: 'Settlements' }} />
       <Stack.Screen name="ProductionQueue" component={ProductionQueueScreen} options={{ title: 'Production Queue' }} />
       <Stack.Screen name="CompletedTasks" component={CompletedTasksScreen} options={{ title: 'Completed Tasks' }} />
       <Stack.Screen name="ProduceProduct" component={ProduceScreen} options={{ title: 'Produce Products' }} />

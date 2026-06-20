@@ -107,6 +107,14 @@ router.post(
       const db = getDb();
       const { location_id, category, amount, description, payment_method, expense_date, is_return } = req.body;
 
+      // Look up the currently open register FIRST so we can store register_id on the expense.
+      // This links the expense permanently to its session — critical for correct session-scoped queries
+      // and for reversing against the correct register on deletion.
+      const openRegister = payment_method === 'cash'
+        ? db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1').get(location_id)
+        : null;
+      const registerId = openRegister ? openRegister.id : null;
+
       const expense_number = generateExpenseNumber(db, location_id);
 
       let result;
@@ -114,34 +122,40 @@ router.post(
       try {
         if (expense_number) {
           result = db.prepare(
-            `INSERT INTO expenses (expense_number, location_id, category, amount, description, payment_method, expense_date, created_by, is_return)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-          ).run(expense_number, location_id, category, amount, description || '', payment_method, expense_date, req.user.id, isReturnInt);
+            `INSERT INTO expenses (expense_number, location_id, category, amount, description, payment_method, expense_date, created_by, is_return, register_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          ).run(expense_number, location_id, category, amount, description || '', payment_method, expense_date, req.user.id, isReturnInt, registerId);
         } else {
+          result = db.prepare(
+            `INSERT INTO expenses (location_id, category, amount, description, payment_method, expense_date, created_by, is_return, register_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          ).run(location_id, category, amount, description || '', payment_method, expense_date, req.user.id, isReturnInt, registerId);
+        }
+      } catch (err) {
+        const msg = String(err?.message || '').toLowerCase();
+        // Fallback if expense_number column doesn't exist (legacy schema)
+        if (msg.includes('expense_number')) {
+          result = db.prepare(
+            `INSERT INTO expenses (location_id, category, amount, description, payment_method, expense_date, created_by, is_return, register_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          ).run(location_id, category, amount, description || '', payment_method, expense_date, req.user.id, isReturnInt, registerId);
+        // Fallback if register_id column doesn't exist yet (migration pending)
+        } else if (msg.includes('register_id')) {
           result = db.prepare(
             `INSERT INTO expenses (location_id, category, amount, description, payment_method, expense_date, created_by, is_return)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
           ).run(location_id, category, amount, description || '', payment_method, expense_date, req.user.id, isReturnInt);
+        } else {
+          throw err;
         }
-      } catch (err) {
-        const msg = String(err?.message || '').toLowerCase();
-        if (!msg.includes('expense_number')) throw err;
-        result = db.prepare(
-          `INSERT INTO expenses (location_id, category, amount, description, payment_method, expense_date, created_by, is_return)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-        ).run(location_id, category, amount, description || '', payment_method, expense_date, req.user.id, isReturnInt);
       }
 
-      // If cash expense, deduct from cash register expected_cash
-      if (payment_method === 'cash') {
-        const today = localToday();
-        const register = db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND date = ?').get(location_id, today);
-        if (register) {
-          if (is_return) {
-            db.prepare('UPDATE cash_registers SET expected_cash = expected_cash + ? WHERE id = ?').run(amount, register.id);
-          } else {
-            db.prepare('UPDATE cash_registers SET expected_cash = expected_cash - ? WHERE id = ?').run(amount, register.id);
-          }
+      // Update expected_cash on the open register (already found above)
+      if (openRegister) {
+        if (is_return) {
+          db.prepare('UPDATE cash_registers SET expected_cash = expected_cash + ? WHERE id = ?').run(amount, openRegister.id);
+        } else {
+          db.prepare('UPDATE cash_registers SET expected_cash = expected_cash - ? WHERE id = ?').run(amount, openRegister.id);
         }
       }
 
@@ -167,14 +181,23 @@ router.delete('/:id', authenticate, authorize('owner', 'manager'), (req, res, ne
     const expense = db.prepare('SELECT * FROM expenses WHERE id = ?').get(req.params.id);
     if (!expense) return res.status(404).json({ success: false, message: 'Expense not found' });
 
-    // Reverse cash register deduction if applicable
+    // Reverse cash register deduction if applicable.
+    // IMPORTANT: Use expense.register_id to target the exact session the expense belonged to.
+    // This prevents reversals from hitting a different (e.g. today's) open register when the
+    // expense was recorded in a previous session.
     if (expense.payment_method === 'cash') {
-      const register = db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND date = ?').get(expense.location_id, expense.expense_date);
-      if (register) {
+      // Prefer the stored register_id (session-exact). Fall back to current open register
+      // only if the expense pre-dates the register_id column (legacy data).
+      const registerId = expense.register_id
+        || db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1').get(expense.location_id)?.id;
+
+      if (registerId) {
         if (expense.is_return) {
-          db.prepare('UPDATE cash_registers SET expected_cash = expected_cash - ? WHERE id = ?').run(expense.amount, register.id);
+          // Reversing a return: expected_cash should go back down
+          db.prepare('UPDATE cash_registers SET expected_cash = expected_cash - ? WHERE id = ?').run(expense.amount, registerId);
         } else {
-          db.prepare('UPDATE cash_registers SET expected_cash = expected_cash + ? WHERE id = ?').run(expense.amount, register.id);
+          // Reversing an expense: expected_cash should go back up
+          db.prepare('UPDATE cash_registers SET expected_cash = expected_cash + ? WHERE id = ?').run(expense.amount, registerId);
         }
       }
     }

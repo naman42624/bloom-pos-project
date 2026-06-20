@@ -560,8 +560,12 @@ router.post(
   authenticate,
   authorize('owner', 'manager', 'employee'),
   [
-    body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be positive'),
-    body('method').isIn(['cash', 'card', 'upi']).withMessage('Invalid payment method'),
+    body('payments').optional().isArray(),
+    body('payments.*.method').optional().isIn(['cash', 'card', 'upi']),
+    body('payments.*.amount').optional().isFloat({ min: 0.01 }),
+    body('amount').optional().isFloat({ min: 0.01 }),
+    body('method').optional().isIn(['cash', 'card', 'upi']),
+    body('write_off_amount').optional().isFloat({ min: 0.01 }),
     body('sale_id').optional({ nullable: true }).isInt(),
     body('location_id').isInt({ min: 1 }).withMessage('Location ID is required'),
     body('notes').optional().trim(),
@@ -577,27 +581,60 @@ router.post(
       const customer = db.prepare("SELECT id, credit_balance FROM users WHERE id = ? AND role = 'customer'").get(customerId);
       if (!customer) return res.status(404).json({ success: false, message: 'Customer not found' });
 
-      const { amount, method, notes, sale_id, location_id } = req.body;
+      const { amount, method, notes, sale_id, location_id, payments, write_off_amount } = req.body;
       const numLocationId = parseInt(location_id, 10);
+      
+      const paymentList = payments || [];
+      if (amount && method) {
+        paymentList.push({ amount, method });
+      }
+      const woAmount = Number(write_off_amount || 0);
 
-      if (amount > customer.credit_balance) {
-        return res.status(400).json({ success: false, message: `Payment amount (₹${amount}) exceeds outstanding balance (₹${customer.credit_balance})` });
+      const totalPaymentAmount = paymentList.reduce((sum, p) => sum + Number(p.amount), 0);
+      const totalReduction = totalPaymentAmount + woAmount;
+
+      if (totalReduction <= 0) {
+        return res.status(400).json({ success: false, message: 'Total amount must be greater than 0' });
+      }
+
+      if (totalReduction > customer.credit_balance + 0.01) {
+        return res.status(400).json({ success: false, message: `Total reduction (₹${totalReduction}) exceeds outstanding balance (₹${customer.credit_balance})` });
       }
 
       const creditTx = db.transaction(() => {
-        // Record credit payment
-        const result = db.prepare(
-          'INSERT INTO credit_payments (customer_id, amount, payment_method, recorded_by, notes, sale_id, location_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
-        ).run(customerId, amount, method, req.user.id, notes || '', sale_id || null, numLocationId);
+        let lastInsertId = null;
+
+        // 1. Record credit payments (cash, card, upi)
+        for (const p of paymentList) {
+          const result = db.prepare(
+            'INSERT INTO credit_payments (customer_id, amount, payment_method, recorded_by, notes, sale_id, location_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
+          ).run(customerId, p.amount, p.method, req.user.id, notes || '', sale_id || null, numLocationId);
+          lastInsertId = result.lastInsertRowid;
+        }
+
+        // 2. Record write_off in credit_payments if > 0
+        if (woAmount > 0) {
+          const result = db.prepare(
+            'INSERT INTO credit_payments (customer_id, amount, payment_method, recorded_by, notes, sale_id, location_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
+          ).run(customerId, woAmount, 'write_off', req.user.id, notes || 'Write-off', sale_id || null, numLocationId);
+          lastInsertId = lastInsertId || result.lastInsertRowid;
+        }
 
         // Reduce customer credit balance
-        db.prepare('UPDATE users SET credit_balance = credit_balance - ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(amount, customerId);
+        db.prepare('UPDATE users SET credit_balance = GREATEST(0, credit_balance - ?), updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(totalReduction, customerId);
 
         // If linked to a sale, also add as a payment on that sale
         if (sale_id) {
-          db.prepare(
-            'INSERT INTO payments (sale_id, method, amount, reference_number, received_by) VALUES (?, ?, ?, ?, ?)'
-          ).run(sale_id, method, amount, `Credit-${result.lastInsertRowid}`, req.user.id);
+          for (const p of paymentList) {
+            db.prepare(
+              'INSERT INTO payments (sale_id, method, amount, reference_number, received_by) VALUES (?, ?, ?, ?, ?)'
+            ).run(sale_id, p.method, p.amount, `Credit-${lastInsertId}`, req.user.id);
+          }
+
+          if (woAmount > 0) {
+            db.prepare('UPDATE sales SET discount_amount = COALESCE(discount_amount, 0) + ?, grand_total = GREATEST(0, grand_total - ?) WHERE id = ?')
+              .run(woAmount, woAmount, sale_id);
+          }
 
           // Recalculate sale payment status
           const sale = db.prepare('SELECT grand_total FROM sales WHERE id = ?').get(sale_id);
@@ -612,7 +649,10 @@ router.post(
           }
         } else {
           // Auto-allocate general credit payment to the oldest unpaid sales
-          let remainingAmount = amount;
+          let remainingCash = totalPaymentAmount;
+          let remainingWo = woAmount;
+          let totalRemaining = remainingCash + remainingWo;
+
           const unpaidSales = db.prepare(`
             SELECT s.id, s.grand_total, COALESCE((SELECT SUM(amount) FROM payments WHERE sale_id = s.id), 0) as total_paid
             FROM sales s
@@ -621,37 +661,56 @@ router.post(
           `).all(customerId, customerId);
 
           for (const s of unpaidSales) {
-            if (remainingAmount <= 0.01) break;
-            const saleUnpaid = Math.max(0, s.grand_total - s.total_paid);
-            if (saleUnpaid > 0) {
-              const allocation = Math.min(saleUnpaid, remainingAmount);
-              db.prepare('INSERT INTO payments (sale_id, method, amount, reference_number, received_by) VALUES (?, ?, ?, ?, ?)').run(s.id, method, allocation, `Credit-${result.lastInsertRowid}`, req.user.id);
-              remainingAmount -= allocation;
-              
-              const newTotalPaid = s.total_paid + allocation;
-              const roundedGrandTotal = Math.round(Number(s.grand_total || 0) * 100) / 100;
-              const roundedTotalPaid = Math.round(Number(newTotalPaid || 0) * 100) / 100;
-              let paymentStatus = 'pending';
-              if (roundedTotalPaid >= roundedGrandTotal - 0.01) paymentStatus = 'paid';
-              else if (roundedTotalPaid > 0) paymentStatus = 'partial';
-              db.prepare('UPDATE sales SET payment_status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(paymentStatus, s.id);
+            if (totalRemaining <= 0.01) break;
+            let saleUnpaid = Math.max(0, s.grand_total - s.total_paid);
+            if (saleUnpaid <= 0) continue;
+
+            // Allocate write-off first
+            if (remainingWo > 0.01 && saleUnpaid > 0.01) {
+              const allocWo = Math.min(saleUnpaid, remainingWo);
+              db.prepare('UPDATE sales SET discount_amount = COALESCE(discount_amount, 0) + ?, grand_total = GREATEST(0, grand_total - ?) WHERE id = ?').run(allocWo, allocWo, s.id);
+              remainingWo -= allocWo;
+              totalRemaining -= allocWo;
+              saleUnpaid -= allocWo;
             }
+
+            // Allocate cash
+            if (remainingCash > 0.01 && saleUnpaid > 0.01) {
+              const allocCash = Math.min(saleUnpaid, remainingCash);
+              const autoMethod = paymentList.length > 0 ? paymentList[0].method : 'cash';
+              db.prepare('INSERT INTO payments (sale_id, method, amount, reference_number, received_by) VALUES (?, ?, ?, ?, ?)').run(s.id, autoMethod, allocCash, `Credit-${lastInsertId}`, req.user.id);
+              remainingCash -= allocCash;
+              totalRemaining -= allocCash;
+              saleUnpaid -= allocCash;
+            }
+              
+            // Update status
+            const updatedSale = db.prepare('SELECT grand_total FROM sales WHERE id = ?').get(s.id);
+            const newTotalPaid = db.prepare('SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE sale_id = ?').get(s.id).total;
+            const roundedGrandTotal = Math.round(Number(updatedSale.grand_total || 0) * 100) / 100;
+            const roundedTotalPaid = Math.round(Number(newTotalPaid || 0) * 100) / 100;
+            let paymentStatus = 'pending';
+            if (roundedTotalPaid >= roundedGrandTotal - 0.01) paymentStatus = 'paid';
+            else if (roundedTotalPaid > 0) paymentStatus = 'partial';
+            db.prepare('UPDATE sales SET payment_status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(paymentStatus, s.id);
           }
         }
 
         // Update cash register if payment is cash
         const register = db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1').get(numLocationId);
         if (register) {
-          if (method === 'cash') {
-            db.prepare('UPDATE cash_registers SET total_cash_sales = total_cash_sales + ?, expected_cash = expected_cash + ? WHERE id = ?').run(amount, amount, register.id);
-          } else if (method === 'card') {
-            db.prepare('UPDATE cash_registers SET total_card_sales = total_card_sales + ? WHERE id = ?').run(amount, register.id);
-          } else if (method === 'upi') {
-            db.prepare('UPDATE cash_registers SET total_upi_sales = total_upi_sales + ? WHERE id = ?').run(amount, register.id);
+          for (const p of paymentList) {
+            if (p.method === 'cash') {
+              db.prepare('UPDATE cash_registers SET total_cash_sales = total_cash_sales + ?, expected_cash = expected_cash + ? WHERE id = ?').run(p.amount, p.amount, register.id);
+            } else if (p.method === 'card') {
+              db.prepare('UPDATE cash_registers SET total_card_sales = total_card_sales + ? WHERE id = ?').run(p.amount, register.id);
+            } else if (p.method === 'upi') {
+              db.prepare('UPDATE cash_registers SET total_upi_sales = total_upi_sales + ? WHERE id = ?').run(p.amount, register.id);
+            }
           }
         }
 
-        return result.lastInsertRowid;
+        return lastInsertId;
       });
 
       const paymentId = creditTx();

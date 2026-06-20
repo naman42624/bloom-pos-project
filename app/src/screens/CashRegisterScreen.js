@@ -7,12 +7,153 @@ import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
-import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
+import { Colors, FontSize, Spacing, BorderRadius, Shadows, TouchTarget } from '../constants/theme';
+
+const formatTime = (timeStr) => {
+  if (!timeStr) return '-';
+  const d = new Date(timeStr);
+  if (isNaN(d.getTime())) return timeStr;
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+};
+
+const formatDate = (dateStr) => {
+  if (!dateStr) return '-';
+  const d = new Date(dateStr);
+  if (isNaN(d.getTime())) return dateStr;
+  return d.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
+};
+
+const HistoryCard = ({ session, isToday }) => {
+  const [expanded, setExpanded] = useState(false);
+
+  const opening = Number(session.opening_balance || 0);
+  const cashSales = Number(session.total_cash_sales || 0);
+  const cashRefunds = Number(session.total_refunds_cash || 0);
+  const expected = Number(session.expected_cash || 0);
+  const actual = Number(session.actual_cash || 0);
+  const discrepancy = Number(session.discrepancy || 0);
+  
+  // Dynamically derive Net Cash Expenses for closed sessions
+  // expected = opening + cashSales - cashRefunds - netExpenses
+  // netExpenses = opening + cashSales - cashRefunds - expected
+  const inferredExpenses = opening + cashSales - cashRefunds - expected;
+  const hasDiscrepancy = Math.abs(discrepancy) >= 1;
+
+  return (
+    <View style={styles.histCard}>
+      <TouchableOpacity 
+        style={styles.histHeaderBtn} 
+        onPress={() => setExpanded(!expanded)}
+        activeOpacity={0.7}
+      >
+        <View style={{ flex: 1 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: Spacing.sm }}>
+            <Text style={styles.histDate}>{isToday ? `Session (Today)` : formatDate(session.date)}</Text>
+            <View style={[styles.statusBadge, { backgroundColor: session.closed_at ? Colors.surfaceAlt : Colors.successLight }]}>
+              <Text style={[styles.statusBadgeText, { color: session.closed_at ? Colors.textSecondary : Colors.success }]}>
+                {session.closed_at ? 'Closed' : 'Active'}
+              </Text>
+            </View>
+          </View>
+          <Text style={styles.histMeta}>
+            {formatTime(session.opening_time || session.opened_at)} {session.closed_at ? `— ${formatTime(session.closing_time || session.closed_at)}` : '— Now'}
+          </Text>
+        </View>
+        <Ionicons name={expanded ? 'chevron-up' : 'chevron-down'} size={20} color={Colors.textLight} />
+      </TouchableOpacity>
+
+      {expanded && (
+        <View style={styles.histBody}>
+          <View style={styles.histDivider} />
+          
+          <View style={styles.detailRow}>
+            <Text style={styles.detailLabel}>Opening Balance</Text>
+            <Text style={styles.detailVal}>₹{opening.toFixed(2)}</Text>
+          </View>
+
+          {session.closed_at && (
+            <>
+              <View style={styles.detailRow}>
+                <Text style={styles.detailLabel}>Cash Sales</Text>
+                <Text style={[styles.detailVal, { color: Colors.success }]}>+₹{cashSales.toFixed(2)}</Text>
+              </View>
+              {cashRefunds > 0 && (
+                <View style={styles.detailRow}>
+                  <Text style={styles.detailLabel}>Cash Refunds</Text>
+                  <Text style={[styles.detailVal, { color: Colors.error }]}>-₹{cashRefunds.toFixed(2)}</Text>
+                </View>
+              )}
+              {inferredExpenses > 0 ? (
+                <View style={styles.detailRow}>
+                  <Text style={styles.detailLabel}>Net Cash Expenses</Text>
+                  <Text style={[styles.detailVal, { color: Colors.error }]}>-₹{inferredExpenses.toFixed(2)}</Text>
+                </View>
+              ) : inferredExpenses < 0 ? (
+                <View style={styles.detailRow}>
+                  <Text style={styles.detailLabel}>Net Cash Returns</Text>
+                  <Text style={[styles.detailVal, { color: Colors.success }]}>+₹{Math.abs(inferredExpenses).toFixed(2)}</Text>
+                </View>
+              ) : null}
+
+              <View style={styles.histDivider} />
+              
+              <View style={styles.detailRow}>
+                <Text style={styles.detailLabel}>Expected Cash</Text>
+                <Text style={[styles.detailVal, { fontWeight: '700' }]}>₹{expected.toFixed(2)}</Text>
+              </View>
+              <View style={styles.detailRow}>
+                <Text style={styles.detailLabel}>Actual Cash</Text>
+                <Text style={[styles.detailVal, { fontWeight: '700' }]}>₹{actual.toFixed(2)}</Text>
+              </View>
+              <View style={styles.detailRow}>
+                <Text style={[styles.detailLabel, { fontWeight: '700', color: hasDiscrepancy ? Colors.error : Colors.text }]}>Discrepancy</Text>
+                <Text style={[styles.detailVal, { 
+                  fontWeight: '700', 
+                  color: hasDiscrepancy ? Colors.error : Colors.success 
+                }]}>
+                  ₹{discrepancy.toFixed(2)}
+                </Text>
+              </View>
+
+              {/* Non-cash metrics */}
+              <View style={{ marginTop: Spacing.sm, paddingTop: Spacing.sm, borderTopWidth: 1, borderTopColor: Colors.border, borderStyle: 'dashed' }}>
+                <View style={styles.detailRow}>
+                  <Text style={[styles.detailLabel, { fontSize: FontSize.xs }]}>Card / UPI Sales</Text>
+                  <Text style={[styles.detailVal, { fontSize: FontSize.xs, color: Colors.textSecondary }]}>
+                    ₹{Number(session.total_card_sales || 0).toFixed(0)} / ₹{Number(session.total_upi_sales || 0).toFixed(0)}
+                  </Text>
+                </View>
+              </View>
+            </>
+          )}
+
+          <View style={[styles.histDivider, { marginTop: Spacing.sm }]} />
+          <View style={styles.footerRow}>
+            <View style={styles.userBadge}>
+              <Ionicons name="person-circle" size={16} color={Colors.textLight} />
+              <Text style={styles.userBadgeText}>Opened: {session.opened_by_name || 'Unknown'}</Text>
+            </View>
+            {session.closed_at && (
+              <View style={styles.userBadge}>
+                <Ionicons name="person-circle" size={16} color={Colors.textLight} />
+                <Text style={styles.userBadgeText}>Closed: {session.closed_by_name || 'Unknown'}</Text>
+              </View>
+            )}
+          </View>
+          {session.closing_notes ? (
+            <Text style={styles.notesText}>Notes: {session.closing_notes}</Text>
+          ) : null}
+        </View>
+      )}
+    </View>
+  );
+};
 
 export default function CashRegisterScreen({ navigation, route }) {
   const { user } = useAuth();
   const initialLocationId = route.params?.locationId;
   const canManage = user?.role === 'owner' || user?.role === 'manager';
+  const isOwner = user?.role === 'owner';
 
   const [locations, setLocations] = useState([]);
   const [selectedLocation, setSelectedLocation] = useState(initialLocationId || null);
@@ -20,17 +161,17 @@ export default function CashRegisterScreen({ navigation, route }) {
   const [isOpen, setIsOpen] = useState(false);
   const [loading, setLoading] = useState(true);
 
-  // Open form
   const [openingBalance, setOpeningBalance] = useState('');
-  // Close form
   const [actualCash, setActualCash] = useState('');
   const [closingNotes, setClosingNotes] = useState('');
-  // History
+  
   const [history, setHistory] = useState([]);
   const [showHistory, setShowHistory] = useState(false);
   const [todaySessions, setTodaySessions] = useState([]);
 
   const [submitting, setSubmitting] = useState(false);
+  const [pendingCodTotal, setPendingCodTotal] = useState(0);
+  const [pendingCodDeliveries, setPendingCodDeliveries] = useState(0);
 
   useFocusEffect(
     useCallback(() => {
@@ -57,6 +198,8 @@ export default function CashRegisterScreen({ navigation, route }) {
       setRegister(res.data);
       setIsOpen(res.isOpen);
       setTodaySessions(res.todaySessions || []);
+      setPendingCodTotal(res.pendingCodTotal || 0);
+      setPendingCodDeliveries(res.pendingCodDeliveries || 0);
     } catch {}
   };
 
@@ -78,6 +221,7 @@ export default function CashRegisterScreen({ navigation, route }) {
         setRegister(res.data);
         setIsOpen(true);
         setOpeningBalance('');
+        fetchStatus(selectedLocation);
         Alert.alert('Opened', 'Cash register opened successfully');
       } else {
         Alert.alert('Error', res.message);
@@ -107,6 +251,7 @@ export default function CashRegisterScreen({ navigation, route }) {
           setIsOpen(false);
           setActualCash('');
           setClosingNotes('');
+          fetchStatus(selectedLocation);
           Alert.alert('Closed', 'Register closed. Discrepancy: ₹' + Number(res.data.discrepancy || 0).toFixed(2));
         } else {
           Alert.alert('Error', res.message);
@@ -128,6 +273,10 @@ export default function CashRegisterScreen({ navigation, route }) {
 
   const fetchHistory = async () => {
     try {
+      if (showHistory) {
+        setShowHistory(false);
+        return;
+      }
       const res = await api.getRegisterHistory({ location_id: selectedLocation });
       setHistory(res.data || []);
       setShowHistory(true);
@@ -140,7 +289,6 @@ export default function CashRegisterScreen({ navigation, route }) {
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-      {/* Location selector */}
       {locations.length > 1 && (
         <View style={styles.locRow}>
           {locations.map((loc) => (
@@ -155,293 +303,336 @@ export default function CashRegisterScreen({ navigation, route }) {
         </View>
       )}
 
-      {/* Status card */}
-      <View style={[styles.statusCard, { borderColor: isOpen ? Colors.success : Colors.border }]}>
-        <View style={styles.statusHeader}>
-          <Ionicons name={isOpen ? 'lock-open' : 'lock-closed'} size={24} color={isOpen ? Colors.success : Colors.textLight} />
-          <View style={{ marginLeft: Spacing.sm }}>
-            <Text style={styles.statusTitle}>{isOpen ? 'Register Open' : 'Register Closed'}</Text>
-            <Text style={styles.statusSub}>
-              {register ? `${new Date().toLocaleDateString()}` : 'Not opened today'}
+      {/* Pending COD Alert Banner */}
+      {canManage && pendingCodTotal > 0 && (
+        <TouchableOpacity
+          style={styles.codBanner}
+          onPress={() => navigation.navigate('Settlements')}
+          activeOpacity={0.85}
+        >
+          <View style={styles.codBannerLeft}>
+            <Ionicons name="alert-circle" size={20} color="#92400E" />
+            <View>
+              <Text style={styles.codBannerTitle}>Unsettled COD Cash</Text>
+              <Text style={styles.codBannerSub}>
+                ₹{Number(pendingCodTotal).toLocaleString('en-IN', { maximumFractionDigits: 0 })} from {pendingCodDeliveries} deliver{pendingCodDeliveries !== 1 ? 'ies' : 'y'} — not in register yet
+              </Text>
+            </View>
+          </View>
+          <View style={styles.codBannerAction}>
+            <Text style={styles.codBannerActionText}>Settle</Text>
+            <Ionicons name="chevron-forward" size={14} color="#92400E" />
+          </View>
+        </TouchableOpacity>
+      )}
+
+      {/* Main Status Hero */}
+      <View style={[
+        styles.heroCard, 
+        isOpen ? styles.heroCardOpen : styles.heroCardClosed
+      ]}>
+        <View style={styles.heroHeader}>
+          <View style={[styles.heroIconWrap, isOpen ? { backgroundColor: Colors.successLight } : { backgroundColor: Colors.surfaceAlt }]}>
+            <Ionicons name={isOpen ? 'lock-open' : 'lock-closed'} size={28} color={isOpen ? Colors.success : Colors.textSecondary} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.heroTitle}>{isOpen ? 'Register is Open' : 'Register is Closed'}</Text>
+            <Text style={styles.heroSub}>
+              {register ? (
+                isOpen ? `Opened today at ${formatTime(register.opening_time || register.opened_at)}` 
+                       : `Last closed at ${formatTime(register.closing_time || register.closed_at)}`
+              ) : 'No recent sessions'}
             </Text>
           </View>
         </View>
 
         {register && isOpen && (
-          <View style={styles.statusDetails}>
-            <View style={styles.detailRow}>
-              <Text style={styles.detailLabel}>Opening Balance</Text>
-              <Text style={styles.detailVal}>₹{Number(register.opening_balance || 0).toFixed(2)}</Text>
-            </View>
-            {(register.total_expenses_cash || 0) > 0 && (
-              <View style={styles.detailRow}>
-                <Text style={styles.detailLabel}>Cash Expenses</Text>
-                <Text style={[styles.detailVal, { color: Colors.error }]}>-₹{Number(register.total_expenses_cash).toFixed(2)}</Text>
-              </View>
-            )}
-            <View style={styles.detailRow}>
-              <Text style={styles.detailLabel}>Opened By</Text>
-              <Text style={styles.detailVal}>{register.opened_by_name}</Text>
-            </View>
-          </View>
-        )}
+          <View style={styles.heroBody}>
+            {isOwner ? (
+              <View style={styles.liveCalculation}>
+                <Text style={styles.liveCalcTitle}>Live Expected Cash</Text>
+                
+                <View style={styles.calcRow}>
+                  <Text style={styles.calcLabel}>Opening Balance</Text>
+                  <Text style={styles.calcVal}>₹{Number(register.opening_balance || 0).toFixed(2)}</Text>
+                </View>
+                
+                <View style={styles.calcRow}>
+                  <Text style={styles.calcLabel}>+ Cash Sales</Text>
+                  <Text style={[styles.calcVal, { color: Colors.success }]}>₹{Number(register.total_cash_sales || 0).toFixed(2)}</Text>
+                </View>
 
-        {register && !isOpen && register.closed_at && (
-          <View style={styles.statusDetails}>
-            <View style={styles.detailRow}>
-              <Text style={styles.detailLabel}>Opening</Text>
-              <Text style={styles.detailVal}>₹{Number(register.opening_balance || 0).toFixed(2)}</Text>
-            </View>
-            <View style={styles.detailRow}>
-              <Text style={styles.detailLabel}>Cash Sales</Text>
-              <Text style={styles.detailVal}>₹{Number(register.total_cash_sales || 0).toFixed(2)}</Text>
-            </View>
-            <View style={styles.detailRow}>
-              <Text style={styles.detailLabel}>Card Sales</Text>
-              <Text style={styles.detailVal}>₹{Number(register.total_card_sales || 0).toFixed(2)}</Text>
-            </View>
-            <View style={styles.detailRow}>
-              <Text style={styles.detailLabel}>UPI Sales</Text>
-              <Text style={styles.detailVal}>₹{Number(register.total_upi_sales || 0).toFixed(2)}</Text>
-            </View>
-            <View style={styles.detailRow}>
-              <Text style={styles.detailLabel}>Refunds (Cash)</Text>
-              <Text style={[styles.detailVal, { color: Colors.error }]}>-₹{Number(register.total_refunds_cash || 0).toFixed(2)}</Text>
-            </View>
-            {(register.total_expenses_cash || 0) > 0 && (
-              <View style={styles.detailRow}>
-                <Text style={styles.detailLabel}>Expenses (Cash)</Text>
-                <Text style={[styles.detailVal, { color: Colors.error }]}>-₹{Number(register.total_expenses_cash).toFixed(2)}</Text>
+                {Number(register.total_refunds_cash || 0) > 0 && (
+                  <View style={styles.calcRow}>
+                    <Text style={styles.calcLabel}>- Cash Refunds</Text>
+                    <Text style={[styles.calcVal, { color: Colors.error }]}>₹{Number(register.total_refunds_cash).toFixed(2)}</Text>
+                  </View>
+                )}
+
+                {Number(register.total_expenses_cash || 0) > 0 ? (
+                  <View style={styles.calcRow}>
+                    <Text style={styles.calcLabel}>- Net Cash Expenses</Text>
+                    <Text style={[styles.calcVal, { color: Colors.error }]}>₹{Number(register.total_expenses_cash).toFixed(2)}</Text>
+                  </View>
+                ) : Number(register.total_expenses_cash || 0) < 0 ? (
+                  <View style={styles.calcRow}>
+                    <Text style={styles.calcLabel}>+ Net Cash Returns</Text>
+                    <Text style={[styles.calcVal, { color: Colors.success }]}>₹{Math.abs(Number(register.total_expenses_cash)).toFixed(2)}</Text>
+                  </View>
+                ) : null}
+
+                <View style={styles.calcDivider} />
+                <View style={styles.calcRow}>
+                  <Text style={styles.calcTotalLabel}>Expected in Drawer</Text>
+                  <Text style={styles.calcTotalVal}>
+                    ₹{(
+                      Number(register.opening_balance || 0) + 
+                      Number(register.total_cash_sales || 0) - 
+                      Number(register.total_refunds_cash || 0) - 
+                      Number(register.total_expenses_cash || 0)
+                    ).toFixed(2)}
+                  </Text>
+                </View>
+              </View>
+            ) : (
+              <View style={{ gap: Spacing.sm }}>
+                <View style={styles.calcRow}>
+                  <Text style={styles.calcLabel}>Opening Balance</Text>
+                  <Text style={styles.calcVal}>₹{Number(register.opening_balance || 0).toFixed(2)}</Text>
+                </View>
+                <View style={styles.calcRow}>
+                  <Text style={styles.calcLabel}>Opened By</Text>
+                  <Text style={styles.calcVal}>{register.opened_by_name || 'Unknown'}</Text>
+                </View>
               </View>
             )}
-            <View style={styles.divider} />
-            <View style={styles.detailRow}>
-              <Text style={styles.detailLabel}>Expected Cash</Text>
-              <Text style={[styles.detailVal, { fontWeight: '700' }]}>₹{Number(register.expected_cash || 0).toFixed(2)}</Text>
-            </View>
-            <View style={styles.detailRow}>
-              <Text style={styles.detailLabel}>Actual Cash</Text>
-              <Text style={[styles.detailVal, { fontWeight: '700' }]}>₹{Number(register.actual_cash || 0).toFixed(2)}</Text>
-            </View>
-            <View style={styles.detailRow}>
-              <Text style={[styles.detailLabel, { fontWeight: '700' }]}>Discrepancy</Text>
-              <Text style={[styles.detailVal, {
-                fontWeight: '700',
-                color: Math.abs(register.discrepancy || 0) < 1 ? Colors.success : Colors.error,
-              }]}>
-                ₹{Number(register.discrepancy || 0).toFixed(2)}
-              </Text>
-            </View>
           </View>
         )}
       </View>
 
-      {/* Open form */}
+      {/* Forms */}
       {!isOpen && (
-        <View style={styles.formCard}>
-          <Text style={styles.formTitle}>Open Register</Text>
-          <Text style={styles.formLabel}>Opening Cash Balance</Text>
-          <TextInput
-            style={styles.input}
-            value={openingBalance}
-            onChangeText={setOpeningBalance}
-            placeholder="₹ 0.00"
-            placeholderTextColor={Colors.textLight}
-            keyboardType="numeric"
-          />
-          <TouchableOpacity style={[styles.btn, submitting && { opacity: 0.6 }]} onPress={handleOpen} disabled={submitting}>
-            {submitting ? <ActivityIndicator color={Colors.white} /> : (
-              <>
-                <Ionicons name="lock-open" size={18} color={Colors.white} />
-                <Text style={styles.btnText}>Open Register</Text>
-              </>
-            )}
-          </TouchableOpacity>
-        </View>
-      )}
-
-      {/* Close form */}
-      {isOpen && (
-        <View style={styles.formCard}>
-          <Text style={styles.formTitle}>Close Register</Text>
-          <Text style={styles.formLabel}>Actual Cash in Drawer</Text>
-          <TextInput
-            style={styles.input}
-            value={actualCash}
-            onChangeText={setActualCash}
-            placeholder="₹ 0.00"
-            placeholderTextColor={Colors.textLight}
-            keyboardType="numeric"
-          />
-          <Text style={styles.formLabel}>Closing Notes (optional)</Text>
-          <TextInput
-            style={[styles.input, { minHeight: 60 }]}
-            value={closingNotes}
-            onChangeText={setClosingNotes}
-            placeholder="Any notes..."
-            placeholderTextColor={Colors.textLight}
-            multiline
-          />
-          <TouchableOpacity style={[styles.btn, { backgroundColor: Colors.error }, submitting && { opacity: 0.6 }]} onPress={handleClose} disabled={submitting}>
-            {submitting ? <ActivityIndicator color={Colors.white} /> : (
-              <>
-                <Ionicons name="lock-closed" size={18} color={Colors.white} />
-                <Text style={styles.btnText}>Close Register</Text>
-              </>
-            )}
-          </TouchableOpacity>
-        </View>
-      )}
-
-      {/* Today's Sessions Log */}
-      {todaySessions.length > 1 && (
-        <View style={styles.historySection}>
-          <Text style={styles.formTitle}>Today's Sessions ({todaySessions.length})</Text>
-          {todaySessions.map((s, idx) => (
-            <View key={s.id} style={styles.histCard}>
-              <View style={styles.histHeader}>
-                <Text style={styles.histDate}>Session {todaySessions.length - idx}</Text>
-                <Text style={[styles.histLoc, { color: s.closed_at ? Colors.textLight : Colors.success, fontWeight: s.closed_at ? '400' : '700' }]}>
-                  {s.closed_at ? 'Closed' : 'Open'}
-                </Text>
-              </View>
-              <View style={styles.detailRow}>
-                <Text style={styles.detailLabel}>Opening</Text>
-                <Text style={styles.detailVal}>₹{Number(s.opening_balance || 0).toFixed(2)}</Text>
-              </View>
-              {s.closed_at && (
-                <>
-                  <View style={styles.detailRow}>
-                    <Text style={styles.detailLabel}>Cash / Card / UPI</Text>
-                    <Text style={styles.detailVal}>₹{Number(s.total_cash_sales || 0).toFixed(0)} / ₹{Number(s.total_card_sales || 0).toFixed(0)} / ₹{Number(s.total_upi_sales || 0).toFixed(0)}</Text>
-                  </View>
-                  <View style={styles.detailRow}>
-                    <Text style={styles.detailLabel}>Discrepancy</Text>
-                    <Text style={[styles.detailVal, { color: Math.abs(s.discrepancy || 0) < 1 ? Colors.success : Colors.error }]}>
-                      ₹{Number(s.discrepancy || 0).toFixed(2)}
-                    </Text>
-                  </View>
-                </>
+        <View style={styles.formSection}>
+          <Text style={styles.sectionTitle}>Start New Session</Text>
+          <View style={styles.formCard}>
+            <Text style={styles.formLabel}>Opening Cash Balance</Text>
+            <View style={styles.inputWrap}>
+              <Text style={styles.inputSymbol}>₹</Text>
+              <TextInput
+                style={styles.inputLarge}
+                value={openingBalance}
+                onChangeText={setOpeningBalance}
+                placeholder="0.00"
+                placeholderTextColor={Colors.textLight}
+                keyboardType="numeric"
+              />
+            </View>
+            <TouchableOpacity style={[styles.btnOpen, submitting && { opacity: 0.6 }]} onPress={handleOpen} disabled={submitting}>
+              {submitting ? <ActivityIndicator color={Colors.white} /> : (
+                <Text style={styles.btnOpenText}>Open Register</Text>
               )}
-              <Text style={styles.histMeta}>
-                Opened: {s.opened_by_name}{s.closed_by_name ? ` • Closed: ${s.closed_by_name}` : ''}
-              </Text>
-            </View>
-          ))}
+            </TouchableOpacity>
+          </View>
         </View>
       )}
 
-      {/* History toggle */}
+      {isOpen && (
+        <View style={styles.formSection}>
+          <Text style={styles.sectionTitle}>Close Session</Text>
+          <View style={styles.formCard}>
+            <Text style={styles.formLabel}>Actual Cash in Drawer</Text>
+            <View style={styles.inputWrap}>
+              <Text style={styles.inputSymbol}>₹</Text>
+              <TextInput
+                style={styles.inputLarge}
+                value={actualCash}
+                onChangeText={setActualCash}
+                placeholder="0.00"
+                placeholderTextColor={Colors.textLight}
+                keyboardType="numeric"
+              />
+            </View>
+            
+            <Text style={[styles.formLabel, { marginTop: Spacing.md }]}>Closing Notes (optional)</Text>
+            <TextInput
+              style={styles.inputArea}
+              value={closingNotes}
+              onChangeText={setClosingNotes}
+              placeholder="Any discrepancies or notes..."
+              placeholderTextColor={Colors.textLight}
+              multiline
+            />
+            
+            <TouchableOpacity style={[styles.btnClose, submitting && { opacity: 0.6 }]} onPress={handleClose} disabled={submitting}>
+              {submitting ? <ActivityIndicator color={Colors.white} /> : (
+                <Text style={styles.btnCloseText}>Close Register</Text>
+              )}
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
+
+      {/* Actions */}
       {canManage && (
-        <View style={{ gap: Spacing.sm }}>
-          <TouchableOpacity style={styles.historyBtn} onPress={() => navigation.navigate('Expenses')}>
-            <Ionicons name="wallet" size={18} color={Colors.primary} />
-            <Text style={styles.historyBtnText}>Manage Expenses</Text>
+        <View style={styles.actionRow}>
+          <TouchableOpacity style={styles.actionBtn} onPress={() => navigation.navigate('Expenses')}>
+            <View style={[styles.actionIconWrap, { backgroundColor: Colors.infoLight }]}>
+              <Ionicons name="wallet" size={20} color={Colors.info} />
+            </View>
+            <Text style={styles.actionBtnText}>Expenses</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.historyBtn} onPress={fetchHistory}>
-            <Ionicons name="time" size={18} color={Colors.primary} />
-            <Text style={styles.historyBtnText}>View Register History</Text>
+          <TouchableOpacity style={styles.actionBtn} onPress={fetchHistory}>
+            <View style={[styles.actionIconWrap, { backgroundColor: Colors.primaryLight }]}>
+              <Ionicons name="list" size={20} color={Colors.primary} />
+            </View>
+            <Text style={styles.actionBtnText}>{showHistory ? 'Hide History' : 'View History'}</Text>
           </TouchableOpacity>
         </View>
       )}
 
-      {/* History list */}
-      {showHistory && history.length > 0 && (
-        <View style={styles.historySection}>
-          <Text style={styles.formTitle}>History</Text>
-          {history.map((h) => (
-            <View key={h.id} style={styles.histCard}>
-              <View style={styles.histHeader}>
-                <Text style={styles.histDate}>{h.date}</Text>
-                <Text style={styles.histLoc}>{h.location_name}</Text>
-              </View>
-              <View style={styles.detailRow}>
-                <Text style={styles.detailLabel}>Opening</Text>
-                <Text style={styles.detailVal}>₹{Number(h.opening_balance || 0).toFixed(2)}</Text>
-              </View>
-              <View style={styles.detailRow}>
-                <Text style={styles.detailLabel}>Cash / Card / UPI</Text>
-                <Text style={styles.detailVal}>₹{Number(h.total_cash_sales || 0).toFixed(0)} / ₹{Number(h.total_card_sales || 0).toFixed(0)} / ₹{Number(h.total_upi_sales || 0).toFixed(0)}</Text>
-              </View>
-              <View style={styles.detailRow}>
-                <Text style={styles.detailLabel}>Discrepancy</Text>
-                <Text style={[styles.detailVal, { color: Math.abs(h.discrepancy || 0) < 1 ? Colors.success : Colors.error }]}>
-                  ₹{Number(h.discrepancy || 0).toFixed(2)}
-                </Text>
-              </View>
-              <Text style={styles.histMeta}>Opened: {h.opened_by_name} • Closed: {h.closed_by_name || '-'}</Text>
-            </View>
+      {/* History Sections */}
+      {todaySessions.length > 0 && !showHistory && (
+        <View style={styles.listSection}>
+          <Text style={styles.sectionTitle}>Today's Sessions</Text>
+          {todaySessions.map((s, idx) => (
+            <HistoryCard key={`today-${s.id}`} session={s} isToday={true} />
           ))}
         </View>
       )}
 
-      <View style={{ height: 40 }} />
+      {showHistory && history.length > 0 && (
+        <View style={styles.listSection}>
+          <Text style={styles.sectionTitle}>Register History</Text>
+          {history.map((h) => (
+            <HistoryCard key={`hist-${h.id}`} session={h} isToday={false} />
+          ))}
+        </View>
+      )}
+
+      <View style={{ height: 60 }} />
     </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
-  content: { padding: Spacing.md },
+  content: { padding: Spacing.md, maxWidth: 800, alignSelf: 'center', width: '100%' },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: Colors.background },
 
-  locRow: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.xs, marginBottom: Spacing.md },
+  locRow: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm, marginBottom: Spacing.lg },
   locChip: {
-    paddingHorizontal: Spacing.md, paddingVertical: Spacing.xs + 2,
+    paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm,
     borderRadius: BorderRadius.full, backgroundColor: Colors.surface,
     borderWidth: 1, borderColor: Colors.border,
   },
-  locChipActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
-  locChipText: { fontSize: FontSize.xs, color: Colors.textSecondary },
-  locChipTextActive: { color: Colors.white, fontWeight: '600' },
+  locChipActive: { backgroundColor: Colors.text, borderColor: Colors.text },
+  locChipText: { fontSize: FontSize.sm, color: Colors.textSecondary, fontWeight: '500' },
+  locChipTextActive: { color: Colors.white },
 
-  statusCard: {
-    backgroundColor: Colors.surface, borderRadius: BorderRadius.md,
-    borderWidth: 2, padding: Spacing.md,
+  codBanner: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    backgroundColor: '#FEF3C7', borderRadius: BorderRadius.lg,
+    borderWidth: 1, borderColor: '#FDE68A',
+    padding: Spacing.md, marginBottom: Spacing.md,
   },
-  statusHeader: { flexDirection: 'row', alignItems: 'center' },
-  statusTitle: { fontSize: FontSize.md, fontWeight: '700', color: Colors.text },
-  statusSub: { fontSize: FontSize.xs, color: Colors.textLight, marginTop: 1 },
-  statusDetails: { marginTop: Spacing.md },
+  codBannerLeft: { flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 },
+  codBannerTitle: { fontSize: FontSize.sm, fontWeight: '700', color: '#92400E' },
+  codBannerSub: { fontSize: FontSize.xs, color: '#92400E', marginTop: 2, opacity: 0.8 },
+  codBannerAction: {
+    flexDirection: 'row', alignItems: 'center', gap: 3,
+    backgroundColor: '#FDE68A', paddingHorizontal: 10, paddingVertical: 5,
+    borderRadius: BorderRadius.sm,
+  },
+  codBannerActionText: { fontSize: FontSize.xs, fontWeight: '700', color: '#92400E' },
 
-  detailRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 3 },
-  detailLabel: { fontSize: FontSize.sm, color: Colors.textSecondary },
-  detailVal: { fontSize: FontSize.sm, color: Colors.text, fontWeight: '500' },
-  divider: { height: 1, backgroundColor: Colors.border, marginVertical: Spacing.sm },
 
+  heroCard: {
+    backgroundColor: Colors.surface,
+    borderRadius: BorderRadius.xl,
+    padding: Spacing.lg,
+    ...Shadows.md,
+    marginBottom: Spacing.lg,
+    borderWidth: 1,
+  },
+  heroCardOpen: { borderColor: Colors.successLight },
+  heroCardClosed: { borderColor: Colors.border },
+  
+  heroHeader: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
+  heroIconWrap: { width: 48, height: 48, borderRadius: 24, alignItems: 'center', justifyContent: 'center' },
+  heroTitle: { fontSize: FontSize.lg, fontWeight: '800', color: Colors.text },
+  heroSub: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: 2 },
+  
+  heroBody: { marginTop: Spacing.lg, paddingTop: Spacing.lg, borderTopWidth: 1, borderTopColor: Colors.border },
+  
+  liveCalculation: { backgroundColor: Colors.surfaceAlt, borderRadius: BorderRadius.md, padding: Spacing.md },
+  liveCalcTitle: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.textSecondary, marginBottom: Spacing.sm },
+  calcRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 4 },
+  calcLabel: { fontSize: FontSize.sm, color: Colors.text },
+  calcVal: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.text },
+  calcDivider: { height: 1, backgroundColor: Colors.border, marginVertical: Spacing.sm },
+  calcTotalLabel: { fontSize: FontSize.md, fontWeight: '700', color: Colors.text },
+  calcTotalVal: { fontSize: FontSize.lg, fontWeight: '800', color: Colors.text },
+
+  formSection: { marginBottom: Spacing.lg },
+  sectionTitle: { fontSize: FontSize.lg, fontWeight: '800', color: Colors.text, marginBottom: Spacing.sm },
   formCard: {
-    backgroundColor: Colors.surface, borderRadius: BorderRadius.md,
-    borderWidth: 1, borderColor: Colors.border, padding: Spacing.md, marginTop: Spacing.md,
+    backgroundColor: Colors.surface, borderRadius: BorderRadius.xl,
+    padding: Spacing.lg, ...Shadows.sm, borderWidth: 1, borderColor: Colors.border
   },
-  formTitle: { fontSize: FontSize.md, fontWeight: '700', color: Colors.text, marginBottom: Spacing.sm },
-  formLabel: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: Spacing.sm, marginBottom: Spacing.xs },
-  input: {
-    backgroundColor: Colors.background, borderRadius: BorderRadius.md,
+  formLabel: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.textSecondary, marginBottom: Spacing.xs },
+  
+  inputWrap: {
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: Colors.surfaceAlt, borderRadius: BorderRadius.md,
     borderWidth: 1, borderColor: Colors.border,
-    paddingHorizontal: Spacing.sm, paddingVertical: Spacing.sm,
-    fontSize: FontSize.sm, color: Colors.text,
+    paddingHorizontal: Spacing.md,
   },
-  btn: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.xs,
-    backgroundColor: Colors.primary, borderRadius: BorderRadius.md,
-    paddingVertical: Spacing.md, marginTop: Spacing.md,
+  inputSymbol: { fontSize: FontSize.xl, fontWeight: '500', color: Colors.textSecondary, marginRight: Spacing.sm },
+  inputLarge: {
+    flex: 1, fontSize: FontSize.xl, fontWeight: '700', color: Colors.text,
+    paddingVertical: Spacing.md, minHeight: TouchTarget.minHeight,
   },
-  btnText: { color: Colors.white, fontWeight: '600', fontSize: FontSize.sm },
+  inputArea: {
+    backgroundColor: Colors.surfaceAlt, borderRadius: BorderRadius.md,
+    borderWidth: 1, borderColor: Colors.border,
+    padding: Spacing.md, fontSize: FontSize.md, color: Colors.text,
+    minHeight: 80, textAlignVertical: 'top',
+  },
 
-  historyBtn: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.xs,
-    paddingVertical: Spacing.md, marginTop: Spacing.md,
-  },
-  historyBtnText: { color: Colors.primary, fontWeight: '600', fontSize: FontSize.sm },
+  btnOpen: { backgroundColor: Colors.text, borderRadius: BorderRadius.md, padding: Spacing.md, alignItems: 'center', marginTop: Spacing.lg },
+  btnOpenText: { color: Colors.white, fontSize: FontSize.md, fontWeight: '700' },
+  btnClose: { backgroundColor: Colors.error, borderRadius: BorderRadius.md, padding: Spacing.md, alignItems: 'center', marginTop: Spacing.lg },
+  btnCloseText: { color: Colors.white, fontSize: FontSize.md, fontWeight: '700' },
 
-  historySection: { marginTop: Spacing.sm },
+  actionRow: { flexDirection: 'row', gap: Spacing.md, marginBottom: Spacing.xl },
+  actionBtn: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.sm,
+    backgroundColor: Colors.surface, borderRadius: BorderRadius.lg, padding: Spacing.md,
+    borderWidth: 1, borderColor: Colors.border, ...Shadows.sm
+  },
+  actionIconWrap: { width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
+  actionBtnText: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.text },
+
+  listSection: { gap: Spacing.sm },
   histCard: {
-    backgroundColor: Colors.surface, borderRadius: BorderRadius.md,
-    borderWidth: 1, borderColor: Colors.border, padding: Spacing.md,
-    marginBottom: Spacing.sm,
+    backgroundColor: Colors.surface, borderRadius: BorderRadius.lg,
+    borderWidth: 1, borderColor: Colors.border, ...Shadows.sm,
+    overflow: 'hidden',
   },
-  histHeader: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: Spacing.xs },
-  histDate: { fontSize: FontSize.sm, fontWeight: '700', color: Colors.text },
-  histLoc: { fontSize: FontSize.xs, color: Colors.textSecondary },
-  histMeta: { fontSize: FontSize.xs, color: Colors.textLight, marginTop: Spacing.xs },
+  histHeaderBtn: { flexDirection: 'row', alignItems: 'center', padding: Spacing.md, backgroundColor: Colors.surface },
+  histDate: { fontSize: FontSize.md, fontWeight: '700', color: Colors.text },
+  statusBadge: { paddingHorizontal: 8, paddingVertical: 2, borderRadius: BorderRadius.full },
+  statusBadgeText: { fontSize: 11, fontWeight: '700', textTransform: 'uppercase' },
+  histMeta: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: 4 },
+  
+  histBody: { padding: Spacing.md, paddingTop: 0, backgroundColor: Colors.surfaceAlt },
+  histDivider: { height: 1, backgroundColor: Colors.border, marginVertical: Spacing.sm },
+  detailRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 4 },
+  detailLabel: { fontSize: FontSize.sm, color: Colors.textSecondary },
+  detailVal: { fontSize: FontSize.sm, fontWeight: '500', color: Colors.text },
+  
+  footerRow: { flexDirection: 'row', justifyContent: 'space-between', flexWrap: 'wrap', gap: Spacing.sm },
+  userBadge: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  userBadgeText: { fontSize: FontSize.xs, color: Colors.textSecondary },
+  notesText: { fontSize: FontSize.sm, color: Colors.textSecondary, fontStyle: 'italic', marginTop: Spacing.sm },
 });

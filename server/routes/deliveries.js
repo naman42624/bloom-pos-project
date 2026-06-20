@@ -492,6 +492,14 @@ router.put(
             'INSERT INTO payments (sale_id, method, amount, reference_number, received_by, created_at) VALUES (?, ?, ?, ?, ?, ?)'
           ).run(delivery.sale_id, cod_method || 'cash', cod_collected, cod_reference ? `COD-${cod_reference}` : 'COD', req.user.id, nowLocal());
 
+          // Reduce customer credit balance
+          const saleData = db.prepare('SELECT customer_id, sender_customer_id, order_type FROM sales WHERE id = ?').get(delivery.sale_id);
+          const duesCustomerId = (saleData.order_type === 'delivery' && saleData.sender_customer_id) ? saleData.sender_customer_id : saleData.customer_id;
+          if (duesCustomerId) {
+            db.prepare('UPDATE users SET credit_balance = GREATEST(0, credit_balance - ?), updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+              .run(cod_collected, duesCustomerId);
+          }
+
           // Recalculate payment status on the sale
           const sale = db.prepare('SELECT grand_total FROM sales WHERE id = ?').get(delivery.sale_id);
           const totalPaid = db.prepare('SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE sale_id = ?').get(delivery.sale_id).total;
@@ -645,12 +653,6 @@ router.post('/:id(\\d+)/convert-payment', authenticate, authorize('owner', 'mana
         const totalPaid = db.prepare('SELECT SUM(amount) as sum FROM payments WHERE sale_id = ?').get(sale.id).sum || 0;
         const unpaidAmount = Math.max(0, sale.grand_total - totalPaid);
 
-        // Deduct from customer credit balance
-        if (sale.customer_id) {
-          db.prepare('UPDATE users SET credit_balance = GREATEST(0, credit_balance - ?), updated_at = CURRENT_TIMESTAMP WHERE id = ?')
-            .run(unpaidAmount, sale.customer_id);
-        }
-
         // Update sale to NOT credit
         const newPaymentStatus = unpaidAmount > 0 ? (totalPaid > 0 ? 'partial' : 'pending') : 'paid';
         db.prepare('UPDATE sales SET is_credit_sale = 0, payment_status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
@@ -664,7 +666,9 @@ router.post('/:id(\\d+)/convert-payment', authenticate, authorize('owner', 'mana
         if (sale.is_credit_sale) throw new Error('Sale is already a credit sale');
 
         // Find customer
-        let customerId = sale.customer_id;
+        let customerId = (sale.order_type === 'delivery' && sale.sender_customer_id) ? sale.sender_customer_id : sale.customer_id;
+        let isNewlyLinked = false;
+        
         if (!customerId) {
           if (!delivery.customer_name && !delivery.customer_phone && !sale.customer_name && !sale.customer_phone) {
             throw new Error('Customer details required to convert to credit');
@@ -688,20 +692,23 @@ router.post('/:id(\\d+)/convert-payment', authenticate, authorize('owner', 'mana
             `).run('customer', cName, cPhone);
             customerId = ins.lastInsertRowid;
           }
+          isNewlyLinked = true;
           // Link customer to sale
-          db.prepare('UPDATE sales SET customer_id = ? WHERE id = ?').run(customerId, sale.id);
+          db.prepare('UPDATE sales SET customer_id = ?, sender_customer_id = ? WHERE id = ?').run(customerId, customerId, sale.id);
         }
 
         const totalPaid = db.prepare('SELECT SUM(amount) as sum FROM payments WHERE sale_id = ?').get(sale.id).sum || 0;
         const unpaidAmount = Math.max(0, sale.grand_total - totalPaid);
 
-        // Add to customer credit balance
-        db.prepare('UPDATE users SET credit_balance = credit_balance + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
-          .run(unpaidAmount, customerId);
+        if (isNewlyLinked) {
+          // Add to customer credit balance since it was never added during sale creation
+          db.prepare('UPDATE users SET total_spent = total_spent + ?, credit_balance = credit_balance + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+            .run(sale.grand_total, unpaidAmount, customerId);
+        }
 
         // Update sale
         db.prepare('UPDATE sales SET is_credit_sale = 1, payment_status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
-          .run('pending', sale.id); // technically pending payment since it's on credit
+          .run('pending', sale.id); 
 
         // Update delivery COD
         db.prepare("UPDATE deliveries SET cod_amount = 0, cod_status = 'collected', updated_at = CURRENT_TIMESTAMP WHERE id = ?")
@@ -807,6 +814,40 @@ router.post(
 // COD SETTLEMENT
 // ═══════════════════════════════════════════════════════════════
 
+// ─── GET /api/deliveries/settlements/pending-summary ─────────
+// Returns total unsettled COD grouped by partner for a location.
+// Used by the cash register banner and dashboard notice (no partner_id needed).
+router.get('/settlements/pending-summary', authenticate, authorize('owner', 'manager'), async (req, res, next) => {
+  try {
+    const db = await getAsyncDb();
+    const { location_id } = req.query;
+    const locFilter = location_id ? 'AND d.location_id = ?' : '';
+    const params = location_id ? [location_id] : [];
+
+    const partners = await db.prepare(`
+      SELECT
+        d.delivery_partner_id,
+        u.name as partner_name,
+        COUNT(d.id)            as delivery_count,
+        SUM(d.cod_collected)   as total_cod
+      FROM deliveries d
+      LEFT JOIN users u ON d.delivery_partner_id = u.id
+      WHERE d.status = 'delivered'
+        AND d.cod_collected > 0
+        AND d.cod_status IN ('collected', 'partial')
+        AND d.id NOT IN (SELECT delivery_id FROM delivery_settlement_items)
+        ${locFilter}
+      GROUP BY d.delivery_partner_id, u.name
+      ORDER BY total_cod DESC
+    `).all(...params);
+
+    const totalPending = partners.reduce((s, p) => s + Number(p.total_cod || 0), 0);
+    const totalDeliveries = partners.reduce((s, p) => s + Number(p.delivery_count || 0), 0);
+
+    res.json({ success: true, data: { partners, total_pending: totalPending, total_deliveries: totalDeliveries } });
+  } catch (err) { next(err); }
+});
+
 // ─── GET /api/deliveries/settlements/unsettled ───────────────
 // Get deliveries with COD that haven't been settled yet (for a partner)
 router.get('/settlements/unsettled', authenticate, authorize('owner', 'manager', 'delivery_partner'), async (req, res, next) => {
@@ -877,11 +918,12 @@ router.post(
           totalAmount += d.cod_collected;
         }
 
-        // Generate settlement number and calculate commission/net
+        // Generate settlement number.
+        // Commission defaults to 0% — can be configured per-partner in Settings.
         const settlementNumber = generateSettlementNumber(db, location_id);
-        const commissionPercentage = 5.0; // 5% standard commission
-        const commissionAmount = totalAmount * (commissionPercentage / 100);
-        const netAmount = totalAmount - commissionAmount;
+        const commissionPercentage = 0.0;
+        const commissionAmount = 0;
+        const netAmount = totalAmount; // Full COD goes to register
         const today = todayStr();
 
         // Create settlement with new fields — include partner_id (NOT NULL in schema)
@@ -930,6 +972,134 @@ router.post(
   }
 );
 
+// ─── POST /api/deliveries/settlements/settle-now ─────────────
+// Atomic: create + immediately verify in one step. Supports:
+//   - Settling ALL unsettled for a partner (pass delivery_partner_id, no delivery_ids)
+//   - Settling SELECTED deliveries (pass delivery_ids array)
+// Credits the FULL cod_collected amount to the cash register immediately.
+router.post(
+  '/settlements/settle-now',
+  authenticate,
+  authorize('owner', 'manager'),
+  [
+    body('delivery_partner_id').isInt(),
+    body('delivery_ids').optional().isArray({ min: 1 }),
+    body('location_id').optional({ nullable: true }).isInt(),
+    body('notes').optional().trim(),
+  ],
+  async (req, res, next) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) return res.status(400).json({ success: false, message: 'Validation failed', errors: errors.array() });
+
+      const db = getDb();
+      const { delivery_partner_id, notes } = req.body;
+      let { delivery_ids, location_id } = req.body;
+
+      // If no specific delivery_ids provided → settle ALL unsettled for this partner
+      if (!delivery_ids || delivery_ids.length === 0) {
+        const asyncDb = await getAsyncDb();
+        const locFilter = location_id ? 'AND d.location_id = ?' : '';
+        const locParam = location_id ? [delivery_partner_id, location_id] : [delivery_partner_id];
+        const allUnsettled = await asyncDb.prepare(`
+          SELECT d.id FROM deliveries d
+          WHERE d.delivery_partner_id = ? AND d.status = 'delivered'
+            AND d.cod_collected > 0 AND d.cod_status IN ('collected', 'partial')
+            AND d.id NOT IN (SELECT delivery_id FROM delivery_settlement_items)
+            ${locFilter}
+        `).all(...locParam);
+        delivery_ids = allUnsettled.map(d => d.id);
+      }
+
+      if (!delivery_ids || delivery_ids.length === 0) {
+        return res.status(400).json({ success: false, message: 'No eligible unsettled deliveries found for this partner' });
+      }
+
+      // Derive location from first delivery if not explicitly provided
+      if (!location_id && delivery_ids.length > 0) {
+        const firstDel = db.prepare('SELECT location_id FROM deliveries WHERE id = ?').get(delivery_ids[0]);
+        location_id = firstDel ? firstDel.location_id : null;
+      }
+
+      const settleTx = db.transaction(() => {
+        let totalAmount = 0;
+
+        for (const did of delivery_ids) {
+          const d = db.prepare(
+            "SELECT * FROM deliveries WHERE id = ? AND delivery_partner_id = ? AND status = 'delivered' AND cod_collected > 0"
+          ).get(did, delivery_partner_id);
+          if (!d) throw new Error(`Delivery #${did} not eligible for settlement`);
+
+          const already = db.prepare('SELECT id FROM delivery_settlement_items WHERE delivery_id = ?').get(did);
+          if (already) throw new Error(`Delivery #${did} is already settled`);
+
+          totalAmount += Number(d.cod_collected);
+        }
+
+        const settlementNumber = generateSettlementNumber(db, location_id);
+        const today = todayStr();
+
+        // Create settlement record (commission = 0, full amount to store)
+        const result = db.prepare(`
+          INSERT INTO delivery_settlements
+            (partner_id, delivery_partner_id, location_id, total_amount, total_deliveries, status, notes,
+             settlement_number, settlement_date, period_start, period_end,
+             commission_percentage, commission_amount, net_amount,
+             verified_by, verified_at,
+             successful_deliveries, failed_deliveries)
+          VALUES (?, ?, ?, ?, ?, 'verified', ?, ?, ?, ?, ?, 0, 0, ?, ?, CURRENT_TIMESTAMP, ?, 0)
+        `).run(
+          delivery_partner_id, delivery_partner_id, location_id,
+          totalAmount, delivery_ids.length, notes || '',
+          settlementNumber, today, today, today,
+          totalAmount,   // net_amount = total_amount (no commission)
+          req.user.id,   // verified_by = the acting manager
+          delivery_ids.length // successful_deliveries
+        );
+
+        const settlementId = result.lastInsertRowid;
+
+        // Link deliveries and mark each as settled
+        const insertItem = db.prepare(
+          'INSERT INTO delivery_settlement_items (settlement_id, delivery_id, amount) VALUES (?, ?, ?)'
+        );
+        for (const did of delivery_ids) {
+          const d = db.prepare('SELECT cod_collected FROM deliveries WHERE id = ?').get(did);
+          insertItem.run(settlementId, did, d.cod_collected);
+          db.prepare("UPDATE deliveries SET cod_status = 'settled', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(did);
+        }
+
+        // Add the FULL cash amount to the open register immediately
+        const register = db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1').get(location_id);
+        if (register) {
+          db.prepare(
+            'UPDATE cash_registers SET total_cash_sales = total_cash_sales + ?, expected_cash = expected_cash + ? WHERE id = ?'
+          ).run(totalAmount, totalAmount, register.id);
+        }
+
+        return settlementId;
+      });
+
+      const settlementId = settleTx();
+
+      const settlement = db.prepare(`
+        SELECT ds.*, u.name as partner_name, v.name as verified_by_name
+        FROM delivery_settlements ds
+        LEFT JOIN users u ON ds.delivery_partner_id = u.id
+        LEFT JOIN users v ON ds.verified_by = v.id
+        WHERE ds.id = ?
+      `).get(settlementId);
+
+      res.status(201).json({ success: true, data: settlement });
+    } catch (err) {
+      if (err.message?.includes('not eligible') || err.message?.includes('already settled')) {
+        return res.status(400).json({ success: false, message: err.message });
+      }
+      next(err);
+    }
+  }
+);
+
 // ─── PUT /api/deliveries/settlements/:id/verify ──────────────
 // Manager/owner verifies the settlement (confirms money received)
 router.put(
@@ -970,12 +1140,12 @@ router.put(
           settlement.id
         );
 
-        // Add the settled cash to the cash register
-        const today = todayStr();
-        const register = db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND date = ?').get(settlement.location_id, today);
+        // Add the settled cash to the cash register (find the open session, not by date)
+        const register = db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1').get(settlement.location_id);
         if (register) {
-          db.prepare('UPDATE cash_registers SET total_cash_sales = total_cash_sales + ?, expected_cash = opening_balance + total_cash_sales + ? - total_refunds_cash WHERE id = ?')
-            .run(settlement.net_amount, settlement.net_amount, register.id);
+          // Credit the FULL collected amount (total_amount, not net_amount after commission)
+          db.prepare('UPDATE cash_registers SET total_cash_sales = total_cash_sales + ?, expected_cash = expected_cash + ? WHERE id = ?')
+            .run(settlement.total_amount, settlement.total_amount, register.id);
         }
       });
 
@@ -1017,6 +1187,30 @@ router.get('/settlements', authenticate, authorize('owner', 'manager'), async (r
     params.push(parseInt(lim) || 50);
 
     const settlements = await db.prepare(sql).all(...params);
+
+    if (settlements.length > 0) {
+      const settlementIds = settlements.map(s => s.id);
+      const placeholders = settlementIds.map(() => '?').join(',');
+      const itemsSql = `
+        SELECT dsi.settlement_id, dsi.amount, d.id as delivery_id, s.sale_number, d.customer_name, d.customer_phone
+        FROM delivery_settlement_items dsi
+        JOIN deliveries d ON dsi.delivery_id = d.id
+        LEFT JOIN sales s ON d.sale_id = s.id
+        WHERE dsi.settlement_id IN (${placeholders})
+      `;
+      const items = await db.prepare(itemsSql).all(...settlementIds);
+      
+      const itemsBySettlement = {};
+      for (const item of items) {
+        if (!itemsBySettlement[item.settlement_id]) itemsBySettlement[item.settlement_id] = [];
+        itemsBySettlement[item.settlement_id].push(item);
+      }
+      
+      for (const settlement of settlements) {
+        settlement.deliveries = itemsBySettlement[settlement.id] || [];
+      }
+    }
+
     res.json({ success: true, data: settlements });
   } catch (err) { next(err); }
 });
@@ -1177,9 +1371,8 @@ router.put(
             'INSERT INTO payments (sale_id, method, amount, reference_number, received_by) VALUES (?, ?, ?, ?, ?)'
           ).run(sale.id, payment_method || 'cash', paidNow, payment_reference ? `PICKUP-${payment_reference}` : 'PICKUP', req.user.id);
 
-          // Update cash register
-          const today = todayStr();
-          const register = db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND date = ?').get(sale.location_id, today);
+          // Update cash register (find the open session, not by date to handle overnight sessions)
+          const register = db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1').get(sale.location_id);
           if (register) {
             if ((payment_method || 'cash') === 'cash') {
               db.prepare('UPDATE cash_registers SET total_cash_sales = total_cash_sales + ?, expected_cash = opening_balance + total_cash_sales + ? - total_refunds_cash WHERE id = ?').run(paidNow, paidNow, register.id);

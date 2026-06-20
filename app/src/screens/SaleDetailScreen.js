@@ -97,10 +97,17 @@ export default function SaleDetailScreen({ route, navigation }) {
 
   // Pickup Payment Modal
   const [pickupPayModalVisible, setPickupPayModalVisible] = useState(false);
-  const [pickupPayMethod, setPickupPayMethod] = useState('cash');
-  const [pickupPayAmount, setPickupPayAmount] = useState('');
-  const [pickupPayRef, setPickupPayRef] = useState('');
+  const [pickupPayments, setPickupPayments] = useState([{ method: 'cash', amount: '', reference_number: '' }]);
+  const [pickupWriteOffAmount, setPickupWriteOffAmount] = useState('');
   const [confirmingPickup, setConfirmingPickup] = useState(false);
+
+  const handleAddPickupPayment = () => setPickupPayments([...pickupPayments, { method: 'cash', amount: '', reference_number: '' }]);
+  const updatePickupPayment = (index, field, value) => {
+    const updated = [...pickupPayments];
+    updated[index][field] = value;
+    setPickupPayments(updated);
+  };
+  const removePickupPayment = (index) => setPickupPayments(pickupPayments.filter((_, i) => i !== index));
 
   // Edit Sale & Audit Logs
   const [auditLogs, setAuditLogs] = useState([]);
@@ -225,9 +232,8 @@ export default function SaleDetailScreen({ route, navigation }) {
 
     // Guard: pickup orders must be fully paid before completion
     if (nextStatus === 'completed' && sale.order_type === 'pickup' && due > 0.01) {
-      setPickupPayAmount(Number(due).toFixed(0));
-      setPickupPayMethod('cash');
-      setPickupPayRef('');
+      setPickupPayments([{ method: 'cash', amount: Number(due).toFixed(0), reference_number: '' }]);
+      setPickupWriteOffAmount('');
       setPickupPayModalVisible(true);
       return;
     }
@@ -259,19 +265,25 @@ export default function SaleDetailScreen({ route, navigation }) {
   };
 
   const handleConfirmPickupPayment = async () => {
-    const amt = parseFloat(pickupPayAmount);
-    if (!amt || amt <= 0) {
+    const totalPayments = pickupPayments.reduce((sum, p) => sum + (parseFloat(p.amount) || 0), 0);
+    const woAmount = parseFloat(pickupWriteOffAmount) || 0;
+    const totalReduction = totalPayments + woAmount;
+
+    if (totalReduction <= 0) {
       Alert.alert('Invalid', 'Please enter a valid payment amount.');
       return;
     }
 
     setConfirmingPickup(true);
     try {
+      const formattedPayments = pickupPayments
+        .map(p => ({ ...p, amount: parseFloat(p.amount) || 0 }))
+        .filter(p => p.amount > 0);
+
       // 1. Record payment
       await api.addPaymentToSale(saleId, {
-        method: pickupPayMethod,
-        amount: amt,
-        reference_number: pickupPayRef || null,
+        payments: formattedPayments,
+        write_off_amount: woAmount > 0 ? woAmount : undefined,
       });
 
       // 2. Update status to completed
@@ -1289,42 +1301,39 @@ export default function SaleDetailScreen({ route, navigation }) {
               <Text style={styles.balanceAmount}>₹{Number(due).toFixed(2)}</Text>
             </View>
 
-            <Text style={styles.fieldLabel}>Payment Method</Text>
-            <View style={styles.chipRow}>
-              {PAYMENT_METHODS.map(m => (
-                <TouchableOpacity
-                  key={m.key}
-                  style={[styles.methodChip, pickupPayMethod === m.key && styles.methodChipActive]}
-                  onPress={() => setPickupPayMethod(m.key)}
-                >
-                  <Ionicons name={m.icon} size={16} color={pickupPayMethod === m.key ? '#fff' : Colors.textSecondary} />
-                  <Text style={[styles.methodChipText, pickupPayMethod === m.key && styles.methodChipTextActive]}>{m.label}</Text>
-                </TouchableOpacity>
+            <ScrollView style={{ maxHeight: 300, marginBottom: Spacing.md }}>
+              {pickupPayments.map((p, index) => (
+                <View key={index} style={{ marginBottom: Spacing.md, padding: Spacing.sm, backgroundColor: Colors.background, borderRadius: BorderRadius.sm }}>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 }}>
+                    <Text style={styles.fieldLabel}>Payment {index + 1}</Text>
+                    {pickupPayments.length > 1 && (
+                      <TouchableOpacity onPress={() => removePickupPayment(index)}>
+                        <Ionicons name="trash-outline" size={18} color={Colors.error} />
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                  <TextInput style={[styles.modalInput, { marginBottom: Spacing.sm }]} value={p.amount} onChangeText={val => updatePickupPayment(index, 'amount', val)} keyboardType="numeric" placeholder="₹ Amount" />
+                  <View style={styles.chipRow}>
+                    {PAYMENT_METHODS.map(m => (
+                      <TouchableOpacity key={m.key} style={[styles.methodChip, p.method === m.key && styles.methodChipActive]} onPress={() => updatePickupPayment(index, 'method', m.key)}>
+                        <Text style={[styles.methodChipText, p.method === m.key && styles.methodChipTextActive]}>{m.label}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                  {p.method !== 'cash' && (
+                    <TextInput style={[styles.modalInput, { marginTop: Spacing.sm }]} value={p.reference_number} onChangeText={val => updatePickupPayment(index, 'reference_number', val)} placeholder="Reference / Transaction ID" />
+                  )}
+                </View>
               ))}
-            </View>
 
-            <Text style={styles.fieldLabel}>Amount to Receive</Text>
-            <TextInput
-              style={styles.modalInput}
-              value={pickupPayAmount}
-              onChangeText={setPickupPayAmount}
-              placeholder="₹ Amount"
-              placeholderTextColor={Colors.textLight}
-              keyboardType="numeric"
-            />
+              <TouchableOpacity style={{ flexDirection: 'row', alignItems: 'center', marginBottom: Spacing.md }} onPress={handleAddPickupPayment}>
+                <Ionicons name="add-circle-outline" size={18} color={Colors.primary} />
+                <Text style={{ color: Colors.primary, marginLeft: 4, fontWeight: '600', fontSize: FontSize.sm }}>Add Split Payment</Text>
+              </TouchableOpacity>
 
-            {pickupPayMethod !== 'cash' && (
-              <>
-                <Text style={styles.fieldLabel}>Reference / Transaction ID</Text>
-                <TextInput
-                  style={styles.modalInput}
-                  value={pickupPayRef}
-                  onChangeText={setPickupPayRef}
-                  placeholder="Optional reference"
-                  placeholderTextColor={Colors.textLight}
-                />
-              </>
-            )}
+              <Text style={styles.fieldLabel}>Write-off Amount (Optional)</Text>
+              <TextInput style={styles.modalInput} value={pickupWriteOffAmount} onChangeText={setPickupWriteOffAmount} keyboardType="numeric" placeholder="₹ Small discrepancy amount" />
+            </ScrollView>
 
             <TouchableOpacity
               style={[styles.confirmBtn, confirmingPickup && { opacity: 0.6 }]}

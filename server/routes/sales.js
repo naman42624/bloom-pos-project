@@ -531,12 +531,7 @@ router.get('/register/status', authenticate, async (req, res, next) => {
     }
 
     // Run independent lookups in parallel
-    const [expenseRow, todaySessions] = await Promise.all([
-      db.prepare(`
-        SELECT COALESCE(SUM(amount), 0) as total
-        FROM expenses
-        WHERE location_id = ? AND expense_date = ? AND payment_method = 'cash'
-      `).get(location_id, today),
+    const [todaySessions] = await Promise.all([
       db.prepare(`
         SELECT cr.*, u1.name as opened_by_name, u2.name as closed_by_name
         FROM cash_registers cr
@@ -548,17 +543,61 @@ router.get('/register/status', authenticate, async (req, res, next) => {
     ]);
 
     if (register) {
-      register.total_expenses_cash = expenseRow?.total || 0;
+      if (!register.closed_at) {
+        // Open session: get net expenses that belong to THIS session (using register_id for
+        // session-exact scoping; timestamp fallback for legacy expenses without register_id)
+        const sessionStart = register.opening_time || register.opened_at;
+        const expenseRow = await db.prepare(`
+          SELECT COALESCE(SUM(CASE WHEN is_return = 1 THEN -amount ELSE amount END), 0) as total
+          FROM expenses
+          WHERE payment_method = 'cash'
+            AND (
+              register_id = ?
+              OR (register_id IS NULL AND location_id = ? AND created_at >= ?)
+            )
+        `).get(register.id, location_id, sessionStart);
+        register.total_expenses_cash = expenseRow?.total || 0;
+      } else {
+        // Closed session: derive net expenses from expected cash math
+        const inferredExpenses = (Number(register.opening_balance) || 0) 
+                               + (Number(register.total_cash_sales) || 0) 
+                               - (Number(register.total_refunds_cash) || 0) 
+                               - (Number(register.expected_cash) || 0);
+        register.total_expenses_cash = inferredExpenses;
+      }
     }
+
+    // Pending COD: cash collected by delivery partners but not yet settled to this register.
+    // This is "real money" physically in the store not yet counted in expected_cash.
+    let pendingCodTotal = 0;
+    let pendingCodDeliveries = 0;
+    try {
+      const codRow = await db.prepare(`
+        SELECT
+          COALESCE(SUM(d.cod_collected), 0) as total,
+          COUNT(d.id)                        as count
+        FROM deliveries d
+        WHERE d.location_id = ?
+          AND d.status = 'delivered'
+          AND d.cod_collected > 0
+          AND d.cod_status IN ('collected', 'partial')
+          AND d.id NOT IN (SELECT delivery_id FROM delivery_settlement_items)
+      `).get(location_id);
+      pendingCodTotal = Number(codRow?.total || 0);
+      pendingCodDeliveries = Number(codRow?.count || 0);
+    } catch (_) { /* non-critical — don't fail the whole status response */ }
 
     res.json({
       success: true,
       data: register || null,
       isOpen: !!register && !register.closed_at,
       todaySessions,
+      pendingCodTotal,
+      pendingCodDeliveries,
     });
   } catch (err) { next(err); }
 });
+
 
 // ─── POST /api/sales/register/open ───────────────────────────
 router.post(
@@ -629,8 +668,9 @@ router.put(
       if (!register) return res.status(404).json({ success: false, message: 'No open register found for this location' });
 
       // Recalculate totals from actual payment records during this session
-      const sessionStart = register.opened_at;
-      const paymentTotals = db.prepare(`
+      const sessionStart = register.opening_time || register.opened_at;
+      // 1. Get totals from direct sale payments (excluding auto-allocated credit payments)
+      const directPaymentTotals = db.prepare(`
         SELECT
           COALESCE(SUM(CASE WHEN p.method = 'cash' THEN p.amount ELSE 0 END), 0) as cash_total,
           COALESCE(SUM(CASE WHEN p.method = 'card' THEN p.amount ELSE 0 END), 0) as card_total,
@@ -638,7 +678,31 @@ router.put(
         FROM payments p
         JOIN sales s ON p.sale_id = s.id
         WHERE s.location_id = ? AND p.created_at >= ? AND s.status != 'cancelled'
+          AND (p.reference_number IS NULL OR (p.reference_number NOT LIKE 'Credit-%' AND p.reference_number != 'COD' AND p.reference_number NOT LIKE 'COD-%'))
       `).get(location_id, sessionStart);
+
+      // 2. Get totals from credit payments collected at this location
+      const creditPaymentTotals = db.prepare(`
+        SELECT
+          COALESCE(SUM(CASE WHEN payment_method = 'cash' THEN amount ELSE 0 END), 0) as cash_total,
+          COALESCE(SUM(CASE WHEN payment_method = 'card' THEN amount ELSE 0 END), 0) as card_total,
+          COALESCE(SUM(CASE WHEN payment_method = 'upi' THEN amount ELSE 0 END), 0) as upi_total
+        FROM credit_payments
+        WHERE location_id = ? AND created_at >= ? AND payment_method != 'write_off'
+      `).get(location_id, sessionStart);
+
+      // 3. Get totals from verified delivery COD settlements at this location
+      const codSettlementTotal = db.prepare(`
+        SELECT COALESCE(SUM(total_amount), 0) as cash_total
+        FROM delivery_settlements
+        WHERE location_id = ? AND verified_at >= ? AND status = 'verified'
+      `).get(location_id, sessionStart).cash_total;
+
+      const paymentTotals = {
+        cash_total: directPaymentTotals.cash_total + creditPaymentTotals.cash_total + codSettlementTotal,
+        card_total: directPaymentTotals.card_total + creditPaymentTotals.card_total,
+        upi_total: directPaymentTotals.upi_total + creditPaymentTotals.upi_total,
+      };
 
       let refundTotal = 0;
       try {
@@ -659,12 +723,17 @@ router.put(
         `).get(location_id, sessionStart).total;
       }
 
-      // Cash expenses during this session
+      // Cash expenses during this session (net of returns).
+      // Use register_id for session-exact scoping; timestamp fallback for legacy expenses.
       const expenseTotal = db.prepare(`
-        SELECT COALESCE(SUM(amount), 0) as total
+        SELECT COALESCE(SUM(CASE WHEN is_return = 1 THEN -amount ELSE amount END), 0) as total
         FROM expenses
-        WHERE location_id = ? AND created_at >= ? AND payment_method = 'cash'
-      `).get(location_id, sessionStart).total;
+        WHERE payment_method = 'cash'
+          AND (
+            register_id = ?
+            OR (register_id IS NULL AND location_id = ? AND created_at >= ?)
+          )
+      `).get(register.id, location_id, sessionStart).total;
 
       const expectedCash = register.opening_balance + paymentTotals.cash_total - refundTotal - expenseTotal;
       const discrepancy = expectedCash - actual_cash;
@@ -1744,9 +1813,14 @@ router.post(
   authenticate,
   authorize('owner', 'manager', 'employee'),
   [
-    body('method').isIn(['cash', 'card', 'upi']),
-    body('amount').isFloat({ min: 0.01 }),
+    body('payments').optional().isArray(),
+    body('payments.*.method').optional().isIn(['cash', 'card', 'upi']),
+    body('payments.*.amount').optional().isFloat({ min: 0.01 }),
+    body('payments.*.reference_number').optional({ nullable: true }).trim(),
+    body('method').optional().isIn(['cash', 'card', 'upi']),
+    body('amount').optional().isFloat({ min: 0.01 }),
     body('reference_number').optional({ nullable: true }).trim(),
+    body('write_off_amount').optional().isFloat({ min: 0.01 }),
   ],
   (req, res, next) => {
     try {
@@ -1757,40 +1831,79 @@ router.post(
       const sale = db.prepare('SELECT * FROM sales WHERE id = ?').get(req.params.id);
       if (!sale) return res.status(404).json({ success: false, message: 'Sale not found' });
 
-      const { method, amount, reference_number } = req.body;
-
-      db.prepare('INSERT INTO payments (sale_id, method, amount, reference_number, received_by, created_at) VALUES (?, ?, ?, ?, ?, ?)')
-        .run(sale.id, method, amount, reference_number || null, req.user.id, nowLocal());
-
-      // Recalculate payment status
-      const totalPaid = db.prepare('SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE sale_id = ?').get(sale.id).total;
-      const roundedGrandTotal = Math.round(Number(sale.grand_total || 0) * 100) / 100;
-      const roundedTotalPaid = Math.round(Number(totalPaid || 0) * 100) / 100;
-      let paymentStatus = 'pending';
-      if (roundedTotalPaid >= roundedGrandTotal - 0.01) paymentStatus = 'paid';
-      else if (roundedTotalPaid > 0) paymentStatus = 'partial';
-
-      db.prepare('UPDATE sales SET payment_status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(paymentStatus, sale.id);
-
-      // Decrement customer credit balance
-      if (sale.customer_id) {
-        db.prepare('UPDATE users SET credit_balance = GREATEST(0, credit_balance - ?), updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(amount, sale.customer_id);
+      const { method, amount, reference_number, payments, write_off_amount } = req.body;
+      const paymentList = payments || [];
+      if (method && amount) {
+        paymentList.push({ method, amount, reference_number });
       }
 
-      // Update cash register
-      const register = db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1').get(sale.location_id);
-      if (register) {
-        if (method === 'cash') {
-          db.prepare('UPDATE cash_registers SET total_cash_sales = total_cash_sales + ?, expected_cash = expected_cash + ? WHERE id = ?').run(amount, amount, register.id);
-        } else if (method === 'card') {
-          db.prepare('UPDATE cash_registers SET total_card_sales = total_card_sales + ? WHERE id = ?').run(amount, register.id);
-        } else if (method === 'upi') {
-          db.prepare('UPDATE cash_registers SET total_upi_sales = total_upi_sales + ? WHERE id = ?').run(amount, register.id);
+      if (paymentList.length === 0 && !write_off_amount) {
+        return res.status(400).json({ success: false, message: 'No payments or write-off provided' });
+      }
+
+      const tx = db.transaction(() => {
+        let totalAmountPaidNow = 0;
+        for (const p of paymentList) {
+          db.prepare('INSERT INTO payments (sale_id, method, amount, reference_number, received_by, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+            .run(sale.id, p.method, p.amount, p.reference_number || null, req.user.id, nowLocal());
+          totalAmountPaidNow += Number(p.amount);
+
+          // Update cash register
+          const register = db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1').get(sale.location_id);
+          if (register) {
+            if (p.method === 'cash') {
+              db.prepare('UPDATE cash_registers SET total_cash_sales = total_cash_sales + ?, expected_cash = expected_cash + ? WHERE id = ?').run(p.amount, p.amount, register.id);
+            } else if (p.method === 'card') {
+              db.prepare('UPDATE cash_registers SET total_card_sales = total_card_sales + ? WHERE id = ?').run(p.amount, register.id);
+            } else if (p.method === 'upi') {
+              db.prepare('UPDATE cash_registers SET total_upi_sales = total_upi_sales + ? WHERE id = ?').run(p.amount, register.id);
+            }
+          }
         }
-      }
 
-      const payments = db.prepare('SELECT * FROM payments WHERE sale_id = ?').all(sale.id);
-      res.status(201).json({ success: true, data: { payments, payment_status: paymentStatus, total_paid: totalPaid } });
+        // Apply write_off_amount if provided
+        if (write_off_amount > 0) {
+          db.prepare('UPDATE sales SET discount_amount = COALESCE(discount_amount, 0) + ?, grand_total = GREATEST(0, grand_total - ?) WHERE id = ?')
+            .run(write_off_amount, write_off_amount, sale.id);
+          
+          if (sale.customer_id) {
+            db.prepare('UPDATE users SET credit_balance = GREATEST(0, credit_balance - ?), total_spent = GREATEST(0, total_spent - ?) WHERE id = ?')
+              .run(write_off_amount, write_off_amount, sale.customer_id);
+          }
+        }
+
+        // Fetch updated sale grand total
+        const updatedSale = db.prepare('SELECT grand_total FROM sales WHERE id = ?').get(sale.id);
+
+        // Recalculate payment status
+        const totalPaid = db.prepare('SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE sale_id = ?').get(sale.id).total;
+        const roundedGrandTotal = Math.round(Number(updatedSale.grand_total || 0) * 100) / 100;
+        const roundedTotalPaid = Math.round(Number(totalPaid || 0) * 100) / 100;
+        let paymentStatus = 'pending';
+        if (roundedTotalPaid >= roundedGrandTotal - 0.01) paymentStatus = 'paid';
+        else if (roundedTotalPaid > 0) paymentStatus = 'partial';
+
+        db.prepare('UPDATE sales SET payment_status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(paymentStatus, sale.id);
+
+        // Decrement customer credit balance for the payments made
+        const duesCustomerId = (sale.order_type === 'delivery' && sale.sender_customer_id) ? sale.sender_customer_id : sale.customer_id;
+        if (duesCustomerId && totalAmountPaidNow > 0) {
+          db.prepare('UPDATE users SET credit_balance = GREATEST(0, credit_balance - ?) WHERE id = ?').run(totalAmountPaidNow, duesCustomerId);
+        }
+
+        if (sale.order_type === 'delivery' || sale.order_type === 'pre_order') {
+          const newCodAmount = sale.is_credit_sale ? 0 : Math.max(0, updatedSale.grand_total - totalPaid);
+          const codStatus = newCodAmount > 0.01 ? 'pending' : 'collected';
+          db.prepare('UPDATE deliveries SET cod_amount = ?, cod_status = ? WHERE sale_id = ?').run(newCodAmount, codStatus, sale.id);
+        }
+
+        return { paymentStatus, totalPaid };
+      });
+
+      const { paymentStatus, totalPaid } = tx();
+
+      const allPayments = db.prepare('SELECT * FROM payments WHERE sale_id = ?').all(sale.id);
+      res.status(201).json({ success: true, data: { payments: allPayments, payment_status: paymentStatus, total_paid: totalPaid } });
     } catch (err) { next(err); }
   }
 );
@@ -1909,11 +2022,11 @@ router.put(
         return res.status(400).json({ success: false, message: `Cannot transition from ${sale.status} to ${status}` });
       }
 
-      // ── Manager Override Auto-Complete for Pickup Orders ──
+      // ── Manager Override Auto-Complete for Pickup and Delivery Orders ──
       const overrideSetting = db.prepare("SELECT value FROM settings WHERE key = 'pref_manager_override'").get();
       const managerOverrideOn = overrideSetting && overrideSetting.value === '1';
 
-      if (managerOverrideOn && sale.order_type === 'pickup') {
+      if (managerOverrideOn && (sale.order_type === 'pickup' || sale.order_type === 'delivery')) {
         if (status === 'preparing') {
           db.prepare("UPDATE production_tasks SET status = 'in_progress', picked_by = COALESCE(picked_by, ?), updated_at = CURRENT_TIMESTAMP WHERE sale_id = ? AND status IN ('pending', 'assigned')").run(req.user.id, sale.id);
         } else if (status === 'ready') {
@@ -2641,6 +2754,11 @@ router.post('/:id/resolve-balance', authenticate, authorize('owner', 'manager'),
         return res.status(400).json({ success: false, message: 'Cannot convert to credit sale: No customer attached to this order. Please edit the sale to add a customer first.' });
       }
       db.prepare('UPDATE sales SET is_credit_sale = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(sale.id);
+      
+      if (sale.order_type === 'delivery' || sale.order_type === 'pre_order') {
+         db.prepare("UPDATE deliveries SET cod_amount = 0, cod_status = 'collected' WHERE sale_id = ?").run(sale.id);
+      }
+      
       return res.json({ success: true, message: 'Converted to Credit Sale successfully' });
     } else if (action === 'write_off') {
       db.transaction(() => {
@@ -2650,6 +2768,10 @@ router.post('/:id/resolve-balance', authenticate, authorize('owner', 'manager'),
         if (sale.customer_id) {
           db.prepare('UPDATE users SET credit_balance = GREATEST(0, credit_balance - ?), total_spent = GREATEST(0, total_spent - ?), updated_at = CURRENT_TIMESTAMP WHERE id = ?')
             .run(balanceDue, balanceDue, sale.customer_id);
+        }
+        
+        if (sale.order_type === 'delivery' || sale.order_type === 'pre_order') {
+           db.prepare("UPDATE deliveries SET cod_amount = 0, cod_status = 'collected' WHERE sale_id = ?").run(sale.id);
         }
       })();
       return res.json({ success: true, message: 'Balance written off successfully' });

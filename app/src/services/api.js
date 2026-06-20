@@ -871,6 +871,19 @@ class ApiService {
     return this.request(`/deliveries/settlements/${settlementId}/verify`, { method: 'PUT' });
   }
 
+  settleNow(data) {
+    // Single-step: create + verify settlement atomically, credits full amount to register immediately.
+    // data: { delivery_partner_id, delivery_ids? (omit to settle all), location_id?, notes? }
+    return this.request('/deliveries/settlements/settle-now', { method: 'POST', body: JSON.stringify(data) });
+  }
+
+  getPendingCodSummary(locationId) {
+    // Returns total unsettled COD grouped by partner for a location (for register/dashboard banners)
+    const q = locationId ? `?location_id=${locationId}` : '';
+    return this.request(`/deliveries/settlements/pending-summary${q}`);
+  }
+
+
   // ─── Pickup Orders ───────────────────────────────────────
   markPickupReady(saleId) {
     return this.request(`/deliveries/pickup/${saleId}/ready`, { method: 'PUT' });

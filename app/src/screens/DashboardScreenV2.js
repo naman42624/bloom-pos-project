@@ -602,7 +602,7 @@ export default function DashboardScreenV2({ navigation }) {
         const normalizedAbsent=absent.map(x=>({id:`a-${x.id}`,name:x.name,roleLabel:(x.role||'').replace('_',' '),pulse:'off',pulseLabel:'Off-shift'}));
         setStaffPulse([...presentByUser.values(),...normalizedAbsent].slice(0,10));setReportKPIs(reportsRes?.data||null);
       }
-      if(locationList.length>0){const regCalls=await Promise.all(locationList.map(async loc=>{try{const reg=await api.getRegisterStatus(loc.id);return{locationId:loc.id,locationName:loc.name,isOpen:reg?.isOpen===true,register:reg?.data||null};}catch{return{locationId:loc.id,locationName:loc.name,isOpen:false,register:null};}}));setRegisters(regCalls);}else setRegisters([]);
+      if(locationList.length>0){const regCalls=await Promise.all(locationList.map(async loc=>{try{const reg=await api.getRegisterStatus(loc.id);return{locationId:loc.id,locationName:loc.name,isOpen:reg?.isOpen===true,register:reg?.data||null,pendingCodTotal:reg?.pendingCodTotal||0};}catch{return{locationId:loc.id,locationName:loc.name,isOpen:false,register:null,pendingCodTotal:0};}}));setRegisters(regCalls);}else setRegisters([]);
     }catch(err){Alert.alert('Dashboard',err?.message||'Failed to load.');}finally{setLoading(false);setRefreshing(false);}
   },[activeLocation?.id,isOwner,isOwnerOrManager,isStaff,isEmployee,isDeliveryPartner,locationScope,dateScope,role]);
 
@@ -635,6 +635,8 @@ export default function DashboardScreenV2({ navigation }) {
     for(const type of ['delivery','pickup','walk_in']){const g=ordersByTypeAndStatus[type]||{};for(const k of Object.keys(g)){active+=g[k].length;g[k].forEach(o=>{if(getOrderSla(o,timezone)==='overdue')overdue++;});}if(type==='delivery')inTransit+=(g.in_transit||[]).length;}
     return {active,overdue,inTransit,revenue:reportKPIs?.today?.revenue||0};
   },[ordersByTypeAndStatus,timezone,reportKPIs]);
+
+  const totalPendingCod = useMemo(()=>registers.reduce((sum,r)=>sum+Number(r.pendingCodTotal||0),0),[registers]);
 
   const advanceTask=useCallback(async(task)=>{if(!task?.id||task.status==='completed'||task.status==='cancelled')return;setTaskActionLoading(p=>({...p,[task.id]:true}));try{if(task.status==='pending')await api.pickTask(task.id);else if(task.status==='assigned')await api.startTask(task.id);else if(task.status==='in_progress')await api.completeTask(task.id);await fetchDashboard();}catch(e){const msg=e?.message||"Failed";Platform.OS==="web"?window.alert(msg):Alert.alert("Error",msg);}finally{setTaskActionLoading(p=>({...p,[task.id]:false}));};},[fetchDashboard]);
 
@@ -681,6 +683,15 @@ export default function DashboardScreenV2({ navigation }) {
           </View>}
 
           {loading?<View style={{alignItems:'center',paddingVertical:50}}><ActivityIndicator color={P.pink} size="large"/><Text style={{color:P.textSec,marginTop:10}}>Loading...</Text></View>:<>
+            {/* Global COD Alert */}
+            {totalPendingCod > 0 && (
+              <TouchableOpacity style={[ms.codAlert, { alignSelf: 'stretch', marginBottom: 12, paddingVertical: 10, paddingHorizontal: 12, backgroundColor: P.amberLight, borderWidth: 1, borderColor: P.amber+'50' }]} onPress={()=>navigation.navigate('More',{screen:'Settlements',initial:false})} activeOpacity={0.8}>
+                <Ionicons name="alert-circle" size={16} color="#92400E"/>
+                <Text style={[ms.codAlertTxt, { fontSize: 13, flex: 1 }]}>₹{totalPendingCod.toLocaleString('en-IN',{maximumFractionDigits:0})} COD pending from deliveries. Settle now to update cash register.</Text>
+                <Ionicons name="chevron-forward" size={14} color="#92400E"/>
+              </TouchableOpacity>
+            )}
+
             {/* KPI strip */}
             <View style={ms.kpiRow}>
               <KpiChip icon="layers-outline" label="Active" value={kpis.active} color={P.blue} bg={P.blueLight}/>
@@ -701,7 +712,7 @@ export default function DashboardScreenV2({ navigation }) {
 
             {/* Revenue & registers */}
             {isOwner&&reportKPIs&&<View style={ms.widget}><Text style={[ms.widgetTitle,{marginBottom:8}]}>Revenue</Text><View style={{alignItems:'center',marginBottom:8}}><Text style={{fontSize:10,color:P.textMuted,fontWeight:'700'}}>Today</Text><Text style={{fontSize:20,color:P.green,fontWeight:'800',marginTop:2}}>{fmt(reportKPIs?.today?.revenue)}</Text></View><View style={{flexDirection:'row',justifyContent:'space-around'}}><View style={{alignItems:'center'}}><Text style={{fontSize:10,color:P.textMuted}}>Yesterday</Text><Text style={{fontSize:13,color:P.pink,fontWeight:'700',marginTop:2}}>{fmt(reportKPIs?.yesterday?.revenue)}</Text></View><View style={{alignItems:'center'}}><Text style={{fontSize:10,color:P.textMuted}}>Week</Text><Text style={{fontSize:13,color:P.blue,fontWeight:'700',marginTop:2}}>{fmt(reportKPIs?.week?.revenue)}</Text></View></View></View>}
-            {isOwner&&registers.length>0&&<View style={{gap:6,marginBottom:12}}><Text style={ms.widgetTitle}>Registers</Text>{registers.map(r=>{const tone=r.isOpen?P.green:P.red;return <TouchableOpacity key={r.locationId} style={[ms.regCard,{borderLeftColor:tone}]} onPress={()=>navigation.navigate('POS',{screen:'CashRegister',params:{locationId:r.locationId}})}><View style={{flexDirection:'row',justifyContent:'space-between'}}><View><Text style={ms.regTitle}>{r.locationName}</Text><Text style={[ms.regStatus,{color:tone}]}>{r.isOpen?'● OPEN':'● CLOSED'}</Text></View><View style={{alignItems:'flex-end'}}><Text style={{fontSize:9,color:P.textMuted}}>Expected</Text><Text style={{fontSize:12,fontWeight:'800',color:P.text}}>{fmt(r.register?.expected_cash||0)}</Text></View></View></TouchableOpacity>;})}</View>}
+            {isOwner&&registers.length>0&&<View style={{gap:6,marginBottom:12}}><Text style={ms.widgetTitle}>Registers</Text>{registers.map(r=>{const tone=r.isOpen?P.green:P.red;const codTotal=Number(r.pendingCodTotal||0);return <TouchableOpacity key={r.locationId} style={[ms.regCard,{borderLeftColor:tone}]} onPress={()=>navigation.navigate('POS',{screen:'CashRegister',params:{locationId:r.locationId}})}><View style={{flexDirection:'row',justifyContent:'space-between'}}><View><Text style={ms.regTitle}>{r.locationName}</Text><Text style={[ms.regStatus,{color:tone}]}>{r.isOpen?'● OPEN':'● CLOSED'}</Text></View><View style={{alignItems:'flex-end'}}><Text style={{fontSize:9,color:P.textMuted}}>Expected</Text><Text style={{fontSize:12,fontWeight:'800',color:P.text}}>{fmt(r.register?.expected_cash||0)}</Text></View></View>{codTotal>0&&<TouchableOpacity style={ms.codAlert} onPress={()=>navigation.navigate('More',{screen:'Settlements',initial:false})} activeOpacity={0.8}><Ionicons name="alert-circle" size={11} color="#92400E"/><Text style={ms.codAlertTxt}>₹{codTotal.toLocaleString('en-IN',{maximumFractionDigits:0})} COD pending — Settle Now →</Text></TouchableOpacity>}</TouchableOpacity>;})}</View>}
           </>}
         </ScrollView>
 
@@ -774,4 +785,8 @@ const ms = StyleSheet.create({
   emptyTitle:{fontSize:15,fontWeight:'700',color:P.text},
   taskCard:{backgroundColor:P.surface,borderRadius:10,padding:12,borderLeftWidth:4,borderWidth:1,borderColor:P.border,marginBottom:6,...Shadows.sm},
   taskName:{fontSize:13,fontWeight:'700',color:P.text,flex:1,marginRight:8},taskMeta:{fontSize:11,color:P.textSec,marginTop:3},
+
+  codAlert:{flexDirection:'row',alignItems:'center',gap:4,marginTop:6,paddingVertical:4,paddingHorizontal:7,backgroundColor:'#FEF3C7',borderRadius:6,alignSelf:'flex-start'},
+  codAlertTxt:{fontSize:10,fontWeight:'700',color:'#92400E'},
 });
+
