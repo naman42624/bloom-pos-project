@@ -18,7 +18,8 @@ This is a live production app. **Every change below is additive** — no existin
 3. Buyer and recipient are consistently distinct, everywhere an order can be created.
 4. Order status is a single, honest, formally-declared lifecycle — not runtime values wider than the schema claims to allow.
 5. Meaningful edits after creation (items, price, address — not just notes) are visible history, not silent overwrites.
-6. None of the above forces premature payment capture or an open cash register for channels where payment is naturally deferred.
+6. None of the above forces premature payment capture or an open cash register for channels where payment is naturally deferred; cash register accounting stays driven purely by payment method, never by channel or order type.
+7. Instructions for an order (especially prep/delivery notes dictated from a phone call) can be captured as fast as talking, not just typed.
 
 ## 3. Non-goals (deferred to later sub-projects, see `CLAUDE.md` roadmap)
 
@@ -40,6 +41,7 @@ All new columns are nullable or carry a safe default so every existing row remai
 | `sales` | Formalize the `status` CHECK constraint to `('draft','pending','confirmed','preparing','ready','completed','cancelled')` | Codifies what's already used at runtime (see `ORDER_STATUS_AND_FLOW_ANALYSIS.md`) — not a behavior change, a correctness fix so the schema stops lying about what's allowed. |
 | `deliveries` | Formalize `cod_status` CHECK to include `'partial'` | Same kind of fix — already written at runtime, missing from the constraint. |
 | `sale_items` | No structural change; `PUT /api/sales/:id` gains the ability to modify item rows (see §9) | |
+| *(new table)* `sale_attachments` | `id, sale_id, type ('photo'\|'voice_note'), file_url, duration_seconds NULL, uploaded_by, created_at` | Replaces the earlier single-photo idea (§6) — a small append-only attachments table, following the same convention as the existing `delivery_proofs`/`product_images` tables, so an order can carry more than one reference photo or voice note over time (e.g. the customer calls back later with more instructions) without overwriting anything. |
 
 No changes to `users`, `customers`-adjacent tables, `credit_payments`, or anything holding customer financial history — those are explicitly untouched by this sub-project.
 
@@ -69,8 +71,9 @@ New fast-entry form for WhatsApp/email/phone/website orders (`LogOrderScreen`), 
 3. **Items** — same picker used by POS, plus a free-text "custom item" option with manual price (already exists in POS, reused here).
 4. **Fulfilment** — pickup or delivery toggle.
    - If delivery: **recipient name & phone**, separate from the buyer (wires the existing but under-used `receiver_customer_id`/`receiver_name`/`receiver_phone`/`receiver_address_label` fields consistently — this is largely plumbing existing schema, not new fields), address, scheduled date/time, delivery instructions, gift/sender message.
-5. **Reference photo** (optional) — reuses the existing multer image-upload pattern already used for product images; attached to the order for the florist to see.
-6. **Priority** — normal/rush chip.
+5. **Reference photo** (optional) — reuses the existing multer image-upload pattern already used for product images; stored in `sale_attachments`, visible to the florist.
+6. **Voice note** (optional, new) — record a short spoken instruction instead of typing (e.g. "the customer said no lilies, she's allergic," dictated straight from the WhatsApp call instead of retyped). Recorded via `expo-av`/`expo-audio` on mobile, the browser's `MediaRecorder` on web; uploaded the same way as the reference photo, stored in the same `sale_attachments` table with `type='voice_note'`. Capped at 60 seconds — this is meant to be a quick instruction, not a recording booth, per the staff-UX-checklist's "quick and simple" bar. Not limited to quick-log time — also addable later from the order-detail view, since instructions legitimately arrive after the order already exists (a follow-up call, a change of plan). Playable inline in the order detail wherever the order's other instructions are shown (florist/rider view included — this is fulfillment instruction, not sensitive data, so no new permission gating needed).
+7. **Priority** — normal/rush chip.
 
 **Save requires only channel + at least one item or note.** Every other field — customer detail, address, schedule, photo — can be filled in later without blocking the initial save, because in practice the WhatsApp conversation is often still ongoing. This directly implements the staff-UX-checklist principle of "nothing asked that isn't required to proceed."
 
@@ -96,11 +99,18 @@ Runtime values stay as they are today — renaming live data is exactly what the
 
 ## 8. Channel × cash register / payment interaction
 
-**Principle: the register-open requirement is a property of recording a cash payment, not of logging an order or selecting a channel.**
+**Universal principle, already substantially implemented in the codebase — this sub-project documents and preserves it, doesn't invent it: the cash register (specifically `expected_cash`, the physical-drawer figure) is affected only by a payment write where `method = 'cash'`, wherever and whenever that write happens. Channel, order_type, and which screen/action recorded it are all irrelevant to that rule.** Card/UPI payments update `total_card_sales`/`total_upi_sales` on the session for reporting, but never `expected_cash`.
 
-- **Walk-in**: order logging and payment happen in the same moment at the counter — unchanged, still guarded by `QuickCheckoutScreen`'s existing register check.
-- **WhatsApp / email / phone / website**: order logging routinely precedes payment by hours or days. The quick-log form must never force an open register to *save the order* — only the act of recording an actual payment (at log time if "already paid," later via `AddPayment`, or via delivery COD collection settling later) triggers the check. This sub-project only ensures the order model and form don't force premature payment capture; sub-project 3 implements the actual server-side enforcement at every payment-write path (`method='cash'` inserts in sale creation, add-payment, refund, and COD collection — not narrowly "sale creation").
-- Delivery COD continues to flow through the existing settlement mechanism (`delivery_settlements`/`delivery_settlement_items`) untouched by this sub-project — a rider's collected cash never hits a shop register directly, only after manager verification.
+Verified against the actual code, this is already correctly wired in three places:
+- **Sale creation** (`POST /api/sales`) — accepts an optional `payments[]` array; cash entries update the register, others don't.
+- **Pickup completion** (`PUT /api/deliveries/pickup/:saleId/picked-up`) — if a balance is due, requires manager/owner confirmation, accepts a payment method, records it, and updates the register only if cash. This is exactly the "collect balance at pickup" flow — **already built**, not new work.
+- **Delivery COD** — collected by the rider, never touches the shop register directly; it flows into `delivery_settlements`, and only the settlement's creation/verification (`POST /api/deliveries/settlements`) adds the verified cash to the register. This is deliberate: the money isn't physically in the till until a manager has it.
+
+So there are exactly two cases at order-logging time, matching what you described, and neither is a forced two-step process:
+1. **Already paid** (in practice, almost always online/UPI for a non-walk-in order, since the customer isn't physically at the counter) — staff optionally attaches a payment to the quick-log form at save time via the same `payments[]` mechanism POS already uses. If it happens to be cash, register rules apply exactly as they do for a walk-in; if not, no register interaction at all.
+2. **Payment pending** — order saves with `payment_status = pending`/`partial`, no register interaction, no requirement to immediately do anything else. The balance then gets collected whenever it naturally occurs: online at any time before fulfillment (via the existing `AddPayment` screen, a manual escape hatch — not the *required* path), at pickup completion (already built, see above), or via delivery COD → settlement (already built). None of these are extra steps bolted onto the flow — they're the existing fulfillment-completion actions, now just correctly understood as also being the natural payment-collection moments.
+
+**The one real, narrow gap** (confirmed in the actual code, not assumed): none of the three cash-write paths above hard-block when no register is open — they check `if (register)` and silently skip updating totals if none exists, rather than rejecting the write or warning anyone. So a cash payment can still be recorded with no register open and its total quietly never lands anywhere. This sub-project doesn't fix that — it's sub-project 3's job — but sub-project 3's scope is now precisely: add a hard register-open check at every one of these cash-write sites (sale creation, pickup completion, settlement creation/verification, the sale-edit payment path in `PUT /api/sales/:id`, refunds, and `AddPayment`), not just "the sale-creation endpoint" as originally scoped.
 
 ## 9. Edit history
 
@@ -118,6 +128,8 @@ The order-detail view (§5) surfaces this history inline for roles that can alre
 ## 11. Testing / verification plan
 
 - Migration: apply against a copy of production data (not just an empty dev DB) and confirm every existing `sales`/`deliveries` row still reads correctly with the new columns present and the reformalized CHECK constraints not rejecting any existing row.
+- Voice note: record on mobile and on web, confirm playback on both, confirm the 60-second cap is enforced client-side (stop recording automatically, don't just reject on upload), confirm a second voice note on the same order doesn't remove the first.
+- Payment/register: confirm a cash payment recorded at order creation, at pickup completion, and at settlement verification each correctly update `expected_cash`; confirm a card/UPI payment at each of those three sites does not; confirm the existing `if (register)` silent-skip behavior is left as-is here (fixing it is explicitly sub-project 3, not this one) but is now precisely documented at all three sites for that later work.
 - Quick-log form: verify save succeeds with only channel + one item, with every other field empty.
 - Unified inbox: verify an order created via each of the four channels appears correctly filtered, and that a delivery order created via the quick-log form still flows correctly into the existing `DeliveryDetailScreen`/rider assignment path unchanged.
 - Buyer≠recipient: verify a delivery order with a different buyer and recipient displays both correctly throughout (order detail, challan, rider view).
@@ -127,4 +139,4 @@ The order-detail view (§5) surfaces this history inline for roles that can alre
 ## 12. Open assumptions (flag if wrong)
 
 - Historical rows with `channel = NULL` are treated as "unknown" in filters/reports, not backfilled with a guessed value.
-- **Rollout approach — recommendation, not yet locked in**: given this app is live at the counter, build the unified inbox as new and keep `SalesScreen`/`PickupOrdersScreen`/`DeliveriesScreen` reachable in parallel through the implementation phase, then remove them only after the new inbox has been confirmed working in real use — not a same-day cutover on a live system. This will be re-confirmed as part of the implementation plan.
+- **Rollout approach — confirmed: parallel run.** Build the unified inbox as new and keep `SalesScreen`/`PickupOrdersScreen`/`DeliveriesScreen` reachable alongside it. Old screens are only removed once the new inbox has been confirmed working in real counter use — no same-day cutover on a live system.

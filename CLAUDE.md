@@ -51,7 +51,7 @@ Order-side work is first because the app is live at the counter and that's today
 
 1. **Order model, channel & unified inbox** ← current
 2. Identity, roles & employee code/PIN login
-3. POS/checkout integrity (move register-open enforcement server-side, cover all sale-creation paths)
+3. POS/checkout integrity — move register-open enforcement server-side at every cash-payment-write site (sale creation, pickup completion, settlement creation/verification, sale-edit payments, refunds, add-payment), not just sale creation. Card/UPI payments never need this check — only `method='cash'` writes affect `expected_cash`. See `docs/superpowers/specs/2026-08-22-order-channel-model-design.md` §8 for the verified list of existing call sites.
 4. Cash register & settlement reconciliation
 5. Task assignment & delivery workflow
 6. Attendance & shift management
