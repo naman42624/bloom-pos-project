@@ -34,6 +34,46 @@ function generateSettlementNumber(db, locationId) {
   return `SETL-${dateCode}-${String(nextSeq).padStart(3, '0')}`;
 }
 
+// Split a set of deliveries' COD collections by the method actually used to
+// collect them (cash vs upi). `deliveries.cod_collected` (and a settlement's
+// total_amount) is a method-agnostic running total — the real per-collection
+// method lives on `delivery_collections`. Settlement register-crediting must
+// only add the cash portion to the cash drawer (expected_cash/total_cash_sales);
+// a UPI collection never touched cash.
+//
+// `expectedTotal` is the amount the caller believes was collected across these
+// deliveries (sum of cod_collected, or a settlement's total_amount). There's no
+// DB constraint tying delivery_collections rows to that total, and no CHECK on
+// `method` beyond what this app's own validator writes — so if a row is ever
+// missing (data-integrity drift, e.g. a manual DB fix) or carries a method this
+// app doesn't recognize, the unaccounted amount is folded into cash rather than
+// silently dropped from the register. This matches the pre-existing assume-cash
+// default and is logged so the drift stays visible instead of silent.
+function sumCollectionsByMethod(db, deliveryIds, expectedTotal) {
+  const totals = { cash: 0, upi: 0 };
+  let recognizedTotal = 0;
+  if (deliveryIds && deliveryIds.length > 0) {
+    const placeholders = deliveryIds.map(() => '?').join(',');
+    const rows = db.prepare(
+      `SELECT method, COALESCE(SUM(amount), 0) as total FROM delivery_collections WHERE delivery_id IN (${placeholders}) GROUP BY method`
+    ).all(...deliveryIds);
+    for (const row of rows) {
+      const amount = Number(row.total) || 0;
+      if (row.method === 'upi') totals.upi += amount;
+      else totals.cash += amount; // 'cash' and any unrecognized/legacy method both fold into cash
+      recognizedTotal += amount;
+    }
+  }
+  const unaccounted = (Number(expectedTotal) || 0) - recognizedTotal;
+  if (unaccounted > 0.01) {
+    console.warn(
+      `[settlements] delivery_collections under-account for ${unaccounted.toFixed(2)} across delivery ids [${(deliveryIds || []).join(',')}] — crediting the gap to cash so no settled money is dropped from the register.`
+    );
+    totals.cash += unaccounted;
+  }
+  return totals;
+}
+
 // ─── Photo upload config ────────────────────────────────────
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => {
@@ -1069,12 +1109,20 @@ router.post(
           db.prepare("UPDATE deliveries SET cod_status = 'settled', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(did);
         }
 
-        // Add the FULL cash amount to the open register immediately
+        // Credit the register with only the portion actually collected as cash —
+        // UPI collections must not inflate expected_cash (see sumCollectionsByMethod).
         const register = db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1').get(location_id);
         if (register) {
-          db.prepare(
-            'UPDATE cash_registers SET total_cash_sales = total_cash_sales + ?, expected_cash = expected_cash + ? WHERE id = ?'
-          ).run(totalAmount, totalAmount, register.id);
+          const byMethod = sumCollectionsByMethod(db, delivery_ids, totalAmount);
+          if (byMethod.cash > 0) {
+            db.prepare(
+              'UPDATE cash_registers SET total_cash_sales = total_cash_sales + ?, expected_cash = expected_cash + ? WHERE id = ?'
+            ).run(byMethod.cash, byMethod.cash, register.id);
+          }
+          if (byMethod.upi > 0) {
+            db.prepare('UPDATE cash_registers SET total_upi_sales = total_upi_sales + ? WHERE id = ?')
+              .run(byMethod.upi, register.id);
+          }
         }
 
         return settlementId;
@@ -1140,12 +1188,23 @@ router.put(
           settlement.id
         );
 
-        // Add the settled cash to the cash register (find the open session, not by date)
+        // Add the settled amount to the cash register (find the open session, not by date) —
+        // but only the portion actually collected as cash; UPI collections must not
+        // inflate expected_cash (see sumCollectionsByMethod).
         const register = db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1').get(settlement.location_id);
         if (register) {
-          // Credit the FULL collected amount (total_amount, not net_amount after commission)
-          db.prepare('UPDATE cash_registers SET total_cash_sales = total_cash_sales + ?, expected_cash = expected_cash + ? WHERE id = ?')
-            .run(settlement.total_amount, settlement.total_amount, register.id);
+          const settledDeliveryIds = db.prepare(
+            'SELECT delivery_id FROM delivery_settlement_items WHERE settlement_id = ?'
+          ).all(settlement.id).map(r => r.delivery_id);
+          const byMethod = sumCollectionsByMethod(db, settledDeliveryIds, settlement.total_amount);
+          if (byMethod.cash > 0) {
+            db.prepare('UPDATE cash_registers SET total_cash_sales = total_cash_sales + ?, expected_cash = expected_cash + ? WHERE id = ?')
+              .run(byMethod.cash, byMethod.cash, register.id);
+          }
+          if (byMethod.upi > 0) {
+            db.prepare('UPDATE cash_registers SET total_upi_sales = total_upi_sales + ? WHERE id = ?')
+              .run(byMethod.upi, register.id);
+          }
         }
       });
 

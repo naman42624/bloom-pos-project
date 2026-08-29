@@ -502,6 +502,36 @@ class ApiService {
     return this.request(`/sales/${id}/audit-logs`);
   }
 
+  async uploadSaleAttachment(saleId, fileUri, type, durationSeconds) {
+    const formData = new FormData();
+    if (Platform.OS === 'web') {
+      const response = await fetch(fileUri);
+      const blob = await response.blob();
+      formData.append('file', blob, fileUri.split('/').pop() || `attachment.${type === 'voice_note' ? 'webm' : 'jpg'}`);
+    } else {
+      const filename = fileUri.split('/').pop();
+      const match = /\.(\w+)$/.exec(filename);
+      const ext = match ? match[1] : (type === 'voice_note' ? 'm4a' : 'jpg');
+      const mimeType = type === 'voice_note' ? `audio/${ext}` : `image/${ext}`;
+      formData.append('file', { uri: fileUri, name: filename, type: mimeType });
+    }
+    formData.append('type', type);
+    if (durationSeconds) formData.append('duration_seconds', String(durationSeconds));
+
+    const url = `${API_BASE_URL}/sales/${saleId}/attachments`;
+    const headers = {};
+    if (this.token) headers['Authorization'] = `Bearer ${this.token}`;
+
+    const response = await fetch(url, { method: 'POST', headers, body: formData });
+    const data = await response.json();
+    if (!response.ok) throw { status: response.status, message: data.message || 'Upload failed' };
+    return data;
+  }
+
+  getSaleAttachments(saleId) {
+    return this.request(`/sales/${saleId}/attachments`);
+  }
+
   updateSale(id, data) {
     return this.request(`/sales/${id}`, { method: 'PUT', body: JSON.stringify(data) });
   }
