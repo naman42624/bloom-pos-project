@@ -9,6 +9,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { useFocusEffect, CommonActions } from '@react-navigation/native';
 
 import DateTimePickerModal from '../components/DateTimePickerModal';
+import VoiceNoteRecorder from '../components/VoiceNoteRecorder';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
@@ -67,6 +68,9 @@ export default function QuickCheckoutScreen({ navigation, route }) {
   const [receiverPhone, setReceiverPhone] = useState('');
   const [receiverId, setReceiverId] = useState(null);
   const [orderNotes, setOrderNotes] = useState('');
+  // Voice notes recorded for this order, uploaded after the sale is created (see
+  // handlePlaceOrder). Local file URIs only — never carried into a saved draft.
+  const [pendingAttachments, setPendingAttachments] = useState([]);
 
   // Surcharges & Discounts
   const [deliveryCharges, setDeliveryCharges] = useState('');
@@ -694,6 +698,9 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     setSkipAssignment(p.skipAssignment !== false);
     setAssignedTo(p.assignedTo || null);
     setActiveDraftId(draftId);
+    // A voice note is a local file URI — it can't be persisted in a draft
+    // payload, so resuming a draft never carries one over from a prior attempt.
+    setPendingAttachments([]);
   }, []);
 
   const loadDrafts = useCallback(async () => {
@@ -752,6 +759,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     setSkipAssignment(true);
     setActiveDraftId(null);
     setSubmitErrors([]);
+    setPendingAttachments([]);
   }, []);
 
   const handleNewSale = useCallback(async () => {
@@ -1103,6 +1111,23 @@ export default function QuickCheckoutScreen({ navigation, route }) {
           } catch (_) { }
           setActiveDraftId(null);
         }
+
+        // The sale now exists — from here on, any failure is an attachment
+        // problem, not a sale problem. Never treat it as a failed checkout
+        // (that would invite a duplicate re-submit); just let the staff
+        // member know they'll need to re-attach it from the order later.
+        if (pendingAttachments.length > 0) {
+          try {
+            for (const att of pendingAttachments) {
+              await api.uploadSaleAttachment(res.data.id, att.uri, att.type, att.durationSeconds);
+            }
+          } catch (err) {
+            const msg = 'The order was placed, but the voice note could not be uploaded. You can add it again from the order later.';
+            if (Platform.OS === 'web') window.alert(msg);
+            else Alert.alert('Voice note not saved', msg);
+          }
+        }
+
         navigation.dispatch(
           CommonActions.reset({
             index: 1,
@@ -1567,6 +1592,16 @@ export default function QuickCheckoutScreen({ navigation, route }) {
             placeholderTextColor={Colors.textLight}
             multiline
           />
+
+          <Text style={styles.label}>Voice note (optional)</Text>
+          <VoiceNoteRecorder
+            onRecorded={(uri, durationSeconds) => setPendingAttachments((prev) => [...prev, { uri, type: 'voice_note', durationSeconds }])}
+          />
+          {pendingAttachments.map((a, i) => (
+            <Text key={i} style={styles.attachmentNote}>
+              🎤 Voice note recorded ({a.durationSeconds}s) — will attach when the order is placed
+            </Text>
+          ))}
         </View>
 
         {/* ── Section 3: Items (moved below Customer) ── */}
@@ -2320,6 +2355,7 @@ const styles = StyleSheet.create({
   closeBtn: { padding: 4, borderRadius: 20, backgroundColor: Colors.background },
 
   label: { fontSize: FontSize.xs, fontWeight: '600', color: Colors.textSecondary, marginBottom: 4, marginTop: Spacing.xs },
+  attachmentNote: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: 4 },
   input: {
     backgroundColor: Colors.background, borderWidth: 1, borderColor: Colors.border,
     borderRadius: BorderRadius.md, paddingHorizontal: Spacing.sm,
