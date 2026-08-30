@@ -9,6 +9,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { useFocusEffect, CommonActions } from '@react-navigation/native';
 
 import DateTimePickerModal from '../components/DateTimePickerModal';
+import VoiceNoteRecorder from '../components/VoiceNoteRecorder';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
@@ -67,6 +68,14 @@ export default function QuickCheckoutScreen({ navigation, route }) {
   const [receiverPhone, setReceiverPhone] = useState('');
   const [receiverId, setReceiverId] = useState(null);
   const [orderNotes, setOrderNotes] = useState('');
+  // Voice notes recorded for this order, uploaded after the sale is created (see
+  // handlePlaceOrder). Local file URIs only — never carried into a saved draft.
+  const [pendingAttachments, setPendingAttachments] = useState([]);
+  // Which item (by index in `items`) currently has the per-item voice-note modal
+  // open, or null. A per-item reference photo already exists (item.image_url via
+  // pickImage) — this adds the equivalent for voice notes, using the same
+  // sale_attachments mechanism as the order-level notes above.
+  const [itemVoiceModalIdx, setItemVoiceModalIdx] = useState(null);
 
   // Surcharges & Discounts
   const [deliveryCharges, setDeliveryCharges] = useState('');
@@ -510,6 +519,14 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     setItems(items.filter((_, i) => i !== idx));
   };
 
+  const addItemVoiceNote = (idx, uri, durationSeconds) => {
+    const existing = items[idx]?.pendingAttachments || [];
+    updateItem(idx, 'pendingAttachments', [...existing, { uri, type: 'voice_note', durationSeconds }]);
+    setItemVoiceModalIdx(null);
+  };
+
+  const clearItemVoiceNotes = (idx) => updateItem(idx, 'pendingAttachments', []);
+
   // Material management for an item
   const addMaterialToItem = (itemIdx) => {
     const updated = [...items];
@@ -598,7 +615,10 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     customerName,
     customerPhone,
     customerAddress,
-    items,
+    // Strip per-item pendingAttachments (local device file URIs) — same reasoning
+    // as order-level pendingAttachments never being included here: a recorded
+    // voice note can't be meaningfully persisted into a draft or resumed later.
+    items: items.map(({ pendingAttachments, ...rest }) => rest),
     scheduledDate,
     scheduledTime,
     orderType,
@@ -694,6 +714,9 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     setSkipAssignment(p.skipAssignment !== false);
     setAssignedTo(p.assignedTo || null);
     setActiveDraftId(draftId);
+    // A voice note is a local file URI — it can't be persisted in a draft
+    // payload, so resuming a draft never carries one over from a prior attempt.
+    setPendingAttachments([]);
   }, []);
 
   const loadDrafts = useCallback(async () => {
@@ -752,6 +775,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     setSkipAssignment(true);
     setActiveDraftId(null);
     setSubmitErrors([]);
+    setPendingAttachments([]);
   }, []);
 
   const handleNewSale = useCallback(async () => {
@@ -1103,6 +1127,45 @@ export default function QuickCheckoutScreen({ navigation, route }) {
           } catch (_) { }
           setActiveDraftId(null);
         }
+
+        // The sale now exists — from here on, any failure is an attachment
+        // problem, not a sale problem. Never treat it as a failed checkout
+        // (that would invite a duplicate re-submit); just let the staff
+        // member know they'll need to re-attach it from the order later.
+        // Try each attachment (order-level and per-item) independently — one
+        // failing shouldn't stop the rest from uploading.
+        let failedCount = 0;
+        for (const att of pendingAttachments) {
+          try {
+            await api.uploadSaleAttachment(res.data.id, att.uri, att.type, att.durationSeconds);
+          } catch (err) {
+            failedCount += 1;
+          }
+        }
+        // savedItems[i] pairs with cartItems[i] (and therefore items[i]) by
+        // position — the server preserves the request array's order, so this is
+        // the only way to learn each item's real sale_item_id after creation.
+        const savedItems = res.data?.items || [];
+        for (let i = 0; i < items.length; i++) {
+          const itemAttachments = items[i]?.pendingAttachments || [];
+          const savedItemId = savedItems[i]?.id;
+          if (itemAttachments.length === 0 || !savedItemId) continue;
+          for (const att of itemAttachments) {
+            try {
+              await api.uploadSaleAttachment(res.data.id, att.uri, att.type, att.durationSeconds, savedItemId);
+            } catch (err) {
+              failedCount += 1;
+            }
+          }
+        }
+        if (failedCount > 0) {
+          const noun = failedCount === 1 ? 'attachment' : 'attachments';
+          const pronoun = failedCount === 1 ? 'it' : 'them';
+          const msg = `The order was placed, but ${failedCount} ${noun} could not be uploaded. You can add ${pronoun} again from the order later.`;
+          if (Platform.OS === 'web') window.alert(msg);
+          else Alert.alert('Attachment not saved', msg);
+        }
+
         navigation.dispatch(
           CommonActions.reset({
             index: 1,
@@ -1567,6 +1630,16 @@ export default function QuickCheckoutScreen({ navigation, route }) {
             placeholderTextColor={Colors.textLight}
             multiline
           />
+
+          <Text style={styles.label}>Voice note (optional)</Text>
+          <VoiceNoteRecorder
+            onRecorded={(uri, durationSeconds) => setPendingAttachments((prev) => [...prev, { uri, type: 'voice_note', durationSeconds }])}
+          />
+          {pendingAttachments.map((a) => (
+            <Text key={a.uri} style={styles.attachmentNote}>
+              🎤 Voice note recorded ({a.durationSeconds}s) — will attach when the order is placed
+            </Text>
+          ))}
         </View>
 
         {/* ── Section 3: Items (moved below Customer) ── */}
@@ -1804,6 +1877,31 @@ export default function QuickCheckoutScreen({ navigation, route }) {
                     <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                       <Ionicons name="camera-outline" size={24} color={Colors.primary} />
                       <Text style={[styles.pickProductText, { marginLeft: 6 }]}>Photo</Text>
+                    </View>
+                  )}
+                </Pressable>
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.pickProductBtn,
+                    {
+                      minWidth: 50,
+                      marginLeft: 8,
+                      justifyContent: 'center',
+                      height: 50,
+                      marginTop: 10,
+                      opacity: pressed ? 0.6 : 1,
+                      borderWidth: 1,
+                      borderColor: Colors.primary + '30',
+                      backgroundColor: pressed ? Colors.primary + '25' : Colors.primary + '15'
+                    }
+                  ]}
+                  onPress={() => setItemVoiceModalIdx(idx)}
+                  hitSlop={15}
+                >
+                  <Ionicons name="mic-outline" size={22} color={Colors.primary} />
+                  {(item.pendingAttachments || []).length > 0 && (
+                    <View style={styles.itemVoiceBadge}>
+                      <Text style={styles.itemVoiceBadgeText}>{item.pendingAttachments.length}</Text>
                     </View>
                   )}
                 </Pressable>
@@ -2280,6 +2378,34 @@ export default function QuickCheckoutScreen({ navigation, route }) {
         </View>
       </Modal>
 
+      {/* Per-item voice note — one small modal reused for whichever item's mic icon was tapped. */}
+      <Modal visible={itemVoiceModalIdx !== null} transparent animationType="slide" onRequestClose={() => setItemVoiceModalIdx(null)}>
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalCard, { minHeight: undefined, paddingBottom: Platform.OS === 'ios' ? 40 : 20 }]}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>
+                Voice note for {itemVoiceModalIdx !== null ? (items[itemVoiceModalIdx]?.name || 'this item') : ''}
+              </Text>
+              <TouchableOpacity onPress={() => setItemVoiceModalIdx(null)} style={styles.closeBtn}>
+                <Ionicons name="close" size={22} color={Colors.text} />
+              </TouchableOpacity>
+            </View>
+            {itemVoiceModalIdx !== null && (
+              <>
+                <VoiceNoteRecorder
+                  onRecorded={(uri, durationSeconds) => addItemVoiceNote(itemVoiceModalIdx, uri, durationSeconds)}
+                />
+                {(items[itemVoiceModalIdx]?.pendingAttachments || []).length > 0 && (
+                  <TouchableOpacity onPress={() => clearItemVoiceNotes(itemVoiceModalIdx)} style={{ alignSelf: 'center', marginTop: Spacing.sm }}>
+                    <Text style={{ color: Colors.error, fontWeight: '600' }}>Clear recorded note(s) for this item</Text>
+                  </TouchableOpacity>
+                )}
+              </>
+            )}
+          </View>
+        </View>
+      </Modal>
+
       <DateTimePickerModal
         visible={showDatePicker}
         mode="date"
@@ -2320,6 +2446,7 @@ const styles = StyleSheet.create({
   closeBtn: { padding: 4, borderRadius: 20, backgroundColor: Colors.background },
 
   label: { fontSize: FontSize.xs, fontWeight: '600', color: Colors.textSecondary, marginBottom: 4, marginTop: Spacing.xs },
+  attachmentNote: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: 4 },
   input: {
     backgroundColor: Colors.background, borderWidth: 1, borderColor: Colors.border,
     borderRadius: BorderRadius.md, paddingHorizontal: Spacing.sm,
@@ -2389,6 +2516,12 @@ const styles = StyleSheet.create({
     minHeight: 44, marginTop: 24,
   },
   pickProductText: { fontSize: FontSize.sm, color: Colors.primary, fontWeight: '600' },
+  itemVoiceBadge: {
+    position: 'absolute', top: -4, right: -4, backgroundColor: Colors.primary,
+    borderRadius: 10, minWidth: 18, height: 18, justifyContent: 'center',
+    alignItems: 'center', paddingHorizontal: 3,
+  },
+  itemVoiceBadgeText: { fontSize: 10, fontWeight: '700', color: Colors.white },
 
   baseProductTag: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
