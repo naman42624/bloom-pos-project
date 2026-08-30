@@ -8,6 +8,7 @@ import {
   ScrollView,
   Alert,
   TouchableOpacity,
+  Modal,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import api from '../services/api';
@@ -20,7 +21,9 @@ import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 const ROLES = [
   { key: 'owner', label: 'Owner', icon: 'key', color: Colors.roleOwner || '#EAB308' },
   { key: 'manager', label: 'Manager', icon: 'shield', color: Colors.roleManager },
-  { key: 'employee', label: 'Employee', icon: 'person', color: Colors.roleEmployee },
+  { key: 'employee', label: 'Employee (legacy)', icon: 'person', color: Colors.roleEmployee },
+  { key: 'counter_staff', label: 'Counter Staff', icon: 'storefront', color: Colors.roleCounterStaff },
+  { key: 'florist_staff', label: 'Florist/Prep Staff', icon: 'flower', color: Colors.roleFloristStaff },
   { key: 'delivery_partner', label: 'Delivery Partner', icon: 'bicycle', color: Colors.roleDelivery },
   { key: 'customer', label: 'Customer', icon: 'cart', color: Colors.roleCustomer },
 ];
@@ -28,7 +31,9 @@ const ROLES = [
 const ROLE_LABELS = {
   owner: 'Owner',
   manager: 'Manager',
-  employee: 'Employee',
+  employee: 'Employee (legacy)',
+  counter_staff: 'Counter Staff',
+  florist_staff: 'Florist/Prep Staff',
   delivery_partner: 'Delivery Partner',
   customer: 'Customer',
 };
@@ -50,13 +55,18 @@ export default function UserFormScreen({ route, navigation }) {
   // Role change state (edit mode, owner only)
   const [selectedNewRole, setSelectedNewRole] = useState(null);
 
+  // PIN set/reset state (edit mode, staff accounts with an employee code)
+  const [pinModalVisible, setPinModalVisible] = useState(false);
+  const [newPin, setNewPin] = useState('');
+  const [pinSaving, setPinSaving] = useState(false);
+
   const isOwner = currentUser?.role === 'owner';
   const canChangeRole = isEditing && isOwner && existingUser?.id !== currentUser?.id;
 
-  // Manager can only create employee/delivery_partner/customer
+  // Manager can only create employee/counter_staff/florist_staff/delivery_partner/customer
   const availableRoles = isOwner
     ? ROLES
-    : ROLES.filter((r) => ['employee', 'delivery_partner', 'customer'].includes(r.key));
+    : ROLES.filter((r) => ['employee', 'counter_staff', 'florist_staff', 'delivery_partner', 'customer'].includes(r.key));
 
   useEffect(() => {
     if (existingUser) {
@@ -162,6 +172,28 @@ export default function UserFormScreen({ route, navigation }) {
           { text: 'Change Role', style: 'destructive', onPress: doChange },
         ]
       );
+    }
+  };
+
+  const handleSetPin = () => {
+    setNewPin('');
+    setPinModalVisible(true);
+  };
+
+  const submitPin = async () => {
+    if (!/^\d{4}$/.test(newPin)) {
+      Alert.alert('Invalid PIN', 'Enter exactly 4 digits.');
+      return;
+    }
+    setPinSaving(true);
+    try {
+      await api.setUserPin(existingUser.id, newPin);
+      setPinModalVisible(false);
+      Alert.alert('PIN Set', `${existingUser.name}'s PIN has been updated.`);
+    } catch (err) {
+      Alert.alert('Error', err.message || 'Failed to set PIN');
+    } finally {
+      setPinSaving(false);
     }
   };
 
@@ -353,6 +385,25 @@ export default function UserFormScreen({ route, navigation }) {
             </View>
           )}
 
+          {isEditing && ['counter_staff', 'florist_staff', 'employee'].includes(existingUser?.role) && (
+            <View style={styles.pinSection}>
+              <Text style={styles.sectionLabel}>Shared-device login</Text>
+              {existingUser?.employee_code ? (
+                <>
+                  <Text style={styles.employeeCodeText}>Employee code: {existingUser.employee_code}</Text>
+                  <TouchableOpacity style={styles.setPinButton} onPress={handleSetPin}>
+                    <Ionicons name="keypad" size={18} color={Colors.primary} />
+                    <Text style={styles.setPinButtonText}>Set / Reset PIN</Text>
+                  </TouchableOpacity>
+                </>
+              ) : (
+                <Text style={styles.noCodeText}>
+                  No employee code yet — change this account's role to Counter Staff or Florist/Prep Staff above and save, or recreate it as one of those roles, to get a code.
+                </Text>
+              )}
+            </View>
+          )}
+
           <Button
             title={isEditing ? 'Update Staff' : 'Add Staff'}
             onPress={handleSubmit}
@@ -378,6 +429,26 @@ export default function UserFormScreen({ route, navigation }) {
           )}
         </ScrollView>
       </KeyboardAvoidingView>
+
+      <Modal visible={pinModalVisible} transparent animationType="fade" onRequestClose={() => setPinModalVisible(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>Set PIN for {existingUser?.name}</Text>
+            <Input
+              value={newPin}
+              onChangeText={(t) => setNewPin(t.replace(/[^0-9]/g, '').slice(0, 4))}
+              keyboardType="number-pad"
+              placeholder="4-digit PIN"
+              maxLength={4}
+              secureTextEntry
+            />
+            <View style={styles.modalButtons}>
+              <Button title="Cancel" variant="secondary" onPress={() => setPinModalVisible(false)} />
+              <Button title={pinSaving ? 'Saving…' : 'Save PIN'} onPress={submitPin} disabled={pinSaving} />
+            </View>
+          </View>
+        </View>
+      </Modal>
     </DismissKeyboard>
   );
 }
@@ -459,4 +530,16 @@ const styles = StyleSheet.create({
   },
   reactivateBtn: { borderColor: Colors.success, backgroundColor: Colors.success + '08' },
   deactivateBtnText: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.error },
+
+  // Shared-device login (employee code + PIN)
+  pinSection: { marginTop: Spacing.lg, padding: Spacing.md, backgroundColor: Colors.background, borderRadius: BorderRadius.md },
+  sectionLabel: { fontSize: FontSize.sm, fontWeight: '700', color: Colors.textSecondary, marginBottom: Spacing.sm },
+  employeeCodeText: { fontSize: FontSize.md, color: Colors.text, marginBottom: Spacing.sm },
+  setPinButton: { flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start' },
+  setPinButtonText: { color: Colors.primary, fontWeight: '600' },
+  noCodeText: { fontSize: FontSize.sm, color: Colors.textLight },
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', padding: Spacing.lg },
+  modalCard: { backgroundColor: Colors.white, borderRadius: BorderRadius.lg, padding: Spacing.lg, width: '100%', maxWidth: 360 },
+  modalTitle: { fontSize: FontSize.lg, fontWeight: '700', color: Colors.text, marginBottom: Spacing.md },
+  modalButtons: { flexDirection: 'row', justifyContent: 'flex-end', gap: Spacing.sm, marginTop: Spacing.md },
 });

@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, FlatList, TouchableOpacity, RefreshControl, Act
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import api from '../services/api';
+import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import { formatCardDateTime } from '../utils/datetime';
 
@@ -28,6 +29,12 @@ function formatAmount(value) {
 }
 
 export default function OrdersInboxScreen({ navigation }) {
+  const { user } = useAuth();
+  // Owner/manager already have full Customers access via the More tab —
+  // this shortcut is only for employee/counter_staff, who don't have a
+  // 'Customers' route registered in their stack's owner/manager sibling
+  // (OrdersStack), so it must not render there.
+  const showCustomersShortcut = user?.role === 'employee' || user?.role === 'counter_staff';
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -161,6 +168,19 @@ export default function OrdersInboxScreen({ navigation }) {
         />
       )}
 
+      {/* Secondary action — smaller than the primary Log Order FAB, so it
+          doesn't compete for attention on a screen with one clear main task.
+          Lets counter staff check a customer's outstanding balance without
+          an active checkout (e.g. a phone call asking about dues). Owner/
+          manager already have this via the More tab, so it's hidden there —
+          this screen is also reachable by their OrdersStack, which has no
+          'Customers' route registered. */}
+      {showCustomersShortcut && (
+        <TouchableOpacity style={styles.fabSecondary} onPress={() => navigation.navigate('Customers')}>
+          <Ionicons name="people" size={22} color={Colors.primary} />
+        </TouchableOpacity>
+      )}
+
       <TouchableOpacity style={styles.fab} onPress={() => navigation.navigate('LogOrder')}>
         <Ionicons name="add" size={28} color={Colors.white} />
       </TouchableOpacity>
@@ -195,4 +215,5 @@ const styles = StyleSheet.create({
   paymentBadge: { fontSize: FontSize.xs, fontWeight: '700', marginTop: 4 },
   empty: { textAlign: 'center', color: Colors.textLight, marginTop: 40 },
   fab: { position: 'absolute', right: Spacing.lg, bottom: Spacing.lg, width: 56, height: 56, borderRadius: 28, backgroundColor: Colors.primary, justifyContent: 'center', alignItems: 'center', elevation: 4, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 4 },
+  fabSecondary: { position: 'absolute', right: Spacing.lg, bottom: Spacing.lg + 68, width: 44, height: 44, borderRadius: 22, backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.border, justifyContent: 'center', alignItems: 'center', elevation: 3, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.15, shadowRadius: 3 },
 });

@@ -89,7 +89,7 @@ router.get('/', authenticate, async (req, res, next) => {
 router.post(
   '/',
   authenticate,
-  authorize('owner', 'manager', 'employee'),
+  authorize('owner', 'manager', 'employee', 'counter_staff'),
   [
     body('location_id').isInt(),
     body('category').isIn(['supplies', 'petty_cash', 'maintenance', 'transport', 'food', 'utilities', 'salary', 'other']),

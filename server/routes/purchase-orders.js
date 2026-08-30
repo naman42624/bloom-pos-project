@@ -355,7 +355,7 @@ router.put(
 router.post(
   '/:id/receive',
   authenticate,
-  authorize('owner', 'manager', 'employee'),
+  authorize('owner', 'manager', 'employee', 'counter_staff'),
   [
     body('items').isArray({ min: 1 }).withMessage('At least one item is required'),
     body('items.*.item_id').isInt().withMessage('Item ID is required'),
@@ -381,7 +381,7 @@ router.post(
       }
 
       // Employees can only receive at their assigned locations
-      if (req.user.role === 'employee') {
+      if (req.user.role === 'employee' || req.user.role === 'counter_staff') {
         const assigned = db.prepare(
           'SELECT id FROM user_locations WHERE user_id = ? AND location_id = ?'
         ).get(req.user.id, order.location_id);

@@ -102,6 +102,7 @@ import SalaryManagementScreen from '../screens/SalaryManagementScreen';
 import LiveDeliveryMapScreen from '../screens/LiveDeliveryMapScreen';
 import NotificationCenterScreen from '../screens/NotificationCenterScreen';
 import NotificationBell from '../components/NotificationBell';
+import SwitchUserButton from '../components/SwitchUserButton';
 import usePushNotifications from '../hooks/usePushNotifications';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -115,6 +116,7 @@ const stackScreenOptions = {
   headerTintColor: Colors.text,
   headerTitleStyle: { fontWeight: '600' },
   contentStyle: { backgroundColor: Colors.background },
+  headerRight: () => <SwitchUserButton />,
 };
 
 // ─── Dashboard Stack ────────────────────────────────────────
@@ -379,6 +381,28 @@ function EmployeeOrdersStack() {
       <Stack.Screen name="AddPayment" component={AddPaymentScreen} options={{ title: 'Record Payment' }} />
       <Stack.Screen name="DeliveryDetail" component={DeliveryDetailScreen} options={{ title: 'Delivery' }} />
       <Stack.Screen name="LiveDeliveryMap" component={LiveDeliveryMapScreen} options={{ title: 'Live Tracking' }} />
+      {/* Read access so counter staff can check a customer's outstanding
+          balance without an active checkout (e.g. a phone call asking about
+          dues) — CustomerDetailScreen/CustomersScreen already internally
+          gate their owner/manager-only actions via `canManage`, so this is
+          safe to expose; the backend already grants counter_staff full
+          customers.js parity (2026-08-31 follow-up). */}
+      <Stack.Screen name="Customers" component={CustomersScreen} options={{ title: 'Customers' }} />
+      <Stack.Screen name="CustomerDetail" component={CustomerDetailScreen} options={{ title: 'Customer' }} />
+      <Stack.Screen name="CustomerForm" component={CustomerFormScreen} options={{ title: 'Add Customer' }} />
+    </Stack.Navigator>
+  );
+}
+
+// ─── Florist/Prep Stack (Florist/Prep Staff — Production queue + the
+// order detail it links to; no POS/Checkout/Orders-inbox/Inventory/
+// Expenses, per the approved florist permission boundary) ──
+function FloristStack() {
+  return (
+    <Stack.Navigator screenOptions={stackScreenOptions}>
+      <Stack.Screen name="ProductionQueue" component={ProductionQueueScreen} options={{ title: 'Production Queue' }} />
+      <Stack.Screen name="CompletedTasks" component={CompletedTasksScreen} options={{ title: 'Completed Tasks' }} />
+      <Stack.Screen name="SaleDetail" component={SaleDetailScreen} options={{ title: 'Sale Details' }} />
     </Stack.Navigator>
   );
 }
@@ -514,6 +538,7 @@ const TAB_ICONS = {
   Orders: { active: 'clipboard', inactive: 'clipboard-outline' },
   EmployeeOrders: { active: 'file-tray-full', inactive: 'file-tray-full-outline' },
   Inventory: { active: 'leaf', inactive: 'leaf-outline' },
+  Florist: { active: 'flower', inactive: 'flower-outline' },
   Deliveries: { active: 'bicycle', inactive: 'bicycle-outline' },
   MyOrders: { active: 'receipt', inactive: 'receipt-outline' },
   Shop: { active: 'storefront', inactive: 'storefront-outline' },
@@ -579,8 +604,8 @@ export default function MainNavigator() {
         options={{ tabBarLabel: 'Home' }}
       />
 
-      {/* POS tab — Owner, Manager, Employee */}
-      {(role === 'owner' || role === 'manager' || role === 'employee') && (
+      {/* POS tab — Owner, Manager, Employee, Counter Staff */}
+      {(role === 'owner' || role === 'manager' || role === 'employee' || role === 'counter_staff') && (
         <Tab.Screen
           name="POS"
           component={POSStack}
@@ -607,8 +632,8 @@ export default function MainNavigator() {
         />
       )}
 
-      {/* Orders tab — Employee (Orders Inbox + Log Order only, spec §5) */}
-      {role === 'employee' && (
+      {/* Orders tab — Employee, Counter Staff (Orders Inbox + Log Order only, spec §5) */}
+      {(role === 'employee' || role === 'counter_staff') && (
         <Tab.Screen
           name="EmployeeOrders"
           component={EmployeeOrdersStack}
@@ -621,8 +646,8 @@ export default function MainNavigator() {
         />
       )}
 
-      {/* Owner, Manager, and Employee see Inventory tab */}
-      {(role === 'owner' || role === 'manager' || role === 'employee') && (
+      {/* Owner, Manager, Employee, and Counter Staff see Inventory tab */}
+      {(role === 'owner' || role === 'manager' || role === 'employee' || role === 'counter_staff') && (
         <Tab.Screen
           name="Inventory"
           component={InventoryStack}
@@ -630,6 +655,20 @@ export default function MainNavigator() {
           listeners={({ navigation }) => ({
             tabPress: () => {
               navigation.navigate('Inventory', { screen: 'StockOverview' });
+            },
+          })}
+        />
+      )}
+
+      {/* Production tab — Florist/Prep Staff only */}
+      {role === 'florist_staff' && (
+        <Tab.Screen
+          name="Florist"
+          component={FloristStack}
+          options={{ tabBarLabel: 'Production' }}
+          listeners={({ navigation }) => ({
+            tabPress: () => {
+              navigation.navigate('Florist', { screen: 'ProductionQueue' });
             },
           })}
         />
@@ -644,8 +683,8 @@ export default function MainNavigator() {
         />
       )}
 
-      {/* Attendance tab — Employee & Delivery Partner only (owner/manager access from More) */}
-      {(role === 'employee' || role === 'delivery_partner') && (
+      {/* Attendance tab — Employee, Counter Staff, Florist/Prep Staff & Delivery Partner (owner/manager access from More) */}
+      {(role === 'employee' || role === 'counter_staff' || role === 'florist_staff' || role === 'delivery_partner') && (
         <Tab.Screen
           name="Attendance"
           component={AttendanceStack}

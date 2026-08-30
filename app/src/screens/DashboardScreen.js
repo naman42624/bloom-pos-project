@@ -522,14 +522,22 @@ export default function DashboardScreen({ navigation }) {
   const [taskActionLoading, setTaskActionLoading] = useState({});
 
   // Role-specific dashboard state
-  const [myTasks, setMyTasks] = useState([]); // employee's own tasks
+  const [myTasks, setMyTasks] = useState([]); // employee's/florist's own production tasks
   const [myDeliveries, setMyDeliveries] = useState([]); // delivery partner's own deliveries
+  const [counterStats, setCounterStats] = useState({ salesCount: 0, registerOpen: null, registerOpenedBy: null });
+  const [counterPendingOrders, setCounterPendingOrders] = useState([]);
 
   const role = user?.role;
   const isOwner = role === 'owner';
-  const isStaff = role === 'owner' || role === 'manager' || role === 'employee';
+  const isStaff = role === 'owner' || role === 'manager' || role === 'employee' || role === 'counter_staff' || role === 'florist_staff';
   const isOwnerOrManager = role === 'owner' || role === 'manager';
-  const isEmployee = role === 'employee';
+  // Production-task dashboard: today's generic `employee` bucket (unmigrated
+  // accounts) and `florist_staff` (prep is their whole job). `counter_staff`
+  // gets its own sales-focused view below — its job is checkout/orders, not
+  // production, so the task queue was the wrong default here (see counter
+  // staff dashboard discussion, 2026-08-31).
+  const isEmployee = role === 'employee' || role === 'florist_staff';
+  const isCounterStaff = role === 'counter_staff';
   const isDeliveryPartner = role === 'delivery_partner';
   const isDesktop = width >= 1100;
 
@@ -574,6 +582,25 @@ export default function DashboardScreen({ navigation }) {
         ]);
         setMyTasks(myTasksRes?.data || []);
         setTaskRows(allTasksRes?.data || []);
+        setLoading(false);
+        setRefreshing(false);
+        return;
+      }
+
+      // ─── Counter Staff: sales-focused fetch (counts/status only —
+      // no revenue totals or cash amounts, per role scope) ──────
+      if (isCounterStaff) {
+        const [summaryRes, registerRes, pendingRes] = await Promise.all([
+          api.getTodaySummary(activeLocation?.id).catch(() => ({ data: { total_sales: 0 } })),
+          activeLocation?.id ? api.getRegisterStatus(activeLocation.id).catch(() => ({ data: null })) : Promise.resolve({ data: null }),
+          api.getSales({ status: 'pending', location_id: activeLocation?.id, limit: 5 }).catch(() => ({ data: { sales: [] } })),
+        ]);
+        setCounterStats({
+          salesCount: Number(summaryRes?.data?.total_sales || 0),
+          registerOpen: registerRes?.data ? !registerRes.data.closed_at : null,
+          registerOpenedBy: registerRes?.data?.opened_by_name || null,
+        });
+        setCounterPendingOrders(pendingRes?.data?.sales || pendingRes?.data || []);
         setLoading(false);
         setRefreshing(false);
         return;
@@ -719,7 +746,7 @@ export default function DashboardScreen({ navigation }) {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [activeLocation?.id, isOwner, isOwnerOrManager, isStaff, isEmployee, isDeliveryPartner, locationScope, dateScope, role, user?.id, user?.name]);
+  }, [activeLocation?.id, isOwner, isOwnerOrManager, isStaff, isEmployee, isCounterStaff, isDeliveryPartner, locationScope, dateScope, role, user?.id, user?.name]);
 
   useEffect(() => {
     if (locationScope != null) return;
@@ -996,13 +1023,14 @@ export default function DashboardScreen({ navigation }) {
           </View>
           <Text style={styles.heroSub}>
             {isDeliveryPartner ? 'Your active deliveries and earnings at a glance'
+              : isCounterStaff ? "Today's sales and orders at a glance"
               : isEmployee ? 'Your production tasks and work queue'
               : 'Real-time order flow, production pipeline, and operational health metrics'}
           </Text>
         </View>
 
         {/* Location & Date picker — owner/manager only */}
-        {!isEmployee && !isDeliveryPartner && (locations.length > 0 || isOwnerOrManager) && (
+        {!isEmployee && !isCounterStaff && !isDeliveryPartner && (locations.length > 0 || isOwnerOrManager) && (
           <View style={styles.scopeCard}>
             <View style={[styles.rowBetween, { marginBottom: 8 }]}>
               <Text style={styles.scopeLabel}>Dashboard Filter</Text>
@@ -1185,6 +1213,70 @@ export default function DashboardScreen({ navigation }) {
                   </TouchableOpacity>
                 );
               })
+            )}
+          </View>
+        ) : isCounterStaff ? (
+          /* ═══ COUNTER STAFF DASHBOARD ═══
+             Counts and status only — no revenue totals or exact cash
+             amounts (owner/manager territory). See discussion 2026-08-31. */
+          <View style={{ gap: 12 }}>
+            <View style={styles.roleStatsRow}>
+              <View style={[styles.roleStatCard, { borderLeftColor: '#0EA5E9' }]}>
+                <Ionicons name="receipt-outline" size={20} color="#0EA5E9" />
+                <Text style={styles.roleStatCount}>{counterStats.salesCount}</Text>
+                <Text style={styles.roleStatLabel}>Sales Today</Text>
+              </View>
+              <View style={[styles.roleStatCard, { borderLeftColor: '#F59E0B' }]}>
+                <Ionicons name="alert-circle-outline" size={20} color="#F59E0B" />
+                <Text style={styles.roleStatCount}>{counterPendingOrders.length}</Text>
+                <Text style={styles.roleStatLabel}>Need Attention</Text>
+              </View>
+              <View style={[styles.roleStatCard, { borderLeftColor: counterStats.registerOpen ? '#10B981' : '#EF4444' }]}>
+                <Ionicons name={counterStats.registerOpen ? 'lock-open-outline' : 'lock-closed-outline'} size={20} color={counterStats.registerOpen ? '#10B981' : '#EF4444'} />
+                <Text style={[styles.roleStatCount, { fontSize: 14 }]}>{counterStats.registerOpen === null ? '—' : counterStats.registerOpen ? 'Open' : 'Closed'}</Text>
+                <Text style={styles.roleStatLabel}>Register</Text>
+              </View>
+            </View>
+
+            {!counterStats.registerOpen && counterStats.registerOpen !== null && (
+              <TouchableOpacity style={styles.roleEmptyCard} onPress={() => navigation.navigate('POS', { screen: 'CashRegister' })}>
+                <Ionicons name="lock-closed-outline" size={32} color="#EF4444" />
+                <Text style={styles.roleEmptyTitle}>Register isn't open</Text>
+                <Text style={styles.roleEmptyText}>Tap here to open it before taking a cash sale.</Text>
+              </TouchableOpacity>
+            )}
+
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>Orders Needing Attention</Text>
+              <TouchableOpacity onPress={() => navigation.navigate('EmployeeOrders', { screen: 'OrdersInbox' })}>
+                <Text style={{ color: Colors.primary, fontWeight: '600', fontSize: 13 }}>Orders Inbox →</Text>
+              </TouchableOpacity>
+            </View>
+
+            {counterPendingOrders.length === 0 ? (
+              <View style={styles.roleEmptyCard}>
+                <Ionicons name="checkmark-circle-outline" size={40} color="#10B981" />
+                <Text style={styles.roleEmptyTitle}>All caught up!</Text>
+                <Text style={styles.roleEmptyText}>No orders waiting on you right now.</Text>
+              </View>
+            ) : (
+              counterPendingOrders.map((order) => (
+                <TouchableOpacity
+                  key={order.id}
+                  style={[styles.roleTaskCard, { borderLeftColor: '#F59E0B' }]}
+                  onPress={() => navigation.navigate('SaleDetail', { saleId: order.id })}
+                  activeOpacity={0.8}
+                >
+                  <View style={styles.roleTaskHeader}>
+                    <Text style={styles.roleTaskName} numberOfLines={1}>
+                      {order.sale_number} — {order.customer_name || order.customer_display_name || 'Walk-in'}
+                    </Text>
+                    <View style={[styles.roleTaskBadge, { backgroundColor: '#F59E0B20' }]}>
+                      <Text style={[styles.roleTaskBadgeText, { color: '#F59E0B' }]}>PENDING</Text>
+                    </View>
+                  </View>
+                </TouchableOpacity>
+              ))
             )}
           </View>
         ) : isEmployee ? (

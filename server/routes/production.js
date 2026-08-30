@@ -16,7 +16,7 @@ const router = express.Router();
 router.post(
   '/produce',
   authenticate,
-  authorize('owner', 'manager', 'employee'),
+  authorize('owner', 'manager', 'employee', 'counter_staff', 'florist_staff'),
   [
     body('product_id').isInt().withMessage('Product is required'),
     body('location_id').isInt().withMessage('Location is required'),
@@ -105,7 +105,7 @@ router.post(
 router.post(
   '/produce/custom',
   authenticate,
-  authorize('owner', 'manager', 'employee'),
+  authorize('owner', 'manager', 'employee', 'counter_staff', 'florist_staff'),
   [
     body('name').trim().notEmpty().withMessage('Name is required'),
     body('location_id').isInt().withMessage('Location is required'),
@@ -251,7 +251,7 @@ router.post(
 // ═══════════════════════════════════════════════════════════════
 
 // GET /api/production/tasks — Get all production tasks (queue)
-router.get('/tasks', authenticate, authorize('owner', 'manager', 'employee'), async (req, res, next) => {
+router.get('/tasks', authenticate, authorize('owner', 'manager', 'employee', 'counter_staff', 'florist_staff'), async (req, res, next) => {
   try {
     const db = await getAsyncDb();
     const { location_id, status, assigned_to, sale_id } = req.query;
@@ -297,7 +297,7 @@ router.get('/tasks', authenticate, authorize('owner', 'manager', 'employee'), as
     if (sale_id) { sql += ' AND pt.sale_id = ?'; params.push(Number(sale_id)); }
 
     // Scope by location for employees and managers
-    if (req.user.role === 'employee' || req.user.role === 'manager') {
+    if (['employee', 'counter_staff', 'florist_staff', 'manager'].includes(req.user.role)) {
       const userLocs = (await db.prepare('SELECT location_id FROM user_locations WHERE user_id = ?').all(req.user.id)).map(r => r.location_id);
       if (userLocs.length > 0 && !location_id) {
         sql += ` AND pt.location_id IN (${userLocs.map(() => '?').join(',')})`;
@@ -447,7 +447,7 @@ router.put(
       }
 
       const { assigned_to } = req.body;
-      const employee = db.prepare("SELECT id, name FROM users WHERE id = ? AND role IN ('employee','manager','owner')").get(assigned_to);
+      const employee = db.prepare("SELECT id, name FROM users WHERE id = ? AND role IN ('employee','counter_staff','florist_staff','manager','owner')").get(assigned_to);
       if (!employee) return res.status(404).json({ success: false, message: 'Employee not found' });
 
       db.prepare("UPDATE production_tasks SET assigned_to = ?, status = 'assigned', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(assigned_to, task.id);
@@ -478,7 +478,7 @@ router.put(
 router.put(
   '/tasks/:id/pick',
   authenticate,
-  authorize('owner', 'manager', 'employee'),
+  authorize('owner', 'manager', 'employee', 'counter_staff', 'florist_staff'),
   (req, res, next) => {
     try {
       const db = getDb();
@@ -508,7 +508,7 @@ router.put(
 router.put(
   '/tasks/:id/start',
   authenticate,
-  authorize('owner', 'manager', 'employee'),
+  authorize('owner', 'manager', 'employee', 'counter_staff', 'florist_staff'),
   (req, res, next) => {
     try {
       const db = getDb();
@@ -518,7 +518,7 @@ router.put(
         return res.status(400).json({ success: false, message: 'Only assigned tasks can be started' });
       }
       // Only the assigned person or a manager can start
-      if (req.user.role === 'employee' && task.assigned_to !== req.user.id) {
+      if (['employee', 'counter_staff', 'florist_staff'].includes(req.user.role) && task.assigned_to !== req.user.id) {
         return res.status(403).json({ success: false, message: 'Not your task' });
       }
 
@@ -539,7 +539,7 @@ router.put(
 router.put(
   '/tasks/:id/complete',
   authenticate,
-  authorize('owner', 'manager', 'employee'),
+  authorize('owner', 'manager', 'employee', 'counter_staff', 'florist_staff'),
   (req, res, next) => {
     try {
       const db = getDb();
@@ -548,7 +548,7 @@ router.put(
       if (task.status === 'completed' || task.status === 'cancelled') {
         return res.status(400).json({ success: false, message: 'Task already finished' });
       }
-      if (req.user.role === 'employee' && task.assigned_to !== req.user.id) {
+      if (['employee', 'counter_staff', 'florist_staff'].includes(req.user.role) && task.assigned_to !== req.user.id) {
         return res.status(403).json({ success: false, message: 'Not your task' });
       }
 
@@ -688,7 +688,7 @@ router.put(
 // DASHBOARD SUMMARY — Counts for action items
 // ═══════════════════════════════════════════════════════════════
 
-router.get('/dashboard-summary', authenticate, authorize('owner', 'manager', 'employee'), async (req, res, next) => {
+router.get('/dashboard-summary', authenticate, authorize('owner', 'manager', 'employee', 'counter_staff', 'florist_staff'), async (req, res, next) => {
   try {
     const db = await getAsyncDb();
     const { location_id } = req.query;

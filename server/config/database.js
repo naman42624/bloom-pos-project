@@ -654,6 +654,13 @@ function ensureCoreTables() {
 function ensureCompatibilityColumns() {
   ensureCoreTables();
 
+  // ─── users (identity/roles/PIN login) ──────────────────────
+  ensureColumn('users', 'employee_code', 'TEXT UNIQUE');
+  ensureColumn('users', 'pin_hash', 'TEXT');
+  ensureColumn('users', 'pin_failed_attempts', 'INTEGER DEFAULT 0');
+  ensureColumn('users', 'pin_locked_until', 'TIMESTAMP');
+  ensureColumn('users', 'job_title', 'TEXT');
+
   ensureColumn('settings', 'updated_by', 'INTEGER REFERENCES users(id) ON DELETE SET NULL');
   ensureColumn('expenses', 'is_return', 'INTEGER DEFAULT 0');
   ensureColumn('locations', 'gst_number', 'VARCHAR(50)');
@@ -1120,6 +1127,36 @@ function getDb() {
     runPsql('SELECT 1');
     ensureCriticalTimestampColumns();
     ensureCompatibilityColumns();
+
+    // ─── user_locations: backfill a missing unique constraint ─
+    // Pre-existing bug (not introduced by any current sub-project): four
+    // INSERT call sites (server/routes/users.js:251,358; locations.js:193,324)
+    // have always assumed `(user_id, location_id)` is unique via
+    // `ON CONFLICT (user_id, location_id) DO NOTHING`, but the live table
+    // never actually had that constraint — every one of those inserts threw
+    // "no unique or exclusion constraint matching the ON CONFLICT
+    // specification". Verified zero duplicate (user_id, location_id) pairs
+    // exist in the live data before adding this, so it's a safe, additive
+    // backfill of what the code always assumed was already there.
+    // Wrapped narrowly: runPsql throws on failure (e.g. a deploy target with
+    // pre-existing duplicate (user_id, location_id) rows this dev DB never
+    // had), and an uncaught throw here would leave `initialized` false
+    // forever, taking down every subsequent sync-layer query on this
+    // process. Everything else in this block keeps its normal (throwing)
+    // error handling — this is the one statement that must degrade to a
+    // loud warning instead of aborting startup.
+    try {
+      runPsql('CREATE UNIQUE INDEX IF NOT EXISTS user_locations_user_location_idx ON user_locations(user_id, location_id)');
+    } catch (err) {
+      console.warn(
+        '⚠️  Could not create user_locations_user_location_idx — likely pre-existing duplicate ' +
+        '(user_id, location_id) rows in this DB. The four INSERT ... ON CONFLICT (user_id, location_id) ' +
+        'call sites (server/routes/users.js:251,358; locations.js:193,324) will keep throwing "no unique ' +
+        'or exclusion constraint" errors until those duplicates are manually cleaned up and this index is ' +
+        'created. Server startup is continuing without it.',
+        err.message
+      );
+    }
 
     // ─── Seed preference settings (idempotent) ────────────────
     runPsql('CREATE UNIQUE INDEX IF NOT EXISTS settings_key_idx ON settings(key)');

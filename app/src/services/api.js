@@ -106,6 +106,17 @@ class ApiService {
     });
   }
 
+  staffLogin(employeeCode, pin) {
+    return this.request('/auth/staff-login', {
+      method: 'POST',
+      body: JSON.stringify({ employee_code: employeeCode, pin }),
+    });
+  }
+
+  getStaffRoster(locationId) {
+    return this.request(`/auth/staff-roster?location_id=${locationId}`);
+  }
+
   getProfile() {
     return this.request('/auth/me');
   }
@@ -159,6 +170,13 @@ class ApiService {
     return this.request(`/users/${id}/change-role`, {
       method: 'PUT',
       body: JSON.stringify({ role }),
+    });
+  }
+
+  setUserPin(userId, pin) {
+    return this.request(`/users/${userId}/pin`, {
+      method: 'PUT',
+      body: JSON.stringify({ pin }),
     });
   }
 

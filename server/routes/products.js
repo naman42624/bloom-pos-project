@@ -262,7 +262,7 @@ router.get('/:id', authenticate, async (req, res, next) => {
 router.post(
   '/',
   authenticate,
-  authorize('owner', 'manager', 'employee'),
+  authorize('owner', 'manager', 'employee', 'counter_staff'),
   [
     body('name').trim().notEmpty().withMessage('Product name is required'),
     body('sku').optional({ nullable: true, checkFalsy: true }).trim(),
@@ -416,7 +416,7 @@ router.delete('/:id', authenticate, authorize('owner'), (req, res, next) => {
 router.post(
   '/:id/materials',
   authenticate,
-  authorize('owner', 'manager', 'employee'),
+  authorize('owner', 'manager', 'employee', 'counter_staff'),
   [
     body('material_id').isInt().withMessage('Material ID is required'),
     body('quantity').isFloat({ min: 0.01 }).withMessage('Quantity must be > 0'),
@@ -520,7 +520,7 @@ router.delete(
 router.post(
   '/:id/images',
   authenticate,
-  authorize('owner', 'manager', 'employee'),
+  authorize('owner', 'manager', 'employee', 'counter_staff'),
   upload.single('image'),
   (req, res, next) => {
     try {

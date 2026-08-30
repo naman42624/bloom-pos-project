@@ -187,6 +187,13 @@ export default function SaleDetailScreen({ route, navigation }) {
   const canManage = user?.role === 'owner' || user?.role === 'manager';
   const canEdit = canManage || (sale?.created_by === user?.id);
   const isCustomer = user?.role === 'customer';
+  // Florist/prep staff never touch payments (they only see this screen for
+  // the production tasks on an order) and customers viewing their own order
+  // can't record payments either (POST /:id/payments is staff-only
+  // server-side) — hide the button for both rather than letting them tap
+  // into a dead-end request. Delivery partners can't reach this screen at
+  // all (no SaleDetail route in their stack), so no check needed for them.
+  const canRecordPayment = !['florist_staff', 'customer'].includes(user?.role);
 
   // Convert order type state
   const [convertModalVisible, setConvertModalVisible] = useState(false);
@@ -248,7 +255,7 @@ export default function SaleDetailScreen({ route, navigation }) {
     ? null
     : !isToday(sale.created_at)
       ? 'Items can only be edited on the day the order was placed.'
-      : (user?.role === 'employee' && sale.created_by !== user?.id)
+      : (['employee', 'counter_staff'].includes(user?.role) && sale.created_by !== user?.id)
         ? 'You can only edit orders you created.'
         : null;
 
@@ -563,10 +570,17 @@ export default function SaleDetailScreen({ route, navigation }) {
     setLoadingEmployees(true);
     setAssignModalVisible(true);
     try {
-      const res = await api.getUsers({ role: 'employee' });
+      // No single `role` query param can express "any of these three roles"
+      // server-side (GET /users takes one role at a time), so fetch the
+      // full staff list and filter client-side — florist_staff needs to be
+      // assignable here since production tasks are their whole job.
+      const res = await api.getUsers();
       // API returns { data: { users: [...], pagination } }
       const list = res.data?.users || res.data || [];
-      setEmployees(Array.isArray(list) ? list : []);
+      const filtered = Array.isArray(list)
+        ? list.filter((u) => ['employee', 'counter_staff', 'florist_staff'].includes(u.role))
+        : [];
+      setEmployees(filtered);
     } catch (err) {
       console.log('Failed to fetch employees:', err);
       setEmployees([]);
@@ -1336,7 +1350,7 @@ export default function SaleDetailScreen({ route, navigation }) {
       )}
 
       {/* Pay balance */}
-      {sale.status !== 'cancelled' && due > 0.01 && (
+      {sale.status !== 'cancelled' && due > 0.01 && canRecordPayment && (
         <TouchableOpacity
           style={[styles.actionBtn, { backgroundColor: Colors.success, alignSelf: 'stretch', marginHorizontal: 0 }]}
           onPress={() => navigation.navigate('AddPayment', { saleId, due })}

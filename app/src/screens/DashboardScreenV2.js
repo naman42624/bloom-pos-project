@@ -352,7 +352,7 @@ function DetailPanel({ order, tasks, onClose, onRefresh, navigation, canManage, 
   const doStatus=useCallback(async(next)=>{if(!order?.id)return;setActionLoading(true);try{await api.updateOrderStatus(order.id,next);onRefresh?.();onClose();}catch(e){const msg=e?.message||"Failed";Platform.OS==="web"?window.alert(msg):Alert.alert("Error",msg);}finally{setActionLoading(false);}},[order?.id,onRefresh,onClose]);
   const confirmAction=useCallback((next)=>{if(next==='pay'){setShowPayForm(true); setPayAmount(dueAmt > 0 ? dueAmt.toString() : ''); return;}if(confirmStatus===next){setConfirmStatus(null);doStatus(next);}else{setConfirmStatus(next);setTimeout(()=>setConfirmStatus(null),3000);}},[doStatus,confirmStatus]);
 
-  const openEmpPicker=useCallback(async(tid)=>{setShowAssign(tid);setEmpLoading(true);try{const r=await api.getUsers();const a=r?.data?.users||r?.data||[];setEmployees(Array.isArray(a)?a.filter(u=>['owner','manager','employee'].includes(u.role)):[]);}catch{setEmployees([]);}finally{setEmpLoading(false);}},[]);
+  const openEmpPicker=useCallback(async(tid)=>{setShowAssign(tid);setEmpLoading(true);try{const r=await api.getUsers();const a=r?.data?.users||r?.data||[];setEmployees(Array.isArray(a)?a.filter(u=>['owner','manager','employee','counter_staff','florist_staff'].includes(u.role)):[]);}catch{setEmployees([]);}finally{setEmpLoading(false);}},[]);
   const doTaskAssign=useCallback(async(tid,eid)=>{setTaskLoading(p=>({...p,[tid]:true}));try{await api.assignTask(tid,{assigned_to:eid});setShowAssign(null);await refreshTasks();onRefresh?.();}catch(e){const msg=e?.message||"Failed";Platform.OS==="web"?window.alert(msg):Alert.alert("Error",msg);}finally{setTaskLoading(p=>({...p,[tid]:false}));}},[onRefresh,refreshTasks]);
   const doTaskStart=useCallback(async(tid)=>{setTaskLoading(p=>({...p,[tid]:true}));try{await api.startTask(tid);await refreshTasks();onRefresh?.();}catch(e){const msg=e?.message||"Failed";Platform.OS==="web"?window.alert(msg):Alert.alert("Error",msg);}finally{setTaskLoading(p=>({...p,[tid]:false}));}},[onRefresh,refreshTasks]);
   const doTaskComplete=useCallback(async(tid)=>{if(confirmTask===tid){setConfirmTask(null);setTaskLoading(p=>({...p,[tid]:true}));try{await api.completeTask(tid);await refreshTasks();onRefresh?.();}catch(e){const msg=e?.message||"Failed";Platform.OS==="web"?window.alert(msg):Alert.alert("Error",msg);}finally{setTaskLoading(p=>({...p,[tid]:false}));}}else{setConfirmTask(tid);setTimeout(()=>setConfirmTask(null),3000);}},[confirmTask,onRefresh,refreshTasks]);
@@ -548,9 +548,13 @@ export default function DashboardScreenV2({ navigation }) {
   const role = user?.role;
   const isOwner = role==='owner';
   const isOwnerOrManager = role==='owner'||role==='manager';
-  const isEmployee = role==='employee';
+  // Task-focused view: legacy `employee` bucket + florist_staff (prep is their
+  // whole job). counter_staff gets its own sales-focused view below — see V1
+  // DashboardScreen.js for the same split and why (2026-08-31).
+  const isEmployee = role==='employee'||role==='florist_staff';
+  const isCounterStaff = role==='counter_staff';
   const isDeliveryPartner = role==='delivery_partner';
-  const isStaff = role==='owner'||role==='manager'||role==='employee';
+  const isStaff = role==='owner'||role==='manager'||role==='employee'||role==='counter_staff'||role==='florist_staff';
   const isWide = width >= 900;
   const isDesktop = width >= 1100;
 
@@ -568,6 +572,8 @@ export default function DashboardScreenV2({ navigation }) {
   const [reportKPIs, setReportKPIs] = useState(null);
   const [myTasks, setMyTasks] = useState([]);
   const [myDeliveries, setMyDeliveries] = useState([]);
+  const [counterStats, setCounterStats] = useState({ salesCount: 0, registerOpen: null });
+  const [counterPendingOrders, setCounterPendingOrders] = useState([]);
   const [taskActionLoading, setTaskActionLoading] = useState({});
   const [fabVisible, setFabVisible] = useState(false);
 
@@ -583,6 +589,11 @@ export default function DashboardScreenV2({ navigation }) {
       if (isEmployee) {
         const [myTasksRes,allTasksRes]=await Promise.all([api.getMyTasks().catch(()=>({data:[]})),api.getProductionTasks({}).catch(()=>({data:[]}))]);
         setMyTasks(myTasksRes?.data||[]);setTaskRows(allTasksRes?.data||[]);setLoading(false);setRefreshing(false);return;
+      }
+      if (isCounterStaff) {
+        const [summaryRes,registerRes,pendingRes]=await Promise.all([api.getTodaySummary(activeLocation?.id).catch(()=>({data:{total_sales:0}})),activeLocation?.id?api.getRegisterStatus(activeLocation.id).catch(()=>({data:null})):Promise.resolve({data:null}),api.getSales({status:'pending',location_id:activeLocation?.id,limit:5}).catch(()=>({data:{sales:[]}}))]);
+        setCounterStats({salesCount:Number(summaryRes?.data?.total_sales||0),registerOpen:registerRes?.data?!registerRes.data.closed_at:null});
+        setCounterPendingOrders(pendingRes?.data?.sales||pendingRes?.data||[]);setLoading(false);setRefreshing(false);return;
       }
       const locationRes=await api.getLocations();const locationList=locationRes?.data?.locations||locationRes?.data||[];setLocations(Array.isArray(locationList)?locationList:[]);
       let locationId;if(locationScope==='all'&&isOwner)locationId=null;else if(locationScope!=null)locationId=locationScope;else locationId=activeLocation?.id||locationList?.[0]?.id||null;
@@ -604,7 +615,7 @@ export default function DashboardScreenV2({ navigation }) {
       }
       if(locationList.length>0){const regCalls=await Promise.all(locationList.map(async loc=>{try{const reg=await api.getRegisterStatus(loc.id);return{locationId:loc.id,locationName:loc.name,isOpen:reg?.isOpen===true,register:reg?.data||null,pendingCodTotal:reg?.pendingCodTotal||0};}catch{return{locationId:loc.id,locationName:loc.name,isOpen:false,register:null,pendingCodTotal:0};}}));setRegisters(regCalls);}else setRegisters([]);
     }catch(err){Alert.alert('Dashboard',err?.message||'Failed to load.');}finally{setLoading(false);setRefreshing(false);}
-  },[activeLocation?.id,isOwner,isOwnerOrManager,isStaff,isEmployee,isDeliveryPartner,locationScope,dateScope,role]);
+  },[activeLocation?.id,isOwner,isOwnerOrManager,isStaff,isEmployee,isCounterStaff,isDeliveryPartner,locationScope,dateScope,role]);
 
   useEffect(()=>{if(locationScope!=null)return;if(activeLocation?.id){setLocationScope(activeLocation.id);return;}if(locations.length>0)setLocationScope(locations[0].id);},[locationScope,activeLocation?.id,locations]);
   useFocusEffect(useCallback(()=>{setLoading(true);fetchDashboard();},[fetchDashboard]));
@@ -641,6 +652,33 @@ export default function DashboardScreenV2({ navigation }) {
   const advanceTask=useCallback(async(task)=>{if(!task?.id||task.status==='completed'||task.status==='cancelled')return;setTaskActionLoading(p=>({...p,[task.id]:true}));try{if(task.status==='pending')await api.pickTask(task.id);else if(task.status==='assigned')await api.startTask(task.id);else if(task.status==='in_progress')await api.completeTask(task.id);await fetchDashboard();}catch(e){const msg=e?.message||"Failed";Platform.OS==="web"?window.alert(msg):Alert.alert("Error",msg);}finally{setTaskActionLoading(p=>({...p,[task.id]:false}));};},[fetchDashboard]);
 
   const handleNavigateToQueue=useCallback((orderType,status)=>{navigation.navigate('ProductionQueue',{applyId:Date.now(),initialViewMode:'orders',initialOrderType:orderType,initialStatus:status||'',initialLocationId:locationScope==='all'?null:(locationScope||activeLocation?.id||null),initialShowFilters:true});},[navigation,activeLocation?.id,locationScope]);
+
+  /* ─── Counter Staff view ─── counts/status only, no revenue
+     totals or exact cash amounts (owner/manager territory) ──── */
+  if(isCounterStaff){
+    return <View style={ms.root}><ScrollView style={ms.container} contentContainerStyle={ms.content} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={P.pink}/>}>
+      <View style={ms.heroLight}><Text style={ms.heroEye}>TODAY</Text><Text style={ms.heroTitle}>Hey, {(user?.name||'Team').split(' ')[0]}</Text></View>
+      <View style={ms.kpiRow}>
+        <KpiChip icon="receipt-outline" label="Sales Today" value={counterStats.salesCount} color={P.blue} bg={P.blueLight}/>
+        <KpiChip icon="alert-circle-outline" label="Need Attention" value={counterPendingOrders.length} color={P.amber} bg={P.amberLight}/>
+        <KpiChip icon={counterStats.registerOpen?'lock-open-outline':'lock-closed-outline'} label="Register" value={counterStats.registerOpen===null?'—':counterStats.registerOpen?'Open':'Closed'} color={counterStats.registerOpen?P.green:P.red} bg={counterStats.registerOpen?P.greenLight:P.redLight}/>
+      </View>
+      {!counterStats.registerOpen&&counterStats.registerOpen!==null&&(
+        <TouchableOpacity style={ms.emptyCard} onPress={()=>navigation.navigate('POS',{screen:'CashRegister'})}>
+          <Ionicons name="lock-closed-outline" size={32} color={P.red}/><Text style={ms.emptyTitle}>Register isn't open</Text>
+        </TouchableOpacity>
+      )}
+      {loading?<ActivityIndicator color={P.pink} style={{marginTop:40}}/>:counterPendingOrders.length===0?<View style={ms.emptyCard}><Ionicons name="checkmark-circle-outline" size={36} color={P.green}/><Text style={ms.emptyTitle}>All caught up!</Text></View>:
+      counterPendingOrders.map(order=>(
+        <TouchableOpacity key={order.id} style={[ms.taskCard,{borderLeftColor:P.amber}]} onPress={()=>navigation.navigate('SaleDetail',{saleId:order.id})}>
+          <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center'}}>
+            <Text style={ms.taskName} numberOfLines={1}>{order.sale_number} — {order.customer_name||order.customer_display_name||'Walk-in'}</Text>
+            <View style={[cs.badge,{backgroundColor:P.amber+'18'}]}><Text style={[cs.badgeTxt,{color:P.amber}]}>PENDING</Text></View>
+          </View>
+        </TouchableOpacity>
+      ))}
+    </ScrollView></View>;
+  }
 
   /* ─── Employee view ──────────────────────────────────────── */
   if(isEmployee){

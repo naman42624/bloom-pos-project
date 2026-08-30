@@ -12,13 +12,13 @@ router.use(authenticate);
 // ═══════════════════════════════════════════════════════════════
 
 // Get shift for a specific user (or all shifts)
-router.get('/shifts', authorize('owner', 'manager', 'employee', 'delivery_partner'), async (req, res) => {
+router.get('/shifts', authorize('owner', 'manager', 'employee', 'counter_staff', 'delivery_partner'), async (req, res) => {
   try {
     const db = await getAsyncDb();
     const { user_id, location_id } = req.query;
 
     // Employees/DP can only see their own shift
-    if (req.user.role === 'employee' || req.user.role === 'delivery_partner') {
+    if (['employee', 'counter_staff', 'delivery_partner'].includes(req.user.role)) {
       const shifts = await db.prepare(`
         SELECT es.*, u.name as user_name, u.phone as user_phone, u.role as user_role, l.name as location_name
         FROM employee_shifts es
@@ -155,7 +155,7 @@ router.delete('/shifts/:id', authorize('owner', 'manager'), (req, res) => {
 // ═══════════════════════════════════════════════════════════════
 
 // Get salaries — owner sees all, staff sees own
-router.get('/salaries', authorize('owner', 'manager', 'employee', 'delivery_partner'), async (req, res) => {
+router.get('/salaries', authorize('owner', 'manager', 'employee', 'counter_staff', 'delivery_partner'), async (req, res) => {
   try {
     const db = await getAsyncDb();
 
@@ -167,7 +167,7 @@ router.get('/salaries', authorize('owner', 'manager', 'employee', 'delivery_part
         FROM employee_salaries es
         JOIN users u ON es.user_id = u.id
         LEFT JOIN users up ON es.updated_by = up.id
-        WHERE u.role IN ('manager', 'employee', 'delivery_partner') AND u.is_active = 1
+        WHERE u.role IN ('manager', 'employee', 'counter_staff', 'delivery_partner') AND u.is_active = 1
         ORDER BY u.name
       `).all();
 
@@ -175,7 +175,7 @@ router.get('/salaries', authorize('owner', 'manager', 'employee', 'delivery_part
       const usersWithout = await db.prepare(`
         SELECT u.id, u.name, u.phone, u.role
         FROM users u
-        WHERE u.role IN ('manager', 'employee', 'delivery_partner') AND u.is_active = 1
+        WHERE u.role IN ('manager', 'employee', 'counter_staff', 'delivery_partner') AND u.is_active = 1
         AND u.id NOT IN (SELECT user_id FROM employee_salaries)
         ORDER BY u.name
       `).all();
@@ -280,7 +280,7 @@ router.get('/salaries/:userId/history', authorize('owner'), async (req, res) => 
 // ═══════════════════════════════════════════════════════════════
 
 // Record geofence enter/exit event
-router.post('/geofence-event', authorize('manager', 'employee', 'delivery_partner'), (req, res) => {
+router.post('/geofence-event', authorize('manager', 'employee', 'counter_staff', 'delivery_partner'), (req, res) => {
   try {
     const db = getDb();
     const { location_id, event_type, latitude, longitude } = req.body;
@@ -524,7 +524,7 @@ router.post('/payroll/disburse', authorize('owner'), (req, res) => {
 });
 
 // Get payment history
-router.get('/payroll/history', authorize('owner', 'manager', 'employee', 'delivery_partner'), async (req, res) => {
+router.get('/payroll/history', authorize('owner', 'manager', 'employee', 'counter_staff', 'delivery_partner'), async (req, res) => {
   try {
     const db = await getAsyncDb();
     const { user_id, page = 1, limit = 20 } = req.query;

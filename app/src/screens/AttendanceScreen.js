@@ -50,7 +50,7 @@ export default function AttendanceScreen({ navigation }) {
 
   const role = user?.role;
   const isOwner = role === 'owner';
-  const isStaff = role === 'owner' || role === 'manager' || role === 'employee' || role === 'delivery_partner';
+  const isStaff = role === 'owner' || role === 'manager' || role === 'employee' || role === 'counter_staff' || role === 'florist_staff' || role === 'delivery_partner';
   const isManagerOrOwner = role === 'owner' || role === 'manager';
   
   const managerOverrideOn = settings?.pref_manager_override?.value === '1';

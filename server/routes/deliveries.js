@@ -105,7 +105,7 @@ const upload = multer({
 
 // ─── GET /api/deliveries ─────────────────────────────────────
 // List deliveries with filters
-router.get('/', authenticate, authorize('owner', 'manager', 'delivery_partner', 'employee'), async (req, res, next) => {
+router.get('/', authenticate, authorize('owner', 'manager', 'delivery_partner', 'employee', 'counter_staff'), async (req, res, next) => {
   try {
     const db = await getAsyncDb();
     const { location_id, status, delivery_partner_id, date_from, date_to, limit: lim, offset: off } = req.query;
@@ -203,7 +203,7 @@ router.get('/', authenticate, authorize('owner', 'manager', 'delivery_partner', 
 
 // ─── GET /api/deliveries/at-risk ─────────────────────────────
 // Orders/deliveries not ready within 30 min of scheduled time
-router.get('/at-risk', authenticate, authorize('owner', 'manager', 'employee'), async (req, res, next) => {
+router.get('/at-risk', authenticate, authorize('owner', 'manager', 'employee', 'counter_staff'), async (req, res, next) => {
   try {
     const db = await getAsyncDb();
     const { location_id } = req.query;
@@ -1283,7 +1283,7 @@ router.get('/settlements', authenticate, authorize('owner', 'manager'), async (r
 router.put(
   '/pickup/:saleId/ready',
   authenticate,
-  authorize('owner', 'manager', 'employee'),
+  authorize('owner', 'manager', 'employee', 'counter_staff'),
   (req, res, next) => {
     try {
       const db = getDb();
@@ -1380,7 +1380,7 @@ router.put(
 router.put(
   '/pickup/:saleId/picked-up',
   authenticate,
-  authorize('owner', 'manager', 'employee'),
+  authorize('owner', 'manager', 'employee', 'counter_staff'),
   (req, res, next) => {
     try {
       const db = getDb();
@@ -1517,7 +1517,7 @@ router.get('/customer/dues', authenticate, async (req, res, next) => {
     let customerId = req.user.id;
 
     // Manager/owner can query for a specific customer
-    if ((req.user.role === 'owner' || req.user.role === 'manager' || req.user.role === 'employee') && req.query.customer_id) {
+    if (['owner', 'manager', 'employee', 'counter_staff'].includes(req.user.role) && req.query.customer_id) {
       customerId = parseInt(req.query.customer_id);
     }
 

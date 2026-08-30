@@ -82,7 +82,7 @@ function isEarlyDeparture(clockOut, operatingHours, userId, locationId) {
 // ═══════════════════════════════════════════════════════════════
 // CLOCK IN
 // ═══════════════════════════════════════════════════════════════
-router.post('/clock-in', authorize('owner', 'manager', 'employee', 'delivery_partner'), (req, res) => {
+router.post('/clock-in', authorize('owner', 'manager', 'employee', 'counter_staff', 'florist_staff', 'delivery_partner'), (req, res) => {
   try {
     const db = getDb();
     let userId = req.user.id;
@@ -141,7 +141,7 @@ router.post('/clock-in', authorize('owner', 'manager', 'employee', 'delivery_par
 // ═══════════════════════════════════════════════════════════════
 // CLOCK OUT
 // ═══════════════════════════════════════════════════════════════
-router.post('/clock-out', authorize('owner', 'manager', 'employee', 'delivery_partner'), (req, res) => {
+router.post('/clock-out', authorize('owner', 'manager', 'employee', 'counter_staff', 'florist_staff', 'delivery_partner'), (req, res) => {
   try {
     const db = getDb();
     let userId = req.user.id;
@@ -201,7 +201,7 @@ router.post('/clock-out', authorize('owner', 'manager', 'employee', 'delivery_pa
 // ═══════════════════════════════════════════════════════════════
 // GET TODAY'S ATTENDANCE STATUS (for the logged-in user)
 // ═══════════════════════════════════════════════════════════════
-router.get('/today', authorize('owner', 'manager', 'employee', 'delivery_partner'), async (req, res) => {
+router.get('/today', authorize('owner', 'manager', 'employee', 'counter_staff', 'delivery_partner'), async (req, res) => {
   try {
     const db = await getAsyncDb();
     const today = todayStr();
@@ -256,7 +256,7 @@ router.get('/today', authorize('owner', 'manager', 'employee', 'delivery_partner
 // ═══════════════════════════════════════════════════════════════
 // GET ATTENDANCE HISTORY (own or filtered)
 // ═══════════════════════════════════════════════════════════════
-router.get('/', authorize('owner', 'manager', 'employee', 'delivery_partner'), async (req, res) => {
+router.get('/', authorize('owner', 'manager', 'employee', 'counter_staff', 'florist_staff', 'delivery_partner'), async (req, res) => {
   try {
     const db = await getAsyncDb();
     const { user_id, location_id, start_date, end_date, page = 1, limit = 30 } = req.query;
@@ -266,7 +266,7 @@ router.get('/', authorize('owner', 'manager', 'employee', 'delivery_partner'), a
     const params = [];
 
     // Role-based scoping
-    if (req.user.role === 'employee' || req.user.role === 'delivery_partner') {
+    if (['employee', 'counter_staff', 'florist_staff', 'delivery_partner'].includes(req.user.role)) {
       where.push('a.user_id = ?');
       params.push(req.user.id);
     } else if (user_id) {
@@ -404,7 +404,7 @@ router.get('/report', authorize('owner', 'manager'), async (req, res) => {
 // ═══════════════════════════════════════════════════════════════
 // OUTDOOR DUTY REQUEST
 // ═══════════════════════════════════════════════════════════════
-router.post('/outdoor-duty', authorize('owner', 'manager', 'employee', 'delivery_partner'), (req, res) => {
+router.post('/outdoor-duty', authorize('owner', 'manager', 'employee', 'counter_staff', 'delivery_partner'), (req, res) => {
   try {
     const db = getDb();
     const userId = req.user.id;
@@ -510,7 +510,7 @@ router.put('/outdoor-duty/:id/reject', authorize('owner', 'manager'), (req, res)
 // ═══════════════════════════════════════════════════════════════
 // COMPLETE OUTDOOR DUTY (employee returns)
 // ═══════════════════════════════════════════════════════════════
-router.put('/outdoor-duty/:id/complete', authorize('owner', 'manager', 'employee', 'delivery_partner'), (req, res) => {
+router.put('/outdoor-duty/:id/complete', authorize('owner', 'manager', 'employee', 'counter_staff', 'delivery_partner'), (req, res) => {
   try {
     const db = getDb();
     const request = db.prepare('SELECT * FROM outdoor_duty_requests WHERE id = ?').get(req.params.id);
@@ -565,7 +565,7 @@ router.put('/outdoor-duty/:id/complete', authorize('owner', 'manager', 'employee
 // ═══════════════════════════════════════════════════════════════
 // LIST OUTDOOR DUTY REQUESTS (for managers)
 // ═══════════════════════════════════════════════════════════════
-router.get('/outdoor-duty', authorize('owner', 'manager', 'employee', 'delivery_partner'), async (req, res) => {
+router.get('/outdoor-duty', authorize('owner', 'manager', 'employee', 'counter_staff', 'delivery_partner'), async (req, res) => {
   try {
     const db = await getAsyncDb();
     const { status, location_id, date } = req.query;
@@ -574,7 +574,7 @@ router.get('/outdoor-duty', authorize('owner', 'manager', 'employee', 'delivery_
     const params = [];
 
     // Role-based scoping
-    if (req.user.role === 'employee' || req.user.role === 'delivery_partner') {
+    if (['employee', 'counter_staff', 'delivery_partner'].includes(req.user.role)) {
       where.push('odr.user_id = ?');
       params.push(req.user.id);
     } else if (req.user.role === 'manager') {
@@ -621,7 +621,7 @@ router.get('/outdoor-duty', authorize('owner', 'manager', 'employee', 'delivery_
 // ═══════════════════════════════════════════════════════════════
 
 // Request advance
-router.post('/salary-advance', authorize('owner', 'manager', 'employee', 'delivery_partner'), (req, res) => {
+router.post('/salary-advance', authorize('owner', 'manager', 'employee', 'counter_staff', 'delivery_partner'), (req, res) => {
   try {
     const db = getDb();
     const { amount, reason } = req.body;
@@ -650,7 +650,7 @@ router.post('/salary-advance', authorize('owner', 'manager', 'employee', 'delive
 });
 
 // List advances
-router.get('/salary-advances', authorize('owner', 'manager', 'employee', 'delivery_partner'), async (req, res) => {
+router.get('/salary-advances', authorize('owner', 'manager', 'employee', 'counter_staff', 'delivery_partner'), async (req, res) => {
   try {
     const db = await getAsyncDb();
     const { user_id, status } = req.query;
@@ -658,7 +658,7 @@ router.get('/salary-advances', authorize('owner', 'manager', 'employee', 'delive
     let where = ['1=1'];
     const params = [];
 
-    if (req.user.role === 'employee' || req.user.role === 'delivery_partner') {
+    if (['employee', 'counter_staff', 'delivery_partner'].includes(req.user.role)) {
       where.push('sa.user_id = ?');
       params.push(req.user.id);
     } else if (user_id) {
@@ -952,7 +952,7 @@ router.get('/staff-today', authorize('owner', 'manager'), async (req, res) => {
       FROM users u
       JOIN user_locations ul ON u.id = ul.user_id
       LEFT JOIN employee_shifts es ON es.user_id = u.id AND es.location_id = ul.location_id AND es.is_active = 1
-      WHERE u.role IN ('employee', 'delivery_partner', 'manager') AND u.is_active = 1
+      WHERE u.role IN ('employee', 'counter_staff', 'delivery_partner', 'manager') AND u.is_active = 1
       ${notClockedFilter}
       AND u.id NOT IN (SELECT user_id FROM attendance WHERE date = ?)
     `).all(...notParams, today);

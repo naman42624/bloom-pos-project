@@ -287,7 +287,7 @@ export function OrderQuickModal({
     try {
       const res = await api.getUsers();
       const all = res?.data?.users || res?.data || [];
-      setEmployees(Array.isArray(all) ? all.filter((u) => ['owner','manager','employee'].includes(u.role)) : []);
+      setEmployees(Array.isArray(all) ? all.filter((u) => ['owner','manager','employee','counter_staff','florist_staff'].includes(u.role)) : []);
     } catch { setEmployees([]); }
     finally { setEmployeesLoading(false); }
   }, []);

@@ -24,7 +24,7 @@ const QUICK_LINKS = [
 
 export default function StockOverviewScreen({ navigation }) {
   const { user } = useAuth();
-  const isEmployee = user?.role === 'employee';
+  const isEmployee = user?.role === 'employee' || user?.role === 'counter_staff';
 
   const [stock, setStock] = useState([]);
   const [locations, setLocations] = useState([]);

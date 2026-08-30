@@ -18,6 +18,8 @@ const ROLE_LABELS = {
   owner: 'Owner',
   manager: 'Manager',
   employee: 'Employee',
+  counter_staff: 'Counter Staff',
+  florist_staff: 'Florist/Prep Staff',
   delivery_partner: 'Delivery',
   customer: 'Customer',
 };
@@ -26,6 +28,8 @@ const ROLE_COLORS = {
   owner: Colors.roleOwner,
   manager: Colors.roleManager,
   employee: Colors.roleEmployee,
+  counter_staff: Colors.roleCounterStaff,
+  florist_staff: Colors.roleFloristStaff,
   delivery_partner: Colors.roleDelivery,
   customer: Colors.roleCustomer,
 };
@@ -34,6 +38,8 @@ const FILTER_ROLES = [
   { key: 'all', label: 'All' },
   { key: 'manager', label: 'Managers' },
   { key: 'employee', label: 'Employees' },
+  { key: 'counter_staff', label: 'Counter Staff' },
+  { key: 'florist_staff', label: 'Florist/Prep' },
   { key: 'delivery_partner', label: 'Delivery' },
 ];
 

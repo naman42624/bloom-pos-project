@@ -216,7 +216,7 @@ router.get('/', authenticate, async (req, res, next) => {
     }
 
     // Scope by location for non-owner roles
-    if (req.user.role === 'employee' || req.user.role === 'manager') {
+    if (['employee', 'counter_staff', 'manager'].includes(req.user.role)) {
       const userLocs = (await db.prepare('SELECT location_id FROM user_locations WHERE user_id = ?').all(req.user.id)).map(r => r.location_id);
       if (userLocs.length > 0 && !location_id) {
         sql += ` AND s.location_id IN (${userLocs.map(() => '?').join(',')})`;
@@ -358,7 +358,7 @@ router.get('/today-summary', authenticate, async (req, res, next) => {
 });
 
 // ─── GET /api/sales/drafts ──────────────────────────────────
-router.get('/drafts', authenticate, authorize('owner', 'manager', 'employee'), async (req, res, next) => {
+router.get('/drafts', authenticate, authorize('owner', 'manager', 'employee', 'counter_staff'), async (req, res, next) => {
   try {
     const db = await getAsyncDb();
     const { location_id, context, search } = req.query;
@@ -387,7 +387,7 @@ router.get('/drafts', authenticate, authorize('owner', 'manager', 'employee'), a
 });
 
 // ─── GET /api/sales/drafts/:id ──────────────────────────────
-router.get('/drafts/:id', authenticate, authorize('owner', 'manager', 'employee'), async (req, res, next) => {
+router.get('/drafts/:id', authenticate, authorize('owner', 'manager', 'employee', 'counter_staff'), async (req, res, next) => {
   try {
     const db = await getAsyncDb();
     const draft = await db.prepare(
@@ -406,7 +406,7 @@ router.get('/drafts/:id', authenticate, authorize('owner', 'manager', 'employee'
 router.post(
   '/drafts',
   authenticate,
-  authorize('owner', 'manager', 'employee'),
+  authorize('owner', 'manager', 'employee', 'counter_staff'),
   [
     body('id').optional({ nullable: true }).isInt(),
     body('location_id').optional({ nullable: true }).isInt(),
@@ -492,7 +492,7 @@ router.post(
 );
 
 // ─── DELETE /api/sales/drafts/:id ───────────────────────────
-router.delete('/drafts/:id', authenticate, authorize('owner', 'manager', 'employee'), (req, res, next) => {
+router.delete('/drafts/:id', authenticate, authorize('owner', 'manager', 'employee', 'counter_staff'), (req, res, next) => {
   try {
     const db = getDb();
     const existing = db.prepare('SELECT id FROM sale_drafts WHERE id = ? AND created_by = ?').get(req.params.id, req.user.id);
@@ -613,7 +613,7 @@ router.get('/register/status', authenticate, async (req, res, next) => {
 router.post(
   '/register/open',
   authenticate,
-  authorize('owner', 'manager', 'employee'),
+  authorize('owner', 'manager', 'employee', 'counter_staff'),
   [
     body('location_id').isInt(),
     body('opening_balance').isFloat({ min: 0 }),
@@ -658,7 +658,7 @@ router.post(
 router.put(
   '/register/close',
   authenticate,
-  authorize('owner', 'manager', 'employee'),
+  authorize('owner', 'manager', 'employee', 'counter_staff'),
   [
     body('location_id').isInt(),
     body('actual_cash').isFloat({ min: 0 }),
@@ -810,7 +810,7 @@ router.get('/register/history', authenticate, authorize('owner', 'manager'), asy
 router.get(
   '/production-queue',
   authenticate,
-  authorize('owner', 'manager', 'employee'),
+  authorize('owner', 'manager', 'employee', 'counter_staff', 'florist_staff'),
   async (req, res, next) => {
     try {
       const db = await getAsyncDb();
@@ -969,7 +969,7 @@ router.get('/:id/audit-logs', authenticate, authorize('owner', 'manager'), async
 });
 
 // ─── PUT /api/sales/:id ──────────────────────────────────────
-router.put('/:id', authenticate, authorize('owner', 'manager', 'employee'), async (req, res, next) => {
+router.put('/:id', authenticate, authorize('owner', 'manager', 'employee', 'counter_staff'), async (req, res, next) => {
   try {
     const db = await getAsyncDb();
     const saleId = req.params.id;
@@ -979,7 +979,7 @@ router.put('/:id', authenticate, authorize('owner', 'manager', 'employee'), asyn
     if (!oldSale) return res.status(404).json({ success: false, message: 'Sale not found' });
 
     // 1. Permission Check
-    if (req.user.role === 'employee' && oldSale.created_by !== req.user.id) {
+    if (['employee', 'counter_staff'].includes(req.user.role) && oldSale.created_by !== req.user.id) {
       return res.status(403).json({ success: false, message: 'Employees can only edit sales they created' });
     }
 
@@ -1290,7 +1290,7 @@ router.get('/:id', authenticate, async (req, res, next) => {
 router.post(
   '/',
   authenticate,
-  authorize('owner', 'manager', 'employee'),
+  authorize('owner', 'manager', 'employee', 'counter_staff'),
   [
     body('location_id').isInt().withMessage('Location is required'),
     body('order_type').isIn(['walk_in', 'pickup', 'delivery', 'pre_order']),
@@ -1910,7 +1910,7 @@ router.post(
 router.post(
   '/:id/payments',
   authenticate,
-  authorize('owner', 'manager', 'employee'),
+  authorize('owner', 'manager', 'employee', 'counter_staff'),
   [
     body('payments').optional().isArray(),
     body('payments.*.method').optional().isIn(['cash', 'card', 'upi']),
@@ -2094,7 +2094,7 @@ router.put(
 router.put(
   '/:id/status',
   authenticate,
-  authorize('owner', 'manager', 'employee'),
+  authorize('owner', 'manager', 'employee', 'counter_staff'),
   [
     body('status').isIn(['pending', 'preparing', 'ready', 'completed']).withMessage('Invalid status'),
   ],
@@ -2215,7 +2215,7 @@ router.put(
 router.post(
   '/:id/fulfill-from-stock',
   authenticate,
-  authorize('owner', 'manager', 'employee'),
+  authorize('owner', 'manager', 'employee', 'counter_staff'),
   [
     body('sale_item_id').isInt({ min: 1 }).withMessage('sale_item_id is required'),
   ],
@@ -2686,7 +2686,7 @@ router.post(
 router.post(
   '/custom-item',
   authenticate,
-  authorize('owner', 'manager', 'employee'),
+  authorize('owner', 'manager', 'employee', 'counter_staff'),
   [
     body('base_product_id').optional({ nullable: true }).isInt(),
     body('name').trim().notEmpty().withMessage('Name is required'),

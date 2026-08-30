@@ -4,14 +4,15 @@ const { body, param, query, validationResult } = require('express-validator');
 const { getDb } = require('../config/database');
 const { getDb: getAsyncDb } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
+const { hashPin } = require('../utils/pin');
 
 const router = express.Router();
 router.use(authenticate);
 
 const USER_SELECT_FIELDS =
-  'id, phone, email, name, role, avatar, bio, is_active, created_by, created_at, updated_at';
+  'id, phone, email, name, role, avatar, bio, employee_code, job_title, is_active, created_by, created_at, updated_at';
 
-const VALID_ROLES = ['manager', 'employee', 'delivery_partner', 'customer'];
+const VALID_ROLES = ['manager', 'employee', 'counter_staff', 'florist_staff', 'delivery_partner', 'customer'];
 
 // ─── GET /api/users ──────────────────────────────────────────
 // List users (Owner: all, Manager: employees & delivery partners at their locations)
@@ -44,7 +45,7 @@ router.get(
 
       // Managers can see operational staff including managers for shift setup
       if (req.user.role === 'manager') {
-        whereClause += " AND u.role IN ('manager', 'employee', 'delivery_partner')";
+        whereClause += " AND u.role IN ('manager', 'employee', 'counter_staff', 'florist_staff', 'delivery_partner')";
       }
 
       // Always exclude customers from staff listing (separate page)
@@ -168,7 +169,7 @@ router.post(
       .withMessage('Password must be at least 6 characters'),
     body('role')
       .isIn([...VALID_ROLES, 'owner'])
-      .withMessage('Role must be owner, manager, employee, delivery_partner, or customer'),
+      .withMessage('Role must be owner, manager, employee, counter_staff, florist_staff, delivery_partner, or customer'),
     body('location_ids')
       .optional()
       .isArray()
@@ -196,7 +197,7 @@ router.post(
       }
 
       // Managers can only create employees and delivery partners
-      if (req.user.role === 'manager' && !['employee', 'delivery_partner', 'customer'].includes(role)) {
+      if (req.user.role === 'manager' && !['employee', 'counter_staff', 'florist_staff', 'delivery_partner', 'customer'].includes(role)) {
         return res.status(403).json({
           success: false,
           message: 'You can only create employee, delivery partner, or customer accounts',
@@ -228,11 +229,19 @@ router.post(
       const hashedPassword = await bcrypt.hash(password, salt);
 
       const createUser = db.transaction(() => {
+        let employeeCode = null;
+        if (role === 'counter_staff' || role === 'florist_staff') {
+          const maxRow = db.prepare(
+            "SELECT COALESCE(MAX(CAST(employee_code AS INTEGER)), 1000) as max_code FROM users WHERE employee_code ~ '^[0-9]+$'"
+          ).get();
+          employeeCode = String(maxRow.max_code + 1);
+        }
+
         const result = db
           .prepare(
-            'INSERT INTO users (name, phone, email, password, role, created_by) VALUES (?, ?, ?, ?, ?, ?)'
+            'INSERT INTO users (name, phone, email, password, role, created_by, employee_code) VALUES (?, ?, ?, ?, ?, ?, ?)'
           )
-          .run(name, phone, email || null, hashedPassword, role, req.user.id);
+          .run(name, phone, email || null, hashedPassword, role, req.user.id, employeeCode);
 
         const userId = result.lastInsertRowid;
 
@@ -345,8 +354,13 @@ router.put(
         // Update location assignments if provided
         if (location_ids !== undefined) {
           db.prepare('DELETE FROM user_locations WHERE user_id = ?').run(parseInt(req.params.id));
+          // ON CONFLICT DO NOTHING matches the other 3 user_locations INSERT call sites
+          // (server/routes/users.js:251, locations.js:193/324) — without it, a request
+          // body containing a duplicate location id would throw a unique-violation on
+          // the second insert of the same pair (the DELETE above only guards against
+          // stale rows from a PRIOR request, not duplicates within this one).
           const assignLocation = db.prepare(
-            'INSERT INTO user_locations (user_id, location_id, is_primary) VALUES (?, ?, ?)'
+            'INSERT INTO user_locations (user_id, location_id, is_primary) VALUES (?, ?, ?) ON CONFLICT (user_id, location_id) DO NOTHING'
           );
           for (let i = 0; i < location_ids.length; i++) {
             assignLocation.run(parseInt(req.params.id), location_ids[i], i === 0 ? 1 : 0);
@@ -431,6 +445,48 @@ router.put(
   }
 );
 
+// ─── PUT /api/users/:id/pin ──────────────────────────────────
+// Owner/Manager sets or resets a staff member's PIN. Clears any lockout.
+router.put(
+  '/:id/pin',
+  authorize('owner', 'manager'),
+  [
+    param('id').isInt(),
+    body('pin').trim().isLength({ min: 4, max: 4 }).withMessage('PIN must be exactly 4 digits').isNumeric().withMessage('PIN must be numeric'),
+  ],
+  async (req, res, next) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({ success: false, errors: errors.array() });
+      }
+
+      const db = getDb();
+      const targetUser = db.prepare('SELECT id, role, employee_code FROM users WHERE id = ?').get(req.params.id);
+
+      if (!targetUser) {
+        return res.status(404).json({ success: false, message: 'User not found' });
+      }
+      if (!['employee', 'counter_staff', 'florist_staff'].includes(targetUser.role)) {
+        return res.status(400).json({ success: false, message: 'PIN login is only available for staff accounts' });
+      }
+      if (!targetUser.employee_code) {
+        return res.status(400).json({ success: false, message: 'This account has no employee code yet — recreate it as Counter Staff or Florist/Prep Staff, or contact support to backfill one' });
+      }
+
+      const hashedPin = await hashPin(req.body.pin);
+
+      db.prepare(
+        'UPDATE users SET pin_hash = ?, pin_failed_attempts = 0, pin_locked_until = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?'
+      ).run(hashedPin, req.params.id);
+
+      res.json({ success: true, message: 'PIN set successfully' });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
 // ─── PUT /api/users/:id/change-role ─────────────────────────
 // Owner-only: change the role of any staff member
 router.put(
@@ -440,7 +496,7 @@ router.put(
     param('id').isInt(),
     body('role')
       .isIn([...VALID_ROLES, 'owner'])
-      .withMessage('Role must be owner, manager, employee, delivery_partner, or customer'),
+      .withMessage('Role must be owner, manager, employee, counter_staff, florist_staff, delivery_partner, or customer'),
   ],
   (req, res, next) => {
     try {
@@ -465,7 +521,25 @@ router.put(
 
       // Cannot reassign another owner's role (removed to allow multiple owners managing each other)
 
-      db.prepare('UPDATE users SET role = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(role, targetId);
+      // Promoting into counter_staff/florist_staff auto-assigns an employee_code if the
+      // account doesn't already have one (e.g. a live `employee` account being promoted,
+      // per the rollout plan). Done as a single UPDATE statement (not a SELECT-then-write)
+      // so the MAX(...)+1 computation and the write happen in one DB round trip — the
+      // employee_code UNIQUE constraint still catches a genuine concurrent-promotion race.
+      db.prepare(`
+        UPDATE users
+        SET role = ?,
+            employee_code = CASE
+              WHEN employee_code IS NOT NULL THEN employee_code
+              WHEN ? IN ('counter_staff', 'florist_staff') THEN (
+                SELECT COALESCE(MAX(CAST(employee_code AS INTEGER)), 1000) + 1
+                FROM users WHERE employee_code ~ '^[0-9]+$'
+              )::text
+              ELSE NULL
+            END,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `).run(role, role, targetId);
 
       const updatedUser = db.prepare(`SELECT ${USER_SELECT_FIELDS} FROM users WHERE id = ?`).get(targetId);
 

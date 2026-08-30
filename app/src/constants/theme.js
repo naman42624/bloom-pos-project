@@ -43,6 +43,8 @@ export const Colors = {
   roleOwner: '#9C27B0',
   roleManager: '#2196F3',
   roleEmployee: '#FF9800',
+  roleCounterStaff: '#FF9800',
+  roleFloristStaff: '#4CAF50',
   roleDelivery: '#00BCD4',
   roleCustomer: '#795548',
 
