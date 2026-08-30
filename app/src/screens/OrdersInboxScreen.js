@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useRef } from 'react';
-import { View, Text, StyleSheet, FlatList, TouchableOpacity, RefreshControl, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, RefreshControl, ActivityIndicator, TextInput, ScrollView } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import api from '../services/api';
@@ -34,15 +34,24 @@ export default function OrdersInboxScreen({ navigation }) {
   const [statusFilter, setStatusFilter] = useState(null);
   const [channelFilter, setChannelFilter] = useState(null);
   const [priorityOnly, setPriorityOnly] = useState(false);
+  const [search, setSearch] = useState('');
   const requestIdRef = useRef(0);
+  const searchTimer = useRef(null);
+  // fetchOrders reads the search term from this ref, not the `search` state,
+  // so its identity (and therefore the useFocusEffect below) doesn't change on
+  // every keystroke — only on an actual filter change or a debounced search
+  // fetch. `search` state still drives the TextInput's displayed value.
+  const searchRef = useRef('');
 
-  const fetchOrders = useCallback(async () => {
+  const fetchOrders = useCallback(async (searchOverride) => {
     const requestId = ++requestIdRef.current;
     try {
       const params = { limit: 100 };
       if (statusFilter) params.status = statusFilter;
       if (channelFilter) params.channel = channelFilter;
       if (priorityOnly) params.priority = 'rush';
+      const activeSearch = searchOverride !== undefined ? searchOverride : searchRef.current;
+      if (activeSearch.trim()) params.search = activeSearch.trim();
       const res = await api.getSales(params);
       if (requestId !== requestIdRef.current) return; // a newer request superseded this one
       setOrders(res.data?.sales || []);
@@ -58,6 +67,20 @@ export default function OrdersInboxScreen({ navigation }) {
   }, [statusFilter, channelFilter, priorityOnly]);
 
   useFocusEffect(useCallback(() => { setLoading(true); fetchOrders(); }, [fetchOrders]));
+
+  const handleSearchChange = (text) => {
+    setSearch(text);
+    searchRef.current = text;
+    if (searchTimer.current) clearTimeout(searchTimer.current);
+    searchTimer.current = setTimeout(() => fetchOrders(text), 300);
+  };
+
+  const clearSearch = () => {
+    setSearch('');
+    searchRef.current = '';
+    if (searchTimer.current) clearTimeout(searchTimer.current);
+    fetchOrders('');
+  };
 
   const renderItem = ({ item }) => {
     const itemsSummary = formatItemsSummary(item.items);
@@ -91,14 +114,30 @@ export default function OrdersInboxScreen({ navigation }) {
 
   return (
     <View style={styles.container}>
-      <View style={styles.filterRow}>
+      <View style={styles.searchRow}>
+        <Ionicons name="search" size={18} color={Colors.textLight} />
+        <TextInput
+          style={styles.searchInput}
+          value={search}
+          onChangeText={handleSearchChange}
+          placeholder="Search order #, customer, phone, item…"
+          placeholderTextColor={Colors.textLight}
+        />
+        {search.length > 0 && (
+          <TouchableOpacity onPress={clearSearch}>
+            <Ionicons name="close-circle" size={18} color={Colors.textLight} />
+          </TouchableOpacity>
+        )}
+      </View>
+
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
         {STATUS_FILTERS.map((s) => (
           <TouchableOpacity key={s || 'all'} style={[styles.filterChip, statusFilter === s && styles.filterChipSelected]} onPress={() => setStatusFilter(s)}>
             <Text style={[styles.filterChipText, statusFilter === s && styles.filterChipTextSelected]}>{s ? STATUS_LABELS[s] : 'All'}</Text>
           </TouchableOpacity>
         ))}
-      </View>
-      <View style={styles.filterRow}>
+      </ScrollView>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
         {CHANNEL_FILTERS.map((c) => (
           <TouchableOpacity key={c || 'all'} style={[styles.filterChip, channelFilter === c && styles.filterChipSelected]} onPress={() => setChannelFilter(c)}>
             <Text style={[styles.filterChipText, channelFilter === c && styles.filterChipTextSelected]}>{c || 'Any channel'}</Text>
@@ -107,7 +146,7 @@ export default function OrdersInboxScreen({ navigation }) {
         <TouchableOpacity style={[styles.filterChip, priorityOnly && styles.filterChipSelected]} onPress={() => setPriorityOnly((v) => !v)}>
           <Text style={[styles.filterChipText, priorityOnly && styles.filterChipTextSelected]}>🔥 Rush only</Text>
         </TouchableOpacity>
-      </View>
+      </ScrollView>
 
       {loading ? (
         <ActivityIndicator style={{ marginTop: 40 }} color={Colors.primary} />
@@ -131,7 +170,14 @@ export default function OrdersInboxScreen({ navigation }) {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
-  filterRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, paddingHorizontal: Spacing.md, paddingTop: Spacing.sm },
+  searchRow: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
+    backgroundColor: Colors.surface, borderRadius: BorderRadius.md,
+    paddingHorizontal: Spacing.sm, marginHorizontal: Spacing.md, marginTop: Spacing.sm,
+    borderWidth: 1, borderColor: Colors.border,
+  },
+  searchInput: { flex: 1, fontSize: FontSize.md, color: Colors.text, minHeight: 44 },
+  filterRow: { flexDirection: 'row', gap: 6, paddingHorizontal: Spacing.md, paddingTop: Spacing.sm },
   filterChip: { paddingVertical: 8, paddingHorizontal: 12, borderRadius: BorderRadius.lg, backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.border, minHeight: 36 },
   filterChipSelected: { backgroundColor: Colors.primary, borderColor: Colors.primary },
   filterChipText: { fontSize: FontSize.sm, color: Colors.text, fontWeight: '600' },
