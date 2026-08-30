@@ -516,7 +516,8 @@ class ApiService {
       formData.append('file', { uri: fileUri, name: filename, type: mimeType });
     }
     formData.append('type', type);
-    if (durationSeconds) formData.append('duration_seconds', String(durationSeconds));
+    // Truthy check would drop a legitimate 0 (stopped almost immediately after tapping record).
+    if (durationSeconds !== undefined && durationSeconds !== null) formData.append('duration_seconds', String(durationSeconds));
     // Optional: scope this attachment to one line item instead of the whole order.
     if (saleItemId) formData.append('sale_item_id', String(saleItemId));
 

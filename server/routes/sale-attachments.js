@@ -49,6 +49,16 @@ const handleMulterError = (err, _req, res, next) => {
   next(err);
 };
 
+// multer writes the file to disk before this route handler runs at all (it has to —
+// the body fields we validate below arrive in the same multipart payload as the
+// file). Every rejection path after that point must delete the now-orphaned file,
+// or a stream of invalid requests slowly fills the disk with files nothing points to.
+async function cleanupUploadedFile(req) {
+  if (req.file?.path) {
+    try { await fs.promises.unlink(req.file.path); } catch (_) { /* best-effort — don't mask the real response */ }
+  }
+}
+
 // ─── POST /api/sales/:saleId/attachments ──────────────────────
 router.post('/:saleId(\\d+)/attachments', authenticate, authorize('owner', 'manager', 'employee'), (req, res, next) => {
   upload.single('file')(req, res, (err) => {
@@ -59,11 +69,15 @@ router.post('/:saleId(\\d+)/attachments', authenticate, authorize('owner', 'mana
   try {
     const db = await getDb();
     const sale = await db.prepare('SELECT id FROM sales WHERE id = ?').get(req.params.saleId);
-    if (!sale) return res.status(404).json({ success: false, message: 'Sale not found' });
+    if (!sale) {
+      await cleanupUploadedFile(req);
+      return res.status(404).json({ success: false, message: 'Sale not found' });
+    }
     if (!req.file) return res.status(400).json({ success: false, message: 'No file uploaded' });
 
     const type = req.body.type;
     if (type !== 'photo' && type !== 'voice_note') {
+      await cleanupUploadedFile(req);
       return res.status(400).json({ success: false, message: "type must be 'photo' or 'voice_note'" });
     }
 
@@ -71,6 +85,7 @@ router.post('/:saleId(\\d+)/attachments', authenticate, authorize('owner', 'mana
     if (req.body.duration_seconds !== undefined && req.body.duration_seconds !== null && req.body.duration_seconds !== '') {
       const parsed = parseInt(req.body.duration_seconds, 10);
       if (!Number.isFinite(parsed) || parsed < 0) {
+        await cleanupUploadedFile(req);
         return res.status(400).json({ success: false, message: 'duration_seconds must be a non-negative number' });
       }
       durationSeconds = parsed;
@@ -83,10 +98,12 @@ router.post('/:saleId(\\d+)/attachments', authenticate, authorize('owner', 'mana
     if (req.body.sale_item_id !== undefined && req.body.sale_item_id !== null && req.body.sale_item_id !== '') {
       const parsed = parseInt(req.body.sale_item_id, 10);
       if (!Number.isFinite(parsed)) {
+        await cleanupUploadedFile(req);
         return res.status(400).json({ success: false, message: 'sale_item_id must be a number' });
       }
       const item = await db.prepare('SELECT id FROM sale_items WHERE id = ? AND sale_id = ?').get(parsed, req.params.saleId);
       if (!item) {
+        await cleanupUploadedFile(req);
         return res.status(400).json({ success: false, message: 'sale_item_id does not belong to this sale' });
       }
       saleItemId = parsed;
@@ -99,7 +116,10 @@ router.post('/:saleId(\\d+)/attachments', authenticate, authorize('owner', 'mana
     ).get(req.params.saleId, saleItemId, type, fileUrl, durationSeconds, req.user.id);
 
     res.status(201).json({ success: true, data: result });
-  } catch (err) { next(err); }
+  } catch (err) {
+    await cleanupUploadedFile(req);
+    next(err);
+  }
 });
 
 // ─── GET /api/sales/:saleId/attachments ───────────────────────

@@ -1038,6 +1038,26 @@ router.put('/:id', authenticate, authorize('owner', 'manager', 'employee'), asyn
 
     // Update items if provided (edit existing rows only; no add/remove in this task)
     if (items && Array.isArray(items)) {
+      // Validate every item before writing anything — this loop isn't wrapped in a
+      // DB transaction (see the parked transaction-safety note below), so rejecting
+      // up front avoids leaving earlier items in the array updated while a later one
+      // fails, and avoids ever writing a negative/zero quantity or negative price.
+      for (const item of items) {
+        if (!item.id) continue;
+        if (item.quantity !== undefined && item.quantity !== null) {
+          const qty = Number(item.quantity);
+          if (!Number.isFinite(qty) || qty <= 0) {
+            return res.status(400).json({ success: false, message: `Item ${item.id}: quantity must be a positive number` });
+          }
+        }
+        if (item.unit_price !== undefined && item.unit_price !== null) {
+          const price = Number(item.unit_price);
+          if (!Number.isFinite(price) || price < 0) {
+            return res.status(400).json({ success: false, message: `Item ${item.id}: price cannot be negative` });
+          }
+        }
+      }
+
       const updateItem = db.prepare('UPDATE sale_items SET quantity = COALESCE(?, quantity), unit_price = COALESCE(?, unit_price), product_name = COALESCE(?, product_name) WHERE id = ? AND sale_id = ?');
       for (const item of items) {
         if (!item.id) continue;
