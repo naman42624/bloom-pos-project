@@ -1117,12 +1117,21 @@ export default function QuickCheckoutScreen({ navigation, route }) {
         // (that would invite a duplicate re-submit); just let the staff
         // member know they'll need to re-attach it from the order later.
         if (pendingAttachments.length > 0) {
-          try {
-            for (const att of pendingAttachments) {
+          // Try each attachment independently — one failing shouldn't stop the rest
+          // from uploading, and the failure message should reflect how many (if more
+          // than one voice note was ever recorded for this order) actually failed.
+          let failedCount = 0;
+          for (const att of pendingAttachments) {
+            try {
               await api.uploadSaleAttachment(res.data.id, att.uri, att.type, att.durationSeconds);
+            } catch (err) {
+              failedCount += 1;
             }
-          } catch (err) {
-            const msg = 'The order was placed, but the voice note could not be uploaded. You can add it again from the order later.';
+          }
+          if (failedCount > 0) {
+            const noun = failedCount === 1 ? 'voice note' : 'voice notes';
+            const pronoun = failedCount === 1 ? 'it' : 'them';
+            const msg = `The order was placed, but ${failedCount} ${noun} could not be uploaded. You can add ${pronoun} again from the order later.`;
             if (Platform.OS === 'web') window.alert(msg);
             else Alert.alert('Voice note not saved', msg);
           }
@@ -1597,8 +1606,8 @@ export default function QuickCheckoutScreen({ navigation, route }) {
           <VoiceNoteRecorder
             onRecorded={(uri, durationSeconds) => setPendingAttachments((prev) => [...prev, { uri, type: 'voice_note', durationSeconds }])}
           />
-          {pendingAttachments.map((a, i) => (
-            <Text key={i} style={styles.attachmentNote}>
+          {pendingAttachments.map((a) => (
+            <Text key={a.uri} style={styles.attachmentNote}>
               🎤 Voice note recorded ({a.durationSeconds}s) — will attach when the order is placed
             </Text>
           ))}
