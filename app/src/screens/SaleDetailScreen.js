@@ -279,6 +279,11 @@ export default function SaleDetailScreen({ route, navigation }) {
 
   const handlePickAttachmentPhoto = async () => {
     try {
+      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission Required', 'Please allow access to your photo library.');
+        return;
+      }
       const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.6 });
       if (result.canceled || !result.assets?.[0]) return;
       setUploadingAttachment(true);

@@ -28,7 +28,7 @@ try {
   try { db.prepare("ALTER TABLE sales DROP CONSTRAINT IF EXISTS sales_channel_check").run(); } catch { }
   try { db.prepare("ALTER TABLE sales ADD CONSTRAINT sales_channel_check CHECK(channel IS NULL OR channel IN ('whatsapp','email','website','walk_in','phone'))").run(); } catch { }
   try { db.prepare("ALTER TABLE sales DROP CONSTRAINT IF EXISTS sales_priority_check").run(); } catch { }
-  try { db.prepare("ALTER TABLE sales ADD CONSTRAINT sales_priority_check CHECK(priority IN ('normal','rush'))").run(); } catch { }
+  try { db.prepare("ALTER TABLE sales ADD CONSTRAINT sales_priority_check CHECK(priority IS NULL OR priority IN ('normal','rush'))").run(); } catch { }
 } catch (e) { console.log('Sales migration note:', e.message); }
 
 
@@ -1050,8 +1050,12 @@ router.put('/:id', authenticate, authorize('owner', 'manager', 'employee'), asyn
       // async route. Recompute inline using the async db instance instead — logic adapted
       // from the equivalent recalculation in POST /:id/payments further down this file.
       const updatedItems = await db.prepare('SELECT * FROM sale_items WHERE sale_id = ?').all(saleId);
-      const newSubtotal = updatedItems.reduce((s, i) => s + (Number(i.unit_price) * Number(i.quantity)), 0);
-      const newTaxTotal = updatedItems.reduce((s, i) => s + Number(i.tax_amount || 0), 0);
+      // Guard each term with `|| 0`, not just the outer Number(...) call — a single row
+      // with a non-numeric/garbled unit_price or quantity would otherwise turn the whole
+      // reduce() into NaN and silently corrupt this sale's totals for every item, not just
+      // the bad one.
+      const newSubtotal = updatedItems.reduce((s, i) => s + ((Number(i.unit_price) || 0) * (Number(i.quantity) || 0)), 0);
+      const newTaxTotal = updatedItems.reduce((s, i) => s + (Number(i.tax_amount) || 0), 0);
       const currentSale = await db.prepare('SELECT discount_amount, discount_type, discount_percentage, delivery_charges, order_type, is_credit_sale FROM sales WHERE id = ?').get(saleId);
 
       let newDiscountAmount = Number(currentSale.discount_amount || 0);

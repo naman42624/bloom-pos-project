@@ -2,8 +2,13 @@
 require('dotenv').config();
 
 const BASE_URL = process.env.API_BASE_URL || 'http://localhost:3001';
-const OWNER_PHONE = process.env.SMOKE_OWNER_PHONE || '9876453210';
-const OWNER_PASSWORD = process.env.SMOKE_OWNER_PASSWORD || 'naman1234';
+const OWNER_PHONE = process.env.SMOKE_OWNER_PHONE;
+const OWNER_PASSWORD = process.env.SMOKE_OWNER_PASSWORD;
+
+if (!OWNER_PHONE || !OWNER_PASSWORD) {
+  console.error('Set SMOKE_OWNER_PHONE and SMOKE_OWNER_PASSWORD (e.g. in server/.env) before running this script — no default credentials are baked in.');
+  process.exit(1);
+}
 
 async function request(method, path, { token, body, formData } = {}) {
   const headers = {};

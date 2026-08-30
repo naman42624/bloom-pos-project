@@ -62,8 +62,20 @@ router.post('/:saleId(\\d+)/attachments', authenticate, authorize('owner', 'mana
     if (!sale) return res.status(404).json({ success: false, message: 'Sale not found' });
     if (!req.file) return res.status(400).json({ success: false, message: 'No file uploaded' });
 
-    const type = req.body.type === 'photo' ? 'photo' : 'voice_note';
-    const durationSeconds = req.body.duration_seconds ? parseInt(req.body.duration_seconds, 10) : null;
+    const type = req.body.type;
+    if (type !== 'photo' && type !== 'voice_note') {
+      return res.status(400).json({ success: false, message: "type must be 'photo' or 'voice_note'" });
+    }
+
+    let durationSeconds = null;
+    if (req.body.duration_seconds !== undefined && req.body.duration_seconds !== null && req.body.duration_seconds !== '') {
+      const parsed = parseInt(req.body.duration_seconds, 10);
+      if (!Number.isFinite(parsed) || parsed < 0) {
+        return res.status(400).json({ success: false, message: 'duration_seconds must be a non-negative number' });
+      }
+      durationSeconds = parsed;
+    }
+
     const fileUrl = `/uploads/sale-attachments/${req.file.filename}`;
 
     const result = await db.prepare(
@@ -75,7 +87,7 @@ router.post('/:saleId(\\d+)/attachments', authenticate, authorize('owner', 'mana
 });
 
 // ─── GET /api/sales/:saleId/attachments ───────────────────────
-router.get('/:saleId(\\d+)/attachments', authenticate, async (req, res, next) => {
+router.get('/:saleId(\\d+)/attachments', authenticate, authorize('owner', 'manager', 'employee'), async (req, res, next) => {
   try {
     const db = await getDb();
     const rows = await db.prepare(`
