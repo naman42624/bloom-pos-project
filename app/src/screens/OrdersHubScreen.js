@@ -6,6 +6,7 @@ import api from '../services/api';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 
 const SECTIONS = [
+  { key: 'OrdersInbox', icon: 'file-tray-full', label: 'Orders Inbox (New)', color: Colors.primary, countKey: 'inboxCount' },
   { key: 'SalesList', icon: 'receipt', label: 'All Sales', color: Colors.primary, countKey: 'salesCount' },
   { key: 'DeliveriesList', icon: 'bicycle', label: 'Deliveries', color: '#FF9800', countKey: 'deliveriesCount' },
   { key: 'PickupOrders', icon: 'bag-handle', label: 'Pickups', color: '#4CAF50', countKey: 'pickupsCount' },

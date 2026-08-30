@@ -23,6 +23,12 @@ try {
 
   // Add is_credit_sale column to sales table
   try { db.prepare("ALTER TABLE sales ADD COLUMN is_credit_sale INTEGER DEFAULT 0").run(); } catch { }
+
+  // Task 1: Add channel and priority constraints to sales table
+  try { db.prepare("ALTER TABLE sales DROP CONSTRAINT IF EXISTS sales_channel_check").run(); } catch { }
+  try { db.prepare("ALTER TABLE sales ADD CONSTRAINT sales_channel_check CHECK(channel IS NULL OR channel IN ('whatsapp','email','website','walk_in','phone'))").run(); } catch { }
+  try { db.prepare("ALTER TABLE sales DROP CONSTRAINT IF EXISTS sales_priority_check").run(); } catch { }
+  try { db.prepare("ALTER TABLE sales ADD CONSTRAINT sales_priority_check CHECK(priority IS NULL OR priority IN ('normal','rush'))").run(); } catch { }
 } catch (e) { console.log('Sales migration note:', e.message); }
 
 
@@ -152,7 +158,7 @@ function mapSaleDraftRow(draft) {
 router.get('/', authenticate, async (req, res, next) => {
   try {
     const db = await getAsyncDb();
-    const { location_id, order_type, payment_status, status, pickup_status, date_from, date_to, filter_date, search, limit: lim, offset: off } = req.query;
+    const { location_id, order_type, payment_status, status, pickup_status, channel, priority, date_from, date_to, filter_date, search, limit: lim, offset: off } = req.query;
 
     let sql = `
       SELECT s.*, l.name as location_name, u.name as created_by_name,
@@ -178,6 +184,8 @@ router.get('/', authenticate, async (req, res, next) => {
     if (pickup_status) { sql += ' AND s.pickup_status = ?'; params.push(pickup_status); }
     if (status) { sql += ' AND s.status = ?'; params.push(status); }
     else { sql += " AND s.status != 'cancelled'"; }
+    if (channel) { sql += ' AND s.channel = ?'; params.push(channel); }
+    if (priority) { sql += ' AND s.priority = ?'; params.push(priority); }
     if (date_from) { sql += ' AND s.created_at >= (?::date)'; params.push(date_from); }
     if (date_to) { sql += " AND s.created_at < (?::date + INTERVAL '1 day')"; params.push(date_to); }
     if (filter_date) {
@@ -261,6 +269,8 @@ router.get('/', authenticate, async (req, res, next) => {
     if (payment_status) { countSql += ' AND s.payment_status = ?'; countParams.push(payment_status); }
     if (status) { countSql += ' AND s.status = ?'; countParams.push(status); }
     else { countSql += " AND s.status != 'cancelled'"; }
+    if (channel) { countSql += ' AND s.channel = ?'; countParams.push(channel); }
+    if (priority) { countSql += ' AND s.priority = ?'; countParams.push(priority); }
     if (date_from) { countSql += ' AND s.created_at >= (?::date)'; countParams.push(date_from); }
     if (date_to) { countSql += " AND s.created_at < (?::date + INTERVAL '1 day')"; countParams.push(date_to); }
     if (filter_date) {
@@ -993,11 +1003,14 @@ router.put('/:id', authenticate, authorize('owner', 'manager', 'employee'), asyn
 
     const oldPayments = await db.prepare('SELECT * FROM payments WHERE sale_id = ?').all(saleId);
     const oldState = { ...oldSale, payments: oldPayments };
+    const oldItems = await db.prepare('SELECT * FROM sale_items WHERE sale_id = ?').all(saleId);
+    oldState.items = oldItems;
 
     // We allow updating limited fields in this MVP
     const {
       customer_name, customer_phone,
-      payment_status, payments, order_notes
+      payment_status, payments, order_notes,
+      items, delivery_address
     } = req.body;
 
     const updates = [];
@@ -1007,6 +1020,7 @@ router.put('/:id', authenticate, authorize('owner', 'manager', 'employee'), asyn
     if (customer_phone !== undefined) { updates.push('customer_phone = ?'); params.push(customer_phone); }
     if (payment_status !== undefined) { updates.push('payment_status = ?'); params.push(payment_status); }
     if (order_notes !== undefined) { updates.push('order_notes = ?'); params.push(order_notes); }
+    if (delivery_address !== undefined) { updates.push('delivery_address = ?'); params.push(delivery_address); }
 
     if (updates.length > 0) {
       params.push(saleId);
@@ -1022,10 +1036,82 @@ router.put('/:id', authenticate, authorize('owner', 'manager', 'employee'), asyn
       }
     }
 
+    // Update items if provided (edit existing rows only; no add/remove in this task)
+    if (items && Array.isArray(items)) {
+      // Validate every item before writing anything — this loop isn't wrapped in a
+      // DB transaction (see the parked transaction-safety note below), so rejecting
+      // up front avoids leaving earlier items in the array updated while a later one
+      // fails, and avoids ever writing a negative/zero quantity or negative price.
+      for (const item of items) {
+        if (!item.id) continue;
+        if (item.quantity !== undefined && item.quantity !== null) {
+          const qty = Number(item.quantity);
+          if (!Number.isFinite(qty) || qty <= 0) {
+            return res.status(400).json({ success: false, message: `Item ${item.id}: quantity must be a positive number` });
+          }
+        }
+        if (item.unit_price !== undefined && item.unit_price !== null) {
+          const price = Number(item.unit_price);
+          if (!Number.isFinite(price) || price < 0) {
+            return res.status(400).json({ success: false, message: `Item ${item.id}: price cannot be negative` });
+          }
+        }
+      }
+
+      const updateItem = db.prepare('UPDATE sale_items SET quantity = COALESCE(?, quantity), unit_price = COALESCE(?, unit_price), product_name = COALESCE(?, product_name) WHERE id = ? AND sale_id = ?');
+      for (const item of items) {
+        if (!item.id) continue;
+        await updateItem.run(item.quantity ?? null, item.unit_price ?? null, item.product_name ?? null, item.id, saleId);
+      }
+      // Recalculate totals after item edits, and their downstream consequences
+      // (tax_total, percentage discount_amount, payment_status, deliveries.cod_amount).
+      // NOTE: recalcSaleTotals() (defined near the top of this file) is written for the
+      // sync db layer (db.prepare().run() without await) and must NOT be called from this
+      // async route. Recompute inline using the async db instance instead — logic adapted
+      // from the equivalent recalculation in POST /:id/payments further down this file.
+      const updatedItems = await db.prepare('SELECT * FROM sale_items WHERE sale_id = ?').all(saleId);
+      // Guard each term with `|| 0`, not just the outer Number(...) call — a single row
+      // with a non-numeric/garbled unit_price or quantity would otherwise turn the whole
+      // reduce() into NaN and silently corrupt this sale's totals for every item, not just
+      // the bad one.
+      const newSubtotal = updatedItems.reduce((s, i) => s + ((Number(i.unit_price) || 0) * (Number(i.quantity) || 0)), 0);
+      const newTaxTotal = updatedItems.reduce((s, i) => s + (Number(i.tax_amount) || 0), 0);
+      const currentSale = await db.prepare('SELECT discount_amount, discount_type, discount_percentage, delivery_charges, order_type, is_credit_sale FROM sales WHERE id = ?').get(saleId);
+
+      let newDiscountAmount = Number(currentSale.discount_amount || 0);
+      if (currentSale.discount_type === 'percentage' && Number(currentSale.discount_percentage) > 0) {
+        newDiscountAmount = newSubtotal * Number(currentSale.discount_percentage) / 100;
+      }
+
+      const newGrandTotal = Math.max(0, newSubtotal - newDiscountAmount) + newTaxTotal + Number(currentSale.delivery_charges || 0);
+
+      // Recalculate payment status by comparing total paid against the new grand total
+      const totalPaidRow = await db.prepare('SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE sale_id = ?').get(saleId);
+      const totalPaid = Number(totalPaidRow.total || 0);
+      const roundedGrandTotal = Math.round(newGrandTotal * 100) / 100;
+      const roundedTotalPaid = Math.round(totalPaid * 100) / 100;
+      let newPaymentStatus = 'pending';
+      if (roundedTotalPaid >= roundedGrandTotal - 0.01) newPaymentStatus = 'paid';
+      else if (roundedTotalPaid > 0) newPaymentStatus = 'partial';
+
+      await db.prepare(
+        'UPDATE sales SET subtotal = ?, tax_total = ?, discount_amount = ?, grand_total = ?, payment_status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'
+      ).run(newSubtotal, newTaxTotal, newDiscountAmount, newGrandTotal, newPaymentStatus, saleId);
+
+      // Keep the delivery's COD amount in sync with the new outstanding balance
+      if (currentSale.order_type === 'delivery' || currentSale.order_type === 'pre_order') {
+        const newCodAmount = currentSale.is_credit_sale ? 0 : Math.max(0, newGrandTotal - totalPaid);
+        const codStatus = newCodAmount > 0.01 ? 'pending' : 'collected';
+        await db.prepare('UPDATE deliveries SET cod_amount = ?, cod_status = ? WHERE sale_id = ?').run(newCodAmount, codStatus, saleId);
+      }
+    }
+
     // Fetch new sale state for the audit log
     const newSale = await db.prepare('SELECT * FROM sales WHERE id = ?').get(saleId);
     const newPayments = await db.prepare('SELECT * FROM payments WHERE sale_id = ?').all(saleId);
     const newState = { ...newSale, payments: newPayments };
+    const newItems = await db.prepare('SELECT * FROM sale_items WHERE sale_id = ?').all(saleId);
+    newState.items = newItems;
 
     // Record audit log
     await db.prepare(`
@@ -1187,6 +1273,14 @@ router.get('/:id', authenticate, async (req, res, next) => {
     sale.refund = refund;
     sale.delivery = delivery;
 
+    sale.attachments = await db.prepare(`
+      SELECT sa.*, u.name as uploaded_by_name
+      FROM sale_attachments sa
+      LEFT JOIN users u ON sa.uploaded_by = u.id
+      WHERE sa.sale_id = ?
+      ORDER BY sa.created_at ASC
+    `).all(req.params.id);
+
     res.json({ success: true, data: sale });
   } catch (err) { next(err); }
 });
@@ -1200,6 +1294,8 @@ router.post(
   [
     body('location_id').isInt().withMessage('Location is required'),
     body('order_type').isIn(['walk_in', 'pickup', 'delivery', 'pre_order']),
+    body('channel').optional({ nullable: true }).isIn(['whatsapp', 'email', 'website', 'walk_in', 'phone']),
+    body('priority').optional({ nullable: true }).isIn(['normal', 'rush']),
     body('items').isArray({ min: 1 }).withMessage('At least one item is required'),
     body('items.*.product_id').optional({ nullable: true }).isInt(),
     body('items.*.material_id').optional({ nullable: true }).isInt(),
@@ -1244,7 +1340,7 @@ router.post(
 
       const db = getDb();
       const {
-        location_id, order_type, items, payments,
+        location_id, order_type, channel, priority, items, payments,
         customer_id: customer_id_from_body, customer_name, customer_phone,
         sender_customer_id: sender_customer_id_from_body,
         receiver_customer_id: receiver_customer_id_from_body,
@@ -1508,19 +1604,19 @@ router.post(
           INSERT INTO sales (sale_number, location_id, customer_id, customer_name, customer_phone,
             subtotal, tax_total, discount_amount, discount_type, discount_percentage, discount_approved_by,
             delivery_charges, delivery_address, scheduled_date, scheduled_time,
-            grand_total, payment_status, order_type, status, stock_deducted,
+            grand_total, payment_status, order_type, channel, priority, status, stock_deducted,
             special_instructions, customer_notes,
             sender_customer_id, receiver_customer_id, sender_same_as_receiver,
             sender_name, sender_phone, receiver_name, receiver_phone, sender_message,
             created_by, created_at, is_credit_sale)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           saleNumber, location_id, customer_id || null, saleCustomerName || null, saleCustomerPhone || null,
           subtotal, taxTotal, discountAmount, discount_type || null, discountPercentage, discountApprovedBy,
           delivery_charges || 0, delivery_address || null,
           scheduled_date || (order_type === 'walk_in' ? localToday() : null),
           scheduled_time || (order_type === 'walk_in' ? nowTimeStr() : null),
-          grandTotal, paymentStatus, order_type, initialStatus, stockDeducted,
+          grandTotal, paymentStatus, order_type, channel || null, priority || 'normal', initialStatus, stockDeducted,
           notes || special_instructions || '', customer_notes || '',
           senderCustomerId || null, receiverCustomerId || null, senderReceiverSame ? 1 : 0,
           senderNameForSale || '', senderPhoneForSale || '', receiverNameForSale || '', receiverPhoneForSale || '', sender_message || '', req.user.id,
@@ -1767,8 +1863,11 @@ router.post(
         });
       }
 
-      // Attach items & payments for response
-      sale.items = db.prepare('SELECT * FROM sale_items WHERE sale_id = ?').all(sale.id);
+      // Attach items & payments for response. ORDER BY id ASC matches insertion
+      // order (processedItems is a 1:1, unreordered map of the request's items
+      // array), so the client can pair request-array index i with sale.items[i].id
+      // to attach per-item photos/voice notes right after creation.
+      sale.items = db.prepare('SELECT * FROM sale_items WHERE sale_id = ? ORDER BY id ASC').all(sale.id);
       sale.payments = db.prepare('SELECT * FROM payments WHERE sale_id = ?').all(sale.id);
 
       // Normalize date/time fields for consistent API output (uses shared normalizeDateFields from utils)

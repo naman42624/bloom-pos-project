@@ -77,6 +77,8 @@ import CustomerOrdersScreen from '../screens/CustomerOrdersScreen';
 // More hub
 import MoreScreen from '../screens/MoreScreen';
 import OrdersHubScreen from '../screens/OrdersHubScreen';
+import OrdersInboxScreen from '../screens/OrdersInboxScreen';
+import LogOrderScreen from '../screens/LogOrderScreen';
 
 // Recurring Orders
 import RecurringOrdersScreen from '../screens/RecurringOrdersScreen';
@@ -344,6 +346,8 @@ function OrdersStack() {
   return (
     <Stack.Navigator screenOptions={stackScreenOptions}>
       <Stack.Screen name="OrdersHub" component={OrdersHubScreen} options={{ title: 'Orders' }} />
+      <Stack.Screen name="OrdersInbox" component={OrdersInboxScreen} options={{ title: 'Orders Inbox' }} />
+      <Stack.Screen name="LogOrder" component={LogOrderScreen} options={{ title: 'Log Order' }} />
       <Stack.Screen name="SalesList" component={SalesScreen} options={{ title: 'Sales' }} />
       <Stack.Screen name="DeliveriesList" component={DeliveriesScreen} options={{ title: 'Deliveries' }} />
       <Stack.Screen name="DeliveryDetail" component={DeliveryDetailScreen} options={{ title: 'Delivery' }} />
@@ -357,6 +361,23 @@ function OrdersStack() {
       <Stack.Screen name="ProductionQueue" component={ProductionQueueScreen} options={{ title: 'Production Queue' }} />
       <Stack.Screen name="CompletedTasks" component={CompletedTasksScreen} options={{ title: 'Completed Tasks' }} />
       <Stack.Screen name="ProduceProduct" component={ProduceScreen} options={{ title: 'Produce Products' }} />
+      <Stack.Screen name="LiveDeliveryMap" component={LiveDeliveryMapScreen} options={{ title: 'Live Tracking' }} />
+    </Stack.Navigator>
+  );
+}
+
+// ─── Employee Orders Stack (Employee — Inbox, Log Order, and Sale Detail
+// with its payment/delivery/live-tracking siblings so those buttons work;
+// the full owner/manager OrdersStack also has Settlements/CashRegister/
+// Expenses/ProductionQueue, which stay owner/manager-only per spec §5) ──
+function EmployeeOrdersStack() {
+  return (
+    <Stack.Navigator screenOptions={stackScreenOptions}>
+      <Stack.Screen name="OrdersInbox" component={OrdersInboxScreen} options={{ title: 'Orders Inbox' }} />
+      <Stack.Screen name="LogOrder" component={LogOrderScreen} options={{ title: 'Log Order' }} />
+      <Stack.Screen name="SaleDetail" component={SaleDetailScreen} options={{ title: 'Sale Details' }} />
+      <Stack.Screen name="AddPayment" component={AddPaymentScreen} options={{ title: 'Record Payment' }} />
+      <Stack.Screen name="DeliveryDetail" component={DeliveryDetailScreen} options={{ title: 'Delivery' }} />
       <Stack.Screen name="LiveDeliveryMap" component={LiveDeliveryMapScreen} options={{ title: 'Live Tracking' }} />
     </Stack.Navigator>
   );
@@ -491,6 +512,7 @@ const TAB_ICONS = {
   Dashboard: { active: 'grid', inactive: 'grid-outline' },
   POS: { active: 'cart', inactive: 'cart-outline' },
   Orders: { active: 'clipboard', inactive: 'clipboard-outline' },
+  EmployeeOrders: { active: 'file-tray-full', inactive: 'file-tray-full-outline' },
   Inventory: { active: 'leaf', inactive: 'leaf-outline' },
   Deliveries: { active: 'bicycle', inactive: 'bicycle-outline' },
   MyOrders: { active: 'receipt', inactive: 'receipt-outline' },
@@ -580,6 +602,20 @@ export default function MainNavigator() {
           listeners={({ navigation }) => ({
             tabPress: () => {
               navigation.navigate('Orders', { screen: 'OrdersHub' });
+            },
+          })}
+        />
+      )}
+
+      {/* Orders tab — Employee (Orders Inbox + Log Order only, spec §5) */}
+      {role === 'employee' && (
+        <Tab.Screen
+          name="EmployeeOrders"
+          component={EmployeeOrdersStack}
+          options={{ tabBarLabel: 'Orders' }}
+          listeners={({ navigation }) => ({
+            tabPress: () => {
+              navigation.navigate('EmployeeOrders', { screen: 'OrdersInbox' });
             },
           })}
         />

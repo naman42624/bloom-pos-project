@@ -7,12 +7,15 @@ import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
+import * as ImagePicker from 'expo-image-picker';
+import { useAudioPlayer, useAudioPlayerStatus } from 'expo-audio';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
-import { formatDateTime, formatCardDateTime } from '../utils/datetime';
+import { formatDateTime, formatCardDateTime, isToday } from '../utils/datetime';
 import { Image } from 'react-native';
 import ImageModal from '../components/ImageModal';
+import VoiceNoteRecorder from '../components/VoiceNoteRecorder';
 
 const STATUS_COLORS = {
   completed: Colors.success,
@@ -22,6 +25,10 @@ const STATUS_COLORS = {
   preparing: Colors.info,
   ready: Colors.success,
 };
+
+// Duplicated locally (rather than imported from OrdersInboxScreen) to avoid
+// coupling this detail screen's import graph to an inbox screen.
+const CHANNEL_ICONS = { whatsapp: 'logo-whatsapp', email: 'mail', website: 'globe', walk_in: 'walk', phone: 'call' };
 
 const PAYMENT_STATUS_COLORS = {
   paid: Colors.success,
@@ -44,6 +51,104 @@ const PAYMENT_METHODS = [
   { key: 'upi', label: 'UPI', icon: 'phone-portrait' },
 ];
 
+// Top-level sale fields the history diff summary knows how to describe in
+// plain language. Anything else that changes is silently ignored rather
+// than dumped as raw JSON.
+const AUDIT_FIELD_LABELS = {
+  delivery_address: 'Delivery address',
+  payment_status: 'Payment status',
+};
+
+// previous_state/new_state come back from the API as already-parsed JSON
+// objects (Postgres JSONB column), but this defends against a raw string
+// making it through in case that ever changes.
+function parseMaybeJson(value) {
+  if (value == null) return value;
+  if (typeof value === 'string') {
+    try { return JSON.parse(value); } catch { return value; }
+  }
+  return value;
+}
+
+// Turns an audit log's previous_state/new_state pair into a list of plain-
+// language change descriptions ("Quantity changed from 2 to 3") instead of
+// a raw JSON diff — a non-technical owner needs to read this at a glance.
+function summarizeAuditChanges(log) {
+  const prev = parseMaybeJson(log?.previous_state) || {};
+  const next = parseMaybeJson(log?.new_state) || {};
+  const changes = [];
+
+  Object.keys(AUDIT_FIELD_LABELS).forEach((field) => {
+    const oldVal = prev?.[field] ?? '';
+    const newVal = next?.[field] ?? '';
+    if (String(oldVal) !== String(newVal)) {
+      changes.push(`${AUDIT_FIELD_LABELS[field]} changed from "${oldVal || '(none)'}" to "${newVal || '(none)'}"`);
+    }
+  });
+
+  const prevItems = Array.isArray(prev?.items) ? prev.items : [];
+  const nextItems = Array.isArray(next?.items) ? next.items : [];
+  const prevById = new Map(prevItems.map((it) => [it.id, it]));
+  nextItems.forEach((item) => {
+    const old = prevById.get(item.id);
+    if (!old) return;
+    const itemLabel = item.product_name || old.product_name || 'Item';
+
+    const oldQty = Number(old.quantity);
+    const newQty = Number(item.quantity);
+    if (Number.isFinite(oldQty) && Number.isFinite(newQty) && oldQty !== newQty) {
+      changes.push(`${itemLabel}: quantity changed from ${oldQty} to ${newQty}`);
+    }
+
+    const oldPrice = Number(old.unit_price);
+    const newPrice = Number(item.unit_price);
+    if (Number.isFinite(oldPrice) && Number.isFinite(newPrice) && oldPrice !== newPrice) {
+      changes.push(`${itemLabel}: price changed from ₹${oldPrice.toFixed(2)} to ₹${newPrice.toFixed(2)}`);
+    }
+  });
+
+  return changes;
+}
+
+// One row per voice-note attachment — each owns its own expo-audio player
+// instance (hooks must be called unconditionally per component instance,
+// so a list of N voice notes needs N sibling components, not N hook calls
+// inside a single .map()).
+function AttachmentVoiceRow({ attachment }) {
+  const player = useAudioPlayer(api.getMediaUrl(attachment.file_url));
+  const status = useAudioPlayerStatus(player);
+  const isPlaying = status.playing;
+
+  const togglePlay = () => {
+    if (isPlaying) {
+      player.pause();
+      return;
+    }
+    if (status.didJustFinish || (status.duration > 0 && status.currentTime >= status.duration)) {
+      player.seekTo(0);
+    }
+    player.play();
+  };
+
+  return (
+    <View style={styles.attachmentRow}>
+      <TouchableOpacity style={styles.voicePlayBtn} onPress={togglePlay}>
+        <Ionicons name={isPlaying ? 'pause' : 'play'} size={16} color={Colors.white} />
+      </TouchableOpacity>
+      <View style={{ flex: 1 }}>
+        <Text style={styles.attachmentLabel}>
+          Voice note{attachment.duration_seconds ? ` (${attachment.duration_seconds}s)` : ''}
+        </Text>
+        {attachment.uploaded_by_name ? (
+          <Text style={styles.attachmentMeta}>
+            {attachment.uploaded_by_name} • {formatDateTime(attachment.created_at)}
+          </Text>
+        ) : null}
+      </View>
+    </View>
+  );
+}
+
 export default function SaleDetailScreen({ route, navigation }) {
   const { saleId } = route.params;
   const { user, settings } = useAuth();
@@ -51,6 +156,12 @@ export default function SaleDetailScreen({ route, navigation }) {
   const [loading, setLoading] = useState(true);
   const [expandedItems, setExpandedItems] = useState({});
   const [viewedImage, setViewedImage] = useState(null);
+
+  // Attachments (photos & voice notes) — seeded from the sale detail
+  // response, then refreshed independently after each upload so newly
+  // added items append to the list without losing earlier ones.
+  const [attachments, setAttachments] = useState([]);
+  const [uploadingAttachment, setUploadingAttachment] = useState(false);
 
   const fromCheckout = route.params?.fromCheckout;
 
@@ -75,6 +186,7 @@ export default function SaleDetailScreen({ route, navigation }) {
 
   const canManage = user?.role === 'owner' || user?.role === 'manager';
   const canEdit = canManage || (sale?.created_by === user?.id);
+  const isCustomer = user?.role === 'customer';
 
   // Convert order type state
   const [convertModalVisible, setConvertModalVisible] = useState(false);
@@ -111,6 +223,7 @@ export default function SaleDetailScreen({ route, navigation }) {
 
   // Edit Sale & Audit Logs
   const [auditLogs, setAuditLogs] = useState([]);
+  const [historyExpanded, setHistoryExpanded] = useState(false);
   const [editModalVisible, setEditModalVisible] = useState(false);
   const [editError, setEditError] = useState(null);
   const [editCustomerName, setEditCustomerName] = useState('');
@@ -118,6 +231,26 @@ export default function SaleDetailScreen({ route, navigation }) {
   const [editPaymentStatus, setEditPaymentStatus] = useState('');
   const [editPaymentMethod, setEditPaymentMethod] = useState('cash');
   const [savingEdit, setSavingEdit] = useState(false);
+
+  // Item price/quantity edit
+  const [itemEditModalVisible, setItemEditModalVisible] = useState(false);
+  const [editingItem, setEditingItem] = useState(null);
+  const [editItemQuantity, setEditItemQuantity] = useState('');
+  const [editItemPrice, setEditItemPrice] = useState('');
+  const [itemEditError, setItemEditError] = useState(null);
+  const [savingItemEdit, setSavingItemEdit] = useState(false);
+
+  // Plain-language reason item editing is blocked right now, or null if it's
+  // allowed — mirrors PUT /api/sales/:id's own same-day + creator-only rules
+  // (the register-closed check isn't verified client-side; that error surfaces
+  // from the server on save instead, see handleSaveItemEdit).
+  const itemEditBlockReason = !sale
+    ? null
+    : !isToday(sale.created_at)
+      ? 'Items can only be edited on the day the order was placed.'
+      : (user?.role === 'employee' && sale.created_by !== user?.id)
+        ? 'You can only edit orders you created.'
+        : null;
 
   useFocusEffect(
     useCallback(() => {
@@ -129,11 +262,50 @@ export default function SaleDetailScreen({ route, navigation }) {
     try {
       const res = await api.getSale(saleId);
       setSale(res.data);
+      setAttachments(res.data?.attachments || []);
       if (canManage) {
         const auditRes = await api.getSaleAuditLogs(saleId);
         setAuditLogs(auditRes.data || []);
       }
     } catch { } finally { setLoading(false); }
+  };
+
+  const refreshAttachments = async () => {
+    try {
+      const res = await api.getSaleAttachments(saleId);
+      setAttachments(res.data || []);
+    } catch { }
+  };
+
+  const handlePickAttachmentPhoto = async () => {
+    try {
+      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission Required', 'Please allow access to your photo library.');
+        return;
+      }
+      const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.6 });
+      if (result.canceled || !result.assets?.[0]) return;
+      setUploadingAttachment(true);
+      await api.uploadSaleAttachment(saleId, result.assets[0].uri, 'photo');
+      await refreshAttachments();
+    } catch (err) {
+      Alert.alert('Error', err.message || 'Failed to upload photo');
+    } finally {
+      setUploadingAttachment(false);
+    }
+  };
+
+  const handleVoiceNoteRecorded = async (uri, durationSeconds) => {
+    try {
+      setUploadingAttachment(true);
+      await api.uploadSaleAttachment(saleId, uri, 'voice_note', durationSeconds);
+      await refreshAttachments();
+    } catch (err) {
+      Alert.alert('Error', err.message || 'Failed to upload voice note');
+    } finally {
+      setUploadingAttachment(false);
+    }
   };
 
   const openEditModal = () => {
@@ -173,6 +345,49 @@ export default function SaleDetailScreen({ route, navigation }) {
       setEditError(err.message || 'Failed to update sale');
     } finally {
       setSavingEdit(false);
+    }
+  };
+
+  const openItemEditModal = (item) => {
+    if (itemEditBlockReason) {
+      // Not editable right now — explain why in plain language rather than
+      // opening an editor that will just fail on save.
+      if (Platform.OS === 'web') window.alert(itemEditBlockReason);
+      else Alert.alert('Cannot Edit Item', itemEditBlockReason);
+      return;
+    }
+    setEditingItem(item);
+    setEditItemQuantity(String(item.quantity ?? ''));
+    setEditItemPrice(String(item.unit_price ?? ''));
+    setItemEditError(null);
+    setItemEditModalVisible(true);
+  };
+
+  const handleSaveItemEdit = async () => {
+    if (!editingItem) return;
+    const qty = parseFloat(editItemQuantity);
+    const price = parseFloat(editItemPrice);
+    if (!Number.isFinite(qty) || qty <= 0) {
+      setItemEditError('Enter a quantity greater than 0.');
+      return;
+    }
+    if (!Number.isFinite(price) || price < 0) {
+      setItemEditError('Enter a valid price.');
+      return;
+    }
+    setSavingItemEdit(true);
+    setItemEditError(null);
+    try {
+      await api.updateSale(saleId, { items: [{ id: editingItem.id, quantity: qty, unit_price: price }] });
+      setItemEditModalVisible(false);
+      setEditingItem(null);
+      await fetchSale(); // refreshes items + grand_total + history from the server
+    } catch (err) {
+      // Server-side-only checks (e.g. register closed for the day) surface here
+      // in plain language, same as the rest of this screen's error handling.
+      setItemEditError(err.message || 'Failed to update item. Please try again.');
+    } finally {
+      setSavingItemEdit(false);
     }
   };
 
@@ -561,10 +776,23 @@ export default function SaleDetailScreen({ route, navigation }) {
             <Text style={styles.saleNumber}>{sale.sale_number}</Text>
             <Text style={styles.saleDate}>{formatDateTime(sale.created_at)}</Text>
           </View>
-          <View style={[styles.statusBadge, { backgroundColor: (STATUS_COLORS[sale.status] || Colors.textLight) + '20' }]}>
-            <Text style={[styles.statusText, { color: STATUS_COLORS[sale.status] || Colors.textLight }]}>
-              {sale.status?.toUpperCase()}
-            </Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+            {sale.channel ? (
+              <View style={styles.channelBadge}>
+                <Ionicons name={CHANNEL_ICONS[sale.channel] || 'ellipse'} size={12} color={Colors.textSecondary} />
+                <Text style={styles.channelBadgeText}>{sale.channel.replace('_', ' ').toUpperCase()}</Text>
+              </View>
+            ) : null}
+            {sale.priority === 'rush' ? (
+              <View style={styles.rushBadge}>
+                <Text style={styles.rushBadgeText}>🔥 Rush</Text>
+              </View>
+            ) : null}
+            <View style={[styles.statusBadge, { backgroundColor: (STATUS_COLORS[sale.status] || Colors.textLight) + '20' }]}>
+              <Text style={[styles.statusText, { color: STATUS_COLORS[sale.status] || Colors.textLight }]}>
+                {sale.status?.toUpperCase()}
+              </Text>
+            </View>
           </View>
         </View>
 
@@ -869,6 +1097,11 @@ export default function SaleDetailScreen({ route, navigation }) {
               <View style={{ alignItems: 'flex-end' }}>
                 <Text style={styles.itemTotal}>₹{Number(itemTotal || 0).toFixed(2)}</Text>
                 {item.tax_amount > 0 && <Text style={styles.itemTax}>incl. ₹{Number(item.tax_amount).toFixed(2)} tax</Text>}
+                {canEdit && sale.status !== 'cancelled' && (
+                  <TouchableOpacity style={styles.itemEditBtn} onPress={() => openItemEditModal(item)}>
+                    <Ionicons name="pencil" size={13} color={Colors.primary} />
+                  </TouchableOpacity>
+                )}
               </View>
             </View>
           );
@@ -997,6 +1230,44 @@ export default function SaleDetailScreen({ route, navigation }) {
         </View>
       )}
 
+      {/* Attachments (photos & voice notes) — fulfillment instructions, not
+          sensitive pricing data, so viewing stays open to whoever can already
+          view this screen (including customers). Adding attachments is
+          owner/manager/employee-only server-side (POST /attachments), so the
+          add controls are hidden for the customer role to avoid a dead 403. */}
+      <View style={styles.section}>
+        <Text style={styles.sectionTitle}>Attachments ({attachments.length})</Text>
+
+        {attachments.filter(a => a.type === 'photo').length > 0 && (
+          <View style={styles.attachmentPhotoRow}>
+            {attachments.filter(a => a.type === 'photo').map((att) => (
+              <TouchableOpacity key={att.id} onPress={() => setViewedImage(api.getMediaUrl(att.file_url))}>
+                <Image source={{ uri: api.getMediaUrl(att.file_url) }} style={styles.attachmentThumb} />
+              </TouchableOpacity>
+            ))}
+          </View>
+        )}
+
+        {attachments.filter(a => a.type === 'voice_note').map((att) => (
+          <AttachmentVoiceRow key={att.id} attachment={att} />
+        ))}
+
+        {attachments.length === 0 && (
+          <Text style={styles.infoSubtext}>No attachments yet.</Text>
+        )}
+
+        {!isCustomer && (
+          <View style={{ marginTop: Spacing.sm, gap: Spacing.sm }}>
+            <TouchableOpacity style={styles.addPhotoBtn} onPress={handlePickAttachmentPhoto} disabled={uploadingAttachment}>
+              <Ionicons name="image-outline" size={16} color={Colors.primary} />
+              <Text style={styles.addPhotoBtnText}>Add Photo</Text>
+            </TouchableOpacity>
+            <VoiceNoteRecorder onRecorded={handleVoiceNoteRecorded} />
+            {uploadingAttachment && <ActivityIndicator color={Colors.primary} size="small" />}
+          </View>
+        )}
+      </View>
+
       {/* Receipt button */}
       <TouchableOpacity style={[styles.actionBtn, { backgroundColor: Colors.primary, alignSelf: 'stretch', marginHorizontal: 0, marginTop: Spacing.md }]} onPress={generateReceipt}>
         <Ionicons name="receipt" size={18} color={Colors.white} />
@@ -1075,20 +1346,46 @@ export default function SaleDetailScreen({ route, navigation }) {
         </TouchableOpacity>
       )}
 
-      {/* Audit Logs / Revision History */}
-      {auditLogs && auditLogs.length > 0 && (
+      {/* History — owner/manager only, matches the backend's own restriction
+          on GET /:id/audit-logs. Collapsed by default; audit log data was
+          already fetched alongside the sale (see fetchSale) so expanding is
+          instant. */}
+      {canManage && (
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Revision History</Text>
-          {auditLogs.map((log, idx) => (
-            <View key={idx} style={{ paddingVertical: 8, borderBottomWidth: idx < auditLogs.length - 1 ? 1 : 0, borderBottomColor: Colors.border }}>
-              <Text style={{ fontSize: FontSize.sm, color: Colors.text }}>
-                <Text style={{ fontWeight: '600' }}>{log.user_name || 'System'}</Text> edited sale ({log.action})
-              </Text>
-              <Text style={{ fontSize: FontSize.xs, color: Colors.textLight, marginTop: 4 }}>
-                {formatDateTime(log.created_at)}
-              </Text>
-            </View>
-          ))}
+          <TouchableOpacity
+            style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}
+            onPress={() => setHistoryExpanded(prev => !prev)}
+          >
+            <Text style={styles.sectionTitle}>History{auditLogs.length > 0 ? ` (${auditLogs.length})` : ''}</Text>
+            <Ionicons name={historyExpanded ? 'chevron-up' : 'chevron-down'} size={18} color={Colors.textLight} />
+          </TouchableOpacity>
+
+          {historyExpanded && (
+            auditLogs.length === 0 ? (
+              <Text style={[styles.infoSubtext, { marginTop: 6 }]}>No edits have been made to this order yet.</Text>
+            ) : (
+              auditLogs.map((log, idx) => {
+                const changes = summarizeAuditChanges(log);
+                const actionLabel = log.action === 'update' ? 'updated this order' : `made a change (${log.action}) to this order`;
+                return (
+                  <View key={log.id || idx} style={{ paddingVertical: 8, marginTop: idx === 0 ? 8 : 0, borderTopWidth: 1, borderTopColor: Colors.border }}>
+                    <Text style={{ fontSize: FontSize.sm, color: Colors.text }}>
+                      <Text style={{ fontWeight: '600' }}>{log.user_name || 'System'}</Text> {actionLabel} on {formatDateTime(log.created_at)}
+                    </Text>
+                    {changes.length > 0 ? (
+                      <View style={{ marginTop: 4, gap: 2 }}>
+                        {changes.map((c, cIdx) => (
+                          <Text key={cIdx} style={{ fontSize: FontSize.xs, color: Colors.textSecondary }}>• {c}</Text>
+                        ))}
+                      </View>
+                    ) : (
+                      <Text style={{ fontSize: FontSize.xs, color: Colors.textLight, marginTop: 4 }}>No item, address, or payment status changes in this edit.</Text>
+                    )}
+                  </View>
+                );
+              })
+            )
+          )}
         </View>
       )}
 
@@ -1437,6 +1734,67 @@ export default function SaleDetailScreen({ route, navigation }) {
         </KeyboardAvoidingView>
       </Modal>
 
+      {/* Item Edit Modal */}
+      <Modal visible={itemEditModalVisible} transparent animationType="slide">
+        <KeyboardAvoidingView style={styles.modalOverlay} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Edit Item</Text>
+              <TouchableOpacity onPress={() => setItemEditModalVisible(false)}>
+                <Ionicons name="close" size={24} color={Colors.text} />
+              </TouchableOpacity>
+            </View>
+
+            {editingItem ? (
+              <Text style={styles.modalSubtitle}>{editingItem.product_name || editingItem.display_name || 'Item'}</Text>
+            ) : null}
+
+            {itemEditError ? (
+              <View style={{ backgroundColor: Colors.error + '20', padding: 12, borderRadius: 8, marginBottom: 16 }}>
+                <Text style={{ color: Colors.error, fontSize: FontSize.sm }}>{itemEditError}</Text>
+              </View>
+            ) : null}
+
+            <Text style={styles.fieldLabel}>Quantity</Text>
+            <TextInput
+              style={styles.modalInput}
+              value={editItemQuantity}
+              onChangeText={setEditItemQuantity}
+              keyboardType="numeric"
+              placeholder="Quantity"
+              placeholderTextColor={Colors.textLight}
+            />
+
+            <Text style={styles.fieldLabel}>Unit Price (₹)</Text>
+            <TextInput
+              style={styles.modalInput}
+              value={editItemPrice}
+              onChangeText={setEditItemPrice}
+              keyboardType="numeric"
+              placeholder="Unit price"
+              placeholderTextColor={Colors.textLight}
+            />
+
+            <TouchableOpacity
+              style={[styles.confirmBtn, savingItemEdit && { opacity: 0.6 }]}
+              onPress={handleSaveItemEdit}
+              disabled={savingItemEdit}
+            >
+              {savingItemEdit ? (
+                <ActivityIndicator color="#fff" size="small" />
+              ) : (
+                <>
+                  <Ionicons name="save" size={20} color="#fff" />
+                  <Text style={styles.confirmBtnText}>Save Item</Text>
+                </>
+              )}
+            </TouchableOpacity>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      <ImageModal visible={!!viewedImage} imageUrl={viewedImage} onClose={() => setViewedImage(null)} />
+
     </ScrollView>
   );
 }
@@ -1466,6 +1824,15 @@ const styles = StyleSheet.create({
   payBadge: { paddingHorizontal: Spacing.sm, paddingVertical: 2, borderRadius: BorderRadius.full },
   payBadgeText: { fontSize: FontSize.xs, fontWeight: '700' },
 
+  channelBadge: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    paddingHorizontal: Spacing.sm, paddingVertical: 2, borderRadius: BorderRadius.full,
+    backgroundColor: Colors.background, borderWidth: 1, borderColor: Colors.border,
+  },
+  channelBadgeText: { fontSize: FontSize.xs, fontWeight: '600', color: Colors.textSecondary },
+  rushBadge: { paddingHorizontal: Spacing.sm, paddingVertical: 2, borderRadius: BorderRadius.full, backgroundColor: Colors.errorLight },
+  rushBadgeText: { fontSize: FontSize.xs, fontWeight: '700', color: Colors.error },
+
   section: {
     backgroundColor: Colors.surface, borderRadius: BorderRadius.md,
     borderWidth: 1, borderColor: Colors.border, padding: Spacing.md, marginTop: Spacing.md,
@@ -1482,6 +1849,7 @@ const styles = StyleSheet.create({
   itemMeta: { fontSize: FontSize.sm, color: Colors.textLight, marginTop: 2 },
   itemTotal: { fontSize: FontSize.md, fontWeight: '700', color: Colors.text },
   itemTax: { fontSize: FontSize.xs, color: Colors.textLight },
+  itemEditBtn: { marginTop: 6, padding: 5, borderRadius: BorderRadius.sm, backgroundColor: Colors.primary + '12' },
   stockBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 4 },
   stockBadgeText: { fontSize: FontSize.xs, fontWeight: '600', color: Colors.success },
   fulfillBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 4, backgroundColor: Colors.primary + '15', paddingHorizontal: 8, paddingVertical: 4, borderRadius: BorderRadius.sm, alignSelf: 'flex-start' },
@@ -1524,6 +1892,27 @@ const styles = StyleSheet.create({
   payMethod: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.text },
   payRef: { fontSize: FontSize.xs, color: Colors.textLight },
   payAmount: { fontSize: FontSize.sm, fontWeight: '700', color: Colors.text },
+
+  // Attachments
+  attachmentPhotoRow: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm, marginBottom: Spacing.sm },
+  attachmentThumb: { width: 64, height: 64, borderRadius: BorderRadius.sm },
+  attachmentRow: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
+    paddingVertical: Spacing.sm, paddingHorizontal: Spacing.sm, borderRadius: BorderRadius.sm,
+    marginBottom: Spacing.xs, backgroundColor: Colors.background,
+  },
+  voicePlayBtn: {
+    width: 32, height: 32, borderRadius: 16, backgroundColor: Colors.primary,
+    justifyContent: 'center', alignItems: 'center',
+  },
+  attachmentLabel: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.text },
+  attachmentMeta: { fontSize: FontSize.xs, color: Colors.textLight, marginTop: 2 },
+  addPhotoBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    borderWidth: 1, borderColor: Colors.primary + '40', backgroundColor: Colors.primary + '10',
+    paddingVertical: Spacing.sm, borderRadius: BorderRadius.md,
+  },
+  addPhotoBtnText: { fontSize: FontSize.sm, fontWeight: '700', color: Colors.primary },
 
   actions: {
     flexDirection: 'row', gap: Spacing.sm, marginTop: Spacing.md,

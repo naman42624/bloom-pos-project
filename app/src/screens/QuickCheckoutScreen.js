@@ -1048,6 +1048,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
       const saleData = {
         location_id: selectedLocation,
         order_type: orderType,
+        channel: 'walk_in',
         customer_id: needsDelivery ? (customerId || null) : customerId,
         customer_name: needsDelivery ? (effectiveCustomerName || null) : (customerName.trim() || null),
         customer_phone: needsDelivery ? (effectiveCustomerPhone || null) : (customerPhone.trim() || null),

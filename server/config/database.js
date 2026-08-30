@@ -268,6 +268,19 @@ function ensureCoreTables() {
   `);
 
   runPsql(`
+    CREATE TABLE IF NOT EXISTS sale_attachments (
+      id SERIAL PRIMARY KEY,
+      sale_id INTEGER NOT NULL REFERENCES sales(id) ON DELETE CASCADE,
+      type TEXT NOT NULL CHECK (type IN ('photo', 'voice_note')),
+      file_url TEXT NOT NULL,
+      duration_seconds INTEGER,
+      uploaded_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  runPsql('CREATE INDEX IF NOT EXISTS idx_sale_attachments_sale ON sale_attachments(sale_id)');
+
+  runPsql(`
     CREATE TABLE IF NOT EXISTS delivery_settlements (
       id SERIAL PRIMARY KEY,
       delivery_partner_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
@@ -840,6 +853,12 @@ function ensureCompatibilityColumns() {
   ensureColumn('sales', 'receiver_name', "VARCHAR(255) DEFAULT ''");
   ensureColumn('sales', 'receiver_phone', "VARCHAR(20) DEFAULT ''");
   ensureColumn('sales', 'sender_same_as_receiver', 'INTEGER DEFAULT 0');
+  ensureColumn('sales', 'channel', "TEXT");
+  ensureColumn('sales', 'priority', "TEXT DEFAULT 'normal'");
+  // Optional per-item attachment scoping: NULL = order-level (existing behavior
+  // unchanged), set = this photo/voice note belongs to one specific line item.
+  ensureColumn('sale_attachments', 'sale_item_id', 'INTEGER REFERENCES sale_items(id) ON DELETE CASCADE');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_sale_attachments_item ON sale_attachments(sale_item_id)');
   runPsql('CREATE INDEX IF NOT EXISTS idx_sales_sender_customer ON sales(sender_customer_id)');
   runPsql('CREATE INDEX IF NOT EXISTS idx_sales_receiver_customer ON sales(receiver_customer_id)');
   ensureColumn('sale_drafts', 'location_id', 'INTEGER REFERENCES locations(id) ON DELETE SET NULL');
