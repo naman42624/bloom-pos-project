@@ -76,11 +76,27 @@ router.post('/:saleId(\\d+)/attachments', authenticate, authorize('owner', 'mana
       durationSeconds = parsed;
     }
 
+    // Optional: scope this attachment to one line item instead of the whole order.
+    // Must belong to this sale — otherwise a client could attach a photo/voice note
+    // to an item on someone else's order.
+    let saleItemId = null;
+    if (req.body.sale_item_id !== undefined && req.body.sale_item_id !== null && req.body.sale_item_id !== '') {
+      const parsed = parseInt(req.body.sale_item_id, 10);
+      if (!Number.isFinite(parsed)) {
+        return res.status(400).json({ success: false, message: 'sale_item_id must be a number' });
+      }
+      const item = await db.prepare('SELECT id FROM sale_items WHERE id = ? AND sale_id = ?').get(parsed, req.params.saleId);
+      if (!item) {
+        return res.status(400).json({ success: false, message: 'sale_item_id does not belong to this sale' });
+      }
+      saleItemId = parsed;
+    }
+
     const fileUrl = `/uploads/sale-attachments/${req.file.filename}`;
 
     const result = await db.prepare(
-      'INSERT INTO sale_attachments (sale_id, type, file_url, duration_seconds, uploaded_by, created_at) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP) RETURNING *'
-    ).get(req.params.saleId, type, fileUrl, durationSeconds, req.user.id);
+      'INSERT INTO sale_attachments (sale_id, sale_item_id, type, file_url, duration_seconds, uploaded_by, created_at) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) RETURNING *'
+    ).get(req.params.saleId, saleItemId, type, fileUrl, durationSeconds, req.user.id);
 
     res.status(201).json({ success: true, data: result });
   } catch (err) { next(err); }

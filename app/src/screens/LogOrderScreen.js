@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { View, Text, StyleSheet, ScrollView, TextInput, TouchableOpacity, ActivityIndicator, Alert, Platform } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TextInput, TouchableOpacity, ActivityIndicator, Alert, Platform, Modal } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import api from '../services/api';
@@ -89,6 +89,11 @@ export default function LogOrderScreen({ navigation }) {
   const [skipAssignment, setSkipAssignment] = useState(false);
 
   const [pendingAttachments, setPendingAttachments] = useState([]);
+  // Which item (by index in `items`) currently has the voice-note recording
+  // modal open, or null. Per-item photo/voice note — each item can optionally
+  // carry its own reference photo/voice note, distinct from the order-level
+  // ones above (e.g. "this specific rose needs to be this exact shade").
+  const [itemVoiceModalIdx, setItemVoiceModalIdx] = useState(null);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -222,6 +227,28 @@ export default function LogOrderScreen({ navigation }) {
 
   const removeItem = (idx) => setItems((prev) => prev.filter((_, i) => i !== idx));
 
+  const pickItemPhoto = async (idx) => {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') {
+      showAlert('Permission Required', 'Please allow access to your photo library.');
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.8, allowsEditing: true });
+    if (result.canceled) return;
+    setItems((prev) => prev.map((it, i) => (i === idx
+      ? { ...it, pendingAttachments: [...(it.pendingAttachments || []), { uri: result.assets[0].uri, type: 'photo', durationSeconds: null }] }
+      : it)));
+  };
+
+  const addItemVoiceNote = (idx, uri, durationSeconds) => {
+    setItems((prev) => prev.map((it, i) => (i === idx
+      ? { ...it, pendingAttachments: [...(it.pendingAttachments || []), { uri, type: 'voice_note', durationSeconds }] }
+      : it)));
+    setItemVoiceModalIdx(null);
+  };
+
+  const clearItemAttachments = (idx) => setItems((prev) => prev.map((it, i) => (i === idx ? { ...it, pendingAttachments: [] } : it)));
+
   const computeItemsTotal = () => items.reduce(
     (sum, it) => sum + (Number(it.unit_price) || 0) * (Number(it.quantity) || 0),
     0
@@ -303,6 +330,7 @@ export default function LogOrderScreen({ navigation }) {
     // Step 1: create the sale. If this fails, nothing was created server-side —
     // it's safe to show a hard failure and let the staff member retry.
     let saleId;
+    let savedItems = [];
     try {
       const payload = {
         location_id: activeLocation?.id,
@@ -312,7 +340,11 @@ export default function LogOrderScreen({ navigation }) {
         customer_id: customerId,
         customer_name: customerName || undefined,
         customer_phone: customerPhone || undefined,
-        items: items.length > 0 ? items : [{ product_id: null, product_name: 'See notes', quantity: 1, unit_price: 0 }],
+        // Strip the local-only pendingAttachments field — the server doesn't need it
+        // (per-item photos/voice notes upload separately, after creation, once each
+        // item has a real sale_item_id — see Step 2 below).
+        items: (items.length > 0 ? items : [{ product_id: null, product_name: 'See notes', quantity: 1, unit_price: 0 }])
+          .map(({ pendingAttachments, ...rest }) => rest),
         notes: note || undefined,
         receiver_name: fulfilment === 'delivery' ? receiverName : undefined,
         receiver_phone: fulfilment === 'delivery' ? receiverPhone : undefined,
@@ -324,6 +356,7 @@ export default function LogOrderScreen({ navigation }) {
       };
       const res = await api.createSale(payload);
       saleId = res.data?.id;
+      savedItems = res.data?.items || [];
     } catch (err) {
       setSaving(false);
       showAlert('Could not save order', err.message || 'Please try again.');
@@ -333,21 +366,38 @@ export default function LogOrderScreen({ navigation }) {
     // Step 2: the order now exists — from here on, any failure is an attachment
     // problem, not a save problem. Never tell the staff member the save failed
     // (that would invite a duplicate re-submit), and always navigate away so the
-    // populated form can't be resubmitted.
-    let attachmentError = null;
-    try {
-      for (const att of pendingAttachments) {
+    // populated form can't be resubmitted. Each attachment (order-level and
+    // per-item) uploads independently so one failing doesn't stop the rest.
+    let failedCount = 0;
+    for (const att of pendingAttachments) {
+      try {
         await api.uploadSaleAttachment(saleId, att.uri, att.type, att.durationSeconds);
+      } catch (err) {
+        failedCount += 1;
       }
-    } catch (err) {
-      attachmentError = err;
+    }
+    // savedItems[i] pairs with items[i] by position — the server preserves the
+    // request array's order (see the ORDER BY id ASC comment on the create-sale
+    // response), so this is the only way to learn each item's real sale_item_id.
+    for (let i = 0; i < items.length; i++) {
+      const itemAttachments = items[i]?.pendingAttachments || [];
+      const savedItemId = savedItems[i]?.id;
+      if (itemAttachments.length === 0 || !savedItemId) continue;
+      for (const att of itemAttachments) {
+        try {
+          await api.uploadSaleAttachment(saleId, att.uri, att.type, att.durationSeconds, savedItemId);
+        } catch (err) {
+          failedCount += 1;
+        }
+      }
     }
     setSaving(false);
 
-    if (attachmentError) {
+    if (failedCount > 0) {
+      const noun = failedCount === 1 ? 'attachment' : 'attachments';
       showAlert(
         'Order logged',
-        'The order was saved, but a photo/voice note could not be uploaded. You can add it again from the order later.',
+        `The order was saved, but ${failedCount} ${noun} could not be uploaded. You can add ${failedCount === 1 ? 'it' : 'them'} again from the order later.`,
         () => navigation.goBack()
       );
     } else {
@@ -409,14 +459,49 @@ export default function LogOrderScreen({ navigation }) {
         )}
 
         <Text style={styles.sectionLabel}>What are they ordering?</Text>
-        {items.map((it, idx) => (
-          <View key={idx} style={styles.itemRow}>
-            <Text style={styles.itemText}>{it.product_name} × {it.quantity} — ₹{it.unit_price}</Text>
-            <TouchableOpacity onPress={() => removeItem(idx)}>
-              <Ionicons name="close-circle" size={20} color={Colors.textLight} />
-            </TouchableOpacity>
+        {items.map((it, idx) => {
+          const itemAttCount = (it.pendingAttachments || []).length;
+          return (
+            <View key={idx} style={styles.itemRow}>
+              <Text style={styles.itemText}>{it.product_name} × {it.quantity} — ₹{it.unit_price}</Text>
+              <TouchableOpacity onPress={() => pickItemPhoto(idx)} style={styles.itemIconBtn}>
+                <Ionicons name="camera-outline" size={18} color={Colors.textSecondary} />
+              </TouchableOpacity>
+              <TouchableOpacity onPress={() => setItemVoiceModalIdx(idx)} style={styles.itemIconBtn}>
+                <Ionicons name="mic-outline" size={18} color={Colors.textSecondary} />
+              </TouchableOpacity>
+              {itemAttCount > 0 && (
+                <TouchableOpacity onPress={() => clearItemAttachments(idx)} style={styles.itemAttachmentBadge}>
+                  <Text style={styles.itemAttachmentBadgeText}>{itemAttCount}</Text>
+                </TouchableOpacity>
+              )}
+              <TouchableOpacity onPress={() => removeItem(idx)}>
+                <Ionicons name="close-circle" size={20} color={Colors.textLight} />
+              </TouchableOpacity>
+            </View>
+          );
+        })}
+
+        {/* Per-item voice note — one small modal reused for whichever item's mic icon was tapped. */}
+        <Modal visible={itemVoiceModalIdx !== null} transparent animationType="slide" onRequestClose={() => setItemVoiceModalIdx(null)}>
+          <View style={styles.modalOverlay}>
+            <View style={styles.modalContent}>
+              <View style={styles.modalHeader}>
+                <Text style={styles.modalTitle}>
+                  Voice note for {itemVoiceModalIdx !== null ? items[itemVoiceModalIdx]?.product_name : ''}
+                </Text>
+                <TouchableOpacity onPress={() => setItemVoiceModalIdx(null)}>
+                  <Ionicons name="close" size={24} color={Colors.text} />
+                </TouchableOpacity>
+              </View>
+              {itemVoiceModalIdx !== null && (
+                <VoiceNoteRecorder
+                  onRecorded={(uri, durationSeconds) => addItemVoiceNote(itemVoiceModalIdx, uri, durationSeconds)}
+                />
+              )}
+            </View>
           </View>
-        ))}
+        </Modal>
         <TextInput
           style={styles.input}
           placeholder="Search products…"
@@ -608,8 +693,15 @@ const styles = StyleSheet.create({
   chipTextSelected: { color: Colors.white },
   input: { backgroundColor: Colors.surface, borderRadius: BorderRadius.md, borderWidth: 1, borderColor: Colors.border, padding: 12, fontSize: FontSize.md, marginBottom: Spacing.sm },
   noteInput: { minHeight: 60, textAlignVertical: 'top' },
-  itemRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 8 },
+  itemRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 8, gap: 4 },
   itemText: { fontSize: FontSize.md, color: Colors.text, flex: 1 },
+  itemIconBtn: { padding: 4 },
+  itemAttachmentBadge: { backgroundColor: Colors.primary + '20', borderRadius: 10, minWidth: 20, height: 20, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 4 },
+  itemAttachmentBadgeText: { fontSize: FontSize.xs, fontWeight: '700', color: Colors.primary },
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
+  modalContent: { backgroundColor: Colors.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: Spacing.lg, paddingBottom: Spacing.xl },
+  modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: Spacing.md },
+  modalTitle: { fontSize: FontSize.lg, fontWeight: '700', color: Colors.text, flex: 1, marginRight: Spacing.sm },
   customItemRow: { flexDirection: 'row', gap: 8, alignItems: 'center' },
   customItemInput: { flex: 2 },
   priceInput: { flex: 1 },

@@ -855,6 +855,10 @@ function ensureCompatibilityColumns() {
   ensureColumn('sales', 'sender_same_as_receiver', 'INTEGER DEFAULT 0');
   ensureColumn('sales', 'channel', "TEXT");
   ensureColumn('sales', 'priority', "TEXT DEFAULT 'normal'");
+  // Optional per-item attachment scoping: NULL = order-level (existing behavior
+  // unchanged), set = this photo/voice note belongs to one specific line item.
+  ensureColumn('sale_attachments', 'sale_item_id', 'INTEGER REFERENCES sale_items(id) ON DELETE CASCADE');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_sale_attachments_item ON sale_attachments(sale_item_id)');
   runPsql('CREATE INDEX IF NOT EXISTS idx_sales_sender_customer ON sales(sender_customer_id)');
   runPsql('CREATE INDEX IF NOT EXISTS idx_sales_receiver_customer ON sales(receiver_customer_id)');
   ensureColumn('sale_drafts', 'location_id', 'INTEGER REFERENCES locations(id) ON DELETE SET NULL');

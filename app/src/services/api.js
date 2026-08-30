@@ -502,7 +502,7 @@ class ApiService {
     return this.request(`/sales/${id}/audit-logs`);
   }
 
-  async uploadSaleAttachment(saleId, fileUri, type, durationSeconds) {
+  async uploadSaleAttachment(saleId, fileUri, type, durationSeconds, saleItemId) {
     const formData = new FormData();
     if (Platform.OS === 'web') {
       const response = await fetch(fileUri);
@@ -517,6 +517,8 @@ class ApiService {
     }
     formData.append('type', type);
     if (durationSeconds) formData.append('duration_seconds', String(durationSeconds));
+    // Optional: scope this attachment to one line item instead of the whole order.
+    if (saleItemId) formData.append('sale_item_id', String(saleItemId));
 
     const url = `${API_BASE_URL}/sales/${saleId}/attachments`;
     const headers = {};

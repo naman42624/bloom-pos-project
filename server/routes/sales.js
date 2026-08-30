@@ -1843,8 +1843,11 @@ router.post(
         });
       }
 
-      // Attach items & payments for response
-      sale.items = db.prepare('SELECT * FROM sale_items WHERE sale_id = ?').all(sale.id);
+      // Attach items & payments for response. ORDER BY id ASC matches insertion
+      // order (processedItems is a 1:1, unreordered map of the request's items
+      // array), so the client can pair request-array index i with sale.items[i].id
+      // to attach per-item photos/voice notes right after creation.
+      sale.items = db.prepare('SELECT * FROM sale_items WHERE sale_id = ? ORDER BY id ASC').all(sale.id);
       sale.payments = db.prepare('SELECT * FROM payments WHERE sale_id = ?').all(sale.id);
 
       // Normalize date/time fields for consistent API output (uses shared normalizeDateFields from utils)
