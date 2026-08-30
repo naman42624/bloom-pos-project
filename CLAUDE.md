@@ -49,7 +49,7 @@ WhatsApp, Website, Email, Walk-in/Phone. None need API integration — website o
 
 Order-side work is first because the app is live at the counter and that's today's acute pain. Each sub-project gets its own brainstorm → design doc (`docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md`) → implementation plan → build cycle. Update the status marker here as phases complete.
 
-1. **Order model, channel & unified inbox** — done, PR raised from `feature/order-channel-inbox` (not yet merged)
+1. **Order model, channel & unified inbox** — done, merged to `main` (PRs #1 and #2)
 2. **Identity, roles & employee code/PIN login** ← current
 3. POS/checkout integrity — move register-open enforcement server-side at every cash-payment-write site (sale creation, pickup completion, settlement creation/verification, sale-edit payments, refunds, add-payment), not just sale creation. Card/UPI payments never need this check — only `method='cash'` writes affect `expected_cash`. See `docs/superpowers/specs/2026-08-22-order-channel-model-design.md` §8 for the verified list of existing call sites.
 4. Cash register & settlement reconciliation
