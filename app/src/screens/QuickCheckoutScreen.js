@@ -1108,7 +1108,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
         advance_amount: paymentMode === 'partial' ? Math.round((parseFloat(advanceAmount) || 0) * 100) / 100 : 0,
         skip_assignment: skipAssignment,
         assigned_to: !skipAssignment ? assignedTo : null,
-        route_id: orderType === 'delivery' ? (routeId || null) : null,
+        route_id: needsDelivery ? (routeId || null) : null,
       };
 
       if (orderType === 'pre_order') {
@@ -1604,7 +1604,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
                 multiline
               />
 
-              {orderType === 'delivery' && (
+              {needsDelivery && (
                 <>
                   <Text style={styles.label}>Delivery Route (optional)</Text>
                   <RoutePicker value={routeId} onChange={setRouteId} locationId={selectedLocation} />
