@@ -2390,7 +2390,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
 
       {/* Per-item voice note — one small modal reused for whichever item's mic icon was tapped. */}
       <Modal visible={itemVoiceModalIdx !== null} transparent animationType="slide" onRequestClose={() => setItemVoiceModalIdx(null)}>
-        <View style={styles.modalOverlay}>
+        <View style={styles.modalOverlay} onTouchStart={bumpActivity}>
           <View style={[styles.modalCard, { minHeight: undefined, paddingBottom: Platform.OS === 'ios' ? 40 : 20 }]}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>
