@@ -954,6 +954,10 @@ router.get(
         }
       }
 
+      if (req.user.role !== 'owner') {
+        for (const order of orders) delete order.vendor_name;
+      }
+
       res.json({ success: true, data: orders });
     } catch (err) { next(err); }
   }
@@ -1124,6 +1128,8 @@ router.put('/:id', authenticate, authorize('owner', 'manager', 'employee', 'coun
       INSERT INTO audit_logs (entity_type, entity_id, user_id, action, previous_state, new_state, created_at)
       VALUES ('sale', ?, ?, 'update', ?, ?, CURRENT_TIMESTAMP)
     `).run(saleId, req.user.id, JSON.stringify(oldState), JSON.stringify(newState));
+
+    if (req.user.role !== 'owner') delete newState.vendor_name;
 
     res.json({ success: true, message: 'Sale updated successfully', data: newState });
   } catch (err) { next(err); }
@@ -2282,6 +2288,7 @@ router.put(
       }
 
       const updated = db.prepare('SELECT * FROM sales WHERE id = ?').get(sale.id);
+      if (req.user.role !== 'owner') delete updated.vendor_name;
       res.json({ success: true, data: updated });
 
       // Notify customer on status change
@@ -2374,6 +2381,7 @@ router.post(
 
       const updated = db.prepare('SELECT * FROM sales WHERE id = ?').get(sale.id);
       updated.items = db.prepare('SELECT * FROM sale_items WHERE sale_id = ?').all(sale.id);
+      if (req.user.role !== 'owner') delete updated.vendor_name;
       res.json({ success: true, message: 'Item fulfilled from stock', data: updated });
     } catch (err) { next(err); }
   }
@@ -2568,6 +2576,7 @@ router.put(
       updated.items = db.prepare('SELECT * FROM sale_items WHERE sale_id = ?').all(sale.id);
       const delivery = db.prepare('SELECT * FROM deliveries WHERE sale_id = ?').get(sale.id);
       if (delivery) updated.delivery = delivery;
+      if (req.user.role !== 'owner') delete updated.vendor_name;
       res.json({ success: true, message: `Order converted to ${new_order_type}`, data: updated });
     } catch (err) { next(err); }
   }
