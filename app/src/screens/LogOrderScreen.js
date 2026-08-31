@@ -97,6 +97,8 @@ export default function LogOrderScreen({ navigation }) {
   const [itemVoiceModalIdx, setItemVoiceModalIdx] = useState(null);
   const [saving, setSaving] = useState(false);
 
+  const [vendorName, setVendorName] = useState('');
+
   useEffect(() => {
     // Remember last-used channel per staff member, per staff-ux-checklist §4
     try {
@@ -354,6 +356,7 @@ export default function LogOrderScreen({ navigation }) {
         scheduled_time: scheduledTime || undefined,
         ...(paymentMode !== 'unpaid' ? { payments: [{ method: paymentMethod, amount: parseFloat(paymentAmount) || 0 }] } : {}),
         ...(skipAssignment ? { skip_assignment: true } : {}),
+        ...(user?.role === 'owner' || user?.role === 'manager' ? { vendor_name: vendorName || null } : {}),
       };
       const res = await api.createSale(payload);
       saleId = res.data?.id;
@@ -537,6 +540,19 @@ export default function LogOrderScreen({ navigation }) {
           onChangeText={setNote}
           multiline
         />
+
+        {(user?.role === 'owner' || user?.role === 'manager') && (
+          <View style={styles.field}>
+            <Text style={styles.label}>Vendor (optional)</Text>
+            <TextInput
+              style={styles.input}
+              value={vendorName}
+              onChangeText={setVendorName}
+              placeholder="Who referred this order?"
+              placeholderTextColor={Colors.textLight}
+            />
+          </View>
+        )}
 
         <Text style={styles.sectionLabel}>Payment</Text>
         <View style={styles.chipRow}>
@@ -732,4 +748,7 @@ const styles = StyleSheet.create({
   dateTimeButton: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: Colors.surface, borderRadius: BorderRadius.md, borderWidth: 1, borderColor: Colors.border, padding: 12, marginBottom: Spacing.sm },
   dateTimeButtonText: { fontSize: FontSize.md, color: Colors.text },
   clearLink: { fontSize: FontSize.sm, color: Colors.error, marginTop: -4, marginBottom: Spacing.sm },
+
+  field: { marginBottom: Spacing.md },
+  label: { fontSize: FontSize.sm, fontWeight: '700', color: Colors.textSecondary, marginBottom: 4 },
 });
