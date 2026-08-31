@@ -8,6 +8,7 @@ const { todayStr: localToday, nowLocal, nowTimeStr, parseServerDate } = require(
 const { safeParseJSON } = require('../utils/json');
 const { hasOpenRegister, REGISTER_CLOSED_MESSAGE } = require('../utils/register-guard');
 const { completeProductionTaskCore } = require('./production');
+const { computeOrderStage } = require('../utils/order-stage');
 
 const router = express.Router();
 
@@ -168,7 +169,7 @@ router.get('/', authenticate, async (req, res, next) => {
               snd.name as sender_display_name, snd.phone as sender_display_phone,
               rcv.name as receiver_display_name, rcv.phone as receiver_display_phone,
              COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.sale_id = s.id), 0) as total_paid,
-             d.status as delivery_status
+             d.status as delivery_status, d.id as delivery_id, d.cod_amount, d.cod_collected
       FROM sales s
       LEFT JOIN locations l ON s.location_id = l.id
       LEFT JOIN users u ON s.created_by = u.id
@@ -285,7 +286,9 @@ router.get('/', authenticate, async (req, res, next) => {
     const normalizedSales = (sales || []).map(s => {
       s.items = s.items || [];
       s.items = s.items.map(normalizeDateFields);
-      return normalizeDateFields(s);
+      const normalized = normalizeDateFields(s);
+      normalized.display_stage = computeOrderStage(normalized);
+      return normalized;
     });
 
     res.json({ success: true, data: { sales: normalizedSales, total, limit, offset } });
@@ -1282,6 +1285,16 @@ router.get('/:id', authenticate, async (req, res, next) => {
       WHERE sa.sale_id = ?
       ORDER BY sa.created_at ASC
     `).all(req.params.id);
+
+    const totalPaidForStage = (sale.payments || []).reduce((sum, p) => sum + Number(p.amount || 0), 0);
+    sale.display_stage = computeOrderStage({
+      ...sale,
+      delivery_id: sale.delivery?.id,
+      cod_amount: sale.delivery?.cod_amount,
+      cod_collected: sale.delivery?.cod_collected,
+      delivery_status: sale.delivery?.status,
+      total_paid: totalPaidForStage,
+    });
 
     res.json({ success: true, data: sale });
   } catch (err) { next(err); }
