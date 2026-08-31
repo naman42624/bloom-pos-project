@@ -109,11 +109,19 @@ async function attachMaterialsToTasks(db, tasks) {
 // is a one-to-many fan-out done as a single grouped query, not per-task.
 async function attachVoiceNotesToTasks(db, tasks) {
   const saleIds = [...new Set(tasks.filter(t => t.sale_id).map(t => t.sale_id))];
-  const notesBySale = {};
+  // Keyed by sale_id for order-level notes (sale_item_id IS NULL — a
+  // general instruction relevant to everyone prepping this order), and by
+  // "saleId:itemId" for notes tied to one specific item. Without this
+  // split every task on a multi-item order showed every voice note
+  // attached to the sale, regardless of which item it was actually about
+  // (2026-08-31 fix — sale_attachments.sale_item_id exists precisely to
+  // avoid this, it just wasn't being used here yet).
+  const orderLevelNotes = {};
+  const itemLevelNotes = {};
   if (saleIds.length > 0) {
     const placeholders = saleIds.map(() => '?').join(',');
     const notes = await db.prepare(`
-      SELECT sa.id, sa.sale_id, sa.file_url, sa.duration_seconds, sa.created_at,
+      SELECT sa.id, sa.sale_id, sa.sale_item_id, sa.file_url, sa.duration_seconds, sa.created_at,
              u.name as uploaded_by_name
       FROM sale_attachments sa
       LEFT JOIN users u ON sa.uploaded_by = u.id
@@ -121,12 +129,22 @@ async function attachVoiceNotesToTasks(db, tasks) {
       ORDER BY sa.created_at ASC
     `).all(...saleIds);
     for (const note of notes) {
-      if (!notesBySale[note.sale_id]) notesBySale[note.sale_id] = [];
-      notesBySale[note.sale_id].push(note);
+      if (note.sale_item_id) {
+        const key = `${note.sale_id}:${note.sale_item_id}`;
+        if (!itemLevelNotes[key]) itemLevelNotes[key] = [];
+        itemLevelNotes[key].push(note);
+      } else {
+        if (!orderLevelNotes[note.sale_id]) orderLevelNotes[note.sale_id] = [];
+        orderLevelNotes[note.sale_id].push(note);
+      }
     }
   }
   for (const task of tasks) {
-    task.voice_notes = notesBySale[task.sale_id] || [];
+    const itemKey = `${task.sale_id}:${task.sale_item_id}`;
+    task.voice_notes = [
+      ...(orderLevelNotes[task.sale_id] || []),
+      ...(task.sale_item_id ? (itemLevelNotes[itemKey] || []) : []),
+    ];
   }
   return tasks;
 }
@@ -460,11 +478,17 @@ router.get('/my-tasks', authenticate, async (req, res, next) => {
       LEFT JOIN sale_items si ON pt.sale_item_id = si.id
       JOIN locations l ON pt.location_id = l.id
       WHERE (pt.assigned_to = ? OR pt.picked_by = ?)
-        AND pt.status IN ('assigned', 'in_progress')
+        AND (
+          pt.status IN ('assigned', 'in_progress')
+          -- "Done Today" on the dashboard needs today's completions too —
+          -- the original query only ever returned assigned/in_progress,
+          -- so that stat was silently always zero (2026-08-31 fix).
+          OR (pt.status = 'completed' AND pt.completed_at::date = (?)::date)
+        )
       ORDER BY
         CASE pt.priority WHEN 'urgent' THEN 0 ELSE 1 END,
         pt.created_at ASC
-    `).all(req.user.id, req.user.id);
+    `).all(req.user.id, req.user.id, localToday());
 
     // Dashboard task cards show materials-to-grab + voice-note playback
     // inline (2026-08-31 follow-up) — same batch helpers GET /tasks uses.
@@ -475,11 +499,15 @@ router.get('/my-tasks', authenticate, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// PUT /api/production/tasks/:id/assign — Manager assigns task to employee
+// PUT /api/production/tasks/:id/assign — Manager/counter staff assigns a
+// task to prep staff. Counter staff granted this 2026-08-31 — they're the
+// ones logging orders and are the natural person to hand a task to a
+// florist, and the assignable-staff picker already listed florist_staff
+// as an option without this actually working server-side.
 router.put(
   '/tasks/:id/assign',
   authenticate,
-  authorize('owner', 'manager'),
+  authorize('owner', 'manager', 'counter_staff'),
   [body('assigned_to').isInt().withMessage('Employee is required')],
   (req, res, next) => {
     try {

@@ -152,6 +152,13 @@ export default function SaleDetailScreen({ route, navigation }) {
   const canManage = user?.role === 'owner' || user?.role === 'manager';
   const canEdit = canManage || (sale?.created_by === user?.id);
   const isCustomer = user?.role === 'customer';
+  // Counter staff can cancel/refund at the counter (up to the same cap a
+  // manager has, enforced server-side — see the refund_manager_limit check
+  // on POST /:id/refund and PUT /:id/cancel). Everyone else keeps whatever
+  // canManage already grants (owner/manager only). Added 2026-08-31 after
+  // counter staff hit a live order needing a refund with no one able to
+  // process it without an owner/manager on hand.
+  const canCancelOrRefund = canManage || user?.role === 'counter_staff';
   // Florist/prep staff never touch payments (they only see this screen for
   // the production tasks on an order) and customers viewing their own order
   // can't record payments either (POST /:id/payments is staff-only
@@ -1260,7 +1267,7 @@ export default function SaleDetailScreen({ route, navigation }) {
             <Ionicons name="flame-outline" size={18} color={Colors.white} />
             <Text style={styles.actionBtnText}>Start Preparing</Text>
           </TouchableOpacity>
-          {canManage && (
+          {canCancelOrRefund && (
             <TouchableOpacity style={[styles.actionBtn, { backgroundColor: Colors.error }]} onPress={handleCancel}>
               <Ionicons name="close-circle" size={18} color={Colors.white} />
               <Text style={styles.actionBtnText}>Cancel</Text>
@@ -1281,7 +1288,7 @@ export default function SaleDetailScreen({ route, navigation }) {
               <Text style={styles.actionBtnText}>Waiting for Production ({sale.production_summary?.completed || 0}/{sale.production_summary?.total_tasks || 0})</Text>
             </View>
           )}
-          {canManage && (
+          {canCancelOrRefund && (
             <TouchableOpacity style={[styles.actionBtn, { backgroundColor: Colors.error }]} onPress={handleCancel}>
               <Ionicons name="close-circle" size={18} color={Colors.white} />
               <Text style={styles.actionBtnText}>Cancel</Text>
@@ -1299,7 +1306,7 @@ export default function SaleDetailScreen({ route, navigation }) {
       )}
 
       {/* Actions for completed orders */}
-      {canManage && sale.status === 'completed' && (
+      {canCancelOrRefund && sale.status === 'completed' && (
         <View style={styles.actions}>
           {!sale.refund && (
             <TouchableOpacity style={[styles.actionBtn, { backgroundColor: Colors.error }]} onPress={handleRefund}>

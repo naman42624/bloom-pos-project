@@ -20,10 +20,11 @@ import { useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 import { Colors, FontSize, Spacing } from '../constants/theme';
-import { formatDateTime, parseServerDate, getShopNow, DEFAULT_TZ, minutesSinceServerDate, minutesUntilShopDateTime, formatTimeString } from '../utils/datetime';
+import { formatDateTime, parseServerDate, getShopNow, getShopTodayStr, DEFAULT_TZ, minutesSinceServerDate, minutesUntilShopDateTime, formatTimeString } from '../utils/datetime';
 import { OrderQuickModal } from '../components/QuickModals';
 import DateTimePickerModal from '../components/DateTimePickerModal';
 import AttachmentVoiceRow from '../components/AttachmentVoiceRow';
+import ImageModal from '../components/ImageModal';
 
 const ORDER_TYPES = ['delivery', 'pickup', 'walk_in'];
 const ORDER_TYPE_LABELS = {
@@ -507,6 +508,7 @@ export default function DashboardScreen({ navigation }) {
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
   const [fabVisible, setFabVisible] = useState(false);
+  const [viewedImage, setViewedImage] = useState(null); // task-card product photo, tap to enlarge
   const [selectedTaskModal, setSelectedTaskModal] = useState(null);
   const [selectedOrderModal, setSelectedOrderModal] = useState(null); // { order, tasks }
 
@@ -594,7 +596,10 @@ export default function DashboardScreen({ navigation }) {
         const [summaryRes, registerRes, pendingRes] = await Promise.all([
           api.getTodaySummary(activeLocation?.id).catch(() => ({ data: { total_sales: 0 } })),
           activeLocation?.id ? api.getRegisterStatus(activeLocation.id).catch(() => ({ data: null })) : Promise.resolve({ data: null }),
-          api.getSales({ status: 'pending', location_id: activeLocation?.id, limit: 5 }).catch(() => ({ data: { sales: [] } })),
+          // Fetched wider than the 5 we display so the today/future split
+          // below has real data to count against, not just the first 5
+          // pending orders regardless of date (2026-08-31 fix).
+          api.getSales({ status: 'pending', location_id: activeLocation?.id, limit: 30 }).catch(() => ({ data: { sales: [] } })),
         ]);
         setCounterStats({
           salesCount: Number(summaryRes?.data?.total_sales || 0),
@@ -1005,6 +1010,28 @@ export default function DashboardScreen({ navigation }) {
     return { order: freshOrder, tasks: freshTasks };
   }, [selectedOrderModal, sales, tasksBySaleId]);
 
+  // Counter staff dashboard: split today/unscheduled orders from
+  // future-scheduled ones — otherwise a delivery due in 5 days sits mixed
+  // in with what actually needs attention right now (2026-08-31 fix).
+  const counterOrdersSplit = useMemo(() => {
+    const todayStr = getShopTodayStr(DEFAULT_TZ);
+    return {
+      dueToday: counterPendingOrders.filter((o) => !o.scheduled_date || o.scheduled_date <= todayStr),
+      scheduledLater: counterPendingOrders.filter((o) => o.scheduled_date && o.scheduled_date > todayStr),
+    };
+  }, [counterPendingOrders]);
+
+  // Florist/employee task dashboard: same today/future split, applied to
+  // the active (not completed/cancelled) task list (2026-08-31 fix).
+  const myTasksSplit = useMemo(() => {
+    const todayStr = getShopTodayStr(DEFAULT_TZ);
+    const active = myTasks.filter((t) => t.status !== 'completed' && t.status !== 'cancelled');
+    return {
+      dueToday: active.filter((t) => !t.scheduled_date || t.scheduled_date <= todayStr),
+      scheduledLater: active.filter((t) => t.scheduled_date && t.scheduled_date > todayStr),
+    };
+  }, [myTasks]);
+
   return (
     <View style={styles.root}>
       <ScrollView
@@ -1229,7 +1256,7 @@ export default function DashboardScreen({ navigation }) {
               </View>
               <View style={[styles.roleStatCard, { borderLeftColor: '#F59E0B' }]}>
                 <Ionicons name="alert-circle-outline" size={20} color="#F59E0B" />
-                <Text style={styles.roleStatCount}>{counterPendingOrders.length}</Text>
+                <Text style={styles.roleStatCount}>{counterOrdersSplit.dueToday.length}</Text>
                 <Text style={styles.roleStatLabel}>Need Attention</Text>
               </View>
               <View style={[styles.roleStatCard, { borderLeftColor: counterStats.registerOpen ? '#10B981' : '#EF4444' }]}>
@@ -1254,30 +1281,41 @@ export default function DashboardScreen({ navigation }) {
               </TouchableOpacity>
             </View>
 
-            {counterPendingOrders.length === 0 ? (
+            {counterOrdersSplit.dueToday.length === 0 ? (
               <View style={styles.roleEmptyCard}>
                 <Ionicons name="checkmark-circle-outline" size={40} color="#10B981" />
                 <Text style={styles.roleEmptyTitle}>All caught up!</Text>
-                <Text style={styles.roleEmptyText}>No orders waiting on you right now.</Text>
+                <Text style={styles.roleEmptyText}>
+                  {counterOrdersSplit.scheduledLater.length > 0
+                    ? `No orders waiting on you right now — ${counterOrdersSplit.scheduledLater.length} scheduled for later.`
+                    : 'No orders waiting on you right now.'}
+                </Text>
               </View>
             ) : (
-              counterPendingOrders.map((order) => (
-                <TouchableOpacity
-                  key={order.id}
-                  style={[styles.roleTaskCard, { borderLeftColor: '#F59E0B' }]}
-                  onPress={() => navigation.navigate('SaleDetail', { saleId: order.id })}
-                  activeOpacity={0.8}
-                >
-                  <View style={styles.roleTaskHeader}>
-                    <Text style={styles.roleTaskName} numberOfLines={1}>
-                      {order.sale_number} — {order.customer_name || order.customer_display_name || 'Walk-in'}
-                    </Text>
-                    <View style={[styles.roleTaskBadge, { backgroundColor: '#F59E0B20' }]}>
-                      <Text style={[styles.roleTaskBadgeText, { color: '#F59E0B' }]}>PENDING</Text>
+              <>
+                {counterOrdersSplit.dueToday.map((order) => (
+                  <TouchableOpacity
+                    key={order.id}
+                    style={[styles.roleTaskCard, { borderLeftColor: '#F59E0B' }]}
+                    onPress={() => navigation.navigate('SaleDetail', { saleId: order.id })}
+                    activeOpacity={0.8}
+                  >
+                    <View style={styles.roleTaskHeader}>
+                      <Text style={styles.roleTaskName} numberOfLines={1}>
+                        {order.sale_number} — {order.customer_name || order.customer_display_name || 'Walk-in'}
+                      </Text>
+                      <View style={[styles.roleTaskBadge, { backgroundColor: '#F59E0B20' }]}>
+                        <Text style={[styles.roleTaskBadgeText, { color: '#F59E0B' }]}>PENDING</Text>
+                      </View>
                     </View>
-                  </View>
-                </TouchableOpacity>
-              ))
+                  </TouchableOpacity>
+                ))}
+                {counterOrdersSplit.scheduledLater.length > 0 && (
+                  <Text style={{ fontSize: 12, color: '#6B7280', textAlign: 'center', marginTop: 4 }}>
+                    +{counterOrdersSplit.scheduledLater.length} more scheduled for later
+                  </Text>
+                )}
+              </>
             )}
           </View>
         ) : isEmployee ? (
@@ -1310,15 +1348,18 @@ export default function DashboardScreen({ navigation }) {
               </TouchableOpacity>
             </View>
 
-            {myTasks.filter(t => t.status !== 'completed' && t.status !== 'cancelled').length === 0 ? (
+            {myTasksSplit.dueToday.length === 0 ? (
               <View style={styles.roleEmptyCard}>
                 <Ionicons name="checkmark-circle-outline" size={40} color="#10B981" />
                 <Text style={styles.roleEmptyTitle}>All caught up!</Text>
-                <Text style={styles.roleEmptyText}>No pending tasks assigned to you.</Text>
+                <Text style={styles.roleEmptyText}>
+                  {myTasksSplit.scheduledLater.length > 0
+                    ? `No pending tasks for today — ${myTasksSplit.scheduledLater.length} scheduled for later.`
+                    : 'No pending tasks assigned to you.'}
+                </Text>
               </View>
             ) : (
-              myTasks
-                .filter(t => t.status !== 'completed' && t.status !== 'cancelled')
+              myTasksSplit.dueToday
                 .map((task) => {
                   const tColor = getTaskChipColor(task.status);
                   const tLabel = TASK_STATUS_LABELS[task.status] || task.status;
@@ -1346,7 +1387,9 @@ export default function DashboardScreen({ navigation }) {
                     >
                       <View style={{ flexDirection: 'row', gap: 12 }}>
                         {imageUri ? (
-                          <Image source={{ uri: api.getMediaUrl(imageUri) }} style={{ width: 60, height: 60, borderRadius: 8, backgroundColor: '#F3F4F6' }} />
+                          <TouchableOpacity onPress={(e) => { e.stopPropagation(); setViewedImage(api.getMediaUrl(imageUri)); }}>
+                            <Image source={{ uri: api.getMediaUrl(imageUri) }} style={{ width: 60, height: 60, borderRadius: 8, backgroundColor: '#F3F4F6' }} />
+                          </TouchableOpacity>
                         ) : (
                           <View style={{ width: 60, height: 60, borderRadius: 8, backgroundColor: '#F3F4F6', alignItems: 'center', justifyContent: 'center' }}>
                             <Ionicons name="image-outline" size={24} color="#D1D5DB" />
@@ -1446,6 +1489,11 @@ export default function DashboardScreen({ navigation }) {
                     </TouchableOpacity>
                   );
                 })
+            )}
+            {myTasksSplit.dueToday.length > 0 && myTasksSplit.scheduledLater.length > 0 && (
+              <Text style={{ fontSize: 12, color: '#6B7280', textAlign: 'center', marginTop: 4 }}>
+                +{myTasksSplit.scheduledLater.length} more scheduled for later
+              </Text>
             )}
 
             {/* Completed today */}
@@ -1565,13 +1613,21 @@ export default function DashboardScreen({ navigation }) {
         )}
       </ScrollView>
 
-      <TouchableOpacity
-        style={styles.fab}
-        onPress={() => setFabVisible(true)}
-        activeOpacity={0.85}
-      >
-        <Ionicons name="add" size={28} color="#fff" />
-      </TouchableOpacity>
+      {/* Owner/manager only — counter staff has their own Log Order FAB on
+          Orders Inbox, and florist_staff has no page this quick-add modal
+          could send them to (they were previously seeing this button with
+          nowhere it could actually take them — 2026-08-31 fix). */}
+      {isOwnerOrManager && (
+        <TouchableOpacity
+          style={styles.fab}
+          onPress={() => setFabVisible(true)}
+          activeOpacity={0.85}
+        >
+          <Ionicons name="add" size={28} color="#fff" />
+        </TouchableOpacity>
+      )}
+
+      <ImageModal visible={!!viewedImage} imageUrl={viewedImage} onClose={() => setViewedImage(null)} />
 
       <DateTimePickerModal
         visible={showDatePicker}

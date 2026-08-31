@@ -11,6 +11,7 @@ const fs = require('fs');
 
 const router = express.Router();
 const { normalizeDateFields } = require('../utils/normalizeDates');
+const { hasOpenRegister, REGISTER_CLOSED_MESSAGE } = require('../utils/register-guard');
 
 // Use todayStr() from time.js for timezone-aware date strings
 
@@ -1111,18 +1112,21 @@ router.post(
 
         // Credit the register with only the portion actually collected as cash —
         // UPI collections must not inflate expected_cash (see sumCollectionsByMethod).
+        // Hard-blocked if there's cash to credit and no open register — UPI-only
+        // settlements never need a register at all.
         const register = db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1').get(location_id);
-        if (register) {
-          const byMethod = sumCollectionsByMethod(db, delivery_ids, totalAmount);
-          if (byMethod.cash > 0) {
-            db.prepare(
-              'UPDATE cash_registers SET total_cash_sales = total_cash_sales + ?, expected_cash = expected_cash + ? WHERE id = ?'
-            ).run(byMethod.cash, byMethod.cash, register.id);
-          }
-          if (byMethod.upi > 0) {
-            db.prepare('UPDATE cash_registers SET total_upi_sales = total_upi_sales + ? WHERE id = ?')
-              .run(byMethod.upi, register.id);
-          }
+        const byMethod = sumCollectionsByMethod(db, delivery_ids, totalAmount);
+        if (byMethod.cash > 0 && !register) {
+          throw new Error(REGISTER_CLOSED_MESSAGE);
+        }
+        if (byMethod.cash > 0) {
+          db.prepare(
+            'UPDATE cash_registers SET total_cash_sales = total_cash_sales + ?, expected_cash = expected_cash + ? WHERE id = ?'
+          ).run(byMethod.cash, byMethod.cash, register.id);
+        }
+        if (byMethod.upi > 0 && register) {
+          db.prepare('UPDATE cash_registers SET total_upi_sales = total_upi_sales + ? WHERE id = ?')
+            .run(byMethod.upi, register.id);
         }
 
         return settlementId;
@@ -1140,7 +1144,7 @@ router.post(
 
       res.status(201).json({ success: true, data: settlement });
     } catch (err) {
-      if (err.message?.includes('not eligible') || err.message?.includes('already settled')) {
+      if (err.message?.includes('not eligible') || err.message?.includes('already settled') || err.message?.includes("Register isn't open")) {
         return res.status(400).json({ success: false, message: err.message });
       }
       next(err);
@@ -1190,21 +1194,23 @@ router.put(
 
         // Add the settled amount to the cash register (find the open session, not by date) —
         // but only the portion actually collected as cash; UPI collections must not
-        // inflate expected_cash (see sumCollectionsByMethod).
+        // inflate expected_cash (see sumCollectionsByMethod). Hard-blocked if there's
+        // cash to credit and no open register — UPI-only settlements never need one.
         const register = db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1').get(settlement.location_id);
-        if (register) {
-          const settledDeliveryIds = db.prepare(
-            'SELECT delivery_id FROM delivery_settlement_items WHERE settlement_id = ?'
-          ).all(settlement.id).map(r => r.delivery_id);
-          const byMethod = sumCollectionsByMethod(db, settledDeliveryIds, settlement.total_amount);
-          if (byMethod.cash > 0) {
-            db.prepare('UPDATE cash_registers SET total_cash_sales = total_cash_sales + ?, expected_cash = expected_cash + ? WHERE id = ?')
-              .run(byMethod.cash, byMethod.cash, register.id);
-          }
-          if (byMethod.upi > 0) {
-            db.prepare('UPDATE cash_registers SET total_upi_sales = total_upi_sales + ? WHERE id = ?')
-              .run(byMethod.upi, register.id);
-          }
+        const settledDeliveryIds = db.prepare(
+          'SELECT delivery_id FROM delivery_settlement_items WHERE settlement_id = ?'
+        ).all(settlement.id).map(r => r.delivery_id);
+        const byMethod = sumCollectionsByMethod(db, settledDeliveryIds, settlement.total_amount);
+        if (byMethod.cash > 0 && !register) {
+          throw new Error(REGISTER_CLOSED_MESSAGE);
+        }
+        if (byMethod.cash > 0) {
+          db.prepare('UPDATE cash_registers SET total_cash_sales = total_cash_sales + ?, expected_cash = expected_cash + ? WHERE id = ?')
+            .run(byMethod.cash, byMethod.cash, register.id);
+        }
+        if (byMethod.upi > 0 && register) {
+          db.prepare('UPDATE cash_registers SET total_upi_sales = total_upi_sales + ? WHERE id = ?')
+            .run(byMethod.upi, register.id);
         }
       });
 
@@ -1219,7 +1225,12 @@ router.put(
       `).get(settlement.id);
 
       res.json({ success: true, data: updated });
-    } catch (err) { next(err); }
+    } catch (err) {
+      if (err.message?.includes("Register isn't open")) {
+        return res.status(400).json({ success: false, message: err.message });
+      }
+      next(err);
+    }
   }
 );
 
@@ -1425,6 +1436,9 @@ router.put(
           if (paidNow <= 0) {
             throw new Error(`Balance due: ₹${balanceDue.toFixed(2)}. Please collect payment before marking as picked up.`);
           }
+          if ((payment_method || 'cash') === 'cash' && !hasOpenRegister(db, sale.location_id)) {
+            throw new Error(REGISTER_CLOSED_MESSAGE);
+          }
           // Record the payment
           db.prepare(
             'INSERT INTO payments (sale_id, method, amount, reference_number, received_by) VALUES (?, ?, ?, ?, ?)'
@@ -1466,7 +1480,7 @@ router.put(
 
       res.json({ success: true, message: 'Order picked up by customer' });
     } catch (err) {
-      if (err.message.includes('Balance due') || err.message.includes('Only manager')) {
+      if (err.message.includes('Balance due') || err.message.includes('Only manager') || err.message.includes("Register isn't open")) {
         return res.status(400).json({ success: false, message: err.message });
       }
       next(err);
