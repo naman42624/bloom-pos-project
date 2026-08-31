@@ -1226,6 +1226,20 @@ router.get('/:id', authenticate, async (req, res, next) => {
       }
     }
 
+    // Per-item task indicator — only surfaced when it's actually relevant
+    // (multiple items, multiple distinct assignees). See spec §4.
+    const taskRows = (sale.items || [])
+      .map(i => i.production_task)
+      .filter(Boolean);
+    const distinctAssignees = new Set(taskRows.map(t => t.assigned_to_name).filter(Boolean));
+    sale.task_summary = (sale.items.length > 1 && distinctAssignees.size > 1)
+      ? {
+          total: taskRows.length,
+          completed: taskRows.filter(t => t.status === 'completed').length,
+          assignees: [...distinctAssignees],
+        }
+      : null;
+
     // Production task summary for the entire sale
     sale.production_summary = {
       total_tasks: 0,
