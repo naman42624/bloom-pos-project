@@ -387,6 +387,14 @@ function EmployeeOrdersStack() {
           only screen with the "mark picked up / collect payment" action
           and it was never reachable from here at all — added same day. */}
       <Stack.Screen name="PickupOrders" component={PickupOrdersScreen} options={{ title: 'Pickup Orders' }} />
+      {/* Settlement permissions widened to counter_staff 2026-09-01
+          (sub-project 4) — it's counter staff, not owner/manager, who
+          physically take the cash handoff from a delivery partner here.
+          SettlementsScreen already handled a non-manager caller correctly
+          (its own useFocusEffect branches on isManager and scopes to just
+          activeLocation otherwise) — it just had nowhere to be reached
+          from in this stack. */}
+      <Stack.Screen name="Settlements" component={SettlementsScreen} options={{ title: 'Settlements' }} />
       <Stack.Screen name="AddPayment" component={AddPaymentScreen} options={{ title: 'Record Payment' }} />
       <Stack.Screen name="DeliveryDetail" component={DeliveryDetailScreen} options={{ title: 'Delivery' }} />
       <Stack.Screen name="LiveDeliveryMap" component={LiveDeliveryMapScreen} options={{ title: 'Live Tracking' }} />

@@ -153,15 +153,18 @@ export default function CashRegisterScreen({ navigation, route }) {
   const { user } = useAuth();
   const initialLocationId = route.params?.locationId;
   const canManage = user?.role === 'owner' || user?.role === 'manager';
-  // GET/POST /api/expenses have granted employee/counter_staff access all
-  // along (they're the ones actually handling petty cash at the counter)
-  // — but this was the only real entry point into ExpensesScreen, and it
-  // was gated behind canManage along with the (correctly owner/manager-
-  // only, GET /register/history) "View History" button. Split them:
-  // "View History" stays canManage-only, "Expenses" opens up to whoever
-  // the backend already allows (found live, 2026-09-01 — "how would
-  // counter staff even add an expense with no way to reach the screen?").
-  const canViewExpenses = canManage || user?.role === 'employee' || user?.role === 'counter_staff';
+  // employee/counter_staff are the roles actually handling cash day-to-day
+  // at the counter (opening/closing the register, taking cash sales,
+  // logging expenses, receiving a delivery partner's COD handoff) — the
+  // backend already trusts them with all of this, but several UI gates on
+  // this screen were still canManage-only, leftover from before those
+  // roles existed. Covers: the Expenses entry point (found live,
+  // 2026-09-01 — "how would counter staff even add an expense with no way
+  // to reach the screen?") and the pending-COD settle banner (same day,
+  // sub-project 4 — matches settle-now's own widened role list).
+  // "View History" (GET /register/history) stays canManage-only below —
+  // that one really is owner/manager territory.
+  const isCashHandlingStaff = canManage || user?.role === 'employee' || user?.role === 'counter_staff';
   const isOwner = user?.role === 'owner';
 
   const [locations, setLocations] = useState([]);
@@ -312,8 +315,12 @@ export default function CashRegisterScreen({ navigation, route }) {
         </View>
       )}
 
-      {/* Pending COD Alert Banner */}
-      {canManage && pendingCodTotal > 0 && (
+      {/* Pending COD Alert Banner — was canManage-only despite the backend
+          allowing any authenticated role to read pendingCodTotal, and despite
+          it being counter staff, not owner/manager, who physically take
+          this cash handoff in practice. Widened to match settle-now's own
+          role list (2026-09-01, sub-project 4). */}
+      {isCashHandlingStaff && pendingCodTotal > 0 && (
         <TouchableOpacity
           style={styles.codBanner}
           onPress={() => navigation.navigate('Settlements', { locationId: selectedLocation })}
@@ -482,9 +489,9 @@ export default function CashRegisterScreen({ navigation, route }) {
       )}
 
       {/* Actions */}
-      {(canViewExpenses || canManage) && (
+      {(isCashHandlingStaff || canManage) && (
         <View style={styles.actionRow}>
-          {canViewExpenses && (
+          {isCashHandlingStaff && (
             <TouchableOpacity style={styles.actionBtn} onPress={() => navigation.navigate('Expenses')}>
               <View style={[styles.actionIconWrap, { backgroundColor: Colors.infoLight }]}>
                 <Ionicons name="wallet" size={20} color={Colors.info} />

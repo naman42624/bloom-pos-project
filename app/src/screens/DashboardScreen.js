@@ -616,11 +616,13 @@ export default function DashboardScreen({ navigation }) {
         // counter_staff fix). florist_staff never touches payments, so it
         // skips this fetch entirely.
         if (role === 'employee' && activeLocation?.id) {
-          const registerRes = await api.getRegisterStatus(activeLocation.id).catch(() => ({ data: null }));
+          const registerRes = await api.getRegisterStatus(activeLocation.id).catch(() => ({}));
           setCounterStats((prev) => ({
             ...prev,
             registerOpen: registerRes?.data ? !registerRes.data.closed_at : null,
             registerOpenedBy: registerRes?.data?.opened_by_name || null,
+            pendingCodTotal: Number(registerRes?.pendingCodTotal || 0),
+            pendingCodDeliveries: Number(registerRes?.pendingCodDeliveries || 0),
           }));
         }
         setLoading(false);
@@ -650,6 +652,14 @@ export default function DashboardScreen({ navigation }) {
           salesCount: Number(summaryRes?.data?.total_sales || 0),
           registerOpen: registerRes?.data ? !registerRes.data.closed_at : null,
           registerOpenedBy: registerRes?.data?.opened_by_name || null,
+          // Money a delivery partner has collected (cash or UPI) but hasn't
+          // handed over/been settled yet — was only ever shown on
+          // CashRegisterScreen, and only to owner/manager there, so
+          // counter staff (who actually take this handoff) had no
+          // visibility into it at all until they happened to navigate deep
+          // into Cash Register (2026-09-01, sub-project 4).
+          pendingCodTotal: Number(registerRes?.pendingCodTotal || 0),
+          pendingCodDeliveries: Number(registerRes?.pendingCodDeliveries || 0),
         });
         const pendingList = pendingRes?.data?.sales || pendingRes?.data || [];
         const preparingList = preparingRes?.data?.sales || preparingRes?.data || [];
@@ -1369,6 +1379,21 @@ export default function DashboardScreen({ navigation }) {
               </TouchableOpacity>
             )}
 
+            {/* Money a delivery partner has collected but hasn't handed
+                over yet — was owner/manager-only visibility buried inside
+                Cash Register; surfaced here directly since counter staff
+                are the ones who actually take this handoff and settle it
+                (2026-09-01, sub-project 4). */}
+            {counterStats.pendingCodTotal > 0 && (
+              <TouchableOpacity style={styles.codBannerCompact} onPress={() => navigation.navigate('POS', { screen: 'Settlements' })}>
+                <Ionicons name="alert-circle" size={20} color="#92400E" />
+                <Text style={styles.codBannerCompactText}>
+                  ₹{counterStats.pendingCodTotal.toLocaleString('en-IN', { maximumFractionDigits: 0 })} from {counterStats.pendingCodDeliveries} deliver{counterStats.pendingCodDeliveries !== 1 ? 'ies' : 'y'} not settled yet
+                </Text>
+                <Ionicons name="chevron-forward" size={16} color="#92400E" />
+              </TouchableOpacity>
+            )}
+
             <View style={styles.sectionHeader}>
               <Text style={styles.sectionTitle}>Orders Needing Attention</Text>
               <TouchableOpacity onPress={() => navigation.navigate('EmployeeOrders', { screen: 'OrdersInbox' })}>
@@ -1516,6 +1541,16 @@ export default function DashboardScreen({ navigation }) {
                 <Ionicons name="lock-closed-outline" size={32} color="#EF4444" />
                 <Text style={styles.roleEmptyTitle}>Register isn't open</Text>
                 <Text style={styles.roleEmptyText}>Tap here to open it before taking a cash sale.</Text>
+              </TouchableOpacity>
+            )}
+
+            {role === 'employee' && counterStats.pendingCodTotal > 0 && (
+              <TouchableOpacity style={styles.codBannerCompact} onPress={() => navigation.navigate('POS', { screen: 'Settlements' })}>
+                <Ionicons name="alert-circle" size={20} color="#92400E" />
+                <Text style={styles.codBannerCompactText}>
+                  ₹{counterStats.pendingCodTotal.toLocaleString('en-IN', { maximumFractionDigits: 0 })} from {counterStats.pendingCodDeliveries} deliver{counterStats.pendingCodDeliveries !== 1 ? 'ies' : 'y'} not settled yet
+                </Text>
+                <Ionicons name="chevron-forward" size={16} color="#92400E" />
               </TouchableOpacity>
             )}
 
@@ -2725,6 +2760,21 @@ const styles = StyleSheet.create({
     padding: 32,
     alignItems: 'center',
     gap: 8,
+  },
+  codBannerCompact: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#FEF3C7',
+    borderRadius: 12,
+    padding: 12,
+  },
+  codBannerCompactText: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#92400E',
+    fontFamily: FONT_FAMILY,
   },
   roleEmptyTitle: {
     fontSize: 18,

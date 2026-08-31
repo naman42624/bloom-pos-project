@@ -914,14 +914,9 @@ class ApiService {
     return this.request(`/deliveries/settlements${q ? `?${q}` : ''}`);
   }
 
-  createSettlement(data) {
-    return this.request('/deliveries/settlements', { method: 'POST', body: JSON.stringify(data) });
-  }
-
-  verifySettlement(settlementId) {
-    return this.request(`/deliveries/settlements/${settlementId}/verify`, { method: 'PUT' });
-  }
-
+  // createSettlement/verifySettlement (the old two-step create-then-verify
+  // pair) were removed 2026-09-01 — nothing called them, settleNow below
+  // is the only settlement-creation path this app actually uses.
   settleNow(data) {
     // Single-step: create + verify settlement atomically, credits full amount to register immediately.
     // data: { delivery_partner_id, delivery_ids? (omit to settle all), location_id?, notes? }
