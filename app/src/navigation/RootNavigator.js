@@ -1,5 +1,5 @@
-import React from 'react';
-import { View, StyleSheet } from 'react-native';
+import React, { useEffect } from 'react';
+import { View, StyleSheet, Platform } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { useAuth, isSharedDeviceStaffRole } from '../context/AuthContext';
@@ -26,7 +26,28 @@ export default function RootNavigator() {
   // counter_staff/florist_staff). Owner/manager/delivery_partner/customer
   // use their own personal device and must never be auto-locked into the
   // staff PIN tile grid.
-  const { bump } = useIdleLock(isAuthenticated && !locked && isSharedDeviceStaffRole(user?.role), lock);
+  const idleLockEnabled = isAuthenticated && !locked && isSharedDeviceStaffRole(user?.role);
+  const { bump } = useIdleLock(idleLockEnabled, lock);
+
+  // Web-only: mouse-wheel/trackpad scrolling never fires a touch event, so
+  // someone reading or scrolling a long list (the Dashboard, Orders Inbox)
+  // with a mouse generated ZERO activity signal — onTouchStart only ever
+  // saw their last actual click. Reported live: idle-locked mid-explore in
+  // under a minute even with the 5-minute timeout, because the clock was
+  // really counting from that last click, not from when they stopped
+  // reading. On native this isn't needed — a touch-scroll starts with a
+  // real touch-down, which onTouchStart already catches. `passive: true`
+  // since this only reads the event, never blocks the actual scroll
+  // (2026-09-01).
+  useEffect(() => {
+    if (Platform.OS !== 'web' || !idleLockEnabled) return;
+    window.addEventListener('wheel', bump, { passive: true });
+    window.addEventListener('scroll', bump, { passive: true, capture: true });
+    return () => {
+      window.removeEventListener('wheel', bump);
+      window.removeEventListener('scroll', bump, { capture: true });
+    };
+  }, [idleLockEnabled, bump]);
 
   if (isLoading) {
     return <LoadingScreen message="Starting Flower point..." />;
