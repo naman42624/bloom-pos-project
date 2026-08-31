@@ -890,6 +890,7 @@ router.get('/settlements/pending-summary', authenticate, authorize('owner', 'man
       SELECT
         d.delivery_partner_id,
         u.name as partner_name,
+        u.phone as partner_phone,
         COUNT(d.id)            as delivery_count,
         SUM(d.cod_collected)   as total_cod
       FROM deliveries d
@@ -899,7 +900,7 @@ router.get('/settlements/pending-summary', authenticate, authorize('owner', 'man
         AND d.cod_status IN ('collected', 'partial')
         AND d.id NOT IN (SELECT delivery_id FROM delivery_settlement_items)
         ${locFilter}
-      GROUP BY d.delivery_partner_id, u.name
+      GROUP BY d.delivery_partner_id, u.name, u.phone
       ORDER BY total_cod DESC
     `).all(...params);
 
