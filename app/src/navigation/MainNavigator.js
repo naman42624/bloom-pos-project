@@ -398,6 +398,11 @@ function EmployeeOrdersStack() {
       <Stack.Screen name="AddPayment" component={AddPaymentScreen} options={{ title: 'Record Payment' }} />
       <Stack.Screen name="DeliveryDetail" component={DeliveryDetailScreen} options={{ title: 'Delivery' }} />
       <Stack.Screen name="LiveDeliveryMap" component={LiveDeliveryMapScreen} options={{ title: 'Live Tracking' }} />
+      {/* counter_staff gained delivery assign/cancel/reattempt parity
+          2026-09-01 (sub-project 5, user confirmed) — DeliveriesScreen
+          (the list + "at-risk"/overdue monitoring view, not just a single
+          delivery's detail) was never reachable from here at all. */}
+      <Stack.Screen name="DeliveriesList" component={DeliveriesScreen} options={{ title: 'Deliveries' }} />
       {/* Read access so counter staff can check a customer's outstanding
           balance without an active checkout (e.g. a phone call asking about
           dues) — CustomerDetailScreen/CustomersScreen already internally

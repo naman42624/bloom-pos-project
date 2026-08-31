@@ -65,6 +65,20 @@ export default function DeliveriesScreen({ navigation }) {
 
   const isManager = user?.role === 'owner' || user?.role === 'manager';
   const isOwner = user?.role === 'owner';
+  // This screen was built assuming only two audiences: owner/manager
+  // (management view) or delivery_partner (their own simplified "what do
+  // I still owe" view). counter_staff is a third audience the backend
+  // already grants full access to (GET /deliveries, GET /deliveries/
+  // at-risk, assign/batch-assign/cancel/reattempt — widened 2026-09-01,
+  // sub-project 5, user confirmed) but the screen wasn't registered
+  // anywhere counter_staff could reach it, and every isManager check here
+  // would have silently treated them like a delivery_partner instead.
+  // canManageDeliveries covers the management view for all three
+  // management-capable roles; isManager stays as-is for the one place
+  // that's genuinely owner/manager-specific (the multi-location switcher —
+  // counter_staff already gets auto-scoped to their own location, same as
+  // non-owner managers, via the !isOwner check in fetchLocations below).
+  const canManageDeliveries = isManager || user?.role === 'counter_staff';
 
   const [batchMode, setBatchMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState(new Set());
@@ -98,7 +112,7 @@ export default function DeliveriesScreen({ navigation }) {
 
       const [deliveriesRes, atRiskRes] = await Promise.all([
         api.getDeliveries(params),
-        isManager ? api.getAtRiskOrders(selectedLocation ? { location_id: selectedLocation } : {}).catch(() => ({ data: [] })) : Promise.resolve({ data: [] }),
+        canManageDeliveries ? api.getAtRiskOrders(selectedLocation ? { location_id: selectedLocation } : {}).catch(() => ({ data: [] })) : Promise.resolve({ data: [] }),
       ]);
 
       setDeliveries(deliveriesRes.data || []);
@@ -114,16 +128,20 @@ export default function DeliveriesScreen({ navigation }) {
     } finally {
       setLoading(false);
     }
-  }, [selectedLocation, statusFilter, isManager]);
+  }, [selectedLocation, statusFilter, canManageDeliveries]);
 
   useFocusEffect(useCallback(() => { fetchDeliveries(); }, [fetchDeliveries]));
 
   const openAssignModal = async (delivery) => {
     setSelectedDelivery(delivery);
     try {
-      const res = await api.getUsers({ role: 'delivery_partner', limit: 100 });
+      // GET /deliveries/partners (not GET /users, which is owner/manager-
+      // only) — already scoped to active delivery_partner accounts server-
+      // side, and reachable by counter_staff now that they can assign a
+      // rider (2026-09-01, sub-project 5).
+      const res = await api.getDeliveryPartners(selectedLocation);
       const users = res.data?.users || res.data || [];
-      setPartners(Array.isArray(users) ? users.filter(u => u.is_active) : []);
+      setPartners(Array.isArray(users) ? users : []);
     } catch (err) {
       console.error('Fetch partners error:', err);
       setPartners([]);
@@ -169,9 +187,13 @@ export default function DeliveriesScreen({ navigation }) {
       return;
     }
     try {
-      const res = await api.getUsers({ role: 'delivery_partner', limit: 100 });
+      // GET /deliveries/partners (not GET /users, which is owner/manager-
+      // only) — already scoped to active delivery_partner accounts server-
+      // side, and reachable by counter_staff now that they can assign a
+      // rider (2026-09-01, sub-project 5).
+      const res = await api.getDeliveryPartners(selectedLocation);
       const users = res.data?.users || res.data || [];
-      setPartners(Array.isArray(users) ? users.filter(u => u.is_active) : []);
+      setPartners(Array.isArray(users) ? users : []);
     } catch (err) {
       console.error('Fetch partners error:', err);
       setPartners([]);
@@ -280,7 +302,7 @@ export default function DeliveriesScreen({ navigation }) {
           else navigation.navigate('DeliveryDetail', { deliveryId: item.id });
         }}
         onLongPress={() => {
-          if (isManager && ['pending', 'assigned', 'failed'].includes(item.status)) {
+          if (canManageDeliveries && ['pending', 'assigned', 'failed'].includes(item.status)) {
             setBatchMode(true);
             setSelectedIds(new Set([item.id]));
           }
@@ -368,20 +390,20 @@ export default function DeliveriesScreen({ navigation }) {
         )}
 
         <View style={styles.cardFooter}>
-          {isManager && <Text style={styles.amount}>₹{Number(item.grand_total || 0).toFixed(0)}</Text>}
+          {canManageDeliveries && <Text style={styles.amount}>₹{Number(item.grand_total || 0).toFixed(0)}</Text>}
           {item.cod_amount > 0 && (
             <View style={[styles.codBadge, item.cod_status === 'collected' ? styles.codCollected : styles.codPending]}>
               <Text style={styles.codText}>
-                {!isManager ? 'Collect' : 'COD'} ₹{Number(item.cod_amount).toFixed(0)} {item.cod_status === 'collected' ? '✓' : item.cod_status === 'settled' ? '$$' : ''}
+                {!canManageDeliveries ? 'Collect' : 'COD'} ₹{Number(item.cod_amount).toFixed(0)} {item.cod_status === 'collected' ? '✓' : item.cod_status === 'settled' ? '$$' : ''}
               </Text>
             </View>
           )}
-          {!isManager && item.cod_amount === 0 && (
+          {!canManageDeliveries && item.cod_amount === 0 && (
             <View style={[styles.codBadge, styles.codCollected]}>
               <Text style={styles.codText}>Prepaid ✓</Text>
             </View>
           )}
-          {isManager && item.status === 'pending' && (
+          {canManageDeliveries && item.status === 'pending' && (
             <TouchableOpacity style={styles.assignBtn} onPress={() => openAssignModal(item)}>
               <Text style={styles.assignBtnText}>Assign</Text>
             </TouchableOpacity>
@@ -444,7 +466,7 @@ export default function DeliveriesScreen({ navigation }) {
       )}
 
       {/* Batch mode bar */}
-      {isManager && batchMode && (
+      {canManageDeliveries && batchMode && (
         <View style={styles.batchBar}>
           <Text style={styles.batchBarText}>{selectedIds.size} selected</Text>
           <View style={{ flexDirection: 'row', gap: Spacing.sm }}>

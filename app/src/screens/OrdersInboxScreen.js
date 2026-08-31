@@ -126,12 +126,21 @@ export default function OrdersInboxScreen({ navigation }) {
           all — counter_staff had zero path to it, even after the backend
           gained permission to confirm pickup payment. Owner/manager reach
           it via their own OrdersHub, so this link is scoped to the roles
-          that only have this stack (2026-09-01, sub-project 4 audit). */}
+          that only have this stack (2026-09-01, sub-project 4 audit).
+          DeliveriesList added the same day for the same reason, sub-
+          project 5 — the list/at-risk monitoring view, not just a single
+          delivery's own detail (already reachable via SaleDetail). */}
       {showCustomersShortcut && (
-        <TouchableOpacity style={styles.pickupLink} onPress={() => navigation.navigate('PickupOrders')}>
-          <Ionicons name="bag-handle-outline" size={16} color={Colors.primary} />
-          <Text style={styles.pickupLinkText}>Pickup Orders →</Text>
-        </TouchableOpacity>
+        <View style={styles.quickLinksRow}>
+          <TouchableOpacity style={styles.pickupLink} onPress={() => navigation.navigate('PickupOrders')}>
+            <Ionicons name="bag-handle-outline" size={16} color={Colors.primary} />
+            <Text style={styles.pickupLinkText}>Pickup Orders →</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.pickupLink} onPress={() => navigation.navigate('DeliveriesList')}>
+            <Ionicons name="bicycle-outline" size={16} color={Colors.primary} />
+            <Text style={styles.pickupLinkText}>Deliveries →</Text>
+          </TouchableOpacity>
+        </View>
       )}
       <View style={styles.searchRow}>
         <Ionicons name="search" size={18} color={Colors.textLight} />
@@ -202,9 +211,12 @@ export default function OrdersInboxScreen({ navigation }) {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
-  pickupLink: {
-    flexDirection: 'row', alignItems: 'center', gap: 4, alignSelf: 'flex-end',
+  quickLinksRow: {
+    flexDirection: 'row', justifyContent: 'flex-end', gap: Spacing.md,
     paddingHorizontal: Spacing.md, paddingTop: Spacing.sm,
+  },
+  pickupLink: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
   },
   pickupLinkText: { color: Colors.primary, fontWeight: '600', fontSize: FontSize.sm },
   searchRow: {

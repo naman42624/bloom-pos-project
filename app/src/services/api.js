@@ -834,6 +834,10 @@ class ApiService {
     return this.request(`/deliveries/at-risk${q ? `?${q}` : ''}`);
   }
 
+  getDeliveryPartners(locationId) {
+    return this.request(`/deliveries/partners${locationId ? `?location_id=${locationId}` : ''}`);
+  }
+
   getDelivery(id) {
     return this.request(`/deliveries/${id}`);
   }

@@ -53,6 +53,14 @@ export default function DeliveryDetailScreen({ route, navigation }) {
 
   const isPartner = user?.role === 'delivery_partner';
   const isManager = user?.role === 'owner' || user?.role === 'manager';
+  // Fulfill-from-stock, assign-partner, and reattempt/cancel-failed-
+  // delivery all already allow counter_staff server-side (fulfill-from-
+  // stock always did; assign/reattempt/cancel widened 2026-09-01,
+  // sub-project 5, user confirmed) — this screen's isManager gates on
+  // those three actions were missed. Convert-to-COD/Credit and Convert-
+  // to-Pickup stay isManager-only below, unchanged — those backend routes
+  // are still owner/manager-only, out of scope for this pass.
+  const canManageDeliveries = isManager || user?.role === 'counter_staff';
 
   const takeProofPhoto = async () => {
     try {
@@ -126,9 +134,12 @@ export default function DeliveryDetailScreen({ route, navigation }) {
 
   const openAssignModal = async () => {
     try {
-      const res = await api.getUsers({ role: 'delivery_partner', limit: 100 });
+      // GET /deliveries/partners, not GET /users (owner/manager-only) —
+      // same fix as DeliveriesScreen.js, needed here now that counter_staff
+      // can reach "Assign Partner" too (2026-09-01, sub-project 5).
+      const res = await api.getDeliveryPartners(delivery?.location_id);
       const users = res.data?.users || res.data || [];
-      setPartners(Array.isArray(users) ? users.filter(u => u.is_active) : []);
+      setPartners(Array.isArray(users) ? users : []);
     } catch {
       setPartners([]);
     }
@@ -549,7 +560,7 @@ export default function DeliveryDetailScreen({ route, navigation }) {
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Items ({delivery.items.length})</Text>
           {delivery.items.map((item, i) => {
-            const canFulfill = !isFinal && item.product_id && !item.from_product_stock && isManager;
+            const canFulfill = !isFinal && item.product_id && !item.from_product_stock && canManageDeliveries;
             return (
               <View key={i} style={styles.itemRow}>
                 {item.product_image && (
@@ -679,7 +690,7 @@ export default function DeliveryDetailScreen({ route, navigation }) {
             <Text style={styles.actionBtnText}>Print Delivery Challan</Text>
           </TouchableOpacity>
 
-          {isManager && delivery.status === 'pending' && (
+          {canManageDeliveries && delivery.status === 'pending' && (
             <TouchableOpacity style={[styles.actionBtn, { backgroundColor: '#2196F3' }]} onPress={openAssignModal} disabled={actionLoading}>
               <Ionicons name="person-add" size={20} color="#fff" />
               <Text style={styles.actionBtnText}>Assign Partner</Text>
@@ -795,7 +806,7 @@ export default function DeliveryDetailScreen({ route, navigation }) {
       )}
 
       {/* Failed delivery — Reattempt or Cancel */}
-      {delivery.status === 'failed' && isManager && (
+      {delivery.status === 'failed' && canManageDeliveries && (
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Failed Delivery Actions</Text>
           <Text style={{ fontSize: FontSize.sm, color: Colors.textSecondary, marginBottom: 12 }}>

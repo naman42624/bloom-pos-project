@@ -104,6 +104,35 @@ const upload = multer({
 // DELIVERY MANAGEMENT
 // ═══════════════════════════════════════════════════════════════
 
+// ─── GET /api/deliveries/partners ────────────────────────────
+// Active delivery_partner accounts, for the assign-a-rider picker.
+// counter_staff gained assign/batch-assign permission 2026-09-01
+// (sub-project 5, user confirmed) but the picker was still calling
+// GET /api/users (owner/manager-only — the full account directory,
+// including owner/manager/customer, far more than this needs). Rather
+// than widen that, or misuse /auth/staff-roster (built specifically for
+// the PIN-login roster — requires employee_code, doesn't select phone),
+// this is a small purpose-built endpoint matching the id/name/phone the
+// assign modal actually renders, same narrow-endpoint pattern as
+// staff-roster.
+router.get('/partners', authenticate, authorize('owner', 'manager', 'counter_staff'), async (req, res, next) => {
+  try {
+    const db = await getAsyncDb();
+    const { location_id } = req.query;
+    const locFilter = location_id ? 'AND ul.location_id = ?' : '';
+    const params = location_id ? [location_id] : [];
+    const users = await db.prepare(`
+      SELECT DISTINCT u.id, u.name, u.phone, u.avatar
+      FROM users u
+      LEFT JOIN user_locations ul ON ul.user_id = u.id
+      WHERE u.role = 'delivery_partner' AND u.is_active = 1
+        ${locFilter}
+      ORDER BY u.name ASC
+    `).all(...params);
+    res.json({ success: true, data: { users } });
+  } catch (err) { next(err); }
+});
+
 // ─── GET /api/deliveries ─────────────────────────────────────
 // List deliveries with filters
 router.get('/', authenticate, authorize('owner', 'manager', 'delivery_partner', 'employee', 'counter_staff'), async (req, res, next) => {
@@ -268,10 +297,14 @@ router.get('/at-risk', authenticate, authorize('owner', 'manager', 'employee', '
 // ═══════════════════════════════════════════════════════════════
 // BATCH ASSIGN — assign multiple deliveries to one partner
 // ═══════════════════════════════════════════════════════════════
+// Widened to counter_staff 2026-09-01 (sub-project 5, user confirmed) —
+// same reasoning as settlements/expenses/pickup: counter staff run the
+// floor day-to-day and shouldn't need a manager on hand to dispatch a
+// rider.
 router.post(
   '/batch-assign',
   authenticate,
-  authorize('owner', 'manager'),
+  authorize('owner', 'manager', 'counter_staff'),
   (req, res, next) => {
     try {
       const db = getDb();
@@ -374,11 +407,11 @@ router.get('/:id(\\d+)', authenticate, async (req, res, next) => {
 });
 
 // ─── PUT /api/deliveries/:id/assign ──────────────────────────
-// Manager/owner assigns a delivery partner
+// Widened to counter_staff 2026-09-01 (sub-project 5, user confirmed).
 router.put(
   '/:id(\\d+)/assign',
   authenticate,
-  authorize('owner', 'manager'),
+  authorize('owner', 'manager', 'counter_staff'),
   [body('delivery_partner_id').isInt().withMessage('Delivery partner ID required')],
   (req, res, next) => {
     try {
@@ -663,7 +696,8 @@ router.put(
 
 // ─── PUT /api/deliveries/:id/reattempt ───────────────────────
 // Reset a failed delivery back to 'assigned' for another attempt
-router.put('/:id(\\d+)/reattempt', authenticate, authorize('owner', 'manager'), (req, res, next) => {
+// Widened to counter_staff 2026-09-01 (sub-project 5, user confirmed).
+router.put('/:id(\\d+)/reattempt', authenticate, authorize('owner', 'manager', 'counter_staff'), (req, res, next) => {
   try {
     const db = getDb();
     const delivery = db.prepare('SELECT * FROM deliveries WHERE id = ?').get(req.params.id);
@@ -792,7 +826,8 @@ router.post('/:id(\\d+)/convert-payment', authenticate, authorize('owner', 'mana
 
 // ─── PUT /api/deliveries/:id/cancel ──────────────────────────
 // Cancel a delivery (manager/owner). Adds prepared items to product_stock.
-router.put('/:id(\\d+)/cancel', authenticate, authorize('owner', 'manager'), (req, res, next) => {
+// Widened to counter_staff 2026-09-01 (sub-project 5, user confirmed).
+router.put('/:id(\\d+)/cancel', authenticate, authorize('owner', 'manager', 'counter_staff'), (req, res, next) => {
   try {
     const db = getDb();
     const delivery = db.prepare('SELECT * FROM deliveries WHERE id = ?').get(req.params.id);
