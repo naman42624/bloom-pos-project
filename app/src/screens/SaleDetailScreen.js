@@ -370,7 +370,34 @@ export default function SaleDetailScreen({ route, navigation }) {
     }
   };
 
+  const goToRefund = () => {
+    navigation.navigate('RefundSale', { saleId, grandTotal: sale.grand_total });
+  };
+
   const handleCancel = () => {
+    // The server blocks cancelling a sale with money still owed to the
+    // customer (refund it first — see PUT /sales/:id/cancel). Checking the
+    // same balance here means staff hit a clear "here's what to do" screen
+    // *before* confirming, instead of tapping "Yes, cancel" and landing on
+    // a dead-end error with no next step (staff-ux-checklist #6, added
+    // 2026-09-01 after exactly that happened in live testing).
+    const paidTotal = (sale.payments || []).reduce((sum, p) => sum + Number(p.amount || 0), 0);
+    const refundedTotal = Number(sale.refund?.amount || 0);
+    const unrefundedBalance = paidTotal - refundedTotal;
+
+    if (unrefundedBalance > 0.01) {
+      const message = `This order was paid ₹${unrefundedBalance.toFixed(2)}. Cancelling won't return that money on its own — refund the customer first, then cancel.`;
+      if (Platform.OS === 'web') {
+        if (window.confirm(`${message}\n\nOpen the refund screen now?`)) goToRefund();
+      } else {
+        Alert.alert('Refund needed first', message, [
+          { text: 'Not now', style: 'cancel' },
+          { text: 'Refund now', onPress: goToRefund },
+        ]);
+      }
+      return;
+    }
+
     const doCancel = async () => {
       try {
         await api.cancelSale(saleId);
@@ -391,7 +418,7 @@ export default function SaleDetailScreen({ route, navigation }) {
   };
 
   const handleRefund = () => {
-    navigation.navigate('RefundSale', { saleId, grandTotal: sale.grand_total });
+    goToRefund();
   };
 
   const handleViewLivePartner = () => {
