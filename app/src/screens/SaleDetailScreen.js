@@ -8,7 +8,6 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import * as ImagePicker from 'expo-image-picker';
-import { useAudioPlayer, useAudioPlayerStatus } from 'expo-audio';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
@@ -16,6 +15,7 @@ import { formatDateTime, formatCardDateTime, isToday } from '../utils/datetime';
 import { Image } from 'react-native';
 import ImageModal from '../components/ImageModal';
 import VoiceNoteRecorder from '../components/VoiceNoteRecorder';
+import AttachmentVoiceRow from '../components/AttachmentVoiceRow';
 
 const STATUS_COLORS = {
   completed: Colors.success,
@@ -114,41 +114,6 @@ function summarizeAuditChanges(log) {
 // instance (hooks must be called unconditionally per component instance,
 // so a list of N voice notes needs N sibling components, not N hook calls
 // inside a single .map()).
-function AttachmentVoiceRow({ attachment }) {
-  const player = useAudioPlayer(api.getMediaUrl(attachment.file_url));
-  const status = useAudioPlayerStatus(player);
-  const isPlaying = status.playing;
-
-  const togglePlay = () => {
-    if (isPlaying) {
-      player.pause();
-      return;
-    }
-    if (status.didJustFinish || (status.duration > 0 && status.currentTime >= status.duration)) {
-      player.seekTo(0);
-    }
-    player.play();
-  };
-
-  return (
-    <View style={styles.attachmentRow}>
-      <TouchableOpacity style={styles.voicePlayBtn} onPress={togglePlay}>
-        <Ionicons name={isPlaying ? 'pause' : 'play'} size={16} color={Colors.white} />
-      </TouchableOpacity>
-      <View style={{ flex: 1 }}>
-        <Text style={styles.attachmentLabel}>
-          Voice note{attachment.duration_seconds ? ` (${attachment.duration_seconds}s)` : ''}
-        </Text>
-        {attachment.uploaded_by_name ? (
-          <Text style={styles.attachmentMeta}>
-            {attachment.uploaded_by_name} • {formatDateTime(attachment.created_at)}
-          </Text>
-        ) : null}
-      </View>
-    </View>
-  );
-}
-
 export default function SaleDetailScreen({ route, navigation }) {
   const { saleId } = route.params;
   const { user, settings } = useAuth();
@@ -1910,17 +1875,6 @@ const styles = StyleSheet.create({
   // Attachments
   attachmentPhotoRow: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm, marginBottom: Spacing.sm },
   attachmentThumb: { width: 64, height: 64, borderRadius: BorderRadius.sm },
-  attachmentRow: {
-    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
-    paddingVertical: Spacing.sm, paddingHorizontal: Spacing.sm, borderRadius: BorderRadius.sm,
-    marginBottom: Spacing.xs, backgroundColor: Colors.background,
-  },
-  voicePlayBtn: {
-    width: 32, height: 32, borderRadius: 16, backgroundColor: Colors.primary,
-    justifyContent: 'center', alignItems: 'center',
-  },
-  attachmentLabel: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.text },
-  attachmentMeta: { fontSize: FontSize.xs, color: Colors.textLight, marginTop: 2 },
   addPhotoBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
     borderWidth: 1, borderColor: Colors.primary + '40', backgroundColor: Colors.primary + '10',

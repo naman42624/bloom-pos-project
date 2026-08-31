@@ -23,6 +23,7 @@ import { Colors, FontSize, Spacing } from '../constants/theme';
 import { formatDateTime, parseServerDate, getShopNow, DEFAULT_TZ, minutesSinceServerDate, minutesUntilShopDateTime, formatTimeString } from '../utils/datetime';
 import { OrderQuickModal } from '../components/QuickModals';
 import DateTimePickerModal from '../components/DateTimePickerModal';
+import AttachmentVoiceRow from '../components/AttachmentVoiceRow';
 
 const ORDER_TYPES = ['delivery', 'pickup', 'walk_in'];
 const ORDER_TYPE_LABELS = {
@@ -1381,6 +1382,40 @@ export default function DashboardScreen({ navigation }) {
                       {notes && (
                         <View style={{ marginTop: 10, backgroundColor: '#FEF3C7', padding: 8, borderRadius: 6 }}>
                           <Text style={{ color: '#B45309', fontSize: 12, fontWeight: '500' }}>⚡ {notes}</Text>
+                        </View>
+                      )}
+
+                      {/* What to grab — recipe/custom materials with live stock,
+                          so prep staff don't need to leave the dashboard to check.
+                          Insufficient stock highlighted in red. */}
+                      {task.materials && task.materials.length > 0 && (
+                        <View style={{ marginTop: 10 }}>
+                          <Text style={{ fontSize: 11, fontWeight: '700', color: '#6B7280', marginBottom: 4, textTransform: 'uppercase' }}>Materials</Text>
+                          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
+                            {task.materials.map((m, idx) => (
+                              <View
+                                key={m.material_id || idx}
+                                style={{
+                                  paddingVertical: 4, paddingHorizontal: 8, borderRadius: 12,
+                                  backgroundColor: m.sufficient === false ? '#FEE2E2' : '#F3F4F6',
+                                }}
+                              >
+                                <Text style={{ fontSize: 11, fontWeight: '600', color: m.sufficient === false ? '#EF4444' : '#4B5563' }}>
+                                  {Number(m.total_needed || m.qty_per_unit || 1)}× {m.material_name}
+                                </Text>
+                              </View>
+                            ))}
+                          </View>
+                        </View>
+                      )}
+
+                      {/* Voice note(s) the customer/staff left on this order —
+                          play inline, no need to open the full order detail. */}
+                      {task.voice_notes && task.voice_notes.length > 0 && (
+                        <View style={{ marginTop: 10 }}>
+                          {task.voice_notes.map((vn) => (
+                            <AttachmentVoiceRow key={vn.id} attachment={vn} />
+                          ))}
                         </View>
                       )}
 

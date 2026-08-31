@@ -9,6 +9,128 @@ const { safeParseJSON } = require('../utils/json');
 
 const router = express.Router();
 
+// Batch-attaches a `materials` array (recipe/BOM or custom materials, with
+// live stock levels) to each task in place. Requires each task to already
+// carry `product_id`, `quantity`, `location_id`, and `custom_materials_json`
+// (aliased from sale_items.custom_materials) from the caller's SELECT.
+// Extracted from GET /tasks so GET /my-tasks (used by the Dashboard's
+// florist/employee task cards) can show the same "what to grab" info
+// without duplicating this batch-fetch logic (2026-08-31 follow-up).
+async function attachMaterialsToTasks(db, tasks) {
+  // ⚡ OPTIMIZATION: Batch fetch all BOMs at once (not per task)
+  const productIds = [...new Set(tasks.filter(t => t.product_id).map(t => t.product_id))];
+  const allBomsData = {};
+  if (productIds.length > 0) {
+    const placeholders = productIds.map(() => '?').join(',');
+    const boms = await db.prepare(`
+      SELECT pm.product_id, pm.material_id, pm.quantity as qty_per_unit,
+             mat.name as material_name, mat.sku as material_sku,
+             mat.image_url as material_image,
+             mc.name as category_name, mc.unit
+      FROM product_materials pm
+      JOIN materials mat ON pm.material_id = mat.id
+      LEFT JOIN material_categories mc ON mat.category_id = mc.id
+      WHERE pm.product_id IN (${placeholders})
+      ORDER BY mat.name
+    `).all(...productIds);
+
+    for (const bom of boms) {
+      if (!allBomsData[bom.product_id]) allBomsData[bom.product_id] = [];
+      allBomsData[bom.product_id].push(bom);
+    }
+  }
+
+  // ⚡ OPTIMIZATION: Batch fetch ALL material stock at once (not per task per material)
+  const materialIds = new Set();
+  for (const task of tasks) {
+    if (task.custom_materials) {
+      for (const cm of task.custom_materials) materialIds.add(cm.material_id);
+    }
+  }
+  for (const bom of Object.values(allBomsData).flat()) {
+    materialIds.add(bom.material_id);
+  }
+
+  const stockMap = new Map(); // Key: "materialId-locationId"
+  if (materialIds.size > 0) {
+    const locationIds = [...new Set(tasks.map(t => t.location_id))];
+    const matPlaceholders = [...materialIds].map(() => '?').join(',');
+    const locPlaceholders = locationIds.map(() => '?').join(',');
+    const stocks = await db.prepare(`
+      SELECT material_id, location_id, quantity
+      FROM material_stock
+      WHERE material_id IN (${matPlaceholders}) AND location_id IN (${locPlaceholders})
+    `).all(...materialIds, ...locationIds);
+
+    for (const stock of stocks) {
+      stockMap.set(`${stock.material_id}-${stock.location_id}`, stock.quantity);
+    }
+  }
+
+  // Attach materials to tasks with O(1) lookups
+  for (const task of tasks) {
+    task.custom_materials = safeParseJSON(task.custom_materials_json, null);
+    delete task.custom_materials_json;
+
+    if (task.custom_materials && task.custom_materials.length > 0) {
+      task.materials = task.custom_materials.map(cm => {
+        const quantity = stockMap.get(`${cm.material_id}-${task.location_id}`) || 0;
+        const needed = (cm.qty_per_unit || cm.qty || cm.quantity || 1) * task.quantity;
+        return {
+          material_id: cm.material_id,
+          material_name: cm.name || cm.material_name || 'Material',
+          qty_per_unit: cm.qty_per_unit || cm.qty || cm.quantity || 1,
+          total_needed: needed,
+          in_stock: quantity,
+          sufficient: quantity >= needed,
+        };
+      });
+    } else if (task.product_id && allBomsData[task.product_id]) {
+      task.materials = allBomsData[task.product_id].map(b => {
+        const quantity = stockMap.get(`${b.material_id}-${task.location_id}`) || 0;
+        const needed = b.qty_per_unit * task.quantity;
+        return {
+          ...b,
+          total_needed: needed,
+          in_stock: quantity,
+          sufficient: quantity >= needed,
+        };
+      });
+    } else {
+      task.materials = [];
+    }
+  }
+  return tasks;
+}
+
+// Batch-attaches a `voice_notes` array (from sale_attachments, type=voice_note)
+// to each task in place, keyed by the task's sale_id. A sale can carry more
+// than one voice note (e.g. a follow-up call changing instructions), so this
+// is a one-to-many fan-out done as a single grouped query, not per-task.
+async function attachVoiceNotesToTasks(db, tasks) {
+  const saleIds = [...new Set(tasks.filter(t => t.sale_id).map(t => t.sale_id))];
+  const notesBySale = {};
+  if (saleIds.length > 0) {
+    const placeholders = saleIds.map(() => '?').join(',');
+    const notes = await db.prepare(`
+      SELECT sa.id, sa.sale_id, sa.file_url, sa.duration_seconds, sa.created_at,
+             u.name as uploaded_by_name
+      FROM sale_attachments sa
+      LEFT JOIN users u ON sa.uploaded_by = u.id
+      WHERE sa.sale_id IN (${placeholders}) AND sa.type = 'voice_note'
+      ORDER BY sa.created_at ASC
+    `).all(...saleIds);
+    for (const note of notes) {
+      if (!notesBySale[note.sale_id]) notesBySale[note.sale_id] = [];
+      notesBySale[note.sale_id].push(note);
+    }
+  }
+  for (const task of tasks) {
+    task.voice_notes = notesBySale[task.sale_id] || [];
+  }
+  return tasks;
+}
+
 // ═══════════════════════════════════════════════════════════════
 // PRODUCE — Staff makes products for display (not tied to an order)
 // ═══════════════════════════════════════════════════════════════
@@ -314,89 +436,8 @@ router.get('/tasks', authenticate, authorize('owner', 'manager', 'employee', 'co
 
     const tasks = await db.prepare(sql).all(...params);
 
-    // ⚡ OPTIMIZATION: Batch fetch all BOMs at once (not per task)
-    const productIds = [...new Set(tasks.filter(t => t.product_id).map(t => t.product_id))];
-    const allBomsData = {};
-    if (productIds.length > 0) {
-      const placeholders = productIds.map(() => '?').join(',');
-      const boms = await db.prepare(`
-        SELECT pm.product_id, pm.material_id, pm.quantity as qty_per_unit,
-               mat.name as material_name, mat.sku as material_sku,
-               mat.image_url as material_image,
-               mc.name as category_name, mc.unit
-        FROM product_materials pm
-        JOIN materials mat ON pm.material_id = mat.id
-        LEFT JOIN material_categories mc ON mat.category_id = mc.id
-        WHERE pm.product_id IN (${placeholders})
-        ORDER BY mat.name
-      `).all(...productIds);
-      
-      for (const bom of boms) {
-        if (!allBomsData[bom.product_id]) allBomsData[bom.product_id] = [];
-        allBomsData[bom.product_id].push(bom);
-      }
-    }
-
-    // ⚡ OPTIMIZATION: Batch fetch ALL material stock at once (not per task per material)
-    const materialIds = new Set();
-    for (const task of tasks) {
-      if (task.custom_materials) {
-        for (const cm of task.custom_materials) materialIds.add(cm.material_id);
-      }
-    }
-    for (const bom of Object.values(allBomsData).flat()) {
-      materialIds.add(bom.material_id);
-    }
-    
-    const stockMap = new Map(); // Key: "materialId-locationId"
-    if (materialIds.size > 0) {
-      const locationIds = [...new Set(tasks.map(t => t.location_id))];
-      const matPlaceholders = [...materialIds].map(() => '?').join(',');
-      const locPlaceholders = locationIds.map(() => '?').join(',');
-      const stocks = await db.prepare(`
-        SELECT material_id, location_id, quantity
-        FROM material_stock
-        WHERE material_id IN (${matPlaceholders}) AND location_id IN (${locPlaceholders})
-      `).all(...materialIds, ...locationIds);
-      
-      for (const stock of stocks) {
-        stockMap.set(`${stock.material_id}-${stock.location_id}`, stock.quantity);
-      }
-    }
-
-    // Attach materials to tasks with O(1) lookups
-    for (const task of tasks) {
-      task.custom_materials = safeParseJSON(task.custom_materials_json, null);
-      delete task.custom_materials_json;
-
-      if (task.custom_materials && task.custom_materials.length > 0) {
-        task.materials = task.custom_materials.map(cm => {
-          const quantity = stockMap.get(`${cm.material_id}-${task.location_id}`) || 0;
-          const needed = (cm.qty_per_unit || cm.qty || cm.quantity || 1) * task.quantity;
-          return {
-            material_id: cm.material_id,
-            material_name: cm.name || cm.material_name || 'Material',
-            qty_per_unit: cm.qty_per_unit || cm.qty || cm.quantity || 1,
-            total_needed: needed,
-            in_stock: quantity,
-            sufficient: quantity >= needed,
-          };
-        });
-      } else if (task.product_id && allBomsData[task.product_id]) {
-        task.materials = allBomsData[task.product_id].map(b => {
-          const quantity = stockMap.get(`${b.material_id}-${task.location_id}`) || 0;
-          const needed = b.qty_per_unit * task.quantity;
-          return {
-            ...b,
-            total_needed: needed,
-            in_stock: quantity,
-            sufficient: quantity >= needed,
-          };
-        });
-      } else {
-        task.materials = [];
-      }
-    }
+    await attachMaterialsToTasks(db, tasks);
+    await attachVoiceNotesToTasks(db, tasks);
 
     res.json({ success: true, data: tasks });
   } catch (err) { next(err); }
@@ -411,6 +452,7 @@ router.get('/my-tasks', authenticate, async (req, res, next) => {
              p.name as product_name, p.sku as product_sku, p.image_url as product_image,
              s.sale_number, s.order_type, s.customer_name, s.scheduled_date, s.scheduled_time, s.special_instructions as order_special_instructions,
              si.product_name AS item_product_name, si.special_instructions AS item_special_instructions, si.image_url AS item_image_url,
+             si.custom_materials AS custom_materials_json,
              l.name as location_name
       FROM production_tasks pt
       LEFT JOIN products p ON pt.product_id = p.id
@@ -423,6 +465,11 @@ router.get('/my-tasks', authenticate, async (req, res, next) => {
         CASE pt.priority WHEN 'urgent' THEN 0 ELSE 1 END,
         pt.created_at ASC
     `).all(req.user.id, req.user.id);
+
+    // Dashboard task cards show materials-to-grab + voice-note playback
+    // inline (2026-08-31 follow-up) — same batch helpers GET /tasks uses.
+    await attachMaterialsToTasks(db, tasks);
+    await attachVoiceNotesToTasks(db, tasks);
 
     res.json({ success: true, data: tasks });
   } catch (err) { next(err); }
