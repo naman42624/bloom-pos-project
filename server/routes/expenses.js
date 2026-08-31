@@ -47,7 +47,11 @@ function generateExpenseNumber(db, locationId) {
 }
 
 // ─── GET /api/expenses ───────────────────────────────────────
-router.get('/', authenticate, async (req, res, next) => {
+// Was authenticate-only (any role, including customer, could read expense
+// records) — matching the write side's role list here, since anyone who
+// can log an expense has an obvious need to see the expense list too
+// (sub-project 3 gap, closed 2026-09-01).
+router.get('/', authenticate, authorize('owner', 'manager', 'employee', 'counter_staff'), async (req, res, next) => {
   try {
     const db = await getAsyncDb();
     const { location_id, category, start_date, end_date } = req.query;
@@ -210,7 +214,8 @@ router.delete('/:id', authenticate, authorize('owner', 'manager'), (req, res, ne
 });
 
 // ─── GET /api/expenses/summary ───────────────────────────────
-router.get('/summary', authenticate, async (req, res, next) => {
+// Same gap as GET / above — was authenticate-only.
+router.get('/summary', authenticate, authorize('owner', 'manager', 'employee', 'counter_staff'), async (req, res, next) => {
   try {
     const db = await getAsyncDb();
     const { location_id, start_date, end_date } = req.query;
