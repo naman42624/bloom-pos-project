@@ -288,6 +288,7 @@ router.get('/', authenticate, async (req, res, next) => {
       s.items = s.items.map(normalizeDateFields);
       const normalized = normalizeDateFields(s);
       normalized.display_stage = computeOrderStage(normalized);
+      if (req.user.role !== 'owner') delete normalized.vendor_name;
       return normalized;
     });
 
@@ -1310,6 +1311,8 @@ router.get('/:id', authenticate, async (req, res, next) => {
       total_paid: totalPaidForStage,
     });
 
+    if (req.user.role !== 'owner') delete sale.vendor_name;
+
     res.json({ success: true, data: sale });
   } catch (err) { next(err); }
 });
@@ -1361,6 +1364,7 @@ router.post(
     body('sender_phone').optional({ nullable: true }).trim(),
     body('sender_message').optional({ nullable: true }).trim(),
     body('skip_assignment').optional().isBoolean().toBoolean(),
+    body('vendor_name').optional({ nullable: true }).trim(),
   ],
   (req, res, next) => {
     try {
@@ -1380,9 +1384,13 @@ router.post(
         scheduled_date, scheduled_time, advance_amount,
         sender_name, sender_phone, sender_message,
         is_credit_sale, skip_assignment,
+        vendor_name,
       } = req.body;
       // Mutable alias — may be set by auto-create logic below
       let customer_id = customer_id_from_body || null;
+      // Owner-only field, but only owner/manager may set it at creation —
+      // silently dropped (not rejected) from any other role's request body.
+      const vendorNameToStore = ['owner', 'manager'].includes(req.user.role) ? (vendor_name || null) : null;
 
       // Hard register-open check — only when this sale actually writes cash.
       // Card/UPI-only sales (or sales with no payment yet) are unaffected.
@@ -1643,8 +1651,8 @@ router.post(
             special_instructions, customer_notes,
             sender_customer_id, receiver_customer_id, sender_same_as_receiver,
             sender_name, sender_phone, receiver_name, receiver_phone, sender_message,
-            created_by, created_at, is_credit_sale)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            created_by, created_at, is_credit_sale, vendor_name)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           saleNumber, location_id, customer_id || null, saleCustomerName || null, saleCustomerPhone || null,
           subtotal, taxTotal, discountAmount, discount_type || null, discountPercentage, discountApprovedBy,
@@ -1655,7 +1663,7 @@ router.post(
           notes || special_instructions || '', customer_notes || '',
           senderCustomerId || null, receiverCustomerId || null, senderReceiverSame ? 1 : 0,
           senderNameForSale || '', senderPhoneForSale || '', receiverNameForSale || '', receiverPhoneForSale || '', sender_message || '', req.user.id,
-          nowLocal(), is_credit_sale ? 1 : 0
+          nowLocal(), is_credit_sale ? 1 : 0, vendorNameToStore
         );
         const saleId = saleResult.lastInsertRowid;
 
@@ -1913,6 +1921,10 @@ router.post(
       if (sale.order_type === 'pre_order') {
         sale.pre_order = db.prepare('SELECT * FROM pre_orders WHERE sale_id = ?').get(sale.id);
       }
+
+      // vendor_name is owner-only on read, even for the manager who just set it —
+      // strip from the create response too, not just GET /, GET /:id.
+      if (req.user.role !== 'owner') delete sale.vendor_name;
 
       res.status(201).json({ success: true, data: sale });
 

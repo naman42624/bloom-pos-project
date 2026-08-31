@@ -882,6 +882,7 @@ function ensureCompatibilityColumns() {
   ensureColumn('sales', 'sender_same_as_receiver', 'INTEGER DEFAULT 0');
   ensureColumn('sales', 'channel', "TEXT");
   ensureColumn('sales', 'priority', "TEXT DEFAULT 'normal'");
+  ensureColumn('sales', 'vendor_name', 'VARCHAR(150)');
   // Optional per-item attachment scoping: NULL = order-level (existing behavior
   // unchanged), set = this photo/voice note belongs to one specific line item.
   ensureColumn('sale_attachments', 'sale_item_id', 'INTEGER REFERENCES sale_items(id) ON DELETE CASCADE');
