@@ -121,6 +121,18 @@ export default function OrdersInboxScreen({ navigation }) {
 
   return (
     <View style={styles.container}>
+      {/* PickupOrdersScreen (the only screen with the "mark picked up /
+          collect payment" action) was never registered in this stack at
+          all — counter_staff had zero path to it, even after the backend
+          gained permission to confirm pickup payment. Owner/manager reach
+          it via their own OrdersHub, so this link is scoped to the roles
+          that only have this stack (2026-09-01, sub-project 4 audit). */}
+      {showCustomersShortcut && (
+        <TouchableOpacity style={styles.pickupLink} onPress={() => navigation.navigate('PickupOrders')}>
+          <Ionicons name="bag-handle-outline" size={16} color={Colors.primary} />
+          <Text style={styles.pickupLinkText}>Pickup Orders →</Text>
+        </TouchableOpacity>
+      )}
       <View style={styles.searchRow}>
         <Ionicons name="search" size={18} color={Colors.textLight} />
         <TextInput
@@ -190,6 +202,11 @@ export default function OrdersInboxScreen({ navigation }) {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
+  pickupLink: {
+    flexDirection: 'row', alignItems: 'center', gap: 4, alignSelf: 'flex-end',
+    paddingHorizontal: Spacing.md, paddingTop: Spacing.sm,
+  },
+  pickupLinkText: { color: Colors.primary, fontWeight: '600', fontSize: FontSize.sm },
   searchRow: {
     flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
     backgroundColor: Colors.surface, borderRadius: BorderRadius.md,

@@ -100,8 +100,11 @@ export default function PickupOrdersScreen({ navigation }) {
   const handleMarkPickedUp = async (order) => {
     // If not fully paid AND not a credit sale, show payment collection modal (manager/owner only)
     if (order.payment_status !== 'paid' && !order.is_credit_sale) {
-      if (!isManagerOrOwner) {
-        Alert.alert('Permission', 'Only manager/owner can confirm pickup with pending payment.');
+      // Matches the backend's own authorize() list on PUT /deliveries/
+      // pickup/:saleId/picked-up — counter_staff extended in 2026-09-01,
+      // same precedent as refund/cancel (same trust as manager).
+      if (!isManagerOrOwner && user?.role !== 'counter_staff') {
+        Alert.alert('Permission', 'Only manager/owner/counter staff can confirm pickup with pending payment.');
         return;
       }
       setSelectedOrder(order);

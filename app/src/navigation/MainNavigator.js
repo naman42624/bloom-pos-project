@@ -382,6 +382,11 @@ function EmployeeOrdersStack() {
           2026-08-31 (canCancelOrRefund) but this stack never got the
           screen those buttons navigate to — added same day, same fix. */}
       <Stack.Screen name="RefundSale" component={RefundSaleScreen} options={{ title: 'Refund' }} />
+      {/* Backend gained counter_staff pickup-payment-confirmation parity
+          2026-09-01 (matching refund/cancel's precedent), but this was the
+          only screen with the "mark picked up / collect payment" action
+          and it was never reachable from here at all — added same day. */}
+      <Stack.Screen name="PickupOrders" component={PickupOrdersScreen} options={{ title: 'Pickup Orders' }} />
       <Stack.Screen name="AddPayment" component={AddPaymentScreen} options={{ title: 'Record Payment' }} />
       <Stack.Screen name="DeliveryDetail" component={DeliveryDetailScreen} options={{ title: 'Delivery' }} />
       <Stack.Screen name="LiveDeliveryMap" component={LiveDeliveryMapScreen} options={{ title: 'Live Tracking' }} />

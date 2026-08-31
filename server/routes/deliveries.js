@@ -1428,9 +1428,16 @@ router.put(
         const balanceDue = sale.grand_total - totalPaid;
 
         if (balanceDue > 0.01) {
-          // Only manager/owner can confirm pickup with payment
-          if (req.user.role !== 'owner' && req.user.role !== 'manager') {
-            throw new Error('Only manager/owner can confirm pickup payment');
+          // The route's own authorize() already allows counter_staff, but
+          // this inline check was never updated to match — missed by
+          // sub-project 2's counter_staff parity pass. Extended to match
+          // the exact precedent already set for refund/cancel (same trust
+          // as manager), rather than leaving counter staff — who actually
+          // run the counter and collect pickup payment in practice — hard
+          // blocked from confirming their own sale (found live during the
+          // sub-project 4 audit, 2026-09-01).
+          if (!['owner', 'manager', 'counter_staff'].includes(req.user.role)) {
+            throw new Error('Only manager/owner/counter staff can confirm pickup payment');
           }
           const paidNow = parseFloat(payment_amount) || 0;
           if (paidNow <= 0) {

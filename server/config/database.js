@@ -815,6 +815,26 @@ function ensureCompatibilityColumns() {
   if (hasColumn('refunds', 'status')) {
     runPsql("UPDATE refunds SET status = COALESCE(status, 'processed')");
   }
+  // refunds.created_at was DATE (no time-of-day) — every other financial
+  // table register accounting depends on (payments, expenses,
+  // delivery_settlements) correctly uses TIMESTAMP. PUT /sales/register/close
+  // recalculates each session's totals by filtering created_at against a
+  // precise session-start timestamp; a DATE column can't distinguish "this
+  // session" from "earlier the same day," so a second same-day register
+  // session (shift changes, explicitly supported — see POST /register/open's
+  // "allows multiple per day" comment) can silently absorb an earlier
+  // session's refunds into its own discrepancy figure. Confirmed live via a
+  // real multi-session test (₹600 of refunds from a closed session leaked
+  // into the next one's recalculation). Widening DATE->TIMESTAMP is
+  // lossless — existing values just gain a 00:00:00 time component, no
+  // data loss, no backfill needed (2026-09-01).
+  const refundsCreatedAtType = runSelect(`
+    SELECT data_type FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'refunds' AND column_name = 'created_at'
+  `);
+  if (refundsCreatedAtType.length > 0 && refundsCreatedAtType[0].data_type === 'date') {
+    runPsql('ALTER TABLE refunds ALTER COLUMN created_at TYPE TIMESTAMP');
+  }
 
   if (hasColumn('deliveries', 'cod_amount') && hasColumn('deliveries', 'cod_collected')) {
     runPsql("UPDATE deliveries SET cod_collected = COALESCE(cod_collected, 0)");
