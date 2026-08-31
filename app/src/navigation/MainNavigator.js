@@ -378,6 +378,10 @@ function EmployeeOrdersStack() {
       <Stack.Screen name="OrdersInbox" component={OrdersInboxScreen} options={{ title: 'Orders Inbox' }} />
       <Stack.Screen name="LogOrder" component={LogOrderScreen} options={{ title: 'Log Order' }} />
       <Stack.Screen name="SaleDetail" component={SaleDetailScreen} options={{ title: 'Sale Details' }} />
+      {/* Counter staff gained the Cancel/Refund buttons on SaleDetail
+          2026-08-31 (canCancelOrRefund) but this stack never got the
+          screen those buttons navigate to — added same day, same fix. */}
+      <Stack.Screen name="RefundSale" component={RefundSaleScreen} options={{ title: 'Refund' }} />
       <Stack.Screen name="AddPayment" component={AddPaymentScreen} options={{ title: 'Record Payment' }} />
       <Stack.Screen name="DeliveryDetail" component={DeliveryDetailScreen} options={{ title: 'Delivery' }} />
       <Stack.Screen name="LiveDeliveryMap" component={LiveDeliveryMapScreen} options={{ title: 'Live Tracking' }} />
