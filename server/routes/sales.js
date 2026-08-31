@@ -7,6 +7,7 @@ const { notifyByRole, createNotification } = require('./notifications');
 const { todayStr: localToday, nowLocal, nowTimeStr, parseServerDate } = require('../utils/time');
 const { safeParseJSON } = require('../utils/json');
 const { hasOpenRegister, REGISTER_CLOSED_MESSAGE } = require('../utils/register-guard');
+const { completeProductionTaskCore } = require('./production');
 
 const router = express.Router();
 
@@ -2154,9 +2155,33 @@ router.put(
 
       if (managerOverrideOn && (sale.order_type === 'pickup' || sale.order_type === 'delivery')) {
         if (status === 'preparing') {
+          // 'in_progress' has no material-deduction side effect in the real
+          // /tasks/:id/start endpoint either — this is just a status label,
+          // safe to flip directly.
           db.prepare("UPDATE production_tasks SET status = 'in_progress', picked_by = COALESCE(picked_by, ?), updated_at = CURRENT_TIMESTAMP WHERE sale_id = ? AND status IN ('pending', 'assigned')").run(req.user.id, sale.id);
         } else if (status === 'ready') {
-          db.prepare("UPDATE production_tasks SET status = 'completed', picked_by = COALESCE(picked_by, ?), updated_at = CURRENT_TIMESTAMP WHERE sale_id = ? AND status NOT IN ('completed', 'cancelled')").run(req.user.id, sale.id);
+          // Used to directly flip production_tasks.status = 'completed'
+          // here, bypassing the real completion logic entirely — no
+          // material deduction, no production log, and stock_deducted got
+          // set to 1 further down regardless, falsely claiming inventory
+          // was handled. This "manager override" is meant to save staff
+          // the per-item pick/start/complete dance when they're confident
+          // the order is actually done, not to skip inventory accounting —
+          // run the same real logic /tasks/:id/complete uses, for every
+          // task still open, in one transaction (found live, 2026-09-01;
+          // the Dashboard's own "Mark Ready" quick action made this
+          // shortcut more reachable without knowing what it was skipping).
+          const incompleteTasks = db.prepare(
+            "SELECT * FROM production_tasks WHERE sale_id = ? AND status NOT IN ('completed', 'cancelled')"
+          ).all(sale.id);
+          if (incompleteTasks.length > 0) {
+            const bulkCompleteTx = db.transaction(() => {
+              for (const t of incompleteTasks) {
+                completeProductionTaskCore(db, t, req.user.id);
+              }
+            });
+            bulkCompleteTx();
+          }
         }
       }
 

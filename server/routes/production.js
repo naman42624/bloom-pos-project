@@ -616,6 +616,65 @@ router.put(
   }
 );
 
+// Real completion work for one task — material deduction (custom or BOM),
+// production logging, marking the task completed. Extracted 2026-09-01 so
+// the same TRUTHFUL logic can run from both a single-task complete and a
+// bulk "manager override" advance (see PUT /sales/:id/status), instead of
+// the override directly flipping production_tasks.status and claiming
+// stock_deducted=1 without ever actually deducting anything (found live —
+// a real, silent inventory-accuracy bug, not just a UX shortcut). Never
+// opens its own transaction — the caller wraps this (and, for a bulk
+// call, the loop over multiple tasks) in one db.transaction() so a
+// multi-task advance is atomic together. Returns the list of material_ids
+// touched, for the caller's own low-stock-alert check.
+function completeProductionTaskCore(db, task, userId) {
+  const standardBom = db.prepare('SELECT material_id, quantity as qty_needed FROM product_materials WHERE product_id = ?').all(task.product_id || 0);
+  const sale = db.prepare('SELECT sale_number FROM sales WHERE id = ?').get(task.sale_id);
+
+  let customMats = null;
+  if (task.sale_item_id) {
+    const si = db.prepare('SELECT custom_materials FROM sale_items WHERE id = ?').get(task.sale_item_id);
+    customMats = safeParseJSON(si?.custom_materials, null);
+  }
+
+  const materialsToDeduct = (customMats && customMats.length > 0)
+    ? customMats.map(cm => ({ material_id: cm.material_id, qty_needed: cm.qty_per_unit || cm.qty || cm.quantity || 1 }))
+    : standardBom;
+
+  if (materialsToDeduct.length > 0) {
+    const logPlaceholders = materialsToDeduct.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
+    const logParams = [];
+    for (const b of materialsToDeduct) {
+      const usedQty = b.qty_needed * task.quantity;
+      logParams.push(b.material_id, task.location_id, 'usage', usedQty, 'sale', task.sale_id, `Task #${task.id} for ${sale?.sale_number || ''}`, userId, nowLocal());
+    }
+    db.prepare(`INSERT INTO material_transactions (material_id, location_id, type, quantity, reference_type, reference_id, notes, created_by, created_at) VALUES ${logPlaceholders}`).run(...logParams);
+
+    let updateCases = '';
+    const updateParams = [];
+    for (const b of materialsToDeduct) {
+      const usedQty = b.qty_needed * task.quantity;
+      updateCases += ' WHEN material_id = ? THEN ?';
+      updateParams.push(b.material_id, usedQty);
+    }
+    const matIdPlaceholders = materialsToDeduct.map(() => '?').join(',');
+    const caseQuery = `UPDATE material_stock SET quantity = GREATEST(0, quantity - CASE ${updateCases} ELSE 0 END), updated_at = CURRENT_TIMESTAMP WHERE location_id = ? AND material_id IN (${matIdPlaceholders})`;
+    db.prepare(caseQuery).run(...updateParams, task.location_id, ...materialsToDeduct.map(b => b.material_id));
+  }
+
+  if (task.sale_item_id) {
+    db.prepare('UPDATE sale_items SET materials_deducted = 1 WHERE id = ?').run(task.sale_item_id);
+  }
+
+  db.prepare(
+    'INSERT INTO production_logs (product_id, location_id, quantity, sale_id, task_id, produced_by, notes) VALUES (?, ?, ?, ?, ?, ?, ?)'
+  ).run(task.product_id, task.location_id, task.quantity, task.sale_id, task.id, userId, `Order ${sale?.sale_number || ''}`);
+
+  db.prepare("UPDATE production_tasks SET status = 'completed', completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(task.id);
+
+  return materialsToDeduct.map((m) => m.material_id);
+}
+
 // PUT /api/production/tasks/:id/complete — Task done: deduct materials, log production
 router.put(
   '/tasks/:id/complete',
@@ -633,67 +692,17 @@ router.put(
         return res.status(403).json({ success: false, message: 'Not your task' });
       }
 
-      const product = db.prepare('SELECT id, name FROM products WHERE id = ?').get(task.product_id);
-      const standardBom = db.prepare('SELECT material_id, quantity as qty_needed FROM product_materials WHERE product_id = ?').all(task.product_id || 0);
-      const sale = db.prepare('SELECT sale_number FROM sales WHERE id = ?').get(task.sale_id);
-
-      // Check for custom_materials on the sale_item
-      let customMats = null;
-      if (task.sale_item_id) {
-        const si = db.prepare('SELECT custom_materials FROM sale_items WHERE id = ?').get(task.sale_item_id);
-        customMats = safeParseJSON(si?.custom_materials, null);
-      }
-
-      // Use custom materials if present, otherwise standard BOM
-      const materialsToDeduct = (customMats && customMats.length > 0)
-        ? customMats.map(cm => ({ material_id: cm.material_id, qty_needed: cm.qty_per_unit || cm.qty || cm.quantity || 1 }))
-        : standardBom;
-
+      let deductedMaterialIds = [];
       const completeTx = db.transaction(() => {
-        // 1. Deduct materials (custom or standard BOM)
-        if (materialsToDeduct.length > 0) {
-          // --- BATCH INSERT MATERIAL TRANSACTIONS ---
-          const logPlaceholders = materialsToDeduct.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
-          const logParams = [];
-          for (const b of materialsToDeduct) {
-             const usedQty = b.qty_needed * task.quantity;
-             logParams.push(b.material_id, task.location_id, 'usage', usedQty, 'sale', task.sale_id, `Task #${task.id} for ${sale?.sale_number || ''}`, req.user.id, nowLocal());
-          }
-          db.prepare(`INSERT INTO material_transactions (material_id, location_id, type, quantity, reference_type, reference_id, notes, created_by, created_at) VALUES ${logPlaceholders}`).run(...logParams);
+        deductedMaterialIds = completeProductionTaskCore(db, task, req.user.id);
 
-          // --- BATCH UPDATE MATERIAL STOCK ---
-          let updateCases = '';
-          const updateParams = [];
-          for (const b of materialsToDeduct) {
-             const usedQty = b.qty_needed * task.quantity;
-             updateCases += ' WHEN material_id = ? THEN ?';
-             updateParams.push(b.material_id, usedQty);
-          }
-          const matIdPlaceholders = materialsToDeduct.map(() => '?').join(',');
-          const caseQuery = `UPDATE material_stock SET quantity = GREATEST(0, quantity - CASE ${updateCases} ELSE 0 END), updated_at = CURRENT_TIMESTAMP WHERE location_id = ? AND material_id IN (${matIdPlaceholders})`;
-          db.prepare(caseQuery).run(...updateParams, task.location_id, ...materialsToDeduct.map(b => b.material_id));
-        }
-
-        // 2. Mark sale_item as materials_deducted
-        if (task.sale_item_id) {
-          db.prepare('UPDATE sale_items SET materials_deducted = 1 WHERE id = ?').run(task.sale_item_id);
-        }
-
-        // 3. Log production (for employee tracking/incentives)
-        db.prepare(
-          'INSERT INTO production_logs (product_id, location_id, quantity, sale_id, task_id, produced_by, notes) VALUES (?, ?, ?, ?, ?, ?, ?)'
-        ).run(task.product_id, task.location_id, task.quantity, task.sale_id, task.id, req.user.id, `Order ${sale?.sale_number || ''}`);
-
-        // 4. Mark task complete
-        db.prepare("UPDATE production_tasks SET status = 'completed', completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(task.id);
-
-        // 5. ⚡ OPTIMIZED: Use single JOIN query instead of COUNT subquery + multiple updates
+        // ⚡ OPTIMIZED: Use single JOIN query instead of COUNT subquery + multiple updates
         //    Determine sale status in one query: if any tasks remain (not completed/cancelled)
         const sql = `
-          UPDATE sales SET 
-            status = CASE 
+          UPDATE sales SET
+            status = CASE
               WHEN NOT EXISTS (
-                SELECT 1 FROM production_tasks 
+                SELECT 1 FROM production_tasks
                 WHERE sale_id = ? AND status NOT IN ('completed', 'cancelled')
               ) THEN 'ready'
               ELSE status
@@ -711,7 +720,7 @@ router.put(
       // Check for low stock alerts after material deduction (BATCHED)
       try {
         const db2 = getDb();
-        const matIds = materialsToDeduct.map(m => m.material_id);
+        const matIds = deductedMaterialIds;
         if (matIds.length > 0) {
           const placeholders = matIds.map(() => '?').join(',');
           const lowStocks = db2.prepare(`
@@ -1082,3 +1091,4 @@ router.get('/logs', authenticate, async (req, res, next) => {
 });
 
 module.exports = router;
+module.exports.completeProductionTaskCore = completeProductionTaskCore;
