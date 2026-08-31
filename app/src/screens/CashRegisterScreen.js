@@ -153,6 +153,15 @@ export default function CashRegisterScreen({ navigation, route }) {
   const { user } = useAuth();
   const initialLocationId = route.params?.locationId;
   const canManage = user?.role === 'owner' || user?.role === 'manager';
+  // GET/POST /api/expenses have granted employee/counter_staff access all
+  // along (they're the ones actually handling petty cash at the counter)
+  // — but this was the only real entry point into ExpensesScreen, and it
+  // was gated behind canManage along with the (correctly owner/manager-
+  // only, GET /register/history) "View History" button. Split them:
+  // "View History" stays canManage-only, "Expenses" opens up to whoever
+  // the backend already allows (found live, 2026-09-01 — "how would
+  // counter staff even add an expense with no way to reach the screen?").
+  const canViewExpenses = canManage || user?.role === 'employee' || user?.role === 'counter_staff';
   const isOwner = user?.role === 'owner';
 
   const [locations, setLocations] = useState([]);
@@ -473,20 +482,24 @@ export default function CashRegisterScreen({ navigation, route }) {
       )}
 
       {/* Actions */}
-      {canManage && (
+      {(canViewExpenses || canManage) && (
         <View style={styles.actionRow}>
-          <TouchableOpacity style={styles.actionBtn} onPress={() => navigation.navigate('Expenses')}>
-            <View style={[styles.actionIconWrap, { backgroundColor: Colors.infoLight }]}>
-              <Ionicons name="wallet" size={20} color={Colors.info} />
-            </View>
-            <Text style={styles.actionBtnText}>Expenses</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.actionBtn} onPress={fetchHistory}>
-            <View style={[styles.actionIconWrap, { backgroundColor: Colors.primaryLight }]}>
-              <Ionicons name="list" size={20} color={Colors.primary} />
-            </View>
-            <Text style={styles.actionBtnText}>{showHistory ? 'Hide History' : 'View History'}</Text>
-          </TouchableOpacity>
+          {canViewExpenses && (
+            <TouchableOpacity style={styles.actionBtn} onPress={() => navigation.navigate('Expenses')}>
+              <View style={[styles.actionIconWrap, { backgroundColor: Colors.infoLight }]}>
+                <Ionicons name="wallet" size={20} color={Colors.info} />
+              </View>
+              <Text style={styles.actionBtnText}>Expenses</Text>
+            </TouchableOpacity>
+          )}
+          {canManage && (
+            <TouchableOpacity style={styles.actionBtn} onPress={fetchHistory}>
+              <View style={[styles.actionIconWrap, { backgroundColor: Colors.primaryLight }]}>
+                <Ionicons name="list" size={20} color={Colors.primary} />
+              </View>
+              <Text style={styles.actionBtnText}>{showHistory ? 'Hide History' : 'View History'}</Text>
+            </TouchableOpacity>
+          )}
         </View>
       )}
 
