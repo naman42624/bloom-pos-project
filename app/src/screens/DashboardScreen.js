@@ -525,7 +525,7 @@ function OrderCard({ order, tasks, hasPendingProduction, pulseOpacity, onTaskCli
 
 export default function DashboardScreen({ navigation }) {
   const { width } = useWindowDimensions();
-  const { user, activeLocation, settings } = useAuth();
+  const { user, activeLocation, settings, locked } = useAuth();
   const timezone = settings?.timezone?.value || 'Asia/Kolkata';
 
   const [refreshing, setRefreshing] = useState(false);
@@ -818,6 +818,24 @@ export default function DashboardScreen({ navigation }) {
       fetchDashboard();
     }, [fetchDashboard])
   );
+
+  // The idle-lock screen is now an overlay on top of the still-mounted app
+  // (see RootNavigator.js) rather than a real navigation away and back —
+  // that's what stops an in-progress order from being wiped on lock, but
+  // it also means this screen never loses React Navigation focus during a
+  // lock, so useFocusEffect above never re-fires on unlock. Without this,
+  // whatever was on screen when the lock triggered (register status,
+  // "Need Attention" counts) just sat there stale after unlocking, with no
+  // visual sign it wasn't current — reported live as the dashboard
+  // "looking different" between login methods, actually a same-account
+  // lock/unlock leaving old data on screen (2026-09-01).
+  const wasLockedRef = useRef(false);
+  useEffect(() => {
+    if (wasLockedRef.current && !locked) {
+      fetchDashboard();
+    }
+    wasLockedRef.current = locked;
+  }, [locked, fetchDashboard]);
 
   const onRefresh = useCallback(() => {
     setRefreshing(true);
