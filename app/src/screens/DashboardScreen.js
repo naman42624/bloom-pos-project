@@ -25,12 +25,16 @@ import OrderKanbanBoard from '../components/OrderKanbanBoard';
 import DateTimePickerModal from '../components/DateTimePickerModal';
 import AttachmentVoiceRow from '../components/AttachmentVoiceRow';
 import ImageModal from '../components/ImageModal';
-
-// NOTE: ORDER_TYPES is also duplicated in components/OrderKanbanBoard.js —
-// that component owns the kanban rendering and needs its own copy to stay
-// self-contained (Task 9, order-lifecycle plan, 2026-09-01); this one here
-// is still needed for the sales-fetch filter below.
-const ORDER_TYPES = ['delivery', 'pickup', 'walk_in'];
+import {
+  ORDER_TYPES,
+  ORDER_STATUS_LABELS,
+  TASK_STATUS_LABELS,
+  DELIVERY_STATUS_COLORS,
+  DELIVERY_STATUS_LABELS,
+  FONT_FAMILY,
+  formatMoney,
+  getTaskChipColor,
+} from '../constants/orderDisplay';
 
 // Compact form of the above for inline card meta text ("Delivery · ₹500"),
 // where "Delivery Orders" would read oddly repeated per-card.
@@ -39,16 +43,6 @@ const ORDER_TYPE_SHORT_LABELS = {
   pickup: 'Pickup',
   walk_in: 'Walk-in',
   pre_order: 'Advance order',
-};
-
-const ORDER_STATUS_LABELS = {
-  pending: 'Pending',
-  confirmed: 'Confirmed',
-  preparing: 'Preparing',
-  ready: 'Ready',
-  completed: 'Completed',
-  cancelled: 'Cancelled',
-  draft: 'Draft',
 };
 
 // Matches OrdersInboxScreen's palette — same statuses should look the same
@@ -64,50 +58,6 @@ const ORDER_STATUS_COLORS = {
   cancelled: Colors.error,
   draft: Colors.textLight,
 };
-
-const TASK_STATUS_LABELS = {
-  pending: 'Queued',
-  assigned: 'Assigned',
-  in_progress: 'In Progress',
-  completed: 'Done',
-  cancelled: 'Cancelled',
-};
-
-const DELIVERY_STATUS_COLORS = {
-  pending: '#9CA3AF',
-  assigned: '#6366F1',
-  picked_up: '#F59E0B',
-  in_transit: '#0EA5E9',
-  delivered: '#10B981',
-  failed: '#E11D48',
-  cancelled: '#9CA3AF',
-};
-
-const DELIVERY_STATUS_LABELS = {
-  pending: 'Pending',
-  assigned: 'Assigned',
-  picked_up: 'Picked Up',
-  in_transit: 'In Transit',
-  delivered: 'Delivered',
-  failed: 'Failed',
-  cancelled: 'Cancelled',
-};
-
-const FONT_FAMILY = typeof navigator !== 'undefined' && navigator.product === 'ReactNative'
-  ? undefined
-  : 'Inter, Geist, system-ui';
-
-function formatMoney(value) {
-  return `₹${Number(value || 0).toLocaleString('en-IN', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
-}
-
-function getTaskChipColor(status) {
-  if (status === 'completed') return '#10B981';
-  if (status === 'in_progress') return '#0EA5E9';
-  if (status === 'assigned') return '#6366F1';
-  if (status === 'pending') return '#F59E0B';
-  return '#9CA3AF';
-}
 
 function RegisterCard({ item, onPress }) {
   const { locationName, isOpen, register } = item;
@@ -288,6 +238,11 @@ export default function DashboardScreen({ navigation }) {
   const isEmployee = role === 'employee' || role === 'florist_staff';
   const isCounterStaff = role === 'counter_staff';
   const isDeliveryPartner = role === 'delivery_partner';
+  // Same 1100px breakpoint components/OrderKanbanBoard.js computes
+  // independently for its own preview-cap logic (2 cards vs 1) — kept as two
+  // separate computations deliberately (different purposes: general layout
+  // here vs preview-cap there), but if this number ever changes, check that
+  // file too.
   const isDesktop = width >= 1100;
   // NOTE: the card pulse-border animation (pulseAnim/pulseOpacity) that used
   // to live here moved into OrderKanbanBoard.js along with OrderCard, the

@@ -11,43 +11,35 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '../constants/theme';
 import { formatDateTime, minutesSinceServerDate, minutesUntilShopDateTime, formatTimeString } from '../utils/datetime';
+import {
+  ORDER_TYPES,
+  ORDER_STATUS_LABELS,
+  TASK_STATUS_LABELS,
+  DELIVERY_STATUS_COLORS,
+  DELIVERY_STATUS_LABELS,
+  FONT_FAMILY,
+  formatMoney,
+  getTaskChipColor,
+} from '../constants/orderDisplay';
 
 // ─────────────────────────────────────────────────────────────────────────
 // Extracted verbatim from DashboardScreen.js (Task 9, order-lifecycle plan,
 // 2026-09-01) — the owner/manager kanban board of delivery/pickup/walk-in
-// orders. Pure extraction, no logic changes. A handful of constants/helpers
-// below are duplicated rather than imported from DashboardScreen.js because
-// they're also used by code that stayed behind there (the counter_staff
-// branch, the deliveries widget, the my-tasks section, TaskDetailModal) —
-// duplicating a few small lookup tables/pure functions here keeps this
-// component genuinely self-contained (no import cycle back to the screen
-// that renders it) at the cost of two tiny sources of truth. If either
-// side's table changes, check the other.
+// orders. Pure extraction, no logic changes. The constants/helpers imported
+// above from constants/orderDisplay.js are also used by code that stayed
+// behind in DashboardScreen.js (the counter_staff branch, the deliveries
+// widget, the my-tasks section, TaskDetailModal) — pulled into that shared
+// leaf module (fix-round, 2026-09-01) instead of being duplicated here, so
+// there's one source of truth and no import cycle (neither this file nor
+// DashboardScreen.js imports the other; both import the leaf module).
+// The constants below this comment ARE exclusive to this component (not
+// used anywhere in DashboardScreen.js) and stay defined locally.
 // ─────────────────────────────────────────────────────────────────────────
 
-const ORDER_TYPES = ['delivery', 'pickup', 'walk_in'];
 const ORDER_TYPE_LABELS = {
   delivery: 'Delivery Orders',
   pickup: 'Pickup Orders',
   walk_in: 'Walk-in Orders',
-};
-
-const ORDER_STATUS_LABELS = {
-  pending: 'Pending',
-  confirmed: 'Confirmed',
-  preparing: 'Preparing',
-  ready: 'Ready',
-  completed: 'Completed',
-  cancelled: 'Cancelled',
-  draft: 'Draft',
-};
-
-const TASK_STATUS_LABELS = {
-  pending: 'Queued',
-  assigned: 'Assigned',
-  in_progress: 'In Progress',
-  completed: 'Done',
-  cancelled: 'Cancelled',
 };
 
 const ORDER_PHASE_LABELS = {
@@ -68,40 +60,12 @@ const PICKUP_STATUS_LABELS = {
   picked_up: 'Picked Up',
 };
 
-const DELIVERY_STATUS_COLORS = {
-  pending: '#9CA3AF',
-  assigned: '#6366F1',
-  picked_up: '#F59E0B',
-  in_transit: '#0EA5E9',
-  delivered: '#10B981',
-  failed: '#E11D48',
-  cancelled: '#9CA3AF',
-};
-
-const DELIVERY_STATUS_LABELS = {
-  pending: 'Pending',
-  assigned: 'Assigned',
-  picked_up: 'Picked Up',
-  in_transit: 'In Transit',
-  delivered: 'Delivered',
-  failed: 'Failed',
-  cancelled: 'Cancelled',
-};
-
 const PAYMENT_STATUS_COLORS = {
   paid: '#10B981',
   partial: '#F59E0B',
   pending: '#E11D48',
   refunded: '#9CA3AF',
 };
-
-const FONT_FAMILY = typeof navigator !== 'undefined' && navigator.product === 'ReactNative'
-  ? undefined
-  : 'Inter, Geist, system-ui';
-
-function formatMoney(value) {
-  return `₹${Number(value || 0).toLocaleString('en-IN', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
-}
 
 function formatOrderType(value) {
   return ORDER_TYPE_LABELS[value] || value || 'Order';
@@ -135,14 +99,6 @@ function formatCardDateTime(dateStr, timeStr, timezone) {
     }
   } catch {}
   return dateStr || '';
-}
-
-function getTaskChipColor(status) {
-  if (status === 'completed') return '#10B981';
-  if (status === 'in_progress') return '#0EA5E9';
-  if (status === 'assigned') return '#6366F1';
-  if (status === 'pending') return '#F59E0B';
-  return '#9CA3AF';
 }
 
 function getOrderStatusTone(status) {
@@ -393,6 +349,10 @@ export default function OrderKanbanBoard({
   timezone,
 }) {
   const { width } = useWindowDimensions();
+  // Same 1100px breakpoint DashboardScreen.js computes independently for its
+  // own general layout — kept as two separate computations deliberately
+  // (different purposes: layout there vs this board's preview-cap here), but
+  // if this number ever changes, check that file too.
   const isDesktop = width >= 1100;
   const effectiveTimezone = timezone || 'Asia/Kolkata';
 
