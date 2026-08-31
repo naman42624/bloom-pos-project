@@ -838,6 +838,15 @@ class ApiService {
     return this.request(`/deliveries/partners${locationId ? `?location_id=${locationId}` : ''}`);
   }
 
+  // ─── Delivery Routes ────────────────────────────────────
+  getDeliveryRoutes(locationId) {
+    return this.request(`/delivery-routes${locationId ? `?location_id=${locationId}` : ''}`);
+  }
+
+  createOrFindDeliveryRoute(name, locationId) {
+    return this.request('/delivery-routes', { method: 'POST', body: JSON.stringify({ name, location_id: locationId }) });
+  }
+
   getDelivery(id) {
     return this.request(`/deliveries/${id}`);
   }

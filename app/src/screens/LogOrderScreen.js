@@ -4,6 +4,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import api from '../services/api';
 import VoiceNoteRecorder from '../components/VoiceNoteRecorder';
+import RoutePicker from '../components/RoutePicker';
 import DateTimePickerModal from '../components/DateTimePickerModal';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import { useAuth } from '../context/AuthContext';
@@ -73,6 +74,7 @@ export default function LogOrderScreen({ navigation }) {
   const [receiverName, setReceiverName] = useState('');
   const [receiverPhone, setReceiverPhone] = useState('');
   const [deliveryAddress, setDeliveryAddress] = useState('');
+  const [routeId, setRouteId] = useState(null);
 
   // Scheduled date/time for advance orders — both optional.
   const [scheduledDate, setScheduledDate] = useState('');
@@ -352,6 +354,7 @@ export default function LogOrderScreen({ navigation }) {
         receiver_name: fulfilment === 'delivery' ? receiverName : undefined,
         receiver_phone: fulfilment === 'delivery' ? receiverPhone : undefined,
         delivery_address: fulfilment === 'delivery' ? deliveryAddress : undefined,
+        route_id: fulfilment === 'delivery' ? routeId : undefined,
         scheduled_date: scheduledDate || undefined,
         scheduled_time: scheduledTime || undefined,
         ...(paymentMode !== 'unpaid' ? { payments: [{ method: paymentMethod, amount: parseFloat(paymentAmount) || 0 }] } : {}),
@@ -609,6 +612,8 @@ export default function LogOrderScreen({ navigation }) {
             <TextInput style={styles.input} placeholder="Recipient name" value={receiverName} onChangeText={setReceiverName} />
             <TextInput style={styles.input} placeholder="Recipient phone" keyboardType="phone-pad" value={receiverPhone} onChangeText={setReceiverPhone} />
             <TextInput style={styles.input} placeholder="Delivery address" value={deliveryAddress} onChangeText={setDeliveryAddress} multiline />
+            <Text style={styles.sectionHint}>Delivery route (optional)</Text>
+            <RoutePicker value={routeId} onChange={setRouteId} locationId={activeLocation?.id} />
           </View>
         )}
 

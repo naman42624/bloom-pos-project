@@ -10,6 +10,7 @@ import { useFocusEffect, CommonActions } from '@react-navigation/native';
 
 import DateTimePickerModal from '../components/DateTimePickerModal';
 import VoiceNoteRecorder from '../components/VoiceNoteRecorder';
+import RoutePicker from '../components/RoutePicker';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
@@ -68,6 +69,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
   const [receiverName, setReceiverName] = useState('');
   const [receiverPhone, setReceiverPhone] = useState('');
   const [receiverId, setReceiverId] = useState(null);
+  const [routeId, setRouteId] = useState(null);
   const [orderNotes, setOrderNotes] = useState('');
   // Voice notes recorded for this order, uploaded after the sale is created (see
   // handlePlaceOrder). Local file URIs only — never carried into a saved draft.
@@ -758,6 +760,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     setReceiverName('');
     setReceiverPhone('');
     setReceiverId(null);
+    setRouteId(null);
     setOrderNotes('');
     setDeliveryCharges('');
     setDiscountValue('');
@@ -1105,6 +1108,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
         advance_amount: paymentMode === 'partial' ? Math.round((parseFloat(advanceAmount) || 0) * 100) / 100 : 0,
         skip_assignment: skipAssignment,
         assigned_to: !skipAssignment ? assignedTo : null,
+        route_id: orderType === 'delivery' ? (routeId || null) : null,
       };
 
       if (orderType === 'pre_order') {
@@ -1599,6 +1603,13 @@ export default function QuickCheckoutScreen({ navigation, route }) {
                 placeholderTextColor={Colors.textLight}
                 multiline
               />
+
+              {orderType === 'delivery' && (
+                <>
+                  <Text style={styles.label}>Delivery Route (optional)</Text>
+                  <RoutePicker value={routeId} onChange={setRouteId} locationId={selectedLocation} />
+                </>
+              )}
 
               <Text style={styles.label}>Sender Address (optional)</Text>
               <TextInput
