@@ -1,7 +1,13 @@
 import { useEffect } from 'react';
 import { AppState } from 'react-native';
 
-const IDLE_TIMEOUT_MS = 3 * 60 * 1000; // 3 minutes
+// 3 minutes was tight enough to fire mid-order (typing a delivery address
+// or item notes doesn't re-trigger a touch on the outer view the way a tap
+// does, so a slow typist could go quiet for the whole window without ever
+// looking "idle" to a human). 5 minutes gives more real breathing room
+// while the mount-preservation fix in RootNavigator.js means even a false
+// trigger now costs a PIN re-entry, not the order itself (2026-09-01).
+const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 
 // Module-level (not per-hook-instance) so any screen can report activity
 // without needing the hook's own `bump` return value threaded through
