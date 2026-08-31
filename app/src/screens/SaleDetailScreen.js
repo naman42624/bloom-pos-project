@@ -159,6 +159,13 @@ export default function SaleDetailScreen({ route, navigation }) {
   // counter staff hit a live order needing a refund with no one able to
   // process it without an owner/manager on hand.
   const canCancelOrRefund = canManage || user?.role === 'counter_staff';
+  // Counter staff assign/reassign production tasks to florist staff as part
+  // of logging an order — the backend (PUT /production/tasks/:id/assign)
+  // already granted this 2026-08-31, but the button itself was still gated
+  // behind canManage, so it never actually appeared for them. Found live
+  // (2026-09-01): the picker already listed florist_staff as assignable,
+  // it just had no visible way to open it.
+  const canAssignTasks = canManage || user?.role === 'counter_staff';
   // Florist/prep staff never touch payments (they only see this screen for
   // the production tasks on an order) and customers viewing their own order
   // can't record payments either (POST /:id/payments is staff-only
@@ -569,17 +576,18 @@ export default function SaleDetailScreen({ route, navigation }) {
     setLoadingEmployees(true);
     setAssignModalVisible(true);
     try {
-      // No single `role` query param can express "any of these three roles"
-      // server-side (GET /users takes one role at a time), so fetch the
-      // full staff list and filter client-side — florist_staff needs to be
-      // assignable here since production tasks are their whole job.
-      const res = await api.getUsers();
-      // API returns { data: { users: [...], pagination } }
-      const list = res.data?.users || res.data || [];
-      const filtered = Array.isArray(list)
-        ? list.filter((u) => ['employee', 'counter_staff', 'florist_staff'].includes(u.role))
-        : [];
-      setEmployees(filtered);
+      // GET /users is owner/manager-only (it lists the whole account
+      // directory — owner/manager/customer included — which counter_staff
+      // has no business seeing just to pick who preps an order). Reuse
+      // /auth/staff-roster instead: same endpoint LockScreen already uses,
+      // pre-filtered server-side to exactly employee/counter_staff/
+      // florist_staff, scoped to this sale's own location, and safe for
+      // any authenticated role since it was already designed to be safe
+      // for NO role (LockScreen calls it unauthenticated). Switched
+      // 2026-09-01 so counter_staff's Assign button actually works instead
+      // of 403ing the moment the modal tried to load names.
+      const res = await api.getStaffRoster(sale.location_id);
+      setEmployees(res.data?.staff || []);
     } catch (err) {
       console.log('Failed to fetch employees:', err);
       setEmployees([]);
@@ -966,6 +974,14 @@ export default function SaleDetailScreen({ route, navigation }) {
           const hasCustomMaterials = parsedCustomMaterials && parsedCustomMaterials.length > 0;
           const hasMaterials = hasCustomMaterials || (item.materials && item.materials.length > 0);
           const isExpanded = expandedItems[idx];
+          // Voice notes recorded against THIS item specifically (see the
+          // Attachments section below for order-level notes, sale_item_id
+          // IS NULL). The data already carried sale_item_id — this screen
+          // just wasn't reading it, so every note showed in one flat list
+          // at the bottom regardless of which item it was actually about
+          // (found live, 2026-09-01 — the Dashboard task cards already got
+          // this same fix in production.js the session before).
+          const itemVoiceNotes = attachments.filter((a) => a.type === 'voice_note' && a.sale_item_id === item.id);
           return (
             <View key={idx} style={styles.itemRow}>
               <View style={{ flex: 1 }}>
@@ -986,6 +1002,13 @@ export default function SaleDetailScreen({ route, navigation }) {
                       {item.tax_rate > 0 ? ` (${item.tax_rate}% tax)` : ''}
                     </Text>
                     {item.special_instructions ? <Text style={{ fontSize: FontSize.xs, color: Colors.textLight, marginTop: 4 }}>Note: {item.special_instructions}</Text> : null}
+                    {itemVoiceNotes.length > 0 && (
+                      <View style={{ marginTop: 6, gap: 4 }}>
+                        {itemVoiceNotes.map((att) => (
+                          <AttachmentVoiceRow key={att.id} attachment={att} />
+                        ))}
+                      </View>
+                    )}
                     {/* Show custom image_url only if different from product_image */}
                     {item.image_url && item.product_image && item.image_url !== item.product_image ? (
                       <TouchableOpacity onPress={(e) => { e.stopPropagation(); setViewedImage(api.getMediaUrl(item.image_url)); }} style={{ marginTop: 8 }}>
@@ -1017,7 +1040,7 @@ export default function SaleDetailScreen({ route, navigation }) {
                               <Ionicons name="hand-left-outline" size={14} color={Colors.info} />
                               <Text style={[styles.taskActionText, { color: Colors.info }]}>Pick Up</Text>
                             </TouchableOpacity>
-                            {canManage && (
+                            {canAssignTasks && (
                               <TouchableOpacity style={[styles.taskActionBtn, { backgroundColor: '#9C27B0' + '15' }]} onPress={() => openAssignModal(task.id)}>
                                 <Ionicons name="person-add-outline" size={14} color="#9C27B0" />
                                 <Text style={[styles.taskActionText, { color: '#9C27B0' }]}>Assign</Text>
@@ -1027,7 +1050,7 @@ export default function SaleDetailScreen({ route, navigation }) {
                         )}
                         {task.status === 'assigned' && (
                           <>
-                            {canManage && (
+                            {canAssignTasks && (
                               <TouchableOpacity style={[styles.taskActionBtn, { backgroundColor: '#9C27B0' + '15' }]} onPress={() => openAssignModal(task.id)}>
                                 <Ionicons name="swap-horizontal-outline" size={14} color="#9C27B0" />
                                 <Text style={[styles.taskActionText, { color: '#9C27B0' }]}>Reassign</Text>
@@ -1249,25 +1272,44 @@ export default function SaleDetailScreen({ route, navigation }) {
           owner/manager/employee-only server-side (POST /attachments), so the
           add controls are hidden for the customer role to avoid a dead 403. */}
       <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Attachments ({attachments.length})</Text>
+        {/* Voice notes tied to one item (sale_item_id set) show with that
+            item above instead of here — this section is general/order-wide
+            notes only (sale_item_id IS NULL), so the count reflects what's
+            actually listed below it rather than double-counting notes
+            shown elsewhere (2026-09-01). */}
+        {(() => {
+          const photos = attachments.filter((a) => a.type === 'photo');
+          const generalVoiceNotes = attachments.filter((a) => a.type === 'voice_note' && !a.sale_item_id);
+          const hasItemNotes = attachments.some((a) => a.type === 'voice_note' && a.sale_item_id);
+          return (
+            <>
+              <Text style={styles.sectionTitle}>Attachments ({photos.length + generalVoiceNotes.length})</Text>
+              {hasItemNotes && (
+                <Text style={[styles.infoSubtext, { marginBottom: Spacing.xs }]}>
+                  Notes about a specific item are shown with that item above.
+                </Text>
+              )}
 
-        {attachments.filter(a => a.type === 'photo').length > 0 && (
-          <View style={styles.attachmentPhotoRow}>
-            {attachments.filter(a => a.type === 'photo').map((att) => (
-              <TouchableOpacity key={att.id} onPress={() => setViewedImage(api.getMediaUrl(att.file_url))}>
-                <Image source={{ uri: api.getMediaUrl(att.file_url) }} style={styles.attachmentThumb} />
-              </TouchableOpacity>
-            ))}
-          </View>
-        )}
+              {photos.length > 0 && (
+                <View style={styles.attachmentPhotoRow}>
+                  {photos.map((att) => (
+                    <TouchableOpacity key={att.id} onPress={() => setViewedImage(api.getMediaUrl(att.file_url))}>
+                      <Image source={{ uri: api.getMediaUrl(att.file_url) }} style={styles.attachmentThumb} />
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              )}
 
-        {attachments.filter(a => a.type === 'voice_note').map((att) => (
-          <AttachmentVoiceRow key={att.id} attachment={att} />
-        ))}
+              {generalVoiceNotes.map((att) => (
+                <AttachmentVoiceRow key={att.id} attachment={att} />
+              ))}
 
-        {attachments.length === 0 && (
-          <Text style={styles.infoSubtext}>No attachments yet.</Text>
-        )}
+              {photos.length === 0 && generalVoiceNotes.length === 0 && (
+                <Text style={styles.infoSubtext}>No general attachments yet.</Text>
+              )}
+            </>
+          );
+        })()}
 
         {!isCustomer && (
           <View style={{ marginTop: Spacing.sm, gap: Spacing.sm }}>

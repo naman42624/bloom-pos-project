@@ -33,6 +33,15 @@ const ORDER_TYPE_LABELS = {
   walk_in: 'Walk-in Orders',
 };
 
+// Compact form of the above for inline card meta text ("Delivery · ₹500"),
+// where "Delivery Orders" would read oddly repeated per-card.
+const ORDER_TYPE_SHORT_LABELS = {
+  delivery: 'Delivery',
+  pickup: 'Pickup',
+  walk_in: 'Walk-in',
+  pre_order: 'Advance order',
+};
+
 const ORDER_STATUS_LABELS = {
   pending: 'Pending',
   confirmed: 'Confirmed',
@@ -41,6 +50,20 @@ const ORDER_STATUS_LABELS = {
   completed: 'Completed',
   cancelled: 'Cancelled',
   draft: 'Draft',
+};
+
+// Matches OrdersInboxScreen's palette — same statuses should look the same
+// wherever staff see them. Used by the counter_staff dashboard's order
+// cards, which previously showed a hardcoded "PENDING" badge regardless of
+// the order's real status (found live, 2026-09-01).
+const ORDER_STATUS_COLORS = {
+  pending: Colors.warning,
+  confirmed: Colors.info,
+  preparing: Colors.info,
+  ready: Colors.success,
+  completed: Colors.textSecondary,
+  cancelled: Colors.error,
+  draft: Colors.textLight,
 };
 
 const TASK_STATUS_LABELS = {
@@ -529,6 +552,7 @@ export default function DashboardScreen({ navigation }) {
   const [myDeliveries, setMyDeliveries] = useState([]); // delivery partner's own deliveries
   const [counterStats, setCounterStats] = useState({ salesCount: 0, registerOpen: null, registerOpenedBy: null });
   const [counterPendingOrders, setCounterPendingOrders] = useState([]);
+  const [orderActionLoading, setOrderActionLoading] = useState({});
 
   const role = user?.role;
   const isOwner = role === 'owner';
@@ -607,20 +631,29 @@ export default function DashboardScreen({ navigation }) {
       // ─── Counter Staff: sales-focused fetch (counts/status only —
       // no revenue totals or cash amounts, per role scope) ──────
       if (isCounterStaff) {
-        const [summaryRes, registerRes, pendingRes] = await Promise.all([
+        const [summaryRes, registerRes, pendingRes, preparingRes] = await Promise.all([
           api.getTodaySummary(activeLocation?.id).catch(() => ({ data: { total_sales: 0 } })),
           activeLocation?.id ? api.getRegisterStatus(activeLocation.id).catch(() => ({ data: null })) : Promise.resolve({ data: null }),
           // Fetched wider than the 5 we display so the today/future split
           // below has real data to count against, not just the first 5
           // pending orders regardless of date (2026-08-31 fix).
           api.getSales({ status: 'pending', location_id: activeLocation?.id, limit: 30 }).catch(() => ({ data: { sales: [] } })),
+          // GET /sales only takes one status value per call, so 'preparing'
+          // needs its own request. Without this, an order advanced out of
+          // 'pending' vanished from the dashboard entirely — no way to see
+          // it again to mark it Ready once prep finished (2026-09-01 fix,
+          // alongside adding the "Mark Ready"/"Start Preparing" quick
+          // actions these two statuses need).
+          api.getSales({ status: 'preparing', location_id: activeLocation?.id, limit: 30 }).catch(() => ({ data: { sales: [] } })),
         ]);
         setCounterStats({
           salesCount: Number(summaryRes?.data?.total_sales || 0),
           registerOpen: registerRes?.data ? !registerRes.data.closed_at : null,
           registerOpenedBy: registerRes?.data?.opened_by_name || null,
         });
-        setCounterPendingOrders(pendingRes?.data?.sales || pendingRes?.data || []);
+        const pendingList = pendingRes?.data?.sales || pendingRes?.data || [];
+        const preparingList = preparingRes?.data?.sales || preparingRes?.data || [];
+        setCounterPendingOrders([...pendingList, ...preparingList]);
         setLoading(false);
         setRefreshing(false);
         return;
@@ -858,6 +891,27 @@ export default function DashboardScreen({ navigation }) {
       Alert.alert('Task Update', err?.message || 'Unable to update task status.');
     } finally {
       setTaskActionLoading((prev) => ({ ...prev, [task.id]: false }));
+    }
+  }, [fetchDashboard]);
+
+  // Counter staff's one-tap "advance this order" quick action — pending ->
+  // preparing, or preparing -> ready. Deliberately stops at 'ready': the
+  // next step (pickup/delivery completion) can require collecting a
+  // payment, which isn't safe as a blind one-tap card action, so those
+  // orders route to the full SaleDetail screen instead (2026-09-01).
+  const advanceOrderStatus = useCallback(async (order) => {
+    const nextStatus = order.status === 'pending' ? 'preparing' : order.status === 'preparing' ? 'ready' : null;
+    if (!nextStatus) return;
+    setOrderActionLoading((prev) => ({ ...prev, [order.id]: true }));
+    try {
+      await api.updateOrderStatus(order.id, nextStatus);
+      await fetchDashboard();
+    } catch (err) {
+      // The backend's guard messages are already plain-language (e.g. "3
+      // production task(s) still pending") — pass them straight through.
+      Alert.alert('Order Update', err?.message || 'Unable to update this order.');
+    } finally {
+      setOrderActionLoading((prev) => ({ ...prev, [order.id]: false }));
     }
   }, [fetchDashboard]);
 
@@ -1316,23 +1370,85 @@ export default function DashboardScreen({ navigation }) {
               </View>
             ) : (
               <>
-                {counterOrdersSplit.dueToday.map((order) => (
-                  <TouchableOpacity
-                    key={order.id}
-                    style={[styles.roleTaskCard, { borderLeftColor: '#F59E0B' }]}
-                    onPress={() => navigation.navigate('SaleDetail', { saleId: order.id })}
-                    activeOpacity={0.8}
-                  >
-                    <View style={styles.roleTaskHeader}>
-                      <Text style={styles.roleTaskName} numberOfLines={1}>
-                        {order.sale_number} — {order.customer_name || order.customer_display_name || 'Walk-in'}
-                      </Text>
-                      <View style={[styles.roleTaskBadge, { backgroundColor: '#F59E0B20' }]}>
-                        <Text style={[styles.roleTaskBadgeText, { color: '#F59E0B' }]}>PENDING</Text>
+                {counterOrdersSplit.dueToday.map((order) => {
+                  // Card was a bare sale_number + hardcoded "PENDING" badge
+                  // regardless of real status, with zero order info and no
+                  // way to act without leaving the dashboard (found live,
+                  // 2026-09-01). Now shows real status/type/amount and one
+                  // next-step action, mirroring OrdersInboxScreen's info
+                  // density and the guardrails PUT /:id/status already
+                  // enforces (e.g. can't mark Ready with prep unfinished —
+                  // surfaced as a plain Alert if tapped too early).
+                  const statusColor = ORDER_STATUS_COLORS[order.status] || Colors.textSecondary;
+                  const statusLabel = ORDER_STATUS_LABELS[order.status] || order.status;
+                  const isUnpaid = order.payment_status && order.payment_status !== 'paid' && order.payment_status !== 'refunded';
+                  const contactPhone = order.customer_phone || order.receiver_phone;
+                  const nextActionLabel = order.status === 'pending' ? 'Start Preparing' : order.status === 'preparing' ? 'Mark Ready' : null;
+                  const isOrderLoading = !!orderActionLoading[order.id];
+                  return (
+                    <TouchableOpacity
+                      key={order.id}
+                      style={[styles.roleTaskCard, { borderLeftColor: statusColor }]}
+                      onPress={() => navigation.navigate('SaleDetail', { saleId: order.id })}
+                      activeOpacity={0.8}
+                    >
+                      <View style={styles.roleTaskHeader}>
+                        <Text style={styles.roleTaskName} numberOfLines={1}>
+                          {order.sale_number}{order.priority === 'rush' ? '  🔥' : ''} — {order.customer_name || order.customer_display_name || 'Walk-in'}
+                        </Text>
+                        <View style={[styles.roleTaskBadge, { backgroundColor: statusColor + '20' }]}>
+                          <Text style={[styles.roleTaskBadgeText, { color: statusColor }]}>{statusLabel.toUpperCase()}</Text>
+                        </View>
                       </View>
-                    </View>
-                  </TouchableOpacity>
-                ))}
+
+                      <Text style={styles.roleTaskMeta}>
+                        {ORDER_TYPE_SHORT_LABELS[order.order_type] || order.order_type} · ₹{Number(order.grand_total || 0).toFixed(0)}
+                        {order.scheduled_time ? ` · ${formatTimeString(order.scheduled_time)}` : ''}
+                        {isUnpaid ? ` · ${order.payment_status === 'partial' ? 'Partly paid' : 'Unpaid'}` : ''}
+                      </Text>
+
+                      <View style={{ flexDirection: 'row', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+                        {contactPhone && (
+                          <TouchableOpacity
+                            style={styles.orderQuickActionBtn}
+                            onPress={(e) => { e.stopPropagation(); Linking.openURL(`tel:${contactPhone}`); }}
+                          >
+                            <Ionicons name="call-outline" size={14} color={Colors.info} />
+                            <Text style={[styles.orderQuickActionText, { color: Colors.info }]}>Call</Text>
+                          </TouchableOpacity>
+                        )}
+                        {contactPhone && (
+                          <TouchableOpacity
+                            style={styles.orderQuickActionBtn}
+                            onPress={(e) => {
+                              e.stopPropagation();
+                              Linking.openURL(`https://wa.me/91${contactPhone}?text=${encodeURIComponent(`Hi, this is about your order ${order.sale_number}`)}`);
+                            }}
+                          >
+                            <Ionicons name="logo-whatsapp" size={14} color={Colors.success} />
+                            <Text style={[styles.orderQuickActionText, { color: Colors.success }]}>WhatsApp</Text>
+                          </TouchableOpacity>
+                        )}
+                        {nextActionLabel && (
+                          <TouchableOpacity
+                            style={[styles.orderQuickActionBtn, { backgroundColor: Colors.primary + '15', opacity: isOrderLoading ? 0.6 : 1 }]}
+                            onPress={(e) => { e.stopPropagation(); advanceOrderStatus(order); }}
+                            disabled={isOrderLoading}
+                          >
+                            {isOrderLoading ? (
+                              <ActivityIndicator size="small" color={Colors.primary} />
+                            ) : (
+                              <>
+                                <Ionicons name="arrow-forward-circle-outline" size={14} color={Colors.primary} />
+                                <Text style={[styles.orderQuickActionText, { color: Colors.primary }]}>{nextActionLabel}</Text>
+                              </>
+                            )}
+                          </TouchableOpacity>
+                        )}
+                      </View>
+                    </TouchableOpacity>
+                  );
+                })}
                 {counterOrdersSplit.scheduledLater.length > 0 && (
                   <Text style={{ fontSize: 12, color: '#6B7280', textAlign: 'center', marginTop: 4 }}>
                     +{counterOrdersSplit.scheduledLater.length} more scheduled for later
@@ -2555,6 +2671,20 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#6B7280',
     marginTop: 2,
+    fontFamily: FONT_FAMILY,
+  },
+  orderQuickActionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: '#F3F4F6',
+  },
+  orderQuickActionText: {
+    fontSize: 12,
+    fontWeight: '600',
     fontFamily: FONT_FAMILY,
   },
   roleActionBtn: {

@@ -480,9 +480,15 @@ router.get('/my-tasks', authenticate, async (req, res, next) => {
       WHERE (pt.assigned_to = ? OR pt.picked_by = ?)
         AND (
           pt.status IN ('assigned', 'in_progress')
-          -- "Done Today" on the dashboard needs today's completions too —
+          -- "Done Today" on the dashboard needs same-day completions too --
           -- the original query only ever returned assigned/in_progress,
           -- so that stat was silently always zero (2026-08-31 fix).
+          -- NOTE: no apostrophes in this comment block, ever -- database-async.js's
+          -- bindParams() toggles its "inside a string" flag on every single quote
+          -- character with no awareness of -- comments, so one stray apostrophe
+          -- here desyncs placeholder counting for the rest of the query and 500s
+          -- this endpoint for every caller (found live, 2026-09-01: this exact
+          -- typo -- "today's" -- broke every florist/employee's My Tasks).
           OR (pt.status = 'completed' AND pt.completed_at::date = (?)::date)
         )
       ORDER BY
