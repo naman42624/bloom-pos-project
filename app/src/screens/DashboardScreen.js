@@ -1259,11 +1259,20 @@ export default function DashboardScreen({ navigation }) {
                 <Text style={styles.roleStatCount}>{counterOrdersSplit.dueToday.length}</Text>
                 <Text style={styles.roleStatLabel}>Need Attention</Text>
               </View>
-              <View style={[styles.roleStatCard, { borderLeftColor: counterStats.registerOpen ? '#10B981' : '#EF4444' }]}>
+              {/* This card is the ONLY way in for counter staff once the
+                  register is already open — the "isn't open" banner below
+                  and the reactive alert on Checkout/Log Order both only
+                  fire while it's closed, so there was previously no path
+                  at all to reach CashRegisterScreen to close it at end of
+                  shift (found live, 2026-09-01). Always tappable now. */}
+              <TouchableOpacity
+                style={[styles.roleStatCard, { borderLeftColor: counterStats.registerOpen ? '#10B981' : '#EF4444' }]}
+                onPress={() => navigation.navigate('POS', { screen: 'CashRegister' })}
+              >
                 <Ionicons name={counterStats.registerOpen ? 'lock-open-outline' : 'lock-closed-outline'} size={20} color={counterStats.registerOpen ? '#10B981' : '#EF4444'} />
                 <Text style={[styles.roleStatCount, { fontSize: 14 }]}>{counterStats.registerOpen === null ? '—' : counterStats.registerOpen ? 'Open' : 'Closed'}</Text>
                 <Text style={styles.roleStatLabel}>Register</Text>
-              </View>
+              </TouchableOpacity>
             </View>
 
             {!counterStats.registerOpen && counterStats.registerOpen !== null && (
