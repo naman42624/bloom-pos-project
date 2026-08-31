@@ -585,6 +585,20 @@ export default function DashboardScreen({ navigation }) {
         ]);
         setMyTasks(myTasksRes?.data || []);
         setTaskRows(allTasksRes?.data || []);
+        // Plain `employee` (unlike florist_staff) has the POS tab and takes
+        // cash payments, so it has the exact same register-reachability
+        // need counter_staff does — reusing counterStats' register fields
+        // rather than adding a parallel state (2026-09-01 follow-up to the
+        // counter_staff fix). florist_staff never touches payments, so it
+        // skips this fetch entirely.
+        if (role === 'employee' && activeLocation?.id) {
+          const registerRes = await api.getRegisterStatus(activeLocation.id).catch(() => ({ data: null }));
+          setCounterStats((prev) => ({
+            ...prev,
+            registerOpen: registerRes?.data ? !registerRes.data.closed_at : null,
+            registerOpenedBy: registerRes?.data?.opened_by_name || null,
+          }));
+        }
         setLoading(false);
         setRefreshing(false);
         return;
@@ -1347,7 +1361,29 @@ export default function DashboardScreen({ navigation }) {
                 <Text style={styles.roleStatCount}>{myTasks.filter(t => t.status === 'completed').length}</Text>
                 <Text style={styles.roleStatLabel}>Done Today</Text>
               </View>
+              {/* florist_staff never takes payments (no POS tab, see
+                  FloristStack) so it has no reason to see or manage the
+                  register — this card is employee-only, same reasoning
+                  as the counter_staff fix above. */}
+              {role === 'employee' && (
+                <TouchableOpacity
+                  style={[styles.roleStatCard, { borderLeftColor: counterStats.registerOpen ? '#10B981' : '#EF4444' }]}
+                  onPress={() => navigation.navigate('POS', { screen: 'CashRegister' })}
+                >
+                  <Ionicons name={counterStats.registerOpen ? 'lock-open-outline' : 'lock-closed-outline'} size={20} color={counterStats.registerOpen ? '#10B981' : '#EF4444'} />
+                  <Text style={[styles.roleStatCount, { fontSize: 14 }]}>{counterStats.registerOpen === null ? '—' : counterStats.registerOpen ? 'Open' : 'Closed'}</Text>
+                  <Text style={styles.roleStatLabel}>Register</Text>
+                </TouchableOpacity>
+              )}
             </View>
+
+            {role === 'employee' && !counterStats.registerOpen && counterStats.registerOpen !== null && (
+              <TouchableOpacity style={styles.roleEmptyCard} onPress={() => navigation.navigate('POS', { screen: 'CashRegister' })}>
+                <Ionicons name="lock-closed-outline" size={32} color="#EF4444" />
+                <Text style={styles.roleEmptyTitle}>Register isn't open</Text>
+                <Text style={styles.roleEmptyText}>Tap here to open it before taking a cash sale.</Text>
+              </TouchableOpacity>
+            )}
 
             {/* My assigned tasks */}
             <View style={styles.sectionHeader}>
