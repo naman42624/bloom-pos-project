@@ -974,6 +974,16 @@ router.get('/:id/audit-logs', authenticate, authorize('owner', 'manager'), async
       ORDER BY a.created_at DESC
     `).all(req.params.id);
 
+    // vendor_name is owner-only on read. The audit trail itself keeps full
+    // fidelity in storage (that's its whole purpose) — strip the key from
+    // the JSON snapshots here, at read time only, never touching the DB.
+    if (req.user.role !== 'owner') {
+      for (const log of logs) {
+        if (log.previous_state && typeof log.previous_state === 'object') delete log.previous_state.vendor_name;
+        if (log.new_state && typeof log.new_state === 'object') delete log.new_state.vendor_name;
+      }
+    }
+
     res.json({ success: true, data: logs });
   } catch (err) { next(err); }
 });
