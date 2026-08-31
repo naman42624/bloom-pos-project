@@ -66,6 +66,20 @@ The Dashboard's per-order card (built for counter_staff in an earlier phase) alr
 
 Anything requiring input (collecting a balance, recording a failed-delivery reason) is explicitly *not* added as a card shortcut — it routes to the real screen, same split as §6.
 
+## 5.5. Dashboard consolidation — counter_staff gets the manager dashboard's grouping, both get inline shortcuts
+
+User's addition after reviewing the first draft: both the owner/manager and counter_staff dashboards should carry order-progressing shortcuts, and the counter_staff dashboard specifically should become a merge of the two — today's manager dashboard's *organization* plus today's counter dashboard's *action-orientation* — "so grouping and viewing and updating can be done in a single quick way."
+
+**What the manager dashboard already has that counter_staff's doesn't:** a kanban-style board (`ordersByTypeAndStatus`, `renderOrderTypeSection`/`renderStatusLane`) — orders grouped by `order_type` (delivery/pickup/walk_in) into cards, each card broken into status lanes (Pending/Preparing/Ready, plus In Transit for delivery), with per-lane overdue/due-soon SLA counts and sub-status hints ("3 assigned · 1 in transit · 1 failed" for delivery, "2 ready to collect · 1 waiting" for pickup). This is pure order-count/status information, not revenue or cash figures — nothing here conflicts with the existing "no revenue totals, no exact register cash" boundary already agreed for counter_staff's dashboard, so it's safe to bring over largely as-is.
+
+**What the manager dashboard is missing, that counter_staff's has:** inline per-order quick actions. Today, tapping a lane on the manager dashboard navigates *away* to a filtered queue screen (`handleNavigateToQueue`) — there's no one-tap "Mark Ready" directly on the dashboard itself, unlike the shortcuts already built for counter_staff's flat list (§5). This is a real gap on the manager side too, not something to leave behind when consolidating.
+
+**The consolidated design:**
+- Counter_staff's dashboard is rebuilt on the same kanban-by-type-and-lane structure as the manager dashboard (grouping/viewing), still excluding revenue/cash totals per the existing boundary.
+- Individual orders within a lane get the inline one-tap actions from §5/§6 (Start Preparing / Mark Ready / Confirm Pickup / Mark Delivered, whichever applies to that order's Stage) directly on the card — no navigating to a queue screen just to advance a status.
+- The *same* inline actions are added to the manager dashboard's existing lanes too, closing that gap for owner/manager as well — this isn't a counter-only enhancement, both get it.
+- The existing counter_staff-specific pieces already built this session (today/future split, pending-COD banner, register-status card) carry over unchanged into the new layout — they're not being replaced, just re-hosted inside the richer kanban structure.
+
 ## 6. SaleDetail inline actions (sub-project 5's "approach C")
 
 Deliberately **not** a full consolidation of `DeliveryDetailScreen`/`PickupOrdersScreen` into `SaleDetailScreen` — those screens carry real weight (GPS tracking, COD collection with method/reference, proof-of-delivery, assign-a-rider) that would bloat SaleDetail if inlined wholesale.
@@ -140,11 +154,12 @@ Explicitly scoped against real logistics patterns, keeping only what fits this s
 
 - **Automated stop-sequencing / route optimization** (suggesting an optimal visiting order using live mapping/geocoding). This needs a real external mapping API — cost, external dependency, same category of decision as the WhatsApp Business API question from sub-project 4. Route (§8) is a manual grouping tag, not a routing algorithm. User confirmed: defer, revisit as its own brainstorm if wanted later.
 - **Rider capacity limits / auto-balancing assignment.** Real fleets need this at a scale where a human dispatcher can't reason about it by eye. User confirmed this shop's scale doesn't need it — §9.1.3's plain visibility is the whole of what's being built here.
+- **`ProductionQueueScreen` fixes and improvements** — added to the deferred list per the user's explicit request when reviewing this spec. Not investigated yet in this session, so no concrete issues are named here; flagged as a future audit-and-fix pass (matching the shape of sub-project 4/5's "audit first, then fix" approach) rather than left implicitly fine.
 
 ## 10. Explicitly out of scope for this spec
 
 - Any change to the underlying six status fields themselves (Stage is a read-layer computation over them, not a schema consolidation).
-- `ProductionQueueScreen`'s granular per-item flow — unchanged, remains available for delegated multi-item orders.
+- `ProductionQueueScreen`'s granular per-item flow itself (assign/pick/start/complete, per item) — unchanged in this pass, remains available for delegated multi-item orders. **`ProductionQueueScreen`'s own fixes/improvements are separately deferred to a future pass — see §9.2.** No specific issues identified yet (unlike the other deferred items, this wasn't backed by an investigation this session); it's flagged per the user's request as something to come back and audit, not something with known concrete problems right now.
 - Full CRUD/admin management UI for `delivery_routes` (deactivating unused routes, renaming) — the create-or-find flow is enough to start; a management screen can follow later if the list needs pruning.
 
 ## 11. Open items for spec review
