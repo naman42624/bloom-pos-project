@@ -1381,6 +1381,7 @@ router.post(
     body('sender_message').optional({ nullable: true }).trim(),
     body('skip_assignment').optional().isBoolean().toBoolean(),
     body('vendor_name').optional({ nullable: true }).trim(),
+    body('route_id').optional({ nullable: true }).isInt(),
   ],
   (req, res, next) => {
     try {
@@ -1400,7 +1401,7 @@ router.post(
         scheduled_date, scheduled_time, advance_amount,
         sender_name, sender_phone, sender_message,
         is_credit_sale, skip_assignment,
-        vendor_name,
+        vendor_name, route_id,
       } = req.body;
       // Mutable alias — may be set by auto-create logic below
       let customer_id = customer_id_from_body || null;
@@ -1841,10 +1842,10 @@ router.post(
           const codAmount = is_credit_sale ? 0 : Math.max(0, grandTotal - totalPaid);
           db.prepare(`
             INSERT INTO deliveries (sale_id, location_id, delivery_address, customer_name, customer_phone,
-              scheduled_date, scheduled_time, cod_amount, cod_status, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              scheduled_date, scheduled_time, cod_amount, cod_status, route_id, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `).run(saleId, location_id, delivery_address, receiverNameForSale || saleCustomerName || null, receiverPhoneForSale || saleCustomerPhone || null,
-            scheduled_date || null, scheduled_time || null, codAmount, codAmount > 0 ? 'pending' : 'collected', nowLocal());
+            scheduled_date || null, scheduled_time || null, codAmount, codAmount > 0 ? 'pending' : 'collected', route_id || null, nowLocal());
         }
 
         // Save sender/receiver addresses with labels when provided

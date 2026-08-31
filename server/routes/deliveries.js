@@ -145,12 +145,14 @@ router.get('/', authenticate, authorize('owner', 'manager', 'delivery_partner', 
              s.status as order_status, s.special_instructions, s.is_credit_sale,
              u.name as partner_name, u.phone as partner_phone,
              l.name as location_name,
-             ab.name as assigned_by_name
+             ab.name as assigned_by_name,
+             r.name as route_name
       FROM deliveries d
       LEFT JOIN sales s ON d.sale_id = s.id
       LEFT JOIN users u ON d.delivery_partner_id = u.id
       LEFT JOIN locations l ON d.location_id = l.id
       LEFT JOIN users ab ON d.assigned_by = ab.id
+      LEFT JOIN delivery_routes r ON r.id = d.route_id
       WHERE 1=1
     `;
     const params = [];
