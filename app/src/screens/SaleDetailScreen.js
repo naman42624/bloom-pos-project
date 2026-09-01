@@ -822,6 +822,17 @@ export default function SaleDetailScreen({ route, navigation }) {
   const paidAmount = (sale.payments || []).reduce((s, p) => s + Number(p.amount || 0), 0);
   const due = Number(sale.grand_total || 0) - paidAmount;
 
+  // True only when display_stage.nextAction (server/utils/order-stage.js) is
+  // the server's signal that this order's next step needs zero staff input —
+  // Confirm Pickup / Mark Delivered. Single source shared by both the
+  // "Complete Order" gate and the new inline quick-action button below it,
+  // so the two conditions can never drift apart (Task 12 fix round,
+  // 2026-09-01 — coordinator ruling: showing both at once for the same net
+  // effect reintroduces the old multi-button confusion this redesign exists
+  // to remove).
+  const nextAction = sale.display_stage?.nextAction;
+  const hasNoInputNextAction = nextAction?.label === 'Confirm Pickup' || nextAction?.label === 'Mark Delivered';
+
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       {/* Header card */}
@@ -1399,7 +1410,18 @@ export default function SaleDetailScreen({ route, navigation }) {
           )}
         </View>
       )}
-      {sale.status === 'ready' && (
+      {/* "Complete Order" is suppressed when hasNoInputNextAction is true
+          (both computed above, near `due`) — Stage/nextAction is meant to be
+          the single source of truth for "what's the next action"; showing
+          this generic button alongside the dedicated "Confirm Pickup"/"Mark
+          Delivered" one below would reintroduce the old multi-button
+          confusion this whole redesign exists to remove (coordinator ruling,
+          2026-09-01 fix round). Still renders as before for every other
+          'ready' case: walk_in/pre_order orders (their own nextAction.label
+          is 'Complete', not one of the two checked here) and any pickup/
+          delivery order where nextAction is null (balance/COD still due) —
+          those still need this button's own pay-modal/guard fallback. */}
+      {sale.status === 'ready' && !hasNoInputNextAction && (
         <View style={styles.actions}>
           <TouchableOpacity style={[styles.actionBtn, { backgroundColor: Colors.success, flex: 1 }]} onPress={() => handleStatusTransition('completed', 'Complete Order')}>
             <Ionicons name="checkmark-done-outline" size={18} color={Colors.white} />
@@ -1417,7 +1439,7 @@ export default function SaleDetailScreen({ route, navigation }) {
           through to DeliveryDetail) or the Complete Order button's own
           pay-balance modal (for pickup) remain the way to finish the order,
           same as before this task. */}
-      {(sale.display_stage?.nextAction?.label === 'Confirm Pickup' || sale.display_stage?.nextAction?.label === 'Mark Delivered') && (
+      {hasNoInputNextAction && (
         <TouchableOpacity
           style={[
             styles.actionBtn,
@@ -1432,7 +1454,7 @@ export default function SaleDetailScreen({ route, navigation }) {
           ) : (
             <>
               <Ionicons name="checkmark-done-outline" size={18} color={Colors.white} />
-              <Text style={styles.actionBtnText}>{sale.display_stage.nextAction.label}</Text>
+              <Text style={styles.actionBtnText}>{nextAction.label}</Text>
             </>
           )}
         </TouchableOpacity>
