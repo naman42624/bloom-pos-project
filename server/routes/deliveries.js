@@ -122,7 +122,10 @@ router.get('/partners', authenticate, authorize('owner', 'manager', 'counter_sta
     const locFilter = location_id ? 'AND ul.location_id = ?' : '';
     const params = location_id ? [location_id] : [];
     const users = await db.prepare(`
-      SELECT DISTINCT u.id, u.name, u.phone, u.avatar
+      SELECT DISTINCT u.id, u.name, u.phone, u.avatar,
+        (SELECT COUNT(*) FROM deliveries d
+          WHERE d.delivery_partner_id = u.id
+            AND d.status IN ('assigned','picked_up','in_transit')) as active_delivery_count
       FROM users u
       LEFT JOIN user_locations ul ON ul.user_id = u.id
       WHERE u.role = 'delivery_partner' AND u.is_active = 1

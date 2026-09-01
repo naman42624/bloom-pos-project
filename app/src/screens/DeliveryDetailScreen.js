@@ -886,6 +886,7 @@ export default function DeliveryDetailScreen({ route, navigation }) {
                   <View style={{ flex: 1 }}>
                     <Text style={styles.partnerName}>{p.name}</Text>
                     <Text style={styles.partnerPhone}>{p.phone}</Text>
+                    <Text style={styles.partnerLoad}>{p.active_delivery_count || 0} stop{Number(p.active_delivery_count) !== 1 ? 's' : ''} today</Text>
                   </View>
                   <Ionicons name="chevron-forward" size={20} color={Colors.textLight} />
                 </TouchableOpacity>
@@ -966,4 +967,5 @@ const styles = StyleSheet.create({
   partnerItem: { flexDirection: 'row', alignItems: 'center', padding: Spacing.md, borderBottomWidth: 1, borderBottomColor: Colors.border },
   partnerName: { fontSize: FontSize.md, fontWeight: '600', color: Colors.text },
   partnerPhone: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: 2 },
+  partnerLoad: { fontSize: FontSize.sm, color: Colors.primary, marginTop: 2 },
 });
