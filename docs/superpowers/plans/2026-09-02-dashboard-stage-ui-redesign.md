@@ -574,16 +574,26 @@ Create the file with this at the top (below imports). This is spec §7:
 function resolveDeadEnd(order) {
   const stageKey = order.display_stage?.key;
 
-  if (stageKey === 'ready_for_pickup') {
+  // 'ready' and 'ready_for_pickup' share one branch, and it keys on the DATA
+  // (is there an open delivery? is money owed?) rather than on order_type.
+  // Keying this on order_type was the original bug in this plan and the exact
+  // bug Task 1 fixed in the backend guards: a pre_order fulfilled by delivery
+  // is not order_type 'delivery', and gating on that would drop it straight
+  // through into a card with no action at all.
+  if (stageKey === 'ready' || stageKey === 'ready_for_pickup') {
+    const hasOpenDelivery = order.delivery_id != null
+      && !['delivered', 'cancelled'].includes(order.delivery_status);
+    if (hasOpenDelivery) {
+      if (!order.delivery_partner_name) {
+        return { type: 'route', kind: 'assign_rider', label: 'Assign Rider' };
+      }
+      return { type: 'status', text: `${order.delivery_partner_name} has it` };
+    }
     const due = Number(order.grand_total || 0) - Number(order.total_paid || 0);
     if (due > 0.01 && !order.is_credit_sale) {
       return { type: 'route', kind: 'collect_payment', label: `Collect ${formatMoney(due)}` };
     }
     return null;
-  }
-
-  if (stageKey === 'ready' && order.order_type === 'delivery') {
-    return { type: 'route', kind: 'assign_rider', label: 'Assign Rider' };
   }
 
   if (stageKey === 'out_for_delivery') {
