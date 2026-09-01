@@ -601,11 +601,12 @@ export default function DeliveriesScreen({ navigation }) {
             </View>
           );
         }}
-        // In route view, an at-risk delivery deliberately appears twice —
-        // once in the "Needs Attention" lead section, once in its own
-        // route group — so item.id alone isn't a unique key across the
-        // flattened list. Fold in the absolute index to keep keys unique.
-        keyExtractor={(item, index) => `${index}-${item.id}`}
+        // SectionList already namespaces each item's key by its own
+        // section (VirtualizedSectionList._subExtractor), so item.id alone
+        // stays a safe key even though an at-risk delivery deliberately
+        // appears twice in route view — once in the "Needs Attention" lead
+        // section, once in its own route group. No collision.
+        keyExtractor={item => String(item.id)}
         contentContainerStyle={{ padding: Spacing.md, paddingBottom: 100 }}
         refreshing={loading}
         onRefresh={fetchDeliveries}
