@@ -149,7 +149,7 @@ Expected: two `OK` lines, exit 0.
 Start the dev server. Against **Test Loc (`location_id 4`) only**, create a `pre_order` with a delivery attached, then attempt to complete it:
 
 ```bash
-curl -s -X PUT "http://localhost:5000/api/sales/<PRE_ORDER_ID>/status" \
+curl -s -X PUT "http://localhost:3001/api/sales/<PRE_ORDER_ID>/status" \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"status":"completed"}'
 ```
@@ -506,14 +506,14 @@ Return `withStage` where the handler currently returns its rows.
 - [ ] **Step 4: Verify both routes live**
 
 ```bash
-curl -s "http://localhost:5000/api/sales?location_id=4&limit=3" \
+curl -s "http://localhost:3001/api/sales?location_id=4&limit=3" \
   -H "Authorization: Bearer $TOKEN" | python3 -m json.tool | grep -E 'delivery_partner_name|"label"|"key"'
 ```
 
 Expected: `delivery_partner_name` present on every row (null when unassigned), and each row still carrying its `display_stage`.
 
 ```bash
-curl -s "http://localhost:5000/api/deliveries?location_id=4&limit=3" \
+curl -s "http://localhost:3001/api/deliveries?location_id=4&limit=3" \
   -H "Authorization: Bearer $TOKEN" | python3 -m json.tool | grep -E '"display_stage"|"label"|"delivery_status"'
 ```
 
