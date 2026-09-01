@@ -287,7 +287,9 @@ router.get('/', authenticate, async (req, res, next) => {
       s.items = s.items || [];
       s.items = s.items.map(normalizeDateFields);
       const normalized = normalizeDateFields(s);
-      normalized.display_stage = computeOrderStage(normalized);
+      // Pass the viewer's role — nextAction is gated on each endpoint's real
+      // authorize() list so we never render a one-tap button that 403s.
+      normalized.display_stage = computeOrderStage(normalized, req.user.role);
       if (req.user.role !== 'owner') delete normalized.vendor_name;
       return normalized;
     });
@@ -1325,7 +1327,7 @@ router.get('/:id', authenticate, async (req, res, next) => {
       cod_collected: sale.delivery?.cod_collected,
       delivery_status: sale.delivery?.status,
       total_paid: totalPaidForStage,
-    });
+    }, req.user.role);
 
     if (req.user.role !== 'owner') delete sale.vendor_name;
 
@@ -2195,6 +2197,15 @@ router.put(
       const { status } = req.body;
       const validTransitions = {
         pending: ['preparing', 'cancelled'],
+        // 'confirmed' is pending-equivalent (written by PUT
+        // /deliveries/:id/reattempt, allowed by the sales status CHECK,
+        // counted as new work by production.js) but had no entry here, so a
+        // confirmed order could not be advanced at all — every transition
+        // 400'd with "Cannot transition from confirmed to ...". Added
+        // 2026-09-01 alongside making computeOrderStage() treat 'confirmed'
+        // as 'new'; without it the "Start Preparing" one-tap that stage now
+        // offers would be a guaranteed dead end.
+        confirmed: ['preparing', 'cancelled'],
         preparing: ['ready', 'cancelled'],
         ready: ['completed', 'cancelled'],
         completed: [],
