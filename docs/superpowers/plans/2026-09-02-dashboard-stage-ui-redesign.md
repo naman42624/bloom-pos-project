@@ -491,7 +491,7 @@ After the rows are fetched and before they are returned, map each one:
         delivery_status: row.status,
         delivery_id: row.id,
         grand_total: row.grand_total,
-        total_paid: null,
+        total_paid: row.total_paid,
         is_credit_sale: row.is_credit_sale,
         cod_amount: row.cod_amount,
         cod_collected: row.cod_collected,
@@ -499,7 +499,15 @@ After the rows are fetched and before they are returned, map each one:
     }));
 ```
 
-`total_paid` is passed as `null` deliberately: this route does not sum `payments`, and `computeOrderStage()`'s balance check is written as `sale.grand_total != null && sale.total_paid != null ? ... : false`, so a null makes the pickup balance branch evaluate to "no balance due" rather than guessing. That branch is unreachable from a delivery row anyway — every row here has a delivery attached, so the pickup ladder never runs.
+**`total_paid` must be a real number here, not null.** An earlier draft of this plan passed `null`, reasoning that the pickup ladder never runs for a delivery row. That reasoning is now wrong: Task 1's fix added a balance check to the *shared* `walk_in`/`pre_order` ladder too, and that ladder **is** reachable from a `GET /deliveries` row — a `pre_order` whose delivery is `cancelled` or `delivered` but which still has money owed. With `total_paid: null` the balance check evaluates to "nothing due" and the route emits a `Complete` action that `PUT /sales/:id/status` will then reject — exactly the dead-end button Task 1 was fixed to eliminate, reintroduced through a different route.
+
+So add the sum to the `SELECT` as well, using the same expression `GET /sales` already uses:
+
+```sql
+             COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.sale_id = d.sale_id), 0) as total_paid,
+```
+
+Verify this specifically in Step 4 below: find or create a `pre_order` at Test Loc with a cancelled delivery and an unpaid balance, and confirm `GET /deliveries` returns `display_stage.nextAction === null` for it, not a `Complete` action.
 
 Return `withStage` where the handler currently returns its rows.
 
@@ -1463,9 +1471,22 @@ Leave alone: delivery sub-status badges on `DeliveriesScreen` that describe the 
 
 - [ ] **Step 3: Converge SaleDetailScreen's status calls**
 
-`:479` and `:552` call `api.updateOrderStatus` with a hand-derived next status. Where the screen already has `sale.display_stage.nextAction` available (it does — `:833` reads it), route through `api.advanceOrder(nextAction)` instead, exactly as `:511` already does. Do not remove the explicit Complete Order button's guard behaviour — `:825-833` already hides it when the inline action covers the same case.
+`:479` and `:552` call `api.updateOrderStatus` with a hand-derived next status. Where the screen already has `sale.display_stage.nextAction` available (it does — `:833` reads it), route through `api.advanceOrder(nextAction)` instead, exactly as `:511` already does.
 
-- [ ] **Step 4: Verify transforms**
+- [ ] **Step 4: Stop SaleDetail's Complete Order button from leading to a 400**
+
+This screen still mirrors the **old** `order_type` keying that Task 1 removed from the backend: `:449` branches on `order_type === 'delivery'` and `:469` on `order_type === 'pickup'`. Meanwhile the Complete Order button at `:1424` is gated only on `status === 'ready' && !hasNoInputNextAction` — it renders regardless of whether `nextAction` exists.
+
+The consequence, for exactly the shapes Task 1 widened: a `pre_order` with an open delivery, and an unpaid `walk_in`/`pre_order`, both render a Complete Order button that the endpoint now rejects. Worse, the collect-payment modal at `:469` fires only for `order_type === 'pickup'`, so an unpaid `pre_order` or `walk_in` gets a raw error instead of a way to take the money.
+
+Fix, applying spec §7's principle on this screen:
+- Hide Complete Order whenever `sale.display_stage.nextAction` is null and the stage is not terminal — the server has already decided a blind one-tap is unsafe.
+- In its place, offer the same routing the card offers: `Collect ₹N` when a balance is due on a non-credit sale, `Assign Rider` when a delivery is attached and unassigned. Reuse this screen's existing navigation to `AddPayment` and `DeliveryDetail`.
+- Widen the `:469` payment branch off `order_type === 'pickup'` to "a balance is due and this is not a credit sale", matching the backend guard Task 1 rewrote.
+
+Verify by opening a `pre_order` with an open delivery and an unpaid `walk_in` on this screen and confirming neither offers a button that 400s.
+
+- [ ] **Step 5: Verify transforms**
 
 ```bash
 cd app && node scripts/babel-check.js src/screens/SaleDetailScreen.js src/screens/OrdersInboxScreen.js src/screens/DeliveriesScreen.js
@@ -1473,11 +1494,11 @@ cd app && node scripts/babel-check.js src/screens/SaleDetailScreen.js src/screen
 
 Expected: three `OK` lines, exit 0.
 
-- [ ] **Step 5: Verify live**
+- [ ] **Step 6: Verify live**
 
 For one delivery order at Test Loc, open it on the dashboard card, in Orders Inbox, on SaleDetail, and on DeliveriesScreen. **All four must show the same Stage label.** A disagreement means one screen is still deriving locally — find it and fix it before committing.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add app/src/screens/SaleDetailScreen.js app/src/screens/OrdersInboxScreen.js app/src/screens/DeliveriesScreen.js
