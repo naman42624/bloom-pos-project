@@ -199,6 +199,13 @@ export default function SaleDetailScreen({ route, navigation }) {
   const [pickupWriteOffAmount, setPickupWriteOffAmount] = useState('');
   const [confirmingPickup, setConfirmingPickup] = useState(false);
 
+  // One-tap "Confirm Pickup" / "Mark Delivered" (Task 12, order-lifecycle
+  // plan, 2026-09-01) — separate from confirmingPickup above, which is the
+  // pay-balance modal's own loading flag. Keyed by nothing (single button on
+  // this screen, unlike OrderKanbanBoard's per-order map) since only one
+  // sale is ever in view here.
+  const [quickActionLoading, setQuickActionLoading] = useState(false);
+
   const handleAddPickupPayment = () => setPickupPayments([...pickupPayments, { method: 'cash', amount: '', reference_number: '' }]);
   const updatePickupPayment = (index, field, value) => {
     const updated = [...pickupPayments];
@@ -489,6 +496,33 @@ export default function SaleDetailScreen({ route, navigation }) {
         { text: 'Cancel', style: 'cancel' },
         { text: label, onPress: onConfirm },
       ]);
+    }
+  };
+
+  // One-tap dispatch for sale.display_stage.nextAction (server/utils/order-stage.js)
+  // — only ever rendered for 'Confirm Pickup'/'Mark Delivered', both of which
+  // the server only offers when there's nothing left to collect (no balance
+  // due, no COD outstanding). Same generic api.advanceOrder(nextAction) call
+  // Task 10 built for OrderKanbanBoard's handleQuickAction — reused as-is
+  // rather than duplicated into a shared orderActions.js helper, since the
+  // whole call is a single pass-through line with no logic of its own to
+  // share beyond what api.advanceOrder already centralizes.
+  const handleQuickAction = async () => {
+    const nextAction = sale?.display_stage?.nextAction;
+    if (!nextAction) return;
+    setQuickActionLoading(true);
+    try {
+      await api.advanceOrder(nextAction);
+      fetchSale();
+    } catch (err) {
+      const msg = err.message || 'Unable to update this order.';
+      if (Platform.OS === 'web') {
+        window.alert('Error: ' + msg);
+      } else {
+        Alert.alert('Order Update', msg);
+      }
+    } finally {
+      setQuickActionLoading(false);
     }
   };
 
@@ -1372,6 +1406,36 @@ export default function SaleDetailScreen({ route, navigation }) {
             <Text style={styles.actionBtnText}>Complete Order</Text>
           </TouchableOpacity>
         </View>
+      )}
+
+      {/* One-tap Confirm Pickup / Mark Delivered (Task 12, order-lifecycle
+          plan, 2026-09-01) — rendered only for the two labels the server's
+          display_stage.nextAction ever sends for the pickup/delivery
+          "nothing left to collect" case (server/utils/order-stage.js). When
+          a balance/COD is still outstanding, nextAction is null and this
+          button doesn't render — the Delivery Status section above (taps
+          through to DeliveryDetail) or the Complete Order button's own
+          pay-balance modal (for pickup) remain the way to finish the order,
+          same as before this task. */}
+      {(sale.display_stage?.nextAction?.label === 'Confirm Pickup' || sale.display_stage?.nextAction?.label === 'Mark Delivered') && (
+        <TouchableOpacity
+          style={[
+            styles.actionBtn,
+            { backgroundColor: Colors.success, alignSelf: 'stretch', marginHorizontal: 0, marginTop: Spacing.sm, minHeight: 44 },
+            quickActionLoading && { opacity: 0.6 },
+          ]}
+          onPress={handleQuickAction}
+          disabled={quickActionLoading}
+        >
+          {quickActionLoading ? (
+            <ActivityIndicator color={Colors.white} size="small" />
+          ) : (
+            <>
+              <Ionicons name="checkmark-done-outline" size={18} color={Colors.white} />
+              <Text style={styles.actionBtnText}>{sale.display_stage.nextAction.label}</Text>
+            </>
+          )}
+        </TouchableOpacity>
       )}
 
       {/* Actions for completed orders */}
