@@ -525,7 +525,16 @@ curl -s "http://localhost:3001/api/deliveries?location_id=4&limit=3" \
   -H "Authorization: Bearer $TOKEN" | python3 -m json.tool | grep -E '"display_stage"|"label"|"delivery_status"'
 ```
 
-Expected: every row now has `display_stage`. **Verify the stage is actually correct**, not merely present: pick a delivery whose sale is `ready` and whose delivery is `assigned`, and confirm the label reads `Out for Delivery` — if it reads `Ready` or `New`, the Step 3 mapping is wrong.
+Expected: every row now has `display_stage`. **Verify the stage is actually correct**, not merely present — but pick a *discriminating* row to do it with.
+
+Do **not** use "sale `ready` + delivery `assigned` should read Out for Delivery" as the check. It reads `Ready`, correctly: `computeOrderStage()`'s delivery ladder evaluates the plain-`Ready` branch before the out-for-delivery branch and `assigned` is not in its exclusion list, so every caller sees `Ready` for that combination. That is the pre-existing cosmetic quirk already recorded in `CLAUDE.md` (sub-project 5, Task 18) — not an adapter bug, and not something to "fix" from this task, since the shared util also feeds `GET /sales`, `GET /sales/:id` and the dashboard.
+
+Use rows that actually discriminate the three fields the adapter remaps:
+- a delivery with `delivery_status = 'in_transit'` → must read `Out for Delivery` (proves `delivery_status` came from the row's `status`, not `order_status`)
+- a delivery whose sale is `preparing` → must return a `Mark Ready` action pointing at `/sales/<SALE_ID>/status` (proves both `order_status` and `sale_id` are mapped — if the endpoint carries the delivery's id instead, the mapping is wrong)
+- a `pre_order` with `total_paid = 0` and a balance owed → must return `nextAction: null` (proves the `total_paid` subquery landed; with `null` it emits the dead-end `Complete`)
+
+The strongest check available: compare `display_stage` from `GET /deliveries` against the same sale's `display_stage` from `GET /sales`, which computes it independently. They must agree on both `key` and `nextAction` for every row.
 
 - [ ] **Step 5: Confirm no permission regression**
 
