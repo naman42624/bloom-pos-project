@@ -12,6 +12,7 @@ const fs = require('fs');
 const router = express.Router();
 const { normalizeDateFields } = require('../utils/normalizeDates');
 const { hasOpenRegister, REGISTER_CLOSED_MESSAGE } = require('../utils/register-guard');
+const { computeOrderStage } = require('../utils/order-stage');
 
 // Use todayStr() from time.js for timezone-aware date strings
 
@@ -145,7 +146,8 @@ router.get('/', authenticate, authorize('owner', 'manager', 'delivery_partner', 
 
     let sql = `
       SELECT d.*, s.sale_number, s.grand_total, s.payment_status, s.order_type,
-             s.status as order_status, s.special_instructions, s.is_credit_sale,
+             s.status as order_status, s.pickup_status, s.special_instructions, s.is_credit_sale,
+             COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.sale_id = d.sale_id), 0) as total_paid,
              u.name as partner_name, u.phone as partner_phone,
              l.name as location_name,
              ab.name as assigned_by_name,
@@ -232,7 +234,34 @@ router.get('/', authenticate, authorize('owner', 'manager', 'delivery_partner', 
       d.items = d.items.map(normalizeDateFields);
       return normalizeDateFields(d);
     });
-    res.json({ success: true, data: normalized });
+
+    // computeOrderStage() expects a SALE-shaped object. A delivery row is not
+    // one: its `status` is the delivery's status, the sale's is aliased to
+    // `order_status`, `id` is the delivery id and the sale id is `sale_id`.
+    // Passing the row through directly silently yields a wrong stage on every
+    // row, so map explicitly. Same adapter pattern as sales.js's GET /:id.
+    // `total_paid` must be a real number, never null: the shared
+    // walk_in/pre_order ladder is reachable from here (a pre_order whose
+    // delivery is cancelled or delivered but which still has a balance), and a
+    // null there reads as "nothing due" and emits a one-tap Complete that
+    // PUT /sales/:id/status would reject.
+    const withStage = normalized.map((row) => ({
+      ...row,
+      display_stage: computeOrderStage({
+        id: row.sale_id,
+        status: row.order_status,
+        order_type: row.order_type,
+        pickup_status: row.pickup_status,
+        delivery_status: row.status,
+        delivery_id: row.id,
+        grand_total: row.grand_total,
+        total_paid: row.total_paid,
+        is_credit_sale: row.is_credit_sale,
+        cod_amount: row.cod_amount,
+        cod_collected: row.cod_collected,
+      }, req.user.role),
+    }));
+    res.json({ success: true, data: withStage });
   } catch (err) { next(err); }
 });
 

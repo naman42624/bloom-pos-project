@@ -169,7 +169,8 @@ router.get('/', authenticate, async (req, res, next) => {
               snd.name as sender_display_name, snd.phone as sender_display_phone,
               rcv.name as receiver_display_name, rcv.phone as receiver_display_phone,
              COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.sale_id = s.id), 0) as total_paid,
-             d.status as delivery_status, d.id as delivery_id, d.cod_amount, d.cod_collected
+             d.status as delivery_status, d.id as delivery_id, d.cod_amount, d.cod_collected,
+             dp.name as delivery_partner_name
       FROM sales s
       LEFT JOIN locations l ON s.location_id = l.id
       LEFT JOIN users u ON s.created_by = u.id
@@ -177,6 +178,7 @@ router.get('/', authenticate, async (req, res, next) => {
             LEFT JOIN users snd ON s.sender_customer_id = snd.id
             LEFT JOIN users rcv ON s.receiver_customer_id = rcv.id
             LEFT JOIN deliveries d ON d.sale_id = s.id
+            LEFT JOIN users dp ON d.delivery_partner_id = dp.id
       WHERE 1=1
     `;
     const params = [];
