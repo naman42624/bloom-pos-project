@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   Alert,
   Animated,
+  Linking,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -190,6 +191,16 @@ function OrderCard({ order, tasks, hasPendingProduction, pulseOpacity, onTaskCli
   const isCredit = order.is_credit_sale === 1;
   const payColor = isCredit ? '#8B5CF6' : (PAYMENT_STATUS_COLORS[order.payment_status] || '#9CA3AF');
 
+  // Call/WhatsApp one-tap contact — restores the shortcut the counter_staff
+  // dashboard's old flat card list had (order.customer_phone falling back to
+  // order.receiver_phone, same field pair that card used) and that this
+  // shared kanban board never had for anyone, owner/manager included, until
+  // now (fix round, Task 11, order-lifecycle plan, 2026-09-01 — flagged as a
+  // functionality-loss concern on first landing this board onto counter_staff,
+  // fixed here per coordinator ruling rather than left as a gap). Same
+  // wa.me deep-link pattern as SettlementsScreen.js's partner-handoff button.
+  const contactPhone = order.customer_phone || order.receiver_phone;
+
   return (
     <TouchableOpacity
       style={[styles.orderCard, {
@@ -214,7 +225,30 @@ function OrderCard({ order, tasks, hasPendingProduction, pulseOpacity, onTaskCli
       <View style={styles.orderHeader}>
         <View style={{ flex: 1 }}>
           <Text style={styles.orderNumber}>#{order.sale_number}</Text>
-          <Text style={styles.orderMeta}>{order.customer_name || 'Guest'}</Text>
+          <View style={styles.orderMetaRow}>
+            <Text style={styles.orderMeta} numberOfLines={1}>{order.customer_name || 'Guest'}</Text>
+            {contactPhone && (
+              <>
+                <TouchableOpacity
+                  style={[styles.contactIconBtn, { backgroundColor: Colors.info + '15' }]}
+                  onPress={(e) => { e.stopPropagation(); Linking.openURL(`tel:${contactPhone}`); }}
+                  hitSlop={11}
+                >
+                  <Ionicons name="call-outline" size={12} color={Colors.info} />
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.contactIconBtn, { backgroundColor: Colors.success + '15' }]}
+                  onPress={(e) => {
+                    e.stopPropagation();
+                    Linking.openURL(`https://wa.me/91${contactPhone}?text=${encodeURIComponent(`Hi, this is about your order ${order.sale_number}`)}`);
+                  }}
+                  hitSlop={11}
+                >
+                  <Ionicons name="logo-whatsapp" size={12} color={Colors.success} />
+                </TouchableOpacity>
+              </>
+            )}
+          </View>
           <Text style={styles.orderAmount}>{formatMoney(order.grand_total)}</Text>
         </View>
         <View style={{ alignItems: 'flex-end', gap: 4 }}>
@@ -756,6 +790,22 @@ const styles = StyleSheet.create({
     color: Colors.textSecondary,
     marginTop: 2,
     fontFamily: FONT_FAMILY,
+    flexShrink: 1,
+  },
+  orderMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  // Small, secondary — deliberately not sized/styled like the primary
+  // stage-advance action (laneQuickAction below); hitSlop brings the real
+  // tap target to 44pt without the card needing to look button-heavy.
+  contactIconBtn: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   orderAmount: {
     fontSize: 12,
