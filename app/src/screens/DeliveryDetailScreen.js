@@ -63,6 +63,14 @@ export default function DeliveryDetailScreen({ route, navigation }) {
   // to-Pickup stay isManager-only below, unchanged — those backend routes
   // are still owner/manager-only, out of scope for this pass.
   const canManageDeliveries = isManager || user?.role === 'counter_staff';
+  // Task 17: rider-side "Verify Load" access. Backend (`GET`/`PUT
+  // /deliveries/:id/checklist`) already 403s a delivery_partner touching a
+  // delivery that isn't theirs (`delivery.delivery_partner_id !==
+  // req.user.id`) — mirror that same ownership check here so the UI never
+  // offers a button that would just fail. Number() guards against a
+  // string/number id mismatch between `user.id` (auth context) and
+  // `delivery.delivery_partner_id` (raw DB value).
+  const isOwnDelivery = isPartner && delivery && Number(delivery.delivery_partner_id) === Number(user?.id);
 
   const takeProofPhoto = async () => {
     try {
@@ -562,7 +570,7 @@ export default function DeliveryDetailScreen({ route, navigation }) {
         <View style={styles.section}>
           <View style={styles.itemsSectionHeader}>
             <Text style={styles.sectionTitle}>Items ({delivery.items.length})</Text>
-            {canManageDeliveries && !isFinal && (
+            {(canManageDeliveries || isOwnDelivery) && !isFinal && (
               <TouchableOpacity style={styles.verifyLoadBtn} onPress={() => setChecklistVisible(true)}>
                 <Ionicons name="checkbox-outline" size={16} color={Colors.primary} />
                 <Text style={styles.verifyLoadBtnText}>Verify Load</Text>
