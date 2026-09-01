@@ -15,7 +15,13 @@
  * defined — no changes, just relocated.
  */
 
-export const ORDER_TYPES = ['delivery', 'pickup', 'walk_in'];
+// 'pre_order' was missing here (inherited from the owner/manager kanban,
+// which never had it) — so once the counter_staff dashboard was rebuilt onto
+// OrderKanbanBoard, advance orders stopped being shown at all, even though
+// the flat card list it replaced did show them and the "Need Attention" count
+// still counts them. Added 2026-09-01 (final-review fix): this also surfaces
+// pre-orders on the owner/manager kanban for the first time.
+export const ORDER_TYPES = ['delivery', 'pickup', 'walk_in', 'pre_order'];
 
 export const ORDER_STATUS_LABELS = {
   pending: 'Pending',

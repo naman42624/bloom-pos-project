@@ -43,6 +43,9 @@ const ORDER_TYPE_LABELS = {
   delivery: 'Delivery Orders',
   pickup: 'Pickup Orders',
   walk_in: 'Walk-in Orders',
+  // Matches the label the counter_staff dashboard's old flat card list used
+  // for this type ('Advance order') before Task 11 replaced it with this board.
+  pre_order: 'Advance Orders',
 };
 
 const ORDER_PHASE_LABELS = {
@@ -462,6 +465,11 @@ export default function OrderKanbanBoard({
       delivery: { pending: [], preparing: [], ready: [], in_transit: [], completed: [] },
       pickup: { pending: [], preparing: [], ready: [], completed: [] },
       walk_in: { pending: [], preparing: [], ready: [], completed: [] },
+      // pre_order shares walk_in's simple ladder (pending -> preparing ->
+      // ready -> completed), exactly as computeOrderStage() treats it
+      // server-side. Without this key, widening ORDER_TYPES would crash on
+      // base[order.order_type][bucket].push below.
+      pre_order: { pending: [], preparing: [], ready: [], completed: [] },
     };
 
     for (const order of sales) {
@@ -480,7 +488,7 @@ export default function OrderKanbanBoard({
       }
 
       // Do not show completed orders for walkin, pickup, and delivery order types
-      if (order.status === 'completed' && ['walk_in', 'pickup', 'delivery'].includes(order.order_type)) continue;
+      if (order.status === 'completed' && ['walk_in', 'pickup', 'delivery', 'pre_order'].includes(order.order_type)) continue;
 
       const normalizedPhase = normalizeOrderPhase(order.status);
       const bucket = normalizedPhase === 'ready'
@@ -623,7 +631,9 @@ export default function OrderKanbanBoard({
       ? { bg: '#F8FAFC', border: '#BFDBFE', icon: '#2563EB' }
       : type === 'pickup'
         ? { bg: '#F0FDF4', border: '#BBF7D0', icon: '#047857' }
-        : { bg: '#FFF7ED', border: '#FED7AA', icon: '#C2410C' };
+        : type === 'pre_order'
+          ? { bg: '#FAF5FF', border: '#E9D5FF', icon: '#7E22CE' }
+          : { bg: '#FFF7ED', border: '#FED7AA', icon: '#C2410C' };
 
     return (
       <View key={type} style={[styles.typeCard, { backgroundColor: typeTheme.bg, borderColor: typeTheme.border }]}>
@@ -632,7 +642,7 @@ export default function OrderKanbanBoard({
             <Text style={styles.typeCardTitle}>{formatOrderType(type)}</Text>
             <Text style={styles.typeCardSubtitle}>{totalOrders} active order{totalOrders !== 1 ? 's' : ''}</Text>
           </View>
-          <Ionicons name={type === 'delivery' ? 'bicycle' : type === 'pickup' ? 'bag-handle' : 'storefront'} size={22} color={typeTheme.icon} />
+          <Ionicons name={type === 'delivery' ? 'bicycle' : type === 'pickup' ? 'bag-handle' : type === 'pre_order' ? 'calendar' : 'storefront'} size={22} color={typeTheme.icon} />
         </View>
 
         <View style={{ gap: 8 }}>

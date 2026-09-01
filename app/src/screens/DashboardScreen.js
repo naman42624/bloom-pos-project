@@ -273,13 +273,19 @@ export default function DashboardScreen({ navigation }) {
       // ─── Counter Staff: sales-focused fetch (counts/status only —
       // no revenue totals or cash amounts, per role scope) ──────
       if (isCounterStaff) {
-        const [summaryRes, registerRes, pendingRes, preparingRes, tasksRes] = await Promise.all([
+        const [summaryRes, registerRes, pendingRes, confirmedRes, preparingRes, readyRes, tasksRes] = await Promise.all([
           api.getTodaySummary(activeLocation?.id).catch(() => ({ data: { total_sales: 0 } })),
           activeLocation?.id ? api.getRegisterStatus(activeLocation.id).catch(() => ({ data: null })) : Promise.resolve({ data: null }),
           // Fetched wider than the 5 we display so the today/future split
           // below has real data to count against, not just the first 5
           // pending orders regardless of date (2026-08-31 fix).
           api.getSales({ status: 'pending', location_id: activeLocation?.id, limit: 30 }).catch(() => ({ data: { sales: [] } })),
+          // 'confirmed' is pending-equivalent everywhere (the kanban buckets
+          // it into the same lane as pending, and computeOrderStage() now
+          // returns the same 'new' stage for it) — it's what a reattempted
+          // delivery is set to. Without its own call it never reached this
+          // dashboard at all (2026-09-01 final-review fix, alongside 'ready').
+          api.getSales({ status: 'confirmed', location_id: activeLocation?.id, limit: 30 }).catch(() => ({ data: { sales: [] } })),
           // GET /sales only takes one status value per call, so 'preparing'
           // needs its own request. Without this, an order advanced out of
           // 'pending' vanished from the dashboard entirely — no way to see
@@ -287,6 +293,13 @@ export default function DashboardScreen({ navigation }) {
           // alongside adding the "Mark Ready"/"Start Preparing" quick
           // actions these two statuses need).
           api.getSales({ status: 'preparing', location_id: activeLocation?.id, limit: 30 }).catch(() => ({ data: { sales: [] } })),
+          // Same one-status-per-call reason as 'preparing' above: without its
+          // own request, an order marked Ready vanished from this dashboard,
+          // leaving the Ready / Out-for-Delivery kanban lanes permanently
+          // empty for counter staff — so "Confirm Pickup"/"Mark Delivered"
+          // could never appear here even though counter staff are exactly
+          // who hands a ready order over (2026-09-01 final-review fix).
+          api.getSales({ status: 'ready', location_id: activeLocation?.id, limit: 30 }).catch(() => ({ data: { sales: [] } })),
           // Production tasks, needed so OrderKanbanBoard's per-card task
           // pills/pipeline counts (Task 11, order-lifecycle plan — rebuilding
           // this dashboard onto the kanban board) reflect real prep state
@@ -311,8 +324,10 @@ export default function DashboardScreen({ navigation }) {
           pendingCodDeliveries: Number(registerRes?.pendingCodDeliveries || 0),
         });
         const pendingList = pendingRes?.data?.sales || pendingRes?.data || [];
+        const confirmedList = confirmedRes?.data?.sales || confirmedRes?.data || [];
         const preparingList = preparingRes?.data?.sales || preparingRes?.data || [];
-        setCounterPendingOrders([...pendingList, ...preparingList]);
+        const readyList = readyRes?.data?.sales || readyRes?.data || [];
+        setCounterPendingOrders([...pendingList, ...confirmedList, ...preparingList, ...readyList]);
         setTaskRows(Array.isArray(tasksRes?.data) ? tasksRes.data : []);
         setLoading(false);
         setRefreshing(false);
