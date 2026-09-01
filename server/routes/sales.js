@@ -2266,24 +2266,33 @@ router.put(
       }
 
       // ── Enforce delivery completion before marking order 'completed' ──
-      if (status === 'completed' && sale.order_type === 'delivery') {
+      // Keyed on "does this sale have a delivery row", NOT on order_type: a
+      // pre_order fulfilled by delivery bypassed this guard entirely and could
+      // be one-tap completed with a rider still holding the flowers
+      // (2026-09-02). order_type === 'delivery' is a subset of that condition,
+      // so this is strictly wider than what it replaces.
+      if (status === 'completed') {
         const delivery = db.prepare("SELECT status FROM deliveries WHERE sale_id = ? LIMIT 1").get(sale.id);
-        if (delivery && delivery.status !== 'delivered') {
+        if (delivery && !['delivered', 'cancelled'].includes(delivery.status)) {
           return res.status(400).json({
             success: false,
-            message: `Cannot complete — delivery is still '${delivery.status}'. Mark the delivery as 'delivered' first.`,
+            message: `Cannot complete — this order's delivery is still '${delivery.status}'. Mark the delivery as delivered first.`,
           });
         }
       }
 
-      // ── Enforce pickup payment before marking order 'completed' ──
-      if (status === 'completed' && sale.order_type === 'pickup') {
+      // ── Enforce payment before marking a non-delivery order 'completed' ──
+      // Was `order_type === 'pickup'`, so a pre_order fulfilled by pickup could
+      // be completed with money still owed (2026-09-02). Deliveries are excluded
+      // because COD is collected by the rider at the door and reconciled through
+      // settlements — a delivery legitimately completes with balance outstanding.
+      if (status === 'completed' && sale.order_type !== 'delivery') {
         const totalPaid = db.prepare('SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE sale_id = ?').get(sale.id).total;
         const balanceDue = sale.grand_total - totalPaid;
         if (balanceDue > 0.01 && !sale.is_credit_sale) {
           return res.status(400).json({
             success: false,
-            message: `Cannot complete pickup — balance due: ₹${balanceDue.toFixed(2)}. Please collect payment first.`,
+            message: `Cannot complete — ₹${balanceDue.toFixed(2)} is still due. Please collect payment first.`,
           });
         }
       }
