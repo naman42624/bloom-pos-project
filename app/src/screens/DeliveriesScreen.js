@@ -222,14 +222,33 @@ export default function DeliveriesScreen({ navigation }) {
     setAssignModalVisible(true);
   };
 
+  // A route tag carries no date, so a route group mixes today's stops with
+  // anything scheduled further out on the same route (an advance order due
+  // next week, say). One tap of "select all" must never sweep a future-dated
+  // delivery into today's rider assignment — so it only ever picks up what's
+  // actually due for dispatch now: today's, anything already overdue, and
+  // undated stops. A genuinely future one can still be assigned deliberately
+  // — long-press its card to enter batch mode and tick it — it just isn't
+  // included by a blind bulk tap. (2026-09-01 final-review fix; the old
+  // date-grouped-only view gave this boundary for free.)
+  const isDueForDispatch = (d) => {
+    if (!ASSIGNABLE_STATUSES.includes(d.status)) return false;
+    const date = extractLocalDate(d.scheduled_date);
+    if (!date) return true; // undated — nothing scheduling it for later
+    return date <= getShopTodayStr(timezone);
+  };
+
   // "Select all in this route" — a route group header button. Pure frontend
   // selection convenience (spec §9.1.1): no new endpoint, it just selects
-  // every still-assignable delivery in that route's group and opens the
-  // existing batch-assign modal pre-populated.
+  // every still-assignable delivery due today in that route's group and
+  // opens the existing batch-assign modal pre-populated.
   const selectAllInRoute = (routeItems) => {
-    const ids = new Set(routeItems.filter(d => ASSIGNABLE_STATUSES.includes(d.status)).map(d => d.id));
+    const ids = new Set(routeItems.filter(isDueForDispatch).map(d => d.id));
     if (ids.size === 0) {
-      const msg = 'Nothing to assign in this route — every delivery here is already picked up, delivered, or cancelled.';
+      const laterCount = routeItems.filter(d => ASSIGNABLE_STATUSES.includes(d.status)).length;
+      const msg = laterCount > 0
+        ? `Nothing due today on this route — the ${laterCount} delivery(s) left here are scheduled for a later date. Long-press one to assign it early.`
+        : 'Nothing to assign in this route — every delivery here is already picked up, delivered, or cancelled.';
       Platform.OS === 'web' ? window.alert(msg) : Alert.alert('Info', msg);
       return;
     }
@@ -575,8 +594,10 @@ export default function DeliveriesScreen({ navigation }) {
         sections={sections}
         renderItem={renderDelivery}
         renderSectionHeader={({ section }) => {
+          // Counts only what "select all" will actually select — see
+          // isDueForDispatch: today/overdue/undated, never future-dated.
           const selectableCount = section.isRoute
-            ? section.data.filter(d => ASSIGNABLE_STATUSES.includes(d.status)).length
+            ? section.data.filter(isDueForDispatch).length
             : 0;
           return (
             <View style={styles.sectionHeader}>
@@ -595,7 +616,7 @@ export default function DeliveriesScreen({ navigation }) {
                   hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                 >
                   <Ionicons name="checkmark-done-outline" size={16} color={Colors.primary} />
-                  <Text style={styles.selectRouteBtnText}>Select all ({selectableCount})</Text>
+                  <Text style={styles.selectRouteBtnText}>Select today's ({selectableCount})</Text>
                 </TouchableOpacity>
               )}
             </View>
