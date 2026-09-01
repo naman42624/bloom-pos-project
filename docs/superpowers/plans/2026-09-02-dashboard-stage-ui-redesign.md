@@ -546,7 +546,7 @@ its row's \`status\` is the delivery's, not the sale's."
 - Create: `app/src/components/orderBoard/OrderCard.js`
 
 **Interfaces:**
-- Consumes: `StageBadge` (Task 3), `TYPE_ICONS` (Task 2), `delivery_partner_name` (Task 4).
+- Consumes: `StageBadge` (Task 3), `TYPE_ICONS` (Task 2), `delivery_partner_name` (Task 4), `formatCardDateTime` (pre-existing, `utils/datetime.js`).
 - Produces: `<OrderCard order tasks timezone quickActionLoading onOpen onQuickAction onResolve />`, where `onResolve(order, kind)` is called with `kind` being one of `'collect_payment' | 'assign_rider' | 'record_cod'`. The card never calls `navigation` itself — the parent owns routing, matching how `onOrderPress` already works on this board.
 - There is deliberately **no** `viewerRole` prop. The role gate is already baked into `nextAction` being null server-side (`ENDPOINT_ROLES` in `order-stage.js`), so re-checking the role here would be a second source of truth for one decision.
 
@@ -796,13 +796,13 @@ import React from 'react';
 import { ActivityIndicator, Linking, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '../../constants/theme';
-import { FONT_FAMILY, formatCardDateTime, formatMoney } from '../../constants/orderDisplay';
+import { FONT_FAMILY, formatMoney } from '../../constants/orderDisplay';
 import { TYPE_ICONS } from '../../constants/orderStages';
-import { minutesSinceServerDate, minutesUntilShopDateTime } from '../../utils/datetime';
+import { formatCardDateTime, minutesSinceServerDate, minutesUntilShopDateTime } from '../../utils/datetime';
 import StageBadge from '../StageBadge';
 ```
 
-`formatCardDateTime` currently lives inside `components/OrderKanbanBoard.js`. Move it into `constants/orderDisplay.js` and export it there, then import it here — do not copy it. The old board file is deleted in Task 8 and the new board does not use this helper, so nothing else needs repointing; verify with `grep -rn "formatCardDateTime" app/src/` after Task 8 that the only definition is the one in `constants/orderDisplay.js`.
+**On `formatCardDateTime`:** it is already an exported function at `app/src/utils/datetime.js:61`, already imported from there by `printHelpers.js`, `SaleDetailScreen.js` and `OrdersInboxScreen.js`. The copy at `components/OrderKanbanBoard.js:85` is a redundant shadowing duplicate (functionally identical, minus the NaN guards the shared one has). Import the shared one, as the import block above does. Do **not** move or copy anything, and do **not** touch `constants/orderDisplay.js` in this task — the duplicate dies with the old board file in Task 8.
 
 - [ ] **Step 4: Write the styles**
 
@@ -848,15 +848,15 @@ const styles = StyleSheet.create({
 - [ ] **Step 5: Verify it transforms**
 
 ```bash
-cd app && node scripts/babel-check.js src/components/orderBoard/OrderCard.js src/constants/orderDisplay.js
+cd app && node scripts/babel-check.js src/components/orderBoard/OrderCard.js
 ```
 
-Expected: two `OK` lines, exit 0.
+Expected: `OK`, exit 0.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add app/src/components/orderBoard/OrderCard.js app/src/constants/orderDisplay.js
+git add app/src/components/orderBoard/OrderCard.js
 git commit -m "Add exceptions-only OrderCard that routes instead of dead-ending
 
 13 card elements down to 5 plus up to 4 conditional. Every state where
@@ -1490,7 +1490,6 @@ No new code. This is the gate before the work is called done.
 ```bash
 cd app && node scripts/babel-check.js \
   src/constants/orderStages.js \
-  src/constants/orderDisplay.js \
   src/hooks/useBreakpoint.js \
   src/components/StageBadge.js \
   src/components/orderBoard/OrderCard.js \
@@ -1503,7 +1502,7 @@ cd app && node scripts/babel-check.js \
   src/screens/DeliveriesScreen.js
 ```
 
-Expected: 12 `OK` lines, exit 0.
+Expected: 11 `OK` lines, exit 0.
 
 - [ ] **Step 2: Role verification**
 
