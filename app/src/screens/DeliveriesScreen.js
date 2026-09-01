@@ -22,6 +22,10 @@ const STATUS_TABS = [
   { key: 'failed', label: 'Failed' },
 ];
 
+// Statuses a delivery can still be (re)assigned from — matches the batch-
+// select long-press affordance and the per-card checkbox eligibility.
+const ASSIGNABLE_STATUSES = ['pending', 'assigned', 'failed'];
+
 const STATUS_COLORS = {
   pending: '#FF9800',
   assigned: '#2196F3',
@@ -82,6 +86,16 @@ export default function DeliveriesScreen({ navigation }) {
 
   const [batchMode, setBatchMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState(new Set());
+
+  // Dispatch view: with 50+ deliveries/day, different areas, and a handful
+  // of delivery partners, a flat date list stops being manageable (design
+  // brief, spec §9.1.1). Default is route-grouped with at-risk (late/nearly-
+  // late) deliveries surfaced first; date-grouping stays available as a
+  // toggle, per CLAUDE.md's "never cut functionality" rule — this is
+  // additive, not a replacement. Only meaningful for the management view;
+  // a delivery_partner's own small list always stays date-grouped.
+  const [viewMode, setViewMode] = useState('route'); // 'route' | 'date'
+  const effectiveViewMode = canManageDeliveries ? viewMode : 'date';
 
   // Tick every 60s to update countdowns
   useEffect(() => {
@@ -180,12 +194,19 @@ export default function DeliveriesScreen({ navigation }) {
     });
   };
 
-  const openBatchAssignModal = async () => {
-    if (selectedIds.size === 0) {
+  // `idsOverride` lets a caller (e.g. "select all in this route") hand in
+  // the exact set to assign instead of relying on `selectedIds` state,
+  // which wouldn't be flushed yet if we just called setSelectedIds() and
+  // then immediately called this in the same synchronous handler.
+  const openBatchAssignModal = async (idsOverride) => {
+    const ids = idsOverride && idsOverride.size > 0 ? idsOverride : selectedIds;
+    if (ids.size === 0) {
       const msg = 'Select at least one delivery';
       Platform.OS === 'web' ? window.alert(msg) : Alert.alert('Info', msg);
       return;
     }
+    setBatchMode(true);
+    setSelectedIds(ids);
     try {
       // GET /deliveries/partners (not GET /users, which is owner/manager-
       // only) — already scoped to active delivery_partner accounts server-
@@ -199,6 +220,20 @@ export default function DeliveriesScreen({ navigation }) {
       setPartners([]);
     }
     setAssignModalVisible(true);
+  };
+
+  // "Select all in this route" — a route group header button. Pure frontend
+  // selection convenience (spec §9.1.1): no new endpoint, it just selects
+  // every still-assignable delivery in that route's group and opens the
+  // existing batch-assign modal pre-populated.
+  const selectAllInRoute = (routeItems) => {
+    const ids = new Set(routeItems.filter(d => ASSIGNABLE_STATUSES.includes(d.status)).map(d => d.id));
+    if (ids.size === 0) {
+      const msg = 'Nothing to assign in this route — every delivery here is already picked up, delivered, or cancelled.';
+      Platform.OS === 'web' ? window.alert(msg) : Alert.alert('Info', msg);
+      return;
+    }
+    openBatchAssignModal(ids);
   };
 
   const filteredDeliveries = search
@@ -222,16 +257,46 @@ export default function DeliveriesScreen({ navigation }) {
   const getDateLabel = (dateStr) => formatShopDateLabel(dateStr, timezone);
 
 
-  const sections = [];
+  const dateSections = [];
   const grouped = {};
   for (const item of sortedDeliveries) {
     const key = extractLocalDate(item.scheduled_date) || '_unscheduled';
     if (!grouped[key]) {
-      grouped[key] = { title: getDateLabel(key), data: [] };
-      sections.push(grouped[key]);
+      grouped[key] = { key, title: getDateLabel(key), data: [], isAtRisk: false, isRoute: false };
+      dateSections.push(grouped[key]);
     }
     grouped[key].data.push(item);
   }
+
+  // Dispatch/route view — at-risk deliveries lead (regardless of route, so
+  // nothing urgent gets buried inside a route group), then every delivery
+  // grouped by route. At-risk items still also appear in their route group
+  // below (still carrying their "LATE" badge there) — dropping them out of
+  // the route group would make "select all in route" silently skip them.
+  const NO_ROUTE_KEY = '_no_route';
+  const routeSections = [];
+  const atRiskItems = sortedDeliveries.filter(d => atRiskIds.has(d.id));
+  if (atRiskItems.length > 0) {
+    routeSections.push({ key: '_at_risk', title: `Needs Attention (${atRiskItems.length})`, data: atRiskItems, isAtRisk: true, isRoute: false });
+  }
+  const byRoute = {};
+  const routeKeys = [];
+  for (const item of sortedDeliveries) {
+    const key = item.route_name || NO_ROUTE_KEY;
+    if (!byRoute[key]) {
+      byRoute[key] = { key, title: item.route_name || 'No Route Assigned', data: [], isAtRisk: false, isRoute: true };
+      routeKeys.push(key);
+    }
+    byRoute[key].data.push(item);
+  }
+  routeKeys.sort((a, b) => {
+    if (a === NO_ROUTE_KEY) return 1;
+    if (b === NO_ROUTE_KEY) return -1;
+    return a.localeCompare(b);
+  });
+  for (const key of routeKeys) routeSections.push(byRoute[key]);
+
+  const sections = effectiveViewMode === 'route' ? routeSections : dateSections;
 
   const getTimeInfo = (item) => {
     // For delivered/failed orders, show completion time instead of countdown
@@ -292,7 +357,7 @@ export default function DeliveriesScreen({ navigation }) {
     const statusColor = STATUS_COLORS[item.status] || '#999';
     const isAtRisk = atRiskIds.has(item.id);
     const timeInfo = getTimeInfo(item);
-    const canSelect = batchMode && ['pending', 'assigned', 'failed'].includes(item.status);
+    const canSelect = batchMode && ASSIGNABLE_STATUSES.includes(item.status);
     const isSelected = selectedIds.has(item.id);
     return (
       <TouchableOpacity
@@ -302,7 +367,7 @@ export default function DeliveriesScreen({ navigation }) {
           else navigation.navigate('DeliveryDetail', { deliveryId: item.id });
         }}
         onLongPress={() => {
-          if (canManageDeliveries && ['pending', 'assigned', 'failed'].includes(item.status)) {
+          if (canManageDeliveries && ASSIGNABLE_STATUSES.includes(item.status)) {
             setBatchMode(true);
             setSelectedIds(new Set([item.id]));
           }
@@ -465,6 +530,26 @@ export default function DeliveriesScreen({ navigation }) {
         </ScrollView>
       )}
 
+      {/* View mode: route (dispatch) view vs plain date view — both stay available */}
+      {canManageDeliveries && (
+        <View style={styles.viewModeRow}>
+          <TouchableOpacity
+            style={[styles.viewModeBtn, viewMode === 'route' && styles.viewModeBtnActive]}
+            onPress={() => setViewMode('route')}
+          >
+            <Ionicons name="navigate-outline" size={16} color={viewMode === 'route' ? '#fff' : Colors.textLight} />
+            <Text style={[styles.viewModeText, viewMode === 'route' && styles.viewModeTextActive]}>By Route</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.viewModeBtn, viewMode === 'date' && styles.viewModeBtnActive]}
+            onPress={() => setViewMode('date')}
+          >
+            <Ionicons name="calendar-outline" size={16} color={viewMode === 'date' ? '#fff' : Colors.textLight} />
+            <Text style={[styles.viewModeText, viewMode === 'date' && styles.viewModeTextActive]}>By Date</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
       {/* Batch mode bar */}
       {canManageDeliveries && batchMode && (
         <View style={styles.batchBar}>
@@ -484,18 +569,43 @@ export default function DeliveriesScreen({ navigation }) {
         </View>
       )}
 
-      {/* List — grouped by date */}
+      {/* List — grouped by route (default) or by date, toggled above */}
       <SectionList
         style={{ flex: 1 }}
         sections={sections}
         renderItem={renderDelivery}
-        renderSectionHeader={({ section: { title } }) => (
-          <View style={styles.sectionHeader}>
-            <Ionicons name="calendar-outline" size={16} color={Colors.primary} />
-            <Text style={styles.sectionHeaderText}>{title}</Text>
-          </View>
-        )}
-        keyExtractor={item => String(item.id)}
+        renderSectionHeader={({ section }) => {
+          const selectableCount = section.isRoute
+            ? section.data.filter(d => ASSIGNABLE_STATUSES.includes(d.status)).length
+            : 0;
+          return (
+            <View style={styles.sectionHeader}>
+              <View style={styles.sectionHeaderLeft}>
+                <Ionicons
+                  name={section.isAtRisk ? 'warning' : section.isRoute ? 'navigate-outline' : 'calendar-outline'}
+                  size={16}
+                  color={section.isAtRisk ? '#FF6D00' : Colors.primary}
+                />
+                <Text style={[styles.sectionHeaderText, section.isAtRisk && styles.sectionHeaderTextAtRisk]}>{section.title}</Text>
+              </View>
+              {section.isRoute && canManageDeliveries && selectableCount > 0 && (
+                <TouchableOpacity
+                  style={styles.selectRouteBtn}
+                  onPress={() => selectAllInRoute(section.data)}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
+                  <Ionicons name="checkmark-done-outline" size={16} color={Colors.primary} />
+                  <Text style={styles.selectRouteBtnText}>Select all ({selectableCount})</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          );
+        }}
+        // In route view, an at-risk delivery deliberately appears twice —
+        // once in the "Needs Attention" lead section, once in its own
+        // route group — so item.id alone isn't a unique key across the
+        // flattened list. Fold in the absolute index to keep keys unique.
+        keyExtractor={(item, index) => `${index}-${item.id}`}
         contentContainerStyle={{ padding: Spacing.md, paddingBottom: 100 }}
         refreshing={loading}
         onRefresh={fetchDeliveries}
@@ -587,8 +697,26 @@ const styles = StyleSheet.create({
   codText: { fontSize: FontSize.xs, fontWeight: '600', color: '#E65100' },
   assignBtn: { backgroundColor: Colors.primary, paddingHorizontal: 16, paddingVertical: 8, borderRadius: BorderRadius.md },
   assignBtnText: { color: '#fff', fontWeight: '600', fontSize: FontSize.sm },
-  sectionHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 10, paddingHorizontal: 4, marginTop: 8 },
+  sectionHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 10, paddingHorizontal: 4, marginTop: 8 },
+  sectionHeaderLeft: { flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1, flexShrink: 1 },
   sectionHeaderText: { fontSize: FontSize.md, fontWeight: '700', color: Colors.primary },
+  sectionHeaderTextAtRisk: { color: '#FF6D00' },
+  selectRouteBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    paddingHorizontal: 12, paddingVertical: 10, borderRadius: BorderRadius.md,
+    backgroundColor: Colors.primary + '15', borderWidth: 1, borderColor: Colors.primary + '30',
+  },
+  selectRouteBtnText: { fontSize: FontSize.sm, fontWeight: '700', color: Colors.primary },
+  // View mode toggle (route-grouped dispatch view vs date-grouped view)
+  viewModeRow: { flexDirection: 'row', gap: Spacing.sm, paddingHorizontal: Spacing.md, marginBottom: Spacing.sm, flexShrink: 0 },
+  viewModeBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, flex: 1,
+    paddingVertical: 10, borderRadius: BorderRadius.md, backgroundColor: Colors.surface,
+    borderWidth: 1, borderColor: Colors.border,
+  },
+  viewModeBtnActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
+  viewModeText: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.textLight },
+  viewModeTextActive: { color: '#fff' },
   empty: { alignItems: 'center', marginTop: 60 },
   emptyText: { fontSize: FontSize.md, color: Colors.textLight, marginTop: 8, textAlign: 'center' },
   urgentBadge: { flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: '#FFF3E0', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 },
