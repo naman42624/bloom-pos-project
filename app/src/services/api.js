@@ -605,6 +605,18 @@ class ApiService {
     return this.request(`/sales/${saleId}/status`, { method: 'PUT', body: JSON.stringify({ status }) });
   }
 
+  // Generic dispatcher for a sale's computed `display_stage.nextAction`
+  // (server/utils/order-stage.js) — one-tap kanban/dashboard quick actions.
+  // Shared by OrderKanbanBoard (owner/manager dashboard) and reused wherever
+  // else `nextAction` is rendered, so the endpoint/method/body it carries
+  // never needs re-deriving client-side.
+  advanceOrder(nextAction) {
+    return this.request(nextAction.endpoint, {
+      method: nextAction.method,
+      body: JSON.stringify(nextAction.body || {}),
+    });
+  }
+
   fulfillFromStock(saleId, saleItemId) {
     return this.request(`/sales/${saleId}/fulfill-from-stock`, { method: 'POST', body: JSON.stringify({ sale_item_id: saleItemId }) });
   }

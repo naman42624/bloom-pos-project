@@ -1231,6 +1231,7 @@ export default function DashboardScreen({ navigation }) {
                   taskActionLoading={taskActionLoading}
                   onTaskPress={(task) => setSelectedTaskModal(task)}
                   timezone={timezone}
+                  onRefresh={fetchDashboard}
                 />
               </View>
             </View>

@@ -1,6 +1,7 @@
-import React, { useEffect, useMemo, useRef } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Animated,
   StyleSheet,
   Text,
@@ -9,6 +10,7 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import api from '../services/api';
 import { Colors } from '../constants/theme';
 import { formatDateTime, minutesSinceServerDate, minutesUntilShopDateTime, formatTimeString } from '../utils/datetime';
 import {
@@ -166,7 +168,7 @@ function TaskPill({ task, onPress, loading }) {
   );
 }
 
-function OrderCard({ order, tasks, hasPendingProduction, pulseOpacity, onTaskClick, taskActionLoading, onOpen, timezone }) {
+function OrderCard({ order, tasks, hasPendingProduction, pulseOpacity, onTaskClick, taskActionLoading, onOpen, timezone, onQuickAction, quickActionLoading }) {
   const phaseStatus = normalizeOrderPhase(order.status);
   const statusTone = getOrderStatusTone(phaseStatus);
   const stats = {
@@ -271,6 +273,29 @@ function OrderCard({ order, tasks, hasPendingProduction, pulseOpacity, onTaskCli
         </View>
       )}
 
+      {/* Inline one-tap stage-advance action (Task 10, order-lifecycle plan,
+          2026-09-01) — only rendered when the server has already decided the
+          next step is safe as a blind one-tap (server/utils/order-stage.js
+          returns null whenever advancing needs a human decision, e.g. a
+          payment collection or rider pick). */}
+      {order.display_stage?.nextAction && (
+        <TouchableOpacity
+          style={[styles.laneQuickAction, quickActionLoading && styles.laneQuickActionDisabled]}
+          onPress={(e) => { e.stopPropagation(); onQuickAction(order); }}
+          disabled={!!quickActionLoading}
+          activeOpacity={0.75}
+        >
+          {quickActionLoading ? (
+            <ActivityIndicator size="small" color={Colors.primary} />
+          ) : (
+            <>
+              <Ionicons name="arrow-forward-circle-outline" size={14} color={Colors.primary} />
+              <Text style={styles.laneQuickActionText}>{order.display_stage.nextAction.label}</Text>
+            </>
+          )}
+        </TouchableOpacity>
+      )}
+
       {totalTasks > 0 ? (
         <>
           <View style={styles.pipelineRow}>
@@ -347,6 +372,7 @@ export default function OrderKanbanBoard({
   taskActionLoading,
   onTaskPress,
   timezone,
+  onRefresh,
 }) {
   const { width } = useWindowDimensions();
   // Same 1100px breakpoint DashboardScreen.js computes independently for its
@@ -372,6 +398,30 @@ export default function OrderKanbanBoard({
     inputRange: [0, 1],
     outputRange: [0.1, 0.6],
   });
+
+  // Loading state for the inline quick-action button lives locally (it's a
+  // pure UI concern of this board, unlike tasksBySaleId/taskActionLoading
+  // which the parent dashboard owns because it's shared with TaskDetailModal
+  // outside this component). Keyed by order id, same shape as the sibling
+  // taskActionLoading prop.
+  const [quickActionLoading, setQuickActionLoading] = useState({});
+
+  const handleQuickAction = useCallback(async (order) => {
+    const nextAction = order?.display_stage?.nextAction;
+    if (!nextAction) return;
+    setQuickActionLoading((prev) => ({ ...prev, [order.id]: true }));
+    try {
+      await api.advanceOrder(nextAction);
+      if (onRefresh) await onRefresh();
+    } catch (err) {
+      // Matches DashboardScreen's advanceOrderStatus/advanceTaskStatus
+      // convention — the backend's guard messages are already plain
+      // language, pass them straight through.
+      Alert.alert('Order Update', err?.message || 'Unable to update this order.');
+    } finally {
+      setQuickActionLoading((prev) => ({ ...prev, [order.id]: false }));
+    }
+  }, [onRefresh]);
 
   const ordersByTypeAndStatus = useMemo(() => {
     const base = {
@@ -499,6 +549,8 @@ export default function OrderKanbanBoard({
                   onTaskClick={(task) => onTaskPress(task)}
                   onOpen={() => onOrderPress(order)}
                   timezone={effectiveTimezone}
+                  onQuickAction={handleQuickAction}
+                  quickActionLoading={!!quickActionLoading[order.id]}
                 />
               );
             })}
@@ -832,6 +884,28 @@ const styles = StyleSheet.create({
     fontSize: 10,
     color: '#6366F1',
     fontWeight: '600',
+    fontFamily: FONT_FAMILY,
+  },
+  laneQuickAction: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    alignSelf: 'flex-start',
+    minHeight: 44,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    borderRadius: 8,
+    backgroundColor: Colors.primary + '15',
+    marginBottom: 6,
+  },
+  laneQuickActionDisabled: {
+    opacity: 0.6,
+  },
+  laneQuickActionText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: Colors.primary,
     fontFamily: FONT_FAMILY,
   },
   laneSubHint: {
