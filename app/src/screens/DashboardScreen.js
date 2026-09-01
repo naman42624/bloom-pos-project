@@ -36,29 +36,6 @@ import {
   getTaskChipColor,
 } from '../constants/orderDisplay';
 
-// Compact form of the above for inline card meta text ("Delivery · ₹500"),
-// where "Delivery Orders" would read oddly repeated per-card.
-const ORDER_TYPE_SHORT_LABELS = {
-  delivery: 'Delivery',
-  pickup: 'Pickup',
-  walk_in: 'Walk-in',
-  pre_order: 'Advance order',
-};
-
-// Matches OrdersInboxScreen's palette — same statuses should look the same
-// wherever staff see them. Used by the counter_staff dashboard's order
-// cards, which previously showed a hardcoded "PENDING" badge regardless of
-// the order's real status (found live, 2026-09-01).
-const ORDER_STATUS_COLORS = {
-  pending: Colors.warning,
-  confirmed: Colors.info,
-  preparing: Colors.info,
-  ready: Colors.success,
-  completed: Colors.textSecondary,
-  cancelled: Colors.error,
-  draft: Colors.textLight,
-};
-
 function RegisterCard({ item, onPress }) {
   const { locationName, isOpen, register } = item;
   const tone = isOpen ? '#10B981' : '#E11D48';
@@ -224,7 +201,6 @@ export default function DashboardScreen({ navigation }) {
   const [myDeliveries, setMyDeliveries] = useState([]); // delivery partner's own deliveries
   const [counterStats, setCounterStats] = useState({ salesCount: 0, registerOpen: null, registerOpenedBy: null });
   const [counterPendingOrders, setCounterPendingOrders] = useState([]);
-  const [orderActionLoading, setOrderActionLoading] = useState({});
 
   const role = user?.role;
   const isOwner = role === 'owner';
@@ -297,7 +273,7 @@ export default function DashboardScreen({ navigation }) {
       // ─── Counter Staff: sales-focused fetch (counts/status only —
       // no revenue totals or cash amounts, per role scope) ──────
       if (isCounterStaff) {
-        const [summaryRes, registerRes, pendingRes, preparingRes] = await Promise.all([
+        const [summaryRes, registerRes, pendingRes, preparingRes, tasksRes] = await Promise.all([
           api.getTodaySummary(activeLocation?.id).catch(() => ({ data: { total_sales: 0 } })),
           activeLocation?.id ? api.getRegisterStatus(activeLocation.id).catch(() => ({ data: null })) : Promise.resolve({ data: null }),
           // Fetched wider than the 5 we display so the today/future split
@@ -311,6 +287,15 @@ export default function DashboardScreen({ navigation }) {
           // alongside adding the "Mark Ready"/"Start Preparing" quick
           // actions these two statuses need).
           api.getSales({ status: 'preparing', location_id: activeLocation?.id, limit: 30 }).catch(() => ({ data: { sales: [] } })),
+          // Production tasks, needed so OrderKanbanBoard's per-card task
+          // pills/pipeline counts (Task 11, order-lifecycle plan — rebuilding
+          // this dashboard onto the kanban board) reflect real prep state
+          // instead of always reading empty. Same endpoint/call the isEmployee
+          // branch above uses; GET /production/tasks already authorizes
+          // counter_staff and auto-scopes to their assigned location(s)
+          // server-side, and carries no cost/margin fields (verified against
+          // attachMaterialsToTasks in server/routes/production.js).
+          api.getProductionTasks({}).catch(() => ({ data: [] })),
         ]);
         setCounterStats({
           salesCount: Number(summaryRes?.data?.total_sales || 0),
@@ -328,6 +313,7 @@ export default function DashboardScreen({ navigation }) {
         const pendingList = pendingRes?.data?.sales || pendingRes?.data || [];
         const preparingList = preparingRes?.data?.sales || preparingRes?.data || [];
         setCounterPendingOrders([...pendingList, ...preparingList]);
+        setTaskRows(Array.isArray(tasksRes?.data) ? tasksRes.data : []);
         setLoading(false);
         setRefreshing(false);
         return;
@@ -548,26 +534,12 @@ export default function DashboardScreen({ navigation }) {
     }
   }, [fetchDashboard]);
 
-  // Counter staff's one-tap "advance this order" quick action — pending ->
-  // preparing, or preparing -> ready. Deliberately stops at 'ready': the
-  // next step (pickup/delivery completion) can require collecting a
-  // payment, which isn't safe as a blind one-tap card action, so those
-  // orders route to the full SaleDetail screen instead (2026-09-01).
-  const advanceOrderStatus = useCallback(async (order) => {
-    const nextStatus = order.status === 'pending' ? 'preparing' : order.status === 'preparing' ? 'ready' : null;
-    if (!nextStatus) return;
-    setOrderActionLoading((prev) => ({ ...prev, [order.id]: true }));
-    try {
-      await api.updateOrderStatus(order.id, nextStatus);
-      await fetchDashboard();
-    } catch (err) {
-      // The backend's guard messages are already plain-language (e.g. "3
-      // production task(s) still pending") — pass them straight through.
-      Alert.alert('Order Update', err?.message || 'Unable to update this order.');
-    } finally {
-      setOrderActionLoading((prev) => ({ ...prev, [order.id]: false }));
-    }
-  }, [fetchDashboard]);
+  // Counter staff's per-order one-tap stage-advance now lives inside
+  // OrderKanbanBoard itself (its own handleQuickAction, driven by the
+  // server-computed `display_stage.nextAction` via api.advanceOrder) —
+  // this screen-local version (pending -> preparing -> ready via
+  // api.updateOrderStatus) was only ever used by the flat card list it
+  // replaced (Task 11, order-lifecycle plan, 2026-09-01) and is gone with it.
 
   const handleNavigateToQueue = useCallback((orderType, status) => {
     navigation.navigate('ProductionQueue', {
@@ -894,85 +866,27 @@ export default function DashboardScreen({ navigation }) {
               </View>
             ) : (
               <>
-                {counterOrdersSplit.dueToday.map((order) => {
-                  // Card was a bare sale_number + hardcoded "PENDING" badge
-                  // regardless of real status, with zero order info and no
-                  // way to act without leaving the dashboard (found live,
-                  // 2026-09-01). Now shows real status/type/amount and one
-                  // next-step action, mirroring OrdersInboxScreen's info
-                  // density and the guardrails PUT /:id/status already
-                  // enforces (e.g. can't mark Ready with prep unfinished —
-                  // surfaced as a plain Alert if tapped too early).
-                  const statusColor = ORDER_STATUS_COLORS[order.status] || Colors.textSecondary;
-                  const statusLabel = ORDER_STATUS_LABELS[order.status] || order.status;
-                  const isUnpaid = order.payment_status && order.payment_status !== 'paid' && order.payment_status !== 'refunded';
-                  const contactPhone = order.customer_phone || order.receiver_phone;
-                  const nextActionLabel = order.status === 'pending' ? 'Start Preparing' : order.status === 'preparing' ? 'Mark Ready' : null;
-                  const isOrderLoading = !!orderActionLoading[order.id];
-                  return (
-                    <TouchableOpacity
-                      key={order.id}
-                      style={[styles.roleTaskCard, { borderLeftColor: statusColor }]}
-                      onPress={() => navigation.navigate('SaleDetail', { saleId: order.id })}
-                      activeOpacity={0.8}
-                    >
-                      <View style={styles.roleTaskHeader}>
-                        <Text style={styles.roleTaskName} numberOfLines={1}>
-                          {order.sale_number}{order.priority === 'rush' ? '  🔥' : ''} — {order.customer_name || order.customer_display_name || 'Walk-in'}
-                        </Text>
-                        <View style={[styles.roleTaskBadge, { backgroundColor: statusColor + '20' }]}>
-                          <Text style={[styles.roleTaskBadgeText, { color: statusColor }]}>{statusLabel.toUpperCase()}</Text>
-                        </View>
-                      </View>
-
-                      <Text style={styles.roleTaskMeta}>
-                        {ORDER_TYPE_SHORT_LABELS[order.order_type] || order.order_type} · ₹{Number(order.grand_total || 0).toFixed(0)}
-                        {order.scheduled_time ? ` · ${formatTimeString(order.scheduled_time)}` : ''}
-                        {isUnpaid ? ` · ${order.payment_status === 'partial' ? 'Partly paid' : 'Unpaid'}` : ''}
-                      </Text>
-
-                      <View style={{ flexDirection: 'row', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
-                        {contactPhone && (
-                          <TouchableOpacity
-                            style={styles.orderQuickActionBtn}
-                            onPress={(e) => { e.stopPropagation(); Linking.openURL(`tel:${contactPhone}`); }}
-                          >
-                            <Ionicons name="call-outline" size={14} color={Colors.info} />
-                            <Text style={[styles.orderQuickActionText, { color: Colors.info }]}>Call</Text>
-                          </TouchableOpacity>
-                        )}
-                        {contactPhone && (
-                          <TouchableOpacity
-                            style={styles.orderQuickActionBtn}
-                            onPress={(e) => {
-                              e.stopPropagation();
-                              Linking.openURL(`https://wa.me/91${contactPhone}?text=${encodeURIComponent(`Hi, this is about your order ${order.sale_number}`)}`);
-                            }}
-                          >
-                            <Ionicons name="logo-whatsapp" size={14} color={Colors.success} />
-                            <Text style={[styles.orderQuickActionText, { color: Colors.success }]}>WhatsApp</Text>
-                          </TouchableOpacity>
-                        )}
-                        {nextActionLabel && (
-                          <TouchableOpacity
-                            style={[styles.orderQuickActionBtn, { backgroundColor: Colors.primary + '15', opacity: isOrderLoading ? 0.6 : 1 }]}
-                            onPress={(e) => { e.stopPropagation(); advanceOrderStatus(order); }}
-                            disabled={isOrderLoading}
-                          >
-                            {isOrderLoading ? (
-                              <ActivityIndicator size="small" color={Colors.primary} />
-                            ) : (
-                              <>
-                                <Ionicons name="arrow-forward-circle-outline" size={14} color={Colors.primary} />
-                                <Text style={[styles.orderQuickActionText, { color: Colors.primary }]}>{nextActionLabel}</Text>
-                              </>
-                            )}
-                          </TouchableOpacity>
-                        )}
-                      </View>
-                    </TouchableOpacity>
-                  );
-                })}
+                {/* Rebuilt onto the same order-kanban board owner/manager uses
+                    (Task 11, order-lifecycle plan, 2026-09-01) — grouped by
+                    order type + status lane with inline one-tap stage-advance
+                    and production-task pills, matching the explicit brainstorm
+                    ask: "a mix of both, the current manager dashboard and the
+                    current counter dashboard... grouping and viewing and
+                    updating in a single quick way." Fed `counterOrdersSplit.dueToday`
+                    (not the full counterPendingOrders fetch) to keep the
+                    existing today/future split intent intact — a delivery
+                    scheduled days out still shouldn't clutter what needs
+                    attention right now; see the note below for the rest. */}
+                <OrderKanbanBoard
+                  sales={counterOrdersSplit.dueToday}
+                  onOrderPress={(order) => setSelectedOrderModal({ order, tasks: tasksBySaleId.get(order.id) })}
+                  onNavigateToQueue={handleNavigateToQueue}
+                  tasksBySaleId={tasksBySaleId}
+                  taskActionLoading={taskActionLoading}
+                  onTaskPress={(task) => setSelectedTaskModal(task)}
+                  timezone={timezone}
+                  onRefresh={fetchDashboard}
+                />
                 {counterOrdersSplit.scheduledLater.length > 0 && (
                   <Text style={{ fontSize: 12, color: '#6B7280', textAlign: 'center', marginTop: 4 }}>
                     +{counterOrdersSplit.scheduledLater.length} more scheduled for later
