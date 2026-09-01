@@ -907,6 +907,17 @@ class ApiService {
     });
   }
 
+  getDeliveryChecklist(deliveryId) {
+    return this.request(`/deliveries/${deliveryId}/checklist`);
+  }
+
+  toggleDeliveryChecklistItem(deliveryId, saleItemId, checked) {
+    return this.request(`/deliveries/${deliveryId}/checklist/${saleItemId}`, {
+      method: 'PUT',
+      body: JSON.stringify({ checked }),
+    });
+  }
+
   // Generic Media Upload
   async uploadGenericMedia(imageUri) {
     const formData = new FormData();
