@@ -42,7 +42,7 @@ Three separate problems, addressed together because they touch the same files:
 - One unified Stage board that uses the full width of a desktop/tablet viewport.
 - A card that shows what is needed to decide, and hides what is merely true.
 - No card is ever a dead end — every state offers a way forward.
-- Collapse the three coexisting one-tap status mechanisms into one.
+- Collapse the coexisting one-tap status mechanisms onto `display_stage.nextAction`.
 
 **Non-goals**
 - No schema change. Nothing here adds a column, table, or migration.
@@ -183,19 +183,25 @@ No backend change. `nextAction: null` already means "not safe as a blind one-tap
 the client stops reading that as "render nothing" and starts reading it as "route to
 where a human decides."
 
-## 8. One status mechanism, not three
+## 8. One status mechanism, not two
 
-Three independent one-tap status mechanisms currently coexist in this flow:
+**Corrected 2026-09-02.** An earlier draft of this section claimed three coexisting
+one-tap mechanisms, carrying forward a claim from the previous session's handoff
+notes. Verified against the code: there are **two**.
+`DashboardScreen.advanceOrderStatus` no longer exists — it was deleted in Task 11 of
+the order-lifecycle plan, and `DashboardScreen.js:551-557` is the comment recording
+its removal. The "Orders Needing Attention" section now renders `OrderKanbanBoard`
+itself. A stale reference to the old name survives in a comment at
+`OrderKanbanBoard.js:454`; clean it up in passing.
 
-| # | Where | Driven by |
-| --- | --- | --- |
-| 1 | `OrderKanbanBoard.handleQuickAction` (`:447`) | `display_stage.nextAction` |
-| 2 | `DashboardScreen.advanceOrderStatus` — "Orders Needing Attention" | raw `status` |
-| 3 | `OrderQuickModal` status buttons (`QuickModals.js:170–179`) | raw `status` |
+| # | Where | Driven by | In scope |
+| --- | --- | --- | --- |
+| 1 | `OrderKanbanBoard.handleQuickAction` (`:447`) | `display_stage.nextAction` | already correct |
+| 2 | `OrderQuickModal` status buttons (`QuickModals.js:170-179`, dispatching at `:262`) | raw `status` | **yes** |
+| 3 | `SaleDetailScreen` (`:479`, `:552`) | raw `status` via `api.updateOrderStatus` | **yes**, see §9 |
+| 4 | `ProductionQueueScreen` (`:704`) | raw `status` | **no** — deferred, §13 |
 
-All three converge onto `display_stage.nextAction` + §7 routing.
-
-Mechanism 3 matters most and was nearly missed: `OrderQuickModal` is what opens when
+Mechanism 2 matters most and was nearly missed: `OrderQuickModal` is what opens when
 a card is tapped. Leaving it on raw status would mean the card shows the new Stage
 vocabulary and the modal one tap behind it shows the old — reproducing the exact
 mismatch this work exists to remove, one level deeper. Its raw status badge and its
