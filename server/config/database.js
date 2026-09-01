@@ -553,6 +553,22 @@ function ensureCoreTables() {
     )
   `);
 
+  // delivery_load_checks — packing/manifest checklist, shared between
+  // counter-staff (pre-dispatch) and the rider (self-verifying) — ONE
+  // set of rows both sides read/write, not two parallel checklists. See
+  // spec §9.1.4.
+  runPsql(`
+    CREATE TABLE IF NOT EXISTS delivery_load_checks (
+      id SERIAL PRIMARY KEY,
+      delivery_id INTEGER NOT NULL REFERENCES deliveries(id) ON DELETE CASCADE,
+      sale_item_id INTEGER NOT NULL REFERENCES sale_items(id) ON DELETE CASCADE,
+      checked BOOLEAN DEFAULT false,
+      checked_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      checked_at TIMESTAMP,
+      UNIQUE(delivery_id, sale_item_id)
+    )
+  `);
+
   // Ensure partner_id column exists on delivery_settlements
   if (!hasColumn('delivery_settlements', 'partner_id')) {
     runPsql('ALTER TABLE delivery_settlements ADD COLUMN partner_id INTEGER REFERENCES users(id) ON DELETE SET NULL');

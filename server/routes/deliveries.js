@@ -411,6 +411,56 @@ router.get('/:id(\\d+)', authenticate, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// GET /api/deliveries/:id/checklist — lazily creates one row per sale_item
+// on this delivery's sale, so an item added after assignment still shows
+// up next time this is viewed (spec §11, item 2's recommendation).
+router.get('/:id(\\d+)/checklist', authenticate, authorize('owner', 'manager', 'employee', 'counter_staff', 'delivery_partner'), async (req, res, next) => {
+  try {
+    const db = await getAsyncDb();
+    const delivery = await db.prepare('SELECT id, sale_id, delivery_partner_id, location_id FROM deliveries WHERE id = ?').get(req.params.id);
+    if (!delivery) return res.status(404).json({ success: false, message: 'Delivery not found' });
+    if (req.user.role === 'delivery_partner' && delivery.delivery_partner_id !== req.user.id) {
+      return res.status(403).json({ success: false, message: 'Not your delivery' });
+    }
+
+    const items = await db.prepare('SELECT id, product_name, quantity FROM sale_items WHERE sale_id = ?').all(delivery.sale_id);
+    for (const item of items) {
+      await db.prepare(
+        'INSERT INTO delivery_load_checks (delivery_id, sale_item_id) VALUES (?, ?) ON CONFLICT (delivery_id, sale_item_id) DO NOTHING'
+      ).run(delivery.id, item.id);
+    }
+
+    const checklist = await db.prepare(`
+      SELECT dlc.sale_item_id, dlc.checked, dlc.checked_by, dlc.checked_at, si.product_name, si.quantity, u.name as checked_by_name
+      FROM delivery_load_checks dlc
+      JOIN sale_items si ON si.id = dlc.sale_item_id
+      LEFT JOIN users u ON u.id = dlc.checked_by
+      WHERE dlc.delivery_id = ?
+      ORDER BY si.id ASC
+    `).all(delivery.id);
+
+    res.json({ success: true, data: checklist });
+  } catch (err) { next(err); }
+});
+
+// PUT /api/deliveries/:id/checklist/:saleItemId — toggle checked
+router.put('/:id(\\d+)/checklist/:saleItemId(\\d+)', authenticate, authorize('owner', 'manager', 'employee', 'counter_staff', 'delivery_partner'), async (req, res, next) => {
+  try {
+    const db = await getAsyncDb();
+    const delivery = await db.prepare('SELECT id, delivery_partner_id FROM deliveries WHERE id = ?').get(req.params.id);
+    if (!delivery) return res.status(404).json({ success: false, message: 'Delivery not found' });
+    if (req.user.role === 'delivery_partner' && delivery.delivery_partner_id !== req.user.id) {
+      return res.status(403).json({ success: false, message: 'Not your delivery' });
+    }
+    const { checked } = req.body;
+    await db.prepare(
+      `UPDATE delivery_load_checks SET checked = ?, checked_by = ?, checked_at = CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE NULL END
+       WHERE delivery_id = ? AND sale_item_id = ?`
+    ).run(!!checked, req.user.id, !!checked, req.params.id, req.params.saleItemId);
+    res.json({ success: true });
+  } catch (err) { next(err); }
+});
+
 // ─── PUT /api/deliveries/:id/assign ──────────────────────────
 // Widened to counter_staff 2026-09-01 (sub-project 5, user confirmed).
 router.put(
