@@ -2173,6 +2173,20 @@ router.put(
   }
 );
 
+// Plain-language names for deliveries.status, for messages a counter staff
+// member reads. Never interpolate the raw enum into a staff-facing string —
+// "still 'in_transit'" is developer output, not an instruction. 'delivered'
+// and 'cancelled' are absent on purpose: neither ever blocks anything, so
+// neither is ever rendered here. 'failed' is handled by its own branch below
+// because its recovery is different. Unknown/new values fall back to a safe
+// generic rather than leaking the enum.
+const DELIVERY_STAGE_WORDS = {
+  pending: 'not assigned to a rider yet',
+  assigned: 'assigned to a rider',
+  picked_up: 'with the rider',
+  in_transit: 'on the way',
+};
+
 // ─── PUT /api/sales/:id/status ───────────────────────────────
 // Order lifecycle: pending → preparing → ready → completed
 // 'ready' is only allowed when ALL production tasks for this sale are completed/cancelled.
@@ -2274,9 +2288,20 @@ router.put(
       if (status === 'completed') {
         const delivery = db.prepare("SELECT status FROM deliveries WHERE sale_id = ? LIMIT 1").get(sale.id);
         if (delivery && !['delivered', 'cancelled'].includes(delivery.status)) {
+          // A failed delivery CANNOT be marked delivered — PUT
+          // /deliveries/:id/deliver only accepts 'picked_up'/'in_transit'
+          // (deliveries.js). Its real recoveries are reattempt or cancel, so
+          // it gets its own sentence; telling staff to "mark it delivered"
+          // would send them at an action the API refuses.
+          if (delivery.status === 'failed') {
+            return res.status(400).json({
+              success: false,
+              message: "Cannot complete — this order's delivery did not go through. Send it out again, or cancel the delivery, then complete the order.",
+            });
+          }
           return res.status(400).json({
             success: false,
-            message: `Cannot complete — this order's delivery is still '${delivery.status}'. Mark the delivery as delivered first.`,
+            message: `Cannot complete — this order's delivery is ${DELIVERY_STAGE_WORDS[delivery.status] || 'not finished yet'}. Mark the delivery as delivered first.`,
           });
         }
       }

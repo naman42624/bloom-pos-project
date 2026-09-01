@@ -137,11 +137,28 @@ function computeOrderStage(sale, viewerRole) {
     return { key: 'preparing', label: 'Preparing', color: STAGE_COLORS.preparing, nextAction: actionFor('SALE_STATUS', viewerRole, markReady) };
   }
   if (sale.status === 'ready') {
+    // ── Mirrors PUT /api/sales/:id/status's two completion guards ──
+    // server/routes/sales.js, "Enforce delivery completion before marking
+    // order 'completed'" and "Enforce payment before marking a non-delivery
+    // order 'completed'". Those guards were re-keyed 2026-09-02 off order_type
+    // and onto "has a delivery row" / "is not a delivery", so they now fire on
+    // walk_in and pre_order too — which is exactly this ladder. Without these
+    // two checks the 'Complete' button below is handed to staff for orders the
+    // endpoint is guaranteed to 400: the dead-end this file's header exists to
+    // prevent. Same idiom as the pickup ladder's balance check above.
+    // If you change a guard there, change this branch too, and vice versa.
+    const balanceDue = sale.grand_total != null && sale.total_paid != null ? Number(sale.grand_total) - Number(sale.total_paid) > 0.01 : false;
+    // delivery_status is only populated when a deliveries row actually exists
+    // (LEFT JOIN on the list route, sale.delivery?.status on the detail route),
+    // so a falsy value means "no delivery attached" — nothing to block on.
+    const deliveryPending = !!sale.delivery_status && !['delivered', 'cancelled'].includes(sale.delivery_status);
     return {
       key: 'ready',
       label: 'Ready',
       color: STAGE_COLORS.ready,
-      nextAction: actionFor('SALE_STATUS', viewerRole, { label: 'Complete', endpoint: `/sales/${sale.id}/status`, method: 'PUT', body: { status: 'completed' } }),
+      nextAction: (deliveryPending || (balanceDue && !sale.is_credit_sale))
+        ? null // the endpoint would reject this — send staff to the real screen, not a one-tap dead end
+        : actionFor('SALE_STATUS', viewerRole, { label: 'Complete', endpoint: `/sales/${sale.id}/status`, method: 'PUT', body: { status: 'completed' } }),
     };
   }
   return { key: 'completed', label: 'Completed', color: STAGE_COLORS.completed, nextAction: null };
