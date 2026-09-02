@@ -583,7 +583,12 @@ export default function DashboardScreen({ navigation }) {
       navigation.navigate('POS', { screen: 'AddPayment', params: { saleId: order.id, due } });
       return;
     }
-    if (kind === 'assign_rider') {
+    // Both delivery kinds land on the same screen — 'assign_rider' to pick a
+    // rider, 'reattempt_delivery' to use its Reattempt/Cancel controls on a
+    // failed delivery. OrderCard only ever emits either for a viewer whose role
+    // can actually use those controls (its canManageDeliveries), so neither
+    // routes anyone into a screen that will refuse them.
+    if (kind === 'assign_rider' || kind === 'reattempt_delivery') {
       if (order.delivery_id) {
         navigation.navigate('DeliveryDetail', { deliveryId: order.delivery_id });
       } else {
@@ -941,6 +946,7 @@ export default function DashboardScreen({ navigation }) {
                   onNavigateToDone={handleNavigateToDone}
                   tasksBySaleId={tasksBySaleId}
                   timezone={timezone}
+                  viewerRole={user?.role}
                   onRefresh={fetchDashboard}
                 />
                 {counterOrdersSplit.scheduledLater.length > 0 && (
@@ -1233,6 +1239,7 @@ export default function DashboardScreen({ navigation }) {
                   onNavigateToDone={handleNavigateToDone}
                   tasksBySaleId={tasksBySaleId}
                   timezone={timezone}
+                  viewerRole={user?.role}
                   onRefresh={fetchDashboard}
                 />
               </View>

@@ -23,9 +23,14 @@ import OrderCard from './OrderCard';
  *
  * CALLER CONSTRAINT — staff surfaces only. This board must not be rendered on
  * a delivery-rider or customer surface. OrderCard's dead-end router offers
- * "Assign Rider" and "Collect ₹X" with no client-side role check,
- * deliberately: duplicating a server authorization decision in the client is
- * the anti-pattern this redesign exists to remove.
+ * "Collect ₹X" with no client-side role check, deliberately: duplicating a
+ * server authorization decision in the client is the anti-pattern this
+ * redesign exists to remove. Its one exception is `viewerRole`, threaded
+ * through this component and used ONLY to pick a routing button vs a status
+ * line for a delivery — see resolveDeadEnd's own note for why nextAction
+ * cannot cover that case. Pass it; without it the delivery buttons degrade to
+ * status lines for everyone, which is safe but tells owner/manager/counter
+ * staff less than they need.
  *
  * What actually enforces that, precisely — because the Dashboard tab itself
  * has NO role gate (MainNavigator.js:623 registers it for every role; the
@@ -52,6 +57,7 @@ export default function OrderKanbanBoard({
   onNavigateToDone,
   tasksBySaleId,
   timezone,
+  viewerRole,
   onRefresh,
 }) {
   const { isWide } = useBreakpoint();
@@ -139,11 +145,12 @@ export default function OrderKanbanBoard({
       tasks={tasksBySaleId?.get?.(order.id)}
       timezone={effectiveTimezone}
       quickActionLoading={!!quickActionLoading[order.id]}
+      viewerRole={viewerRole}
       onOpen={() => onOrderPress(order)}
       onQuickAction={handleQuickAction}
       onResolve={onResolveAction}
     />
-  ), [tasksBySaleId, effectiveTimezone, quickActionLoading, onOrderPress, handleQuickAction, onResolveAction]);
+  ), [tasksBySaleId, effectiveTimezone, quickActionLoading, viewerRole, onOrderPress, handleQuickAction, onResolveAction]);
 
   return (
     <View>

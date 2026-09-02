@@ -166,6 +166,18 @@ export default function SaleDetailScreen({ route, navigation }) {
   // into a dead-end request. Delivery partners can't reach this screen at
   // all (no SaleDetail route in their stack), so no check needed for them.
   const canRecordPayment = !['florist_staff', 'customer'].includes(user?.role);
+  // Assigning a rider and re-sending a failed delivery are both done on
+  // DeliveryDetailScreen, whose own gate (its canManageDeliveries, :65)
+  // mirrors PUT /deliveries/:id/assign and PUT /deliveries/:id/reattempt —
+  // both authorize('owner', 'manager', 'counter_staff'). Without this check an
+  // `employee` or `florist_staff` tapped a real-looking "Assign Rider" /
+  // "Delivery Failed — Send Again", landed on a screen showing none of those
+  // controls, and had nowhere to go: a dead end moved one level deeper rather
+  // than removed (review finding, 2026-09-02). Live-relevant, not theoretical
+  // — CLAUDE.md records four `employee` accounts that stay on that role
+  // indefinitely. Same role list as OrderCard's, kept in step on purpose
+  // (app/src/components/orderBoard/OrderCard.js).
+  const canManageDeliveries = ['owner', 'manager', 'counter_staff'].includes(user?.role);
 
   // Convert order type state
   const [convertModalVisible, setConvertModalVisible] = useState(false);
@@ -563,13 +575,27 @@ export default function SaleDetailScreen({ route, navigation }) {
     }
   };
 
+  // react-native-web's Alert is a literal no-op (its Alert.alert() body is
+  // empty — node_modules/react-native-web/dist/exports/Alert/index.js), and the
+  // counter runs this app on web. Every message on the take-the-money path has
+  // to be SEEN, especially "the payment went through but the order didn't", so
+  // it goes through the same Platform check the rest of this file already uses
+  // (e.g. :476, :485) rather than a bare Alert.alert that vanishes on web.
+  const notify = (title, message) => {
+    if (Platform.OS === 'web') {
+      window.alert(title + ': ' + message);
+    } else {
+      Alert.alert(title, message);
+    }
+  };
+
   const handleConfirmPickupPayment = async () => {
     const totalPayments = pickupPayments.reduce((sum, p) => sum + (parseFloat(p.amount) || 0), 0);
     const woAmount = parseFloat(pickupWriteOffAmount) || 0;
     const totalReduction = totalPayments + woAmount;
 
     if (totalReduction <= 0) {
-      Alert.alert('Invalid', 'Please enter a valid payment amount.');
+      notify('Invalid', 'Please enter a valid payment amount.');
       return;
     }
 
@@ -579,29 +605,65 @@ export default function SaleDetailScreen({ route, navigation }) {
         .map(p => ({ ...p, amount: parseFloat(p.amount) || 0 }))
         .filter(p => p.amount > 0);
 
-      // 1. Record payment
-      await api.addPaymentToSale(saleId, {
-        payments: formattedPayments,
-        write_off_amount: woAmount > 0 ? woAmount : undefined,
-      });
+      // ── Step 1: take the money ──
+      // Its own try/catch, deliberately NOT sharing one with step 2. When both
+      // awaits sat in a single block, a step-2 failure surfaced step 1's
+      // message — "Could not record the payment. Please try again." — while the
+      // money was already banked, with the modal still open and the full
+      // balance still pre-filled. Anyone who followed that instruction charged
+      // the customer twice. Never tell someone to retry a payment that
+      // succeeded (review finding, 2026-09-02).
+      try {
+        await api.addPaymentToSale(saleId, {
+          payments: formattedPayments,
+          write_off_amount: woAmount > 0 ? woAmount : undefined,
+        });
+      } catch (err) {
+        // Nothing was taken. Retrying really is the right instruction here, and
+        // the modal stays open with the amounts intact so it is one tap away.
+        notify('Error', err.message || 'Could not record the payment. Please try again.');
+        return;
+      }
 
-      // 2. Finish the order too, but ONLY when this modal was opened from
-      //    Complete Order. Opened from "Collect ₹N" it just takes the money and
-      //    lets the refreshed stage offer the real next step (Confirm Pickup for
-      //    a pickup, Complete for a walk_in/pre_order) — force-completing there
-      //    would mark a pickup 'picked_up' while the customer is still waiting
-      //    for the flowers.
+      // ── Step 2: finish the order too ──
+      // ONLY when this modal was opened from Complete Order. Opened from
+      // "Collect ₹N" it just takes the money and lets the refreshed stage offer
+      // the real next step (Confirm Pickup for a pickup, Complete for a
+      // walk_in/pre_order) — force-completing there would mark a pickup
+      // 'picked_up' while the customer is still waiting for the flowers.
+      let completed = false;
       if (pickupPayCompletesOrder) {
-        await api.updateOrderStatus(saleId, 'completed');
+        try {
+          await api.updateOrderStatus(saleId, 'completed');
+          completed = true;
+        } catch (err) {
+          // The payment IS recorded. Close the modal and refetch FIRST so the
+          // balance on screen is the real one and the correct next control is
+          // already rendered, then say what actually happened. fetchSale()
+          // swallows its own errors, so this cannot throw past the finally.
+          //
+          // The message deliberately does NOT name a button. The likeliest
+          // real cause of a step-2 failure is a PARTIAL payment (the modal
+          // allows one), and then the next control is another "Collect ₹N",
+          // not Complete Order or Confirm Pickup — naming one would send staff
+          // looking for a button that isn't there. The backend's own guard
+          // messages are already plain language ("Cannot complete — ₹100.00 is
+          // still due. Please collect payment first."), so pass that straight
+          // through as the reason, the same way OrderKanbanBoard's
+          // handleQuickAction does.
+          setPickupPayModalVisible(false);
+          await fetchSale();
+          const why = err?.message ? ' ' + err.message : '';
+          notify('Payment recorded', 'The payment is saved — do not collect it again. The order was not finished.' + why);
+          return;
+        }
       }
 
       setPickupPayModalVisible(false);
       // Awaited, not fire-and-forget: the next action has to be on screen the
       // moment the modal closes, with no manual pull-to-refresh.
       await fetchSale();
-      Alert.alert('Success', pickupPayCompletesOrder ? 'Payment recorded and order completed.' : 'Payment recorded.');
-    } catch (err) {
-      Alert.alert('Error', err.message || 'Could not record the payment. Please try again.');
+      notify('Success', completed ? 'Payment recorded and order completed.' : 'Payment recorded.');
     } finally {
       setConfirmingPickup(false);
     }
@@ -898,8 +960,17 @@ export default function SaleDetailScreen({ route, navigation }) {
   //
   // Same decision resolveDeadEnd() makes for the dashboard card
   // (app/src/components/orderBoard/OrderCard.js) — mirrored rather than
-  // imported, since that helper is card-shaped. Labels are kept identical on
-  // purpose so the two screens can never say different things about one order.
+  // imported, since that helper is card-shaped: it reads a flat list row
+  // (delivery_id / delivery_status / delivery_partner_name / total_paid) while
+  // this reads the nested sale.delivery object from GET /sales/:id.
+  //
+  // Labels, the failed-delivery branch and the who-can-assign role list are
+  // kept identical on purpose so the two surfaces can never say different
+  // things about one order. That claim was NOT true when it was first written:
+  // resolveDeadEnd had no 'failed' branch, so a failed delivery read
+  // "<rider> has it" on the dashboard while this screen said "Delivery Failed
+  // — Send Again". Fixed on both sides 2026-09-02; if you change one branch
+  // here, change its twin there in the same commit.
   const hasOpenDelivery = !!sale.delivery && !['delivered', 'cancelled'].includes(sale.delivery.status);
   // Deliveries are excluded: COD is collected by the rider at the door and
   // reconciled through settlements, so a delivery legitimately completes with a
@@ -1509,8 +1580,17 @@ export default function SaleDetailScreen({ route, navigation }) {
           dashboard card uses (resolveDeadEnd in
           app/src/components/orderBoard/OrderCard.js) so one order never reads
           two different ways. When the blocker is not this person's job to clear,
-          it says so in a sentence rather than offering a button that 403s. */}
-      {sale.status === 'ready' && completionBlocked && (
+          it says so in a sentence rather than offering a button that 403s.
+
+          !hasNoInputNextAction (added 2026-09-02, review finding): a 'ready'
+          sale whose delivery is assigned/picked_up/in_transit with no COD
+          outstanding satisfies BOTH this gate and the one-tap gate below, so
+          the screen rendered "…tap Delivery Status above to follow it" with a
+          Mark Delivered button directly underneath contradicting it (live row
+          INV-MAIN-20260606-002 is exactly this shape). This note is for the
+          case where there is genuinely nothing to tap; whenever the server
+          does offer a one-tap action, that action is the whole answer. */}
+      {sale.status === 'ready' && completionBlocked && !hasNoInputNextAction && (
         <View style={styles.actions}>
           {hasOpenDelivery ? (
             /* A FAILED delivery cannot be "marked delivered" — PUT
@@ -1521,13 +1601,22 @@ export default function SaleDetailScreen({ route, navigation }) {
                name attached, so it would otherwise fall into that sentence and
                tell staff to wait for something that can never happen. */
             sale.delivery.status === 'failed' ? (
-              <TouchableOpacity
-                style={[styles.actionBtn, { backgroundColor: Colors.warning, flex: 1 }]}
-                onPress={() => navigation.navigate('DeliveryDetail', { deliveryId: sale.delivery.id })}
-              >
-                <Ionicons name="refresh-outline" size={18} color={Colors.white} />
-                <Text style={styles.actionBtnText}>Delivery Failed — Send Again</Text>
-              </TouchableOpacity>
+              canManageDeliveries ? (
+                <TouchableOpacity
+                  style={[styles.actionBtn, { backgroundColor: Colors.warning, flex: 1 }]}
+                  onPress={() => navigation.navigate('DeliveryDetail', { deliveryId: sale.delivery.id })}
+                >
+                  <Ionicons name="refresh-outline" size={18} color={Colors.white} />
+                  <Text style={styles.actionBtnText}>Delivery Failed — Send Again</Text>
+                </TouchableOpacity>
+              ) : (
+                <View style={styles.blockedNote}>
+                  <Ionicons name="alert-circle-outline" size={18} color={Colors.warning} />
+                  <Text style={styles.blockedNoteText}>
+                    This delivery came back undelivered. Counter staff will send it out again.
+                  </Text>
+                </View>
+              )
             ) : sale.delivery.partner_name ? (
               <View style={styles.blockedNote}>
                 <Ionicons name="bicycle-outline" size={18} color={Colors.info} />
@@ -1535,7 +1624,7 @@ export default function SaleDetailScreen({ route, navigation }) {
                   {sale.delivery.partner_name} has this order. It finishes on its own once the delivery is marked delivered — tap Delivery Status above to follow it.
                 </Text>
               </View>
-            ) : (
+            ) : canManageDeliveries ? (
               <TouchableOpacity
                 style={[styles.actionBtn, { backgroundColor: Colors.info, flex: 1 }]}
                 onPress={() => navigation.navigate('DeliveryDetail', { deliveryId: sale.delivery.id })}
@@ -1543,6 +1632,13 @@ export default function SaleDetailScreen({ route, navigation }) {
                 <Ionicons name="bicycle-outline" size={18} color={Colors.white} />
                 <Text style={styles.actionBtnText}>Assign Rider</Text>
               </TouchableOpacity>
+            ) : (
+              <View style={styles.blockedNote}>
+                <Ionicons name="bicycle-outline" size={18} color={Colors.info} />
+                <Text style={styles.blockedNoteText}>
+                  Waiting for a rider. Counter staff give this order to one, and it finishes once it is delivered.
+                </Text>
+              </View>
             )
           ) : showCollectAction ? (
             <TouchableOpacity

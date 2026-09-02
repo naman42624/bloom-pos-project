@@ -21,9 +21,21 @@ import StageBadge from '../StageBadge';
  *   { type: 'status', text }        — render a plain status line, no button
  *   null                            — genuinely nothing to show (terminal stage)
  *
+ * `canManageDeliveries` — whether the VIEWER can use the delivery screen these
+ * buttons route to. A null nextAction already encodes the server's decision
+ * about an *action*, but nothing on the wire says a *destination screen* will
+ * refuse this viewer: PUT /deliveries/:id/assign and /reattempt are both
+ * authorize('owner','manager','counter_staff'), and DeliveryDetailScreen's own
+ * gate (:65) mirrors that, so an `employee` or `florist_staff` tapping
+ * "Assign Rider" landed on a screen with none of those controls. That is a
+ * dead end moved one level deeper, not removed — the exact failure this helper
+ * exists to prevent. They still need to know what is happening with the order
+ * (customers ring up asking), so it falls back to a status line, the same
+ * shape the out_for_delivery branch already uses. Review finding, 2026-09-02.
+ *
  * See docs/superpowers/specs/2026-09-01-dashboard-stage-ui-redesign-design.md §7.
  */
-function resolveDeadEnd(order) {
+function resolveDeadEnd(order, canManageDeliveries) {
   const stageKey = order.display_stage?.key;
 
   // 'ready' and 'ready_for_pickup' share one branch, and it keys on the DATA
@@ -36,8 +48,25 @@ function resolveDeadEnd(order) {
     const hasOpenDelivery = order.delivery_id != null
       && !['delivered', 'cancelled'].includes(order.delivery_status);
     if (hasOpenDelivery) {
+      // A FAILED delivery can never be "marked delivered" — PUT
+      // /deliveries/:id/deliver accepts only picked_up/in_transit. Its real
+      // recoveries are Reattempt and Cancel on DeliveryDetail. Checked FIRST
+      // because a failed delivery normally still has its partner name
+      // attached, so without this it fell into the "<rider> has it" line below
+      // and read as in-progress — while SaleDetailScreen, which has had this
+      // branch since 8d741d3, said "Delivery Failed — Send Again" about the
+      // same order. Added 2026-09-02 to make the two agree; same label.
+      if (order.delivery_status === 'failed') {
+        if (canManageDeliveries) {
+          return { type: 'route', kind: 'reattempt_delivery', label: 'Delivery Failed — Send Again' };
+        }
+        return { type: 'status', text: 'Delivery failed — counter staff will resend' };
+      }
       if (!order.delivery_partner_name) {
-        return { type: 'route', kind: 'assign_rider', label: 'Assign Rider' };
+        if (canManageDeliveries) {
+          return { type: 'route', kind: 'assign_rider', label: 'Assign Rider' };
+        }
+        return { type: 'status', text: 'Waiting for a rider' };
       }
       return { type: 'status', text: `${order.delivery_partner_name} has it` };
     }
@@ -112,6 +141,7 @@ export default function OrderCard({
   tasks,
   timezone,
   quickActionLoading,
+  viewerRole,
   onOpen,
   onQuickAction,
   onResolve,
@@ -120,7 +150,13 @@ export default function OrderCard({
   const payment = getPaymentWarning(order);
   const taskProgress = getTaskProgress(tasks);
   const nextAction = order.display_stage?.nextAction;
-  const deadEnd = nextAction ? null : resolveDeadEnd(order);
+  // The ONLY role logic in this component, and it decides one thing: routing
+  // button vs status line for a delivery. Everything else stays server-decided
+  // via display_stage.nextAction — duplicating an authorization decision in the
+  // client is the anti-pattern this redesign removes. Same list as
+  // SaleDetailScreen's canManageDeliveries; keep the two in step.
+  const canManageDeliveries = ['owner', 'manager', 'counter_staff'].includes(viewerRole);
+  const deadEnd = nextAction ? null : resolveDeadEnd(order, canManageDeliveries);
   const contactPhone = order.customer_phone || order.receiver_phone;
   const showSchedule = order.scheduled_date && order.order_type !== 'walk_in';
 
@@ -231,8 +267,14 @@ export default function OrderCard({
         </TouchableOpacity>
       )}
 
+      {/* Two lines, not one (2026-09-02). The role-fallback lines added this
+          round carry the "what happens next" half at the END of the sentence
+          ("Delivery failed — counter staff will resend"), which is exactly the
+          half a one-line ellipsis eats on a narrow column — staff-ux-checklist
+          #6. The pre-existing short lines ("Ravi has it") still render on one
+          line, so nothing else changes. */}
       {deadEnd?.type === 'status' && (
-        <Text style={styles.statusLine} numberOfLines={1}>{deadEnd.text}</Text>
+        <Text style={styles.statusLine} numberOfLines={2}>{deadEnd.text}</Text>
       )}
     </TouchableOpacity>
   );
