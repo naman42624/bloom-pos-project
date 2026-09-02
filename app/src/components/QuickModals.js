@@ -275,10 +275,23 @@ export function OrderQuickModal({
     }
   }, [order?.id, onRefresh, onClose]);
 
-  // Tap once to arm, tap again within 3s to run. Kept for every action, not
-  // just Cancel — an accidental tap inside a sheet should never change an order.
+  // A stage advance runs on the FIRST tap, with no prompt — the same as the
+  // order card. display_stage.nextAction is non-null only when the server has
+  // already decided the advance is safe to perform blind; asking again here
+  // would contradict that decision, and would make one button cost two taps
+  // from the modal and one from the card depending only on how the staff
+  // member happened to reach it. Double-firing is prevented by actionLoading,
+  // which disables the button for the whole request.
+  //
+  // Cancel is the exception and keeps tap-once-to-arm, tap-again-within-3s:
+  // it is genuinely destructive and has no nextAction equivalent, so it is the
+  // one case where the friction is worth it.
   const confirmAction = useCallback((chosen) => {
     if (!chosen) return;
+    if (chosen.action) {
+      doStatusChange(chosen);
+      return;
+    }
     const key = actionKeyOf(chosen);
     if (confirmingAction === key) {
       setConfirmingAction(null);
