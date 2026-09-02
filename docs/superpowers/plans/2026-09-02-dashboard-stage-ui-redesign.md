@@ -1323,6 +1323,24 @@ Replace every `isDesktop` usage with `isWide` and delete the old computation plu
 grep -n "isDesktop" app/src/screens/DashboardScreen.js
 ```
 
+- [ ] **Step 6b: Close the customer fall-through on this screen (data exposure)**
+
+**This is the highest-severity item in the plan and it is pre-existing, not caused by this work.** Found during Task 7's review and independently confirmed.
+
+`MainNavigator.js:623` registers the `Dashboard` tab with **no role gate** — customers get `Shop` and `MyOrders` *in addition to* it, not instead of it. This screen's role chain is `isDeliveryPartner ? … : isCounterStaff ? … : isEmployee ? … : (owner/manager)` with **no `customer` branch**, so `role === 'customer'` falls through to the owner/manager branch — the one that renders the board. `isStaff` (`:207`) excludes `customer`, but it is only consulted when choosing *extra* requests; `reqs[0]` is a sales fetch issued for every role and `setSales()` at `:374` is unconditional. `GET /api/sales` is recorded in `CLAUDE.md` as deliberately having no server-side role guard.
+
+Net effect today: a logged-in customer's device fetches shop-wide sales and renders them on the owner/manager dashboard. Both the data and the UI leak.
+
+Fix both halves in this task:
+
+1. Add `const isCustomer = role === 'customer';` alongside the existing role flags at `:205-207`.
+2. In `fetchDashboard`, return early for a customer before any request is issued — do not fetch shop-wide sales onto their device at all. Match the shape of the existing `isDeliveryPartner` early-return branch.
+3. Add an `isCustomer` branch to the render chain **before** the owner/manager fall-through, showing a customer-appropriate screen: a short welcome and buttons to their existing `Shop` and `MyOrders` tabs. Do not render the board, revenue, registers, staff, or COD widgets.
+
+Do **not** solve this by unregistering the `Dashboard` tab in `MainNavigator.js`. That changes the customer's initial route and risks breaking deep links to `Dashboard`; it is a larger navigation change than this task should carry. The guard belongs on the screen.
+
+Verify by logging in as a `customer` account and confirming: the dashboard shows the customer view, and no shop-wide sales request is issued (check the server log or the network tab — absence of the request is the point, not just absence of the UI).
+
 - [ ] **Step 7: Delete the old board**
 
 ```bash
