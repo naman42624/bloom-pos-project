@@ -47,16 +47,23 @@ const PAYMENT_STATUS_COLORS = {
   refunded: '#9CA3AF',
 };
 
-const PICKUP_STATUS_COLORS = {
-  waiting: '#F59E0B',
-  ready_for_pickup: '#10B981',
-  picked_up: '#6366F1',
-};
-
-const PICKUP_STATUS_LABELS = {
-  waiting: 'Waiting',
-  ready_for_pickup: 'Ready for Pickup',
-  picked_up: 'Picked Up',
+// Plain-language payment wording, matched word-for-word to the order card
+// (components/orderBoard/OrderCard.js). One entry per value the server can
+// actually write to sales.payment_status: 'pending'/'partial'/'paid' (computed
+// from payments vs grand_total in server/routes/sales.js) and 'refunded'
+// (server/routes/sales.js, the refund route).
+//
+// Deliberately a lookup, NOT a ternary with a 'Paid' fallback. PUT /api/sales/:id
+// passes a caller-supplied payment_status straight through with no whitelist,
+// and the live sales table has no CHECK constraint on the column, so the set is
+// not provably closed. An unrecognized value therefore renders no pill at all
+// rather than being announced as "Paid" — a wrong statement about money, read
+// at the counter with the customer standing there, is worse than no statement.
+const PAYMENT_LABELS = {
+  pending: 'Unpaid',
+  partial: 'Part paid',
+  paid: 'Paid',
+  refunded: 'Refunded',
 };
 
 const DELIVERY_STATUS_COLORS = {
@@ -365,15 +372,17 @@ export function OrderQuickModal({
 
   if (!order) return null;
 
-  const orderStatus = order.status || 'pending';
   const orderType = order.order_type || 'walk_in';
   const isCredit = order.is_credit_sale === 1;
   const payColor = isCredit ? '#8B5CF6' : (PAYMENT_STATUS_COLORS[order.payment_status] || '#9CA3AF');
+  // undefined for a payment_status this app does not recognise — the pill is
+  // then not rendered at all. The column defaults to 'pending' server-side, so
+  // a missing value is read as unpaid rather than dropped.
+  const payLabel = isCredit ? 'Credit' : PAYMENT_LABELS[order.payment_status || 'pending'];
 
   const taskTotal = localTasks?.length || 0;
   const taskDone = localTasks?.filter((t) => t.status === 'completed').length || 0;
   const taskActive = localTasks?.filter((t) => ['pending', 'assigned', 'in_progress'].includes(t.status)).length || 0;
-  const isFinal = ['completed', 'cancelled'].includes(orderStatus);
 
   const delivColor = deliveryInfo ? (DELIVERY_STATUS_COLORS[deliveryInfo.status] || '#9CA3AF') : null;
 
@@ -407,19 +416,12 @@ export function OrderQuickModal({
       </View>
 
       <ScrollView showsVerticalScrollIndicator={false} style={styles.sheetBody} keyboardShouldPersistTaps="handled">
-        {/* Status badges */}
+        {/* Stage (server-computed) + money. No pickup pill: PICKUP_STATUS_LABELS
+            said "Ready for Pickup"/"Picked Up" word-for-word beside a StageBadge
+            already saying the same thing, and "Waiting" restated New/Preparing. */}
         <View style={styles.badgesRow}>
           <StageBadge stage={order.display_stage} />
-          <BadgePill
-            label={isCredit ? 'Credit' : order.payment_status === 'pending' ? 'Unpaid' : order.payment_status === 'partial' ? 'Part paid' : 'Paid'}
-            color={payColor}
-          />
-          {orderType === 'pickup' && order.pickup_status && (
-            <BadgePill
-              label={PICKUP_STATUS_LABELS[order.pickup_status] || order.pickup_status}
-              color={PICKUP_STATUS_COLORS[order.pickup_status] || '#9CA3AF'}
-            />
-          )}
+          {payLabel ? <BadgePill label={payLabel} color={payColor} /> : null}
         </View>
 
         {/* Key details */}
@@ -583,7 +585,7 @@ export function OrderQuickModal({
         )}
 
         {/* Quick status actions */}
-        {!isFinal && statusActions.length > 0 && (
+        {statusActions.length > 0 && (
           <View style={styles.actionsBlock}>
             <Text style={styles.actionsTitle}>Quick Actions</Text>
             <View style={{ gap: 8 }}>
