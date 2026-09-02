@@ -31,6 +31,7 @@ import { Ionicons } from '@expo/vector-icons';
 import api from '../services/api';
 import { Colors } from '../constants/theme';
 import { generateDeliverySlip, generatePickupSlip } from '../utils/printHelpers';
+import StageBadge from './StageBadge';
 
 // ─── Shared constants ────────────────────────────────────────────────────────
 
@@ -38,16 +39,6 @@ const FONT_FAMILY =
   typeof navigator !== 'undefined' && navigator.product === 'ReactNative'
     ? undefined
     : 'Inter, Geist, system-ui';
-
-const ORDER_STATUS_COLORS = {
-  pending: '#F59E0B',
-  confirmed: '#F59E0B',
-  preparing: '#0EA5E9',
-  ready: '#10B981',
-  completed: '#10B981',
-  cancelled: '#E11D48',
-  draft: '#9CA3AF',
-};
 
 const PAYMENT_STATUS_COLORS = {
   paid: '#10B981',
@@ -115,6 +106,13 @@ function formatDateTime(dateStr, timeStr) {
     const ampm = hh >= 12 ? 'PM' : 'AM';
     return `${datePart}, ${hh % 12 || 12}:${String(mm || 0).padStart(2, '0')} ${ampm}`;
   } catch { return dateStr || ''; }
+}
+
+// A quick-action entry is one of two shapes: the server's computed stage
+// advance ({ action: nextAction }) or the local Cancel ({ next: 'cancelled' }).
+// Both need one stable key — for React and for the tap-again-to-confirm state.
+function actionKeyOf(action) {
+  return action?.next || 'advance';
 }
 
 function BadgePill({ label, color, size = 'sm' }) {
@@ -213,7 +211,7 @@ export function OrderQuickModal({
   const [showEmployeePicker, setShowEmployeePicker] = useState(null); // taskId being assigned
   const [employees, setEmployees] = useState([]);
   const [employeesLoading, setEmployeesLoading] = useState(false);
-  const [confirmingStatus, setConfirmingStatus] = useState(null);
+  const [confirmingAction, setConfirmingAction] = useState(null);
   const [confirmingTask, setConfirmingTask] = useState(null);
 
   // Sync localTasks when tasks prop changes (e.g. on reopen)
@@ -248,37 +246,48 @@ export function OrderQuickModal({
       setActionLoading(false);
       setTaskLoading({});
       setShowEmployeePicker(null);
-      setConfirmingStatus(null);
+      setConfirmingAction(null);
       setConfirmingTask(null);
       return;
     }
     refreshDelivery();
   }, [visible, refreshDelivery]);
 
-  const doStatusChange = useCallback(async (nextStatus) => {
-    if (!order?.id) return;
+  // Takes a whole quick-action entry, not a status string, so it can dispatch
+  // both shapes: `action` = the server's display_stage.nextAction (endpoint +
+  // method + body already decided), `next` = the local Cancel status change.
+  const doStatusChange = useCallback(async (chosen) => {
+    if (!order?.id || !chosen) return;
     setActionLoading(true);
     try {
-      await api.updateOrderStatus(order.id, nextStatus);
+      if (chosen.action) {
+        await api.advanceOrder(chosen.action);
+      } else {
+        await api.updateOrderStatus(order.id, chosen.next);
+      }
       onRefresh?.();
       onClose();
     } catch (err) {
-      const msg = err?.message || 'Failed to update status';
+      const msg = err?.message || 'Could not update this order. Please try again.';
       Platform.OS === 'web' ? window.alert(msg) : Alert.alert('Error', msg);
     } finally {
       setActionLoading(false);
     }
   }, [order?.id, onRefresh, onClose]);
 
-  const confirmAction = useCallback((label, nextStatus, msg) => {
-    if (confirmingStatus === nextStatus) {
-      setConfirmingStatus(null);
-      doStatusChange(nextStatus);
+  // Tap once to arm, tap again within 3s to run. Kept for every action, not
+  // just Cancel — an accidental tap inside a sheet should never change an order.
+  const confirmAction = useCallback((chosen) => {
+    if (!chosen) return;
+    const key = actionKeyOf(chosen);
+    if (confirmingAction === key) {
+      setConfirmingAction(null);
+      doStatusChange(chosen);
     } else {
-      setConfirmingStatus(nextStatus);
-      setTimeout(() => setConfirmingStatus(null), 3000);
+      setConfirmingAction(key);
+      setTimeout(() => setConfirmingAction(null), 3000);
     }
-  }, [doStatusChange, confirmingStatus]);
+  }, [doStatusChange, confirmingAction]);
 
   // Task actions
   const openEmployeePicker = useCallback(async (taskId) => {
@@ -345,7 +354,6 @@ export function OrderQuickModal({
 
   const orderStatus = order.status || 'pending';
   const orderType = order.order_type || 'walk_in';
-  const orderColor = ORDER_STATUS_COLORS[orderStatus] || '#9CA3AF';
   const isCredit = order.is_credit_sale === 1;
   const payColor = isCredit ? '#8B5CF6' : (PAYMENT_STATUS_COLORS[order.payment_status] || '#9CA3AF');
 
@@ -356,21 +364,18 @@ export function OrderQuickModal({
 
   const delivColor = deliveryInfo ? (DELIVERY_STATUS_COLORS[deliveryInfo.status] || '#9CA3AF') : null;
 
-  // Contextual status actions
+  // One action, decided server-side (server/utils/order-stage.js), instead of
+  // four derived from raw status here. A null nextAction means advancing needs
+  // a human decision (assign a rider, take payment) — the card's dead-end
+  // routing and "Open Full Details" below cover those, so nothing is lost.
+  // Cancel is kept: it is not a stage advance and has no nextAction equivalent.
   const statusActions = [];
-  if (!isFinal) {
-    if (orderStatus === 'pending' || orderStatus === 'confirmed') {
-      statusActions.push({ label: 'Mark Preparing', next: 'preparing', color: '#0EA5E9', icon: 'construct-outline' });
-    }
-    if (orderStatus === 'preparing') {
-      statusActions.push({ label: 'Mark Ready', next: 'ready', color: '#10B981', icon: 'checkmark-circle-outline' });
-    }
-    if (orderStatus === 'ready' && orderType !== 'delivery') {
-      statusActions.push({ label: 'Complete Order', next: 'completed', color: '#6366F1', icon: 'bag-check-outline' });
-    }
-    if (canManage) {
-      statusActions.push({ label: 'Cancel Order', next: 'cancelled', color: '#E11D48', icon: 'close-circle-outline' });
-    }
+  const nextAction = order?.display_stage?.nextAction;
+  if (nextAction) {
+    statusActions.push({ label: nextAction.label, action: nextAction, color: '#10B981', icon: 'arrow-forward-circle-outline' });
+  }
+  if (canManage && !['completed', 'cancelled'].includes(order?.status)) {
+    statusActions.push({ label: 'Cancel Order', next: 'cancelled', color: '#E11D48', icon: 'close-circle-outline' });
   }
 
   return (
@@ -391,9 +396,9 @@ export function OrderQuickModal({
       <ScrollView showsVerticalScrollIndicator={false} style={styles.sheetBody} keyboardShouldPersistTaps="handled">
         {/* Status badges */}
         <View style={styles.badgesRow}>
-          <BadgePill label={(orderStatus).replace(/_/g, ' ').toUpperCase()} color={orderColor} />
+          <StageBadge stage={order.display_stage} />
           <BadgePill
-            label={isCredit ? 'CREDIT' : order.payment_status === 'pending' ? 'PAY: UNPAID' : order.payment_status === 'partial' ? 'PAY: PARTIAL' : (order.payment_status || 'pending').toUpperCase()}
+            label={isCredit ? 'Credit' : order.payment_status === 'pending' ? 'Unpaid' : order.payment_status === 'partial' ? 'Part paid' : 'Paid'}
             color={payColor}
           />
           {orderType === 'pickup' && order.pickup_status && (
@@ -565,23 +570,23 @@ export function OrderQuickModal({
         )}
 
         {/* Quick status actions */}
-        {!isFinal && statusActions.length > 0 && canManage && (
+        {!isFinal && statusActions.length > 0 && (
           <View style={styles.actionsBlock}>
             <Text style={styles.actionsTitle}>Quick Actions</Text>
             <View style={{ gap: 8 }}>
               {statusActions.map((action) => (
                 <TouchableOpacity
-                  key={action.next}
+                  key={actionKeyOf(action)}
                   style={[styles.actionBtnFull, { backgroundColor: action.color, opacity: actionLoading ? 0.6 : 1 }]}
                   disabled={actionLoading}
-                  onPress={() => confirmAction(action.label, action.next)}
+                  onPress={() => confirmAction(action)}
                 >
                   {actionLoading ? (
                     <ActivityIndicator size="small" color="#fff" />
                   ) : (
                     <>
                       <Ionicons name={action.icon} size={16} color="#fff" />
-                      <Text style={styles.actionBtnText}>{confirmingStatus === action.next ? 'Tap again to confirm' : action.label}</Text>
+                      <Text style={styles.actionBtnText}>{confirmingAction === actionKeyOf(action) ? 'Tap again to confirm' : action.label}</Text>
                     </>
                   )}
                 </TouchableOpacity>
