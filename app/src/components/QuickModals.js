@@ -205,6 +205,10 @@ export function OrderQuickModal({
   onOpenDelivery,
   navigation,
   canManage,
+  // Optional. Given, the modal hands Start Preparing to the parent instead of
+  // firing it bare, so this entry point and the order card's button do the
+  // same thing. Omitted, the modal behaves exactly as it did before.
+  onPickPreparer,
 }) {
   const [actionLoading, setActionLoading] = useState(false);
   const [deliveryLoading, setDeliveryLoading] = useState(false);
@@ -296,6 +300,20 @@ export function OrderQuickModal({
   const confirmAction = useCallback((chosen) => {
     if (!chosen) return;
     if (chosen.action) {
+      // Start Preparing is the one advance that can also record WHO is making
+      // it (Task 15). This modal used to fire it bare, so the same order, on
+      // the same screen, under the same button label, assigned somebody when
+      // tapped on the card and nobody when tapped through the card body — the
+      // "two one-tap mechanisms coexist" divergence this plan exists to delete
+      // (CLAUDE.md already flags this file for it). Handing it to the parent
+      // routes it through the identical `pick_preparer` flow the card uses, and
+      // that flow re-asks the shared rule, so it still advances with no prompt
+      // whenever there is nothing to assign.
+      if (chosen.action?.body?.status === 'preparing' && onPickPreparer) {
+        onClose();
+        onPickPreparer(order);
+        return;
+      }
       doStatusChange(chosen);
       return;
     }
@@ -307,7 +325,7 @@ export function OrderQuickModal({
       setConfirmingAction(key);
       setTimeout(() => setConfirmingAction(null), 3000);
     }
-  }, [doStatusChange, confirmingAction]);
+  }, [doStatusChange, confirmingAction, onPickPreparer, onClose, order]);
 
   // Task actions
   const openEmployeePicker = useCallback(async (taskId) => {

@@ -23,6 +23,10 @@ import { parseServerDate, getShopNow, getShopTodayStr, DEFAULT_TZ, formatTimeStr
 import { OrderQuickModal } from '../components/QuickModals';
 import OrderKanbanBoard from '../components/orderBoard/OrderKanbanBoard';
 import AssignPickerModal from '../components/orderBoard/AssignPickerModal';
+// The one place the "does starting this need a preparer, and who decides?"
+// rule lives. Imported rather than restated so this screen, the order card and
+// the order modal cannot drift apart on it (Task 15 review).
+import { resolvePreparerStep } from '../components/orderBoard/OrderCard';
 import DateTimePickerModal from '../components/DateTimePickerModal';
 import AttachmentVoiceRow from '../components/AttachmentVoiceRow';
 import ImageModal from '../components/ImageModal';
@@ -222,6 +226,14 @@ export default function DashboardScreen({ navigation }) {
   // or 'assign' when the order is already preparing and this is purely a
   // correction — see handleResolveAction's pick_preparer branch.
   const [preparerPicker, setPreparerPicker] = useState(null);
+  // Same monotonic request token as riderReqRef above, for the same reasons and
+  // with the same pairing rule (every bump is owned by something that settles).
+  // Without it: cancelling during the roster fetch reopens the picker the
+  // person just dismissed; and open-A, cancel, open-B, with A resolving last,
+  // rebuilds the whole state object from A's closure — the title is static, so
+  // the modal still LOOKS like B while pointing at A, and the next tap acts on
+  // A. In 'start' mode that flips a live sale to preparing.
+  const preparerReqRef = useRef(0);
 
   const [locations, setLocations] = useState([]);
   const [locationScope, setLocationScope] = useState(null);
@@ -723,7 +735,35 @@ export default function DashboardScreen({ navigation }) {
     // OrderCard only emits this kind for owner/manager/counter_staff, which is
     // exactly that route's authorize() list — do not relax it here.
     if (kind === 'pick_preparer') {
-      const mode = order.display_stage?.nextAction?.body?.status === 'preparing' ? 'start' : 'assign';
+      const nextAction = order.display_stage?.nextAction;
+      const mode = nextAction?.body?.status === 'preparing' ? 'start' : 'assign';
+
+      // This branch is entered from TWO places now — the card's primary action
+      // and the order modal's copy of the same button (QuickModals.js) — so it
+      // re-asks the shared rule rather than assuming the caller pre-filtered.
+      // The card does pre-filter; the modal deliberately does not, which is how
+      // it stops silently advancing with nobody attached.
+      if (mode === 'start') {
+        const step = resolvePreparerStep({
+          order,
+          tasks: tasksBySaleId.get(order.id),
+          viewerRole: user?.role,
+          viewerId: user?.id,
+        });
+        if (step.kind !== 'pick') {
+          // 'advance' (nothing unassigned — asking would change nothing) or
+          // 'self' (an employee takes it themselves). Either way: no prompt.
+          try {
+            await api.advanceOrder(nextAction, step.kind === 'self' ? { assigned_to: step.assignedTo } : undefined);
+          } catch (err) {
+            showMessage('Start Preparing', err?.message || 'Could not start this order. Please try again.');
+            return;
+          }
+          await fetchDashboard();
+          return;
+        }
+      }
+
       // Scope to the ORDER's own location for the same reason the rider picker
       // does: an owner on "All locations" has no meaningful activeLocation.
       const locId = order.location_id || activeLocation?.id;
@@ -734,6 +774,7 @@ export default function DashboardScreen({ navigation }) {
         navigation.navigate('SaleDetail', { saleId: order.id });
         return;
       }
+      const reqId = ++preparerReqRef.current;
       setPreparerPicker({ order, mode, loading: true, people: [] });
       try {
         // GET /auth/staff-roster, not GET /users: the account directory is
@@ -751,6 +792,12 @@ export default function DashboardScreen({ navigation }) {
         // hide three names would be the wrong trade.
         const res = await api.getStaffRoster(locId);
         const list = Array.isArray(res?.data?.staff) ? res.data.staff : [];
+        // Superseded while awaiting — cancelled, or a different order's picker
+        // was opened. This setState rebuilds the object from THIS closure,
+        // `order` included, so applying it late would leave the picker showing
+        // one order and writing to another. Identical guard, identical reason,
+        // to the rider branch above.
+        if (preparerReqRef.current !== reqId) return;
         setPreparerPicker({
           order,
           mode,
@@ -762,6 +809,10 @@ export default function DashboardScreen({ navigation }) {
           })),
         });
       } catch (err) {
+        // Same guard on the failure path: a stale error must not close a picker
+        // the person has since reopened, nor talk to them about a request they
+        // already walked away from.
+        if (preparerReqRef.current !== reqId) return;
         setPreparerPicker(null);
         showMessage('Staff', err?.message || 'Could not load the staff list. Please try again.');
       }
@@ -782,7 +833,7 @@ export default function DashboardScreen({ navigation }) {
     if (kind === 'record_cod') {
       navigation.navigate('POS', { screen: 'Settlements' });
     }
-  }, [navigation, activeLocation?.id]);
+  }, [navigation, activeLocation?.id, tasksBySaleId, user?.role, user?.id, fetchDashboard]);
 
   // Closing is also a cancellation: bumping the token orphans any in-flight
   // partner fetch or assign so it cannot resurrect the picker after the user
@@ -819,17 +870,37 @@ export default function DashboardScreen({ navigation }) {
     }
   }, [riderPicker, fetchDashboard]);
 
+  // The order modal's Start Preparing, routed into the identical flow as the
+  // card's. It re-reads the order from `sales` rather than trusting the object
+  // the modal was opened with, which can be a refresh behind.
+  const handlePickPreparerFromModal = useCallback((order) => {
+    if (!order?.id) return;
+    const fresh = sales.find((s) => s.id === order.id)
+      || counterPendingOrders.find((s) => s.id === order.id)
+      || order;
+    handleResolveAction(fresh, 'pick_preparer');
+  }, [sales, counterPendingOrders, handleResolveAction]);
+
+  // Closing is also a cancellation — same contract as closeRiderPicker.
+  const closePreparerPicker = useCallback(() => {
+    preparerReqRef.current += 1;
+    setPreparerPicker(null);
+  }, []);
+
   // Second tap of the who-is-making-this pick. Same loading-lock shape as
   // handlePickRider so a double-tap cannot fire two writes.
   const handlePickPreparer = useCallback(async (person) => {
     const picker = preparerPicker;
     if (!picker?.order || picker.loading) return;
+    const reqId = ++preparerReqRef.current;
     setPreparerPicker((prev) => (prev ? { ...prev, loading: true } : prev));
+    let wrote = false;
     try {
       if (picker.mode === 'start') {
         const nextAction = picker.order.display_stage?.nextAction;
         if (!nextAction) throw new Error('This order has already moved on. Pull down to refresh.');
         await api.advanceOrder(nextAction, { assigned_to: person.id });
+        wrote = true;
       } else {
         // Already preparing: name the owner of the work without touching the
         // order's status. One task per line item, so this is a handful of
@@ -839,19 +910,48 @@ export default function DashboardScreen({ navigation }) {
         const openTasks = (tasksBySaleId.get(picker.order.id) || []).filter(
           (t) => t.status !== 'completed' && t.status !== 'cancelled'
         );
-        if (openTasks.length === 0) {
+        // ── Fill the free work first; never quietly take work off someone ──
+        // When anything is unassigned, this fills ONLY that — the same set the
+        // server's own `WHERE assigned_to IS NULL` would touch on the 'start'
+        // path, so both modes of this one button mean the same thing. Only when
+        // everything is already held does picking someone genuinely move the
+        // work, and that is the case where the card says `change` rather than
+        // `assign`. Reassigning a task another person is actively holding, one
+        // at a time, stays on Sale Detail — one level deeper, not deleted.
+        const free = openTasks.filter((t) => t.assigned_to == null);
+        const targets = free.length > 0 ? free : openTasks;
+        if (targets.length === 0) {
           throw new Error('There is no prep work left on this order to hand over.');
         }
-        for (const t of openTasks) {
+        for (const t of targets) {
+          // Re-checked INSIDE the loop, not just before it: a multi-item sale
+          // issues several writes and the picker can be dismissed partway
+          // through. Checking once at the top would leave the rest of the loop
+          // running against a picker the person has already walked away from.
+          if (preparerReqRef.current !== reqId) return;
           await api.assignTask(t.id, { assigned_to: person.id });
+          wrote = true;
         }
       }
-      setPreparerPicker(null);
+      // Only this interaction's own picker gets closed; if it was superseded,
+      // whatever superseded it owns the UI now.
+      if (preparerReqRef.current === reqId) setPreparerPicker(null);
+      // Refreshed either way — the writes DID land, so the board must show them
+      // regardless of what has been tapped since.
       await fetchDashboard();
     } catch (err) {
+      if (preparerReqRef.current !== reqId) {
+        // Superseded: say nothing, but still reconcile the board if a partial
+        // write got out before the failure.
+        if (wrote) { try { await fetchDashboard(); } catch (e) { /* stale board is recoverable */ } }
+        return;
+      }
       // Picker closes first so the message is not stuck behind a modal on web.
       setPreparerPicker(null);
       showMessage('Assign', err?.message || 'Could not assign this person. Please try again.');
+      // A multi-task assign can fail halfway. Refresh so the card shows what
+      // actually landed rather than what it looked like before the tap.
+      if (wrote) { try { await fetchDashboard(); } catch (e) { /* see above */ } }
     }
   }, [preparerPicker, tasksBySaleId, fetchDashboard]);
 
@@ -864,6 +964,7 @@ export default function DashboardScreen({ navigation }) {
   const handleLeavePreparerForNow = useCallback(async () => {
     const picker = preparerPicker;
     if (!picker?.order || picker.loading) return;
+    const reqId = ++preparerReqRef.current;
     setPreparerPicker((prev) => (prev ? { ...prev, loading: true } : prev));
     try {
       const nextAction = picker.order.display_stage?.nextAction;
@@ -871,9 +972,10 @@ export default function DashboardScreen({ navigation }) {
       // No assigned_to key at all — NOT an empty string, which the route
       // parseInt()s into NaN and rejects with a 400.
       await api.advanceOrder(nextAction);
-      setPreparerPicker(null);
+      if (preparerReqRef.current === reqId) setPreparerPicker(null);
       await fetchDashboard();
     } catch (err) {
+      if (preparerReqRef.current !== reqId) return;
       setPreparerPicker(null);
       showMessage('Start Preparing', err?.message || 'Could not start this order. Please try again.');
     }
@@ -1647,6 +1749,9 @@ export default function DashboardScreen({ navigation }) {
         onRefresh={fetchDashboard}
         navigation={navigation}
         canManage={isOwnerOrManager}
+        // Same flow the card's Start Preparing uses, so which part of the card
+        // someone happened to tap cannot change what the button does.
+        onPickPreparer={handlePickPreparerFromModal}
       />
 
       {/* Two-tap assign: "Assign Rider" on the card opens this, one tap on a
@@ -1693,23 +1798,51 @@ export default function DashboardScreen({ navigation }) {
       <AssignPickerModal
         visible={preparerPicker !== null}
         title="Who is making this?"
+        notice={
+          // Only ever shown when the list is not what someone would expect —
+          // never on a normal result. The roster only lists staff who have an
+          // employee code, so a shop whose prep staff have not been set up with
+          // one sees an empty list and no explanation at all. Says what to do
+          // next in plain language rather than leaving a blank sheet.
+          !preparerPicker?.loading && (preparerPicker?.people || []).length === 0
+            ? 'Only staff with an employee code appear here. Ask the owner to set one up for the person making this.'
+            : null
+        }
         people={preparerPicker?.people || []}
         loading={!!preparerPicker?.loading}
         onPick={handlePickPreparer}
-        onClose={() => setPreparerPicker(null)}
+        onClose={closePreparerPicker}
         footer={
-          // Never a gate: with nobody to pick — or nobody they want to pick —
-          // the order still has to be able to move. Only in 'start' mode,
-          // where there is genuinely something to advance.
-          preparerPicker?.mode === 'start' && !preparerPicker?.loading ? (
-            <TouchableOpacity
-              style={styles.pickerFallbackBtn}
-              activeOpacity={0.7}
-              onPress={handleLeavePreparerForNow}
-            >
-              <Text style={styles.pickerFallbackText}>Leave for now</Text>
-            </TouchableOpacity>
-          ) : null
+          preparerPicker?.loading ? null
+            // Never a gate: with nobody to pick — or nobody they want to pick —
+            // the order still has to be able to move. 'start' mode has
+            // something to advance, so that is the offer.
+            : preparerPicker?.mode === 'start' ? (
+              <TouchableOpacity
+                style={styles.pickerFallbackBtn}
+                activeOpacity={0.7}
+                onPress={handleLeavePreparerForNow}
+              >
+                <Text style={styles.pickerFallbackText}>Leave for now</Text>
+              </TouchableOpacity>
+            )
+            // 'assign' mode has nothing to advance, so an empty list would
+            // otherwise leave Cancel as the only way out — a soft dead end on
+            // the one action this line exists to offer. Sale Detail assigns
+            // per task and is the real home of the deeper case.
+            : (preparerPicker?.people || []).length === 0 && preparerPicker?.order ? (
+              <TouchableOpacity
+                style={styles.pickerFallbackBtn}
+                activeOpacity={0.7}
+                onPress={() => {
+                  const saleId = preparerPicker.order.id;
+                  closePreparerPicker();
+                  navigation.navigate('SaleDetail', { saleId });
+                }}
+              >
+                <Text style={styles.pickerFallbackText}>Open this order</Text>
+              </TouchableOpacity>
+            ) : null
         }
       />
 

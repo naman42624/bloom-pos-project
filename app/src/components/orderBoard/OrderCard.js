@@ -184,7 +184,7 @@ function getTaskProgress(tasks) {
  * before the assign runs — matching 'pending' alone was a real silent no-op
  * found live 2026-09-02.
  */
-function hasUnassignedTasks(tasks) {
+export function hasUnassignedTasks(tasks) {
   const list = Array.isArray(tasks) ? tasks : [];
   return list.some(
     (t) => t.assigned_to == null && (t.status === 'pending' || t.status === 'in_progress')
@@ -192,12 +192,54 @@ function hasUnassignedTasks(tasks) {
 }
 
 /**
+ * The whole "does starting this need a preparer, and who decides?" rule, in
+ * ONE place, because there are two ways into the same button: the card's
+ * primary action and the order modal's (components/QuickModals.js) copy of the
+ * same nextAction. Those two silently diverged — the modal advanced with
+ * nobody attached — which is exactly the "two one-tap mechanisms coexist"
+ * pattern this plan exists to delete. Both now ask this function.
+ *
+ * Returns:
+ *   { kind: 'advance' }               — behave exactly as before, no prompt
+ *   { kind: 'self', assignedTo }      — one tap, the viewer takes it themselves
+ *   { kind: 'pick' }                  — ask who, via the 'pick_preparer' kind
+ */
+export function resolvePreparerStep({ order, tasks, viewerRole, viewerId }) {
+  // Only Start Preparing may carry assigned_to: PUT /sales/:id/status acts on
+  // it exclusively when the status being set is 'preparing'. Everywhere else
+  // it is accepted, returns 200, and assigns nobody.
+  if (order?.display_stage?.nextAction?.body?.status !== 'preparing') return { kind: 'advance' };
+  // Never ask a question whose answer changes nothing.
+  if (!hasUnassignedTasks(tasks)) return { kind: 'advance' };
+  // The person who is going to do it themselves. Not florist_staff:
+  // ENDPOINT_ROLES.SALE_STATUS in server/utils/order-stage.js omits them, so
+  // nextAction is null for a florist and this is unreachable for them anyway.
+  if (viewerRole === 'employee' && viewerId != null) return { kind: 'self', assignedTo: viewerId };
+  // Counter staff, owner, manager: they are not the ones making the bouquet,
+  // so self-assigning would put a false name on the work.
+  return { kind: 'pick' };
+}
+
+/**
  * Who is preparing this order, for the line shown on a `preparing` card.
  *
  * Returns null when there is nothing to say (no live tasks at all — e.g. a
- * sale of only ready-made stock), otherwise:
- *   { text, actionWord }  — actionWord is 'assign' when nobody holds it yet,
- *                           'change' when someone does.
+ * sale of only ready-made stock), otherwise `{ text, actionWord }`.
+ *
+ * ── An unassigned task must never hide behind a name ──
+ *
+ * Deriving this from the assigned tasks alone was wrong: one task on Jeetu and
+ * one on nobody read as plain "Jeetu is preparing", so the free task was
+ * invisible — and the word on the button was `change`, which then reassigned
+ * Jeetu's own work away from him. The count is therefore part of the sentence
+ * whenever it is non-zero, and it also decides the verb:
+ *   'assign' — there is free work; picking someone FILLS it and touches nobody
+ *              else's task (matching the server's own `WHERE assigned_to IS
+ *              NULL` on the 'start' path).
+ *   'change' — everything is already held, so picking someone genuinely moves
+ *              the work, and `change` is the honest word for that.
+ * Taking a task off someone who actively holds it, one by one, stays one level
+ * deeper on Sale Detail. What is not acceptable is doing it by accident.
  *
  * `assigned_to` is compared through Number() on both sides on purpose: this
  * codebase has already been bitten by pg handing back a numeric column as a
@@ -210,20 +252,31 @@ function getPreparerLine(tasks, viewerId) {
   if (live.length === 0) return null;
 
   const holders = new Map();
+  let freeCount = 0;
   live.forEach((t) => {
-    if (t.assigned_to == null) return;
+    if (t.assigned_to == null) { freeCount++; return; }
     holders.set(Number(t.assigned_to), t.assigned_to_name || 'Someone');
   });
 
   if (holders.size === 0) return { text: 'Nobody assigned yet', actionWord: 'assign' };
+
+  let who;
   if (holders.size === 1) {
     const [id] = Array.from(holders.keys());
-    if (viewerId != null && Number(viewerId) === id) {
-      return { text: "You're on it", actionWord: 'change' };
-    }
-    return { text: `${holders.get(id)} is preparing`, actionWord: 'change' };
+    who = (viewerId != null && Number(viewerId) === id)
+      ? "You're on it"
+      : `${holders.get(id)} is preparing`;
+  } else {
+    who = `${holders.size} people preparing`;
   }
-  return { text: `${holders.size} people preparing`, actionWord: 'change' };
+
+  if (freeCount > 0) {
+    return {
+      text: `${who} · ${freeCount} still unassigned`,
+      actionWord: 'assign',
+    };
+  }
+  return { text: who, actionWord: 'change' };
 }
 
 export default function OrderCard({
@@ -257,14 +310,9 @@ export default function OrderCard({
   //
   // Whoever taps Start Preparing usually knows who is doing the work, so the
   // action carries it instead of costing a separate trip to another screen.
-  //
-  // `startsPreparing` is the ONLY action `assigned_to` may ride along with:
-  // PUT /sales/:id/status acts on it exclusively when the status being set is
-  // 'preparing'. On Mark Ready / Complete / Confirm Pickup / Mark Delivered it
-  // is accepted, returns 200, and assigns nobody — so it must never be
-  // attached there. See api.advanceOrder's note.
-  const startsPreparing = nextAction?.body?.status === 'preparing';
-  const needsPreparer = startsPreparing && hasUnassignedTasks(tasks);
+  // The rule itself lives in resolvePreparerStep so the order modal's copy of
+  // this same button cannot drift away from it.
+  const preparerStep = resolvePreparerStep({ order, tasks, viewerRole, viewerId });
 
   // A third role list, and like the other two it mirrors one real authorize():
   // PUT /production/tasks/:id/assign is owner/manager/counter_staff. Handing
@@ -280,19 +328,13 @@ export default function OrderCard({
 
   const handlePrimaryPress = (e) => {
     e.stopPropagation();
-    if (needsPreparer) {
-      // One tap for the person who is going to do it themselves. Not
-      // florist_staff: ENDPOINT_ROLES.SALE_STATUS in server/utils/order-stage.js
-      // omits them, so nextAction is null for a florist and this button does
-      // not exist on their card at all — a branch for them would be dead code
-      // describing a capability they do not have.
-      if (viewerRole === 'employee' && viewerId != null) {
-        onQuickAction(order, { assigned_to: viewerId });
-        return;
-      }
-      // Counter staff, owner, manager: they are not the ones making the
-      // bouquet, so self-assigning would put a false name on the work. Ask.
-      // The card stays navigation- and fetch-free — it signals the parent.
+    // The card stays navigation- and fetch-free: 'pick' signals the parent
+    // rather than opening anything itself.
+    if (preparerStep.kind === 'self') {
+      onQuickAction(order, { assigned_to: preparerStep.assignedTo });
+      return;
+    }
+    if (preparerStep.kind === 'pick') {
       onResolve(order, 'pick_preparer');
       return;
     }
@@ -391,13 +433,21 @@ export default function OrderCard({
             hitSlop={8}
           >
             <Ionicons name="person-outline" size={13} color={Colors.textSecondary} />
-            <Text style={styles.preparerText} numberOfLines={1}>{preparerLine.text}</Text>
+            {/* Two lines, for the same reason the status line below takes two:
+                the "N still unassigned" half sits at the END of the sentence
+                and is exactly what a one-line ellipsis eats on a narrow
+                column — and it is the half that changes what you should do. */}
+            <Text style={styles.preparerText} numberOfLines={2}>{preparerLine.text}</Text>
             <Text style={styles.preparerAction}>· {preparerLine.actionWord}</Text>
           </TouchableOpacity>
         ) : (
           <View style={styles.preparerRow}>
             <Ionicons name="person-outline" size={13} color={Colors.textSecondary} />
-            <Text style={styles.preparerText} numberOfLines={1}>{preparerLine.text}</Text>
+            {/* Two lines, for the same reason the status line below takes two:
+                the "N still unassigned" half sits at the END of the sentence
+                and is exactly what a one-line ellipsis eats on a narrow
+                column — and it is the half that changes what you should do. */}
+            <Text style={styles.preparerText} numberOfLines={2}>{preparerLine.text}</Text>
           </View>
         )
       )}
