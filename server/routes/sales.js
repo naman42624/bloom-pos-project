@@ -2250,6 +2250,19 @@ router.put(
         if (assigningSomeoneElse && !['owner', 'manager', 'counter_staff'].includes(req.user.role)) {
           return res.status(403).json({ success: false, message: 'You can take this on yourself, but only a manager or counter staff can hand it to someone else.' });
         }
+        // Mirrors the target check PUT /production/tasks/:id/assign already
+        // makes, same role list verbatim, so this path cannot record an
+        // assignee that route would have refused: a deleted or made-up id, a
+        // customer, a delivery partner. That route neither location-scopes nor
+        // checks is_active, so neither does this — being stricter here than the
+        // route we mirror would reject people the task picker still offers.
+        // Runs ahead of every write, like the two checks above it.
+        const assignee = db.prepare(
+          "SELECT id FROM users WHERE id = ? AND role IN ('employee','counter_staff','florist_staff','manager','owner')"
+        ).get(assignedTo);
+        if (!assignee) {
+          return res.status(400).json({ success: false, message: 'That person cannot be given prep work. Please pick someone from the staff list.' });
+        }
       }
 
       // ── Manager Override Auto-Complete for Pickup and Delivery Orders ──
@@ -2347,11 +2360,23 @@ router.put(
       db.prepare('UPDATE sales SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(status, sale.id);
 
       // A sale has one production task per line item, so assigning "the order"
-      // means assigning its tasks. Only 'pending' ones — never reassign work
-      // someone already holds, which would silently take it off their queue.
+      // means assigning its tasks. `assigned_to IS NULL` is the real guard —
+      // never take work off someone who already holds it.
+      //
+      // 'in_progress' is in that status list because of `pref_manager_override`:
+      // when that pref is on (it is, in the live shop), the override block ABOVE
+      // has already flipped this sale's pending tasks to 'in_progress' before we
+      // reach here, but only for pickup/delivery orders. Matching 'pending'
+      // alone therefore assigned nobody on exactly those orders and still
+      // returned 200 — a silent no-op, found live 2026-09-02. Do NOT "simplify"
+      // this back to status = 'pending'; that restores the bug invisibly.
+      //
+      // The CASE keeps the promotion one-way. A task someone is already working
+      // on gets its owner recorded without being dragged backwards to
+      // 'assigned' — we are naming who owns it, not restarting it.
       if (assignedTo != null && status === 'preparing') {
         db.prepare(
-          "UPDATE production_tasks SET assigned_to = ?, status = 'assigned', updated_at = CURRENT_TIMESTAMP WHERE sale_id = ? AND status = 'pending' AND assigned_to IS NULL"
+          "UPDATE production_tasks SET assigned_to = ?, status = CASE WHEN status = 'pending' THEN 'assigned' ELSE status END, updated_at = CURRENT_TIMESTAMP WHERE sale_id = ? AND assigned_to IS NULL AND status IN ('pending', 'in_progress')"
         ).run(assignedTo, sale.id);
       }
 
