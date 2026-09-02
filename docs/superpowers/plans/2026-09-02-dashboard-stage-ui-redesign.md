@@ -1622,6 +1622,106 @@ Report to the user: what passed, what failed and was fixed, and anything found b
 
 ---
 
+### Task 12: Cap each Stage column, with a way to see the rest
+
+Added mid-run, after Task 8's review. Runs **after Task 10 and before Task 11's final verification**.
+
+**Why:** the old board sliced each lane to 1-2 preview cards. `StageColumn` now does `orders.map(renderCard)` inside a plain `ScrollView` — no cap, no virtualization — fed by a `limit: 500` fetch. On a busy day the owner/manager board renders every open order at once, on a screen in daily use at the counter. This is the same failure mode `CLAUDE.md` already records for "Orders Needing Attention" (sorted by recency, no render cap, unusable past ~20 orders), and it works against the whole point of this redesign: a dashboard you cannot scan is not less cluttered for having nicer cards.
+
+**Files:**
+- Modify: `app/src/constants/orderStages.js` (add the cap constant)
+- Modify: `app/src/components/orderBoard/StageColumn.js` (render the cap + the overflow affordance)
+- Modify: `app/src/components/orderBoard/OrderKanbanBoard.js` (pass the overflow handler through)
+- Modify: `app/src/screens/DashboardScreen.js` (route the overflow tap)
+
+**Interfaces:**
+- Produces: `COLUMN_CARD_CAP` from `constants/orderStages`.
+- `StageColumn` gains one prop: `onShowAll` — called with no arguments when the overflow row is tapped. `OrderKanbanBoard` gains `onShowAll` and forwards it.
+
+- [ ] **Step 1: Add the cap constant**
+
+In `app/src/constants/orderStages.js`:
+
+```js
+// How many cards one Stage column renders before collapsing the remainder into
+// a "+N more" row. The board is a "what needs doing now" surface, not a browser:
+// past roughly this many cards in one column, scanning stops working and the
+// right tool is Orders Inbox, which has search, filters and a virtualized list.
+// StageColumn renders into a plain ScrollView with no virtualization, so this
+// cap is also what stops a busy day rendering hundreds of cards at once.
+export const COLUMN_CARD_CAP = 8;
+```
+
+- [ ] **Step 2: Render the cap and the overflow row in `StageColumn`**
+
+Import `COLUMN_CARD_CAP`, accept an `onShowAll` prop, and replace the body's card list so it renders at most the cap and appends an overflow row when there are more. The count already shown in the header stays the **true** total — capping what renders must not change what is counted, or staff lose the one number that tells them how much work exists.
+
+```js
+  const visible = orders.slice(0, COLUMN_CARD_CAP);
+  const hiddenCount = orders.length - visible.length;
+
+  const body = count === 0 ? (
+    <Text style={styles.emptyText}>Nothing here</Text>
+  ) : (
+    <View style={styles.cardStack}>
+      {visible.map(renderCard)}
+      {hiddenCount > 0 && (
+        <TouchableOpacity style={styles.showAllRow} onPress={onShowAll} activeOpacity={0.75}>
+          <Text style={styles.showAllText}>{hiddenCount} more — see all</Text>
+          <Ionicons name="arrow-forward" size={14} color={Colors.primary} />
+        </TouchableOpacity>
+      )}
+    </View>
+  );
+```
+
+Add the styles, sized as a real tap target:
+
+```js
+  showAllRow: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    minHeight: 44, borderRadius: 10, borderWidth: 1, borderStyle: 'dashed',
+    borderColor: Colors.primary, backgroundColor: Colors.primary + '08',
+  },
+  showAllText: { fontSize: 14, fontWeight: '700', color: Colors.primary, fontFamily: FONT_FAMILY },
+```
+
+The wording is deliberate: `"12 more — see all"` says what is hidden and what tapping does. Avoid `"+12"`, which tells a first-time user neither.
+
+- [ ] **Step 3: Forward `onShowAll` through the board**
+
+In `app/src/components/orderBoard/OrderKanbanBoard.js`, accept `onShowAll` in the props and pass it to every `<StageColumn>`. It is the same destination for every column — the point is to leave the board, not to filter to one stage — so no per-column argument is needed.
+
+- [ ] **Step 4: Route it from the dashboard**
+
+In `app/src/screens/DashboardScreen.js`, pass `onShowAll={handleNavigateToDone}` to both `<OrderKanbanBoard>` call sites. That handler already routes to Orders Inbox and is already role-aware (`Orders` for owner/manager, `EmployeeOrders` otherwise), so it is exactly the right destination and needs no change.
+
+If you find `handleNavigateToDone`'s name now misleading given it serves both the "Done today" chip and this overflow row, rename it to `handleOpenOrdersInbox` and update both usages — but only if you do it completely.
+
+- [ ] **Step 5: Verify**
+
+```bash
+cd app && node scripts/babel-check.js   src/constants/orderStages.js   src/components/orderBoard/StageColumn.js   src/components/orderBoard/OrderKanbanBoard.js   src/screens/DashboardScreen.js
+```
+
+Expected: 4 `OK`, exit 0.
+
+Then confirm by reading the code that: a column with 8 or fewer orders renders no overflow row; a column with 9+ renders exactly 8 cards plus one overflow row reading `1 more — see all`; and the column header count still shows the true total, not the capped one.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add app/src/constants/orderStages.js app/src/components/orderBoard/StageColumn.js app/src/components/orderBoard/OrderKanbanBoard.js app/src/screens/DashboardScreen.js
+git commit -m "Cap each Stage column at 8 cards with a see-all overflow row
+
+StageColumn rendered every order in a plain ScrollView with no cap and no
+virtualization, fed by a limit:500 fetch — the same failure mode CLAUDE.md
+records for Orders Needing Attention. The header count stays the true total;
+only what renders is capped."
+```
+
+---
+
 ## Notes for whoever executes this
 
 - **Task 1 ships alone and first.** It is the live-data fix and Task 8's UI assumes the corrected behaviour.
