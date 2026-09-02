@@ -1,5 +1,5 @@
 import React from 'react';
-import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, Text, TouchableOpacity } from 'react-native';
 import { Colors } from '../../constants/theme';
 import { FONT_FAMILY } from '../../constants/orderDisplay';
 

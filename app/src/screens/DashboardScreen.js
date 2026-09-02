@@ -205,9 +205,17 @@ export default function DashboardScreen({ navigation }) {
   const [viewedImage, setViewedImage] = useState(null); // task-card product photo, tap to enlarge
   const [selectedTaskModal, setSelectedTaskModal] = useState(null);
   const [selectedOrderModal, setSelectedOrderModal] = useState(null); // { order, tasks }
-  // { deliveryId, saleId, loading, people } while the assign-a-rider picker is
-  // open, null when it is closed (Task 14).
+  // { deliveryId, saleId, loading, people, showingEveryone } while the
+  // assign-a-rider picker is open, null when it is closed (Task 14).
   const [riderPicker, setRiderPicker] = useState(null);
+  // Monotonic request token for everything the picker awaits. Bumped when a
+  // request STARTS and when the picker CLOSES; a resolved promise applies its
+  // result only if the token still matches, so a slow response can never
+  // reopen a closed picker or overwrite a newer one's deliveryId. Every bump
+  // is paired with an owner that ends in a settled state (a fresh
+  // loading:true request, or null), so a discarded response can never strand
+  // the picker mid-spinner.
+  const riderReqRef = useRef(0);
   // { order, mode, loading, people } while the who-is-making-this picker is
   // open, null when it is closed (Task 15). `mode` is 'start' when picking
   // also starts preparation (the Start Preparing action carries assigned_to),
@@ -629,6 +637,7 @@ export default function DashboardScreen({ navigation }) {
         navigation.navigate('SaleDetail', { saleId: order.id });
         return;
       }
+      const reqId = ++riderReqRef.current;
       setRiderPicker({ deliveryId: order.delivery_id, saleId: order.id, loading: true, people: [] });
       try {
         // Scope to the ORDER's own location, not the viewer's activeLocation:
@@ -662,6 +671,13 @@ export default function DashboardScreen({ navigation }) {
             showingEveryone = true;
           }
         }
+        // Superseded while we were awaiting — the user cancelled, or opened a
+        // different order's picker. Dropping the result is the whole point:
+        // this setState rebuilds the object from THIS closure, deliveryId
+        // included, so applying it late would silently repoint a picker
+        // showing order B at order A's delivery and send the flowers to the
+        // wrong address.
+        if (riderReqRef.current !== reqId) return;
         setRiderPicker({
           deliveryId: order.delivery_id,
           saleId: order.id,
@@ -680,6 +696,10 @@ export default function DashboardScreen({ navigation }) {
           }),
         });
       } catch (err) {
+        // Same guard on the failure path: a stale error must not close a
+        // picker the user has since reopened, nor alert about a request they
+        // already walked away from.
+        if (riderReqRef.current !== reqId) return;
         setRiderPicker(null);
         showMessage('Riders', err?.message || 'Could not load the rider list. Please try again.');
       }
@@ -764,22 +784,36 @@ export default function DashboardScreen({ navigation }) {
     }
   }, [navigation, activeLocation?.id]);
 
+  // Closing is also a cancellation: bumping the token orphans any in-flight
+  // partner fetch or assign so it cannot resurrect the picker after the user
+  // has deliberately dismissed it.
+  const closeRiderPicker = useCallback(() => {
+    riderReqRef.current += 1;
+    setRiderPicker(null);
+  }, []);
+
   // Second (and last) tap of the two-tap assign: pick a rider, write it,
   // refresh the board. The picker is put back into its loading state for the
   // duration so the rows are gone and a double-tap cannot fire two assigns.
   const handlePickRider = useCallback(async (person) => {
     const deliveryId = riderPicker?.deliveryId;
     if (!deliveryId || riderPicker?.loading) return;
+    const reqId = ++riderReqRef.current;
     setRiderPicker((prev) => (prev ? { ...prev, loading: true } : prev));
     try {
       await api.assignDelivery(deliveryId, { delivery_partner_id: person.id });
-      setRiderPicker(null);
+      // Only this interaction's own picker gets closed. If it was superseded,
+      // whatever superseded it owns the UI now and must not be dismissed.
+      if (riderReqRef.current === reqId) setRiderPicker(null);
+      // Refreshed either way: the write DID land on the server, so the board
+      // must show it regardless of what the user has since tapped.
       await fetchDashboard();
     } catch (err) {
       // Backend's own message, verbatim — it says the useful thing
       // ("Cannot assign delivery in delivered status", "Delivery partner not
       // found or inactive"). Picker closes first so the message is not stuck
       // behind a modal on web.
+      if (riderReqRef.current !== reqId) return;
       setRiderPicker(null);
       showMessage('Assign Rider', err?.message || 'Could not assign this rider. Please try again.');
     }
@@ -1628,7 +1662,7 @@ export default function DashboardScreen({ navigation }) {
         people={riderPicker?.people || []}
         loading={!!riderPicker?.loading}
         onPick={handlePickRider}
-        onClose={() => setRiderPicker(null)}
+        onClose={closeRiderPicker}
         footer={
           // Never a dead end: with no rider to pick, the only thing left to do
           // with this order lives on Delivery Detail (reattempt, cancel,
@@ -1640,7 +1674,7 @@ export default function DashboardScreen({ navigation }) {
               activeOpacity={0.7}
               onPress={() => {
                 const deliveryId = riderPicker.deliveryId;
-                setRiderPicker(null);
+                closeRiderPicker();
                 navigation.navigate('DeliveryDetail', { deliveryId });
               }}
             >
