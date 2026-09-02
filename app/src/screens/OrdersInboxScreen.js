@@ -6,9 +6,9 @@ import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import { formatCardDateTime } from '../utils/datetime';
+import StageBadge from '../components/StageBadge';
 
 const STATUS_LABELS = { pending: 'Received', confirmed: 'Confirmed', preparing: 'In Preparation', ready: 'Ready', completed: 'Completed', cancelled: 'Cancelled', draft: 'Draft' };
-const STATUS_COLORS = { pending: Colors.warning, confirmed: Colors.info, preparing: Colors.info, ready: Colors.success, completed: Colors.textSecondary, cancelled: Colors.error, draft: Colors.textLight };
 const ORDER_TYPE_LABELS = { pickup: 'Pickup', delivery: 'Delivery', walk_in: 'Walk-in', pre_order: 'Advance order' };
 const PAYMENT_STATUS_COLORS = { paid: Colors.success, partial: Colors.warning, pending: Colors.error, refunded: Colors.textLight };
 const CHANNEL_ICONS = { whatsapp: 'logo-whatsapp', email: 'mail', website: 'globe', walk_in: 'walk', phone: 'call' };
@@ -93,7 +93,6 @@ export default function OrdersInboxScreen({ navigation }) {
     const itemsSummary = formatItemsSummary(item.items);
     const orderTypeLabel = ORDER_TYPE_LABELS[item.order_type] || item.order_type;
     const isUnpaid = item.payment_status && item.payment_status !== 'paid' && item.payment_status !== 'refunded';
-    const statusColor = STATUS_COLORS[item.status] || Colors.textSecondary;
 
     return (
       <TouchableOpacity style={styles.row} onPress={() => navigation.navigate('SaleDetail', { saleId: item.id })}>
@@ -107,7 +106,7 @@ export default function OrdersInboxScreen({ navigation }) {
           )}
         </View>
         <View style={styles.rowSide}>
-          <Text style={[styles.statusBadge, { color: statusColor }]}>{STATUS_LABELS[item.status] || item.status}</Text>
+          <StageBadge stage={item.display_stage} size="sm" />
           <Text style={styles.amount}>{formatAmount(item.grand_total)}</Text>
           {isUnpaid && (
             <Text style={[styles.paymentBadge, { color: PAYMENT_STATUS_COLORS[item.payment_status] || Colors.error }]}>
@@ -239,7 +238,6 @@ const styles = StyleSheet.create({
   itemsSummary: { fontSize: FontSize.sm, color: Colors.text, marginTop: 4 },
   scheduled: { fontSize: FontSize.xs, color: Colors.info, fontWeight: '600', marginTop: 4 },
   rowSide: { alignItems: 'flex-end', marginLeft: Spacing.sm },
-  statusBadge: { fontSize: FontSize.sm, fontWeight: '700' },
   amount: { fontSize: FontSize.sm, fontWeight: '700', color: Colors.text, marginTop: 4 },
   paymentBadge: { fontSize: FontSize.xs, fontWeight: '700', marginTop: 4 },
   empty: { textAlign: 'center', color: Colors.textLight, marginTop: 40 },

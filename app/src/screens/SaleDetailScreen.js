@@ -16,15 +16,8 @@ import { Image } from 'react-native';
 import ImageModal from '../components/ImageModal';
 import VoiceNoteRecorder from '../components/VoiceNoteRecorder';
 import AttachmentVoiceRow from '../components/AttachmentVoiceRow';
-
-const STATUS_COLORS = {
-  completed: Colors.success,
-  cancelled: Colors.error,
-  draft: Colors.warning,
-  pending: Colors.warning,
-  preparing: Colors.info,
-  ready: Colors.success,
-};
+import StageBadge from '../components/StageBadge';
+import { formatMoney } from '../constants/orderDisplay';
 
 // Duplicated locally (rather than imported from OrdersInboxScreen) to avoid
 // coupling this detail screen's import graph to an inbox screen.
@@ -854,11 +847,7 @@ export default function SaleDetailScreen({ route, navigation }) {
                 <Text style={styles.rushBadgeText}>🔥 Rush</Text>
               </View>
             ) : null}
-            <View style={[styles.statusBadge, { backgroundColor: (STATUS_COLORS[sale.status] || Colors.textLight) + '20' }]}>
-              <Text style={[styles.statusText, { color: STATUS_COLORS[sale.status] || Colors.textLight }]}>
-                {sale.status?.toUpperCase()}
-              </Text>
-            </View>
+            <StageBadge stage={sale.display_stage} />
           </View>
         </View>
 
@@ -1954,7 +1943,6 @@ const styles = StyleSheet.create({
   saleNumber: { fontSize: FontSize.lg, fontWeight: '700', color: Colors.text },
   saleDate: { fontSize: FontSize.xs, color: Colors.textLight, marginTop: 2 },
   statusBadge: { paddingHorizontal: Spacing.sm, paddingVertical: 2, borderRadius: BorderRadius.full },
-  statusText: { fontSize: FontSize.xs, fontWeight: '700' },
   metaItem: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   metaText: { fontSize: FontSize.xs, color: Colors.textSecondary },
   typeBadge: {

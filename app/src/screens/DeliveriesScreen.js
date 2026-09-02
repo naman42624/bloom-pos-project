@@ -9,6 +9,7 @@ import {
   parseServerDate, formatDateTime, formatShopDateLabel,
   getShopNow, getShopTodayStr, getShopTomorrowStr, DEFAULT_TZ
 } from '../utils/datetime';
+import StageBadge from '../components/StageBadge';
 
 
 const STATUS_TABS = [
@@ -428,10 +429,13 @@ export default function DeliveriesScreen({ navigation }) {
             )}
           </View>
 
-          <View style={[styles.badge, { backgroundColor: statusColor + '20' }]}>
-            <Text style={[styles.badgeText, { color: statusColor }]}>
-              {item.status.replace(/_/g, ' ').toUpperCase()}
-            </Text>
+          <View style={styles.badgeStack}>
+            <StageBadge stage={item.display_stage} size="sm" />
+            <View style={[styles.badge, { backgroundColor: statusColor + '20' }]}>
+              <Text style={[styles.badgeText, { color: statusColor }]}>
+                {item.status.replace(/_/g, ' ').toUpperCase()}
+              </Text>
+            </View>
           </View>
         </View>
 
@@ -706,6 +710,7 @@ const styles = StyleSheet.create({
   countdownOverdue: { color: '#D32F2F' },
   cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
   orderNum: { fontSize: FontSize.md, fontWeight: '700', color: Colors.text },
+  badgeStack: { alignItems: 'flex-end', gap: 4 },
   badge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12 },
   badgeText: { fontSize: FontSize.xs, fontWeight: '700' },
   cardBody: { marginBottom: 8 },
