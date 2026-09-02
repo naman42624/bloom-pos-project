@@ -640,15 +640,27 @@ export default function DashboardScreen({ navigation }) {
         // return [] while three active riders exist), which would show
         // "Nobody is available right now" and dead-end the one action this
         // card exists to offer. So an empty scoped list retries unscoped.
+        // ...but the fallback must never be SILENT. One shop today, more soon
+        // (CLAUDE.md): the moment there are two, quietly widening the list means
+        // someone hands an order to a rider standing in another shop with no
+        // sign that is what happened. So we record that it happened and the
+        // picker says so. Flagged true only when the wider call actually
+        // produced riders — if it comes back empty too, the list is genuinely
+        // empty and "showing everyone" would be a lie.
+        let showingEveryone = false;
         if (list.length === 0 && locId) {
           const all = await api.getDeliveryPartners();
           const allList = all?.data?.users || all?.data || [];
-          if (Array.isArray(allList)) list = allList;
+          if (Array.isArray(allList) && allList.length > 0) {
+            list = allList;
+            showingEveryone = true;
+          }
         }
         setRiderPicker({
           deliveryId: order.delivery_id,
           saleId: order.id,
           loading: false,
+          showingEveryone,
           people: list.map((p) => {
             // active_delivery_count comes back from pg as a STRING ("1", "7"),
             // so it needs Number() before any comparison. Shown so staff can
@@ -1480,6 +1492,9 @@ export default function DashboardScreen({ navigation }) {
       <AssignPickerModal
         visible={riderPicker !== null}
         title="Who is delivering this?"
+        notice={riderPicker?.showingEveryone
+          ? 'No riders are set up for this location — showing everyone.'
+          : null}
         people={riderPicker?.people || []}
         loading={!!riderPicker?.loading}
         onPick={handlePickRider}
