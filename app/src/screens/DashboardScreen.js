@@ -22,6 +22,7 @@ import { Colors, FontSize, Spacing } from '../constants/theme';
 import { parseServerDate, getShopNow, getShopTodayStr, DEFAULT_TZ, formatTimeString } from '../utils/datetime';
 import { OrderQuickModal } from '../components/QuickModals';
 import OrderKanbanBoard from '../components/orderBoard/OrderKanbanBoard';
+import AssignPickerModal from '../components/orderBoard/AssignPickerModal';
 import DateTimePickerModal from '../components/DateTimePickerModal';
 import AttachmentVoiceRow from '../components/AttachmentVoiceRow';
 import ImageModal from '../components/ImageModal';
@@ -35,6 +36,25 @@ import {
   formatMoney,
   getTaskChipColor,
 } from '../constants/orderDisplay';
+
+/**
+ * Show a message the user will actually see.
+ *
+ * react-native-web's Alert is literally `class Alert { static alert() {} }` —
+ * a no-op — and the shop runs this in a browser, so a bare Alert.alert here
+ * would swallow the backend's error silently. Task 16 adds a shared
+ * app/src/utils/alert.js and converts every call site (including this file's
+ * pre-existing bare Alert.alert calls); until it lands, new messages added by
+ * Task 14 go through this local branch. Same (title, message) signature as
+ * Alert.alert so that conversion is a one-line swap for an import.
+ */
+function showMessage(title, message) {
+  if (Platform.OS === 'web') {
+    if (typeof window !== 'undefined' && window.alert) window.alert(`${title}\n\n${message}`);
+    return;
+  }
+  Alert.alert(title, message);
+}
 
 function RegisterCard({ item, onPress }) {
   const { locationName, isOpen, register } = item;
@@ -185,6 +205,9 @@ export default function DashboardScreen({ navigation }) {
   const [viewedImage, setViewedImage] = useState(null); // task-card product photo, tap to enlarge
   const [selectedTaskModal, setSelectedTaskModal] = useState(null);
   const [selectedOrderModal, setSelectedOrderModal] = useState(null); // { order, tasks }
+  // { deliveryId, saleId, loading, people } while the assign-a-rider picker is
+  // open, null when it is closed (Task 14).
+  const [riderPicker, setRiderPicker] = useState(null);
 
   const [locations, setLocations] = useState([]);
   const [locationScope, setLocationScope] = useState(null);
@@ -577,23 +600,81 @@ export default function DashboardScreen({ navigation }) {
   // decides WHAT to offer (components/orderBoard/OrderCard.js resolveDeadEnd),
   // this decides WHERE it goes, because only the screen knows the navigator
   // layout. Spec §7.
-  const handleResolveAction = useCallback((order, kind) => {
+  const handleResolveAction = useCallback(async (order, kind) => {
     if (kind === 'collect_payment') {
       const due = Number(order.grand_total || 0) - Number(order.total_paid || 0);
       navigation.navigate('POS', { screen: 'AddPayment', params: { saleId: order.id, due } });
       return;
     }
-    // Both delivery kinds land on the same screen — 'assign_rider' to pick a
-    // rider, 'reattempt_delivery' to use its Reattempt/Cancel controls on a
-    // failed delivery. OrderCard only ever emits either for a viewer whose role
-    // can actually use those controls (its canManageDeliveries), so neither
-    // routes anyone into a screen that will refuse them.
-    if (kind === 'assign_rider' || kind === 'reattempt_delivery') {
+    // Picking a rider is one of the most repeated actions in the shop, so it
+    // happens right here in a modal rather than costing a screen change plus
+    // three more taps on DeliveryDetail (Task 14). DeliveryDetail is untouched
+    // and still the home of everything else a delivery needs — reattempt,
+    // cancel, convert-to-pickup, live tracking. This removes a detour, not a
+    // screen. OrderCard only ever emits 'assign_rider' for a viewer whose role
+    // can actually assign (its canManageDeliveries, mirroring
+    // deliveries.js's authorize('owner','manager','counter_staff')), so by the
+    // time this runs the role check has already passed — do not re-check or
+    // relax it here.
+    if (kind === 'assign_rider') {
+      if (!order.delivery_id) {
+        // A delivery order with no delivery row is a data problem, not a
+        // dead end — send them to the order where they can see why.
+        navigation.navigate('SaleDetail', { saleId: order.id });
+        return;
+      }
+      setRiderPicker({ deliveryId: order.delivery_id, saleId: order.id, loading: true, people: [] });
+      try {
+        // Scope to the ORDER's own location, not the viewer's activeLocation:
+        // an owner on "All locations" has no meaningful activeLocation, and a
+        // delivery belongs to the shop that took it. Matches what
+        // DeliveryDetailScreen already passes (delivery.location_id).
+        const locId = order.location_id || activeLocation?.id;
+        const res = await api.getDeliveryPartners(locId);
+        let list = res?.data?.users || res?.data || [];
+        if (!Array.isArray(list)) list = [];
+        // The location filter is a convenience, not a rule — PUT
+        // /deliveries/:id/assign accepts any active delivery_partner
+        // regardless of location. Riders missing a user_locations row for this
+        // shop come back as an empty list (verified live: location_id=2 and 3
+        // return [] while three active riders exist), which would show
+        // "Nobody is available right now" and dead-end the one action this
+        // card exists to offer. So an empty scoped list retries unscoped.
+        if (list.length === 0 && locId) {
+          const all = await api.getDeliveryPartners();
+          const allList = all?.data?.users || all?.data || [];
+          if (Array.isArray(allList)) list = allList;
+        }
+        setRiderPicker({
+          deliveryId: order.delivery_id,
+          saleId: order.id,
+          loading: false,
+          people: list.map((p) => {
+            // active_delivery_count comes back from pg as a STRING ("1", "7"),
+            // so it needs Number() before any comparison. Shown so staff can
+            // hand the next job to whoever is least loaded.
+            const busy = Number(p.active_delivery_count || 0);
+            return {
+              id: p.id,
+              name: p.name,
+              meta: busy === 0 ? 'Free right now' : busy === 1 ? '1 on the road' : `${busy} on the road`,
+            };
+          }),
+        });
+      } catch (err) {
+        setRiderPicker(null);
+        showMessage('Riders', err?.message || 'Could not load the rider list. Please try again.');
+      }
+      return;
+    }
+    // 'reattempt_delivery' still goes to DeliveryDetail — its Reattempt/Cancel
+    // controls live there and there is no one-tap equivalent. OrderCard only
+    // emits it for a viewer whose role can use them, so this never routes
+    // anyone into a screen that will refuse them.
+    if (kind === 'reattempt_delivery') {
       if (order.delivery_id) {
         navigation.navigate('DeliveryDetail', { deliveryId: order.delivery_id });
       } else {
-        // A delivery order with no delivery row is a data problem, not a
-        // dead end — send them to the order where they can see why.
         navigation.navigate('SaleDetail', { saleId: order.id });
       }
       return;
@@ -601,7 +682,28 @@ export default function DashboardScreen({ navigation }) {
     if (kind === 'record_cod') {
       navigation.navigate('POS', { screen: 'Settlements' });
     }
-  }, [navigation]);
+  }, [navigation, activeLocation?.id]);
+
+  // Second (and last) tap of the two-tap assign: pick a rider, write it,
+  // refresh the board. The picker is put back into its loading state for the
+  // duration so the rows are gone and a double-tap cannot fire two assigns.
+  const handlePickRider = useCallback(async (person) => {
+    const deliveryId = riderPicker?.deliveryId;
+    if (!deliveryId || riderPicker?.loading) return;
+    setRiderPicker((prev) => (prev ? { ...prev, loading: true } : prev));
+    try {
+      await api.assignDelivery(deliveryId, { delivery_partner_id: person.id });
+      setRiderPicker(null);
+      await fetchDashboard();
+    } catch (err) {
+      // Backend's own message, verbatim — it says the useful thing
+      // ("Cannot assign delivery in delivered status", "Delivery partner not
+      // found or inactive"). Picker closes first so the message is not stuck
+      // behind a modal on web.
+      setRiderPicker(null);
+      showMessage('Assign Rider', err?.message || 'Could not assign this rider. Please try again.');
+    }
+  }, [riderPicker, fetchDashboard]);
 
   const handleNavigateToDone = useCallback(() => {
     // Same destination screen, two different tabs: owner/manager reach Orders
@@ -1371,6 +1473,38 @@ export default function DashboardScreen({ navigation }) {
         canManage={isOwnerOrManager}
       />
 
+      {/* Two-tap assign: "Assign Rider" on the card opens this, one tap on a
+          name writes it. Rendered once here (not inside OrderKanbanBoard,
+          which this screen mounts in two different branches) so there is only
+          ever one picker in the tree. */}
+      <AssignPickerModal
+        visible={riderPicker !== null}
+        title="Who is delivering this?"
+        people={riderPicker?.people || []}
+        loading={!!riderPicker?.loading}
+        onPick={handlePickRider}
+        onClose={() => setRiderPicker(null)}
+        footer={
+          // Never a dead end: with no rider to pick, the only thing left to do
+          // with this order lives on Delivery Detail (reattempt, cancel,
+          // convert to pickup). Only shown when there is genuinely nothing to
+          // tap above — the normal path never sees it.
+          !riderPicker?.loading && (riderPicker?.people || []).length === 0 && riderPicker?.deliveryId ? (
+            <TouchableOpacity
+              style={styles.pickerFallbackBtn}
+              activeOpacity={0.7}
+              onPress={() => {
+                const deliveryId = riderPicker.deliveryId;
+                setRiderPicker(null);
+                navigation.navigate('DeliveryDetail', { deliveryId });
+              }}
+            >
+              <Text style={styles.pickerFallbackText}>Open Delivery Details</Text>
+            </TouchableOpacity>
+          ) : null
+        }
+      />
+
       <Modal visible={fabVisible} transparent animationType="fade" onRequestClose={() => setFabVisible(false)}>
         <TouchableOpacity style={styles.modalBackdrop} activeOpacity={1} onPress={() => setFabVisible(false)}>
           <View style={styles.quickActionsCard}>
@@ -1733,6 +1867,25 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: 'rgba(15, 23, 42, 0.5)',
     justifyContent: 'flex-end',
+  },
+  // AssignPickerModal's empty-state escape hatch (Task 14). Sized like a real
+  // button, not a text link — 48px tall, full width, tapped in a hurry.
+  pickerFallbackBtn: {
+    minHeight: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.surfaceAlt,
+    marginTop: 4,
+    marginBottom: 4,
+  },
+  pickerFallbackText: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: Colors.primary,
+    fontFamily: FONT_FAMILY,
   },
   quickActionsCard: {
     backgroundColor: '#fff',
