@@ -2167,6 +2167,142 @@ named follow-up, not a silent gap."
 
 ---
 
+### Task 17: A staff list that actually contains the prep staff
+
+Added after Task 15's review. Runs before Task 11's final verification.
+
+**Why — measured, not assumed.** Task 15 used `GET /auth/staff-roster` for the "who's preparing this?" picker, on my instruction. That endpoint (`server/routes/auth.js:292-298`) filters `AND u.employee_code IS NOT NULL`, and returns only `{id, name, avatar, employee_code, job_title}` — no `role`.
+
+Measured against the live database:
+
+| role | active | with `employee_code` |
+| --- | --- | --- |
+| counter_staff | 4 | 4 |
+| **employee** | **4** | **0** |
+| florist_staff | 1 | 1 |
+
+So the picker today excludes **all four `employee` accounts** — the exact accounts `CLAUDE.md` records as the shop's prep staff until the owner promotes them — while including counter staff, whom the approved design deliberately excluded. Both halves are wrong, and the feature is close to useless on real data.
+
+`staff-roster` is not the right tool and must not be widened: it is deliberately callable **unauthenticated** (LockScreen uses it pre-login for PIN entry), and its `employee_code IS NOT NULL` filter is correct *for that purpose* — a person with no code cannot PIN-log-in, so listing them there would be a dead end. Loosening it would both break that screen's meaning and widen what an unauthenticated caller can enumerate.
+
+The right move is the precedent `CLAUDE.md` already names: a narrow, purpose-built endpoint, exactly as `GET /deliveries/partners` was added for rider assignment.
+
+**Files:**
+- Modify: `server/routes/production.js` (new route)
+- Modify: `app/src/services/api.js`
+- Modify: `app/src/screens/DashboardScreen.js`
+
+**Interfaces:**
+- Produces: `GET /api/production/assignable-staff?location_id=` → `{ success, staff: [{ id, name, role, job_title }] }`
+- Produces: `api.getAssignableStaff(locationId)`
+
+- [ ] **Step 1: Read the two precedents before writing anything**
+
+```bash
+grep -n "router.get('/partners'" -A 30 server/routes/deliveries.js
+sed -n '285,310p' server/routes/auth.js
+```
+
+Match `deliveries.js`'s partners route for shape and style — that is the established pattern for "a narrow list of people for one purpose". Note which DB layer that file uses and match the file you are editing, not the one you copied from.
+
+- [ ] **Step 2: Add the route**
+
+In `server/routes/production.js`, alongside the other task routes:
+
+```js
+// Who can be given production work, for the "who's preparing this?" picker.
+//
+// Deliberately NOT GET /auth/staff-roster: that endpoint is callable
+// unauthenticated (LockScreen uses it pre-login) and filters
+// `employee_code IS NOT NULL`, which is right for PIN entry and wrong here —
+// all four of this shop's live `employee` accounts have no code, so the roster
+// excludes exactly the people who do the prep work. It also returns no `role`,
+// so callers cannot filter to prep staff. Same narrow-endpoint precedent as
+// GET /deliveries/partners.
+//
+// `florist_staff` and `employee` only: counter staff can technically hold a
+// task, but they are not the ones making the bouquet and listing them adds
+// noise to a picker read at counter speed.
+router.get(
+  '/assignable-staff',
+  authenticate,
+  authorize('owner', 'manager', 'counter_staff'),
+  async (req, res, next) => {
+    try {
+      const db = await getAsyncDb();
+      const { location_id } = req.query;
+      let sql = `
+        SELECT DISTINCT u.id, u.name, u.role, u.job_title
+        FROM users u
+        LEFT JOIN user_locations ul ON ul.user_id = u.id
+        WHERE u.role IN ('employee', 'florist_staff')
+          AND u.is_active = 1
+      `;
+      const params = [];
+      if (location_id) { sql += ' AND ul.location_id = ?'; params.push(parseInt(location_id, 10)); }
+      sql += ' ORDER BY u.name ASC';
+      const staff = await db.prepare(sql).all(...params);
+      res.json({ success: true, staff });
+    } catch (err) { next(err); }
+  }
+);
+```
+
+Confirm `getAsyncDb`, `authenticate` and `authorize` are the identifiers this file already imports, and match its existing style. If `production.js` uses the synchronous layer for its other routes, use that instead — do not introduce a second layer into one file.
+
+**Do not add a `LEFT JOIN` that can duplicate rows** — `DISTINCT` is there because a user with two `user_locations` rows would otherwise appear twice. Verify that with a real query rather than trusting it.
+
+- [ ] **Step 3: Add the client method**
+
+In `app/src/services/api.js`, next to `getDeliveryPartners`:
+
+```js
+  getAssignableStaff(locationId) {
+    return this.request(`/production/assignable-staff${locationId ? `?location_id=${locationId}` : ''}`);
+  }
+```
+
+- [ ] **Step 4: Point the preparer picker at it**
+
+In `DashboardScreen.js`, change the `pick_preparer` branch to call `api.getAssignableStaff(activeLocation?.id)` and map `{ id, name, meta: job_title || role }`.
+
+Keep whatever empty/fallback handling Task 14 established for the rider picker — if a location-scoped call comes back empty, the same "showing everyone" treatment applies, for the same reason.
+
+- [ ] **Step 5: Verify against real data**
+
+```bash
+curl -s "http://localhost:3001/api/production/assignable-staff?location_id=4" \
+  -H "Authorization: Bearer $TOKEN" | python3 -m json.tool
+```
+
+The result **must** include the `employee`-role accounts — that is the entire point of this task. Confirm:
+- every returned person has `is_active = 1`
+- no `counter_staff` appears
+- nobody appears twice (the `DISTINCT` / join check)
+- omitting `location_id` returns the unscoped list
+
+Then `node server/scripts/verify-identity-roles.js` → 10/10 unchanged.
+
+```bash
+cd app && node scripts/babel-check.js src/services/api.js src/screens/DashboardScreen.js
+```
+2 `OK`, exit 0. Plus the style-key audit on any file you touched.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add server/routes/production.js app/src/services/api.js app/src/screens/DashboardScreen.js
+git commit -m "Add GET /production/assignable-staff for the preparer picker
+
+staff-roster filters employee_code IS NOT NULL — correct for PIN login,
+wrong here: all four live `employee` accounts have no code, so the picker
+excluded exactly the people who do the prep work, while including counter
+staff it was meant to exclude. Narrow purpose-built endpoint, same
+precedent as GET /deliveries/partners."
+```
+
+---
+
 ## Notes for whoever executes this
 
 - **Task 1 ships alone and first.** It is the live-data fix and Task 8's UI assumes the corrected behaviour.
