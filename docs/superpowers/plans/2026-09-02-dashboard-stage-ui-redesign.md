@@ -2020,6 +2020,147 @@ when the tasks are already assigned."
 
 ---
 
+### Task 16: Make error messages actually appear on web
+
+Added mid-run after Task 10's fix round surfaced it. Runs before Task 11's final verification.
+
+**Why — this is the most consequential defect found in this whole run, and it predates the plan entirely.**
+
+`app/node_modules/react-native-web/dist/exports/Alert/index.js` is, in full:
+
+```js
+class Alert {
+  static alert() {}
+}
+```
+
+An empty function. There are **368 `Alert.alert` call sites across 66 files**, and on the web build every one of them is a silent no-op. The shop runs this app in a browser. So on the platform actually in use: staff tap a blocked action and *nothing happens at all* — no error, no explanation, no next step.
+
+This defeats two things this plan is built on. `CLAUDE.md` requires that errors say what to do next in plain language; a message that never renders cannot. And spec §7 requires that no path is a dead end; a blocked action that silently does nothing **is** a dead end, and a worse one than a bad message, because the person cannot even tell that something was refused.
+
+It also means every task in this plan that verified "the backend's plain-language message reaches the user" verified the code path, not the screen. Those verifications were honest and still wrong about the outcome.
+
+**Scope: the files this plan touched, not all 368 sites.** A blind sweep of 66 files is a separate piece of work with its own risk; doing it here would smuggle a large untested refactor into a UI plan. This task makes *this plan's* work correct on web and leaves the rest explicitly open.
+
+Current counts in scope: `SaleDetailScreen.js` (28), `QuickModals.js` (10), `DeliveriesScreen.js` (4), `DashboardScreen.js` (2), `orderBoard/OrderKanbanBoard.js` (1).
+
+**Files:**
+- Create: `app/src/utils/alert.js`
+- Modify: the five files listed above
+
+**Interfaces:**
+- Produces: `showAlert(title, message, buttons)` and `showConfirm(title, message, onConfirm, options)` from `utils/alert`.
+
+- [ ] **Step 1: Confirm the defect yourself before fixing it**
+
+```bash
+cat app/node_modules/react-native-web/dist/exports/Alert/index.js
+```
+
+Do not proceed on my description — read it. If it is not an empty method in this install, STOP and report NEEDS_CONTEXT.
+
+- [ ] **Step 2: Write the helper**
+
+```js
+import { Alert, Platform } from 'react-native';
+
+/**
+ * Cross-platform replacement for Alert.alert.
+ *
+ * react-native-web ships `class Alert { static alert() {} }` — a literal no-op.
+ * Every Alert.alert in this app is therefore silent in a browser, which is where
+ * the shop actually runs it. Staff tapping a blocked action saw nothing at all:
+ * no error, no reason, no next step. See
+ * docs/superpowers/specs/2026-09-01-dashboard-stage-ui-redesign-design.md §6.
+ *
+ * Native keeps the real Alert. Web falls back to the browser's own dialogs,
+ * which are ugly but visible — and visible beats elegant for a message telling
+ * someone why the till would not accept something.
+ */
+export function showAlert(title, message, buttons) {
+  if (Platform.OS !== 'web') {
+    Alert.alert(title, message, buttons);
+    return;
+  }
+  const text = [title, message].filter(Boolean).join('\n\n');
+  window.alert(text);
+  // Honour a single acknowledge-style handler so callers that refresh or
+  // navigate after an alert still do so on web.
+  const ack = (buttons || []).find((b) => b && b.style !== 'cancel' && typeof b.onPress === 'function');
+  if (ack) ack.onPress();
+}
+
+/**
+ * Destructive/confirming variant. Native uses a two-button Alert; web uses
+ * window.confirm. `onConfirm` runs only on a positive answer.
+ */
+export function showConfirm(title, message, onConfirm, options) {
+  const confirmLabel = (options && options.confirmLabel) || 'OK';
+  const cancelLabel = (options && options.cancelLabel) || 'Cancel';
+  const destructive = !!(options && options.destructive);
+
+  if (Platform.OS !== 'web') {
+    Alert.alert(title, message, [
+      { text: cancelLabel, style: 'cancel' },
+      { text: confirmLabel, style: destructive ? 'destructive' : 'default', onPress: onConfirm },
+    ]);
+    return;
+  }
+  if (window.confirm([title, message].filter(Boolean).join('\n\n'))) onConfirm();
+}
+```
+
+- [ ] **Step 3: Replace the call sites in the five in-scope files**
+
+Import from `../utils/alert` (screens) or `../../utils/alert` (the `orderBoard/` component) — check the depth per file.
+
+Mechanical rules:
+- A plain one-button `Alert.alert(title, msg)` → `showAlert(title, msg)`.
+- A two-button confirm/cancel → `showConfirm(title, msg, onConfirm, { destructive: true })` where the action is destructive (cancelling an order, refunding).
+- Anything with three or more buttons, or a text-input prompt: **leave it on `Alert.alert` and list it in your report.** Do not invent a web equivalent for a multi-choice dialog in this task — getting that wrong is worse than leaving it as it was.
+
+Remove the now-unused `Alert` import from a file only if no `Alert.alert` remains in it.
+
+- [ ] **Step 4: Verify**
+
+```bash
+cd app && node scripts/babel-check.js \
+  src/utils/alert.js \
+  src/screens/SaleDetailScreen.js \
+  src/components/QuickModals.js \
+  src/screens/DeliveriesScreen.js \
+  src/screens/DashboardScreen.js \
+  src/components/orderBoard/OrderKanbanBoard.js
+```
+Expect 6 `OK`, exit 0.
+
+Then:
+```bash
+grep -rn "Alert.alert" app/src/screens/SaleDetailScreen.js app/src/components/QuickModals.js app/src/screens/DeliveriesScreen.js app/src/screens/DashboardScreen.js app/src/components/orderBoard/OrderKanbanBoard.js
+```
+Every remaining hit must be one you deliberately left (multi-button/prompt) and named in your report. There must be no accidental survivors.
+
+Finally, count what is still unconverted app-wide and put the number in your report:
+```bash
+grep -rn "Alert.alert" app/src/ | wc -l
+```
+That number is the size of the follow-up this task deliberately does not do.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add app/src/utils/alert.js app/src/screens/SaleDetailScreen.js app/src/components/QuickModals.js app/src/screens/DeliveriesScreen.js app/src/screens/DashboardScreen.js app/src/components/orderBoard/OrderKanbanBoard.js
+git commit -m "Make error messages visible on web, for the files this plan touched
+
+react-native-web's Alert is literally `static alert() {}`, so all 368
+Alert.alert sites are silent in a browser — where the shop actually runs
+this. Staff tapping a blocked action saw nothing at all. Adds a
+cross-platform helper and converts the in-scope files; the rest is a
+named follow-up, not a silent gap."
+```
+
+---
+
 ## Notes for whoever executes this
 
 - **Task 1 ships alone and first.** It is the live-data fix and Task 8's UI assumes the corrected behaviour.
