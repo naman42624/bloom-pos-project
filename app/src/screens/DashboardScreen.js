@@ -208,6 +208,12 @@ export default function DashboardScreen({ navigation }) {
   // { deliveryId, saleId, loading, people } while the assign-a-rider picker is
   // open, null when it is closed (Task 14).
   const [riderPicker, setRiderPicker] = useState(null);
+  // { order, mode, loading, people } while the who-is-making-this picker is
+  // open, null when it is closed (Task 15). `mode` is 'start' when picking
+  // also starts preparation (the Start Preparing action carries assigned_to),
+  // or 'assign' when the order is already preparing and this is purely a
+  // correction — see handleResolveAction's pick_preparer branch.
+  const [preparerPicker, setPreparerPicker] = useState(null);
 
   const [locations, setLocations] = useState([]);
   const [locationScope, setLocationScope] = useState(null);
@@ -679,6 +685,68 @@ export default function DashboardScreen({ navigation }) {
       }
       return;
     }
+    // Who is making this? Same two-tap shape as the rider picker above, and
+    // the same reason: assigning prep work is a constant action, and making it
+    // cost a screen change is why nobody did it (Task 15).
+    //
+    // ONE kind covers two writes, because the card asks the same question in
+    // two situations and the person is not asked to care which:
+    //   'start'  — the card's Start Preparing action is still available, so
+    //              picking someone rides along with it in one request
+    //              (PUT /sales/:id/status, the only transition that acts on
+    //              assigned_to at all).
+    //   'assign' — the order is ALREADY preparing, so its nextAction is Mark
+    //              Ready. Sending assigned_to there would both skip the order
+    //              forward a stage AND assign nobody. This path therefore
+    //              writes the tasks directly instead (PUT
+    //              /production/tasks/:id/assign), touching no status.
+    // OrderCard only emits this kind for owner/manager/counter_staff, which is
+    // exactly that route's authorize() list — do not relax it here.
+    if (kind === 'pick_preparer') {
+      const mode = order.display_stage?.nextAction?.body?.status === 'preparing' ? 'start' : 'assign';
+      // Scope to the ORDER's own location for the same reason the rider picker
+      // does: an owner on "All locations" has no meaningful activeLocation.
+      const locId = order.location_id || activeLocation?.id;
+      if (!locId) {
+        // Defensive only — every sale carries a location. Send them somewhere
+        // real rather than opening an empty picker.
+        showMessage('Assign', 'Could not tell which shop this order belongs to. Open the order to assign someone.');
+        navigation.navigate('SaleDetail', { saleId: order.id });
+        return;
+      }
+      setPreparerPicker({ order, mode, loading: true, people: [] });
+      try {
+        // GET /auth/staff-roster, not GET /users: the account directory is
+        // owner/manager-only and far too broad for "who preps this" (CLAUDE.md).
+        // The roster is already scoped to this location, filtered to is_active
+        // with an employee_code, and limited server-side to
+        // employee/counter_staff/florist_staff.
+        //
+        // NOTE — the brief asked to filter this list to florist_staff+employee
+        // client-side. That is not possible and not wanted: the endpoint
+        // returns id/name/avatar/employee_code/job_title and NO role field, and
+        // SaleDetailScreen's task-assign modal already offers this same
+        // unfiltered roster for this same question. Widening the endpoint to
+        // leak a role on an UNAUTHENTICATED route (LockScreen calls it) to
+        // hide three names would be the wrong trade.
+        const res = await api.getStaffRoster(locId);
+        const list = Array.isArray(res?.data?.staff) ? res.data.staff : [];
+        setPreparerPicker({
+          order,
+          mode,
+          loading: false,
+          people: list.map((p) => ({
+            id: p.id,
+            name: p.name,
+            meta: p.job_title || p.employee_code || null,
+          })),
+        });
+      } catch (err) {
+        setPreparerPicker(null);
+        showMessage('Staff', err?.message || 'Could not load the staff list. Please try again.');
+      }
+      return;
+    }
     // 'reattempt_delivery' still goes to DeliveryDetail — its Reattempt/Cancel
     // controls live there and there is no one-tap equivalent. OrderCard only
     // emits it for a viewer whose role can use them, so this never routes
@@ -716,6 +784,66 @@ export default function DashboardScreen({ navigation }) {
       showMessage('Assign Rider', err?.message || 'Could not assign this rider. Please try again.');
     }
   }, [riderPicker, fetchDashboard]);
+
+  // Second tap of the who-is-making-this pick. Same loading-lock shape as
+  // handlePickRider so a double-tap cannot fire two writes.
+  const handlePickPreparer = useCallback(async (person) => {
+    const picker = preparerPicker;
+    if (!picker?.order || picker.loading) return;
+    setPreparerPicker((prev) => (prev ? { ...prev, loading: true } : prev));
+    try {
+      if (picker.mode === 'start') {
+        const nextAction = picker.order.display_stage?.nextAction;
+        if (!nextAction) throw new Error('This order has already moved on. Pull down to refresh.');
+        await api.advanceOrder(nextAction, { assigned_to: person.id });
+      } else {
+        // Already preparing: name the owner of the work without touching the
+        // order's status. One task per line item, so this is a handful of
+        // requests at most. 'completed'/'cancelled' are skipped because the
+        // route refuses them ("Cannot assign a finished task") — sending them
+        // would fail the whole pick over work that is already done.
+        const openTasks = (tasksBySaleId.get(picker.order.id) || []).filter(
+          (t) => t.status !== 'completed' && t.status !== 'cancelled'
+        );
+        if (openTasks.length === 0) {
+          throw new Error('There is no prep work left on this order to hand over.');
+        }
+        for (const t of openTasks) {
+          await api.assignTask(t.id, { assigned_to: person.id });
+        }
+      }
+      setPreparerPicker(null);
+      await fetchDashboard();
+    } catch (err) {
+      // Picker closes first so the message is not stuck behind a modal on web.
+      setPreparerPicker(null);
+      showMessage('Assign', err?.message || 'Could not assign this person. Please try again.');
+    }
+  }, [preparerPicker, tasksBySaleId, fetchDashboard]);
+
+  // "Leave for now" — start preparing without naming anybody. Assignment is
+  // an improvement on the old flow, never a new gate in front of it: someone
+  // mid-rush must always be able to move the order and sort out who is making
+  // it afterwards (the card's "Nobody assigned yet · assign" line is exactly
+  // that afterwards). Only offered in 'start' mode; in 'assign' mode there is
+  // nothing to advance and Cancel already means "leave it".
+  const handleLeavePreparerForNow = useCallback(async () => {
+    const picker = preparerPicker;
+    if (!picker?.order || picker.loading) return;
+    setPreparerPicker((prev) => (prev ? { ...prev, loading: true } : prev));
+    try {
+      const nextAction = picker.order.display_stage?.nextAction;
+      if (!nextAction) throw new Error('This order has already moved on. Pull down to refresh.');
+      // No assigned_to key at all — NOT an empty string, which the route
+      // parseInt()s into NaN and rejects with a 400.
+      await api.advanceOrder(nextAction);
+      setPreparerPicker(null);
+      await fetchDashboard();
+    } catch (err) {
+      setPreparerPicker(null);
+      showMessage('Start Preparing', err?.message || 'Could not start this order. Please try again.');
+    }
+  }, [preparerPicker, fetchDashboard]);
 
   const handleNavigateToDone = useCallback(() => {
     // Same destination screen, two different tabs: owner/manager reach Orders
@@ -1062,6 +1190,7 @@ export default function DashboardScreen({ navigation }) {
                   tasksBySaleId={tasksBySaleId}
                   timezone={timezone}
                   viewerRole={user?.role}
+                  viewerId={user?.id}
                   onRefresh={fetchDashboard}
                 />
                 {counterOrdersSplit.scheduledLater.length > 0 && (
@@ -1356,6 +1485,7 @@ export default function DashboardScreen({ navigation }) {
                   tasksBySaleId={tasksBySaleId}
                   timezone={timezone}
                   viewerRole={user?.role}
+                  viewerId={user?.id}
                   onRefresh={fetchDashboard}
                 />
               </View>
@@ -1515,6 +1645,35 @@ export default function DashboardScreen({ navigation }) {
               }}
             >
               <Text style={styles.pickerFallbackText}>Open Delivery Details</Text>
+            </TouchableOpacity>
+          ) : null
+        }
+      />
+
+      {/* Who is making this (Task 15). A separate instance rather than a mode
+          flag on the rider picker above: the two answer different questions,
+          write to different endpoints, and are never open at the same time, so
+          sharing one would only make each branch harder to read. Same reason
+          both live here and not inside OrderKanbanBoard — this screen mounts
+          that board in two branches, and one picker in the tree is enough. */}
+      <AssignPickerModal
+        visible={preparerPicker !== null}
+        title="Who is making this?"
+        people={preparerPicker?.people || []}
+        loading={!!preparerPicker?.loading}
+        onPick={handlePickPreparer}
+        onClose={() => setPreparerPicker(null)}
+        footer={
+          // Never a gate: with nobody to pick — or nobody they want to pick —
+          // the order still has to be able to move. Only in 'start' mode,
+          // where there is genuinely something to advance.
+          preparerPicker?.mode === 'start' && !preparerPicker?.loading ? (
+            <TouchableOpacity
+              style={styles.pickerFallbackBtn}
+              activeOpacity={0.7}
+              onPress={handleLeavePreparerForNow}
+            >
+              <Text style={styles.pickerFallbackText}>Leave for now</Text>
             </TouchableOpacity>
           ) : null
         }

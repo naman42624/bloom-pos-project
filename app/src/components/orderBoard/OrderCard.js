@@ -169,12 +169,70 @@ function getTaskProgress(tasks) {
   return `${done} of ${list.length} tasks`;
 }
 
+/**
+ * Tasks this sale still has that nobody owns.
+ *
+ * Deliberately the SAME predicate as the server's own assign statement in
+ * PUT /sales/:id/status (server/routes/sales.js): `assigned_to IS NULL AND
+ * status IN ('pending','in_progress')`. If this drifts wider than that, the
+ * card asks "who is making this?" about a sale where the answer would change
+ * nothing — a question with no effect is worse than no question. If it drifts
+ * narrower, work silently lands on nobody.
+ *
+ * 'in_progress' is in the list because `pref_manager_override` (on, in the
+ * live shop) flips a pickup/delivery order's pending tasks to 'in_progress'
+ * before the assign runs — matching 'pending' alone was a real silent no-op
+ * found live 2026-09-02.
+ */
+function hasUnassignedTasks(tasks) {
+  const list = Array.isArray(tasks) ? tasks : [];
+  return list.some(
+    (t) => t.assigned_to == null && (t.status === 'pending' || t.status === 'in_progress')
+  );
+}
+
+/**
+ * Who is preparing this order, for the line shown on a `preparing` card.
+ *
+ * Returns null when there is nothing to say (no live tasks at all — e.g. a
+ * sale of only ready-made stock), otherwise:
+ *   { text, actionWord }  — actionWord is 'assign' when nobody holds it yet,
+ *                           'change' when someone does.
+ *
+ * `assigned_to` is compared through Number() on both sides on purpose: this
+ * codebase has already been bitten by pg handing back a numeric column as a
+ * string (active_delivery_count, Task 14), and a `'7' === 7` miss here would
+ * quietly show a counter staffer's own name as somebody else's.
+ */
+function getPreparerLine(tasks, viewerId) {
+  const list = Array.isArray(tasks) ? tasks : [];
+  const live = list.filter((t) => t.status !== 'completed' && t.status !== 'cancelled');
+  if (live.length === 0) return null;
+
+  const holders = new Map();
+  live.forEach((t) => {
+    if (t.assigned_to == null) return;
+    holders.set(Number(t.assigned_to), t.assigned_to_name || 'Someone');
+  });
+
+  if (holders.size === 0) return { text: 'Nobody assigned yet', actionWord: 'assign' };
+  if (holders.size === 1) {
+    const [id] = Array.from(holders.keys());
+    if (viewerId != null && Number(viewerId) === id) {
+      return { text: "You're on it", actionWord: 'change' };
+    }
+    return { text: `${holders.get(id)} is preparing`, actionWord: 'change' };
+  }
+  return { text: `${holders.size} people preparing`, actionWord: 'change' };
+}
+
 export default function OrderCard({
   order,
   tasks,
   timezone,
   quickActionLoading,
   viewerRole,
+  viewerId,
   onOpen,
   onQuickAction,
   onResolve,
@@ -194,6 +252,52 @@ export default function OrderCard({
   const deadEnd = nextAction ? null : resolveDeadEnd(order, canManageDeliveries, canTakeMoney);
   const contactPhone = order.customer_phone || order.receiver_phone;
   const showSchedule = order.scheduled_date && order.order_type !== 'walk_in';
+
+  // ── Who is making this? (Task 15) ──
+  //
+  // Whoever taps Start Preparing usually knows who is doing the work, so the
+  // action carries it instead of costing a separate trip to another screen.
+  //
+  // `startsPreparing` is the ONLY action `assigned_to` may ride along with:
+  // PUT /sales/:id/status acts on it exclusively when the status being set is
+  // 'preparing'. On Mark Ready / Complete / Confirm Pickup / Mark Delivered it
+  // is accepted, returns 200, and assigns nobody — so it must never be
+  // attached there. See api.advanceOrder's note.
+  const startsPreparing = nextAction?.body?.status === 'preparing';
+  const needsPreparer = startsPreparing && hasUnassignedTasks(tasks);
+
+  // A third role list, and like the other two it mirrors one real authorize():
+  // PUT /production/tasks/:id/assign is owner/manager/counter_staff. Handing
+  // anyone else a tap that 403s is the dead end this redesign exists to
+  // remove, so for them the preparer line renders as plain text — they still
+  // need to know who has it. (`employee` and `florist_staff` never reach this
+  // board on DashboardScreen anyway; they get the task-focused branch, where
+  // they self-assign with pickTask/startTask.)
+  const canAssignPreparer = ['owner', 'manager', 'counter_staff'].includes(viewerRole);
+  const preparerLine = order.display_stage?.key === 'preparing'
+    ? getPreparerLine(tasks, viewerId)
+    : null;
+
+  const handlePrimaryPress = (e) => {
+    e.stopPropagation();
+    if (needsPreparer) {
+      // One tap for the person who is going to do it themselves. Not
+      // florist_staff: ENDPOINT_ROLES.SALE_STATUS in server/utils/order-stage.js
+      // omits them, so nextAction is null for a florist and this button does
+      // not exist on their card at all — a branch for them would be dead code
+      // describing a capability they do not have.
+      if (viewerRole === 'employee' && viewerId != null) {
+        onQuickAction(order, { assigned_to: viewerId });
+        return;
+      }
+      // Counter staff, owner, manager: they are not the ones making the
+      // bouquet, so self-assigning would put a false name on the work. Ask.
+      // The card stays navigation- and fetch-free — it signals the parent.
+      onResolve(order, 'pick_preparer');
+      return;
+    }
+    onQuickAction(order);
+  };
 
   return (
     <TouchableOpacity style={styles.card} onPress={onOpen} activeOpacity={0.85}>
@@ -273,10 +377,35 @@ export default function OrderCard({
         </Text>
       )}
 
+      {/* Who is making this — only on a card that is actually being prepared.
+          Doubles as the correction path: tapping it re-opens the same picker,
+          so there is no separate Reassign button and no new clutter. Rendered
+          above the primary action because it answers a question about the work
+          already in progress, not about the next step. */}
+      {preparerLine && (
+        canAssignPreparer ? (
+          <TouchableOpacity
+            style={styles.preparerRow}
+            onPress={(e) => { e.stopPropagation(); onResolve(order, 'pick_preparer'); }}
+            activeOpacity={0.7}
+            hitSlop={8}
+          >
+            <Ionicons name="person-outline" size={13} color={Colors.textSecondary} />
+            <Text style={styles.preparerText} numberOfLines={1}>{preparerLine.text}</Text>
+            <Text style={styles.preparerAction}>· {preparerLine.actionWord}</Text>
+          </TouchableOpacity>
+        ) : (
+          <View style={styles.preparerRow}>
+            <Ionicons name="person-outline" size={13} color={Colors.textSecondary} />
+            <Text style={styles.preparerText} numberOfLines={1}>{preparerLine.text}</Text>
+          </View>
+        )
+      )}
+
       {nextAction && (
         <TouchableOpacity
           style={styles.primaryAction}
-          onPress={(e) => { e.stopPropagation(); onQuickAction(order); }}
+          onPress={handlePrimaryPress}
           disabled={!!quickActionLoading}
           activeOpacity={0.75}
         >
@@ -336,6 +465,11 @@ const styles = StyleSheet.create({
   warnPillSoon: { backgroundColor: Colors.warning + '15' },
   warnText: { fontSize: 12, fontWeight: '700', fontFamily: FONT_FAMILY },
   metaLine: { fontSize: 12, color: Colors.textLight, fontFamily: FONT_FAMILY },
+  // A row, not a bare Text, so the whole line (icon + name + "· change") is
+  // one 36px tap target rather than a few pixels of underlined word.
+  preparerRow: { flexDirection: 'row', alignItems: 'center', gap: 5, minHeight: 36 },
+  preparerText: { fontSize: 13, color: Colors.textSecondary, fontFamily: FONT_FAMILY, flexShrink: 1 },
+  preparerAction: { fontSize: 13, fontWeight: '700', color: Colors.primary, fontFamily: FONT_FAMILY },
   primaryAction: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
     minHeight: 44, borderRadius: 10, backgroundColor: Colors.primary, marginTop: 2,

@@ -610,10 +610,20 @@ class ApiService {
   // Shared by OrderKanbanBoard (owner/manager dashboard) and reused wherever
   // else `nextAction` is rendered, so the endpoint/method/body it carries
   // never needs re-deriving client-side.
-  advanceOrder(nextAction) {
+  //
+  // `extraBody` (optional) is merged over the action's own body, for the one
+  // case where the caller knows something the server-computed action cannot:
+  // who is going to do the work. Today that is only `{ assigned_to }` on the
+  // Start Preparing action (Task 15) — and PUT /sales/:id/status acts on
+  // `assigned_to` ONLY when the status being set is 'preparing', so attaching
+  // it to any other action is a silent no-op (200, nothing assigned). Gate on
+  // `nextAction.body?.status === 'preparing'` before passing it. Never pass an
+  // empty string: the route parseInt()s any non-null value, so '' becomes NaN
+  // and 400s. Omit the key entirely when nobody was chosen.
+  advanceOrder(nextAction, extraBody) {
     return this.request(nextAction.endpoint, {
       method: nextAction.method,
-      body: JSON.stringify(nextAction.body || {}),
+      body: JSON.stringify({ ...(nextAction.body || {}), ...(extraBody || {}) }),
     });
   }
 

@@ -33,6 +33,13 @@ import OrderCard from './OrderCard';
  * degrades to a status line, which is safe but tells staff less than they
  * need.
  *
+ * `viewerId` is the same idea for identity rather than permission (Task 15):
+ * the card needs to know WHO is looking to self-assign Start Preparing in one
+ * tap and to say "You're on it" instead of repeating the person's own name
+ * back at them. It grants nothing — every write it feeds is still authorized
+ * server-side. Without it, self-assign falls back to the picker and the
+ * preparer line shows the name; both safe.
+ *
  * What actually enforces that, precisely — because the Dashboard tab itself
  * has NO role gate (MainNavigator.js:623 registers it for every role; the
  * `delivery_partner` block at :700 *adds* a Deliveries tab, it does not
@@ -60,6 +67,7 @@ export default function OrderKanbanBoard({
   tasksBySaleId,
   timezone,
   viewerRole,
+  viewerId,
   onRefresh,
 }) {
   const { isWide } = useBreakpoint();
@@ -68,13 +76,17 @@ export default function OrderKanbanBoard({
   const [quickActionLoading, setQuickActionLoading] = useState({});
   const effectiveTimezone = timezone || 'Asia/Kolkata';
 
-  const handleQuickAction = useCallback(async (order) => {
+  // `extraBody` is passed only by OrderCard's self-assign branch, and only
+  // ever as `{ assigned_to }` on the Start Preparing action — the one
+  // transition PUT /sales/:id/status acts on it for. The card owns that gate;
+  // this just forwards it (see api.advanceOrder).
+  const handleQuickAction = useCallback(async (order, extraBody) => {
     const nextAction = order?.display_stage?.nextAction;
     if (!nextAction) return;
     setQuickActionLoading((prev) => ({ ...prev, [order.id]: true }));
     let advanced = false;
     try {
-      await api.advanceOrder(nextAction);
+      await api.advanceOrder(nextAction, extraBody);
       advanced = true;
     } catch (err) {
       // The backend's guard messages are already plain language
@@ -148,11 +160,12 @@ export default function OrderKanbanBoard({
       timezone={effectiveTimezone}
       quickActionLoading={!!quickActionLoading[order.id]}
       viewerRole={viewerRole}
+      viewerId={viewerId}
       onOpen={() => onOrderPress(order)}
       onQuickAction={handleQuickAction}
       onResolve={onResolveAction}
     />
-  ), [tasksBySaleId, effectiveTimezone, quickActionLoading, viewerRole, onOrderPress, handleQuickAction, onResolveAction]);
+  ), [tasksBySaleId, effectiveTimezone, quickActionLoading, viewerRole, viewerId, onOrderPress, handleQuickAction, onResolveAction]);
 
   return (
     <View>
