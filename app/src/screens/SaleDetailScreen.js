@@ -191,6 +191,12 @@ export default function SaleDetailScreen({ route, navigation }) {
   const [pickupPayments, setPickupPayments] = useState([{ method: 'cash', amount: '', reference_number: '' }]);
   const [pickupWriteOffAmount, setPickupWriteOffAmount] = useState('');
   const [confirmingPickup, setConfirmingPickup] = useState(false);
+  // The inline collect-payment modal has two callers. Complete Order's own
+  // guard opens it to take the money AND finish the order in one go (its
+  // long-standing behaviour). The "Collect ₹N" button opens it to take the
+  // money only — paying is not the same event as the customer physically
+  // collecting, so the refreshed stage decides what comes next.
+  const [pickupPayCompletesOrder, setPickupPayCompletesOrder] = useState(true);
 
   // One-tap "Confirm Pickup" / "Mark Delivered" (Task 12, order-lifecycle
   // plan, 2026-09-01) — separate from confirmingPickup above, which is the
@@ -198,6 +204,20 @@ export default function SaleDetailScreen({ route, navigation }) {
   // this screen, unlike OrderKanbanBoard's per-order map) since only one
   // sale is ever in view here.
   const [quickActionLoading, setQuickActionLoading] = useState(false);
+
+  // Opens the inline take-the-money modal pre-filled with the whole balance.
+  // Deliberately a modal on THIS screen rather than a navigate to AddPayment:
+  // a customer is standing at the counter while this runs, and collecting a
+  // balance is the shop's highest-frequency interaction, so it has to be the
+  // shortest path (CLAUDE.md, UX design principles). The dashboard card's
+  // Collect ₹N navigates instead only because a card has nowhere to put a
+  // modal; the label is kept identical so the two still read the same.
+  const openCollectPaymentModal = (completeAfter) => {
+    setPickupPayCompletesOrder(completeAfter);
+    setPickupPayments([{ method: 'cash', amount: Number(due).toFixed(0), reference_number: '' }]);
+    setPickupWriteOffAmount('');
+    setPickupPayModalVisible(true);
+  };
 
   const handleAddPickupPayment = () => setPickupPayments([...pickupPayments, { method: 'cash', amount: '', reference_number: '' }]);
   const updatePickupPayment = (index, field, value) => {
@@ -473,9 +493,7 @@ export default function SaleDetailScreen({ route, navigation }) {
     // 400 with no way to take the money. balanceBlocksCompletion is the same
     // condition that guard now uses.
     if (nextStatus === 'completed' && balanceBlocksCompletion) {
-      setPickupPayments([{ method: 'cash', amount: Number(due).toFixed(0), reference_number: '' }]);
-      setPickupWriteOffAmount('');
-      setPickupPayModalVisible(true);
+      openCollectPaymentModal(true);
       return;
     }
 
@@ -567,14 +585,23 @@ export default function SaleDetailScreen({ route, navigation }) {
         write_off_amount: woAmount > 0 ? woAmount : undefined,
       });
 
-      // 2. Update status to completed
-      await api.updateOrderStatus(saleId, 'completed');
+      // 2. Finish the order too, but ONLY when this modal was opened from
+      //    Complete Order. Opened from "Collect ₹N" it just takes the money and
+      //    lets the refreshed stage offer the real next step (Confirm Pickup for
+      //    a pickup, Complete for a walk_in/pre_order) — force-completing there
+      //    would mark a pickup 'picked_up' while the customer is still waiting
+      //    for the flowers.
+      if (pickupPayCompletesOrder) {
+        await api.updateOrderStatus(saleId, 'completed');
+      }
 
       setPickupPayModalVisible(false);
-      fetchSale();
-      Alert.alert('Success', 'Payment recorded and order completed.');
+      // Awaited, not fire-and-forget: the next action has to be on screen the
+      // moment the modal closes, with no manual pull-to-refresh.
+      await fetchSale();
+      Alert.alert('Success', pickupPayCompletesOrder ? 'Payment recorded and order completed.' : 'Payment recorded.');
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to complete pickup payment');
+      Alert.alert('Error', err.message || 'Could not record the payment. Please try again.');
     } finally {
       setConfirmingPickup(false);
     }
@@ -1520,7 +1547,7 @@ export default function SaleDetailScreen({ route, navigation }) {
           ) : showCollectAction ? (
             <TouchableOpacity
               style={[styles.actionBtn, { backgroundColor: Colors.success, flex: 1 }]}
-              onPress={() => navigation.navigate('AddPayment', { saleId, due })}
+              onPress={() => openCollectPaymentModal(false)}
             >
               <Ionicons name="cash" size={18} color={Colors.white} />
               <Text style={styles.actionBtnText}>Collect {formatMoney(due)}</Text>
@@ -1830,7 +1857,7 @@ export default function SaleDetailScreen({ route, navigation }) {
         <KeyboardAvoidingView style={styles.modalOverlay} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
           <View style={styles.modalContent}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Take Payment & Finish Order</Text>
+              <Text style={styles.modalTitle}>{pickupPayCompletesOrder ? 'Take Payment & Finish Order' : 'Take Payment'}</Text>
               <TouchableOpacity onPress={() => setPickupPayModalVisible(false)}>
                 <Ionicons name="close" size={24} color={Colors.text} />
               </TouchableOpacity>
@@ -1889,7 +1916,7 @@ export default function SaleDetailScreen({ route, navigation }) {
               ) : (
                 <>
                   <Ionicons name="checkmark-circle" size={20} color="#fff" />
-                  <Text style={styles.confirmBtnText}>Confirm Payment & Complete</Text>
+                  <Text style={styles.confirmBtnText}>{pickupPayCompletesOrder ? 'Confirm Payment & Complete' : 'Confirm Payment'}</Text>
                 </>
               )}
             </TouchableOpacity>
