@@ -1953,6 +1953,8 @@ git commit -m "Assign a rider from the board in two taps, not four and a screen 
 - Consumes: Task 13's optional `assigned_to`; Task 14's `AssignPickerModal`; the `viewerRole` prop threaded through `OrderCard` during Task 10's fix round.
 - Produces: `api.advanceOrder(nextAction, extraBody)` — `extraBody` is optional and merged into the request body.
 
+**Before you start — a hard constraint from Task 13:** the server only acts on `assigned_to` when the status being set is `'preparing'`. Sending it with any other transition is a silent no-op — accepted, 200, nothing assigned. So never attach `assigned_to` to a `Mark Ready`, `Complete`, `Confirm Pickup` or `Mark Delivered` action. Gate on `nextAction.body?.status === 'preparing'`, exactly as Step 2 says.
+
 - [ ] **Step 1: Let `advanceOrder` carry extra fields**
 
 In `app/src/services/api.js`:
@@ -1971,8 +1973,12 @@ In `app/src/services/api.js`:
 The rule, in order:
 1. If the action is not the start-preparing one (`nextAction.body?.status !== 'preparing'`), behave exactly as today.
 2. If the sale has **no unassigned production tasks**, behave exactly as today — do not ask a question whose answer changes nothing.
-3. If `viewerRole` is `florist_staff` or `employee`, advance in one tap with `assigned_to` set to the current user.
-4. Otherwise (`counter_staff`, `owner`, `manager`), ask the parent to open the picker.
+3. If `viewerRole` is `employee`, advance in one tap with `assigned_to` set to the current user.
+
+   **Not `florist_staff`** — corrected after Task 13's review. `ENDPOINT_ROLES.SALE_STATUS` in `server/utils/order-stage.js` is `['owner','manager','employee','counter_staff']`, so `computeOrderStage` returns `nextAction: null` for a florist, the card renders no Start Preparing button at all, and this branch can never fire for them. Including florists here would be dead code describing a capability they do not have. Do **not** widen the route's `authorize()` to fix that — florists already self-assign in one tap from their own task dashboard (`pickTask`/`startTask`), which is the screen they actually work from, and they do not see this board at all (`DashboardScreen` routes `employee`/`florist_staff` to the task-focused branch).
+4. Otherwise (`counter_staff`, `owner`, `manager`), ask the parent to open the picker. In practice these are the only roles that see this board, so this is the live path.
+
+**Never send `assigned_to` as an empty string.** The server does `parseInt` on any non-null value, so `""` becomes `NaN` and returns a 400 ("Could not tell who to assign this to"). Omit the key entirely, or send `null`, when nobody was chosen.
 
 Step 2 matters: a sale whose tasks are already assigned must not prompt. Derive it from the `tasks` prop the card already receives.
 
