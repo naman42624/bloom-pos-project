@@ -2232,6 +2232,26 @@ router.put(
         return res.status(400).json({ success: false, message: `Cannot transition from ${sale.status} to ${status}` });
       }
 
+      // Optional: assign whoever will prepare this, in the same request that
+      // starts preparation. Mirrors the permission line production.js already
+      // draws — /tasks/:id/pick is open to everyone (self only), while
+      // /tasks/:id/assign is owner/manager/counter_staff (anyone). Assigning
+      // yourself is therefore allowed for every role that may set status;
+      // assigning someone else is not.
+      // Validated here, ahead of every write in this handler (the manager
+      // override below already touches production_tasks), so a rejected
+      // assignment cannot leave the order half-advanced.
+      const assignedTo = req.body.assigned_to != null ? parseInt(req.body.assigned_to, 10) : null;
+      if (assignedTo != null) {
+        if (Number.isNaN(assignedTo)) {
+          return res.status(400).json({ success: false, message: 'Could not tell who to assign this to. Please pick a person and try again.' });
+        }
+        const assigningSomeoneElse = assignedTo !== req.user.id;
+        if (assigningSomeoneElse && !['owner', 'manager', 'counter_staff'].includes(req.user.role)) {
+          return res.status(403).json({ success: false, message: 'You can take this on yourself, but only a manager or counter staff can hand it to someone else.' });
+        }
+      }
+
       // ── Manager Override Auto-Complete for Pickup and Delivery Orders ──
       const overrideSetting = db.prepare("SELECT value FROM settings WHERE key = 'pref_manager_override'").get();
       const managerOverrideOn = overrideSetting && overrideSetting.value === '1';
@@ -2325,6 +2345,15 @@ router.put(
       }
 
       db.prepare('UPDATE sales SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(status, sale.id);
+
+      // A sale has one production task per line item, so assigning "the order"
+      // means assigning its tasks. Only 'pending' ones — never reassign work
+      // someone already holds, which would silently take it off their queue.
+      if (assignedTo != null && status === 'preparing') {
+        db.prepare(
+          "UPDATE production_tasks SET assigned_to = ?, status = 'assigned', updated_at = CURRENT_TIMESTAMP WHERE sale_id = ? AND status = 'pending' AND assigned_to IS NULL"
+        ).run(assignedTo, sale.id);
+      }
 
       // If marking ready, also update stock_deducted flag
       if (status === 'ready') {
