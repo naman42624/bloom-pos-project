@@ -1,8 +1,9 @@
 /**
  * Order/task display constants and formatters shared between DashboardScreen.js
  * (the counter_staff branch, the deliveries widget, the my-tasks section,
- * TaskDetailModal) and components/OrderKanbanBoard.js (the owner/manager
- * kanban board). Pulled out into this leaf module (Task 9 fix-round,
+ * TaskDetailModal) and components/orderBoard/ (the Stage board and its
+ * OrderCard — this line used to name components/OrderKanbanBoard.js, deleted
+ * in the Stage-board redesign). Pulled out into this leaf module (Task 9 fix-round,
  * order-lifecycle plan, 2026-09-01) so both can import a single source of
  * truth instead of each keeping its own copy — a prior version of this split
  * had them duplicated in both files to sidestep an import cycle (neither

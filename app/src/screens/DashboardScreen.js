@@ -11,17 +11,17 @@ import {
   View,
   Image,
   Linking,
-  useWindowDimensions,
   Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '../context/AuthContext';
+import useBreakpoint from '../hooks/useBreakpoint';
 import api from '../services/api';
 import { Colors, FontSize, Spacing } from '../constants/theme';
 import { parseServerDate, getShopNow, getShopTodayStr, DEFAULT_TZ, formatTimeString } from '../utils/datetime';
 import { OrderQuickModal } from '../components/QuickModals';
-import OrderKanbanBoard from '../components/OrderKanbanBoard';
+import OrderKanbanBoard from '../components/orderBoard/OrderKanbanBoard';
 import DateTimePickerModal from '../components/DateTimePickerModal';
 import AttachmentVoiceRow from '../components/AttachmentVoiceRow';
 import ImageModal from '../components/ImageModal';
@@ -173,7 +173,7 @@ function TaskDetailModal({ visible, task, onClose, onAdvance, loading }) {
 }
 
 export default function DashboardScreen({ navigation }) {
-  const { width } = useWindowDimensions();
+  const { isWide } = useBreakpoint();
   const { user, activeLocation, settings, locked } = useAuth();
   const timezone = settings?.timezone?.value || 'Asia/Kolkata';
 
@@ -214,19 +214,34 @@ export default function DashboardScreen({ navigation }) {
   const isEmployee = role === 'employee' || role === 'florist_staff';
   const isCounterStaff = role === 'counter_staff';
   const isDeliveryPartner = role === 'delivery_partner';
-  // Same 1100px breakpoint components/OrderKanbanBoard.js computes
-  // independently for its own preview-cap logic (2 cards vs 1) — kept as two
-  // separate computations deliberately (different purposes: general layout
-  // here vs preview-cap there), but if this number ever changes, check that
-  // file too.
-  const isDesktop = width >= 1100;
+  // Customers reach this screen too: MainNavigator.js registers the Dashboard
+  // tab with NO role gate, so `customer` gets Shop and MyOrders *in addition
+  // to* Home, not instead of it. Without this flag `role === 'customer'`
+  // matched none of the tests above and fell through to the owner/manager
+  // branch — fetching shop-wide sales onto a customer's device and rendering
+  // them on the operations board. Both halves are closed below: the fetch
+  // (fetchDashboard's early return) and the render (the isCustomer branch).
+  const isCustomer = role === 'customer';
   // NOTE: the card pulse-border animation (pulseAnim/pulseOpacity) that used
-  // to live here moved into OrderKanbanBoard.js along with OrderCard, the
-  // only thing that ever consumed it (Task 9, order-lifecycle plan,
-  // 2026-09-01) — nothing else in this screen used it.
+  // to live here moved into the old components/OrderKanbanBoard.js along with
+  // OrderCard, the only thing that ever consumed it (Task 9, order-lifecycle
+  // plan, 2026-09-01). Both that file and the animation are gone now — the
+  // Stage board's OrderCard does not pulse. Kept as a breadcrumb only.
 
   const fetchDashboard = useCallback(async () => {
     try {
+      // ─── Customer: fetch nothing ─────────────────────────────
+      // Deliberately first, and deliberately before any request: this screen
+      // has no customer-facing data to show, and GET /api/sales has no
+      // server-side role guard (CLAUDE.md), so issuing the shop-wide sales
+      // request here would put every order in the shop on a customer's
+      // device. Their own orders live on the MyOrders tab.
+      if (isCustomer) {
+        setLoading(false);
+        setRefreshing(false);
+        return;
+      }
+
       // ─── Delivery Partner: lightweight fetch ─────────────────
       if (isDeliveryPartner) {
         const [delivRes, unsettledRes] = await Promise.all([
@@ -474,7 +489,7 @@ export default function DashboardScreen({ navigation }) {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [activeLocation?.id, isOwner, isOwnerOrManager, isStaff, isEmployee, isCounterStaff, isDeliveryPartner, locationScope, dateScope, role, user?.id, user?.name]);
+  }, [activeLocation?.id, isOwner, isOwnerOrManager, isStaff, isEmployee, isCounterStaff, isDeliveryPartner, isCustomer, locationScope, dateScope, role, user?.id, user?.name]);
 
   useEffect(() => {
     if (locationScope != null) return;
@@ -556,16 +571,40 @@ export default function DashboardScreen({ navigation }) {
   // api.updateOrderStatus) was only ever used by the flat card list it
   // replaced (Task 11, order-lifecycle plan, 2026-09-01) and is gone with it.
 
-  const handleNavigateToQueue = useCallback((orderType, status) => {
-    navigation.navigate('ProductionQueue', {
-      applyId: Date.now(),
-      initialViewMode: 'orders',
-      initialOrderType: orderType,
-      initialStatus: status || '',
-      initialLocationId: locationScope === 'all' ? null : (locationScope || activeLocation?.id || null),
-      initialShowFilters: false,
-    });
-  }, [navigation, activeLocation?.id, locationScope]);
+  // Routing for a card whose display_stage.nextAction is null — the card
+  // decides WHAT to offer (components/orderBoard/OrderCard.js resolveDeadEnd),
+  // this decides WHERE it goes, because only the screen knows the navigator
+  // layout. Spec §7.
+  const handleResolveAction = useCallback((order, kind) => {
+    if (kind === 'collect_payment') {
+      const due = Number(order.grand_total || 0) - Number(order.total_paid || 0);
+      navigation.navigate('POS', { screen: 'AddPayment', params: { saleId: order.id, due } });
+      return;
+    }
+    if (kind === 'assign_rider') {
+      if (order.delivery_id) {
+        navigation.navigate('DeliveryDetail', { deliveryId: order.delivery_id });
+      } else {
+        // A delivery order with no delivery row is a data problem, not a
+        // dead end — send them to the order where they can see why.
+        navigation.navigate('SaleDetail', { saleId: order.id });
+      }
+      return;
+    }
+    if (kind === 'record_cod') {
+      navigation.navigate('POS', { screen: 'Settlements' });
+    }
+  }, [navigation]);
+
+  const handleNavigateToDone = useCallback(() => {
+    // Same destination screen, two different tabs: owner/manager reach Orders
+    // Inbox via the `Orders` tab, counter staff via `EmployeeOrders`
+    // (MainNavigator.js registers one or the other for a role, never both).
+    // Hardcoding 'EmployeeOrders' would make the board's "Done today" chip a
+    // dead tap for the owner — React Navigation drops a navigate to a route
+    // no navigator in the tree owns, so nothing at all would happen.
+    navigation.navigate(isOwnerOrManager ? 'Orders' : 'EmployeeOrders', { screen: 'OrdersInbox' });
+  }, [navigation, isOwnerOrManager]);
 
   const activeOrderModalData = useMemo(() => {
     if (!selectedOrderModal) return null;
@@ -606,7 +645,7 @@ export default function DashboardScreen({ navigation }) {
         <View style={styles.heroCard}>
           <View style={[styles.rowBetween, { marginBottom: 4 }]}>
             <View style={{ flex: 1 }}>
-              <Text style={styles.heroEyebrow}>Operations Dashboard</Text>
+              <Text style={styles.heroEyebrow}>{isCustomer ? 'Your Account' : 'Operations Dashboard'}</Text>
               <Text style={styles.heroTitle}>Welcome, {(user?.name || 'Team').split(' ')[0]}</Text>
             </View>
             <View style={styles.heroIcon}>
@@ -614,7 +653,8 @@ export default function DashboardScreen({ navigation }) {
             </View>
           </View>
           <Text style={styles.heroSub}>
-            {isDeliveryPartner ? 'Your active deliveries and earnings at a glance'
+            {isCustomer ? 'Shop for flowers and track your orders'
+              : isDeliveryPartner ? 'Your active deliveries and earnings at a glance'
               : isCounterStaff ? "Today's sales and orders at a glance"
               : isEmployee ? 'Your production tasks and work queue'
               : 'Real-time order flow, production pipeline, and operational health metrics'}
@@ -622,7 +662,7 @@ export default function DashboardScreen({ navigation }) {
         </View>
 
         {/* Location & Date picker — owner/manager only */}
-        {!isEmployee && !isCounterStaff && !isDeliveryPartner && (locations.length > 0 || isOwnerOrManager) && (
+        {!isEmployee && !isCounterStaff && !isDeliveryPartner && !isCustomer && (locations.length > 0 || isOwnerOrManager) && (
           <View style={styles.scopeCard}>
             <View style={[styles.rowBetween, { marginBottom: 8 }]}>
               <Text style={styles.scopeLabel}>Dashboard Filter</Text>
@@ -895,10 +935,9 @@ export default function DashboardScreen({ navigation }) {
                 <OrderKanbanBoard
                   sales={counterOrdersSplit.dueToday}
                   onOrderPress={(order) => setSelectedOrderModal({ order, tasks: tasksBySaleId.get(order.id) })}
-                  onNavigateToQueue={handleNavigateToQueue}
+                  onResolveAction={handleResolveAction}
+                  onNavigateToDone={handleNavigateToDone}
                   tasksBySaleId={tasksBySaleId}
-                  taskActionLoading={taskActionLoading}
-                  onTaskPress={(task) => setSelectedTaskModal(task)}
                   timezone={timezone}
                   onRefresh={fetchDashboard}
                 />
@@ -1140,14 +1179,47 @@ export default function DashboardScreen({ navigation }) {
               </>
             )}
           </View>
+        ) : isCustomer ? (
+          /* ═══ CUSTOMER ═══
+             Must stay ahead of the owner/manager fall-through below: without
+             this branch a customer landed on the operations dashboard itself
+             (order board, revenue, registers, staff). Nothing here is shop
+             data — just the two places a customer actually has. */
+          <View style={{ gap: 12 }}>
+            <View style={styles.customerCard}>
+              <Ionicons name="flower-outline" size={40} color={Colors.primary} />
+              <Text style={styles.customerCardTitle}>Welcome to the shop</Text>
+              <Text style={styles.customerCardText}>
+                Browse what's in stock, or check on an order you've already placed.
+              </Text>
+            </View>
+
+            <TouchableOpacity
+              style={styles.customerBtn}
+              onPress={() => navigation.navigate('Shop')}
+              activeOpacity={0.85}
+            >
+              <Ionicons name="storefront-outline" size={22} color="#fff" />
+              <Text style={styles.customerBtnText}>Browse Flowers</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.customerBtnSecondary}
+              onPress={() => navigation.navigate('MyOrders')}
+              activeOpacity={0.85}
+            >
+              <Ionicons name="receipt-outline" size={22} color={Colors.primary} />
+              <Text style={styles.customerBtnSecondaryText}>My Orders</Text>
+            </TouchableOpacity>
+          </View>
         ) : (
           /* ═══ OWNER / MANAGER DASHBOARD ═══ */
-          <View style={[styles.layout, isDesktop && styles.layoutDesktop]}>
-            <View style={[styles.feedCol, isDesktop && { flex: 2 }]}>
+          <View style={[styles.layout, isWide && styles.layoutDesktop]}>
+            <View style={[styles.feedCol, isWide && { flex: 2 }]}>
               <View style={styles.sectionHeader}>
                 <View>
                   <Text style={styles.sectionTitle}>Order Management</Text>
-                  <Text style={styles.sectionSubtitle}>Tap on any status lane to view full queue</Text>
+                  <Text style={styles.sectionSubtitle}>Tap an order to see details, or use its button to move it forward</Text>
                 </View>
               </View>
 
@@ -1155,17 +1227,16 @@ export default function DashboardScreen({ navigation }) {
                 <OrderKanbanBoard
                   sales={sales}
                   onOrderPress={(order) => setSelectedOrderModal({ order, tasks: tasksBySaleId.get(order.id) })}
-                  onNavigateToQueue={handleNavigateToQueue}
+                  onResolveAction={handleResolveAction}
+                  onNavigateToDone={handleNavigateToDone}
                   tasksBySaleId={tasksBySaleId}
-                  taskActionLoading={taskActionLoading}
-                  onTaskPress={(task) => setSelectedTaskModal(task)}
                   timezone={timezone}
                   onRefresh={fetchDashboard}
                 />
               </View>
             </View>
 
-            <View style={[styles.healthCol, isDesktop && { flex: 1 }]}>
+            <View style={[styles.healthCol, isWide && { flex: 1 }]}>
               <View style={styles.sectionHeader}>
                 <Text style={styles.sectionTitle}>Team & Finance</Text>
               </View>
@@ -1909,6 +1980,60 @@ const styles = StyleSheet.create({
   roleEmptyText: {
     fontSize: 13,
     color: '#6B7280',
+    fontFamily: FONT_FAMILY,
+  },
+
+  // Customer view (see the isCustomer branch). Deliberately big, plain and
+  // two-choice — this is the whole screen for that role.
+  customerCard: {
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    padding: 24,
+    alignItems: 'center',
+    gap: 8,
+  },
+  customerCardTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#111827',
+    fontFamily: FONT_FAMILY,
+  },
+  customerCardText: {
+    fontSize: 14,
+    color: '#6B7280',
+    textAlign: 'center',
+    fontFamily: FONT_FAMILY,
+  },
+  customerBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    minHeight: 56,
+    borderRadius: 12,
+    backgroundColor: Colors.primary,
+  },
+  customerBtnText: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#fff',
+    fontFamily: FONT_FAMILY,
+  },
+  customerBtnSecondary: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    minHeight: 56,
+    borderRadius: 12,
+    backgroundColor: '#fff',
+    borderWidth: 1,
+    borderColor: Colors.primary,
+  },
+  customerBtnSecondaryText: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: Colors.primary,
     fontFamily: FONT_FAMILY,
   },
 });

@@ -31,16 +31,17 @@ import OrderCard from './OrderCard';
  * has NO role gate (MainNavigator.js:623 registers it for every role; the
  * `delivery_partner` block at :700 *adds* a Deliveries tab, it does not
  * redirect):
- *   - Riders ARE excluded, by DashboardScreen.js's own `isDeliveryPartner ?`
- *     branch (:671), which renders a rider view instead of this board.
- *   - Customers are NOT. `role === 'customer'` matches none of
- *     DashboardScreen's isDeliveryPartner (:671) / isCounterStaff (:810) /
- *     isEmployee (:913) tests and falls through to the owner/manager branch,
- *     which renders this board (:1155). That is a KNOWN GAP being closed in
- *     Task 8 — not an existing protection.
+ *   - Riders are excluded by DashboardScreen.js's own `isDeliveryPartner ?`
+ *     branch, which renders a rider view instead of this board.
+ *   - Customers are excluded by its `isCustomer ?` branch, added in Task 8.
+ *     Before that, `role === 'customer'` matched none of the role tests and
+ *     fell through to the owner/manager branch that renders this board. That
+ *     same task also stops fetchDashboard from requesting shop-wide sales for
+ *     a customer at all, so the exclusion covers the data, not just the UI.
  *
- * So do not read this as "already safe": confirm the exclusion holds before
- * wiring this board onto any new surface.
+ * Both exclusions live in ONE file's render chain, and neither is enforced by
+ * the navigator or by this component. So do not read this as "already safe":
+ * confirm the exclusion holds before wiring this board onto any new surface.
  *
  * See docs/superpowers/specs/2026-09-01-dashboard-stage-ui-redesign-design.md §3, §5.
  */
