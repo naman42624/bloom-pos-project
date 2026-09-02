@@ -173,7 +173,9 @@ function TaskDetailModal({ visible, task, onClose, onAdvance, loading }) {
 }
 
 export default function DashboardScreen({ navigation }) {
-  const { isWide } = useBreakpoint();
+  // Page-layout threshold (1100), deliberately NOT the board's 900 — see the
+  // doc comment in hooks/useBreakpoint.js for why these are two numbers.
+  const { isDesktop } = useBreakpoint();
   const { user, activeLocation, settings, locked } = useAuth();
   const timezone = settings?.timezone?.value || 'Asia/Kolkata';
 
@@ -1214,8 +1216,8 @@ export default function DashboardScreen({ navigation }) {
           </View>
         ) : (
           /* ═══ OWNER / MANAGER DASHBOARD ═══ */
-          <View style={[styles.layout, isWide && styles.layoutDesktop]}>
-            <View style={[styles.feedCol, isWide && { flex: 2 }]}>
+          <View style={[styles.layout, isDesktop && styles.layoutDesktop]}>
+            <View style={[styles.feedCol, isDesktop && { flex: 2 }]}>
               <View style={styles.sectionHeader}>
                 <View>
                   <Text style={styles.sectionTitle}>Order Management</Text>
@@ -1236,7 +1238,7 @@ export default function DashboardScreen({ navigation }) {
               </View>
             </View>
 
-            <View style={[styles.healthCol, isWide && { flex: 1 }]}>
+            <View style={[styles.healthCol, isDesktop && { flex: 1 }]}>
               <View style={styles.sectionHeader}>
                 <Text style={styles.sectionTitle}>Team & Finance</Text>
               </View>
