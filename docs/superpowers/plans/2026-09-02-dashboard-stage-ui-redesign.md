@@ -1725,6 +1725,301 @@ show what needs doing now. The header count stays the true total."
 
 ---
 
+### Task 13: Accept an optional `assigned_to` when starting preparation
+
+Added mid-run, user-approved 2026-09-02. Backend half of the assignment work. Runs after Task 12.
+
+**Why:** assigning who prepares an order is one of the two most frequent decisions attached to it, and today it is a separate trip to another screen. Making the *action* carry the assignment removes the trip without adding a second decision. Doing it in one request rather than N client-side calls keeps it atomic — you cannot end up with a started order whose assignment silently failed.
+
+**Files:**
+- Modify: `server/routes/sales.js` — the `PUT /:id/status` handler
+
+**Interfaces:**
+- Produces: `PUT /api/sales/:id/status` accepts an **optional** `assigned_to` (integer user id). Behaviour is unchanged when it is absent.
+
+- [ ] **Step 1: Read the existing handler and the task-assignment rules**
+
+```bash
+grep -n "router.put('/:id/status'" server/routes/sales.js
+sed -n '505,600p' server/routes/production.js
+```
+
+Note the permission line the production routes already draw, because this task must mirror it exactly:
+- `PUT /production/tasks/:id/pick` — `owner, manager, employee, counter_staff, florist_staff` (assign to **self**)
+- `PUT /production/tasks/:id/assign` — `owner, manager, counter_staff` (assign to **someone else**)
+
+- [ ] **Step 2: Accept and authorise the field**
+
+Inside the `PUT /:id/status` handler, after the existing status validation and before the status write:
+
+```js
+      // Optional: assign whoever will prepare this, in the same request that
+      // starts preparation. Mirrors the permission line production.js already
+      // draws — /tasks/:id/pick is open to everyone (self only), while
+      // /tasks/:id/assign is owner/manager/counter_staff (anyone). Assigning
+      // yourself is therefore allowed for every role that may set status;
+      // assigning someone else is not.
+      const assignedTo = req.body.assigned_to != null ? parseInt(req.body.assigned_to, 10) : null;
+      if (assignedTo != null) {
+        if (Number.isNaN(assignedTo)) {
+          return res.status(400).json({ success: false, message: 'Could not tell who to assign this to. Please pick a person and try again.' });
+        }
+        const assigningSomeoneElse = assignedTo !== req.user.id;
+        if (assigningSomeoneElse && !['owner', 'manager', 'counter_staff'].includes(req.user.role)) {
+          return res.status(403).json({ success: false, message: 'You can take this on yourself, but only a manager or counter staff can hand it to someone else.' });
+        }
+      }
+```
+
+- [ ] **Step 3: Assign the sale's unassigned tasks alongside the status write**
+
+A sale has **one production task per line item**, not one per order, so "assign this order to Priya" means assigning its *unassigned* tasks. Do not touch tasks someone has already picked up or been given — silently reassigning another person's work would be a real bug.
+
+Place this immediately after the existing `UPDATE sales SET status = ...` write, inside the same transaction if the handler has one:
+
+```js
+      // Only 'pending' tasks — never reassign work someone already holds.
+      if (assignedTo != null && status === 'preparing') {
+        db.prepare(
+          "UPDATE production_tasks SET assigned_to = ?, status = 'assigned', updated_at = CURRENT_TIMESTAMP WHERE sale_id = ? AND status = 'pending' AND assigned_to IS NULL"
+        ).run(assignedTo, sale.id);
+      }
+```
+
+Match the surrounding synchronous `db.prepare(...).run(...)` idiom — this file does not use the async layer.
+
+- [ ] **Step 4: Verify live**
+
+At **Test Loc (`location_id = 4`) only** — never Main Shop (`location_id = 1`):
+
+```bash
+# self-assign as the caller: allowed for any role that may set status
+curl -s -X PUT "http://localhost:3001/api/sales/<SALE_ID>/status" \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"status":"preparing","assigned_to":<CALLER_USER_ID>}'
+```
+
+Then confirm with a direct read that the sale's previously-`pending` tasks are now `assigned` to that user, and that any task already assigned to someone else was **left untouched**.
+
+Also verify: omitting `assigned_to` behaves exactly as before (status changes, no task rows touched); a non-numeric `assigned_to` returns the plain-language 400; and assigning someone else as a role outside `owner/manager/counter_staff` returns the plain-language 403.
+
+- [ ] **Step 5: Confirm no permission regression**
+
+```bash
+node server/scripts/verify-identity-roles.js
+```
+Expect 10/10, unchanged.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add server/routes/sales.js
+git commit -m "PUT /sales/:id/status: accept optional assigned_to when starting prep
+
+Assigns the sale's unassigned production tasks in the same request, so a
+started order cannot end up with a silently failed assignment. Mirrors
+production.js's existing pick-vs-assign permission line: self is open to
+every role that may set status, someone else is owner/manager/counter_staff."
+```
+
+---
+
+### Task 14: Assign a rider without leaving the board
+
+**Why:** assigning a rider currently costs 4 taps and a screen transition (card → Delivery Detail → Assign Partner → modal → rider). It is one of the most repeated actions in the shop. `GET /deliveries/partners` already exists for exactly this and already returns each rider's active-delivery count.
+
+**Files:**
+- Create: `app/src/components/orderBoard/AssignPickerModal.js`
+- Modify: `app/src/screens/DashboardScreen.js`
+
+**Interfaces:**
+- Produces: `<AssignPickerModal visible title people loading onPick onClose />` where `people` is `[{ id, name, meta }]` and `meta` is an optional short right-aligned string (e.g. `2 jobs`). Generic on purpose — Task 15 reuses it for florists.
+
+- [ ] **Step 1: Build the picker**
+
+One modal, no navigation, no gestures. Rows are full-width and at least 56px tall — this is tapped quickly, often one-handed, sometimes while talking to a customer.
+
+```js
+import React from 'react';
+import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Colors } from '../../constants/theme';
+import { FONT_FAMILY } from '../../constants/orderDisplay';
+
+/**
+ * A plain "who does this?" list. Deliberately generic — used for riders
+ * (Task 14) and for florists (Task 15) so the two never drift into different
+ * interactions for the same kind of decision.
+ */
+export default function AssignPickerModal({ visible, title, people, loading, onPick, onClose, footer }) {
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <Pressable style={styles.backdrop} onPress={onClose}>
+        <Pressable style={styles.sheet} onPress={(e) => e.stopPropagation()}>
+          <Text style={styles.title}>{title}</Text>
+          {loading ? (
+            <ActivityIndicator color={Colors.primary} style={{ paddingVertical: 24 }} />
+          ) : people.length === 0 ? (
+            <Text style={styles.empty}>Nobody is available right now.</Text>
+          ) : (
+            <ScrollView style={{ maxHeight: 320 }}>
+              {people.map((p) => (
+                <TouchableOpacity key={p.id} style={styles.row} onPress={() => onPick(p)} activeOpacity={0.7}>
+                  <Text style={styles.name} numberOfLines={1}>{p.name}</Text>
+                  {p.meta ? <Text style={styles.meta}>{p.meta}</Text> : null}
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          )}
+          {footer}
+          <TouchableOpacity style={styles.cancel} onPress={onClose} activeOpacity={0.7}>
+            <Text style={styles.cancelText}>Cancel</Text>
+          </TouchableOpacity>
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
+}
+
+const styles = StyleSheet.create({
+  backdrop: { flex: 1, backgroundColor: '#00000055', justifyContent: 'center', padding: 20 },
+  sheet: { backgroundColor: '#FFFFFF', borderRadius: 16, padding: 16, maxWidth: 420, width: '100%', alignSelf: 'center' },
+  title: { fontSize: 17, fontWeight: '800', color: Colors.text, fontFamily: FONT_FAMILY, marginBottom: 10 },
+  row: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', minHeight: 56, paddingHorizontal: 12, borderRadius: 10, borderWidth: 1, borderColor: '#E5E7EB', marginBottom: 8 },
+  name: { fontSize: 16, fontWeight: '700', color: Colors.text, fontFamily: FONT_FAMILY, flexShrink: 1 },
+  meta: { fontSize: 13, color: Colors.textLight, fontFamily: FONT_FAMILY, marginLeft: 10 },
+  empty: { fontSize: 14, color: Colors.textLight, fontFamily: FONT_FAMILY, paddingVertical: 20, textAlign: 'center' },
+  cancel: { minHeight: 44, alignItems: 'center', justifyContent: 'center', marginTop: 4 },
+  cancelText: { fontSize: 15, fontWeight: '700', color: Colors.textSecondary, fontFamily: FONT_FAMILY },
+});
+```
+
+- [ ] **Step 2: Open it from `handleResolveAction` instead of navigating**
+
+In `DashboardScreen.js`, change the `assign_rider` branch so it loads partners and opens the picker rather than navigating. Keep everything else in that handler as it is.
+
+```js
+    if (kind === 'assign_rider') {
+      if (!order.delivery_id) { navigation.navigate('SaleDetail', { saleId: order.id }); return; }
+      setRiderPicker({ deliveryId: order.delivery_id, loading: true, people: [] });
+      try {
+        const res = await api.getDeliveryPartners(activeLocation?.id);
+        const list = res?.data?.partners || res?.data || [];
+        setRiderPicker({
+          deliveryId: order.delivery_id,
+          loading: false,
+          people: list.map((p) => ({ id: p.id, name: p.name, meta: p.active_count != null ? `${p.active_count} on the road` : undefined })),
+        });
+      } catch (err) {
+        setRiderPicker(null);
+        Alert.alert('Riders', err?.message || 'Could not load the rider list. Please try again.');
+      }
+      return;
+    }
+```
+
+Confirm the real field names on `GET /deliveries/partners` before relying on `p.active_count` — read the route, do not assume.
+
+On pick: `await api.assignDelivery(deliveryId, { delivery_partner_id: person.id })`, close the picker, `await fetchDashboard()`. On failure, surface the backend's message verbatim.
+
+**Delivery Detail stays reachable and unchanged** — reattempt, cancel, convert and tracking all still live there. This removes a detour, not a screen.
+
+- [ ] **Step 3: Verify**
+
+```bash
+cd app && node scripts/babel-check.js src/components/orderBoard/AssignPickerModal.js src/screens/DashboardScreen.js
+```
+Expect 2 `OK`, exit 0. Then confirm by trace that assigning a rider takes exactly two taps from the board (`Assign Rider` → the rider), and that a failure leaves the picker closed with the backend's own message shown.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add app/src/components/orderBoard/AssignPickerModal.js app/src/screens/DashboardScreen.js
+git commit -m "Assign a rider from the board in two taps, not four and a screen change"
+```
+
+---
+
+### Task 15: Role-aware Start Preparing
+
+**Why (user-approved design, 2026-09-02):** whoever taps Start Preparing usually knows who is doing the work — often themselves. Making the action carry that removes a whole separate assignment trip. But counter staff and owners are not the ones making the bouquet, so self-assigning for them would put a false name on the work.
+
+**Files:**
+- Modify: `app/src/components/orderBoard/OrderCard.js`
+- Modify: `app/src/components/orderBoard/OrderKanbanBoard.js`
+- Modify: `app/src/screens/DashboardScreen.js`
+- Modify: `app/src/services/api.js`
+
+**Interfaces:**
+- Consumes: Task 13's optional `assigned_to`; Task 14's `AssignPickerModal`; the `viewerRole` prop threaded through `OrderCard` during Task 10's fix round.
+- Produces: `api.advanceOrder(nextAction, extraBody)` — `extraBody` is optional and merged into the request body.
+
+- [ ] **Step 1: Let `advanceOrder` carry extra fields**
+
+In `app/src/services/api.js`:
+
+```js
+  advanceOrder(nextAction, extraBody) {
+    return this.request(nextAction.endpoint, {
+      method: nextAction.method,
+      body: JSON.stringify({ ...(nextAction.body || {}), ...(extraBody || {}) }),
+    });
+  }
+```
+
+- [ ] **Step 2: Decide, on the card, whether a picker is needed**
+
+The rule, in order:
+1. If the action is not the start-preparing one (`nextAction.body?.status !== 'preparing'`), behave exactly as today.
+2. If the sale has **no unassigned production tasks**, behave exactly as today — do not ask a question whose answer changes nothing.
+3. If `viewerRole` is `florist_staff` or `employee`, advance in one tap with `assigned_to` set to the current user.
+4. Otherwise (`counter_staff`, `owner`, `manager`), ask the parent to open the picker.
+
+Step 2 matters: a sale whose tasks are already assigned must not prompt. Derive it from the `tasks` prop the card already receives.
+
+The card must stay navigation- and fetch-free: it signals the parent (reuse the existing `onResolve` channel with a new kind, `'pick_preparer'`) rather than opening anything itself.
+
+- [ ] **Step 3: Show who is preparing, and let it be changed**
+
+On a card whose stage is `preparing`, render a line reading `You're on it` when the tasks are assigned to the current user, or `<Name> is preparing` otherwise, followed by `· change`. Tapping it re-opens the same picker. This is the correction path — no separate Reassign button, no new clutter.
+
+Where the tasks are unassigned, render `Nobody assigned yet · assign`.
+
+- [ ] **Step 4: Wire the picker in `DashboardScreen`**
+
+Handle the `pick_preparer` kind by loading staff from `GET /auth/staff-roster` (the narrow, location-scoped endpoint that exists so screens need not widen `GET /users`), filtered to `florist_staff` and `employee`.
+
+`employee` **must** be included: CLAUDE.md records four live accounts that stay on that role until the owner promotes them, so filtering to `florist_staff` alone would show an empty picker today.
+
+Pass a `Leave for now` footer button that advances the status with no `assigned_to`, so assignment is never forced.
+
+On pick: `await api.advanceOrder(order.display_stage.nextAction, { assigned_to: person.id })`, close, `await fetchDashboard()`.
+
+- [ ] **Step 5: Verify**
+
+```bash
+cd app && node scripts/babel-check.js \
+  src/services/api.js \
+  src/components/orderBoard/OrderCard.js \
+  src/components/orderBoard/OrderKanbanBoard.js \
+  src/screens/DashboardScreen.js
+```
+Expect 4 `OK`, exit 0.
+
+Then confirm by trace, for each role: a florist/employee advances in ONE tap and the tasks land assigned to them; a counter staff/owner/manager gets the picker and `Leave for now` still works; a sale whose tasks are already assigned prompts **nobody**; and the preparing card shows the right name with a working `change`.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add app/src/services/api.js app/src/components/orderBoard/OrderCard.js app/src/components/orderBoard/OrderKanbanBoard.js app/src/screens/DashboardScreen.js
+git commit -m "Start Preparing assigns the preparer in the same tap
+
+Florists and employees self-assign in one tap; counter staff, owners and
+managers pick, because they are not the ones making it. No prompt at all
+when the tasks are already assigned."
+```
+
+---
+
 ## Notes for whoever executes this
 
 - **Task 1 ships alone and first.** It is the live-data fix and Task 8's UI assumes the corrected behaviour.
