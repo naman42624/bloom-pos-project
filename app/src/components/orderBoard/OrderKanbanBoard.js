@@ -1,0 +1,164 @@
+import React, { useCallback, useMemo, useState } from 'react';
+import { Alert, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import api from '../../services/api';
+import { Colors } from '../../constants/theme';
+import { FONT_FAMILY } from '../../constants/orderDisplay';
+import { STAGE_COLUMNS, TYPE_FILTERS, columnKeyForStage, isClosedStage } from '../../constants/orderStages';
+import useBreakpoint from '../../hooks/useBreakpoint';
+import StageColumn from './StageColumn';
+import OrderCard from './OrderCard';
+
+/**
+ * The unified Stage board.
+ *
+ * Replaces components/OrderKanbanBoard.js, which grouped by order type first
+ * and nested status lanes inside each type — four stacked mini-boards. That
+ * nesting was the structural source of the "cluttered" feel, and it rendered
+ * as one narrow mobile column at any viewport width because the old file
+ * computed a desktop breakpoint and used it only to change how many cards
+ * previewed, never the layout.
+ *
+ * Here: one board, columns are the Stage (from display_stage.key), and order
+ * type is a filter chip plus a per-card icon.
+ *
+ * CALLER CONSTRAINT — staff surfaces only. Never render this on a delivery
+ * rider or customer screen. OrderCard's dead-end router offers "Assign Rider"
+ * and "Collect ₹X" with no client-side role check, deliberately: duplicating a
+ * server authorization decision in the client is the anti-pattern this
+ * redesign exists to remove. That is safe only because neither role reaches
+ * this board today — MainNavigator.js routes `delivery_partner` to
+ * DeliveryPartnerStack, and customers never see the dashboard. If you wire
+ * this board onto a new surface, confirm that still holds first.
+ *
+ * See docs/superpowers/specs/2026-09-01-dashboard-stage-ui-redesign-design.md §3, §5.
+ */
+export default function OrderKanbanBoard({
+  sales,
+  onOrderPress,
+  onResolveAction,
+  onNavigateToDone,
+  tasksBySaleId,
+  timezone,
+  onRefresh,
+}) {
+  const { isWide } = useBreakpoint();
+  const [typeFilter, setTypeFilter] = useState('all');
+  const [collapsed, setCollapsed] = useState({});
+  const [quickActionLoading, setQuickActionLoading] = useState({});
+  const effectiveTimezone = timezone || 'Asia/Kolkata';
+
+  const handleQuickAction = useCallback(async (order) => {
+    const nextAction = order?.display_stage?.nextAction;
+    if (!nextAction) return;
+    setQuickActionLoading((prev) => ({ ...prev, [order.id]: true }));
+    try {
+      await api.advanceOrder(nextAction);
+      if (onRefresh) await onRefresh();
+    } catch (err) {
+      // The backend's guard messages are already plain language
+      // (server/routes/sales.js) — pass them straight through rather than
+      // wrapping them in something more technical.
+      Alert.alert('Order Update', err?.message || 'Unable to update this order.');
+    } finally {
+      setQuickActionLoading((prev) => ({ ...prev, [order.id]: false }));
+    }
+  }, [onRefresh]);
+
+  const { columns, doneCount } = useMemo(() => {
+    const buckets = STAGE_COLUMNS.reduce((acc, c) => { acc[c.key] = []; return acc; }, {});
+    let done = 0;
+    const list = (sales || []).filter(
+      (s) => typeFilter === 'all' || s.order_type === typeFilter
+    );
+    list.forEach((sale) => {
+      const stageKey = sale.display_stage?.key;
+      if (!stageKey) return;
+      if (isClosedStage(stageKey)) { done++; return; }
+      const columnKey = columnKeyForStage(stageKey);
+      if (columnKey) buckets[columnKey].push(sale);
+    });
+    // Oldest first within a column, so nothing quietly ages out at the bottom.
+    // Deliberately NOT sorted by urgency: the SLA calculation lives in
+    // OrderCard and sorting by it here would mean either duplicating that
+    // logic or hoisting it, for a reordering that the per-card warning pills
+    // already make visible. Revisit only if columns get long enough that
+    // scanning them stops working.
+    Object.keys(buckets).forEach((k) => {
+      buckets[k].sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+    });
+    return { columns: buckets, doneCount: done };
+  }, [sales, typeFilter]);
+
+  const renderCard = useCallback((order) => (
+    <OrderCard
+      key={order.id}
+      order={order}
+      tasks={tasksBySaleId?.get?.(order.id)}
+      timezone={effectiveTimezone}
+      quickActionLoading={!!quickActionLoading[order.id]}
+      onOpen={() => onOrderPress(order)}
+      onQuickAction={handleQuickAction}
+      onResolve={onResolveAction}
+    />
+  ), [tasksBySaleId, effectiveTimezone, quickActionLoading, onOrderPress, handleQuickAction, onResolveAction]);
+
+  return (
+    <View>
+      <View style={styles.toolbar}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
+          {TYPE_FILTERS.map((f) => {
+            const active = typeFilter === f.key;
+            return (
+              <TouchableOpacity
+                key={f.key}
+                style={[styles.chip, active && styles.chipActive]}
+                onPress={() => setTypeFilter(f.key)}
+                activeOpacity={0.75}
+              >
+                <Text style={[styles.chipText, active && styles.chipTextActive]}>{f.label}</Text>
+              </TouchableOpacity>
+            );
+          })}
+        </ScrollView>
+        {doneCount > 0 && (
+          <TouchableOpacity style={styles.doneChip} onPress={onNavigateToDone} activeOpacity={0.75}>
+            <Text style={styles.doneChipText}>Done today · {doneCount}</Text>
+          </TouchableOpacity>
+        )}
+      </View>
+
+      <View style={isWide ? styles.boardWide : styles.boardNarrow}>
+        {STAGE_COLUMNS.map((column) => (
+          <StageColumn
+            key={column.key}
+            column={column}
+            orders={columns[column.key]}
+            isWide={isWide}
+            collapsed={!!collapsed[column.key]}
+            onToggleCollapse={() => setCollapsed((p) => ({ ...p, [column.key]: !p[column.key] }))}
+            renderCard={renderCard}
+          />
+        ))}
+      </View>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  toolbar: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12 },
+  chipRow: { gap: 6, paddingRight: 8 },
+  chip: {
+    paddingHorizontal: 14, minHeight: 36, justifyContent: 'center',
+    borderRadius: 18, borderWidth: 1, borderColor: '#E5E7EB', backgroundColor: '#FFFFFF',
+  },
+  chipActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
+  chipText: { fontSize: 13, fontWeight: '700', color: Colors.textSecondary, fontFamily: FONT_FAMILY },
+  chipTextActive: { color: '#FFFFFF' },
+  doneChip: {
+    paddingHorizontal: 12, minHeight: 36, justifyContent: 'center',
+    borderRadius: 18, backgroundColor: '#F3F4F6',
+  },
+  doneChipText: { fontSize: 12, fontWeight: '700', color: Colors.textSecondary, fontFamily: FONT_FAMILY },
+  boardWide: { flexDirection: 'row', gap: 12, alignItems: 'flex-start' },
+  boardNarrow: { flexDirection: 'column' },
+});
