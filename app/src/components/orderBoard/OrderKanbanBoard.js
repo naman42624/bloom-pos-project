@@ -21,14 +21,26 @@ import OrderCard from './OrderCard';
  * Here: one board, columns are the Stage (from display_stage.key), and order
  * type is a filter chip plus a per-card icon.
  *
- * CALLER CONSTRAINT — staff surfaces only. Never render this on a delivery
- * rider or customer screen. OrderCard's dead-end router offers "Assign Rider"
- * and "Collect ₹X" with no client-side role check, deliberately: duplicating a
- * server authorization decision in the client is the anti-pattern this
- * redesign exists to remove. That is safe only because neither role reaches
- * this board today — MainNavigator.js routes `delivery_partner` to
- * DeliveryPartnerStack, and customers never see the dashboard. If you wire
- * this board onto a new surface, confirm that still holds first.
+ * CALLER CONSTRAINT — staff surfaces only. This board must not be rendered on
+ * a delivery-rider or customer surface. OrderCard's dead-end router offers
+ * "Assign Rider" and "Collect ₹X" with no client-side role check,
+ * deliberately: duplicating a server authorization decision in the client is
+ * the anti-pattern this redesign exists to remove.
+ *
+ * What actually enforces that, precisely — because the Dashboard tab itself
+ * has NO role gate (MainNavigator.js:623 registers it for every role; the
+ * `delivery_partner` block at :700 *adds* a Deliveries tab, it does not
+ * redirect):
+ *   - Riders ARE excluded, by DashboardScreen.js's own `isDeliveryPartner ?`
+ *     branch (:671), which renders a rider view instead of this board.
+ *   - Customers are NOT. `role === 'customer'` matches none of
+ *     DashboardScreen's isDeliveryPartner (:671) / isCounterStaff (:810) /
+ *     isEmployee (:913) tests and falls through to the owner/manager branch,
+ *     which renders this board (:1155). That is a KNOWN GAP being closed in
+ *     Task 8 — not an existing protection.
+ *
+ * So do not read this as "already safe": confirm the exclusion holds before
+ * wiring this board onto any new surface.
  *
  * See docs/superpowers/specs/2026-09-01-dashboard-stage-ui-redesign-design.md §3, §5.
  */
@@ -51,17 +63,34 @@ export default function OrderKanbanBoard({
     const nextAction = order?.display_stage?.nextAction;
     if (!nextAction) return;
     setQuickActionLoading((prev) => ({ ...prev, [order.id]: true }));
+    let advanced = false;
     try {
       await api.advanceOrder(nextAction);
-      if (onRefresh) await onRefresh();
+      advanced = true;
     } catch (err) {
       // The backend's guard messages are already plain language
       // (server/routes/sales.js) — pass them straight through rather than
       // wrapping them in something more technical.
       Alert.alert('Order Update', err?.message || 'Unable to update this order.');
-    } finally {
-      setQuickActionLoading((prev) => ({ ...prev, [order.id]: false }));
     }
+
+    // Refresh deliberately OUTSIDE that try/catch. If the advance succeeded but
+    // the refetch failed, the order really did move — telling the person at the
+    // counter "Unable to update this order." would be a lie that makes them
+    // redo a done action. Worst case here is a stale board until the next
+    // refresh, which is recoverable and silent.
+    if (advanced && onRefresh) {
+      try {
+        await onRefresh();
+      } catch (refreshErr) {
+        // Swallowed on purpose — see above. Nothing actionable for the user.
+      }
+    }
+
+    // Both awaits above are individually caught, so nothing throws past them
+    // and this always runs; it stays last so the card keeps its spinner until
+    // the refreshed data has actually landed.
+    setQuickActionLoading((prev) => ({ ...prev, [order.id]: false }));
   }, [onRefresh]);
 
   const { columns, doneCount } = useMemo(() => {
@@ -75,7 +104,20 @@ export default function OrderKanbanBoard({
       if (!stageKey) return;
       if (isClosedStage(stageKey)) { done++; return; }
       const columnKey = columnKeyForStage(stageKey);
-      if (columnKey) buckets[columnKey].push(sale);
+      if (!columnKey) {
+        // Not closed (checked above) and not mapped to a column: a stage key
+        // the server emits that this board has never heard of. Without this
+        // line the order would vanish from the board with no signal at all —
+        // and constants/orderStages.js's CLOSED_STAGE_KEYS comment explicitly
+        // promises the board logs exactly this case.
+        console.warn(
+          `[OrderKanbanBoard] Unmapped display_stage key "${stageKey}" on sale ${sale.id} — `
+          + 'this order is not shown on the board. Add the key to STAGE_COLUMNS or '
+          + 'CLOSED_STAGE_KEYS in constants/orderStages.js.'
+        );
+        return;
+      }
+      buckets[columnKey].push(sale);
     });
     // Oldest first within a column, so nothing quietly ages out at the bottom.
     // Deliberately NOT sorted by urgency: the SLA calculation lives in
