@@ -1644,12 +1644,15 @@ In `app/src/constants/orderStages.js`:
 
 ```js
 // How many cards one Stage column renders before collapsing the remainder into
-// a "+N more" row. The board is a "what needs doing now" surface, not a browser:
-// past roughly this many cards in one column, scanning stops working and the
-// right tool is Orders Inbox, which has search, filters and a virtualized list.
-// StageColumn renders into a plain ScrollView with no virtualization, so this
-// cap is also what stops a busy day rendering hundreds of cards at once.
-export const COLUMN_CARD_CAP = 8;
+// a "N more — see all" row.
+//
+// This is a SAFETY BACKSTOP, not a curation device. StageColumn renders into a
+// plain ScrollView with no virtualization, fed by a limit:500 fetch, so without
+// any cap a busy day can render hundreds of cards at once. 50 is high enough
+// that a real column effectively never hits it — the dashboard's job is to show
+// what needs doing now, and hiding genuine work behind a tap defeats that (an
+// earlier draft used 8, which was wrong for exactly this reason).
+export const COLUMN_CARD_CAP = 50;
 ```
 
 - [ ] **Step 2: Render the cap and the overflow row in `StageColumn`**
@@ -1706,18 +1709,18 @@ cd app && node scripts/babel-check.js   src/constants/orderStages.js   src/compo
 
 Expected: 4 `OK`, exit 0.
 
-Then confirm by reading the code that: a column with 8 or fewer orders renders no overflow row; a column with 9+ renders exactly 8 cards plus one overflow row reading `1 more — see all`; and the column header count still shows the true total, not the capped one.
+Then confirm by reading the code that: a column with 50 or fewer orders renders no overflow row at all (the normal case — this cap should effectively never be hit); a column with 51+ renders exactly 50 cards plus one overflow row reading `1 more — see all`; and the column header count still shows the true total, not the capped one.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add app/src/constants/orderStages.js app/src/components/orderBoard/StageColumn.js app/src/components/orderBoard/OrderKanbanBoard.js app/src/screens/DashboardScreen.js
-git commit -m "Cap each Stage column at 8 cards with a see-all overflow row
+git commit -m "Cap each Stage column at 50 cards with a see-all overflow row
 
 StageColumn rendered every order in a plain ScrollView with no cap and no
-virtualization, fed by a limit:500 fetch — the same failure mode CLAUDE.md
-records for Orders Needing Attention. The header count stays the true total;
-only what renders is capped."
+virtualization, fed by a limit:500 fetch. 50 is a safety backstop a real
+column effectively never hits, not a curation device — the dashboard must
+show what needs doing now. The header count stays the true total."
 ```
 
 ---
