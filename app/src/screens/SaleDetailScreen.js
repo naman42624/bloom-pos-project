@@ -438,14 +438,23 @@ export default function SaleDetailScreen({ route, navigation }) {
   };
 
   const handleStatusTransition = (nextStatus, label) => {
-    // Guard: delivery orders must be marked 'delivered' before completion
-    if (nextStatus === 'completed' && sale.order_type === 'delivery') {
-      const delStatus = sale.delivery?.status;
-      if (delStatus !== 'delivered') {
-        const msg = 'This delivery order cannot be completed until it has been delivered. Please mark the delivery as "Delivered" first.';
-        Platform.OS === 'web' ? window.alert(msg) : Alert.alert('Cannot Complete', msg);
-        return;
-      }
+    // Guard: an order with an OPEN delivery cannot be completed. Keyed on the
+    // delivery row rather than order_type (was `order_type === 'delivery'`) to
+    // match the backend guard re-keyed 2026-09-02 — a pre_order fulfilled by
+    // delivery slipped past this copy and got a raw 400 instead of a sentence.
+    // Kept as a safety net even though the button is now hidden for this shape:
+    // `sale` is only as fresh as the last fetch, and someone else can attach a
+    // delivery between that fetch and this tap.
+    if (nextStatus === 'completed' && hasOpenDelivery) {
+      // A failed delivery CANNOT be marked delivered — PUT /deliveries/:id/deliver
+      // only accepts 'picked_up'/'in_transit'. Its real recoveries are reattempt
+      // or cancel, so telling staff to "mark it delivered" would send them at an
+      // action the API refuses. Same split the backend message makes.
+      const msg = sale.delivery?.status === 'failed'
+        ? "This order's delivery did not go through. Send it out again, or cancel the delivery, then finish the order."
+        : 'This order cannot be finished until the delivery is done. Tap Delivery Status above, then mark it delivered.';
+      Platform.OS === 'web' ? window.alert(msg) : Alert.alert('Cannot Complete', msg);
+      return;
     }
 
     // Guard: cannot complete order if any production tasks are still pending/assigned/in_progress
@@ -458,8 +467,12 @@ export default function SaleDetailScreen({ route, navigation }) {
       }
     }
 
-    // Guard: pickup orders must be fully paid before completion
-    if (nextStatus === 'completed' && sale.order_type === 'pickup' && due > 0.01) {
+    // Guard: any NON-DELIVERY order must be settled before completion. Was
+    // `order_type === 'pickup' && due > 0.01`, so an unpaid walk_in/pre_order
+    // never reached this modal and hit the backend's payment guard as a raw
+    // 400 with no way to take the money. balanceBlocksCompletion is the same
+    // condition that guard now uses.
+    if (nextStatus === 'completed' && balanceBlocksCompletion) {
       setPickupPayments([{ method: 'cash', amount: Number(due).toFixed(0), reference_number: '' }]);
       setPickupWriteOffAmount('');
       setPickupPayModalVisible(true);
@@ -469,7 +482,20 @@ export default function SaleDetailScreen({ route, navigation }) {
     const msg = `${label} for this order?`;
     const onConfirm = async () => {
       try {
-        await api.updateOrderStatus(saleId, nextStatus);
+        // Converge on display_stage.nextAction where the server has already
+        // described this exact transition (endpoint + method + body), so the
+        // request stops being re-derived client-side — same api.advanceOrder
+        // path handleQuickAction and the dashboard card use. Falls back to the
+        // hand-built call whenever there is no matching nextAction (notably
+        // when the viewer's role is outside the endpoint's authorize() list, so
+        // the server sends none): behaviour is unchanged there, including the
+        // error it surfaces, rather than a button that silently does nothing.
+        const serverAction = nextAction && nextAction.body?.status === nextStatus ? nextAction : null;
+        if (serverAction) {
+          await api.advanceOrder(serverAction);
+        } else {
+          await api.updateOrderStatus(saleId, nextStatus);
+        }
         fetchSale();
       } catch (err) {
         if (Platform.OS === 'web') {
@@ -825,6 +851,37 @@ export default function SaleDetailScreen({ route, navigation }) {
   // to remove).
   const nextAction = sale.display_stage?.nextAction;
   const hasNoInputNextAction = nextAction?.label === 'Confirm Pickup' || nextAction?.label === 'Mark Delivered';
+
+  // ── The two things that make PUT /api/sales/:id/status refuse 'completed' ──
+  // Mirrors server/routes/sales.js's own guards, which were re-keyed 2026-09-02
+  // OFF order_type and ONTO the data: "does this sale have an open delivery
+  // row" and "is money owed on a non-delivery sale". This screen still carried
+  // the old order_type-keyed copies, so two shapes rendered a Complete Order
+  // button the endpoint now rejects with a raw 400: a pre_order fulfilled by
+  // delivery (not order_type 'delivery', so the delivery guard never fired),
+  // and an unpaid walk_in/pre_order (not order_type 'pickup', so the
+  // take-the-money modal never opened).
+  //
+  // Deliberately NOT keyed on `nextAction == null`, which is the same signal
+  // but strictly wider: an already-delivered delivery order whose sale is still
+  // 'ready' also has a null nextAction (stage 'delivered'), yet completing it
+  // is exactly what staff need to do and the endpoint accepts it. Hiding the
+  // button there would delete real functionality, so these mirror the guards
+  // themselves rather than the summary signal.
+  //
+  // Same decision resolveDeadEnd() makes for the dashboard card
+  // (app/src/components/orderBoard/OrderCard.js) — mirrored rather than
+  // imported, since that helper is card-shaped. Labels are kept identical on
+  // purpose so the two screens can never say different things about one order.
+  const hasOpenDelivery = !!sale.delivery && !['delivered', 'cancelled'].includes(sale.delivery.status);
+  // Deliveries are excluded: COD is collected by the rider at the door and
+  // reconciled through settlements, so a delivery legitimately completes with a
+  // balance outstanding — the backend guard carries the same exclusion.
+  const balanceBlocksCompletion = due > 0.01 && !sale.is_credit_sale && sale.order_type !== 'delivery';
+  const completionBlocked = hasOpenDelivery || balanceBlocksCompletion;
+  // Delivery first when both apply: for a pre_order going out by delivery the
+  // money is collected at the door, so the rider is genuinely the next step.
+  const showCollectAction = sale.status === 'ready' && balanceBlocksCompletion && !hasOpenDelivery && canRecordPayment;
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
@@ -1399,23 +1456,83 @@ export default function SaleDetailScreen({ route, navigation }) {
           )}
         </View>
       )}
-      {/* "Complete Order" is suppressed when hasNoInputNextAction is true
-          (both computed above, near `due`) — Stage/nextAction is meant to be
-          the single source of truth for "what's the next action"; showing
-          this generic button alongside the dedicated "Confirm Pickup"/"Mark
-          Delivered" one below would reintroduce the old multi-button
-          confusion this whole redesign exists to remove (coordinator ruling,
-          2026-09-01 fix round). Still renders as before for every other
-          'ready' case: walk_in/pre_order orders (their own nextAction.label
-          is 'Complete', not one of the two checked here) and any pickup/
-          delivery order where nextAction is null (balance/COD still due) —
-          those still need this button's own pay-modal/guard fallback. */}
-      {sale.status === 'ready' && !hasNoInputNextAction && (
+      {/* "Complete Order" is suppressed in two cases, both computed above near
+          `due`. (1) hasNoInputNextAction — the dedicated "Confirm Pickup"/"Mark
+          Delivered" button below covers the same net effect, and showing both
+          reintroduces the multi-button confusion this redesign exists to remove
+          (coordinator ruling, 2026-09-01). (2) completionBlocked — the server
+          would refuse 'completed' outright, so the button was a guaranteed dead
+          end; the block underneath offers the action that actually clears the
+          blocker instead. Still renders for every 'ready' order the endpoint
+          will accept, including an already-delivered delivery order whose sale
+          is still 'ready' (null nextAction, nothing blocking — this button is
+          the only way to finish it). */}
+      {sale.status === 'ready' && !hasNoInputNextAction && !completionBlocked && (
         <View style={styles.actions}>
           <TouchableOpacity style={[styles.actionBtn, { backgroundColor: Colors.success, flex: 1 }]} onPress={() => handleStatusTransition('completed', 'Complete Order')}>
             <Ionicons name="checkmark-done-outline" size={18} color={Colors.white} />
             <Text style={styles.actionBtnText}>Complete Order</Text>
           </TouchableOpacity>
+        </View>
+      )}
+
+      {/* ── What to do INSTEAD, when finishing the order is blocked ──
+          Never a dead end: whatever stops this order finishing gets exactly one
+          button pointing at the screen that clears it, with the same wording the
+          dashboard card uses (resolveDeadEnd in
+          app/src/components/orderBoard/OrderCard.js) so one order never reads
+          two different ways. When the blocker is not this person's job to clear,
+          it says so in a sentence rather than offering a button that 403s. */}
+      {sale.status === 'ready' && completionBlocked && (
+        <View style={styles.actions}>
+          {hasOpenDelivery ? (
+            /* A FAILED delivery cannot be "marked delivered" — PUT
+               /deliveries/:id/deliver only accepts picked_up/in_transit. Its
+               real recoveries are Reattempt or Cancel, both on DeliveryDetail,
+               so it gets its own button rather than the rider sentence below.
+               Checked first: a failed delivery normally still has a partner
+               name attached, so it would otherwise fall into that sentence and
+               tell staff to wait for something that can never happen. */
+            sale.delivery.status === 'failed' ? (
+              <TouchableOpacity
+                style={[styles.actionBtn, { backgroundColor: Colors.warning, flex: 1 }]}
+                onPress={() => navigation.navigate('DeliveryDetail', { deliveryId: sale.delivery.id })}
+              >
+                <Ionicons name="refresh-outline" size={18} color={Colors.white} />
+                <Text style={styles.actionBtnText}>Delivery Failed — Send Again</Text>
+              </TouchableOpacity>
+            ) : sale.delivery.partner_name ? (
+              <View style={styles.blockedNote}>
+                <Ionicons name="bicycle-outline" size={18} color={Colors.info} />
+                <Text style={styles.blockedNoteText}>
+                  {sale.delivery.partner_name} has this order. It finishes on its own once the delivery is marked delivered — tap Delivery Status above to follow it.
+                </Text>
+              </View>
+            ) : (
+              <TouchableOpacity
+                style={[styles.actionBtn, { backgroundColor: Colors.info, flex: 1 }]}
+                onPress={() => navigation.navigate('DeliveryDetail', { deliveryId: sale.delivery.id })}
+              >
+                <Ionicons name="bicycle-outline" size={18} color={Colors.white} />
+                <Text style={styles.actionBtnText}>Assign Rider</Text>
+              </TouchableOpacity>
+            )
+          ) : showCollectAction ? (
+            <TouchableOpacity
+              style={[styles.actionBtn, { backgroundColor: Colors.success, flex: 1 }]}
+              onPress={() => navigation.navigate('AddPayment', { saleId, due })}
+            >
+              <Ionicons name="cash" size={18} color={Colors.white} />
+              <Text style={styles.actionBtnText}>Collect {formatMoney(due)}</Text>
+            </TouchableOpacity>
+          ) : (
+            <View style={styles.blockedNote}>
+              <Ionicons name="cash-outline" size={18} color={Colors.warning} />
+              <Text style={styles.blockedNoteText}>
+                {formatMoney(due)} still to collect. Counter staff take the payment, then this order can be finished.
+              </Text>
+            </View>
+          )}
         </View>
       )}
 
@@ -1466,7 +1583,7 @@ export default function SaleDetailScreen({ route, navigation }) {
       )}
 
       {/* Pay balance */}
-      {sale.status !== 'cancelled' && due > 0.01 && canRecordPayment && (
+      {sale.status !== 'cancelled' && due > 0.01 && canRecordPayment && !showCollectAction && (
         <TouchableOpacity
           style={[styles.actionBtn, { backgroundColor: Colors.success, alignSelf: 'stretch', marginHorizontal: 0 }]}
           onPress={() => navigation.navigate('AddPayment', { saleId, due })}
@@ -1713,7 +1830,7 @@ export default function SaleDetailScreen({ route, navigation }) {
         <KeyboardAvoidingView style={styles.modalOverlay} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
           <View style={styles.modalContent}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Complete Pickup Payment</Text>
+              <Text style={styles.modalTitle}>Take Payment & Finish Order</Text>
               <TouchableOpacity onPress={() => setPickupPayModalVisible(false)}>
                 <Ionicons name="close" size={24} color={Colors.text} />
               </TouchableOpacity>
@@ -2032,6 +2149,17 @@ const styles = StyleSheet.create({
   },
   addPhotoBtnText: { fontSize: FontSize.sm, fontWeight: '700', color: Colors.primary },
 
+  blockedNote: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: Spacing.sm,
+    backgroundColor: Colors.background,
+    borderRadius: BorderRadius.md,
+    paddingVertical: Spacing.sm,
+    paddingHorizontal: Spacing.md,
+  },
+  blockedNoteText: { flex: 1, fontSize: FontSize.sm, color: Colors.textSecondary, lineHeight: 19 },
   actions: {
     flexDirection: 'row', gap: Spacing.sm, marginTop: Spacing.md,
   },
