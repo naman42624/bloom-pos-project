@@ -21,21 +21,41 @@ import StageBadge from '../StageBadge';
  *   { type: 'status', text }        — render a plain status line, no button
  *   null                            — genuinely nothing to show (terminal stage)
  *
- * `canManageDeliveries` — whether the VIEWER can use the delivery screen these
- * buttons route to. A null nextAction already encodes the server's decision
- * about an *action*, but nothing on the wire says a *destination screen* will
- * refuse this viewer: PUT /deliveries/:id/assign and /reattempt are both
- * authorize('owner','manager','counter_staff'), and DeliveryDetailScreen's own
- * gate (:65) mirrors that, so an `employee` or `florist_staff` tapping
- * "Assign Rider" landed on a screen with none of those controls. That is a
- * dead end moved one level deeper, not removed — the exact failure this helper
- * exists to prevent. They still need to know what is happening with the order
- * (customers ring up asking), so it falls back to a status line, the same
- * shape the out_for_delivery branch already uses. Review finding, 2026-09-02.
+ * ── Why this helper takes role flags at all ──
+ *
+ * A null nextAction already encodes the server's decision about an *action*,
+ * and nothing else here duplicates a server authorization decision. But
+ * nothing on the wire says a *destination screen* will refuse this viewer, and
+ * every 'route' this helper returns sends someone to another screen. Both
+ * flags below answer only that one question, and are transcribed from the real
+ * route definitions — the two lists are NOT the same, so do not merge them.
+ *
+ * `canManageDeliveries` — 'assign_rider' / 'reattempt_delivery' land on
+ *   DeliveryDetailScreen. PUT /deliveries/:id/assign (deliveries.js:498) and
+ *   PUT /deliveries/:id/reattempt (:784) are both
+ *   authorize('owner','manager','counter_staff'), and that screen's own gate
+ *   (:65) mirrors them — so an `employee` or `florist_staff` tapping "Assign
+ *   Rider" landed on a screen with none of those controls.
+ *
+ * `canTakeMoney` — 'collect_payment' lands on AddPaymentScreen and
+ *   'record_cod' on SettlementsScreen. POST /sales/:id/payments
+ *   (sales.js:1981) and POST /deliveries/settlements/settle-now
+ *   (deliveries.js:1078) are both
+ *   authorize('owner','manager','employee','counter_staff') — `employee` IS
+ *   allowed here, unlike the delivery list. Worse than a 403 for the one role
+ *   excluded: DashboardScreen routes both through
+ *   navigation.navigate('POS', ...), and MainNavigator.js:630 registers the
+ *   POS tab only for those same four roles, so for `florist_staff` the tap
+ *   resolves to no navigator at all and simply does nothing.
+ *
+ * In every case the person still needs to know what is happening with the
+ * order (customers ring up asking), so a refused destination becomes a status
+ * line — the same shape the out_for_delivery branch already used. Review
+ * findings, 2026-09-02.
  *
  * See docs/superpowers/specs/2026-09-01-dashboard-stage-ui-redesign-design.md §7.
  */
-function resolveDeadEnd(order, canManageDeliveries) {
+function resolveDeadEnd(order, canManageDeliveries, canTakeMoney) {
   const stageKey = order.display_stage?.key;
 
   // 'ready' and 'ready_for_pickup' share one branch, and it keys on the DATA
@@ -72,14 +92,27 @@ function resolveDeadEnd(order, canManageDeliveries) {
     }
     const due = Number(order.grand_total || 0) - Number(order.total_paid || 0);
     if (due > 0.01 && !order.is_credit_sale) {
-      return { type: 'route', kind: 'collect_payment', label: `Collect ${formatMoney(due)}` };
+      if (canTakeMoney) {
+        return { type: 'route', kind: 'collect_payment', label: `Collect ${formatMoney(due)}` };
+      }
+      // Needs its own line rather than falling through: the fall-through here
+      // is `return null`, which renders NOTHING on the card — a blank dead end
+      // for the one role that cannot take money, on an order that visibly
+      // still owes some. Wording matches SaleDetailScreen's equivalent note,
+      // which already had this case right.
+      return { type: 'status', text: `${formatMoney(due)} still to collect — counter staff take the payment` };
     }
     return null;
   }
 
   if (stageKey === 'out_for_delivery') {
     const codOutstanding = Number(order.cod_amount || 0) > Number(order.cod_collected || 0);
-    if (codOutstanding) {
+    // Deliberately no new copy when the viewer cannot settle: this branch
+    // already ends in exactly the right status lines for someone who does not
+    // handle cash ("Ravi has it" / "Out with a rider"), so it falls through to
+    // them rather than inventing a sentence about money that is not this
+    // person's to collect.
+    if (codOutstanding && canTakeMoney) {
       return { type: 'route', kind: 'record_cod', label: 'Record COD' };
     }
     // Marking a delivery delivered is not counter staff's action —
@@ -150,13 +183,15 @@ export default function OrderCard({
   const payment = getPaymentWarning(order);
   const taskProgress = getTaskProgress(tasks);
   const nextAction = order.display_stage?.nextAction;
-  // The ONLY role logic in this component, and it decides one thing: routing
-  // button vs status line for a delivery. Everything else stays server-decided
-  // via display_stage.nextAction — duplicating an authorization decision in the
-  // client is the anti-pattern this redesign removes. Same list as
-  // SaleDetailScreen's canManageDeliveries; keep the two in step.
+  // The only role logic in this component, and it decides exactly one thing:
+  // routing button vs status line, for each of the three screens this card can
+  // send someone to. Everything else stays server-decided via
+  // display_stage.nextAction. The two lists differ — see resolveDeadEnd's note
+  // — and each mirrors a real authorize() call; keep them in step with
+  // SaleDetailScreen's canManageDeliveries / canRecordPayment.
   const canManageDeliveries = ['owner', 'manager', 'counter_staff'].includes(viewerRole);
-  const deadEnd = nextAction ? null : resolveDeadEnd(order, canManageDeliveries);
+  const canTakeMoney = ['owner', 'manager', 'employee', 'counter_staff'].includes(viewerRole);
+  const deadEnd = nextAction ? null : resolveDeadEnd(order, canManageDeliveries, canTakeMoney);
   const contactPhone = order.customer_phone || order.receiver_phone;
   const showSchedule = order.scheduled_date && order.order_type !== 'walk_in';
 

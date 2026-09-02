@@ -22,15 +22,16 @@ import OrderCard from './OrderCard';
  * type is a filter chip plus a per-card icon.
  *
  * CALLER CONSTRAINT — staff surfaces only. This board must not be rendered on
- * a delivery-rider or customer surface. OrderCard's dead-end router offers
- * "Collect ₹X" with no client-side role check, deliberately: duplicating a
- * server authorization decision in the client is the anti-pattern this
- * redesign exists to remove. Its one exception is `viewerRole`, threaded
- * through this component and used ONLY to pick a routing button vs a status
- * line for a delivery — see resolveDeadEnd's own note for why nextAction
- * cannot cover that case. Pass it; without it the delivery buttons degrade to
- * status lines for everyone, which is safe but tells owner/manager/counter
- * staff less than they need.
+ * a delivery-rider or customer surface. OrderCard duplicates no server
+ * authorization decision — that is the anti-pattern this redesign exists to
+ * remove, and display_stage.nextAction carries the server's decision about
+ * every *action*. Its one exception is `viewerRole`, threaded through this
+ * component and used ONLY to decide routing button vs status line for each of
+ * the three screens a card can send someone to (delivery detail, add payment,
+ * settlements) — see resolveDeadEnd's own note for why nextAction cannot
+ * cover a destination screen. Pass it; without it every routing button
+ * degrades to a status line, which is safe but tells staff less than they
+ * need.
  *
  * What actually enforces that, precisely — because the Dashboard tab itself
  * has NO role gate (MainNavigator.js:623 registers it for every role; the
