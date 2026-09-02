@@ -3,6 +3,7 @@ import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-nati
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '../../constants/theme';
 import { FONT_FAMILY } from '../../constants/orderDisplay';
+import { COLUMN_CARD_CAP } from '../../constants/orderStages';
 
 /**
  * One Stage column (wide) or one collapsible Stage section (narrow).
@@ -17,7 +18,7 @@ import { FONT_FAMILY } from '../../constants/orderDisplay';
  *
  * See docs/superpowers/specs/2026-09-01-dashboard-stage-ui-redesign-design.md §5.
  */
-export default function StageColumn({ column, orders, isWide, collapsed, onToggleCollapse, renderCard }) {
+export default function StageColumn({ column, orders, isWide, collapsed, onToggleCollapse, renderCard, onShowAll }) {
   const count = orders.length;
 
   const header = (
@@ -36,10 +37,21 @@ export default function StageColumn({ column, orders, isWide, collapsed, onToggl
     </View>
   );
 
+  const visible = orders.slice(0, COLUMN_CARD_CAP);
+  const hiddenCount = orders.length - visible.length;
+
   const body = count === 0 ? (
     <Text style={styles.emptyText}>Nothing here</Text>
   ) : (
-    <View style={styles.cardStack}>{orders.map(renderCard)}</View>
+    <View style={styles.cardStack}>
+      {visible.map(renderCard)}
+      {hiddenCount > 0 && (
+        <TouchableOpacity style={styles.showAllRow} onPress={onShowAll} activeOpacity={0.75}>
+          <Text style={styles.showAllText}>{hiddenCount} more — see all</Text>
+          <Ionicons name="arrow-forward" size={14} color={Colors.primary} />
+        </TouchableOpacity>
+      )}
+    </View>
   );
 
   if (isWide) {
@@ -90,4 +102,10 @@ const styles = StyleSheet.create({
     fontSize: 13, color: Colors.textLight, fontFamily: FONT_FAMILY,
     paddingHorizontal: 10, paddingBottom: 10,
   },
+  showAllRow: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    minHeight: 44, borderRadius: 10, borderWidth: 1, borderStyle: 'dashed',
+    borderColor: Colors.primary, backgroundColor: Colors.primary + '08',
+  },
+  showAllText: { fontSize: 14, fontWeight: '700', color: Colors.primary, fontFamily: FONT_FAMILY },
 });

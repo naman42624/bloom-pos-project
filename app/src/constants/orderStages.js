@@ -32,6 +32,17 @@ export const STAGE_COLUMNS = [
 // being treated as done.
 export const CLOSED_STAGE_KEYS = ['delivered', 'picked_up', 'completed', 'cancelled'];
 
+// How many cards one Stage column renders before collapsing the remainder into
+// a "N more — see all" row.
+//
+// This is a SAFETY BACKSTOP, not a curation device. StageColumn renders into a
+// plain ScrollView with no virtualization, fed by a limit:500 fetch, so without
+// any cap a busy day can render hundreds of cards at once. 50 is high enough
+// that a real column effectively never hits it — the dashboard's job is to show
+// what needs doing now, and hiding genuine work behind a tap defeats that (an
+// earlier draft used 8, which was wrong for exactly this reason).
+export const COLUMN_CARD_CAP = 50;
+
 const STAGE_KEY_TO_COLUMN = STAGE_COLUMNS.reduce((acc, col) => {
   col.stageKeys.forEach((k) => { acc[k] = col.key; });
   return acc;

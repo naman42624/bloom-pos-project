@@ -56,6 +56,7 @@ export default function OrderKanbanBoard({
   onOrderPress,
   onResolveAction,
   onNavigateToDone,
+  onShowAll,
   tasksBySaleId,
   timezone,
   viewerRole,
@@ -188,6 +189,7 @@ export default function OrderKanbanBoard({
             collapsed={!!collapsed[column.key]}
             onToggleCollapse={() => setCollapsed((p) => ({ ...p, [column.key]: !p[column.key] }))}
             renderCard={renderCard}
+            onShowAll={onShowAll}
           />
         ))}
       </View>

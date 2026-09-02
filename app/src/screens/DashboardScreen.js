@@ -944,6 +944,7 @@ export default function DashboardScreen({ navigation }) {
                   onOrderPress={(order) => setSelectedOrderModal({ order, tasks: tasksBySaleId.get(order.id) })}
                   onResolveAction={handleResolveAction}
                   onNavigateToDone={handleNavigateToDone}
+                  onShowAll={handleNavigateToDone}
                   tasksBySaleId={tasksBySaleId}
                   timezone={timezone}
                   viewerRole={user?.role}
@@ -1237,6 +1238,7 @@ export default function DashboardScreen({ navigation }) {
                   onOrderPress={(order) => setSelectedOrderModal({ order, tasks: tasksBySaleId.get(order.id) })}
                   onResolveAction={handleResolveAction}
                   onNavigateToDone={handleNavigateToDone}
+                  onShowAll={handleNavigateToDone}
                   tasksBySaleId={tasksBySaleId}
                   timezone={timezone}
                   viewerRole={user?.role}
