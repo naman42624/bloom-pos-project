@@ -41,6 +41,17 @@ import {
   getTaskChipColor,
 } from '../constants/orderDisplay';
 
+// The preparer picker's subtitle line falls back to the account's role when
+// nobody has set a job title. `role` is a database token, and a counter staff
+// member reading this at speed must never be shown `florist_staff`. Wording
+// matches UserFormScreen's own role labels, minus the "(legacy)" qualifier —
+// that is meaningful to an owner managing accounts and only confusing to
+// someone choosing who makes a bouquet (Task 17).
+const PREP_ROLE_LABELS = {
+  florist_staff: 'Florist/Prep Staff',
+  employee: 'Staff',
+};
+
 /**
  * Show a message the user will actually see.
  *
@@ -228,7 +239,7 @@ export default function DashboardScreen({ navigation }) {
   const [preparerPicker, setPreparerPicker] = useState(null);
   // Same monotonic request token as riderReqRef above, for the same reasons and
   // with the same pairing rule (every bump is owned by something that settles).
-  // Without it: cancelling during the roster fetch reopens the picker the
+  // Without it: cancelling during the staff-list fetch reopens the picker the
   // person just dismissed; and open-A, cancel, open-B, with A resolving last,
   // rebuilds the whole state object from A's closure — the title is static, so
   // the modal still LOOKS like B while pointing at A, and the next tap acts on
@@ -777,21 +788,44 @@ export default function DashboardScreen({ navigation }) {
       const reqId = ++preparerReqRef.current;
       setPreparerPicker({ order, mode, loading: true, people: [] });
       try {
-        // GET /auth/staff-roster, not GET /users: the account directory is
-        // owner/manager-only and far too broad for "who preps this" (CLAUDE.md).
-        // The roster is already scoped to this location, filtered to is_active
-        // with an employee_code, and limited server-side to
-        // employee/counter_staff/florist_staff.
-        //
-        // NOTE — the brief asked to filter this list to florist_staff+employee
-        // client-side. That is not possible and not wanted: the endpoint
-        // returns id/name/avatar/employee_code/job_title and NO role field, and
-        // SaleDetailScreen's task-assign modal already offers this same
-        // unfiltered roster for this same question. Widening the endpoint to
-        // leak a role on an UNAUTHENTICATED route (LockScreen calls it) to
-        // hide three names would be the wrong trade.
-        const res = await api.getStaffRoster(locId);
-        const list = Array.isArray(res?.data?.staff) ? res.data.staff : [];
+        // GET /production/assignable-staff — not GET /users (the account
+        // directory is owner/manager-only and far too broad for "who preps
+        // this", CLAUDE.md) and no longer GET /auth/staff-roster, which Task 15
+        // used and which measurement proved was the wrong list. The roster is
+        // the UNAUTHENTICATED lock-screen list, so it filters
+        // `employee_code IS NOT NULL` — correct there, because no code means no
+        // PIN login — and returns no `role`. On live data that excluded all four
+        // `employee` accounts, the exact people who do this shop's prep work,
+        // while including the counter staff this picker is meant to leave out.
+        // Widening the roster was rejected: it would break that screen's meaning
+        // and widen what an unauthenticated caller can enumerate. The new
+        // endpoint is authenticated, returns florist_staff + employee only, and
+        // carries `role` (Task 17) — same narrow-endpoint precedent as
+        // GET /deliveries/partners.
+        const res = await api.getAssignableStaff(locId);
+        let list = Array.isArray(res?.staff) ? res.staff : [];
+        // Identical empty-scoped-list fallback to the rider picker above, for
+        // the identical reason: the location filter is a convenience, not a
+        // rule — PUT /production/tasks/:id/assign accepts any active staff
+        // account regardless of location. Three of this shop's four live
+        // `employee` accounts carry a user_locations row for one shop only, so
+        // any other location comes back empty and would dead-end the one action
+        // this card exists to offer. And as with riders, the widening is never
+        // SILENT: one shop today, more soon (CLAUDE.md), and quietly listing
+        // someone standing in a different shop is how prep work lands on the
+        // wrong person with no sign that is what happened. Flagged true only
+        // when the wider call actually produced people — if that comes back
+        // empty too, the list is genuinely empty and "showing everyone" would
+        // be a lie.
+        let showingEveryone = false;
+        if (list.length === 0 && locId) {
+          const all = await api.getAssignableStaff();
+          const allList = Array.isArray(all?.staff) ? all.staff : [];
+          if (allList.length > 0) {
+            list = allList;
+            showingEveryone = true;
+          }
+        }
         // Superseded while awaiting — cancelled, or a different order's picker
         // was opened. This setState rebuilds the object from THIS closure,
         // `order` included, so applying it late would leave the picker showing
@@ -802,10 +836,13 @@ export default function DashboardScreen({ navigation }) {
           order,
           mode,
           loading: false,
+          showingEveryone,
           people: list.map((p) => ({
             id: p.id,
             name: p.name,
-            meta: p.job_title || p.employee_code || null,
+            // A real job title wins; the role is only the fallback, and only
+            // ever in plain words (see PREP_ROLE_LABELS).
+            meta: p.job_title || PREP_ROLE_LABELS[p.role] || null,
           })),
         });
       } catch (err) {
@@ -1800,13 +1837,17 @@ export default function DashboardScreen({ navigation }) {
         title="Who is making this?"
         notice={
           // Only ever shown when the list is not what someone would expect —
-          // never on a normal result. The roster only lists staff who have an
-          // employee code, so a shop whose prep staff have not been set up with
-          // one sees an empty list and no explanation at all. Says what to do
-          // next in plain language rather than leaving a blank sheet.
-          !preparerPicker?.loading && (preparerPicker?.people || []).length === 0
-            ? 'Only staff with an employee code appear here. Ask the owner to set one up for the person making this.'
-            : null
+          // never on a normal result. This used to explain the employee-code
+          // gap; Task 17 fixed that gap, so saying it now would be a lie about
+          // a problem that no longer exists. What remains true are the two
+          // cases the rider picker also has: the list was widened past this
+          // location, or there is genuinely nobody to show.
+          preparerPicker?.loading ? null
+            : preparerPicker?.showingEveryone
+              ? 'Nobody is set up as prep staff at this location — showing everyone.'
+              : (preparerPicker?.people || []).length === 0
+                ? 'No prep staff yet. Ask the owner to add someone as Florist/Prep Staff.'
+                : null
         }
         people={preparerPicker?.people || []}
         loading={!!preparerPicker?.loading}

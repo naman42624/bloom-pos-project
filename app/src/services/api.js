@@ -860,6 +860,14 @@ class ApiService {
     return this.request(`/deliveries/partners${locationId ? `?location_id=${locationId}` : ''}`);
   }
 
+  // Prep staff (florist_staff + employee) for the "who is preparing this?"
+  // picker. NOT getStaffRoster() — that one is the unauthenticated lock-screen
+  // list and only shows people who have an employee code, which excludes every
+  // one of this shop's `employee`-role prep staff.
+  getAssignableStaff(locationId) {
+    return this.request(`/production/assignable-staff${locationId ? `?location_id=${locationId}` : ''}`);
+  }
+
   // ─── Delivery Routes ────────────────────────────────────
   getDeliveryRoutes(locationId) {
     return this.request(`/delivery-routes${locationId ? `?location_id=${locationId}` : ''}`);
