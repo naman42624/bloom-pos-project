@@ -860,6 +860,17 @@ export default function DashboardScreen({ navigation }) {
       }
       return;
     }
+    // Nothing to pick and nobody to choose: the open production tasks ARE the
+    // blocker, and they live on the order. Deliberately the same destination
+    // the card body already leads to — the button exists so the reason is
+    // stated in words instead of relying on someone guessing that the whole
+    // card is tappable (staff-ux-checklist #1: no hidden gestures). No role
+    // check for the same reason: every viewer who can see this card can
+    // already open the order by tapping it.
+    if (kind === 'finish_tasks') {
+      navigation.navigate('SaleDetail', { saleId: order.id });
+      return;
+    }
     if (kind === 'record_cod') {
       navigation.navigate('POS', { screen: 'Settlements' });
     }

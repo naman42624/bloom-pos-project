@@ -163,12 +163,22 @@ router.get('/', authenticate, async (req, res, next) => {
     const db = await getAsyncDb();
     const { location_id, order_type, payment_status, status, pickup_status, channel, priority, date_from, date_to, filter_date, search, limit: lim, offset: off } = req.query;
 
+    // `open_task_count` is a verbatim copy of the production-task guard in
+    // PUT /:id/status ("Enforce production task completion before marking
+    // 'ready'") — same table, same NOT IN predicate. computeOrderStage() reads
+    // it to decide whether a Mark Ready button is safe to offer, so the two
+    // MUST stay character-identical; if that guard changes, change this too.
+    // Deliberately NOT a comment inside the SQL string below: bindParams() in
+    // database-async.js cannot tell an apostrophe in a SQL comment from a
+    // string boundary and would desync every ? placeholder after it
+    // (see CLAUDE.md, "Known structural debt").
     let sql = `
       SELECT s.*, l.name as location_name, u.name as created_by_name,
              c.name as customer_display_name, c.phone as customer_display_phone,
               snd.name as sender_display_name, snd.phone as sender_display_phone,
               rcv.name as receiver_display_name, rcv.phone as receiver_display_phone,
              COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.sale_id = s.id), 0) as total_paid,
+             (SELECT COUNT(*) FROM production_tasks pt WHERE pt.sale_id = s.id AND pt.status NOT IN ('completed', 'cancelled')) as open_task_count,
              d.status as delivery_status, d.id as delivery_id, d.cod_amount, d.cod_collected,
              dp.name as delivery_partner_name
       FROM sales s
@@ -1274,14 +1284,33 @@ router.get('/:id', authenticate, async (req, res, next) => {
       SELECT status, COUNT(*) as cnt FROM production_tasks WHERE sale_id = ? GROUP BY status
     `).all(req.params.id);
     for (const tc of taskCounts) {
-      sale.production_summary.total_tasks += tc.cnt;
+      // Number() because pg hands COUNT back as a STRING: `0 + "2"` was
+      // producing total_tasks: "02", which SaleDetailScreen rendered
+      // literally as "(0/02)". Found 2026-09-02 while adding open_task_count.
+      sale.production_summary.total_tasks += Number(tc.cnt);
       if (sale.production_summary[tc.status] !== undefined) {
-        sale.production_summary[tc.status] = tc.cnt;
+        sale.production_summary[tc.status] = Number(tc.cnt);
       }
     }
     sale.production_summary.all_done = sale.production_summary.pending === 0 &&
       sale.production_summary.assigned === 0 &&
       sale.production_summary.in_progress === 0;
+    // The SAME number the list route computes as a correlated subquery, and a
+    // verbatim application of the guard in PUT /:id/status: every task whose
+    // status is NOT IN ('completed', 'cancelled'). Folded out of the histogram
+    // above rather than issued as a second query — identical result, one less
+    // round trip on an already query-heavy route.
+    //
+    // Deliberately NOT derived from production_summary.all_done, which is a
+    // paraphrase: it names three statuses (pending/assigned/in_progress) and
+    // would silently under-count if a fourth open status ever existed. The
+    // production_tasks CHECK constraint is dropped and re-added on every boot
+    // (top of this file), so "the constraint guarantees only five statuses" is
+    // not a safe assumption to hang a staff-facing button on.
+    sale.open_task_count = taskCounts.reduce(
+      (n, tc) => (['completed', 'cancelled'].includes(tc.status) ? n : n + Number(tc.cnt)),
+      0
+    );
 
     const [payments, preOrder, refund, delivery] = await Promise.all([
       db.prepare(`

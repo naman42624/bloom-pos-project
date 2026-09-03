@@ -80,12 +80,49 @@ function computeOrderStage(sale, viewerRole) {
     body: { status: 'ready' },
   };
 
+  // ── Mirrors PUT /api/sales/:id/status's production-task guard ──
+  // server/routes/sales.js, "Enforce production task completion before
+  // marking 'ready'". Transcribed, not paraphrased:
+  //
+  //   SELECT COUNT(*) as cnt FROM production_tasks
+  //    WHERE sale_id = ? AND status NOT IN ('completed', 'cancelled')
+  //   -> cnt > 0 returns 400 "Cannot mark as ready — N production task(s)
+  //      still pending."
+  //
+  // Without this, all three `preparing` rungs below handed staff a Mark Ready
+  // button the endpoint was guaranteed to reject — 22 live orders were in that
+  // state when this was found (2026-09-02). Same class of defect, and the same
+  // fix, as the 'ready' rung's balanceDue/deliveryPending checks further down:
+  // this file's header rule is that a nextAction must clear the endpoint's
+  // authorize() list AND its preconditions, not just the former.
+  //
+  // `open_task_count` is that exact COUNT, attached by both callers of this
+  // function — the list route as a correlated subquery, the detail route
+  // folded out of its own per-status task histogram with the identical
+  // NOT IN predicate. If you add a third caller, give it that field too.
+  //
+  // Number() is not optional: pg returns COUNT as a STRING ("2"), the same
+  // trap active_delivery_count hit in Task 14.
+  //
+  // A missing field counts as "not blocking", deliberately matching the
+  // balanceDue / deliveryPending idiom below rather than this file's
+  // fail-closed rule for viewerRole. Fail-closed on absent data would silently
+  // delete a working button from a whole surface if a future caller forgot the
+  // field, which is harder to notice than the loud 400 this fix removes.
+  const openTaskCount = sale.open_task_count != null ? Number(sale.open_task_count) : 0;
+  const tasksUnfinished = openTaskCount > 0;
+  // Resolved ONCE and reused by all three `preparing` rungs below. The rungs
+  // stay written out per ladder like the rest of this file, but the gate has a
+  // single home — applying it to two ladders and forgetting the third is
+  // precisely how the original bug shipped.
+  const markReadyAction = tasksUnfinished ? null : actionFor('SALE_STATUS', viewerRole, markReady);
+
   if (sale.order_type === 'pickup') {
     if (isNew) {
       return { key: 'new', label: 'New', color: STAGE_COLORS.new, nextAction: actionFor('SALE_STATUS', viewerRole, startPreparing) };
     }
     if (sale.status === 'preparing') {
-      return { key: 'preparing', label: 'Preparing', color: STAGE_COLORS.preparing, nextAction: actionFor('SALE_STATUS', viewerRole, markReady) };
+      return { key: 'preparing', label: 'Preparing', color: STAGE_COLORS.preparing, nextAction: markReadyAction };
     }
     if (sale.status === 'ready' || sale.pickup_status === 'ready_for_pickup') {
       const balanceDue = sale.grand_total != null && sale.total_paid != null ? Number(sale.grand_total) - Number(sale.total_paid) > 0.01 : false;
@@ -108,7 +145,7 @@ function computeOrderStage(sale, viewerRole) {
       return { key: 'new', label: 'New', color: STAGE_COLORS.new, nextAction: actionFor('SALE_STATUS', viewerRole, startPreparing) };
     }
     if (sale.status === 'preparing') {
-      return { key: 'preparing', label: 'Preparing', color: STAGE_COLORS.preparing, nextAction: actionFor('SALE_STATUS', viewerRole, markReady) };
+      return { key: 'preparing', label: 'Preparing', color: STAGE_COLORS.preparing, nextAction: markReadyAction };
     }
     if (sale.status === 'ready' && !['picked_up', 'in_transit', 'delivered'].includes(sale.delivery_status)) {
       return { key: 'ready', label: 'Ready', color: STAGE_COLORS.ready, nextAction: null }; // assigning a rider needs the picker — no one-tap here
@@ -134,7 +171,7 @@ function computeOrderStage(sale, viewerRole) {
     return { key: 'new', label: 'New', color: STAGE_COLORS.new, nextAction: actionFor('SALE_STATUS', viewerRole, startPreparing) };
   }
   if (sale.status === 'preparing') {
-    return { key: 'preparing', label: 'Preparing', color: STAGE_COLORS.preparing, nextAction: actionFor('SALE_STATUS', viewerRole, markReady) };
+    return { key: 'preparing', label: 'Preparing', color: STAGE_COLORS.preparing, nextAction: markReadyAction };
   }
   if (sale.status === 'ready') {
     // ── Mirrors PUT /api/sales/:id/status's two completion guards ──

@@ -58,6 +58,38 @@ import StageBadge from '../StageBadge';
 function resolveDeadEnd(order, canManageDeliveries, canTakeMoney) {
   const stageKey = order.display_stage?.key;
 
+  // ── Being prepared, but not markable ready yet ──
+  //
+  // PUT /sales/:id/status refuses 'ready' while the sale has any production
+  // task that is not completed or cancelled, so computeOrderStage() nulls
+  // Mark Ready for exactly that case (server/utils/order-stage.js). Until
+  // 2026-09-02 it did not, and the button was handed out anyway: 22 live
+  // orders answered a tap with a raw 400 telling staff about "production
+  // task(s) still pending". This branch is the other half of that fix — the
+  // null becomes a button that names the blocker in words and opens the order,
+  // where the tasks are listed and can be assigned.
+  //
+  // Number() is load-bearing, not defensive. The two routes serving this field
+  // disagree on its type: GET /sales (this card's source) returns pg's COUNT
+  // verbatim as a STRING, GET /sales/:id returns a real number. `"0"` is
+  // truthy, so a bare truthiness check would block every preparing order,
+  // including the ones whose work is finished.
+  //
+  // No role flag, unlike every other branch here: this routes to the order's
+  // own detail screen — the same place tapping the card already goes — so
+  // there is no destination that could refuse this viewer.
+  if (stageKey === 'preparing') {
+    const openTasks = Number(order.open_task_count || 0);
+    if (openTasks > 0) {
+      return {
+        type: 'route',
+        kind: 'finish_tasks',
+        label: openTasks === 1 ? '1 task to finish' : `${openTasks} tasks to finish`,
+      };
+    }
+    return null;
+  }
+
   // 'ready' and 'ready_for_pickup' share one branch, and it keys on the DATA
   // (is there an open delivery? is money owed?) rather than on order_type.
   // Keying this on order_type was the original bug in this plan and the exact
@@ -303,6 +335,14 @@ export default function OrderCard({
   const canManageDeliveries = ['owner', 'manager', 'counter_staff'].includes(viewerRole);
   const canTakeMoney = ['owner', 'manager', 'employee', 'counter_staff'].includes(viewerRole);
   const deadEnd = nextAction ? null : resolveDeadEnd(order, canManageDeliveries, canTakeMoney);
+  // The 'finish_tasks' button already states what is left ("2 tasks to
+  // finish"), and the meta line's progress form counts the other direction
+  // ("0 of 2 tasks"). Shown together they put two different numbers about one
+  // thing on a card read at counter speed — exactly the kind of step a
+  // first-time user stops to puzzle over (staff-ux-checklist #1 and #10). The
+  // actionable one wins; the passive duplicate is dropped only in that case,
+  // so every other card keeps the progress line it has always had.
+  const showTaskProgress = !!taskProgress && deadEnd?.kind !== 'finish_tasks';
   const contactPhone = order.customer_phone || order.receiver_phone;
   const showSchedule = order.scheduled_date && order.order_type !== 'walk_in';
 
@@ -410,11 +450,11 @@ export default function OrderCard({
         </View>
       )}
 
-      {(showSchedule || taskProgress) && (
+      {(showSchedule || showTaskProgress) && (
         <Text style={styles.metaLine} numberOfLines={1}>
           {[
             showSchedule ? formatCardDateTime(order.scheduled_date, order.scheduled_time, timezone) : null,
-            taskProgress,
+            showTaskProgress ? taskProgress : null,
           ].filter(Boolean).join('  ·  ')}
         </Text>
       )}

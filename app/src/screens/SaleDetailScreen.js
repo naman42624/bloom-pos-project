@@ -955,6 +955,34 @@ export default function SaleDetailScreen({ route, navigation }) {
   const nextAction = sale.display_stage?.nextAction;
   const hasNoInputNextAction = nextAction?.label === 'Confirm Pickup' || nextAction?.label === 'Mark Delivered';
 
+  // ── What stops this order being marked ready ──
+  // PUT /sales/:id/status refuses 'ready' while the sale has any production
+  // task that is not completed or cancelled (server/routes/sales.js), and
+  // computeOrderStage() now nulls its Mark Ready nextAction for that same
+  // reason. This screen already gated its own Mark Ready button, so it never
+  // produced the dead end the dashboard card did — but it gated on
+  // production_summary.all_done, which PARAPHRASES the guard by naming three
+  // statuses (pending/assigned/in_progress). open_task_count is the guard's
+  // own COUNT, so preferring it keeps this screen, the card and the endpoint
+  // on one predicate.
+  //
+  // all_done stays as the fallback for a response that predates the field:
+  // treating an absent count as "blocked" would hide a Mark Ready button that
+  // actually works, which is worse than the paraphrase it replaces.
+  const openTaskCount = sale.open_task_count != null ? Number(sale.open_task_count) : null;
+  const readyBlockedByTasks = openTaskCount != null
+    ? openTaskCount > 0
+    : !sale.production_summary?.all_done;
+  // Word-for-word what the dashboard card shows for the same order
+  // (resolveDeadEnd in app/src/components/orderBoard/OrderCard.js), so the two
+  // surfaces can never describe one order differently. Replaces "Waiting for
+  // Production (0/2)": "Production" is jargon for a first-time user, and the
+  // counts it read from production_summary were arriving from pg as strings,
+  // rendering literally as "(0/02)" (fixed server-side in the same commit).
+  const tasksLeftLabel = openTaskCount == null
+    ? 'Tasks still to finish'
+    : openTaskCount === 1 ? '1 task to finish' : `${openTaskCount} tasks to finish`;
+
   // ── The two things that make PUT /api/sales/:id/status refuse 'completed' ──
   // Mirrors server/routes/sales.js's own guards, which were re-keyed 2026-09-02
   // OFF order_type and ONTO the data: "does this sale have an open delivery
@@ -1549,7 +1577,7 @@ export default function SaleDetailScreen({ route, navigation }) {
       )}
       {sale.status === 'preparing' && (
         <View style={styles.actions}>
-          {sale.production_summary?.all_done ? (
+          {!readyBlockedByTasks ? (
             <TouchableOpacity style={[styles.actionBtn, { backgroundColor: Colors.success, flex: 1 }]} onPress={() => handleStatusTransition('ready', 'Mark Ready')}>
               <Ionicons name="checkmark-circle-outline" size={18} color={Colors.white} />
               <Text style={styles.actionBtnText}>Mark Ready</Text>
@@ -1557,7 +1585,7 @@ export default function SaleDetailScreen({ route, navigation }) {
           ) : (
             <View style={[styles.actionBtn, { backgroundColor: Colors.textLight, flex: 1, opacity: 0.6 }]}>
               <Ionicons name="time-outline" size={18} color={Colors.white} />
-              <Text style={styles.actionBtnText}>Waiting for Production ({sale.production_summary?.completed || 0}/{sale.production_summary?.total_tasks || 0})</Text>
+              <Text style={styles.actionBtnText}>{tasksLeftLabel}</Text>
             </View>
           )}
           {canCancelOrRefund && (
