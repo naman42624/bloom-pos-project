@@ -896,7 +896,7 @@ function DeliverySection({
             <View style={{ flexDirection: 'row', gap: 8, marginHorizontal: 20, marginBottom: 16 }}>
               {isCredit ? (
                 <TouchableOpacity 
-                  style={[styles.actionBtn, { flex: 1, backgroundColor: '#E5E7EB', borderColor: '#D1D5DB', borderWidth: 1 }]} 
+                  style={[styles.actionBtnFull, { flex: 1, backgroundColor: '#E5E7EB', borderColor: '#D1D5DB', borderWidth: 1 }]} 
                   onPress={() => handleConvertPayment('to_cod')}
                   disabled={actionLoading}
                 >
@@ -905,7 +905,7 @@ function DeliverySection({
                 </TouchableOpacity>
               ) : (
                 <TouchableOpacity 
-                  style={[styles.actionBtn, { flex: 1, backgroundColor: '#E5E7EB', borderColor: '#D1D5DB', borderWidth: 1 }]} 
+                  style={[styles.actionBtnFull, { flex: 1, backgroundColor: '#E5E7EB', borderColor: '#D1D5DB', borderWidth: 1 }]} 
                   onPress={() => handleConvertPayment('to_credit')}
                   disabled={actionLoading}
                 >

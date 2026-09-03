@@ -96,10 +96,14 @@ function computeOrderStage(sale, viewerRole) {
   // this file's header rule is that a nextAction must clear the endpoint's
   // authorize() list AND its preconditions, not just the former.
   //
-  // `open_task_count` is that exact COUNT, attached by both callers of this
-  // function — the list route as a correlated subquery, the detail route
-  // folded out of its own per-status task histogram with the identical
-  // NOT IN predicate. If you add a third caller, give it that field too.
+  // `open_task_count` is that exact COUNT, attached by all THREE callers of
+  // this function — sales.js's list route as a correlated subquery, sales.js's
+  // detail route folded out of its own per-status task histogram, and
+  // deliveries.js's GET / as the same correlated subquery, all with the
+  // identical NOT IN predicate. The third caller already existed when this
+  // field was introduced and was missed, so GET /deliveries kept emitting the
+  // dead-end Mark Ready this gate removes (fixed 2026-09-03). If you add a
+  // fourth caller, give it that field too.
   //
   // Number() is not optional: pg returns COUNT as a STRING ("2"), the same
   // trap active_delivery_count hit in Task 14.

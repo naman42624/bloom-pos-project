@@ -144,10 +144,23 @@ router.get('/', authenticate, authorize('owner', 'manager', 'delivery_partner', 
     const db = await getAsyncDb();
     const { location_id, status, delivery_partner_id, date_from, date_to, limit: lim, offset: off } = req.query;
 
+    // `open_task_count` is a verbatim copy of the production-task guard in
+    // PUT /sales/:id/status ("Enforce production task completion before marking
+    // 'ready'") — same table, same NOT IN predicate, and character-identical to
+    // the copy in sales.js's GET / and GET /:id. computeOrderStage() reads it to
+    // decide whether a Mark Ready button is safe to offer; this route is its
+    // THIRD caller and was the one missed when the field was added, so a
+    // 'preparing' delivery with open tasks kept being handed a Mark Ready the
+    // endpoint is guaranteed to reject. All three copies MUST stay identical.
+    // Deliberately NOT a comment inside the SQL string below: bindParams() in
+    // database-async.js cannot tell an apostrophe in a SQL comment from a
+    // string boundary and would desync every ? placeholder after it
+    // (see CLAUDE.md, "Known structural debt").
     let sql = `
       SELECT d.*, s.sale_number, s.grand_total, s.payment_status, s.order_type,
              s.status as order_status, s.pickup_status, s.special_instructions, s.is_credit_sale,
              COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.sale_id = d.sale_id), 0) as total_paid,
+             (SELECT COUNT(*) FROM production_tasks pt WHERE pt.sale_id = s.id AND pt.status NOT IN ('completed', 'cancelled')) as open_task_count,
              u.name as partner_name, u.phone as partner_phone,
              l.name as location_name,
              ab.name as assigned_by_name,
@@ -245,22 +258,32 @@ router.get('/', authenticate, authorize('owner', 'manager', 'delivery_partner', 
     // delivery is cancelled or delivered but which still has a balance), and a
     // null there reads as "nothing due" and emits a one-tap Complete that
     // PUT /sales/:id/status would reject.
-    const withStage = normalized.map((row) => ({
-      ...row,
-      display_stage: computeOrderStage({
-        id: row.sale_id,
-        status: row.order_status,
-        order_type: row.order_type,
-        pickup_status: row.pickup_status,
-        delivery_status: row.status,
-        delivery_id: row.id,
-        grand_total: row.grand_total,
-        total_paid: row.total_paid,
-        is_credit_sale: row.is_credit_sale,
-        cod_amount: row.cod_amount,
-        cod_collected: row.cod_collected,
-      }, req.user.role),
-    }));
+    const withStage = normalized.map((row) => {
+      // Number() is not optional: pg hands COUNT back as a STRING and "0" is
+      // truthy, so an uncoerced "0" would block Mark Ready on every order whose
+      // prep work IS finished — the exact inverse of the bug being fixed.
+      // Coerced once and written back onto the row too, so the field this route
+      // puts on the wire is a real number for any future consumer.
+      const openTaskCount = Number(row.open_task_count || 0);
+      return {
+        ...row,
+        open_task_count: openTaskCount,
+        display_stage: computeOrderStage({
+          id: row.sale_id,
+          status: row.order_status,
+          order_type: row.order_type,
+          pickup_status: row.pickup_status,
+          delivery_status: row.status,
+          delivery_id: row.id,
+          grand_total: row.grand_total,
+          total_paid: row.total_paid,
+          is_credit_sale: row.is_credit_sale,
+          cod_amount: row.cod_amount,
+          cod_collected: row.cod_collected,
+          open_task_count: openTaskCount,
+        }, req.user.role),
+      };
+    });
     res.json({ success: true, data: withStage });
   } catch (err) { next(err); }
 });

@@ -180,7 +180,7 @@ router.get('/', authenticate, async (req, res, next) => {
              COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.sale_id = s.id), 0) as total_paid,
              (SELECT COUNT(*) FROM production_tasks pt WHERE pt.sale_id = s.id AND pt.status NOT IN ('completed', 'cancelled')) as open_task_count,
              d.status as delivery_status, d.id as delivery_id, d.cod_amount, d.cod_collected,
-             dp.name as delivery_partner_name
+             dpart.name as delivery_partner_name
       FROM sales s
       LEFT JOIN locations l ON s.location_id = l.id
       LEFT JOIN users u ON s.created_by = u.id
@@ -188,7 +188,7 @@ router.get('/', authenticate, async (req, res, next) => {
             LEFT JOIN users snd ON s.sender_customer_id = snd.id
             LEFT JOIN users rcv ON s.receiver_customer_id = rcv.id
             LEFT JOIN deliveries d ON d.sale_id = s.id
-            LEFT JOIN users dp ON d.delivery_partner_id = dp.id
+            LEFT JOIN users dpart ON d.delivery_partner_id = dpart.id
       WHERE 1=1
     `;
     const params = [];
@@ -2208,11 +2208,14 @@ router.put(
 // member reads. Never interpolate the raw enum into a staff-facing string —
 // "still 'in_transit'" is developer output, not an instruction. 'delivered'
 // and 'cancelled' are absent on purpose: neither ever blocks anything, so
-// neither is ever rendered here. 'failed' is handled by its own branch below
-// because its recovery is different. Unknown/new values fall back to a safe
-// generic rather than leaking the enum.
+// neither is ever rendered here. 'failed' and 'pending' are handled by their
+// own branches below because their next step is different: the generic
+// sentence this map feeds ends in "Mark the delivery as delivered first",
+// which is a dead end from either of those two — from 'pending' nobody is
+// carrying the order yet, so a rider has to be assigned before it can be
+// delivered at all. Unknown/new values fall back to a safe generic rather
+// than leaking the enum.
 const DELIVERY_STAGE_WORDS = {
-  pending: 'not assigned to a rider yet',
   assigned: 'assigned to a rider',
   picked_up: 'with the rider',
   in_transit: 'on the way',
@@ -2284,7 +2287,15 @@ router.put(
         // assignee that route would have refused: a deleted or made-up id, a
         // customer, a delivery partner. That route neither location-scopes nor
         // checks is_active, so neither does this — being stricter here than the
-        // route we mirror would reject people the task picker still offers.
+        // route we mirror would make the same assignment succeed through one
+        // endpoint and fail through the other, for no stated reason.
+        //
+        // Note the pickers DO filter is_active = 1 (GET
+        // /production/assignable-staff, production.js; GET /auth/staff-roster,
+        // auth.js), so in practice a deactivated person is not offered to
+        // anyone and this gap is unreachable from the UI. That makes adding the
+        // check cheap AND low-value; it is deferred on the consistency argument
+        // above, not on any claim that the pickers would surface such a person.
         // Runs ahead of every write, like the two checks above it.
         const assignee = db.prepare(
           "SELECT id FROM users WHERE id = ? AND role IN ('employee','counter_staff','florist_staff','manager','owner')"
@@ -2361,6 +2372,18 @@ router.put(
             return res.status(400).json({
               success: false,
               message: "Cannot complete — this order's delivery did not go through. Send it out again, or cancel the delivery, then complete the order.",
+            });
+          }
+          // 'pending' means nobody is carrying this order yet, so the generic
+          // sentence below ("Mark the delivery as delivered first") pointed
+          // staff at an action the API refuses from this state — PUT
+          // /deliveries/:id/deliver only accepts 'picked_up'/'in_transit'. Its
+          // real next step is to give the delivery to a rider, so it gets its
+          // own sentence, the same way 'failed' does.
+          if (delivery.status === 'pending') {
+            return res.status(400).json({
+              success: false,
+              message: "Cannot complete — this order's delivery is not assigned to a rider yet. Assign a rider first, then complete the order once it has been delivered.",
             });
           }
           return res.status(400).json({
