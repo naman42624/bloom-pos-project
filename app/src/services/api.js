@@ -860,10 +860,24 @@ class ApiService {
     return this.request(`/deliveries/partners${locationId ? `?location_id=${locationId}` : ''}`);
   }
 
-  // Prep staff (florist_staff + employee) for the "who is preparing this?"
-  // picker. NOT getStaffRoster() — that one is the unauthenticated lock-screen
-  // list and only shows people who have an employee code, which excludes every
-  // one of this shop's `employee`-role prep staff.
+  // Everyone PUT /production/tasks/:id/assign will accept as the target of a
+  // production task: owner, manager, employee, counter_staff, florist_staff.
+  //
+  // READ THIS BEFORE USING IT — the server does NOT pre-filter, and that is
+  // deliberate. Two screens call this and they want different subsets, so the
+  // endpoint keeps one honest meaning ("who may hold a production task",
+  // a fact about the assign route) and returns `role` on every row so each
+  // caller narrows to what belongs on ITS screen. A third caller must do the
+  // same rather than assume this list is already the right one:
+  //   DashboardScreen  -> PREP_ROLES             (employee, florist_staff)
+  //   SaleDetailScreen -> ASSIGNABLE_STAFF_ROLES (+ counter_staff)
+  // Both live in constants/orderDisplay.js. Pushing either subset into the
+  // server would put one screen's editorial choice into a shared contract and
+  // break the other, which is why there is no ?prep_only= parameter.
+  //
+  // NOT getStaffRoster() — that one is the unauthenticated lock-screen list and
+  // only shows people who have an employee code, which excludes every one of
+  // this shop's `employee`-role prep staff (measured, Task 17).
   getAssignableStaff(locationId) {
     return this.request(`/production/assignable-staff${locationId ? `?location_id=${locationId}` : ''}`);
   }

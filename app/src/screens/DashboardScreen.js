@@ -770,17 +770,23 @@ export default function DashboardScreen({ navigation }) {
         // while including the counter staff this picker is meant to leave out.
         // Widening the roster was rejected: it would break that screen's meaning
         // and widen what an unauthenticated caller can enumerate. The new
-        // endpoint is authenticated, returns florist_staff + employee only, and
-        // carries `role` (Task 17) — same narrow-endpoint precedent as
-        // GET /deliveries/partners.
+        // endpoint is authenticated and carries `role` (Task 17) — same
+        // narrow-endpoint precedent as GET /deliveries/partners.
         //
-        // The endpoint returns everyone PUT /production/tasks/:id/assign will
-        // accept — counter staff, managers and the owner included — because
-        // SaleDetailScreen's assign modal must be able to offer all of them.
-        // THIS picker asks a narrower question, so it narrows here rather than
-        // via a query parameter: counter staff can hold a task, but they are
-        // not the ones making the bouquet, and padding a list read at counter
-        // speed with names that are never the answer is its own cost.
+        // It does NOT pre-filter. It returns everyone
+        // PUT /production/tasks/:id/assign will accept — counter staff,
+        // managers and the owner included — because that is the one thing the
+        // server actually knows, and two screens want different subsets of it.
+        // Each narrows to what belongs on its own screen: this picker to
+        // PREP_ROLES, SaleDetailScreen's assign modal to ASSIGNABLE_STAFF_ROLES
+        // (the same three roles it has always offered). So narrowing happens
+        // HERE rather than via a query parameter, which would put this screen's
+        // editorial choice into a shared contract and break the other caller.
+        //
+        // THIS picker asks the narrowest question of the three: counter staff
+        // can hold a task, but they are not the ones making the bouquet, and
+        // padding a list read at counter speed with names that are never the
+        // answer is its own cost.
         //
         // Narrowing happens BEFORE the empty check below, not after. The other
         // order would be a silent dead end: at a location staffed only by

@@ -203,6 +203,12 @@ export default function SaleDetailScreen({ route, navigation }) {
   // SAY it widened, and "showing everyone" above a genuinely empty list would
   // be a lie.
   const [employeesShowingEveryone, setEmployeesShowingEveryone] = useState(false);
+  // True when the staff fetch FAILED, as opposed to succeeding with nobody in
+  // it. Both end with an empty `employees`, and the modal used to tell staff the
+  // same thing either way — "ask the owner to add someone" — which on a dropped
+  // request is a false cause: it sends them to create accounts that already
+  // exist. The two cases now say different things.
+  const [employeesFailed, setEmployeesFailed] = useState(false);
 
   // Pickup Payment Modal
   const [pickupPayModalVisible, setPickupPayModalVisible] = useState(false);
@@ -678,6 +684,7 @@ export default function SaleDetailScreen({ route, navigation }) {
     setLoadingEmployees(true);
     setAssignModalVisible(true);
     setEmployeesShowingEveryone(false);
+    setEmployeesFailed(false);
     try {
       // GET /production/assignable-staff. NOT GET /users, which is
       // owner/manager-only because it lists the whole account directory,
@@ -736,6 +743,10 @@ export default function SaleDetailScreen({ route, navigation }) {
     } catch (err) {
       console.log('Failed to fetch employees:', err);
       setEmployees([]);
+      // Recorded, not asserted: an empty list after a failed request means we
+      // do not know who is assignable, which is a different thing from knowing
+      // there is nobody.
+      setEmployeesFailed(true);
     } finally {
       setLoadingEmployees(false);
     }
@@ -1932,6 +1943,23 @@ export default function SaleDetailScreen({ route, navigation }) {
             )}
             {loadingEmployees ? (
               <ActivityIndicator color={Colors.primary} size="large" style={{ padding: 20 }} />
+            ) : employeesFailed ? (
+              // Never claim a cause we have not established. The request
+              // failed, so we do not know whether anyone is assignable — say
+              // that, and make "try again" something they can actually tap
+              // rather than an instruction to close and start over.
+              <View style={{ padding: 20, alignItems: 'center' }}>
+                <Text style={{ color: Colors.textLight, textAlign: 'center', marginBottom: Spacing.md }}>
+                  Could not load the staff list.
+                </Text>
+                <TouchableOpacity
+                  style={{ minHeight: 44, paddingHorizontal: Spacing.lg, justifyContent: 'center', borderRadius: BorderRadius.md, backgroundColor: Colors.primary }}
+                  activeOpacity={0.7}
+                  onPress={() => openAssignModal(assignTaskId)}
+                >
+                  <Text style={{ color: '#fff', fontSize: FontSize.md, fontWeight: '700' }}>Try Again</Text>
+                </TouchableOpacity>
+              </View>
             ) : employees.length === 0 ? (
               <Text style={{ color: Colors.textLight, textAlign: 'center', padding: 20 }}>
                 No staff to assign yet. Ask the owner to add someone.
