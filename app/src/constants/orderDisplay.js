@@ -92,6 +92,22 @@ export const STAFF_ROLE_LABELS = {
 // counter speed is not padded with names that are never the answer.
 export const PREP_ROLES = ['employee', 'florist_staff'];
 
+// The roles SaleDetailScreen's task-assign modal offers. Three tiers exist and
+// they are deliberately different sizes, so read them together:
+//
+//   server accepts        owner, manager, employee, counter_staff, florist_staff
+//   offered on SaleDetail        employee, counter_staff, florist_staff   <- this
+//   offered on Dashboard         employee, florist_staff                  <- PREP_ROLES
+//
+// This tier is exactly the three roles GET /auth/staff-roster returned before
+// Task 17 — the set this screen has always offered — with the `employee_code`
+// filter that was silently dropping the real prep staff removed, and nothing
+// else changed. Manager and owner ARE assignable server-side, and are left out
+// on purpose: making the owner assignable is a product decision nobody has
+// asked for, and every name that is not the answer costs something in a list
+// read at counter speed. Widening this is a deliberate change, not a cleanup.
+export const ASSIGNABLE_STAFF_ROLES = ['employee', 'counter_staff', 'florist_staff'];
+
 export const FONT_FAMILY = typeof navigator !== 'undefined' && navigator.product === 'ReactNative'
   ? undefined
   : 'Inter, Geist, system-ui';

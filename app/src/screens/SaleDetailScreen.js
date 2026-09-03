@@ -17,7 +17,7 @@ import ImageModal from '../components/ImageModal';
 import VoiceNoteRecorder from '../components/VoiceNoteRecorder';
 import AttachmentVoiceRow from '../components/AttachmentVoiceRow';
 import StageBadge from '../components/StageBadge';
-import { formatMoney, STAFF_ROLE_LABELS } from '../constants/orderDisplay';
+import { formatMoney, STAFF_ROLE_LABELS, ASSIGNABLE_STAFF_ROLES } from '../constants/orderDisplay';
 
 // Duplicated locally (rather than imported from OrdersInboxScreen) to avoid
 // coupling this detail screen's import graph to an inbox screen.
@@ -734,14 +734,34 @@ export default function SaleDetailScreen({ route, navigation }) {
       // no PIN login — and on live data that silently excluded all four of this
       // shop's `employee` accounts, the exact people who do the prep work.
       //
-      // The list this returns is deliberately the SAME set of roles
-      // PUT /production/tasks/:id/assign accepts as a target, unfiltered. This
-      // modal assigns a specific production task, and a counter staffer — or a
-      // manager, or the owner — can legitimately hold one, so narrowing here
-      // the way the dashboard picker does would take away an ability someone
-      // has today. Exactly the assignable people, no more and no fewer.
+      // The endpoint returns everyone PUT /production/tasks/:id/assign accepts,
+      // which is FIVE roles — it stays honest about what the server will take.
+      // This screen offers THREE of them, and the difference is on purpose:
+      //
+      // `manager` and `owner` are genuinely assignable server-side (verified
+      // live: both return 200 from the assign route). They are left out anyway.
+      // The defect Task 17 fixed was people MISSING from this list — the
+      // `employee_code` filter on the old staff-roster call was dropping the
+      // shop's actual prep staff — not roles being absent by design. These three
+      // are exactly what this modal has always offered; restoring them fixes the
+      // bug completely. Making the owner assignable is a separate product
+      // decision nobody has asked for, and a picker read at counter speed gets
+      // worse with every name that is not the answer.
+      //
+      // So: do NOT "fix" this apparent inconsistency by widening it to five.
+      // That is a deliberate change, and this comment is the reason it has not
+      // happened yet. (The dashboard picker narrows further still, to
+      // PREP_ROLES — counter staff can hold a task but do not make bouquets.)
+      //
+      // Filtering happens BEFORE the empty check below, never after. The other
+      // order is a silent dead end: at a location staffed only by managers the
+      // scoped call returns people, the fallback never fires, and the modal
+      // renders an empty list with nothing explaining why. That is not
+      // hypothetical — it is exactly what Test Loc looked like one commit ago.
+      const onlyStaff = (rows) =>
+        (Array.isArray(rows) ? rows : []).filter((p) => ASSIGNABLE_STAFF_ROLES.includes(p.role));
       const res = await api.getAssignableStaff(sale.location_id);
-      let list = Array.isArray(res?.staff) ? res.staff : [];
+      let list = onlyStaff(res?.staff);
       // Same empty-scoped-list fallback the dashboard pickers use, for the same
       // reason: the location filter is a convenience, not a rule — the assign
       // endpoint itself accepts any active staff account regardless of
@@ -751,7 +771,7 @@ export default function SaleDetailScreen({ route, navigation }) {
       // returned people, and surfaced in the modal rather than applied quietly.
       if (list.length === 0 && sale.location_id) {
         const all = await api.getAssignableStaff();
-        const allList = Array.isArray(all?.staff) ? all.staff : [];
+        const allList = onlyStaff(all?.staff);
         if (allList.length > 0) {
           list = allList;
           setEmployeesShowingEveryone(true);
