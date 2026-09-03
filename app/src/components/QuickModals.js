@@ -14,7 +14,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -29,6 +28,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import api from '../services/api';
+import { showAlert, showConfirm } from '../utils/alert';
 import { Colors } from '../constants/theme';
 import { generateDeliverySlip, generatePickupSlip } from '../utils/printHelpers';
 import StageBadge from './StageBadge';
@@ -280,7 +280,7 @@ export function OrderQuickModal({
       onClose();
     } catch (err) {
       const msg = err?.message || 'Could not update this order. Please try again.';
-      Platform.OS === 'web' ? window.alert(msg) : Alert.alert('Error', msg);
+      showAlert('Error', msg);
     } finally {
       setActionLoading(false);
     }
@@ -348,7 +348,7 @@ export function OrderQuickModal({
       onRefresh?.();
     } catch (err) {
       const msg = err?.message || 'Failed to assign';
-      Platform.OS === 'web' ? window.alert(msg) : Alert.alert('Error', msg);
+      showAlert('Error', msg);
     } finally {
       setTaskLoading((p) => ({ ...p, [taskId]: false }));
     }
@@ -362,7 +362,7 @@ export function OrderQuickModal({
       onRefresh?.();
     } catch (err) {
       const msg = err?.message || 'Failed to start';
-      Platform.OS === 'web' ? window.alert(msg) : Alert.alert('Error', msg);
+      showAlert('Error', msg);
     } finally {
       setTaskLoading((p) => ({ ...p, [taskId]: false }));
     }
@@ -378,7 +378,7 @@ export function OrderQuickModal({
         onRefresh?.();
       } catch (err) {
         const msg = err?.message || 'Failed to complete';
-        Platform.OS === 'web' ? window.alert(msg) : Alert.alert('Error', msg);
+        showAlert('Error', msg);
       } finally {
         setTaskLoading((p) => ({ ...p, [taskId]: false }));
       }
@@ -711,7 +711,7 @@ function DeliverySection({
       setShowFailForm(false);
     } catch (err) {
       const msg = err?.message || 'Action failed';
-      Platform.OS === 'web' ? window.alert(msg) : Alert.alert('Error', msg);
+      showAlert('Error', msg);
     } finally {
       setActionLoading(false);
     }
@@ -739,7 +739,7 @@ function DeliverySection({
       setShowAssign(false);
       await onRefresh?.();
     } catch (err) {
-      Alert.alert('Error', err?.message || 'Failed to assign partner');
+      showAlert('Error', err?.message || 'Failed to assign partner');
     } finally {
       setActionLoading(false);
     }
@@ -751,7 +751,7 @@ function DeliverySection({
       const amt = parseFloat(codAmount);
       if (isNaN(amt) || amt < 0) {
         const msg = 'Enter a valid COD amount';
-        Platform.OS === 'web' ? window.alert(msg) : Alert.alert('Error', msg);
+        showAlert('Error', msg);
         return;
       }
       data.cod_collected = amt;
@@ -763,7 +763,7 @@ function DeliverySection({
   const handleFail = () => {
     if (!failReason.trim()) {
       const msg = 'Please enter a reason for failure';
-      Platform.OS === 'web' ? window.alert(msg) : Alert.alert('Error', msg);
+      showAlert('Error', msg);
       return;
     }
     doAction('fail', { failure_reason: failReason.trim() });
@@ -784,7 +784,7 @@ function DeliverySection({
         if (onRefresh) await onRefresh();
       } catch (err) {
         const errorMsg = err.response?.data?.message || err.message || 'Failed to convert payment';
-        Platform.OS === 'web' ? window.alert(errorMsg) : Alert.alert('Error', errorMsg);
+        showAlert('Error', errorMsg);
       } finally {
         setActionLoading(false);
       }
@@ -1060,10 +1060,12 @@ function DeliverySection({
                   <TouchableOpacity
                     style={[styles.actionBtnFull, { backgroundColor: '#0EA5E9' }]}
                     onPress={() => {
-                      Alert.alert('Reattempt', 'Reset to assigned for another attempt?', [
-                        { text: 'Cancel', style: 'cancel' },
-                        { text: 'Reattempt', onPress: () => doAction('reattempt') },
-                      ]);
+                      showConfirm(
+                        'Reattempt',
+                        'Reset to assigned for another attempt?',
+                        () => doAction('reattempt'),
+                        { confirmLabel: 'Reattempt' },
+                      );
                     }}
                     disabled={actionLoading}
                   >

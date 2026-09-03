@@ -1,6 +1,7 @@
 import React, { useCallback, useMemo, useState } from 'react';
-import { Alert, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import api from '../../services/api';
+import { showAlert } from '../../utils/alert';
 import { Colors } from '../../constants/theme';
 import { FONT_FAMILY } from '../../constants/orderDisplay';
 import { STAGE_COLUMNS, TYPE_FILTERS, columnKeyForStage, isClosedStage } from '../../constants/orderStages';
@@ -92,7 +93,7 @@ export default function OrderKanbanBoard({
       // The backend's guard messages are already plain language
       // (server/routes/sales.js) — pass them straight through rather than
       // wrapping them in something more technical.
-      Alert.alert('Order Update', err?.message || 'Unable to update this order.');
+      showAlert('Order Update', err?.message || 'Unable to update this order.');
     }
 
     // Refresh deliberately OUTSIDE that try/catch. If the advance succeeded but

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useLayoutEffect, useCallback } from 'react';
 
 import {
-  View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, Platform, ActivityIndicator, Modal, TextInput, KeyboardAvoidingView,
+  View, Text, StyleSheet, ScrollView, TouchableOpacity, Platform, ActivityIndicator, Modal, TextInput, KeyboardAvoidingView,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
@@ -9,6 +9,7 @@ import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import * as ImagePicker from 'expo-image-picker';
 import api from '../services/api';
+import { showAlert, showConfirm } from '../utils/alert';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import { formatDateTime, formatCardDateTime, isToday } from '../utils/datetime';
@@ -304,7 +305,7 @@ export default function SaleDetailScreen({ route, navigation }) {
     try {
       const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (status !== 'granted') {
-        Alert.alert('Permission Required', 'Please allow access to your photo library.');
+        showAlert('Permission Required', 'Please allow access to your photo library.');
         return;
       }
       const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.6 });
@@ -313,7 +314,7 @@ export default function SaleDetailScreen({ route, navigation }) {
       await api.uploadSaleAttachment(saleId, result.assets[0].uri, 'photo');
       await refreshAttachments();
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to upload photo');
+      showAlert('Error', err.message || 'Failed to upload photo');
     } finally {
       setUploadingAttachment(false);
     }
@@ -325,7 +326,7 @@ export default function SaleDetailScreen({ route, navigation }) {
       await api.uploadSaleAttachment(saleId, uri, 'voice_note', durationSeconds);
       await refreshAttachments();
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to upload voice note');
+      showAlert('Error', err.message || 'Failed to upload voice note');
     } finally {
       setUploadingAttachment(false);
     }
@@ -363,7 +364,7 @@ export default function SaleDetailScreen({ route, navigation }) {
       await api.updateSale(saleId, payload);
       setEditModalVisible(false);
       fetchSale();
-      Alert.alert('Success', 'Sale updated successfully.');
+      showAlert('Success', 'Sale updated successfully.');
     } catch (err) {
       setEditError(err.message || 'Failed to update sale');
     } finally {
@@ -375,8 +376,7 @@ export default function SaleDetailScreen({ route, navigation }) {
     if (itemEditBlockReason) {
       // Not editable right now — explain why in plain language rather than
       // opening an editor that will just fail on save.
-      if (Platform.OS === 'web') window.alert(itemEditBlockReason);
-      else Alert.alert('Cannot Edit Item', itemEditBlockReason);
+      showAlert('Cannot Edit Item', itemEditBlockReason);
       return;
     }
     setEditingItem(item);
@@ -431,14 +431,12 @@ export default function SaleDetailScreen({ route, navigation }) {
 
     if (unrefundedBalance > 0.01) {
       const message = `This order was paid ₹${unrefundedBalance.toFixed(2)}. Cancelling won't return that money on its own — refund the customer first, then cancel.`;
-      if (Platform.OS === 'web') {
-        if (window.confirm(`${message}\n\nOpen the refund screen now?`)) goToRefund();
-      } else {
-        Alert.alert('Refund needed first', message, [
-          { text: 'Not now', style: 'cancel' },
-          { text: 'Refund now', onPress: goToRefund },
-        ]);
-      }
+      showConfirm(
+        'Refund needed first',
+        `${message}\n\nOpen the refund screen now?`,
+        goToRefund,
+        { confirmLabel: 'Refund now', cancelLabel: 'Not now' },
+      );
       return;
     }
 
@@ -446,19 +444,16 @@ export default function SaleDetailScreen({ route, navigation }) {
       try {
         await api.cancelSale(saleId);
         fetchSale();
-        Alert.alert('Cancelled', 'Sale has been cancelled');
+        showAlert('Cancelled', 'Sale has been cancelled');
       } catch (err) {
-        Alert.alert('Error', err.message || 'Failed to cancel');
+        showAlert('Error', err.message || 'Failed to cancel');
       }
     };
-    if (Platform.OS === 'web') {
-      if (window.confirm('Cancel this sale?')) doCancel();
-    } else {
-      Alert.alert('Cancel Sale', 'Are you sure?', [
-        { text: 'No', style: 'cancel' },
-        { text: 'Yes, cancel', style: 'destructive', onPress: doCancel },
-      ]);
-    }
+    showConfirm('Cancel Sale', 'Are you sure?', doCancel, {
+      confirmLabel: 'Yes, cancel',
+      cancelLabel: 'No',
+      destructive: true,
+    });
   };
 
   const handleRefund = () => {
@@ -490,7 +485,7 @@ export default function SaleDetailScreen({ route, navigation }) {
       const msg = sale.delivery?.status === 'failed'
         ? "This order's delivery did not go through. Send it out again, or cancel the delivery, then finish the order."
         : 'This order cannot be finished until the delivery is done. Tap Delivery Status above, then mark it delivered.';
-      Platform.OS === 'web' ? window.alert(msg) : Alert.alert('Cannot Complete', msg);
+      showAlert('Cannot Complete', msg);
       return;
     }
 
@@ -499,7 +494,7 @@ export default function SaleDetailScreen({ route, navigation }) {
       const incompleteTasks = sale.production_tasks.filter(t => !['completed', 'cancelled'].includes(t.status));
       if (incompleteTasks.length > 0) {
         const msg = `Cannot complete this order — ${incompleteTasks.length} production task(s) are still ${incompleteTasks.map(t => t.status).join(', ')}. Please complete or cancel all tasks first.`;
-        Platform.OS === 'web' ? window.alert(msg) : Alert.alert('Cannot Complete', msg);
+        showAlert('Cannot Complete', msg);
         return;
       }
     }
@@ -533,24 +528,16 @@ export default function SaleDetailScreen({ route, navigation }) {
         }
         fetchSale();
       } catch (err) {
-        if (Platform.OS === 'web') {
-          window.alert('Error: ' + (err.message || 'Failed to update status'));
-        } else {
-          Alert.alert('Error', err.message || 'Failed to update status');
-        }
+        showAlert('Error', err.message || 'Failed to update status');
       }
     };
 
-    if (Platform.OS === 'web') {
-      setTimeout(() => {
-        if (window.confirm(msg)) onConfirm();
-      }, 50);
-    } else {
-      Alert.alert(label, msg, [
-        { text: 'Cancel', style: 'cancel' },
-        { text: label, onPress: onConfirm },
-      ]);
-    }
+    // The 50ms defer is web-only and pre-existing, kept as-is: window.confirm
+    // blocks synchronously, and firing it straight out of the tap handler ate
+    // the press. Native has never needed it.
+    const ask = () => showConfirm(label, msg, onConfirm, { confirmLabel: label });
+    if (Platform.OS === 'web') setTimeout(ask, 50);
+    else ask();
   };
 
   // One-tap dispatch for sale.display_stage.nextAction (server/utils/order-stage.js)
@@ -570,27 +557,9 @@ export default function SaleDetailScreen({ route, navigation }) {
       fetchSale();
     } catch (err) {
       const msg = err.message || 'Unable to update this order.';
-      if (Platform.OS === 'web') {
-        window.alert('Error: ' + msg);
-      } else {
-        Alert.alert('Order Update', msg);
-      }
+      showAlert('Order Update', msg);
     } finally {
       setQuickActionLoading(false);
-    }
-  };
-
-  // react-native-web's Alert is a literal no-op (its Alert.alert() body is
-  // empty — node_modules/react-native-web/dist/exports/Alert/index.js), and the
-  // counter runs this app on web. Every message on the take-the-money path has
-  // to be SEEN, especially "the payment went through but the order didn't", so
-  // it goes through the same Platform check the rest of this file already uses
-  // (e.g. :476, :485) rather than a bare Alert.alert that vanishes on web.
-  const notify = (title, message) => {
-    if (Platform.OS === 'web') {
-      window.alert(title + ': ' + message);
-    } else {
-      Alert.alert(title, message);
     }
   };
 
@@ -600,7 +569,7 @@ export default function SaleDetailScreen({ route, navigation }) {
     const totalReduction = totalPayments + woAmount;
 
     if (totalReduction <= 0) {
-      notify('Invalid', 'Please enter a valid payment amount.');
+      showAlert('Invalid', 'Please enter a valid payment amount.');
       return;
     }
 
@@ -626,7 +595,7 @@ export default function SaleDetailScreen({ route, navigation }) {
       } catch (err) {
         // Nothing was taken. Retrying really is the right instruction here, and
         // the modal stays open with the amounts intact so it is one tap away.
-        notify('Error', err.message || 'Could not record the payment. Please try again.');
+        showAlert('Error', err.message || 'Could not record the payment. Please try again.');
         return;
       }
 
@@ -659,7 +628,7 @@ export default function SaleDetailScreen({ route, navigation }) {
           setPickupPayModalVisible(false);
           await fetchSale();
           const why = err?.message ? ' ' + err.message : '';
-          notify('Payment recorded', 'The payment is saved — do not collect it again. The order was not finished.' + why);
+          showAlert('Payment recorded', 'The payment is saved — do not collect it again. The order was not finished.' + why);
           return;
         }
       }
@@ -668,7 +637,7 @@ export default function SaleDetailScreen({ route, navigation }) {
       // Awaited, not fire-and-forget: the next action has to be on screen the
       // moment the modal closes, with no manual pull-to-refresh.
       await fetchSale();
-      notify('Success', completed ? 'Payment recorded and order completed.' : 'Payment recorded.');
+      showAlert('Success', completed ? 'Payment recorded and order completed.' : 'Payment recorded.');
     } finally {
       setConfirmingPickup(false);
     }
@@ -680,30 +649,16 @@ export default function SaleDetailScreen({ route, navigation }) {
       try {
         await api.fulfillFromStock(saleId, saleItemId);
         fetchSale();
-        if (Platform.OS === 'web') {
-          window.alert(`"${productName}" fulfilled from stock`);
-        } else {
-          Alert.alert('Done', `"${productName}" fulfilled from stock`);
-        }
+        showAlert('Done', `"${productName}" fulfilled from stock`);
       } catch (err) {
-        if (Platform.OS === 'web') {
-          window.alert('Error: ' + (err.message || 'Failed to fulfill from stock'));
-        } else {
-          Alert.alert('Error', err.message || 'Failed to fulfill from stock');
-        }
+        showAlert('Error', err.message || 'Failed to fulfill from stock');
       }
     };
 
-    if (Platform.OS === 'web') {
-      setTimeout(() => {
-        if (window.confirm(msg)) onConfirm();
-      }, 50);
-    } else {
-      Alert.alert('Fulfill from Stock', msg, [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Fulfill', onPress: onConfirm },
-      ]);
-    }
+    // Web-only 50ms defer, pre-existing — see handleStatusTransition.
+    const ask = () => showConfirm('Fulfill from Stock', msg, onConfirm, { confirmLabel: 'Fulfill' });
+    if (Platform.OS === 'web') setTimeout(ask, 50);
+    else ask();
   };
 
   // Production task actions
@@ -714,7 +669,7 @@ export default function SaleDetailScreen({ route, navigation }) {
       else if (action === 'complete') await api.completeTask(taskId);
       fetchSale();
     } catch (err) {
-      Alert.alert('Error', err.message || `Failed to ${label}`);
+      showAlert('Error', err.message || `Failed to ${label}`);
     }
   };
 
@@ -792,7 +747,7 @@ export default function SaleDetailScreen({ route, navigation }) {
       setAssignModalVisible(false);
       fetchSale();
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to assign');
+      showAlert('Error', err.message || 'Failed to assign');
     }
   };
 
@@ -825,15 +780,15 @@ export default function SaleDetailScreen({ route, navigation }) {
       const data = { new_order_type: convertTarget };
       if (convertTarget === 'delivery') {
         if (!convertAddress?.trim()) {
-          Alert.alert('Required', 'Delivery address is required');
+          showAlert('Required', 'Delivery address is required');
           return;
         }
         if (!convertSenderName?.trim() || !convertSenderPhone?.trim()) {
-          Alert.alert('Required', 'Sender name and phone are required');
+          showAlert('Required', 'Sender name and phone are required');
           return;
         }
         if (!convertSenderSameAsReceiver && (!convertReceiverName?.trim() || !convertReceiverPhone?.trim())) {
-          Alert.alert('Required', 'Receiver name and phone are required');
+          showAlert('Required', 'Receiver name and phone are required');
           return;
         }
 
@@ -853,9 +808,9 @@ export default function SaleDetailScreen({ route, navigation }) {
       await api.convertOrderType(saleId, data);
       setConvertModalVisible(false);
       fetchSale();
-      Alert.alert('Done', `Order converted to ${convertTarget}`);
+      showAlert('Done', `Order converted to ${convertTarget}`);
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to convert');
+      showAlert('Error', err.message || 'Failed to convert');
     }
   };
 
@@ -964,7 +919,7 @@ export default function SaleDetailScreen({ route, navigation }) {
       const { uri } = await Print.printToFileAsync({ html: receiptHtml, width: 300 });
       await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: `Receipt ${sale.sale_number}` });
     } catch (err) {
-      Alert.alert('Error', 'Could not generate receipt');
+      showAlert('Error', 'Could not generate receipt');
     }
   };
 

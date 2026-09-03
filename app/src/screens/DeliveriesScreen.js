@@ -1,9 +1,10 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { View, Text, SectionList, TouchableOpacity, StyleSheet, TextInput, Alert, Platform, Modal, ScrollView } from 'react-native';
+import { View, Text, SectionList, TouchableOpacity, StyleSheet, TextInput, Modal, ScrollView } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
+import { showAlert } from '../utils/alert';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import {
   parseServerDate, formatDateTime, formatShopDateLabel,
@@ -172,7 +173,7 @@ export default function DeliveriesScreen({ navigation }) {
           delivery_partner_id: partnerId,
         });
         const msg = res.message || `Assigned ${selectedIds.size} deliveries`;
-        Platform.OS === 'web' ? window.alert(msg) : Alert.alert('Success', msg);
+        showAlert('Success', msg);
         setSelectedIds(new Set());
         setBatchMode(false);
       } else {
@@ -182,7 +183,7 @@ export default function DeliveriesScreen({ navigation }) {
       fetchDeliveries();
     } catch (err) {
       const msg = err.message || 'Failed to assign';
-      Platform.OS === 'web' ? window.alert(msg) : Alert.alert('Error', msg);
+      showAlert('Error', msg);
     }
   };
 
@@ -203,7 +204,7 @@ export default function DeliveriesScreen({ navigation }) {
     const ids = idsOverride && idsOverride.size > 0 ? idsOverride : selectedIds;
     if (ids.size === 0) {
       const msg = 'Select at least one delivery';
-      Platform.OS === 'web' ? window.alert(msg) : Alert.alert('Info', msg);
+      showAlert('Info', msg);
       return;
     }
     setBatchMode(true);
@@ -250,7 +251,7 @@ export default function DeliveriesScreen({ navigation }) {
       const msg = laterCount > 0
         ? `Nothing due today on this route — the ${laterCount} delivery(s) left here are scheduled for a later date. Long-press one to assign it early.`
         : 'Nothing to assign in this route — every delivery here is already picked up, delivered, or cancelled.';
-      Platform.OS === 'web' ? window.alert(msg) : Alert.alert('Info', msg);
+      showAlert('Info', msg);
       return;
     }
     openBatchAssignModal(ids);

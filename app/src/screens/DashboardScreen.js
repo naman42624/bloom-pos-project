@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Modal,
   RefreshControl,
   ScrollView,
@@ -11,13 +10,13 @@ import {
   View,
   Image,
   Linking,
-  Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '../context/AuthContext';
 import useBreakpoint from '../hooks/useBreakpoint';
 import api from '../services/api';
+import { showAlert } from '../utils/alert';
 import { Colors, FontSize, Spacing } from '../constants/theme';
 import { parseServerDate, getShopNow, getShopTodayStr, DEFAULT_TZ, formatTimeString } from '../utils/datetime';
 import { OrderQuickModal } from '../components/QuickModals';
@@ -42,25 +41,6 @@ import {
   STAFF_ROLE_LABELS,
   PREP_ROLES,
 } from '../constants/orderDisplay';
-
-/**
- * Show a message the user will actually see.
- *
- * react-native-web's Alert is literally `class Alert { static alert() {} }` —
- * a no-op — and the shop runs this in a browser, so a bare Alert.alert here
- * would swallow the backend's error silently. Task 16 adds a shared
- * app/src/utils/alert.js and converts every call site (including this file's
- * pre-existing bare Alert.alert calls); until it lands, new messages added by
- * Task 14 go through this local branch. Same (title, message) signature as
- * Alert.alert so that conversion is a one-line swap for an import.
- */
-function showMessage(title, message) {
-  if (Platform.OS === 'web') {
-    if (typeof window !== 'undefined' && window.alert) window.alert(`${title}\n\n${message}`);
-    return;
-  }
-  Alert.alert(title, message);
-}
 
 function RegisterCard({ item, onPress }) {
   const { locationName, isOpen, register } = item;
@@ -537,7 +517,7 @@ export default function DashboardScreen({ navigation }) {
         setRegisters([]);
       }
     } catch (err) {
-      Alert.alert('Dashboard', err?.message || 'Failed to load dashboard data.');
+      showAlert('Dashboard', err?.message || 'Failed to load dashboard data.');
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -611,7 +591,7 @@ export default function DashboardScreen({ navigation }) {
       setSelectedTaskModal(null);
       await fetchDashboard();
     } catch (err) {
-      Alert.alert('Task Update', err?.message || 'Unable to update task status.');
+      showAlert('Task Update', err?.message || 'Unable to update task status.');
     } finally {
       setTaskActionLoading((prev) => ({ ...prev, [task.id]: false }));
     }
@@ -715,7 +695,7 @@ export default function DashboardScreen({ navigation }) {
         // already walked away from.
         if (riderReqRef.current !== reqId) return;
         setRiderPicker(null);
-        showMessage('Riders', err?.message || 'Could not load the rider list. Please try again.');
+        showAlert('Riders', err?.message || 'Could not load the rider list. Please try again.');
       }
       return;
     }
@@ -758,7 +738,7 @@ export default function DashboardScreen({ navigation }) {
           try {
             await api.advanceOrder(nextAction, step.kind === 'self' ? { assigned_to: step.assignedTo } : undefined);
           } catch (err) {
-            showMessage('Start Preparing', err?.message || 'Could not start this order. Please try again.');
+            showAlert('Start Preparing', err?.message || 'Could not start this order. Please try again.');
             return;
           }
           await fetchDashboard();
@@ -772,7 +752,7 @@ export default function DashboardScreen({ navigation }) {
       if (!locId) {
         // Defensive only — every sale carries a location. Send them somewhere
         // real rather than opening an empty picker.
-        showMessage('Assign', 'Could not tell which shop this order belongs to. Open the order to assign someone.');
+        showAlert('Assign', 'Could not tell which shop this order belongs to. Open the order to assign someone.');
         navigation.navigate('SaleDetail', { saleId: order.id });
         return;
       }
@@ -858,7 +838,7 @@ export default function DashboardScreen({ navigation }) {
         // already walked away from.
         if (preparerReqRef.current !== reqId) return;
         setPreparerPicker(null);
-        showMessage('Staff', err?.message || 'Could not load the staff list. Please try again.');
+        showAlert('Staff', err?.message || 'Could not load the staff list. Please try again.');
       }
       return;
     }
@@ -910,7 +890,7 @@ export default function DashboardScreen({ navigation }) {
       // behind a modal on web.
       if (riderReqRef.current !== reqId) return;
       setRiderPicker(null);
-      showMessage('Assign Rider', err?.message || 'Could not assign this rider. Please try again.');
+      showAlert('Assign Rider', err?.message || 'Could not assign this rider. Please try again.');
     }
   }, [riderPicker, fetchDashboard]);
 
@@ -992,7 +972,7 @@ export default function DashboardScreen({ navigation }) {
       }
       // Picker closes first so the message is not stuck behind a modal on web.
       setPreparerPicker(null);
-      showMessage('Assign', err?.message || 'Could not assign this person. Please try again.');
+      showAlert('Assign', err?.message || 'Could not assign this person. Please try again.');
       // A multi-task assign can fail halfway. Refresh so the card shows what
       // actually landed rather than what it looked like before the tap.
       if (wrote) { try { await fetchDashboard(); } catch (e) { /* see above */ } }
@@ -1021,7 +1001,7 @@ export default function DashboardScreen({ navigation }) {
     } catch (err) {
       if (preparerReqRef.current !== reqId) return;
       setPreparerPicker(null);
-      showMessage('Start Preparing', err?.message || 'Could not start this order. Please try again.');
+      showAlert('Start Preparing', err?.message || 'Could not start this order. Please try again.');
     }
   }, [preparerPicker, fetchDashboard]);
 
