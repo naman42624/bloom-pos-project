@@ -36,73 +36,105 @@ Key files this work created/changed:
 
 ## 2. THE NEW WORK — three issues the shop owner reported after using it
 
+**All three were investigated to root cause before this handoff. Findings are confirmed live.
+The full evidence is in `INVESTIGATION_FINDINGS.md` (repo root) — read it, it saves you the work.**
+
 ### Issue 1 — owner/manager dashboard shows no orders; counter dashboard shows many
 
-**ROOT CAUSE ESTABLISHED (evidence below). Both causes predate this branch — verified against
-`de08e17`.**
+**CONFIRMED live through the real API at both locations. Cause predates this branch (verified
+against `de08e17`).**
 
 The two role branches of `fetchDashboard` in `app/src/screens/DashboardScreen.js` fetch
 differently:
 
-- **counter_staff** (`:330-350`): four separate `api.getSales({status})` calls —
-  `pending`, `confirmed`, `preparing`, `ready` — each `limit: 30`, scoped to
-  `location_id: activeLocation?.id`, **with no date filter**.
-- **owner/manager** (`:388-406`): one `api.getSales({...filters, limit: 500})` where `filters`
-  includes **`filter_date`** derived from `dateScope`, which `useState(new Date())` defaults to
-  **today** (`:222`, `:399-402`).
+- **counter_staff** (`~:330-350`): four `api.getSales({status})` calls — `pending`, `confirmed`,
+  `preparing`, `ready` — each `limit: 30`, scoped to `activeLocation?.id`, **no date filter**.
+- **owner/manager** (`~:388-406`): one `api.getSales({...filters, limit: 500})` where
+  `filters.filter_date` comes from `dateScope`, which defaults to **today** (`:222`, `:399-402`).
 
-Server-side, `filter_date` means (from `server/routes/sales.js`):
+Server-side, `filter_date` means:
 `scheduled_date = <date> OR (scheduled_date IS NULL AND created_at within that day)`.
 
-**Live evidence gathered 2026-09-03:**
-```
-counter_staff criteria (no date filter), all locations : 93 orders
-owner/manager criteria (filter_date = today)           :  7 orders
-open orders excluded purely by the date filter         : 54
-the 7 matches broke down as: 3 completed, 4 ready — ALL at location_id 4
-ALL open orders by location: loc 1 = 26, loc 4 = 67
-```
+**Live result, measured through the API:**
 
-So: an owner or manager whose `activeLocation` is **Main Shop (location 1)** matches **zero**
-orders, because nothing was created or scheduled at Main Shop that day — while counter staff at
-the same location sees 26. That is exactly the reported symptom.
+| | Main Shop (loc 1) | Test Loc (loc 4) |
+| --- | --- | --- |
+| owner/manager request (`filter_date` = today) | **0 rows** | **0 rows** |
+| counter_staff requests (no date filter) | 26 rows | 67 rows |
 
-**Before fixing, decide the product question:** is a *today-scoped* owner/manager board correct
-and merely under-communicated (it has a visible date chip at `:1101`), or should the board show
-open work regardless of date the way the counter board does? An empty board that is *correctly*
-filtered still reads as broken, which is what happened here. Do not just delete the filter —
-`dateScope` also feeds `getStaffToday` and the reports widgets.
+So the owner/manager board renders **zero cards at both locations**, while counter staff sees
+26 and 67. That is exactly the reported symptom, and it is fully explained.
+
+*Correction to an earlier note:* an initial DB probe on 2026-09-03 found 7 matches at Test Loc.
+That was date-dependent — re-measured through the API, today it is 0 at both. The filter's
+effect swings day to day, which is precisely why it reads as "broken" rather than "filtered".
+
+**Also worth knowing:** the counter fetch's `limit: 30` per status did not truncate today, but
+the margin is thin — 21/30 and 19/30 at Test Loc. A busier day silently drops orders.
+
+**Before fixing, decide the product question.** Is a *today-scoped* owner/manager board correct
+and merely under-communicated (there is a visible date chip at `:1101`), or should it show open
+work regardless of date the way the counter board does? An empty board that is *correctly*
+filtered still reads as broken. **Do not just delete the filter** — `dateScope` also feeds
+`getStaffToday` and the reports widgets.
 
 ### Issue 2 — the "Done today · N" count chip never appears
 
-**ROOT CAUSE ESTABLISHED. Two different causes by role.**
+**CONFIRMED both structurally and empirically.**
 
-- **counter_staff: structural, not data-dependent.** The four fetches above cover only
-  `pending`/`confirmed`/`preparing`/`ready`. `completed` is **never fetched**, so the
-  `doneCount` that `OrderKanbanBoard` derives from closed stages is always `0`, and the chip —
-  gated on `doneCount > 0` — can never render on that dashboard. It is unreachable by
-  construction.
-- **owner/manager: a symptom of Issue 1.** `doneCount` derives from the same `sales` array; an
-  empty array yields `0`.
+- **counter_staff: unreachable by construction.** The four fetches cover only
+  `pending`/`confirmed`/`preparing`/`ready`. `completed` is never requested, so the `doneCount`
+  that `OrderKanbanBoard` derives from closed stages is always `0`, and the chip — gated on
+  `doneCount > 0` — can never render.
+- **owner/manager: a symptom of Issue 1** (empty `sales` → `0`).
+
+The investigation added a stronger empirical proof: **zero live sales anywhere** have a closed
+`display_stage` while still carrying a status the dashboard fetches — because the two relevant
+endpoints flip `status = 'completed'` in the same DB transaction as the closing field. So there
+is no data state in which the current fetch could populate that count.
 
 Fixing Issue 1 fixes the owner/manager half. The counter half needs the fetch to include
-completed orders (or the count to come from the `total` the API already returns — see the
-deferred urgency-sort note in the execution log, which proposed exactly this).
+completed orders, or the count to come from the `total` the API already returns (the deferred
+urgency-sort note in the execution log proposed exactly this).
 
 ### Issue 3 — owner/manager board is squeezed by the Team & Finance column
 
-The owner/manager layout splits the page into `feedCol` (flex 2) / `healthCol` (flex 1) at
-`DashboardScreen.js:~1217-1239`, gated on `isDesktop` (1100px) from `app/src/hooks/useBreakpoint.js`.
-The owner wants the Team/Finance/register/staff elements **moved below the board** rather than
-beside it, so the board gets full width.
+**Facts gathered; deliberately not designed.**
 
-This is a **design change, not a bug** — it needs the `superpowers:brainstorming` skill and the
-`staff-ux-checklist` skill, not a straight edit. Note the breakpoint history in the execution
-log: collapsing 1100 → 900 was tried and reverted because it crushed the four Stage columns to
-~140px each; `useBreakpoint` deliberately exposes both `isWide` (900, board columns) and
-`isDesktop` (1100, page split).
+- The two-column split is `DashboardScreen.js:1646-1747` — `feedCol` (flex 2) / `healthCol`
+  (flex 1), gated on `isDesktop` (1100) from `app/src/hooks/useBreakpoint.js`.
+- `healthCol` contains: **Staff Pulse** (all roles), **Registers** and **Revenue** (owner-only).
+- **Therefore a *manager* sees a single small widget occupying a third of the width.** That is
+  the strongest argument for the owner's request, and it came out of the investigation rather
+  than the report.
+- Both columns share one `ScrollView`. **No structural blocker** to moving the widgets below.
+  The real cost is restyling `widgetCard` and the Revenue block for full width rather than a
+  1/3 column.
 
----
+This is a **design change, not a bug** — use `superpowers:brainstorming` and the
+`staff-ux-checklist` skill.
+
+**History so you do not re-tread it:** `useBreakpoint` deliberately exposes **two** thresholds —
+`isWide` (900, board columns) and `isDesktop` (1100, page split). Collapsing them to one was
+tried during the prior work and **reverted**: at 901px the board got ~2/3 width and the four
+Stage columns landed at ~140px each.
+
+### Other findings from the order-flow testing (none blocking)
+
+1. **Low** — a dashboard card can read "`<rider>` has it" for a delivery merely *assigned*, not
+   yet collected from the shop. Misleading text; same root cause as the already-documented
+   "assigned shows as plain Ready" ladder-ordering gap.
+2. **Cosmetic data drift** — 2 live Test Loc pickup orders have `status = ready` with a stale
+   `pickup_status = waiting`. `display_stage` compensates correctly; no functional impact.
+3. **Worth knowing** — 0 of 39 live `preparing` orders DB-wide currently have zero open tasks,
+   so the `Mark Ready` guard added at the end of the prior work has only ever been exercised
+   *negatively* (correctly blocking), never *positively* (correctly allowing) on live data.
+4. **Ruled out** — a hypothesised dead end (assigned delivery + no COD → dead "Mark Delivered")
+   was chased through live API calls and is **not** a new defect; it is the known ladder-ordering
+   gap.
+
+**Clean result:** `GET /sales` and `GET /deliveries` agreed on `display_stage` for **25/25**
+compared sales at Test Loc.
 
 ## 3. Method
 
