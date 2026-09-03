@@ -523,14 +523,26 @@ router.get('/my-tasks', authenticate, async (req, res, next) => {
 // that 404s the moment someone taps it, and a role assign accepts but that is
 // missing here is an ability silently taken away from whoever holds it today.
 //
-// It deliberately returns MORE than the dashboard's "who is making this?"
-// picker wants. That picker narrows to prep roles client-side (PREP_ROLES in
-// app/src/constants/orderDisplay.js) because counter staff are not the ones
-// making the bouquet. SaleDetailScreen's task-assign modal needs the full
-// list, since a counter staffer — or the owner — can legitimately hold a task.
-// That is why this returns `role`, and why the narrowing is the caller's
-// business rather than a query parameter: one endpoint, one meaning ("who may
-// hold a production task"), and each screen decides how much of it to show.
+// It deliberately returns MORE than either caller shows, and does NOT
+// pre-filter. Both screens narrow client-side, to different subsets, on the
+// `role` this returns with every row. Both lists live in
+// app/src/constants/orderDisplay.js:
+//
+//   returned here            owner, manager, employee, counter_staff, florist_staff
+//   SaleDetailScreen shows          employee, counter_staff, florist_staff  <- ASSIGNABLE_STAFF_ROLES
+//   DashboardScreen shows           employee, florist_staff                 <- PREP_ROLES
+//
+// Manager and owner are genuinely assignable here (verified live: both return
+// 200 from the assign route) and are left off BOTH screens on purpose — a
+// picker read at counter speed gets worse with every name that is not the
+// answer. Counter staff can hold a task, which is why SaleDetail offers them,
+// but they do not make bouquets, which is why the dashboard does not.
+//
+// Those are per-screen editorial choices, and that is exactly why neither is a
+// query parameter: pushing one screen's subset into the server would put its
+// choice into a shared contract and break the other caller. One endpoint, one
+// meaning ("who may hold a production task"), and each screen decides how much
+// of it to show.
 //
 // DISTINCT is load-bearing, not decoration: the LEFT JOIN on user_locations
 // emits one row per location a person is attached to, so anyone assigned to

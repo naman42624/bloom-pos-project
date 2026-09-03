@@ -85,11 +85,16 @@ export const STAFF_ROLE_LABELS = {
 };
 
 // The subset of the above that the dashboard's "who is making this?" picker
-// shows. GET /production/assignable-staff deliberately returns everyone the
-// assign endpoint accepts (counter staff, managers and the owner included,
-// because SaleDetailScreen must be able to offer all of them); this narrows
-// that to the people who actually make the bouquets, so a picker read at
-// counter speed is not padded with names that are never the answer.
+// shows — the narrowest of the three tiers tabulated under
+// ASSIGNABLE_STAFF_ROLES below; read them together rather than in isolation.
+//
+// GET /production/assignable-staff returns everyone the assign endpoint
+// accepts (counter staff, managers and the owner included) and deliberately
+// does NOT pre-filter: two screens call it wanting different subsets, so it
+// returns `role` on every row and each narrows for itself. This one narrows to
+// the people who actually make the bouquets, so a picker read at counter speed
+// is not padded with names that are never the answer. Counter staff CAN hold a
+// task — SaleDetailScreen offers them — they just are not the ones making it.
 export const PREP_ROLES = ['employee', 'florist_staff'];
 
 // The roles SaleDetailScreen's task-assign modal offers. Three tiers exist and

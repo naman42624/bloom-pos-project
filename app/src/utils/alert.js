@@ -12,6 +12,18 @@ import { Alert, Platform } from 'react-native';
  * Native keeps the real Alert. Web falls back to the browser's own dialogs,
  * which are ugly but visible — and visible beats elegant for a message telling
  * someone why the till would not accept something.
+ *
+ * `buttons` is handed straight to Alert on native. On web a window.alert has
+ * only ONE outcome — the person dismisses it — so a handler is auto-fired only
+ * when there is exactly one button and therefore nothing to guess about.
+ *
+ * A two-button alert is a QUESTION, and this helper cannot answer it: on web
+ * nobody was ever offered the choice. Do not pass one here. Guessing is not
+ * safe in either direction — the handler sits on the Cancel button about as
+ * often as on the action, so guessing runs something nobody agreed to, and not
+ * guessing silently drops the action. Use showConfirm for anything with a
+ * choice, and leave three-or-more-button dialogs and text prompts on
+ * Alert.alert until there is a real in-app dialog component.
  */
 export function showAlert(title, message, buttons) {
   if (Platform.OS !== 'web') {
@@ -20,10 +32,23 @@ export function showAlert(title, message, buttons) {
   }
   const text = [title, message].filter(Boolean).join('\n\n');
   window.alert(text);
-  // Honour a single acknowledge-style handler so callers that refresh or
-  // navigate after an alert still do so on web.
-  const ack = (buttons || []).find((b) => b && b.style !== 'cancel' && typeof b.onPress === 'function');
-  if (ack) ack.onPress();
+
+  // Exactly one button is the only unambiguous shape: it is also the only
+  // outcome a one-button native Alert could have produced, so firing it keeps
+  // web and native identical. Callers that refresh or navigate after an alert
+  // still do so. Anything else runs nothing, and says why.
+  const list = Array.isArray(buttons) ? buttons.filter(Boolean) : [];
+  if (list.length === 1) {
+    const only = list[0];
+    if (only.style !== 'cancel' && typeof only.onPress === 'function') only.onPress();
+    return;
+  }
+  if (list.length > 1) {
+    console.warn(
+      '[showAlert] ' + list.length + ' buttons were passed, so no handler ran on web. '
+      + 'A choice belongs in showConfirm(title, message, onConfirm, options).'
+    );
+  }
 }
 
 /**
