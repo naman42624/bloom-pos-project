@@ -39,18 +39,9 @@ import {
   FONT_FAMILY,
   formatMoney,
   getTaskChipColor,
+  STAFF_ROLE_LABELS,
+  PREP_ROLES,
 } from '../constants/orderDisplay';
-
-// The preparer picker's subtitle line falls back to the account's role when
-// nobody has set a job title. `role` is a database token, and a counter staff
-// member reading this at speed must never be shown `florist_staff`. Wording
-// matches UserFormScreen's own role labels, minus the "(legacy)" qualifier —
-// that is meaningful to an owner managing accounts and only confusing to
-// someone choosing who makes a bouquet (Task 17).
-const PREP_ROLE_LABELS = {
-  florist_staff: 'Florist/Prep Staff',
-  employee: 'Staff',
-};
 
 /**
  * Show a message the user will actually see.
@@ -802,8 +793,24 @@ export default function DashboardScreen({ navigation }) {
         // endpoint is authenticated, returns florist_staff + employee only, and
         // carries `role` (Task 17) — same narrow-endpoint precedent as
         // GET /deliveries/partners.
+        //
+        // The endpoint returns everyone PUT /production/tasks/:id/assign will
+        // accept — counter staff, managers and the owner included — because
+        // SaleDetailScreen's assign modal must be able to offer all of them.
+        // THIS picker asks a narrower question, so it narrows here rather than
+        // via a query parameter: counter staff can hold a task, but they are
+        // not the ones making the bouquet, and padding a list read at counter
+        // speed with names that are never the answer is its own cost.
+        //
+        // Narrowing happens BEFORE the empty check below, not after. The other
+        // order would be a silent dead end: at a location staffed only by
+        // counter staff the scoped call returns people, so the fallback would
+        // never fire, and the picker would render an empty list with no notice
+        // explaining it.
+        const onlyPrep = (rows) =>
+          (Array.isArray(rows) ? rows : []).filter((p) => PREP_ROLES.includes(p.role));
         const res = await api.getAssignableStaff(locId);
-        let list = Array.isArray(res?.staff) ? res.staff : [];
+        let list = onlyPrep(res?.staff);
         // Identical empty-scoped-list fallback to the rider picker above, for
         // the identical reason: the location filter is a convenience, not a
         // rule — PUT /production/tasks/:id/assign accepts any active staff
@@ -820,7 +827,7 @@ export default function DashboardScreen({ navigation }) {
         let showingEveryone = false;
         if (list.length === 0 && locId) {
           const all = await api.getAssignableStaff();
-          const allList = Array.isArray(all?.staff) ? all.staff : [];
+          const allList = onlyPrep(all?.staff);
           if (allList.length > 0) {
             list = allList;
             showingEveryone = true;
@@ -841,8 +848,8 @@ export default function DashboardScreen({ navigation }) {
             id: p.id,
             name: p.name,
             // A real job title wins; the role is only the fallback, and only
-            // ever in plain words (see PREP_ROLE_LABELS).
-            meta: p.job_title || PREP_ROLE_LABELS[p.role] || null,
+            // ever in plain words (see STAFF_ROLE_LABELS).
+            meta: p.job_title || STAFF_ROLE_LABELS[p.role] || null,
           })),
         });
       } catch (err) {

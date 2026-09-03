@@ -17,7 +17,7 @@ import ImageModal from '../components/ImageModal';
 import VoiceNoteRecorder from '../components/VoiceNoteRecorder';
 import AttachmentVoiceRow from '../components/AttachmentVoiceRow';
 import StageBadge from '../components/StageBadge';
-import { formatMoney } from '../constants/orderDisplay';
+import { formatMoney, STAFF_ROLE_LABELS } from '../constants/orderDisplay';
 
 // Duplicated locally (rather than imported from OrdersInboxScreen) to avoid
 // coupling this detail screen's import graph to an inbox screen.
@@ -197,6 +197,11 @@ export default function SaleDetailScreen({ route, navigation }) {
   const [assignTaskId, setAssignTaskId] = useState(null);
   const [employees, setEmployees] = useState([]);
   const [loadingEmployees, setLoadingEmployees] = useState(false);
+  // True when the location-scoped staff list came back empty and we widened to
+  // every location. Never inferred at render time — the modal must be able to
+  // SAY it widened, and "showing everyone" above a genuinely empty list would
+  // be a lie.
+  const [employeesShowingEveryone, setEmployeesShowingEveryone] = useState(false);
 
   // Pickup Payment Modal
   const [pickupPayModalVisible, setPickupPayModalVisible] = useState(false);
@@ -717,19 +722,42 @@ export default function SaleDetailScreen({ route, navigation }) {
     setAssignTaskId(taskId);
     setLoadingEmployees(true);
     setAssignModalVisible(true);
+    setEmployeesShowingEveryone(false);
     try {
-      // GET /users is owner/manager-only (it lists the whole account
-      // directory — owner/manager/customer included — which counter_staff
-      // has no business seeing just to pick who preps an order). Reuse
-      // /auth/staff-roster instead: same endpoint LockScreen already uses,
-      // pre-filtered server-side to exactly employee/counter_staff/
-      // florist_staff, scoped to this sale's own location, and safe for
-      // any authenticated role since it was already designed to be safe
-      // for NO role (LockScreen calls it unauthenticated). Switched
-      // 2026-09-01 so counter_staff's Assign button actually works instead
-      // of 403ing the moment the modal tried to load names.
-      const res = await api.getStaffRoster(sale.location_id);
-      setEmployees(res.data?.staff || []);
+      // GET /production/assignable-staff. NOT GET /users, which is
+      // owner/manager-only because it lists the whole account directory,
+      // customers included — counter_staff has no business seeing that just to
+      // pick who preps an order. And no longer GET /auth/staff-roster, which
+      // this screen used from 2026-09-01 until Task 17: that endpoint is the
+      // UNAUTHENTICATED lock-screen list, so it filters
+      // `employee_code IS NOT NULL` — right for PIN entry, since no code means
+      // no PIN login — and on live data that silently excluded all four of this
+      // shop's `employee` accounts, the exact people who do the prep work.
+      //
+      // The list this returns is deliberately the SAME set of roles
+      // PUT /production/tasks/:id/assign accepts as a target, unfiltered. This
+      // modal assigns a specific production task, and a counter staffer — or a
+      // manager, or the owner — can legitimately hold one, so narrowing here
+      // the way the dashboard picker does would take away an ability someone
+      // has today. Exactly the assignable people, no more and no fewer.
+      const res = await api.getAssignableStaff(sale.location_id);
+      let list = Array.isArray(res?.staff) ? res.staff : [];
+      // Same empty-scoped-list fallback the dashboard pickers use, for the same
+      // reason: the location filter is a convenience, not a rule — the assign
+      // endpoint itself accepts any active staff account regardless of
+      // location. A shop whose staff have no user_locations row for it would
+      // otherwise get "No employees found" and a dead end on the one action
+      // this modal exists to perform. Flagged only when the wider call actually
+      // returned people, and surfaced in the modal rather than applied quietly.
+      if (list.length === 0 && sale.location_id) {
+        const all = await api.getAssignableStaff();
+        const allList = Array.isArray(all?.staff) ? all.staff : [];
+        if (allList.length > 0) {
+          list = allList;
+          setEmployeesShowingEveryone(true);
+        }
+      }
+      setEmployees(list);
     } catch (err) {
       console.log('Failed to fetch employees:', err);
       setEmployees([]);
@@ -1920,10 +1948,19 @@ export default function SaleDetailScreen({ route, navigation }) {
                 <Ionicons name="close" size={24} color={Colors.text} />
               </TouchableOpacity>
             </View>
+            {/* Only ever shown when the list is not the one someone would
+                expect. Never on a normal scoped result. */}
+            {!loadingEmployees && employeesShowingEveryone && employees.length > 0 && (
+              <Text style={{ fontSize: FontSize.xs, lineHeight: 18, color: '#92400E', backgroundColor: Colors.warningLight, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 8, marginBottom: Spacing.sm }}>
+                Nobody is set up at this shop — showing everyone.
+              </Text>
+            )}
             {loadingEmployees ? (
               <ActivityIndicator color={Colors.primary} size="large" style={{ padding: 20 }} />
             ) : employees.length === 0 ? (
-              <Text style={{ color: Colors.textLight, textAlign: 'center', padding: 20 }}>No employees found</Text>
+              <Text style={{ color: Colors.textLight, textAlign: 'center', padding: 20 }}>
+                No staff to assign yet. Ask the owner to add someone.
+              </Text>
             ) : (
               <ScrollView>
                 {employees.map(emp => (
@@ -1937,7 +1974,16 @@ export default function SaleDetailScreen({ route, navigation }) {
                     </View>
                     <View style={{ flex: 1 }}>
                       <Text style={{ fontSize: FontSize.md, fontWeight: '600', color: Colors.text }}>{emp.name}</Text>
-                      {emp.phone && <Text style={{ fontSize: FontSize.xs, color: Colors.textLight }}>{emp.phone}</Text>}
+                      {/* Was `emp.phone`, which staff-roster never returned —
+                          a subtitle that was always blank. The new endpoint
+                          carries job_title and role, and the role is only ever
+                          rendered through the shared plain-language map so
+                          nobody is shown the token `florist_staff`. */}
+                      {(emp.job_title || STAFF_ROLE_LABELS[emp.role]) && (
+                        <Text style={{ fontSize: FontSize.xs, color: Colors.textLight }}>
+                          {emp.job_title || STAFF_ROLE_LABELS[emp.role]}
+                        </Text>
+                      )}
                     </View>
                     <Ionicons name="chevron-forward" size={18} color={Colors.textLight} />
                   </TouchableOpacity>

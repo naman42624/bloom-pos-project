@@ -516,9 +516,21 @@ router.get('/my-tasks', authenticate, async (req, res, next) => {
 // so callers cannot filter to prep staff. Same narrow-endpoint precedent as
 // GET /deliveries/partners.
 //
-// `florist_staff` and `employee` only: counter staff can technically hold a
-// task, but they are not the ones making the bouquet and listing them adds
-// noise to a picker read at counter speed.
+// The role list is NOT a judgement call — it is a transcription of the roles
+// PUT /production/tasks/:id/assign actually accepts as a task target (see its
+// `SELECT ... WHERE id = ? AND role IN (...)` guard below). The two must stay
+// in sync in BOTH directions: a role here that assign rejects is a dead option
+// that 404s the moment someone taps it, and a role assign accepts but that is
+// missing here is an ability silently taken away from whoever holds it today.
+//
+// It deliberately returns MORE than the dashboard's "who is making this?"
+// picker wants. That picker narrows to prep roles client-side (PREP_ROLES in
+// app/src/constants/orderDisplay.js) because counter staff are not the ones
+// making the bouquet. SaleDetailScreen's task-assign modal needs the full
+// list, since a counter staffer — or the owner — can legitimately hold a task.
+// That is why this returns `role`, and why the narrowing is the caller's
+// business rather than a query parameter: one endpoint, one meaning ("who may
+// hold a production task"), and each screen decides how much of it to show.
 //
 // DISTINCT is load-bearing, not decoration: the LEFT JOIN on user_locations
 // emits one row per location a person is attached to, so anyone assigned to
@@ -535,7 +547,7 @@ router.get(
         SELECT DISTINCT u.id, u.name, u.role, u.job_title
         FROM users u
         LEFT JOIN user_locations ul ON ul.user_id = u.id
-        WHERE u.role IN ('employee', 'florist_staff')
+        WHERE u.role IN ('owner', 'manager', 'employee', 'counter_staff', 'florist_staff')
           AND u.is_active = 1
       `;
       const params = [];

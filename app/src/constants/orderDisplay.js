@@ -62,6 +62,36 @@ export const DELIVERY_STATUS_LABELS = {
   cancelled: 'Cancelled',
 };
 
+// Plain-language names for the roles that can hold a production task, used as
+// the subtitle in every "who does this?" staff picker when the account has no
+// job_title set — which, on live data, is all of them.
+//
+// It exists because GET /production/assignable-staff returns `role` as a raw
+// database token, and nobody at the counter should ever be shown
+// `florist_staff`. Shared rather than declared per-screen so the dashboard
+// picker and SaleDetailScreen's task-assign modal cannot end up calling the
+// same person two different things.
+//
+// Wording matches UserFormScreen's own ROLE_LABELS, with one intentional
+// difference: `employee` is "Staff", not "Employee (legacy)". The "(legacy)"
+// qualifier is meaningful to an owner administering accounts and is pure
+// confusion to someone picking who makes a bouquet.
+export const STAFF_ROLE_LABELS = {
+  owner: 'Owner',
+  manager: 'Manager',
+  counter_staff: 'Counter Staff',
+  florist_staff: 'Florist/Prep Staff',
+  employee: 'Staff',
+};
+
+// The subset of the above that the dashboard's "who is making this?" picker
+// shows. GET /production/assignable-staff deliberately returns everyone the
+// assign endpoint accepts (counter staff, managers and the owner included,
+// because SaleDetailScreen must be able to offer all of them); this narrows
+// that to the people who actually make the bouquets, so a picker read at
+// counter speed is not padded with names that are never the answer.
+export const PREP_ROLES = ['employee', 'florist_staff'];
+
 export const FONT_FAMILY = typeof navigator !== 'undefined' && navigator.product === 'ReactNative'
   ? undefined
   : 'Inter, Geist, system-ui';
