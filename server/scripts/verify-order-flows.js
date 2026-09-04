@@ -967,6 +967,45 @@ check('recurring order processor: runs without a register/payment side effect (d
   assert(Number(before.cnt) === Number(after.cnt), `Expected zero new payment rows from the recurring processor, went from ${before.cnt} to ${after.cnt}`);
 });
 
+check('FIXED: sort=urgency puts rush orders first without changing the default sort', async () => {
+  const owner = await loginOwner();
+  const older = await api('POST', '/sales', owner.token, {
+    location_id: TEST_LOCATION_ID, order_type: 'walk_in', channel: 'walk_in',
+    items: [{ quantity: 1, unit_price: 100, product_name: 'Test Urgency Sort Older' }],
+  });
+  createdSaleIds.push(older.body.data.id);
+  const rush = await api('POST', '/sales', owner.token, {
+    location_id: TEST_LOCATION_ID, order_type: 'walk_in', channel: 'walk_in', priority: 'rush',
+    items: [{ quantity: 1, unit_price: 100, product_name: 'Test Urgency Sort Rush' }],
+  });
+  createdSaleIds.push(rush.body.data.id);
+  // Add a third order created AFTER the rush order so that plain recency sort
+  // would put it first (proving we're not just accidentally passing because
+  // the rush order happens to be newest).
+  const newer = await api('POST', '/sales', owner.token, {
+    location_id: TEST_LOCATION_ID, order_type: 'walk_in', channel: 'walk_in',
+    items: [{ quantity: 1, unit_price: 100, product_name: 'Test Urgency Sort Newer' }],
+  });
+  createdSaleIds.push(newer.body.data.id);
+
+  // Default (no sort param): unchanged, most-recent-first — the newest (non-rush)
+  // order created last must be first, proving the default sort ignores priority.
+  const defaultRes = await api('GET', `/sales?location_id=${TEST_LOCATION_ID}&limit=3`, owner.token);
+  assert(defaultRes.body.data.sales[0].id === newer.body.data.id, 'Expected default sort to still be plain recency (newest first), and newer (non-rush) should be first');
+
+  // sort=urgency: rush leads regardless of recency — should come before the
+  // newer non-rush order, proving urgency sort is working. Among non-rush
+  // orders, oldest-pending (created_at ASC) comes first, so older comes before newer.
+  const urgencyRes = await api('GET', `/sales?location_id=${TEST_LOCATION_ID}&sort=urgency&limit=50`, owner.token);
+  const ids = urgencyRes.body.data.sales.map((s) => s.id);
+  const rushIdx = ids.indexOf(rush.body.data.id);
+  const newerIdx = ids.indexOf(newer.body.data.id);
+  const olderIdx = ids.indexOf(older.body.data.id);
+  assert(rushIdx !== -1 && newerIdx !== -1 && olderIdx !== -1, 'Expected all three test sales in the urgency-sorted result');
+  assert(rushIdx < newerIdx, `Expected the rush order to sort before the newer non-rush order under sort=urgency (this proves urgency sort differs from default), got rush at ${rushIdx}, newer at ${newerIdx}`);
+  assert(olderIdx < newerIdx, `Expected the older order to sort before the newer order under sort=urgency when both are non-rush (oldest-pending logic), got older at ${olderIdx}, newer at ${newerIdx}`);
+});
+
 // ─── Run ──────────────────────────────────────────────────────
 async function cleanup() {
   if (createdUserIds.length === 0 && createdSaleIds.length === 0) return;

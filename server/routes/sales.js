@@ -162,7 +162,7 @@ function mapSaleDraftRow(draft) {
 router.get('/', authenticate, async (req, res, next) => {
   try {
     const db = await getAsyncDb();
-    const { location_id, order_type, payment_status, status, pickup_status, channel, priority, date_from, date_to, filter_date, search, limit: lim, offset: off } = req.query;
+    const { location_id, order_type, payment_status, status, pickup_status, channel, priority, date_from, date_to, filter_date, search, sort, limit: lim, offset: off } = req.query;
 
     // `open_task_count` is a verbatim copy of the production-task guard in
     // PUT /:id/status ("Enforce production task completion before marking
@@ -251,7 +251,16 @@ router.get('/', authenticate, async (req, res, next) => {
       }
     }
 
-    sql += ' ORDER BY s.created_at DESC';
+    if (sort === 'urgency') {
+      sql += ` ORDER BY
+        (s.priority = 'rush') DESC,
+        (s.scheduled_date IS NOT NULL) DESC,
+        s.scheduled_date ASC NULLS LAST,
+        s.scheduled_time ASC NULLS LAST,
+        s.created_at ASC`;
+    } else {
+      sql += ' ORDER BY s.created_at DESC';
+    }
 
     const limit = parseInt(lim) || 200;
     const offset = parseInt(off) || 0;
