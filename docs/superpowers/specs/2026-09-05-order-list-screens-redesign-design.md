@@ -42,7 +42,10 @@ app/src/
   hooks/
     useOrderListData.js       — fetch + debounced search + filter state + real pagination + sort param + request-race protection
   components/orders/
-    SearchAndFilterBar.js     — search box + configurable filter chips + "N filters active · Clear all"
+    OrderListToolbar.js       — bounded search + filters-button + sort-control row (replaces the old per-filter chip rows — see §3.1a)
+    FilterDrawer.js           — the slide-up sheet holding every filter as a scrollable list, opened from the toolbar
+    SortControl.js            — small separate "Sort: Recent ▾" popover, deliberately not part of FilterDrawer
+    ActiveFilterChips.js      — one bounded, horizontally-scrollable row of removable chips, rendered only when ≥1 filter is active
     ContactButtons.js         — Call + WhatsApp, contextual message templates, phone normalization
     DateSessionGroup.js       — section header: "Today · Morning Session (9:02am–1:15pm) · ₹8,400"
     CollapsibleSection.js     — generic expand/collapse wrapper for any grouped section (Route/Date/Rider/Day)
@@ -54,9 +57,24 @@ app/src/
 
 `CollapsibleSection` is deliberately generic (title, count, `defaultExpanded`, children) so Deliveries' Route/Date/Rider sections and any future Inbox day-grouping all use the same expand/collapse behavior and the same visual language.
 
+### 3.1a Why the filter UI is a new component, not a reuse of the existing chip rows
+
+Reading the actual code changed this part of the design mid-brainstorm. `DeliveriesScreen.js` today stacks up to five independent fixed-height rows above its list — search, status tabs, location chips, the Route/Date view toggle, and (when active) the batch-assign bar — with no collapse or overflow mechanism. Every new filter dimension this spec adds (rider, date range) would be a *sixth* and *seventh* row on top of that, worsening the exact "filters become unreachable / crowd out the list" problem the user flagged, not fixing it.
+
+Replacement: a **bounded toolbar**, capped at three rows no matter how many filter dimensions exist, ever:
+
+```
+Row 1:  🔍 Search anything...          [≣ Filters (2)]
+Row 2:  [By Route▾][By Date][By Rider]     [Sort: Recent ▾]     ← only on screens with a view-mode toggle
+Row 3 (only when ≥1 filter is active):
+        Status: Ready ✕   Channel: WhatsApp ✕
+```
+
+`FilterDrawer` holds every filter (status, channel, rush, rider, location, date range) as a vertically-scrollable list inside a slide-up panel — adding a filter dimension in the future means adding a row *inside the drawer*, never a new row on the main screen. The Route/Date/Rider view-mode toggle stays a primary, always-visible segmented control (it's a frequent, not rare, action) rather than being buried in the drawer; `SortControl` is deliberately its own small control, separate from `FilterDrawer`, so sorting is never confused with filtering. The batch-assign bar (Deliveries only) replaces row 2 while active rather than adding a fourth row.
+
 ### 3.2 Backend: two additive changes, nothing else
 
-1. **`sort=urgency` on `GET /api/sales`** (`server/routes/sales.js`) — optional param, default behavior (`created_at DESC`) unchanged when omitted. When present: `ORDER BY (priority = 'rush') DESC, (scheduled_date IS NOT NULL) DESC, scheduled_date ASC NULLS LAST, scheduled_time ASC NULLS LAST, created_at ASC`. This is the urgency-sort proposal CLAUDE.md already recorded as deferred (originally scoped to the counter_staff dashboard only) — same param now serves Orders Inbox too, and Pickup's at-risk-first need (§6).
+1. **`sort=urgency` on `GET /api/sales`** (`server/routes/sales.js`) — optional param, default behavior (`created_at DESC`) unchanged when omitted, **and unchanged as the frontend's default too** — the user was explicit that the Orders Inbox's default order must not change. `sort=urgency` is only ever sent when a staff member explicitly picks "Urgent first" from the new `SortControl` (§3.1a); "Recent" (today's behavior) stays selected by default on every screen. When requested: `ORDER BY (priority = 'rush') DESC, (scheduled_date IS NOT NULL) DESC, scheduled_date ASC NULLS LAST, scheduled_time ASC NULLS LAST, created_at ASC`. This is the urgency-sort proposal CLAUDE.md already recorded as deferred (originally scoped to the counter_staff dashboard only, and originally imagined as a default there too) — same param now serves Orders Inbox as an opt-in choice, not a default.
 2. **`total` added to `GET /api/deliveries`'s response** (`server/routes/deliveries.js`), mirroring the `{ sales, total, limit, offset }` shape `GET /sales` already returns. Currently this endpoint returns a bare array — **this changes the response shape**, so every existing caller (`DeliveriesScreen.js`, `LiveDeliveryMapScreen.js`, `DashboardScreen.js`, any others found during implementation) must be updated in the same change to read `data.deliveries` instead of `data`. The implementation plan must enumerate every current call site before touching the route.
 
 Deliveries' own server-side sort (status ladder → scheduled_date → created_at, `server/routes/deliveries.js:172`) already does roughly what's wanted and is currently discarded by the client's own re-sort (`DeliveriesScreen.js:269-275`) — removing that client re-sort is a deletion, not a new backend feature.
@@ -101,15 +119,15 @@ Requires one new environment variable, `TRACKING_LINK_SECRET`, alongside however
 
 ## 6. Orders Inbox screen
 
-- `SearchAndFilterBar` (search + status/channel/rush chips, now with a "Clear all" summary) replaces the current two bare chip rows.
-- List reorganized under `DateSessionGroup` headers; default sort changes from `created_at DESC` to `sort=urgency` — reordering only, nothing is filtered out by this change.
+- `OrderListToolbar` (search + a single Filters button opening `FilterDrawer` with status/channel/rush, + `SortControl`) replaces the current two bare chip rows.
+- List reorganized under `DateSessionGroup` headers. Default sort stays exactly as today (`created_at DESC`, most recent first) — `SortControl` offers "Urgent first" (rush → soonest-scheduled → oldest-pending, via `sort=urgency`) as an explicit choice staff can switch to, never applied automatically.
 - Each row gains: `location_name` (currently invisible when viewing "All Locations" — an owner/manager-relevant gap), the order's time, and the one dominant `nextAction` button (the same mechanism `OrderCard` already uses — `api.advanceOrder`), plus secondary `ContactButtons`/Share-link icons per §4's placement rule.
 - Real "Load more" pagination via `useOrderListData`, replacing the silent 100-row cutoff (`total` already returned by `GET /sales` and currently discarded).
 - Bug fix folded in: `OrdersHubScreen.js`'s tile count badges read a `data.pagination.total` field that doesn't exist anywhere in the API — they've always rendered 0. One-line fix to read the real `data.total`.
 
 ## 7. Deliveries screen
 
-- `SearchAndFilterBar` gains a rider filter chip (server already accepts `delivery_partner_id`, currently unused). The existing view-mode toggle (Route/Date, management-only; Date forced for riders) gains a third option, **By Rider** — grouping the already-fetched batch by `partner_name`, the same client-side technique already used for Route grouping. Route stays the default for management; nothing about the existing default changes.
+- Moves onto `OrderListToolbar`: search stays visible; status tabs, location, and the new rider filter (server already accepts `delivery_partner_id`, currently unused) all move into `FilterDrawer` instead of permanently-stacked rows. The view-mode toggle (Route/Date, management-only; Date forced for riders) stays a primary, always-visible control — not moved into the drawer — and gains a third option, **By Rider**, grouping the already-fetched batch by `partner_name`, the same client-side technique already used for Route grouping. Route stays the default for management; nothing about the existing default changes. `SortControl` is available here too (default unchanged, "Urgent first" opt-in) even though at-risk-first ordering already exists independently within Route view.
 - Every section (Route, Date, or Rider) becomes a `CollapsibleSection`, **default expanded** — collapsing is something staff opt into to declutter, never something that hides an order by default.
 - Card redesign: the always-inline full item list becomes a collapsed "3 items ▸" disclosure, opened on tap. Time/countdown, address, rider name, and COD/payment badge stay visible by default — those are what staff actually scan a delivery card for. This should roughly halve the card's height, addressing "~2 cards visible per screen."
 - `ContactButtons` added for both customer (currently plain text) and rider (currently buried inside the assign modal).
@@ -119,13 +137,15 @@ Requires one new environment variable, `TRACKING_LINK_SECRET`, alongside however
 
 ## 8. Pickup Orders screen — brought to parity
 
-- Gains `SearchAndFilterBar` (search didn't exist at all), `ContactButtons` (phone isn't even rendered today), the item-list collapse and date-range filter from §7, and switches from re-deriving state off `payment_status` + the current tab to using the shared `display_stage`/`StageBadge` the other two screens already use.
+- Gains `OrderListToolbar` (search didn't exist at all — status stays as tabs, since three mutually-exclusive tabs is already the right control for this screen and doesn't need a drawer), `ContactButtons` (phone isn't even rendered today), the item-list collapse and date-range filter (in `FilterDrawer`) from §7, and switches from re-deriving state off `payment_status` + the current tab to using the shared `display_stage`/`StageBadge` the other two screens already use.
 - Starts consuming `GET /deliveries/at-risk`'s pickup rows (`type: 'pickup'`, already returned by that endpoint, currently read by nobody) to flag overdue pickups the same way Deliveries flags at-risk deliveries.
 - **Deliberate behavior change, flagged explicitly:** today `PUT /deliveries/pickup/:saleId/ready` has no open-production-task guard, while `PUT /sales/:id/status → 'ready'` (used everywhere else "Mark Ready" appears) blocks with "Cannot mark as ready — N production task(s) still pending." Routing this screen's action through the same guarded path makes it consistent with every other Mark Ready path in the app — meaning a pickup order with unfinished tasks will now correctly block, where before it silently didn't. Per the staff-UX checklist, the existing plain-language error message must actually surface on this screen (not get swallowed by a generic handler) — this is a stated requirement for the implementation plan to verify, not an assumption.
 
 ## 9. Staff-UX checklist compliance notes
 
 Checked explicitly against `.claude/skills/staff-ux-checklist` before finalizing this design:
+- **#3 (common case is the shortest path) / #7 (tap targets):** the bounded toolbar (§3.1a) exists specifically so the filter UI can never grow to crowd out the list or push controls out of easy reach, regardless of how many filter dimensions this or a future spec adds — the failure mode diagnosed in the current `DeliveriesScreen.js`.
+- **#9 (nothing removed, only relocated):** every filter that moves into `FilterDrawer` is still one tap away (open drawer, tap filter) — none are deleted, just no longer permanently occupying screen space for the common case of "no filters active."
 - **#2 (one obvious next action):** the placement rule in §4 exists specifically to prevent the new Call/WhatsApp/Share/nextAction icons from turning into a wall of equal-weight buttons on every row.
 - **#6 (errors say what to do):** the Pickup Mark Ready guard change (§8) is flagged precisely because it's a new blocking path staff will hit; the existing plain-language message must reach this screen, not a raw error.
 - **#7 (tap targets):** 44×44pt minimum and spacing called out explicitly in §4, since this design adds 2–3 new icon buttons per row where 0–1 existed before.
