@@ -1006,6 +1006,15 @@ check('FIXED: sort=urgency puts rush orders first without changing the default s
   assert(olderIdx < newerIdx, `Expected the older order to sort before the newer order under sort=urgency when both are non-rush (oldest-pending logic), got older at ${olderIdx}, newer at ${newerIdx}`);
 });
 
+check('FIXED: GET /deliveries returns an accurate total alongside the (still limited) array', async () => {
+  const owner = await loginOwner();
+  const res = await api('GET', `/deliveries?location_id=${TEST_LOCATION_ID}&limit=1`, owner.token);
+  assert(res.status === 200, `Expected 200, got ${res.status}: ${JSON.stringify(res.body)}`);
+  assert(Array.isArray(res.body.data.deliveries), `Expected data.deliveries to be an array, got ${JSON.stringify(res.body.data)}`);
+  assert(typeof res.body.data.total === 'number', `Expected data.total to be a number, got ${JSON.stringify(res.body.data.total)}`);
+  assert(res.body.data.total >= res.body.data.deliveries.length, `Expected total (${res.body.data.total}) to be >= the returned page length (${res.body.data.deliveries.length})`);
+});
+
 // ─── Run ──────────────────────────────────────────────────────
 async function cleanup() {
   if (createdUserIds.length === 0 && createdSaleIds.length === 0) return;

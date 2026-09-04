@@ -330,7 +330,7 @@ export default function DashboardScreen({ navigation }) {
           api.getDeliveries({ status: 'active' }).catch(() => ({ data: [] })),
           api.getUnsettledDeliveries({}).catch(() => ({ data: { deliveries: [], total_unsettled: 0 } })),
         ]);
-        setMyDeliveries(delivRes?.data || []);
+        setMyDeliveries(delivRes?.data?.deliveries || []);
         const unsettledData = unsettledRes?.data || {};
         setReportKPIs({ unsettledTotal: Number(unsettledData.total_unsettled || 0), unsettledCount: (unsettledData.deliveries || []).length });
         setLoading(false);

@@ -169,6 +169,13 @@ router.get('/', authenticate, authorize('owner', 'manager', 'delivery_partner', 
       }
     }
 
+    // Snapshot sql/params right before ORDER BY/LIMIT/OFFSET are appended, and
+    // wrap that snapshot as a subquery to count matching rows — this
+    // guarantees the count always uses the exact same filters as the list,
+    // with zero duplicated WHERE-condition logic to drift out of sync later.
+    const countRow = await db.prepare(`SELECT COUNT(*) as total FROM (${sql}) as filtered`).get(...params);
+    const total = Number(countRow?.total || 0);
+
     sql += ' ORDER BY CASE d.status WHEN \'pending\' THEN 1 WHEN \'assigned\' THEN 2 WHEN \'picked_up\' THEN 3 WHEN \'in_transit\' THEN 4 WHEN \'delivered\' THEN 5 WHEN \'failed\' THEN 6 WHEN \'cancelled\' THEN 7 END, d.scheduled_date ASC NULLS LAST, d.created_at DESC';
 
     const limit = parseInt(lim) || 200;
@@ -250,7 +257,7 @@ router.get('/', authenticate, authorize('owner', 'manager', 'delivery_partner', 
         }, req.user.role, stageFlags),
       };
     });
-    res.json({ success: true, data: withStage });
+    res.json({ success: true, data: { deliveries: withStage, total } });
   } catch (err) { next(err); }
 });
 

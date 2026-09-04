@@ -131,7 +131,8 @@ export default function DeliveriesScreen({ navigation }) {
         canManageDeliveries ? api.getAtRiskOrders(selectedLocation ? { location_id: selectedLocation } : {}).catch(() => ({ data: [] })) : Promise.resolve({ data: [] }),
       ]);
 
-      setDeliveries(deliveriesRes.data || []);
+      setDeliveries(deliveriesRes.data?.deliveries || []);
+      // total available at res.data.total for future pagination
 
       // Build set of at-risk delivery IDs
       const riskIds = new Set();
