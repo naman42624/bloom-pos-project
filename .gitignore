@@ -2,7 +2,6 @@ node_modules/
 .expo/
 dist/
 web-build/
-server/database.sqlite
 server/uploads/
 *.jks
 *.p8
@@ -10,3 +9,6 @@ server/uploads/
 *.key
 *.mobileprovision
 *.orig.*
+
+# Local git worktrees for isolated feature-branch work (superpowers:using-git-worktrees)
+.worktrees/
