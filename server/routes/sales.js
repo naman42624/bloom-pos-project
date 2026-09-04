@@ -870,6 +870,34 @@ router.get('/register/history', authenticate, authorize('owner', 'manager'), asy
   } catch (err) { next(err); }
 });
 
+
+// ─── GET /api/sales/register/sessions ────────────────────────
+// Every register session (open or closed) for one location on one date —
+// the data DateSessionHeader (app/src/components/orders/DateSessionHeader.js)
+// needs to label which session an order's timestamp falls into. Deliberately
+// its own route rather than widening /register/status (different semantics —
+// that route answers "what's open right now", scoped to today only) or
+// /register/history (owner/manager-only; this needs to work for
+// counter_staff/employee too, since they use the Orders Inbox).
+router.get('/register/sessions', authenticate, authorize('owner', 'manager', 'employee', 'counter_staff'), async (req, res, next) => {
+  try {
+    const db = await getAsyncDb();
+    const { location_id, date } = req.query;
+    if (!location_id) return res.status(400).json({ success: false, message: 'location_id is required' });
+    const targetDate = date || localToday();
+
+    const sessions = await db.prepare(`
+      SELECT cr.*, u1.name as opened_by_name, u2.name as closed_by_name
+      FROM cash_registers cr
+      LEFT JOIN users u1 ON cr.opened_by = u1.id
+      LEFT JOIN users u2 ON cr.closed_by = u2.id
+      WHERE cr.location_id = ? AND cr.date = ?
+      ORDER BY cr.id ASC
+    `).all(location_id, targetDate);
+
+    res.json({ success: true, data: { sessions } });
+  } catch (err) { next(err); }
+});
 // ─── GET /api/sales/production-queue ─────────────────────────
 // Returns orders that need to be prepared (pending/preparing/ready)
 router.get(
