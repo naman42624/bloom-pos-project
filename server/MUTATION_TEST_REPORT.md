@@ -1,12 +1,12 @@
 # Mutation Regression Test Report
 
-- Start: 2026-03-12T23:03:12.818Z
-- End: 2026-03-12T23:03:16.645Z
+- Start: 2026-04-02T06:11:10.774Z
+- End: 2026-04-02T06:11:14.814Z
 - Base URL: http://localhost:3001
-- Total mutation endpoints tested: 105
-- Passed (non-5xx): 105
+- Total mutation endpoints tested: 113
+- Passed (non-5xx): 113
 - Failed (5xx/network): 0
-- Status histogram: {"200":8,"201":2,"400":48,"403":9,"404":38}
+- Status histogram: {"200":8,"201":3,"400":50,"403":9,"404":43}
 
 ## Coverage Strategy
 - Enumerated all router mutation handlers (`POST`, `PUT`, `DELETE`, `PATCH`) from `server/routes/*.js`.
@@ -49,10 +49,12 @@
 | POST | /api/deliveries/batch-assign | /api/deliveries/batch-assign | 400 | deliveries.js | delivery_ids array required. |
 | POST | /api/deliveries/settlements | /api/deliveries/settlements | 400 | deliveries.js | Validation failed |
 | PUT | /api/deliveries/:id(\\d+)/assign | /api/deliveries/999999/assign | 400 | deliveries.js | Validation failed |
+| PUT | /api/deliveries/:id(\\d+)/cancel | /api/deliveries/999999/cancel | 404 | deliveries.js | Delivery not found |
 | PUT | /api/deliveries/:id(\\d+)/deliver | /api/deliveries/999999/deliver | 403 | deliveries.js | You do not have permission to perform this action. |
 | PUT | /api/deliveries/:id(\\d+)/fail | /api/deliveries/999999/fail | 403 | deliveries.js | You do not have permission to perform this action. |
 | PUT | /api/deliveries/:id(\\d+)/in-transit | /api/deliveries/999999/in-transit | 403 | deliveries.js | You do not have permission to perform this action. |
 | PUT | /api/deliveries/:id(\\d+)/pickup | /api/deliveries/999999/pickup | 403 | deliveries.js | You do not have permission to perform this action. |
+| PUT | /api/deliveries/:id(\\d+)/reattempt | /api/deliveries/999999/reattempt | 404 | deliveries.js | Delivery not found |
 | PUT | /api/deliveries/pickup/:saleId/picked-up | /api/deliveries/pickup/999999/picked-up | 404 | deliveries.js | Pickup order not found |
 | PUT | /api/deliveries/pickup/:saleId/ready | /api/deliveries/pickup/999999/ready | 404 | deliveries.js | Pickup order not found |
 | PUT | /api/deliveries/settlements/:id(\\d+)/verify | /api/deliveries/settlements/999999/verify | 404 | deliveries.js | Settlement not found |
@@ -93,11 +95,16 @@
 | DELETE | /api/recurring-orders/:id | /api/recurring-orders/999999 | 404 | recurring-orders.js | Not found |
 | POST | /api/recurring-orders/ | /api/recurring-orders/ | 400 | recurring-orders.js | Validation failed |
 | PUT | /api/recurring-orders/:id | /api/recurring-orders/999999 | 404 | recurring-orders.js | Not found |
+| DELETE | /api/sales/:id | /api/sales/999999 | 404 | sales.js | Sale not found |
+| DELETE | /api/sales/drafts/:id | /api/sales/drafts/999999 | 404 | sales.js | Draft not found |
 | POST | /api/sales/ | /api/sales/ | 400 | sales.js | Validation failed |
 | POST | /api/sales/:id/fulfill-from-stock | /api/sales/999999/fulfill-from-stock | 400 | sales.js | Validation failed |
 | POST | /api/sales/:id/payments | /api/sales/999999/payments | 400 | sales.js | Validation failed |
 | POST | /api/sales/:id/refund | /api/sales/999999/refund | 400 | sales.js | Validation failed |
+| POST | /api/sales/admin/reset | /api/sales/admin/reset | 400 | sales.js | Confirmation required |
+| POST | /api/sales/custom-item | /api/sales/custom-item | 400 | sales.js | Validation failed |
 | POST | /api/sales/customer-order | /api/sales/customer-order | 400 | sales.js | Validation failed |
+| POST | /api/sales/drafts | /api/sales/drafts | 201 | sales.js |  |
 | POST | /api/sales/register/open | /api/sales/register/open | 201 | sales.js |  |
 | PUT | /api/sales/:id/cancel | /api/sales/999999/cancel | 404 | sales.js | Sale not found |
 | PUT | /api/sales/:id/convert-type | /api/sales/999999/convert-type | 400 | sales.js | Validation failed |
@@ -122,6 +129,7 @@
 | POST | /api/suppliers/ | /api/suppliers/ | 400 | suppliers.js | Validation failed |
 | POST | /api/suppliers/:id/materials | /api/suppliers/999999/materials | 400 | suppliers.js | Validation failed |
 | PUT | /api/suppliers/:id | /api/suppliers/999999 | 404 | suppliers.js | Supplier not found |
+| DELETE | /api/users/:id | /api/users/999999 | 404 | users.js | User not found |
 | POST | /api/users/ | /api/users/ | 400 | users.js | Validation failed |
 | PUT | /api/users/:id | /api/users/999999 | 404 | users.js | User not found |
 | PUT | /api/users/:id/reset-password | /api/users/999999/reset-password | 400 | users.js |  |

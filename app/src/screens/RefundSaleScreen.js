@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View, Text, StyleSheet, TextInput, TouchableOpacity,
   Alert, ActivityIndicator, ScrollView, Platform,
@@ -6,6 +6,8 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import api from '../services/api';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
+import useRegisterStatus from '../hooks/useRegisterStatus';
+import RegisterStatusBanner from '../components/RegisterStatusBanner';
 
 const REFUND_METHODS = [
   { key: 'cash', label: 'Cash', icon: 'cash' },
@@ -14,12 +16,22 @@ const REFUND_METHODS = [
 ];
 
 export default function RefundSaleScreen({ route, navigation }) {
-  const { saleId, grandTotal } = route.params;
+  const { saleId, grandTotal, locationId } = route.params;
   const [amount, setAmount] = useState(String(grandTotal || 0));
   const [reason, setReason] = useState('');
   const [method, setMethod] = useState('cash');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
+
+  // Same confirmed gap as ExpensesScreen — a cash refund hard-requires an
+  // open register server-side (POST /:id/refund) but this screen had no
+  // awareness of that at all before submitting (2026-09-04 audit).
+  const registerStatus = useRegisterStatus(locationId);
+  useEffect(() => {
+    if (!registerStatus.loading && !registerStatus.isOpen && method === 'cash') {
+      setMethod('card');
+    }
+  }, [registerStatus.loading, registerStatus.isOpen, method]);
 
   const handleRefund = async () => {
     setError(null);
@@ -63,6 +75,16 @@ export default function RefundSaleScreen({ route, navigation }) {
         <Text style={styles.title}>Process Refund</Text>
         <Text style={styles.hint}>Sale total: ₹{Number(grandTotal || 0).toFixed(2)}</Text>
 
+        {!registerStatus.loading && (
+          <RegisterStatusBanner
+            isOpen={registerStatus.isOpen}
+            isStale={registerStatus.isStale}
+            register={registerStatus.register}
+            onPress={() => navigation.navigate('CashRegister', { locationId })}
+            closedMessage="Cash refunds need it open — Card/UPI still work either way."
+          />
+        )}
+
         {error ? (
           <View style={{ backgroundColor: Colors.error + '20', padding: 12, borderRadius: 8, marginBottom: 16 }}>
             <Text style={{ color: Colors.error, fontSize: FontSize.sm }}>{error}</Text>
@@ -91,17 +113,25 @@ export default function RefundSaleScreen({ route, navigation }) {
 
         <Text style={styles.label}>Refund Method</Text>
         <View style={styles.chipRow}>
-          {REFUND_METHODS.map((m) => (
-            <TouchableOpacity
-              key={m.key}
-              style={[styles.chip, method === m.key && styles.chipActive]}
-              onPress={() => setMethod(m.key)}
-            >
-              <Ionicons name={m.icon} size={16} color={method === m.key ? Colors.white : Colors.textSecondary} />
-              <Text style={[styles.chipText, method === m.key && styles.chipTextActive]}>{m.label}</Text>
-            </TouchableOpacity>
-          ))}
+          {REFUND_METHODS.map((m) => {
+            const disabled = m.key === 'cash' && !registerStatus.loading && !registerStatus.isOpen;
+            const active = method === m.key;
+            return (
+              <TouchableOpacity
+                key={m.key}
+                style={[styles.chip, active && styles.chipActive, disabled && styles.chipDisabled]}
+                onPress={() => setMethod(m.key)}
+                disabled={disabled}
+              >
+                <Ionicons name={m.icon} size={16} color={active ? Colors.white : disabled ? Colors.textLight : Colors.textSecondary} />
+                <Text style={[styles.chipText, active && styles.chipTextActive, disabled && { color: Colors.textLight }]}>{m.label}</Text>
+              </TouchableOpacity>
+            );
+          })}
         </View>
+        {!registerStatus.loading && !registerStatus.isOpen && (
+          <Text style={styles.hintSmall}>Open the register to refund in cash.</Text>
+        )}
 
         <TouchableOpacity style={[styles.btn, submitting && { opacity: 0.6 }]} onPress={handleRefund} disabled={submitting}>
           {submitting ? <ActivityIndicator color={Colors.white} /> : (
@@ -140,8 +170,10 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: Colors.border,
   },
   chipActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
+  chipDisabled: { backgroundColor: Colors.surfaceAlt, borderColor: Colors.border, opacity: 0.6 },
   chipText: { fontSize: FontSize.xs, color: Colors.textSecondary },
   chipTextActive: { color: Colors.white, fontWeight: '600' },
+  hintSmall: { fontSize: FontSize.xs, color: Colors.textLight, marginTop: Spacing.xs, fontStyle: 'italic' },
   btn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.xs,
     backgroundColor: Colors.error, borderRadius: BorderRadius.md,

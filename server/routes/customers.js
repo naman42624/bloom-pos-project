@@ -9,6 +9,7 @@ const { getDb } = require('../config/database');
 const { getDb: getAsyncDb } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
 const { safeParseJSON } = require('../utils/json');
+const { hasOpenRegister, REGISTER_CLOSED_MESSAGE } = require('../utils/register-guard');
 
 // ─── GET /api/customers ─────────────────────────────────────
 // List all customers (users with role='customer') + any unique phones from sales
@@ -599,6 +600,18 @@ router.post(
 
       if (totalReduction > customer.credit_balance + 0.01) {
         return res.status(400).json({ success: false, message: `Total reduction (₹${totalReduction}) exceeds outstanding balance (₹${customer.credit_balance})` });
+      }
+
+      // FIXED (2026-09-04): this was the one cash-write site in the codebase
+      // with no hasOpenRegister check — a cash credit-payment could be
+      // recorded (credit_balance reduced, sale marked paid) with the
+      // register closed or never opened, and the cash amount silently never
+      // reached any cash_registers row (the `if (register)` guard further
+      // below just skips crediting when none is open, with nothing telling
+      // the caller that happened). Same guard, same message, as every other
+      // add-on-payment route in this codebase.
+      if (paymentList.some((p) => p.method === 'cash') && !hasOpenRegister(db, numLocationId)) {
+        return res.status(400).json({ success: false, message: REGISTER_CLOSED_MESSAGE });
       }
 
       const creditTx = db.transaction(() => {

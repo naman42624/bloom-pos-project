@@ -48,7 +48,7 @@ npm install
 npm run dev        # Starts on http://localhost:3001
 ```
 
-The server uses **SQLite** (via better-sqlite3) so no external database setup is needed.
+The server uses **PostgreSQL**. Configure `DATABASE_URL` in `server/.env` before starting.
 
 ### 2. Start the Frontend
 
@@ -107,7 +107,7 @@ Then press:
 
 ### Backend
 - **Express.js 4** — API server
-- **better-sqlite3** — Zero-config embedded database
+- **pg** — PostgreSQL client for Node.js
 - **jsonwebtoken** — JWT authentication
 - **bcryptjs** — Password hashing
 - **express-validator** — Request validation
@@ -124,6 +124,7 @@ Then press:
 | Variable       | Default                                    | Description              |
 |----------------|--------------------------------------------|--------------------------|
 | `PORT`         | `3001`                                     | Server port              |
+| `DATABASE_URL` | `postgresql://user:password@localhost:5432/bloomcart` | PostgreSQL connection URL |
 | `JWT_SECRET`   | `your-super-secret-jwt-key-...`            | JWT signing secret       |
 | `JWT_EXPIRES_IN` | `7d`                                     | Token expiration         |
 | `NODE_ENV`     | `development`                              | Environment mode         |

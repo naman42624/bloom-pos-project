@@ -1,7 +1,7 @@
 # Mutation Happy-Path Chained Test Report
 
-- Start: 2026-03-12T23:03:19.091Z
-- End: 2026-03-12T23:03:22.074Z
+- Start: 2026-04-02T09:23:02.239Z
+- End: 2026-04-02T09:23:05.722Z
 - Base URL: http://localhost:3001
 - Total steps: 33
 - Passed (2xx/3xx): 33
@@ -18,14 +18,14 @@
 
 ## Created Entities
 - location_id: 1
-- category_id: 20
-- material_id: 24
-- product_id: 13
-- customer_id: 26
-- address_id: 10
-- special_date_id: 7
-- expense_id: 8
-- sale_id: 45
+- category_id: 75
+- material_id: 84
+- product_id: 71
+- customer_id: 125
+- address_id: 70
+- special_date_id: 34
+- expense_id: 32
+- sale_id: 83
 
 ## Step Results
 | # | Step | Request | Status | Result | Notes |

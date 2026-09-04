@@ -1,28 +1,37 @@
 require('dotenv').config();
 const { getDb } = require('./config/database-async');
 
-const saleId = process.argv[2];
+const inputId = process.argv[2];
 
-if (!saleId) {
-  console.error('Please provide a sale ID. Usage: node restore_order.js <SALE_ID>');
+if (!inputId) {
+  console.error('Please provide a sale ID or Order Number. Usage: node restore_order.js <ID or ORD-...>');
   process.exit(1);
 }
 
 async function restoreOrder() {
-  console.log(`--- Restoring Order #${saleId} ---`);
+  console.log(`--- Restoring Order: ${inputId} ---`);
   try {
     const db = await getDb();
     
-    const sale = await db.prepare('SELECT * FROM sales WHERE id = ?').get(saleId);
+    // Check by ID if it's a number, otherwise by sale_number
+    let sale;
+    if (!isNaN(inputId) && Number(inputId) > 0) {
+      sale = await db.prepare('SELECT * FROM sales WHERE id = ?').get(inputId);
+    } else {
+      sale = await db.prepare('SELECT * FROM sales WHERE sale_number = ?').get(inputId);
+    }
+
     if (!sale) {
-      console.error(`Order ${saleId} not found.`);
+      console.error(`Order '${inputId}' not found.`);
       process.exit(1);
     }
 
     if (sale.status !== 'cancelled') {
-      console.error(`Order ${saleId} is not cancelled (current status: ${sale.status}). Cannot restore.`);
+      console.error(`Order ${sale.sale_number} is not cancelled (current status: ${sale.status}). Cannot restore.`);
       process.exit(1);
     }
+
+    const saleId = sale.id;
 
     await db.exec('BEGIN');
 
@@ -54,7 +63,7 @@ async function restoreOrder() {
     // By setting status to 'pending', the normal app workflow will deduct stock when the staff marks tasks as completed!
 
     await db.exec('COMMIT');
-    console.log(`--- Successfully Restored Order #${saleId} ---`);
+    console.log(`--- Successfully Restored Order ${sale.sale_number} (ID: ${saleId}) ---`);
     console.log(`NOTE: Any payments originally on this order may have been re-allocated to other orders when it was cancelled. If the customer paid for this, you may need to manually click 'Record Payment' on this order again.`);
     
   } catch (err) {

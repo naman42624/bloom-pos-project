@@ -57,11 +57,23 @@ router.get('/', authenticate, authorize('owner', 'manager', 'employee', 'counter
     const db = await getAsyncDb();
     const { location_id, category, start_date, end_date } = req.query;
 
+    // register_opened_at/register_closed_at let the client show which
+    // session an expense belongs to — added because multiple sessions in
+    // one day are a real, regular occurrence at this shop, and expenses
+    // already stored the right register_id with nothing surfacing it
+    // (2026-09-04 cash-register/expense audit). LEFT JOIN: a cash expense
+    // recorded with no register open at all (legacy data, or the
+    // register_id column not existing yet — see hasExpenseNumberColumn's
+    // sibling fallback in POST /) still returns the expense, just with
+    // both fields null.
     let sql = `
-      SELECT e.*, l.name as location_name, u.name as created_by_name
+      SELECT e.*, l.name as location_name, u.name as created_by_name,
+             cr.opening_time as register_opened_at, cr.opened_at as register_opened_at_fallback,
+             cr.closed_at as register_closed_at
       FROM expenses e
       JOIN locations l ON e.location_id = l.id
       JOIN users u ON e.created_by = u.id
+      LEFT JOIN cash_registers cr ON cr.id = e.register_id
       WHERE 1=1
     `;
     const params = [];
@@ -75,11 +87,15 @@ router.get('/', authenticate, authorize('owner', 'manager', 'employee', 'counter
 
     const expenses = await db.prepare(sql).all(...params);
 
-    const normalizedExpenses = expenses.map((expense) => ({
-      ...expense,
-      amount: Number(expense.amount) || 0,
-      is_return: !!expense.is_return,
-    }));
+    const normalizedExpenses = expenses.map((expense) => {
+      const { register_opened_at_fallback, ...rest } = expense;
+      return {
+        ...rest,
+        amount: Number(expense.amount) || 0,
+        is_return: !!expense.is_return,
+        register_opened_at: expense.register_opened_at || register_opened_at_fallback || null,
+      };
+    });
 
     // Calculate totals using numeric amounts so the client always receives numbers.
     const total = normalizedExpenses.reduce((sum, expense) => sum + (expense.is_return ? -expense.amount : expense.amount), 0);
@@ -207,13 +223,26 @@ router.delete('/:id', authenticate, authorize('owner', 'manager'), (req, res, ne
         || db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1').get(expense.location_id)?.id;
 
       if (registerId) {
-        if (expense.is_return) {
-          // Reversing a return: expected_cash should go back down
-          db.prepare('UPDATE cash_registers SET expected_cash = expected_cash - ? WHERE id = ?').run(expense.amount, registerId);
-        } else {
-          // Reversing an expense: expected_cash should go back up
-          db.prepare('UPDATE cash_registers SET expected_cash = expected_cash + ? WHERE id = ?').run(expense.amount, registerId);
-        }
+        // If the target session is already CLOSED, its discrepancy was
+        // frozen at close time against the expected_cash that existed
+        // then — adjusting expected_cash here without also recomputing
+        // discrepancy left a closed session's own historical record
+        // internally inconsistent (expected_cash says one thing,
+        // discrepancy still reflects the pre-deletion value). actual_cash
+        // is a real physical count from that close and must never change;
+        // discrepancy is just expected_cash - actual_cash recomputed
+        // against the corrected expected_cash. All SET expressions below
+        // read the OLD row (standard SQL UPDATE semantics), so referencing
+        // expected_cash in the discrepancy CASE still means "before this
+        // delta" even though expected_cash is being changed in the same
+        // statement. No-op for an open session (discrepancy isn't set yet).
+        const delta = expense.is_return ? -Number(expense.amount) : Number(expense.amount);
+        db.prepare(`
+          UPDATE cash_registers SET
+            expected_cash = expected_cash + ?,
+            discrepancy = CASE WHEN closed_at IS NOT NULL THEN (expected_cash + ?) - actual_cash ELSE discrepancy END
+          WHERE id = ?
+        `).run(delta, delta, registerId);
       }
     }
 

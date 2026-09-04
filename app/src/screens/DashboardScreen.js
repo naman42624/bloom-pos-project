@@ -6,6 +6,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
   Image,
@@ -18,10 +19,12 @@ import useBreakpoint from '../hooks/useBreakpoint';
 import api from '../services/api';
 import { showAlert } from '../utils/alert';
 import { Colors, FontSize, Spacing } from '../constants/theme';
-import { parseServerDate, getShopNow, getShopTodayStr, DEFAULT_TZ, formatTimeString } from '../utils/datetime';
+import { parseServerDate, getShopNow, getShopTodayStr, DEFAULT_TZ, formatTimeString, formatDateLabel } from '../utils/datetime';
+import { isRegisterStale } from '../hooks/useRegisterStatus';
 import { OrderQuickModal } from '../components/QuickModals';
 import OrderKanbanBoard from '../components/orderBoard/OrderKanbanBoard';
 import AssignPickerModal from '../components/orderBoard/AssignPickerModal';
+import DeliveryChecklist from '../components/DeliveryChecklist';
 // The one place the "does starting this need a preparer, and who decides?"
 // rule lives. Imported rather than restated so this screen, the order card and
 // the order modal cannot drift apart on it (Task 15 review).
@@ -42,9 +45,15 @@ import {
   PREP_ROLES,
 } from '../constants/orderDisplay';
 
-function RegisterCard({ item, onPress }) {
-  const { locationName, isOpen, register } = item;
-  const tone = isOpen ? '#10B981' : '#E11D48';
+function RegisterCard({ item, onPress, onSettlePress }) {
+  const { locationName, isOpen, register, pendingCodTotal, pendingCodDeliveries } = item;
+  // Open but opened before today (spans a day boundary) gets its own amber
+  // tone instead of reading as a plain, healthy "OPEN" — same reasoning as
+  // CashRegisterScreen.js's hero card (isRegisterStale's own comment has the
+  // full story). Nothing here blocks anything; it's a heads-up.
+  const isStale = isOpen && isRegisterStale(register);
+  const tone = isOpen ? (isStale ? '#D97706' : '#10B981') : '#E11D48';
+  const codPending = Number(pendingCodTotal || 0) > 0;
   return (
     <TouchableOpacity
       style={[styles.registerCard, { borderLeftColor: tone, borderLeftWidth: 4 }]}
@@ -55,7 +64,7 @@ function RegisterCard({ item, onPress }) {
         <View style={{ flex: 1 }}>
           <Text style={styles.registerTitle}>{locationName}</Text>
           <Text style={[styles.registerStatus, { color: tone }]}>
-            {isOpen ? '● OPEN' : '● CLOSED'}
+            {isOpen ? (isStale ? `● OPEN since ${formatDateLabel(register?.opening_time || register?.opened_at)}` : '● OPEN') : '● CLOSED'}
           </Text>
         </View>
         <View style={{ alignItems: 'flex-end' }}>
@@ -74,6 +83,28 @@ function RegisterCard({ item, onPress }) {
           <Text style={styles.registerValue}>{formatMoney(register?.total_cash_sales || 0)}</Text>
         </View>
       </View>
+      {/* Money a delivery partner has collected for THIS location but hasn't
+          handed over yet. Existed in the pre-redesign dashboard (V2) as a
+          per-register alert; dropped when RegisterCard was rewritten — the
+          owner's registerCalls map never extracted pendingCodTotal/
+          pendingCodDeliveries from getRegisterStatus()'s response even
+          though the counter_staff/employee branches read the exact same
+          call's fields (see registerCalls above). Restored 2026-09-04, same
+          "which location" context (locationName above), matching the
+          compact banner counter staff already have on their own dashboard. */}
+      {codPending && (
+        <TouchableOpacity
+          style={[styles.codBannerCompact, { marginTop: 8 }]}
+          onPress={onSettlePress}
+          activeOpacity={0.75}
+        >
+          <Ionicons name="alert-circle" size={18} color="#92400E" />
+          <Text style={styles.codBannerCompactText}>
+            ₹{Number(pendingCodTotal).toLocaleString('en-IN', { maximumFractionDigits: 0 })} from {pendingCodDeliveries} deliver{pendingCodDeliveries !== 1 ? 'ies' : 'y'} not settled — Settle Now
+          </Text>
+          <Ionicons name="chevron-forward" size={16} color="#92400E" />
+        </TouchableOpacity>
+      )}
     </TouchableOpacity>
   );
 }
@@ -217,12 +248,30 @@ export default function DashboardScreen({ navigation }) {
   // A. In 'start' mode that flips a live sale to preparing.
   const preparerReqRef = useRef(0);
 
+  // { order, amount, method, reference, loading } while the Mark Delivered
+  // COD-entry prompt is open, null when closed — see resolveDeliverStep
+  // (OrderCard.js) and handleResolveAction's 'collect_cod' branch. Same
+  // shape/purpose as preparerPicker above, one level simpler: no staff list
+  // to fetch, just a form, so it opens filled-in rather than loading.
+  const [codCollectPicker, setCodCollectPicker] = useState(null);
+  // The order whose load checklist is open in a modal, null when closed —
+  // OrderCard's load pill (onVerifyLoad). Holds the whole order (not just a
+  // delivery id) so the modal's title can name the order.
+  const [loadChecklistOrder, setLoadChecklistOrder] = useState(null);
+
   const [locations, setLocations] = useState([]);
   const [locationScope, setLocationScope] = useState(null);
   const [dateScope, setDateScope] = useState(new Date());
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [sales, setSales] = useState([]);
   const [taskRows, setTaskRows] = useState([]);
+  // Real count of orders completed TODAY (shop timezone), independent of
+  // whatever the board's own `sales`/`counterPendingOrders` fetch contains —
+  // see the "Done today" chip on OrderKanbanBoard. Both role branches below
+  // fetch it directly with status=completed&limit=1 and read the API's
+  // accurate `total`, rather than deriving it by counting whatever happens
+  // to already be in the open-orders array.
+  const [doneTodayCount, setDoneTodayCount] = useState(0);
   const [staffPulse, setStaffPulse] = useState([]);
   const [registers, setRegisters] = useState([]);
   const [reportKPIs, setReportKPIs] = useState(null);
@@ -232,7 +281,7 @@ export default function DashboardScreen({ navigation }) {
   // Role-specific dashboard state
   const [myTasks, setMyTasks] = useState([]); // employee's/florist's own production tasks
   const [myDeliveries, setMyDeliveries] = useState([]); // delivery partner's own deliveries
-  const [counterStats, setCounterStats] = useState({ salesCount: 0, registerOpen: null, registerOpenedBy: null });
+  const [counterStats, setCounterStats] = useState({ salesCount: 0, registerOpen: null, registerOpenedBy: null, registerOpenedAt: null });
   const [counterPendingOrders, setCounterPendingOrders] = useState([]);
 
   const role = user?.role;
@@ -309,6 +358,7 @@ export default function DashboardScreen({ navigation }) {
             ...prev,
             registerOpen: registerRes?.data ? !registerRes.data.closed_at : null,
             registerOpenedBy: registerRes?.data?.opened_by_name || null,
+            registerOpenedAt: registerRes?.data?.opening_time || registerRes?.data?.opened_at || null,
             pendingCodTotal: Number(registerRes?.pendingCodTotal || 0),
             pendingCodDeliveries: Number(registerRes?.pendingCodDeliveries || 0),
           }));
@@ -321,7 +371,7 @@ export default function DashboardScreen({ navigation }) {
       // ─── Counter Staff: sales-focused fetch (counts/status only —
       // no revenue totals or cash amounts, per role scope) ──────
       if (isCounterStaff) {
-        const [summaryRes, registerRes, pendingRes, confirmedRes, preparingRes, readyRes, tasksRes] = await Promise.all([
+        const [summaryRes, registerRes, pendingRes, confirmedRes, preparingRes, readyRes, tasksRes, doneTodayRes] = await Promise.all([
           api.getTodaySummary(activeLocation?.id).catch(() => ({ data: { total_sales: 0 } })),
           activeLocation?.id ? api.getRegisterStatus(activeLocation.id).catch(() => ({ data: null })) : Promise.resolve({ data: null }),
           // Fetched wider than the 5 we display so the today/future split
@@ -357,11 +407,20 @@ export default function DashboardScreen({ navigation }) {
           // server-side, and carries no cost/margin fields (verified against
           // attachMaterialsToTasks in server/routes/production.js).
           api.getProductionTasks({}).catch(() => ({ data: [] })),
+          // "Done today" chip: this dashboard's four fetches above only ever
+          // request pending/confirmed/preparing/ready, so a completed order
+          // never enters counterPendingOrders and the chip's count was always
+          // 0 by construction, not merely 0 today — no live data state could
+          // ever have populated it. One row is enough; GET /sales computes an
+          // accurate `total` regardless of `limit`.
+          api.getSales({ status: 'completed', location_id: activeLocation?.id, filter_date: getShopTodayStr(DEFAULT_TZ), limit: 1 })
+            .catch(() => ({ data: { total: 0 } })),
         ]);
         setCounterStats({
           salesCount: Number(summaryRes?.data?.total_sales || 0),
           registerOpen: registerRes?.data ? !registerRes.data.closed_at : null,
           registerOpenedBy: registerRes?.data?.opened_by_name || null,
+          registerOpenedAt: registerRes?.data?.opening_time || registerRes?.data?.opened_at || null,
           // Money a delivery partner has collected (cash or UPI) but hasn't
           // handed over/been settled yet — was only ever shown on
           // CashRegisterScreen, and only to owner/manager there, so
@@ -377,6 +436,7 @@ export default function DashboardScreen({ navigation }) {
         const readyList = readyRes?.data?.sales || readyRes?.data || [];
         setCounterPendingOrders([...pendingList, ...confirmedList, ...preparingList, ...readyList]);
         setTaskRows(Array.isArray(tasksRes?.data) ? tasksRes.data : []);
+        setDoneTodayCount(Number(doneTodayRes?.data?.total || 0));
         setLoading(false);
         setRefreshing(false);
         return;
@@ -395,14 +455,25 @@ export default function DashboardScreen({ navigation }) {
       } else {
         locationId = activeLocation?.id || locationList?.[0]?.id || null;
       }
+      // `filters` (with filter_date) drives the DATE-SCOPED widgets below —
+      // Staff Today, Reports — which legitimately mean "today" or whatever
+      // day dateScope is set to. It no longer drives the board's own sales
+      // fetch (see boardFilters) — an owner/manager viewing the board got
+      // ZERO cards whenever nothing was created or scheduled on that exact
+      // date, even with dozens of open orders sitting at the location.
+      // Live-reproduced 2026-09-03: 0 rows at BOTH locations tested, against
+      // 26 (Main Shop) / 67 (Test Loc) real open orders. The board answers
+      // "what needs doing", which isn't a function of when the order was
+      // created — the counter_staff dashboard already fetches this way.
       const filters = locationId ? { location_id: locationId } : {};
       if (dateScope) {
         const pad = n => String(n).padStart(2, '0');
         filters.filter_date = `${dateScope.getFullYear()}-${pad(dateScope.getMonth() + 1)}-${pad(dateScope.getDate())}`;
       }
+      const boardFilters = locationId ? { location_id: locationId } : {};
 
       const reqs = [
-        api.getSales({ ...filters, limit: 500 }),
+        api.getSales({ ...boardFilters, limit: 500 }),
         api.getProductionTasks({}),
       ];
 
@@ -412,16 +483,29 @@ export default function DashboardScreen({ navigation }) {
       } else if (isStaff) {
         reqs.push(api.getMyTasks().catch(() => ({ data: [] })));
       }
+      // "Done today" chip: literal today regardless of dateScope (the chip
+      // says "today", not "the scoped day"), and independent of the now
+      // date-unfiltered board fetch above — that fetch will include
+      // completed orders from any day once the filter is gone, so counting
+      // off it would no longer mean "today". One row is enough; GET /sales
+      // computes an accurate `total` regardless of `limit`.
+      const doneTodayIdx = reqs.length;
+      reqs.push(
+        api.getSales({ ...boardFilters, status: 'completed', filter_date: getShopTodayStr(DEFAULT_TZ), limit: 1 })
+          .catch(() => ({ data: { total: 0 } }))
+      );
 
       const results = await Promise.all(reqs);
       const salesRes = results[0];
       const tasksRes = results[1];
+      const doneTodayRes = results[doneTodayIdx];
 
       const salesRows = salesRes?.data?.sales || salesRes?.data || [];
       const tasks = tasksRes?.data || [];
 
       setSales(Array.isArray(salesRows) ? salesRows.filter((s) => ORDER_TYPES.includes(s.order_type)) : []);
       setTaskRows(Array.isArray(tasks) ? tasks : []);
+      setDoneTodayCount(Number(doneTodayRes?.data?.total || 0));
 
       if (isOwnerOrManager) {
         const staffRes = results[2];
@@ -501,6 +585,13 @@ export default function DashboardScreen({ navigation }) {
                 locationName: loc.name,
                 isOpen: reg?.isOpen === true,
                 register: reg?.data || null,
+                // getRegisterStatus() has returned these two fields all along
+                // (the counter_staff/employee branches above already read them
+                // off the same call) — this owner-facing map just never
+                // extracted them, so RegisterCard had nothing to show even
+                // after being given a COD row to render. Restored 2026-09-04.
+                pendingCodTotal: Number(reg?.pendingCodTotal || 0),
+                pendingCodDeliveries: Number(reg?.pendingCodDeliveries || 0),
               };
             } catch {
               return {
@@ -873,6 +964,23 @@ export default function DashboardScreen({ navigation }) {
     }
     if (kind === 'record_cod') {
       navigation.navigate('POS', { screen: 'Settlements' });
+      return;
+    }
+    // OrderCard only emits this when resolveDeliverStep found real money
+    // outstanding on a Mark Delivered nextAction it already knows this viewer
+    // is allowed to fire (see that function) — so no role check here either,
+    // same idiom as pick_preparer above. Opens filled in with the exact
+    // outstanding amount; cash/upi mirrors PUT /deliveries/:id/deliver's own
+    // validation (body('cod_method').isIn(['cash','upi'])).
+    if (kind === 'collect_cod') {
+      const outstanding = Number(order.cod_amount || 0) - Number(order.cod_collected || 0);
+      setCodCollectPicker({
+        order,
+        amount: outstanding > 0 ? outstanding.toFixed(2) : '',
+        method: 'cash',
+        reference: '',
+        loading: false,
+      });
     }
   }, [navigation, activeLocation?.id, tasksBySaleId, user?.role, user?.id, fetchDashboard]);
 
@@ -920,6 +1028,17 @@ export default function DashboardScreen({ navigation }) {
       || counterPendingOrders.find((s) => s.id === order.id)
       || order;
     handleResolveAction(fresh, 'pick_preparer');
+  }, [sales, counterPendingOrders, handleResolveAction]);
+
+  // Same idea, for the order modal's Mark Delivered when COD is outstanding
+  // (see QuickModals.js's confirmAction for why this exists at all — the
+  // modal used to fire /deliver bare with no COD form, unlike the card).
+  const handleCollectCodFromModal = useCallback((order) => {
+    if (!order?.id) return;
+    const fresh = sales.find((s) => s.id === order.id)
+      || counterPendingOrders.find((s) => s.id === order.id)
+      || order;
+    handleResolveAction(fresh, 'collect_cod');
   }, [sales, counterPendingOrders, handleResolveAction]);
 
   // Closing is also a cancellation — same contract as closeRiderPicker.
@@ -1022,15 +1141,81 @@ export default function DashboardScreen({ navigation }) {
     }
   }, [preparerPicker, fetchDashboard]);
 
+  const closeCodCollectPicker = useCallback(() => setCodCollectPicker(null), []);
+
+  // Refetch on close (not on every checkbox toggle inside the checklist) so
+  // the card's "N/M" pill and completion color are current the moment the
+  // modal is dismissed, without a request per tap while it's open.
+  const closeLoadChecklist = useCallback(() => {
+    setLoadChecklistOrder(null);
+    fetchDashboard();
+  }, [fetchDashboard]);
+
+  // Submits Mark Delivered with the entered COD amount/method in one request —
+  // same endpoint resolveDeliverStep found outstanding money on
+  // (PUT /deliveries/:id/deliver), just no longer fired blind. Amount is
+  // capped to what's actually outstanding so a typo can't overshoot into the
+  // server's own "COD collection exceeds remaining amount" 400.
+  const handleSubmitCodCollect = useCallback(async () => {
+    const picker = codCollectPicker;
+    if (!picker?.order || picker.loading) return;
+    const nextAction = picker.order.display_stage?.nextAction;
+    if (!nextAction) {
+      setCodCollectPicker(null);
+      showAlert('Mark Delivered', 'This order has already moved on. Pull down to refresh.');
+      return;
+    }
+    const entered = parseFloat(picker.amount) || 0;
+    const outstanding = Number(picker.order.cod_amount || 0) - Number(picker.order.cod_collected || 0);
+    if (entered <= 0) {
+      showAlert('Mark Delivered', 'Enter the amount collected, or the exact outstanding amount if paid in full.');
+      return;
+    }
+    if (entered > outstanding + 0.01) {
+      showAlert('Mark Delivered', `Only ₹${outstanding.toFixed(2)} is outstanding on this order.`);
+      return;
+    }
+    setCodCollectPicker((prev) => (prev ? { ...prev, loading: true } : prev));
+    try {
+      await api.advanceOrder(nextAction, {
+        cod_collected: entered,
+        cod_method: picker.method,
+        cod_reference: picker.reference?.trim() || undefined,
+      });
+      setCodCollectPicker(null);
+      await fetchDashboard();
+    } catch (err) {
+      setCodCollectPicker((prev) => (prev ? { ...prev, loading: false } : prev));
+      showAlert('Mark Delivered', err?.message || 'Could not record this. Please try again.');
+    }
+  }, [codCollectPicker, fetchDashboard]);
+
+  // Same destination screen, two different tabs: owner/manager reach Orders
+  // Inbox via the `Orders` tab, counter staff via `EmployeeOrders`
+  // (MainNavigator.js registers one or the other for a role, never both).
+  // Hardcoding 'EmployeeOrders' would make either handler below a dead tap
+  // for the owner — React Navigation drops a navigate to a route no
+  // navigator in the tree owns, so nothing at all would happen.
+  const ordersInboxTab = isOwnerOrManager ? 'Orders' : 'EmployeeOrders';
+
+  // "Done today · N" chip — the only tap in this file that means "show me
+  // completed orders", so it's the only one that should carry that filter.
   const handleNavigateToDone = useCallback(() => {
-    // Same destination screen, two different tabs: owner/manager reach Orders
-    // Inbox via the `Orders` tab, counter staff via `EmployeeOrders`
-    // (MainNavigator.js registers one or the other for a role, never both).
-    // Hardcoding 'EmployeeOrders' would make the board's "Done today" chip a
-    // dead tap for the owner — React Navigation drops a navigate to a route
-    // no navigator in the tree owns, so nothing at all would happen.
-    navigation.navigate(isOwnerOrManager ? 'Orders' : 'EmployeeOrders', { screen: 'OrdersInbox' });
-  }, [navigation, isOwnerOrManager]);
+    navigation.navigate(ordersInboxTab, { screen: 'OrdersInbox', params: { status: 'completed' } });
+  }, [navigation, ordersInboxTab]);
+
+  // "N more — see all" on any Stage column (onShowAll, passed to every
+  // column alike — see OrderKanbanBoard/StageColumn). This is a generic
+  // overflow escape hatch, not specific to "done" — it used to share
+  // handleNavigateToDone because both were unfiltered, but that handler now
+  // hardcodes status=completed, which would silently mis-filter the "N
+  // more" link on every other column (e.g. Preparing) to show completed
+  // orders instead. Kept unfiltered here, matching pre-existing behaviour;
+  // making this respect the column's own stage is a separate improvement,
+  // not part of this fix.
+  const handleShowAllOrders = useCallback(() => {
+    navigation.navigate(ordersInboxTab, { screen: 'OrdersInbox' });
+  }, [navigation, ordersInboxTab]);
 
   const activeOrderModalData = useMemo(() => {
     if (!selectedOrderModal) return null;
@@ -1038,6 +1223,13 @@ export default function DashboardScreen({ navigation }) {
     const freshTasks = tasksBySaleId.get(selectedOrderModal.order.id) || selectedOrderModal.tasks;
     return { order: freshOrder, tasks: freshTasks };
   }, [selectedOrderModal, sales, tasksBySaleId]);
+
+  // Counter/employee register widget: open, but opened before today. Same
+  // reasoning and treatment as CashRegisterScreen.js's hero card and the
+  // owner's RegisterCard — see isRegisterStale's own comment. This is the
+  // widget counter staff (the people who'd actually forget to close it)
+  // look at every day, so it matters more here than anywhere else.
+  const counterRegisterStale = !!counterStats.registerOpen && isRegisterStale({ opening_time: counterStats.registerOpenedAt });
 
   // Counter staff dashboard: split today/unscheduled orders from
   // future-scheduled ones — otherwise a delivery due in 5 days sits mixed
@@ -1049,6 +1241,25 @@ export default function DashboardScreen({ navigation }) {
       scheduledLater: counterPendingOrders.filter((o) => o.scheduled_date && o.scheduled_date > todayStr),
     };
   }, [counterPendingOrders]);
+
+  // Same today/future split as counterOrdersSplit, applied to the owner/
+  // manager board's own `sales` fetch. That fetch is deliberately
+  // date-unfiltered now (see the comment above `boardFilters` — an
+  // owner/manager viewing the board went to ZERO cards on any day nothing
+  // was created/scheduled exactly then), which fixed that bug but
+  // reintroduced the one this split exists to solve: a pre_order/delivery
+  // scheduled days out sat mixed into "New" today, cluttering the board
+  // with nothing actionable. This is a different axis than that fetch-time
+  // date filter — it's the order's own scheduled_date, checked client-side
+  // after the fetch — so restoring it here does not bring back the 0-cards
+  // bug (2026-09-04).
+  const ordersSplit = useMemo(() => {
+    const todayStr = getShopTodayStr(DEFAULT_TZ);
+    return {
+      dueToday: sales.filter((o) => !o.scheduled_date || o.scheduled_date <= todayStr),
+      scheduledLater: sales.filter((o) => o.scheduled_date && o.scheduled_date > todayStr),
+    };
+  }, [sales]);
 
   // Florist/employee task dashboard: same today/future split, applied to
   // the active (not completed/cancelled) task list (2026-08-31 fix).
@@ -1296,14 +1507,24 @@ export default function DashboardScreen({ navigation }) {
                   at all to reach CashRegisterScreen to close it at end of
                   shift (found live, 2026-09-01). Always tappable now. */}
               <TouchableOpacity
-                style={[styles.roleStatCard, { borderLeftColor: counterStats.registerOpen ? '#10B981' : '#EF4444' }]}
+                style={[styles.roleStatCard, { borderLeftColor: counterStats.registerOpen ? (counterRegisterStale ? '#D97706' : '#10B981') : '#EF4444' }]}
                 onPress={() => navigation.navigate('POS', { screen: 'CashRegister' })}
               >
-                <Ionicons name={counterStats.registerOpen ? 'lock-open-outline' : 'lock-closed-outline'} size={20} color={counterStats.registerOpen ? '#10B981' : '#EF4444'} />
+                <Ionicons name={counterStats.registerOpen ? 'lock-open-outline' : 'lock-closed-outline'} size={20} color={counterStats.registerOpen ? (counterRegisterStale ? '#D97706' : '#10B981') : '#EF4444'} />
                 <Text style={[styles.roleStatCount, { fontSize: 14 }]}>{counterStats.registerOpen === null ? '—' : counterStats.registerOpen ? 'Open' : 'Closed'}</Text>
                 <Text style={styles.roleStatLabel}>Register</Text>
               </TouchableOpacity>
             </View>
+
+            {counterRegisterStale && (
+              <TouchableOpacity style={styles.codBannerCompact} onPress={() => navigation.navigate('POS', { screen: 'CashRegister' })}>
+                <Ionicons name="time-outline" size={20} color="#92400E" />
+                <Text style={styles.codBannerCompactText}>
+                  Register open since {formatDateLabel(counterStats.registerOpenedAt)} — close it out when you get a chance
+                </Text>
+                <Ionicons name="chevron-forward" size={16} color="#92400E" />
+              </TouchableOpacity>
+            )}
 
             {!counterStats.registerOpen && counterStats.registerOpen !== null && (
               <TouchableOpacity style={styles.roleEmptyCard} onPress={() => navigation.navigate('POS', { screen: 'CashRegister' })}>
@@ -1362,18 +1583,22 @@ export default function DashboardScreen({ navigation }) {
                   sales={counterOrdersSplit.dueToday}
                   onOrderPress={(order) => setSelectedOrderModal({ order, tasks: tasksBySaleId.get(order.id) })}
                   onResolveAction={handleResolveAction}
+                  onVerifyLoad={(order) => setLoadChecklistOrder(order)}
                   onNavigateToDone={handleNavigateToDone}
-                  onShowAll={handleNavigateToDone}
+                  onShowAll={handleShowAllOrders}
                   tasksBySaleId={tasksBySaleId}
                   timezone={timezone}
                   viewerRole={user?.role}
                   viewerId={user?.id}
                   onRefresh={fetchDashboard}
+                  doneCountOverride={doneTodayCount}
                 />
                 {counterOrdersSplit.scheduledLater.length > 0 && (
-                  <Text style={{ fontSize: 12, color: '#6B7280', textAlign: 'center', marginTop: 4 }}>
-                    +{counterOrdersSplit.scheduledLater.length} more scheduled for later
-                  </Text>
+                  <TouchableOpacity onPress={handleShowAllOrders} activeOpacity={0.7}>
+                    <Text style={{ fontSize: 12, color: '#6B7280', textAlign: 'center', marginTop: 4, textDecorationLine: 'underline' }}>
+                      +{counterOrdersSplit.scheduledLater.length} more scheduled for later
+                    </Text>
+                  </TouchableOpacity>
                 )}
               </>
             )}
@@ -1404,15 +1629,25 @@ export default function DashboardScreen({ navigation }) {
                   as the counter_staff fix above. */}
               {role === 'employee' && (
                 <TouchableOpacity
-                  style={[styles.roleStatCard, { borderLeftColor: counterStats.registerOpen ? '#10B981' : '#EF4444' }]}
+                  style={[styles.roleStatCard, { borderLeftColor: counterStats.registerOpen ? (counterRegisterStale ? '#D97706' : '#10B981') : '#EF4444' }]}
                   onPress={() => navigation.navigate('POS', { screen: 'CashRegister' })}
                 >
-                  <Ionicons name={counterStats.registerOpen ? 'lock-open-outline' : 'lock-closed-outline'} size={20} color={counterStats.registerOpen ? '#10B981' : '#EF4444'} />
+                  <Ionicons name={counterStats.registerOpen ? 'lock-open-outline' : 'lock-closed-outline'} size={20} color={counterStats.registerOpen ? (counterRegisterStale ? '#D97706' : '#10B981') : '#EF4444'} />
                   <Text style={[styles.roleStatCount, { fontSize: 14 }]}>{counterStats.registerOpen === null ? '—' : counterStats.registerOpen ? 'Open' : 'Closed'}</Text>
                   <Text style={styles.roleStatLabel}>Register</Text>
                 </TouchableOpacity>
               )}
             </View>
+
+            {role === 'employee' && counterRegisterStale && (
+              <TouchableOpacity style={styles.codBannerCompact} onPress={() => navigation.navigate('POS', { screen: 'CashRegister' })}>
+                <Ionicons name="time-outline" size={20} color="#92400E" />
+                <Text style={styles.codBannerCompactText}>
+                  Register open since {formatDateLabel(counterStats.registerOpenedAt)} — close it out when you get a chance
+                </Text>
+                <Ionicons name="chevron-forward" size={16} color="#92400E" />
+              </TouchableOpacity>
+            )}
 
             {role === 'employee' && !counterStats.registerOpen && counterStats.registerOpen !== null && (
               <TouchableOpacity style={styles.roleEmptyCard} onPress={() => navigation.navigate('POS', { screen: 'CashRegister' })}>
@@ -1643,8 +1878,17 @@ export default function DashboardScreen({ navigation }) {
           </View>
         ) : (
           /* ═══ OWNER / MANAGER DASHBOARD ═══ */
-          <View style={[styles.layout, isDesktop && styles.layoutDesktop]}>
-            <View style={[styles.feedCol, isDesktop && { flex: 2 }]}>
+          /* Board gets the full width on every screen size — Team & Finance
+             moves BELOW it rather than squeezing it into 2/3 width, per the
+             owner's direct request (2026-09-04). Was a row-on-desktop split
+             (feedCol flex:2 / healthCol flex:1); the "1/3 width" complaint
+             was structural for anyone who isn't `owner`, since a manager
+             only ever sees Staff Pulse there — Registers and Revenue are
+             owner-only — so a manager lost a third of the page's width to
+             one small widget. `layoutDesktop`/the flex overrides are gone;
+             `layout`'s plain `{ gap: 16 }` already stacks correctly. */
+          <View style={styles.layout}>
+            <View style={styles.feedCol}>
               <View style={styles.sectionHeader}>
                 <View>
                   <Text style={styles.sectionTitle}>Order Management</Text>
@@ -1654,96 +1898,120 @@ export default function DashboardScreen({ navigation }) {
 
               <View style={{ gap: 12 }}>
                 <OrderKanbanBoard
-                  sales={sales}
+                  sales={ordersSplit.dueToday}
                   onOrderPress={(order) => setSelectedOrderModal({ order, tasks: tasksBySaleId.get(order.id) })}
                   onResolveAction={handleResolveAction}
+                  onVerifyLoad={(order) => setLoadChecklistOrder(order)}
                   onNavigateToDone={handleNavigateToDone}
-                  onShowAll={handleNavigateToDone}
+                  onShowAll={handleShowAllOrders}
                   tasksBySaleId={tasksBySaleId}
                   timezone={timezone}
                   viewerRole={user?.role}
                   viewerId={user?.id}
                   onRefresh={fetchDashboard}
+                  doneCountOverride={doneTodayCount}
                 />
+                {ordersSplit.scheduledLater.length > 0 && (
+                  <TouchableOpacity onPress={handleShowAllOrders} activeOpacity={0.7}>
+                    <Text style={{ fontSize: 12, color: '#6B7280', textAlign: 'center' }}>
+                      +{ordersSplit.scheduledLater.length} more scheduled for later
+                    </Text>
+                  </TouchableOpacity>
+                )}
               </View>
             </View>
 
-            <View style={[styles.healthCol, isDesktop && { flex: 1 }]}>
+            <View style={styles.healthCol}>
               <View style={styles.sectionHeader}>
                 <Text style={styles.sectionTitle}>Team & Finance</Text>
               </View>
 
-              {/* Staff Pulse Widget */}
-              <View style={styles.widgetCard}>
-                <View style={styles.widgetHeader}>
-                  <Text style={styles.widgetTitle}>Staff Pulse</Text>
-                  <TouchableOpacity onPress={() => isOwnerOrManager ? navigation.navigate('More', { screen: 'Staff', initial: false }) : null}>
-                    <Ionicons name="open" size={14} color="#9CA3AF" />
-                  </TouchableOpacity>
+              {/* The three widget groups below sit in a row on wide screens
+                  (isDesktop, 1100px — the same threshold the board itself no
+                  longer needs but this section still benefits from) and stack
+                  on narrow ones. Full-width real estate is now available here
+                  precisely because the board above stopped needing to share
+                  it, so laying these out side by side uses it rather than
+                  leaving it as the same cramped single column, just moved. */}
+              <View style={[styles.healthRow, isDesktop && styles.healthRowDesktop]}>
+                {/* Staff Pulse Widget */}
+                <View style={[styles.healthGroup, isDesktop && styles.healthGroupDesktop]}>
+                  <View style={styles.widgetCard}>
+                    <View style={styles.widgetHeader}>
+                      <Text style={styles.widgetTitle}>Staff Pulse</Text>
+                      <TouchableOpacity onPress={() => isOwnerOrManager ? navigation.navigate('More', { screen: 'Staff', initial: false }) : null}>
+                        <Ionicons name="open" size={14} color="#9CA3AF" />
+                      </TouchableOpacity>
+                    </View>
+
+                    {staffPulse.length === 0 ? (
+                      <Text style={styles.emptyWidgetText}>No staff data</Text>
+                    ) : (
+                      <View style={{ gap: 6 }}>
+                        {staffPulse.map((s) => <StaffPulseRow key={s.id} staff={s} />)}
+                      </View>
+                    )}
+                  </View>
                 </View>
 
-                {staffPulse.length === 0 ? (
-                  <Text style={styles.emptyWidgetText}>No staff data</Text>
-                ) : (
-                  <View style={{ gap: 6 }}>
-                    {staffPulse.map((s) => <StaffPulseRow key={s.id} staff={s} />)}
+                {/* Cash Register Widget */}
+                {isOwner && (
+                  <View style={[styles.healthGroup, isDesktop && styles.healthGroupDesktop]}>
+                    <View style={styles.sectionHeader}>
+                      <Text style={styles.sectionTitle}>Registers</Text>
+                    </View>
+
+                    <View style={{ gap: 8 }}>
+                      {registers.length === 0 ? (
+                        <View style={styles.widgetCard}>
+                          <Text style={styles.emptyWidgetText}>No register data</Text>
+                        </View>
+                      ) : (
+                        registers.map((r) => (
+                          <RegisterCard
+                            key={r.locationId}
+                            item={r}
+                            onPress={() => navigation.navigate('POS', {
+                              screen: 'CashRegister',
+                              params: { locationId: r.locationId }
+                            })}
+                            onSettlePress={() => navigation.navigate('POS', {
+                              screen: 'Settlements',
+                              params: { locationId: r.locationId }
+                            })}
+                          />
+                        ))
+                      )}
+                    </View>
+                  </View>
+                )}
+
+                {/* Revenue Snapshot */}
+                {isOwner && reportKPIs && (
+                  <View style={[styles.healthGroup, isDesktop && styles.healthGroupDesktop]}>
+                    <View style={styles.sectionHeader}>
+                      <Text style={styles.sectionTitle}>Revenue</Text>
+                    </View>
+                    <View style={styles.widgetCard}>
+                      <View style={styles.revenueStat}>
+                        <Text style={styles.revenueLabel}>Today</Text>
+                        <Text style={styles.revenueValue}>{formatMoney(reportKPIs?.today?.revenue)}</Text>
+                      </View>
+                      <View style={[styles.divider, { marginVertical: 10 }]} />
+                      <View style={[styles.rowBetween, { marginBottom: 8 }]}>
+                        <View style={styles.revenueStat}>
+                          <Text style={styles.revenueLabel}>Yesterday</Text>
+                          <Text style={styles.revenueValue}>{formatMoney(reportKPIs?.yesterday?.revenue)}</Text>
+                        </View>
+                        <View style={styles.revenueStat}>
+                          <Text style={styles.revenueLabel}>Week</Text>
+                          <Text style={styles.revenueValue}>{formatMoney(reportKPIs?.week?.revenue)}</Text>
+                        </View>
+                      </View>
+                    </View>
                   </View>
                 )}
               </View>
-
-              {/* Cash Register Widget */}
-              {isOwner && (
-                <>
-                  <View style={styles.sectionHeader}>
-                    <Text style={styles.sectionTitle}>Registers</Text>
-                  </View>
-
-                  <View style={{ gap: 8 }}>
-                    {registers.length === 0 ? (
-                      <View style={styles.widgetCard}>
-                        <Text style={styles.emptyWidgetText}>No register data</Text>
-                      </View>
-                    ) : (
-                      registers.map((r) => (
-                        <RegisterCard
-                          key={r.locationId}
-                          item={r}
-                          onPress={() => navigation.navigate('POS', {
-                            screen: 'CashRegister',
-                            params: { locationId: r.locationId }
-                          })}
-                        />
-                      ))
-                    )}
-                  </View>
-                </>
-              )}
-
-              {/* Revenue Snapshot */}
-              {isOwner && reportKPIs && (
-                <>
-                  <View style={styles.sectionHeader}>
-                    <Text style={styles.sectionTitle}>Revenue</Text>
-                  </View>
-                  <View style={styles.widgetCard}>
-                    <View style={styles.revenueStat}>
-                      <Text style={styles.revenueLabel}>Today</Text>
-                      <Text style={styles.revenueValue}>{formatMoney(reportKPIs?.today?.revenue)}</Text>
-                    </View>
-                    <View style={[styles.divider, { marginVertical: 10 }]} />
-                    <View style={[styles.rowBetween, { marginBottom: 8 }]}>
-                      <View style={styles.revenueStat}>
-                        <Text style={styles.revenueLabel}>Yesterday</Text>
-                        <Text style={styles.revenueValue}>{formatMoney(reportKPIs?.yesterday?.revenue)}</Text>
-                      </View>
-                      <View style={styles.revenueStat}>
-                        <Text style={styles.revenueLabel}>Week</Text>
-                        <Text style={styles.revenueValue}>{formatMoney(reportKPIs?.week?.revenue)}</Text>
-                      </View>
-                    </View>
-                  </View>
-                </>
-              )}
             </View>
           </View>
         )}
@@ -1793,6 +2061,7 @@ export default function DashboardScreen({ navigation }) {
         // Same flow the card's Start Preparing uses, so which part of the card
         // someone happened to tap cannot change what the button does.
         onPickPreparer={handlePickPreparerFromModal}
+        onCollectCod={handleCollectCodFromModal}
       />
 
       {/* Two-tap assign: "Assign Rider" on the card opens this, one tap on a
@@ -1890,6 +2159,77 @@ export default function DashboardScreen({ navigation }) {
             ) : null
         }
       />
+
+      {/* Mark Delivered with COD outstanding (resolveDeliverStep, OrderCard.js).
+          One request: PUT /deliveries/:id/deliver already accepts
+          cod_collected/cod_method/cod_reference and marks the order delivered
+          in the same call — no separate "record it, then deliver" trip. */}
+      <Modal visible={codCollectPicker !== null} transparent animationType="fade" onRequestClose={closeCodCollectPicker}>
+        <TouchableOpacity style={styles.modalBackdrop} activeOpacity={1} onPress={closeCodCollectPicker}>
+          <TouchableOpacity activeOpacity={1} style={styles.taskModalCard} onPress={(e) => e.stopPropagation()}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Collect COD & Mark Delivered</Text>
+              <TouchableOpacity onPress={closeCodCollectPicker} hitSlop={5}>
+                <Ionicons name="close" size={20} color="#6B7280" />
+              </TouchableOpacity>
+            </View>
+            <View style={styles.modalContent}>
+              <Text style={styles.detailLabel}>Amount Collected</Text>
+              <TextInput
+                style={styles.codAmountInput}
+                value={codCollectPicker?.amount || ''}
+                onChangeText={(v) => setCodCollectPicker((prev) => (prev ? { ...prev, amount: v } : prev))}
+                keyboardType="numeric"
+                placeholder="0"
+                placeholderTextColor="#9CA3AF"
+                editable={!codCollectPicker?.loading}
+              />
+              <Text style={styles.detailLabel}>Method</Text>
+              <View style={{ flexDirection: 'row', gap: 8 }}>
+                {['cash', 'upi'].map((m) => (
+                  <TouchableOpacity
+                    key={m}
+                    style={[styles.codMethodChip, codCollectPicker?.method === m && styles.codMethodChipActive]}
+                    onPress={() => setCodCollectPicker((prev) => (prev ? { ...prev, method: m } : prev))}
+                    disabled={codCollectPicker?.loading}
+                  >
+                    <Text style={[styles.codMethodChipText, codCollectPicker?.method === m && styles.codMethodChipTextActive]}>
+                      {m.toUpperCase()}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+            <TouchableOpacity
+              style={[styles.actionBtnPrimary, codCollectPicker?.loading && { opacity: 0.6 }]}
+              onPress={handleSubmitCodCollect}
+              disabled={!!codCollectPicker?.loading}
+            >
+              {codCollectPicker?.loading
+                ? <ActivityIndicator color="#fff" />
+                : <Text style={styles.actionBtnPrimaryText}>Confirm & Mark Delivered</Text>}
+            </TouchableOpacity>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* Load-verify quick flow (OrderCard's load pill) — the same
+          DeliveryChecklist component DeliveryDetailScreen uses, opened right
+          from the board instead of navigating there. Refetches the board on
+          close so the pill's count/color is current. */}
+      <Modal visible={loadChecklistOrder !== null} animationType="slide" transparent onRequestClose={closeLoadChecklist}>
+        <TouchableOpacity style={styles.modalBackdrop} activeOpacity={1} onPress={closeLoadChecklist}>
+          <TouchableOpacity activeOpacity={1} style={[styles.taskModalCard, { height: '70%' }]} onPress={(e) => e.stopPropagation()}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Verify Load — #{loadChecklistOrder?.sale_number}</Text>
+              <TouchableOpacity onPress={closeLoadChecklist} hitSlop={5}>
+                <Ionicons name="close" size={20} color="#6B7280" />
+              </TouchableOpacity>
+            </View>
+            {loadChecklistOrder && <DeliveryChecklist deliveryId={loadChecklistOrder.delivery_id} />}
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
 
       <Modal visible={fabVisible} transparent animationType="fade" onRequestClose={() => setFabVisible(false)}>
         <TouchableOpacity style={styles.modalBackdrop} activeOpacity={1} onPress={() => setFabVisible(false)}>
@@ -2071,9 +2411,14 @@ const styles = StyleSheet.create({
   },
 
   layout: { gap: 16 },
-  layoutDesktop: { flexDirection: 'row', alignItems: 'flex-start' },
   feedCol: { gap: 8 },
   healthCol: { gap: 8 },
+  // The three Team & Finance widget groups: stacked by default, a row that
+  // wraps once there is real width to use (isDesktop, 1100px).
+  healthRow: { gap: 8 },
+  healthRowDesktop: { flexDirection: 'row', alignItems: 'flex-start', flexWrap: 'wrap' },
+  healthGroup: { gap: 8 },
+  healthGroupDesktop: { flex: 1, minWidth: 260 },
 
   sectionHeader: {
     marginBottom: 12,
@@ -2271,6 +2616,54 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '700',
     color: Colors.primary,
+    fontFamily: FONT_FAMILY,
+  },
+  // Collect COD & Mark Delivered modal (resolveDeliverStep, OrderCard.js).
+  codAmountInput: {
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#111827',
+    fontFamily: FONT_FAMILY,
+  },
+  codMethodChip: {
+    flex: 1,
+    minHeight: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.surfaceAlt,
+  },
+  codMethodChipActive: {
+    borderColor: Colors.primary,
+    backgroundColor: Colors.primary + '18',
+  },
+  codMethodChipText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#6B7280',
+    fontFamily: FONT_FAMILY,
+  },
+  codMethodChipTextActive: {
+    color: Colors.primary,
+  },
+  actionBtnPrimary: {
+    minHeight: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 10,
+    backgroundColor: Colors.primary,
+  },
+  actionBtnPrimaryText: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#fff',
     fontFamily: FONT_FAMILY,
   },
   quickActionsCard: {

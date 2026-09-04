@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { View, Text, StyleSheet, FlatList, TouchableOpacity, RefreshControl, ActivityIndicator, TextInput, ScrollView } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
@@ -28,7 +28,7 @@ function formatAmount(value) {
   return `₹${n.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
 }
 
-export default function OrdersInboxScreen({ navigation }) {
+export default function OrdersInboxScreen({ navigation, route }) {
   const { user } = useAuth();
   // Owner/manager already have full Customers access via the More tab —
   // this shortcut is only for employee/counter_staff, who don't have a
@@ -38,7 +38,10 @@ export default function OrdersInboxScreen({ navigation }) {
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [statusFilter, setStatusFilter] = useState(null);
+  // Seeded from an incoming `status` param (the Dashboard's Done chip lands
+  // here with { status: 'completed' }) so the inbox opens pre-filtered
+  // instead of the tap just parking on an unfiltered "All" list.
+  const [statusFilter, setStatusFilter] = useState(route.params?.status ?? null);
   const [channelFilter, setChannelFilter] = useState(null);
   const [priorityOnly, setPriorityOnly] = useState(false);
   const [search, setSearch] = useState('');
@@ -72,6 +75,15 @@ export default function OrdersInboxScreen({ navigation }) {
       }
     }
   }, [statusFilter, channelFilter, priorityOnly]);
+
+  // Re-sync if the screen was already mounted and a new `status` param
+  // arrives (e.g. Done chip tapped again from Dashboard while Orders Inbox
+  // is still alive in the stack). setStatusFilter here changes fetchOrders'
+  // identity, which the useFocusEffect below already re-runs on — no
+  // separate refetch call needed.
+  useEffect(() => {
+    if (route.params?.status !== undefined) setStatusFilter(route.params.status);
+  }, [route.params?.status]);
 
   useFocusEffect(useCallback(() => { setLoading(true); fetchOrders(); }, [fetchOrders]));
 

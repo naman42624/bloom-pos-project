@@ -977,7 +977,28 @@ export default function QuickCheckoutScreen({ navigation, route }) {
         const entered = payments.reduce((sum, p) => sum + (parseFloat(p.amount) || 0), 0);
         if (entered <= 0) {
           validationErrors.push('Enter at least one payment amount.');
+        // Same sum-check 'partial' mode already has below — without it, a
+        // typo'd split (entered too low or too high vs the actual total)
+        // was accepted silently: too low quietly created a 'partial'-status
+        // sale mislabeled as fully paid up front, too high overcredited the
+        // register with no warning (found in the same audit, 2026-09-04).
+        } else if (Math.abs(entered - totals.finalTotal) > 0.01) {
+          validationErrors.push(`Split payments (₹${entered.toFixed(0)}) must add up to the total (₹${totals.finalTotal.toFixed(0)}).`);
         }
+      }
+    }
+
+    // A split partial advance (e.g. ₹200 cash + ₹300 UPI) must actually sum
+    // to the stated Advance Payment amount — the server computes the
+    // delivery's COD amount from the REAL sum of what's submitted here
+    // (grand_total - totalPaid), not from the Advance Payment field, so a
+    // mismatch would silently change how much COD gets collected later
+    // without the "Balance ₹X to be collected later" line ever updating to
+    // say so.
+    if (paymentMode === 'partial' && enableSplitPayment) {
+      const splitEntered = payments.reduce((sum, p) => sum + (parseFloat(p.amount) || 0), 0);
+      if (Math.abs(splitEntered - partialAdvance) > 0.01) {
+        validationErrors.push(`Split payments (₹${splitEntered.toFixed(0)}) must add up to the advance amount (₹${partialAdvance.toFixed(0)}).`);
       }
     }
 
@@ -987,20 +1008,40 @@ export default function QuickCheckoutScreen({ navigation, route }) {
       return;
     }
 
-    // Register guard
-    const isRegOpen = await checkRegisterStatus(selectedLocation);
-    if (!isRegOpen) {
-      const msg = 'The cash register for this location is not open. Please open it before creating a sale.';
-      setSubmitErrors([msg]);
-      Alert.alert(
-        'Register Closed',
-        msg,
-        [
-          { text: 'Open Register', onPress: () => navigation.navigate('CashRegister') },
-          { text: 'Cancel', style: 'cancel' },
-        ]
-      );
-      return;
+    // Register guard — only when a cash payment is actually about to be
+    // submitted. This used to run unconditionally on every checkout,
+    // including paymentMode === 'credit' (sends payments: [] — zero cash,
+    // ever) and a pure card/UPI pay_now — blocking a legitimate credit or
+    // card sale for a register state that has nothing to do with it.
+    // LogOrderScreen.js's equivalent check already scopes this correctly
+    // (`if (paymentMethod === 'cash')`); this screen was the one that
+    // didn't (found live, 2026-09-04 cash-register/expense audit).
+    //
+    // 'partial' used to check payments[0]?.method here — the same stale
+    // reference the actual submission logic used to have, before THAT was
+    // fixed to properly branch on enableSplitPayment (same audit, found
+    // when a split ₹200 cash + ₹300 UPI advance was being submitted as one
+    // ₹500 cash entry). Kept in sync with paymentEntries' construction
+    // above: both 'pay_now' and 'partial' now ask the same question the
+    // same way.
+    const willPayCash = (paymentMode === 'pay_now' || paymentMode === 'partial')
+      ? (enableSplitPayment ? payments.some((p) => p.method === 'cash' && (parseFloat(p.amount) || 0) > 0) : paymentMethod === 'cash')
+      : false; // 'credit' and 'cod' never submit a payment at checkout time
+    if (willPayCash) {
+      const isRegOpen = await checkRegisterStatus(selectedLocation);
+      if (!isRegOpen) {
+        const msg = 'The cash register for this location is not open. Please open it before creating a sale.';
+        setSubmitErrors([msg]);
+        Alert.alert(
+          'Register Closed',
+          msg,
+          [
+            { text: 'Open Register', onPress: () => navigation.navigate('CashRegister') },
+            { text: 'Cancel', style: 'cancel' },
+          ]
+        );
+        return;
+      }
     }
 
     setSubmitting(true);
@@ -1056,8 +1097,22 @@ export default function QuickCheckoutScreen({ navigation, route }) {
       const discVal = parseFloat(discountValue) || 0;
 
       // Payment entries
+      // Advance amount for 'partial' mode.
+      const roundedAdvanceAmount = Math.round((parseFloat(advanceAmount) || 0) * 100) / 100;
+
       let paymentEntries = [];
-      if (paymentMode === 'pay_now') {
+      if (paymentMode === 'pay_now' || paymentMode === 'partial') {
+        // 'partial' used to hardcode payments[0].method + the full advance
+        // amount here, REGARDLESS of enableSplitPayment — so the visible
+        // (non-split) Payment Method chips did nothing at all (selecting
+        // UPI still submitted whatever payments[0] happened to be, which
+        // defaults to 'cash' and is only ever touched by the split editor),
+        // and a split advance (e.g. ₹200 cash + ₹300 UPI) collapsed to one
+        // entry using only the first row's method for the WHOLE advance.
+        // Both silently recorded a card/UPI advance as cash on the register.
+        // Found live, 2026-09-04. Now mirrors pay_now's own (already
+        // correct) branching exactly.
+        const totalForMode = paymentMode === 'partial' ? roundedAdvanceAmount : roundedGrandTotal;
         if (enableSplitPayment) {
           paymentEntries = payments.map(p => ({
             method: p.method,
@@ -1067,7 +1122,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
         } else {
           paymentEntries = [{
             method: paymentMethod,
-            amount: roundedGrandTotal,
+            amount: totalForMode,
             reference_number: paymentReference.trim() || null,
           }];
         }
@@ -1099,13 +1154,9 @@ export default function QuickCheckoutScreen({ navigation, route }) {
         scheduled_date: scheduledDate || null,
         scheduled_time: scheduledTime || null,
         items: cartItems,
-        payments: (paymentMode === 'pay_now' || paymentMode === 'partial') ? (
-          paymentMode === 'partial'
-            ? [{ method: payments[0].method, amount: Math.round((parseFloat(advanceAmount) || 0) * 100) / 100, reference_number: payments[0].reference || null }]
-            : paymentEntries
-        ) : [],
+        payments: (paymentMode === 'pay_now' || paymentMode === 'partial') ? paymentEntries : [],
         is_credit_sale: paymentMode === 'credit',
-        advance_amount: paymentMode === 'partial' ? Math.round((parseFloat(advanceAmount) || 0) * 100) / 100 : 0,
+        advance_amount: paymentMode === 'partial' ? roundedAdvanceAmount : 0,
         skip_assignment: skipAssignment,
         assigned_to: !skipAssignment ? assignedTo : null,
         route_id: needsDelivery ? (routeId || null) : null,

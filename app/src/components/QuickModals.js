@@ -32,6 +32,7 @@ import { showAlert, showConfirm } from '../utils/alert';
 import { Colors } from '../constants/theme';
 import { generateDeliverySlip, generatePickupSlip } from '../utils/printHelpers';
 import StageBadge from './StageBadge';
+import { resolveDeliverStep } from './orderBoard/OrderCard';
 
 // ─── Shared constants ────────────────────────────────────────────────────────
 
@@ -209,6 +210,9 @@ export function OrderQuickModal({
   // firing it bare, so this entry point and the order card's button do the
   // same thing. Omitted, the modal behaves exactly as it did before.
   onPickPreparer,
+  // Same idea, for Mark Delivered with COD outstanding — see the comment on
+  // resolveDeliverStep's check in confirmAction below.
+  onCollectCod,
 }) {
   const [actionLoading, setActionLoading] = useState(false);
   const [deliveryLoading, setDeliveryLoading] = useState(false);
@@ -314,6 +318,24 @@ export function OrderQuickModal({
         onPickPreparer(order);
         return;
       }
+      // Mark Delivered is the other advance that sometimes needs more than a
+      // bare tap: computeOrderStage() stopped nulling this nextAction just
+      // because COD is outstanding (2026-09-04, so the board could offer it
+      // at all), on the assumption that whoever fires it checks
+      // resolveDeliverStep first and prompts for the amount — which
+      // OrderCard's own button does, but this modal's doStatusChange did
+      // not, so it fired /deliver with an empty body and silently recorded
+      // ₹0 collected via no method at all (the exact "modal fires bare,
+      // card asks first" divergence the comment above already names for
+      // Start Preparing — found live: a real UPI collection went unrecorded
+      // this way and settled as an unaccounted amount folded into cash).
+      // Same fix shape: hand it to the parent's existing collect_cod flow
+      // instead of reimplementing the form here.
+      if (resolveDeliverStep({ order }).kind === 'collect_cod' && onCollectCod) {
+        onClose();
+        onCollectCod(order);
+        return;
+      }
       doStatusChange(chosen);
       return;
     }
@@ -325,7 +347,7 @@ export function OrderQuickModal({
       setConfirmingAction(key);
       setTimeout(() => setConfirmingAction(null), 3000);
     }
-  }, [doStatusChange, confirmingAction, onPickPreparer, onClose, order]);
+  }, [doStatusChange, confirmingAction, onPickPreparer, onCollectCod, onClose, order]);
 
   // Task actions
   const openEmployeePicker = useCallback(async (taskId) => {

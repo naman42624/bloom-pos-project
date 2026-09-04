@@ -63,6 +63,7 @@ export default function OrderKanbanBoard({
   sales,
   onOrderPress,
   onResolveAction,
+  onVerifyLoad,
   onNavigateToDone,
   onShowAll,
   tasksBySaleId,
@@ -70,6 +71,13 @@ export default function OrderKanbanBoard({
   viewerRole,
   viewerId,
   onRefresh,
+  // Real "done today" count from a dedicated status=completed&limit=1 fetch
+  // (DashboardScreen.js), reading the API's accurate `total`. Optional: when
+  // absent, falls back to deriving from `sales` as before. A caller that
+  // fetches only open statuses (never `completed`) — as this board's own
+  // counter_staff feed does — cannot derive a nonzero doneCount locally no
+  // matter what; the chip was unreachable there until this override existed.
+  doneCountOverride,
 }) {
   const { isWide } = useBreakpoint();
   const [typeFilter, setTypeFilter] = useState('all');
@@ -150,8 +158,14 @@ export default function OrderKanbanBoard({
     Object.keys(buckets).forEach((k) => {
       buckets[k].sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
     });
-    return { columns: buckets, doneCount: done };
-  }, [sales, typeFilter]);
+    // doneCountOverride, when given, is a real shop-wide "completed today"
+    // total from the server (see the prop's own comment) — NOT filtered by
+    // the type chip above, since it is one cheap total call rather than one
+    // per type. Any real number here is strictly better than the locally
+    // derived count it replaces, which was always 0 on every caller that
+    // never fetches `completed` orders at all (the counter_staff feed).
+    return { columns: buckets, doneCount: typeof doneCountOverride === 'number' ? doneCountOverride : done };
+  }, [sales, typeFilter, doneCountOverride]);
 
   const renderCard = useCallback((order) => (
     <OrderCard
@@ -165,8 +179,9 @@ export default function OrderKanbanBoard({
       onOpen={() => onOrderPress(order)}
       onQuickAction={handleQuickAction}
       onResolve={onResolveAction}
+      onVerifyLoad={onVerifyLoad}
     />
-  ), [tasksBySaleId, effectiveTimezone, quickActionLoading, viewerRole, viewerId, onOrderPress, handleQuickAction, onResolveAction]);
+  ), [tasksBySaleId, effectiveTimezone, quickActionLoading, viewerRole, viewerId, onOrderPress, handleQuickAction, onResolveAction, onVerifyLoad]);
 
   return (
     <View>

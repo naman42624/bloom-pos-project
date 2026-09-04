@@ -71,6 +71,27 @@ const PREFERENCE_SETTINGS = [
     icon: 'shield-checkmark-outline',
     iconColor: '#F59E0B',
   },
+  {
+    key: 'pref_flexible_task_assignment',
+    label: 'Flexible Task Assignment',
+    description: 'Let any staff member start or complete a production task, even one assigned to someone else. Turn off to require each task be done only by the person it\'s assigned to.',
+    icon: 'people-outline',
+    iconColor: '#3B82F6',
+  },
+  {
+    key: 'pref_counter_marks_pickup',
+    label: 'Counter Can Mark Picked Up',
+    description: 'Let counter staff mark a delivery order as picked up from the shop, on behalf of the delivery partner.',
+    icon: 'cube-outline',
+    iconColor: '#0EA5E9',
+  },
+  {
+    key: 'pref_counter_marks_delivered',
+    label: 'Counter Can Mark Delivered',
+    description: 'Let counter staff mark a delivery order as delivered, and record the COD amount collected, on behalf of the delivery partner.',
+    icon: 'checkmark-done-outline',
+    iconColor: '#0EA5E9',
+  },
 ];
 
 

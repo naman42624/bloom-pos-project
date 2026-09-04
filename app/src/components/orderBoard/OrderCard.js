@@ -97,8 +97,16 @@ function resolveDeadEnd(order, canManageDeliveries, canTakeMoney) {
   // is not order_type 'delivery', and gating on that would drop it straight
   // through into a card with no action at all.
   if (stageKey === 'ready' || stageKey === 'ready_for_pickup') {
-    const hasOpenDelivery = order.delivery_id != null
-      && !['delivered', 'cancelled'].includes(order.delivery_status);
+    // 'cancelled' used to sit alongside 'delivered' here — both read as
+    // "nothing more to do." True for 'delivered', wrong for 'cancelled':
+    // cancelling a DELIVERY (not the whole sale — "Cancel Delivery Only" on
+    // DeliveryDetailScreen, deliberately distinct from "Cancel Order Too")
+    // leaves the sale alive and still needing a rider. Grouping it with
+    // 'delivered' meant hasOpenDelivery went false, this whole branch was
+    // skipped, and the order fell through to a blank card (fully paid) or a
+    // "Collect ₹N" that had nothing to do with the actual problem — a real
+    // dead end, found live during the 2026-09-04 order-flow audit.
+    const hasOpenDelivery = order.delivery_id != null && order.delivery_status !== 'delivered';
     if (hasOpenDelivery) {
       // A FAILED delivery can never be "marked delivered" — PUT
       // /deliveries/:id/deliver accepts only picked_up/in_transit. Its real
@@ -113,6 +121,19 @@ function resolveDeadEnd(order, canManageDeliveries, canTakeMoney) {
           return { type: 'route', kind: 'reattempt_delivery', label: 'Delivery Failed — Send Again' };
         }
         return { type: 'status', text: 'Delivery failed — counter staff will resend' };
+      }
+      // Checked before the delivery_partner_name check below for the same
+      // reason 'failed' is: delivery_partner_id is never cleared by
+      // PUT /deliveries/:id/cancel, so without this a cancelled delivery
+      // would show the OLD rider's name as if they still had it. PUT
+      // /deliveries/:id/assign now accepts reassigning a 'cancelled'
+      // delivery (server-side fix, same audit), so this button actually
+      // works rather than routing to another dead end.
+      if (order.delivery_status === 'cancelled') {
+        if (canManageDeliveries) {
+          return { type: 'route', kind: 'assign_rider', label: 'Assign a New Rider' };
+        }
+        return { type: 'status', text: 'Delivery cancelled — needs a new rider' };
       }
       if (!order.delivery_partner_name) {
         if (canManageDeliveries) {
@@ -253,6 +274,26 @@ export function resolvePreparerStep({ order, tasks, viewerRole, viewerId }) {
 }
 
 /**
+ * Mark Delivered needs a COD amount/method the same way Start Preparing
+ * sometimes needs a preparer — server/utils/order-stage.js no longer nulls
+ * this nextAction just because COD is outstanding (PUT /deliveries/:id/deliver
+ * never required cod_collected to be complete), so the card decides whether
+ * firing it needs an inline prompt first, from the same cod_amount/
+ * cod_collected fields resolveDeadEnd already reads off the order.
+ *
+ * Returns:
+ *   { kind: 'advance' }                 — nothing outstanding, one tap, no prompt
+ *   { kind: 'collect_cod', outstanding } — ask for the amount, via 'collect_cod'
+ */
+export function resolveDeliverStep({ order }) {
+  const nextAction = order?.display_stage?.nextAction;
+  if (!nextAction?.endpoint?.endsWith('/deliver')) return { kind: 'advance' };
+  const outstanding = Number(order.cod_amount || 0) - Number(order.cod_collected || 0);
+  if (outstanding <= 0.01) return { kind: 'advance' };
+  return { kind: 'collect_cod', outstanding };
+}
+
+/**
  * Who is preparing this order, for the line shown on a `preparing` card.
  *
  * Returns null when there is nothing to say (no live tasks at all — e.g. a
@@ -321,11 +362,25 @@ export default function OrderCard({
   onOpen,
   onQuickAction,
   onResolve,
+  onVerifyLoad,
 }) {
   const sla = getOrderSla(order, timezone);
   const payment = getPaymentWarning(order);
   const taskProgress = getTaskProgress(tasks);
   const nextAction = order.display_stage?.nextAction;
+  // Load-verify pill (2026-09-04): shown once there's something to load and
+  // check off — 'ready' (about to be handed to a rider) or 'out_for_delivery'
+  // (already with one; still useful to see what went out). load_total_count
+  // is 0 for a non-delivery sale (see the server comment on either query
+  // this reads), so this never renders there. Number() on both — see the
+  // server-side comment on the same fields for why: pg hands COUNT back as a
+  // string.
+  const loadTotal = Number(order.load_total_count || 0);
+  const loadChecked = Number(order.load_checked_count || 0);
+  const showLoadPill = order.order_type === 'delivery'
+    && ['ready', 'out_for_delivery'].includes(order.display_stage?.key)
+    && loadTotal > 0;
+  const loadComplete = loadChecked >= loadTotal;
   // The only role logic in this component, and it decides exactly one thing:
   // routing button vs status line, for each of the three screens this card can
   // send someone to. Everything else stays server-decided via
@@ -353,6 +408,8 @@ export default function OrderCard({
   // The rule itself lives in resolvePreparerStep so the order modal's copy of
   // this same button cannot drift away from it.
   const preparerStep = resolvePreparerStep({ order, tasks, viewerRole, viewerId });
+  // ── COD outstanding on Mark Delivered? (see resolveDeliverStep) ──
+  const deliverStep = resolveDeliverStep({ order });
 
   // A third role list, and like the other two it mirrors one real authorize():
   // PUT /production/tasks/:id/assign is owner/manager/counter_staff. Handing
@@ -376,6 +433,10 @@ export default function OrderCard({
     }
     if (preparerStep.kind === 'pick') {
       onResolve(order, 'pick_preparer');
+      return;
+    }
+    if (deliverStep.kind === 'collect_cod') {
+      onResolve(order, 'collect_cod');
       return;
     }
     onQuickAction(order);
@@ -492,6 +553,31 @@ export default function OrderCard({
         )
       )}
 
+      {/* Load-verify pill: has the rider's load been checked off item by
+          item? Tapping opens the same DeliveryChecklist used on
+          DeliveryDetailScreen, in a modal, right here — the "without going
+          to the delivery details screen" ask this exists for. Every role
+          that can see this board can already touch the checklist endpoints
+          (GET/PUT /deliveries/:id/checklist is owner/manager/employee/
+          counter_staff/delivery_partner), so unlike the pills above this one
+          needs no role gate of its own. */}
+      {showLoadPill && (
+        <TouchableOpacity
+          style={[styles.loadPill, loadComplete ? styles.loadPillDone : styles.loadPillPending]}
+          onPress={(e) => { e.stopPropagation(); onVerifyLoad(order); }}
+          activeOpacity={0.7}
+        >
+          <Ionicons
+            name={loadComplete ? 'checkmark-circle' : 'cube-outline'}
+            size={13}
+            color={loadComplete ? Colors.success : Colors.warning}
+          />
+          <Text style={[styles.loadPillText, { color: loadComplete ? Colors.success : Colors.warning }]}>
+            {loadComplete ? 'Load verified' : `Verify load · ${loadChecked}/${loadTotal}`}
+          </Text>
+        </TouchableOpacity>
+      )}
+
       {nextAction && (
         <TouchableOpacity
           style={styles.primaryAction}
@@ -560,6 +646,19 @@ const styles = StyleSheet.create({
   preparerRow: { flexDirection: 'row', alignItems: 'center', gap: 5, minHeight: 36 },
   preparerText: { fontSize: 13, color: Colors.textSecondary, fontFamily: FONT_FAMILY, flexShrink: 1 },
   preparerAction: { fontSize: 13, fontWeight: '700', color: Colors.primary, fontFamily: FONT_FAMILY },
+  loadPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    alignSelf: 'flex-start',
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    borderRadius: 8,
+    marginBottom: 4,
+  },
+  loadPillPending: { backgroundColor: Colors.warning + '15' },
+  loadPillDone: { backgroundColor: Colors.success + '15' },
+  loadPillText: { fontSize: 12, fontWeight: '700', fontFamily: FONT_FAMILY },
   primaryAction: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
     minHeight: 44, borderRadius: 10, backgroundColor: Colors.primary, marginTop: 2,

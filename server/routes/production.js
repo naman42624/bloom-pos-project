@@ -664,8 +664,15 @@ router.put(
       if (task.status !== 'assigned') {
         return res.status(400).json({ success: false, message: 'Only assigned tasks can be started' });
       }
-      // Only the assigned person or a manager can start
-      if (['employee', 'counter_staff', 'florist_staff'].includes(req.user.role) && task.assigned_to !== req.user.id) {
+      // Only the assigned person or a manager can start — UNLESS
+      // pref_flexible_task_assignment is on (default), which restores the
+      // any-staff-can-work-any-task behavior this project had before this
+      // gate shipped. Owner can turn it off for strict per-assignee
+      // enforcement. Missing row (never seeded yet) reads as ON, matching
+      // the seed default below and SaleDetailScreen.js's identical check.
+      const flexRow = db.prepare("SELECT value FROM settings WHERE key = 'pref_flexible_task_assignment'").get();
+      const flexibleAssignment = flexRow?.value !== '0';
+      if (!flexibleAssignment && ['employee', 'counter_staff', 'florist_staff'].includes(req.user.role) && task.assigned_to !== req.user.id) {
         return res.status(403).json({ success: false, message: 'Not your task' });
       }
 
@@ -754,7 +761,13 @@ router.put(
       if (task.status === 'completed' || task.status === 'cancelled') {
         return res.status(400).json({ success: false, message: 'Task already finished' });
       }
-      if (['employee', 'counter_staff', 'florist_staff'].includes(req.user.role) && task.assigned_to !== req.user.id) {
+      // Same pref_flexible_task_assignment gate as /tasks/:id/start above —
+      // see that comment for the reasoning. Kept as its own read rather than
+      // sharing one across routes, matching this file's existing per-route
+      // settings-lookup style (e.g. pref_walkin_auto_complete below).
+      const flexRow = db.prepare("SELECT value FROM settings WHERE key = 'pref_flexible_task_assignment'").get();
+      const flexibleAssignment = flexRow?.value !== '0';
+      if (!flexibleAssignment && ['employee', 'counter_staff', 'florist_staff'].includes(req.user.role) && task.assigned_to !== req.user.id) {
         return res.status(403).json({ success: false, message: 'Not your task' });
       }
 

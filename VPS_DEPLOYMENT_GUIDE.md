@@ -111,8 +111,12 @@ In psql:
 
 ```sql
 CREATE DATABASE bloomcart;
-CREATE USER bloomcart WITH ENCRYPTED PASSWORD 'REPLACE_WITH_STRONG_PASSWORD';
+CREATE USER bloomcart WITH ENCRYPTED PASSWORD 'bloomcartFlowerPoint';
 GRANT ALL PRIVILEGES ON DATABASE bloomcart TO bloomcart;
+ALTER DATABASE bloomcart OWNER TO bloomcart;
+\c bloomcart
+ALTER SCHEMA public OWNER TO bloomcart;
+GRANT ALL ON SCHEMA public TO bloomcart;
 \q
 ```
 
@@ -172,9 +176,9 @@ Create `server/.env`:
 ```env
 PORT=3001
 NODE_ENV=production
-JWT_SECRET=REPLACE_WITH_LONG_RANDOM_SECRET
+JWT_SECRET=flowerpoint
 JWT_EXPIRES_IN=7d
-DATABASE_URL=postgresql://bloomcart:REPLACE_WITH_STRONG_PASSWORD@127.0.0.1:5432/bloomcart
+DATABASE_URL=postgresql://bloomcart:bloomcartFlowerPoint@127.0.0.1:5432/bloomcart
 ```
 
 Notes:
@@ -190,14 +194,24 @@ Choose one strategy:
 ### Option A: Fresh production schema
 
 ```bash
-psql "postgresql://bloomcart:REPLACE_WITH_STRONG_PASSWORD@127.0.0.1:5432/bloomcart" -f server/config/schema.sql
+psql "postgresql://bloomcart:bloomcartFlowerPoint@127.0.0.1:5432/bloomcart" -f server/config/schema.sql
 ```
 
-### Option B: Migrate existing SQLite data
+If you see `permission denied for schema public`, run this one-time fix as postgres:
+
+```bash
+sudo -u postgres psql -d bloomcart -c "ALTER DATABASE bloomcart OWNER TO bloomcart;"
+sudo -u postgres psql -d bloomcart -c "ALTER SCHEMA public OWNER TO bloomcart;"
+sudo -u postgres psql -d bloomcart -c "GRANT ALL ON SCHEMA public TO bloomcart;"
+```
+
+Then rerun the schema command.
+
+### Option B: Restore existing PostgreSQL backup
 
 ```bash
 cd server
-node scripts/smart-migrate.js
+psql "postgresql://bloomcart:REPLACE_WITH_STRONG_PASSWORD@127.0.0.1:5432/bloomcart" < backups/pre_purge_backup_YYYYMMDD.sql
 ```
 
 Then validate:
@@ -246,7 +260,7 @@ Use:
 ```nginx
 server {
     listen 80;
-    server_name api.yourdomain.com;
+    server_name _;
 
     client_max_body_size 20M;
 
@@ -275,6 +289,8 @@ sudo systemctl reload nginx
 
 ## 10) Enable HTTPS (Let's Encrypt)
 
+Requires a real domain. If you are deploying via IP only (e.g. `159.89.173.40`), skip this section for now.
+
 ```bash
 sudo apt install -y certbot python3-certbot-nginx
 sudo certbot --nginx -d api.yourdomain.com
@@ -294,7 +310,7 @@ sudo certbot renew --dry-run
 Update mobile app API base URL to:
 
 ```text
-https://api.yourdomain.com/api
+http://159.89.173.40/api
 ```
 
 If using Expo:

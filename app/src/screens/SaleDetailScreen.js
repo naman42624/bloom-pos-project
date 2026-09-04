@@ -160,6 +160,20 @@ export default function SaleDetailScreen({ route, navigation }) {
   // (2026-09-01): the picker already listed florist_staff as assignable,
   // it just had no visible way to open it.
   const canAssignTasks = canManage || user?.role === 'counter_staff';
+  // pref_flexible_task_assignment (owner-toggleable, default ON): lets any
+  // staff member start/complete a task regardless of who it's assigned to —
+  // restores the behavior from before per-assignee enforcement shipped,
+  // for shops that don't need the stricter gate (2026-09-04, user request).
+  const flexibleTaskAssignment = settings?.pref_flexible_task_assignment?.value !== '0';
+  // Whether THIS viewer may Start/Complete a given task. Mirrors the server
+  // guard exactly (production.js /tasks/:id/start, /tasks/:id/complete):
+  // owner/manager can always act on anyone's task; everyone else only their
+  // own, UNLESS flexibleTaskAssignment is on. A task with no assigned_to
+  // (assigned_to == null) belongs to nobody yet — canManage/flexible mode
+  // are the only things that check exempts, so an unassigned task otherwise
+  // requires Pick Up (self-assign) first, which is the 'pending' branch
+  // above and carries no ownership restriction.
+  const isTaskOwner = (task) => canManage || flexibleTaskAssignment || task.assigned_to === user?.id;
   // Florist/prep staff never touch payments (they only see this screen for
   // the production tasks on an order) and customers viewing their own order
   // can't record payments either (POST /:id/payments is staff-only
@@ -421,7 +435,7 @@ export default function SaleDetailScreen({ route, navigation }) {
   };
 
   const goToRefund = () => {
-    navigation.navigate('RefundSale', { saleId, grandTotal: sale.grand_total });
+    navigation.navigate('RefundSale', { saleId, grandTotal: sale.grand_total, locationId: sale.location_id });
   };
 
   const handleCancel = () => {
@@ -442,6 +456,23 @@ export default function SaleDetailScreen({ route, navigation }) {
         `${message}\n\nOpen the refund screen now?`,
         goToRefund,
         { confirmLabel: 'Refund now', cancelLabel: 'Not now' },
+      );
+      return;
+    }
+
+    // Same "catch it before confirming" idiom as the balance check above,
+    // mirroring the server's own new guard (PUT /sales/:id/cancel): a
+    // delivery actually out (assigned/picked_up/in_transit) needs to be
+    // cancelled first — this route never touches the deliveries table, so
+    // cancelling underneath it left a rider "out" with an order the shop
+    // now considers cancelled, with no signal to them at all (found live
+    // during the 2026-09-04 order-flow audit).
+    if (sale.delivery && ['assigned', 'picked_up', 'in_transit'].includes(sale.delivery.status)) {
+      showConfirm(
+        'Cancel the delivery first',
+        'A rider is already out with this order. Cancel the delivery on the Delivery screen first, then come back and cancel the order.',
+        () => navigation.navigate('DeliveryDetail', { deliveryId: sale.delivery.id }),
+        { confirmLabel: 'Open delivery', cancelLabel: 'Not now' },
       );
       return;
     }
@@ -1287,23 +1318,36 @@ export default function SaleDetailScreen({ route, navigation }) {
                                 <Text style={[styles.taskActionText, { color: '#9C27B0' }]}>Reassign</Text>
                               </TouchableOpacity>
                             )}
-                            <TouchableOpacity style={[styles.taskActionBtn, { backgroundColor: '#00BCD4' + '15' }]} onPress={() => handleTaskAction(task.id, 'start', 'start')}>
-                              <Ionicons name="play-outline" size={14} color="#00BCD4" />
-                              <Text style={[styles.taskActionText, { color: '#00BCD4' }]}>Start</Text>
-                            </TouchableOpacity>
-                            <TouchableOpacity style={[styles.taskActionBtn, { backgroundColor: Colors.success + '15' }]} onPress={() => handleTaskAction(task.id, 'complete', 'complete')}>
-                              <Ionicons name="checkmark-circle" size={14} color={Colors.success} />
-                              <Text style={[styles.taskActionText, { color: Colors.success }]}>Complete</Text>
-                            </TouchableOpacity>
+                            {/* Start/Complete only for the assignee or owner/manager — the
+                                server refuses everyone else with 403 "Not your task"
+                                (production.js /tasks/:id/start, /tasks/:id/complete).
+                                Rendering these unconditionally for anyone who could see
+                                this screen was a real dead end: the button looked
+                                actionable, the tap always failed, and there was no
+                                indication why. Someone who cannot act on this task still
+                                sees who has it (the 👤 line above); Reassign is their only
+                                available move, gated separately on canAssignTasks. */}
+                            {isTaskOwner(task) && (
+                              <>
+                                <TouchableOpacity style={[styles.taskActionBtn, { backgroundColor: '#00BCD4' + '15' }]} onPress={() => handleTaskAction(task.id, 'start', 'start')}>
+                                  <Ionicons name="play-outline" size={14} color="#00BCD4" />
+                                  <Text style={[styles.taskActionText, { color: '#00BCD4' }]}>Start</Text>
+                                </TouchableOpacity>
+                                <TouchableOpacity style={[styles.taskActionBtn, { backgroundColor: Colors.success + '15' }]} onPress={() => handleTaskAction(task.id, 'complete', 'complete')}>
+                                  <Ionicons name="checkmark-circle" size={14} color={Colors.success} />
+                                  <Text style={[styles.taskActionText, { color: Colors.success }]}>Complete</Text>
+                                </TouchableOpacity>
+                              </>
+                            )}
                           </>
                         )}
-                        {task.status === 'pending' && task.picked_by_name && (
+                        {task.status === 'pending' && task.picked_by_name && isTaskOwner(task) && (
                           <TouchableOpacity style={[styles.taskActionBtn, { backgroundColor: '#00BCD4' + '15' }]} onPress={() => handleTaskAction(task.id, 'start', 'start')}>
                             <Ionicons name="play-outline" size={14} color="#00BCD4" />
                             <Text style={[styles.taskActionText, { color: '#00BCD4' }]}>Start</Text>
                           </TouchableOpacity>
                         )}
-                        {task.status === 'in_progress' && (
+                        {task.status === 'in_progress' && isTaskOwner(task) && (
                           <TouchableOpacity style={[styles.taskActionBtn, { backgroundColor: Colors.success + '15' }]} onPress={() => handleTaskAction(task.id, 'complete', 'complete')}>
                             <Ionicons name="checkmark-circle" size={14} color={Colors.success} />
                             <Text style={[styles.taskActionText, { color: Colors.success }]}>Complete</Text>
