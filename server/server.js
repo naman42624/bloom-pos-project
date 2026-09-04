@@ -22,6 +22,7 @@ const expensesRoutes = require('./routes/expenses');
 const customersRoutes = require('./routes/customers');
 const productionRoutes = require('./routes/production');
 const deliveriesRoutes = require('./routes/deliveries');
+const trackRoutes = require('./routes/track');
 const deliveryRoutesRoutes = require('./routes/delivery-routes');
 const recurringOrdersRoutes = require('./routes/recurring-orders');
 const { processRecurringOrders } = require('./routes/recurring-orders');
@@ -82,6 +83,9 @@ app.use('/api/expenses', expensesRoutes);
 app.use('/api/customers', customersRoutes);
 app.use('/api/production', productionRoutes);
 app.use('/api/deliveries', deliveriesRoutes);
+// No `authenticate` middleware — this is the app's first public route.
+// See server/routes/track.js and server/utils/tracking-token.js.
+app.use('/api/track', trackRoutes);
 app.use('/api/delivery-routes', deliveryRoutesRoutes);
 app.use('/api/recurring-orders', recurringOrdersRoutes);
 app.use('/api/attendance', attendanceRoutes);

@@ -128,6 +128,7 @@ Then press:
 | `JWT_SECRET`   | `your-super-secret-jwt-key-...`            | JWT signing secret       |
 | `JWT_EXPIRES_IN` | `7d`                                     | Token expiration         |
 | `NODE_ENV`     | `development`                              | Environment mode         |
+| `TRACKING_LINK_SECRET` | `bloomcart-tracking-secret-2026` (dev fallback) | HMAC secret signing public order-tracking links (`GET /api/track/:token`) — never stored, verified fresh per request |
 
 > ⚠️ **Change `JWT_SECRET`** to a strong random string before deploying!
 

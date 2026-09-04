@@ -1015,6 +1015,50 @@ check('FIXED: GET /deliveries returns an accurate total alongside the (still lim
   assert(res.body.data.total >= res.body.data.deliveries.length, `Expected total (${res.body.data.total}) to be >= the returned page length (${res.body.data.deliveries.length})`);
 });
 
+check('NEW: GET /api/track/:token returns status-only data for a valid token, generic 404 otherwise', async () => {
+  const owner = await loginOwner();
+  const { body: saleBody } = await api('POST', '/sales', owner.token, {
+    location_id: TEST_LOCATION_ID, order_type: 'pickup', channel: 'walk_in',
+    items: [{ quantity: 1, unit_price: 200, product_name: 'Test Tracking Link Item' }],
+  });
+  const saleId = saleBody.data.id;
+  createdSaleIds.push(saleId);
+
+  // Task 5 (not yet built on this branch) is what puts a `tracking_url`
+  // field on GET /sales/:id — per task-4-brief.md's own fallback note,
+  // construct the token directly via generateTrackingToken instead of
+  // depending on that field, so Task 4 is independently verifiable.
+  const { generateTrackingToken } = require('../utils/tracking-token');
+  const token = generateTrackingToken(saleId);
+
+  // No auth header at all — this must work fully unauthenticated.
+  const trackRes = await api('GET', `/track/${token}`, null);
+  assert(trackRes.status === 200, `Expected 200 for a valid token, got ${trackRes.status}: ${JSON.stringify(trackRes.body)}`);
+  assert(trackRes.body.data.sale_number === saleBody.data.sale_number, 'Expected the right sale_number back');
+  assert(trackRes.body.data.stage_label, 'Expected a stage_label field');
+  // Never leak sensitive fields on the public endpoint.
+  assert(trackRes.body.data.grand_total === undefined, 'tracking endpoint must never return grand_total');
+  assert(trackRes.body.data.payment_status === undefined, 'tracking endpoint must never return payment_status');
+  assert(trackRes.body.data.customer_phone === undefined, 'tracking endpoint must never return a phone number');
+  assert(trackRes.body.data.delivery_address === undefined, 'tracking endpoint must never return an address');
+  assert(trackRes.body.data.customer_name === undefined, 'tracking endpoint must never return the customer name');
+
+  const forged = await api('GET', `/track/${saleId}.0000000000000000000000000000000`, null);
+  assert(forged.status === 404, `Expected 404 for a forged token, got ${forged.status}`);
+  assert(JSON.stringify(forged.body) === JSON.stringify({ success: false, message: 'Not found' }), `Expected the generic 404 body, got ${JSON.stringify(forged.body)}`);
+
+  const malformed = await api('GET', `/track/not-a-real-token`, null);
+  assert(malformed.status === 404, `Expected 404 for a malformed token, got ${malformed.status}`);
+  assert(JSON.stringify(malformed.body) === JSON.stringify({ success: false, message: 'Not found' }), `Expected the identical generic 404 body for malformed input too (never a different message than the forged-signature case), got ${JSON.stringify(malformed.body)}`);
+
+  const empty = await api('GET', `/track/`, null);
+  assert(empty.status === 404, `Expected 404 for an empty token path, got ${empty.status}`);
+
+  const nonexistentSale = await api('GET', `/track/${generateTrackingToken(999999999)}`, null);
+  assert(nonexistentSale.status === 404, `Expected 404 for a validly-signed token pointing at a sale ID that doesn't exist, got ${nonexistentSale.status}`);
+  assert(JSON.stringify(nonexistentSale.body) === JSON.stringify({ success: false, message: 'Not found' }), `Expected the same generic 404 body for a nonexistent sale, got ${JSON.stringify(nonexistentSale.body)}`);
+});
+
 // ─── Run ──────────────────────────────────────────────────────
 async function cleanup() {
   if (createdUserIds.length === 0 && createdSaleIds.length === 0) return;

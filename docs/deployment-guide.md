@@ -41,6 +41,7 @@ PORT=3001
 NODE_ENV=production
 JWT_SECRET=your-strong-random-secret-here-min-32-chars
 JWT_EXPIRES_IN=7d
+TRACKING_LINK_SECRET=a-different-strong-random-secret-here
 ```
 
 **Important:** Generate a strong JWT secret:
@@ -254,6 +255,7 @@ eas update --branch production --message "Bug fix v1.0.1"
 | `NODE_ENV` | Yes | `development` | Set to `production` for deployment |
 | `JWT_SECRET` | **Yes** | None (will crash) | Secret key for JWT signing |
 | `JWT_EXPIRES_IN` | No | `7d` | Token expiration time |
+| `TRACKING_LINK_SECRET` | No | `bloomcart-tracking-secret-2026` (dev fallback — set a real one in production) | HMAC secret signing public order-tracking links (`GET /api/track/:token`) |
 
 ### App Configuration
 

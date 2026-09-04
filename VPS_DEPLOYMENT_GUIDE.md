@@ -179,6 +179,7 @@ NODE_ENV=production
 JWT_SECRET=flowerpoint
 JWT_EXPIRES_IN=7d
 DATABASE_URL=postgresql://bloomcart:bloomcartFlowerPoint@127.0.0.1:5432/bloomcart
+TRACKING_LINK_SECRET=<a-different-strong-random-string>
 ```
 
 Notes:
@@ -402,7 +403,7 @@ pm2 restart bloomcart-api
 
 ## 15) Security Hardening Checklist
 
-- Use strong random `JWT_SECRET`
+- Use strong random `JWT_SECRET` and `TRACKING_LINK_SECRET` (different values — see §6.3)
 - Restrict CORS origins in production
 - Disable wildcard DB network access
 - Rotate DB credentials periodically
