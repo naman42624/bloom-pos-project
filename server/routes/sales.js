@@ -10,6 +10,7 @@ const { hasOpenRegister, REGISTER_CLOSED_MESSAGE } = require('../utils/register-
 const { completeProductionTaskCore } = require('./production');
 const { computeOrderStage, getStageFlags } = require('../utils/order-stage');
 const { sumCollectionsByMethod } = require('../utils/settlement-math');
+const { buildTrackingUrl } = require('../utils/tracking-token');
 
 const router = express.Router();
 
@@ -328,6 +329,7 @@ router.get('/', authenticate, async (req, res, next) => {
       // authorize() list so we never render a one-tap button that 403s.
       normalized.display_stage = computeOrderStage(normalized, req.user.role, stageFlags);
       if (req.user.role !== 'owner') delete normalized.vendor_name;
+      normalized.tracking_url = buildTrackingUrl(normalized.id);
       return normalized;
     });
 
@@ -1500,6 +1502,8 @@ router.get('/:id', authenticate, async (req, res, next) => {
     }, req.user.role, stageFlags);
 
     if (req.user.role !== 'owner') delete sale.vendor_name;
+
+    sale.tracking_url = buildTrackingUrl(sale.id);
 
     res.json({ success: true, data: sale });
   } catch (err) { next(err); }

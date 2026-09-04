@@ -42,4 +42,10 @@ function verifyTrackingToken(token) {
   return parseInt(idPart, 10);
 }
 
-module.exports = { generateTrackingToken, verifyTrackingToken };
+const PUBLIC_APP_URL = process.env.PUBLIC_APP_URL || 'http://localhost:19006';
+
+function buildTrackingUrl(saleId) {
+  return `${PUBLIC_APP_URL}/track/${generateTrackingToken(saleId)}`;
+}
+
+module.exports = { generateTrackingToken, verifyTrackingToken, buildTrackingUrl };

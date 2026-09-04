@@ -1024,12 +1024,17 @@ check('NEW: GET /api/track/:token returns status-only data for a valid token, ge
   const saleId = saleBody.data.id;
   createdSaleIds.push(saleId);
 
-  // Task 5 (not yet built on this branch) is what puts a `tracking_url`
-  // field on GET /sales/:id — per task-4-brief.md's own fallback note,
-  // construct the token directly via generateTrackingToken instead of
-  // depending on that field, so Task 4 is independently verifiable.
-  const { generateTrackingToken } = require('../utils/tracking-token');
-  const token = generateTrackingToken(saleId);
+  const { generateTrackingToken, verifyTrackingToken } = require('../utils/tracking-token');
+
+  // Task 5 attached a real `tracking_url` field to GET /sales/:id — exercise
+  // that field directly now instead of constructing the token by hand, so
+  // this check also proves the wiring, not just the token math.
+  const { body: detailBody } = await api('GET', `/sales/${saleId}`, owner.token);
+  assert(detailBody.data.tracking_url, `Expected GET /sales/:id to include a tracking_url field, got ${JSON.stringify(detailBody.data.tracking_url)}`);
+  const trackUrlMatch = detailBody.data.tracking_url.match(/\/track\/([^/?]+)$/);
+  assert(trackUrlMatch, `Expected tracking_url to end in /track/<token>, got ${detailBody.data.tracking_url}`);
+  const token = trackUrlMatch[1];
+  assert(verifyTrackingToken(token) === saleId, `Expected the token embedded in tracking_url to verify back to sale ${saleId}, got ${verifyTrackingToken(token)}`);
 
   // No auth header at all — this must work fully unauthenticated.
   const trackRes = await api('GET', `/track/${token}`, null);

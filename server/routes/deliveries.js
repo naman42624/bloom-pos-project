@@ -14,6 +14,7 @@ const { normalizeDateFields } = require('../utils/normalizeDates');
 const { hasOpenRegister, REGISTER_CLOSED_MESSAGE } = require('../utils/register-guard');
 const { computeOrderStage, getStageFlags } = require('../utils/order-stage');
 const { sumCollectionsByMethod } = require('../utils/settlement-math');
+const { buildTrackingUrl } = require('../utils/tracking-token');
 
 // Use todayStr() from time.js for timezone-aware date strings
 
@@ -257,6 +258,7 @@ router.get('/', authenticate, authorize('owner', 'manager', 'delivery_partner', 
         }, req.user.role, stageFlags),
       };
     });
+    withStage.forEach((d) => { d.tracking_url = buildTrackingUrl(d.sale_id); });
     res.json({ success: true, data: { deliveries: withStage, total } });
   } catch (err) { next(err); }
 });
