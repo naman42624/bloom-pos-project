@@ -667,6 +667,11 @@ class ApiService {
     return this.request(`/sales/register/history${query ? `?${query}` : ''}`);
   }
 
+  getRegisterSessions(params = {}) {
+    const q = new URLSearchParams(params).toString();
+    return this.request(`/sales/register/sessions${q ? `?${q}` : ''}`);
+  }
+
   // ─── Expenses ───────────────────────────────────────────
   getExpenses(params = {}) {
     const query = new URLSearchParams(params).toString();
