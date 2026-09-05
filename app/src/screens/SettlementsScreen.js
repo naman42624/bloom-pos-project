@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import {
   View, Text, FlatList, TouchableOpacity, StyleSheet, Alert,
-  Platform, Modal, ScrollView, ActivityIndicator, Animated,
+  Platform, Modal, ScrollView, ActivityIndicator, Animated, Linking,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
@@ -256,6 +256,23 @@ export default function SettlementsScreen({ navigation, route }) {
             <Text style={styles.partnerName}>{partner.partner_name || 'Unknown Partner'}</Text>
             <Text style={styles.partnerMeta}>{partner.delivery_count} deliveries pending</Text>
           </View>
+          {/* One-tap WhatsApp deep link (wa.me — not the Business API, no
+              new infrastructure) to remind/confirm the handoff with the
+              rider directly, instead of staff looking up their number and
+              opening WhatsApp separately (sub-project 4 "cheap WhatsApp
+              tier", 2026-09-01). */}
+          {partner.partner_phone && (
+            <TouchableOpacity
+              style={styles.partnerWhatsappBtn}
+              onPress={(e) => {
+                e.stopPropagation();
+                const msg = `Hi ${partner.partner_name || ''}, please hand over ₹${fmt(partner.total_cod)} from ${partner.delivery_count} deliver${partner.delivery_count !== 1 ? 'ies' : 'y'} when you're at the shop.`;
+                Linking.openURL(`https://wa.me/91${partner.partner_phone}?text=${encodeURIComponent(msg)}`);
+              }}
+            >
+              <Ionicons name="logo-whatsapp" size={20} color={Colors.success} />
+            </TouchableOpacity>
+          )}
           <View style={{ alignItems: 'flex-end', gap: 4 }}>
             <Text style={styles.partnerAmount}>₹{fmt(partner.total_cod)}</Text>
             <Ionicons name={isExpanded ? 'chevron-up' : 'chevron-down'} size={16} color={Colors.textLight} />
@@ -572,6 +589,11 @@ const styles = StyleSheet.create({
   partnerHeader: {
     flexDirection: 'row', alignItems: 'center', gap: 12,
     padding: Spacing.md,
+  },
+  partnerWhatsappBtn: {
+    width: 36, height: 36, borderRadius: 18,
+    backgroundColor: Colors.success + '15',
+    alignItems: 'center', justifyContent: 'center',
   },
   partnerAvatar: {
     width: 44, height: 44, borderRadius: 22,

@@ -95,7 +95,7 @@ router.put(
 // ─── Tax Rates ──────────────────────────────────────────────
 
 // GET /api/settings/tax-rates
-router.get('/tax-rates', authorize('owner', 'manager', 'employee'), async (req, res, next) => {
+router.get('/tax-rates', authorize('owner', 'manager', 'employee', 'counter_staff'), async (req, res, next) => {
   try {
     const db = await getAsyncDb();
     const taxRates = await db

@@ -11,6 +11,7 @@ const fs = require('fs');
 
 const router = express.Router();
 const { normalizeDateFields } = require('../utils/normalizeDates');
+const { hasOpenRegister, REGISTER_CLOSED_MESSAGE } = require('../utils/register-guard');
 
 // Use todayStr() from time.js for timezone-aware date strings
 
@@ -103,9 +104,38 @@ const upload = multer({
 // DELIVERY MANAGEMENT
 // ═══════════════════════════════════════════════════════════════
 
+// ─── GET /api/deliveries/partners ────────────────────────────
+// Active delivery_partner accounts, for the assign-a-rider picker.
+// counter_staff gained assign/batch-assign permission 2026-09-01
+// (sub-project 5, user confirmed) but the picker was still calling
+// GET /api/users (owner/manager-only — the full account directory,
+// including owner/manager/customer, far more than this needs). Rather
+// than widen that, or misuse /auth/staff-roster (built specifically for
+// the PIN-login roster — requires employee_code, doesn't select phone),
+// this is a small purpose-built endpoint matching the id/name/phone the
+// assign modal actually renders, same narrow-endpoint pattern as
+// staff-roster.
+router.get('/partners', authenticate, authorize('owner', 'manager', 'counter_staff'), async (req, res, next) => {
+  try {
+    const db = await getAsyncDb();
+    const { location_id } = req.query;
+    const locFilter = location_id ? 'AND ul.location_id = ?' : '';
+    const params = location_id ? [location_id] : [];
+    const users = await db.prepare(`
+      SELECT DISTINCT u.id, u.name, u.phone, u.avatar
+      FROM users u
+      LEFT JOIN user_locations ul ON ul.user_id = u.id
+      WHERE u.role = 'delivery_partner' AND u.is_active = 1
+        ${locFilter}
+      ORDER BY u.name ASC
+    `).all(...params);
+    res.json({ success: true, data: { users } });
+  } catch (err) { next(err); }
+});
+
 // ─── GET /api/deliveries ─────────────────────────────────────
 // List deliveries with filters
-router.get('/', authenticate, authorize('owner', 'manager', 'delivery_partner', 'employee'), async (req, res, next) => {
+router.get('/', authenticate, authorize('owner', 'manager', 'delivery_partner', 'employee', 'counter_staff'), async (req, res, next) => {
   try {
     const db = await getAsyncDb();
     const { location_id, status, delivery_partner_id, date_from, date_to, limit: lim, offset: off } = req.query;
@@ -203,7 +233,7 @@ router.get('/', authenticate, authorize('owner', 'manager', 'delivery_partner', 
 
 // ─── GET /api/deliveries/at-risk ─────────────────────────────
 // Orders/deliveries not ready within 30 min of scheduled time
-router.get('/at-risk', authenticate, authorize('owner', 'manager', 'employee'), async (req, res, next) => {
+router.get('/at-risk', authenticate, authorize('owner', 'manager', 'employee', 'counter_staff'), async (req, res, next) => {
   try {
     const db = await getAsyncDb();
     const { location_id } = req.query;
@@ -267,10 +297,14 @@ router.get('/at-risk', authenticate, authorize('owner', 'manager', 'employee'), 
 // ═══════════════════════════════════════════════════════════════
 // BATCH ASSIGN — assign multiple deliveries to one partner
 // ═══════════════════════════════════════════════════════════════
+// Widened to counter_staff 2026-09-01 (sub-project 5, user confirmed) —
+// same reasoning as settlements/expenses/pickup: counter staff run the
+// floor day-to-day and shouldn't need a manager on hand to dispatch a
+// rider.
 router.post(
   '/batch-assign',
   authenticate,
-  authorize('owner', 'manager'),
+  authorize('owner', 'manager', 'counter_staff'),
   (req, res, next) => {
     try {
       const db = getDb();
@@ -373,11 +407,11 @@ router.get('/:id(\\d+)', authenticate, async (req, res, next) => {
 });
 
 // ─── PUT /api/deliveries/:id/assign ──────────────────────────
-// Manager/owner assigns a delivery partner
+// Widened to counter_staff 2026-09-01 (sub-project 5, user confirmed).
 router.put(
   '/:id(\\d+)/assign',
   authenticate,
-  authorize('owner', 'manager'),
+  authorize('owner', 'manager', 'counter_staff'),
   [body('delivery_partner_id').isInt().withMessage('Delivery partner ID required')],
   (req, res, next) => {
     try {
@@ -599,6 +633,22 @@ router.put(
           data: { saleId: delivery.sale_id, screen: 'CustomerOrderDetail' },
         });
       }
+
+      // Notify counter staff the moment cash/UPI actually changes hands —
+      // this was the core gap sub-project 4 set out to close: staff had no
+      // way to know a payment was collected until someone happened to check
+      // the register screen. Only fires when this call actually collected
+      // something (cod_collected > 0), not on every "marked delivered."
+      if (cod_collected && cod_collected > 0) {
+        notifyByRole({
+          roles: ['owner', 'manager', 'employee', 'counter_staff'],
+          locationId: delivery.location_id,
+          title: 'COD collected',
+          body: `${req.user.name} collected ₹${cod_collected} (${cod_method || 'cash'}) for ${sale?.sale_number || 'an order'} — not settled yet.`,
+          type: 'cod_collected',
+          data: { saleId: delivery.sale_id, deliveryId: delivery.id, screen: 'CashRegister' },
+        });
+      }
     } catch (err) {
       if (err.message.includes('COD collection exceeds')) {
         return res.status(400).json({ success: false, message: err.message });
@@ -646,7 +696,8 @@ router.put(
 
 // ─── PUT /api/deliveries/:id/reattempt ───────────────────────
 // Reset a failed delivery back to 'assigned' for another attempt
-router.put('/:id(\\d+)/reattempt', authenticate, authorize('owner', 'manager'), (req, res, next) => {
+// Widened to counter_staff 2026-09-01 (sub-project 5, user confirmed).
+router.put('/:id(\\d+)/reattempt', authenticate, authorize('owner', 'manager', 'counter_staff'), (req, res, next) => {
   try {
     const db = getDb();
     const delivery = db.prepare('SELECT * FROM deliveries WHERE id = ?').get(req.params.id);
@@ -775,7 +826,8 @@ router.post('/:id(\\d+)/convert-payment', authenticate, authorize('owner', 'mana
 
 // ─── PUT /api/deliveries/:id/cancel ──────────────────────────
 // Cancel a delivery (manager/owner). Adds prepared items to product_stock.
-router.put('/:id(\\d+)/cancel', authenticate, authorize('owner', 'manager'), (req, res, next) => {
+// Widened to counter_staff 2026-09-01 (sub-project 5, user confirmed).
+router.put('/:id(\\d+)/cancel', authenticate, authorize('owner', 'manager', 'counter_staff'), (req, res, next) => {
   try {
     const db = getDb();
     const delivery = db.prepare('SELECT * FROM deliveries WHERE id = ?').get(req.params.id);
@@ -857,7 +909,12 @@ router.post(
 // ─── GET /api/deliveries/settlements/pending-summary ─────────
 // Returns total unsettled COD grouped by partner for a location.
 // Used by the cash register banner and dashboard notice (no partner_id needed).
-router.get('/settlements/pending-summary', authenticate, authorize('owner', 'manager'), async (req, res, next) => {
+// Widened to counter_staff/employee 2026-09-01 (sub-project 4): it's
+// counter staff, not owner/manager, who physically take the cash handoff
+// from a delivery partner in this shop's real workflow — the permission
+// model previously assumed otherwise, leaving them with no visibility
+// into what's outstanding at all.
+router.get('/settlements/pending-summary', authenticate, authorize('owner', 'manager', 'employee', 'counter_staff'), async (req, res, next) => {
   try {
     const db = await getAsyncDb();
     const { location_id } = req.query;
@@ -868,6 +925,7 @@ router.get('/settlements/pending-summary', authenticate, authorize('owner', 'man
       SELECT
         d.delivery_partner_id,
         u.name as partner_name,
+        u.phone as partner_phone,
         COUNT(d.id)            as delivery_count,
         SUM(d.cod_collected)   as total_cod
       FROM deliveries d
@@ -877,7 +935,7 @@ router.get('/settlements/pending-summary', authenticate, authorize('owner', 'man
         AND d.cod_status IN ('collected', 'partial')
         AND d.id NOT IN (SELECT delivery_id FROM delivery_settlement_items)
         ${locFilter}
-      GROUP BY d.delivery_partner_id, u.name
+      GROUP BY d.delivery_partner_id, u.name, u.phone
       ORDER BY total_cod DESC
     `).all(...params);
 
@@ -890,7 +948,7 @@ router.get('/settlements/pending-summary', authenticate, authorize('owner', 'man
 
 // ─── GET /api/deliveries/settlements/unsettled ───────────────
 // Get deliveries with COD that haven't been settled yet (for a partner)
-router.get('/settlements/unsettled', authenticate, authorize('owner', 'manager', 'delivery_partner'), async (req, res, next) => {
+router.get('/settlements/unsettled', authenticate, authorize('owner', 'manager', 'employee', 'counter_staff', 'delivery_partner'), async (req, res, next) => {
   try {
     const db = await getAsyncDb();
     const { delivery_partner_id } = req.query;
@@ -915,102 +973,15 @@ router.get('/settlements/unsettled', authenticate, authorize('owner', 'manager',
   } catch (err) { next(err); }
 });
 
-// ─── POST /api/deliveries/settlements ────────────────────────
-// Create a settlement — partner hands over collected COD money
-router.post(
-  '/settlements',
-  authenticate,
-  authorize('owner', 'manager'),
-  [
-    body('delivery_partner_id').isInt(),
-    body('delivery_ids').isArray({ min: 1 }).withMessage('At least one delivery required'),
-    body('location_id').optional({ nullable: true }).isInt(),
-    body('notes').optional().trim(),
-  ],
-  (req, res, next) => {
-    try {
-      const errors = validationResult(req);
-      if (!errors.isEmpty()) return res.status(400).json({ success: false, message: 'Validation failed', errors: errors.array() });
-
-      const db = getDb();
-      const { delivery_partner_id, delivery_ids, notes } = req.body;
-      // Derive location_id from first delivery if not explicitly provided
-      let location_id = req.body.location_id;
-      if (!location_id && delivery_ids && delivery_ids.length > 0) {
-        const firstDel = db.prepare('SELECT location_id FROM deliveries WHERE id = ?').get(delivery_ids[0]);
-        location_id = firstDel ? firstDel.location_id : null;
-      }
-
-      const settleTx = db.transaction(() => {
-        let totalAmount = 0;
-
-        // Verify all deliveries belong to this partner and are unsettled
-        for (const did of delivery_ids) {
-          const d = db.prepare(
-            "SELECT * FROM deliveries WHERE id = ? AND delivery_partner_id = ? AND status = 'delivered' AND cod_collected > 0"
-          ).get(did, delivery_partner_id);
-          if (!d) throw new Error(`Delivery #${did} not found or not eligible for settlement`);
-
-          // Check not already settled
-          const already = db.prepare('SELECT id FROM delivery_settlement_items WHERE delivery_id = ?').get(did);
-          if (already) throw new Error(`Delivery #${did} is already settled`);
-
-          totalAmount += d.cod_collected;
-        }
-
-        // Generate settlement number.
-        // Commission defaults to 0% — can be configured per-partner in Settings.
-        const settlementNumber = generateSettlementNumber(db, location_id);
-        const commissionPercentage = 0.0;
-        const commissionAmount = 0;
-        const netAmount = totalAmount; // Full COD goes to register
-        const today = todayStr();
-
-        // Create settlement with new fields — include partner_id (NOT NULL in schema)
-        const result = db.prepare(
-          `INSERT INTO delivery_settlements 
-           (partner_id, delivery_partner_id, location_id, total_amount, total_deliveries, status, notes, 
-            settlement_number, settlement_date, period_start, period_end, 
-            commission_percentage, commission_amount, net_amount)
-           VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)`
-        ).run(
-          delivery_partner_id, delivery_partner_id, location_id, totalAmount, delivery_ids.length, notes || '',
-          settlementNumber, today, today, today,
-          commissionPercentage, commissionAmount, netAmount
-        );
-
-        const settlementId = result.lastInsertRowid;
-
-        // Link deliveries
-        const insertItem = db.prepare(
-          'INSERT INTO delivery_settlement_items (settlement_id, delivery_id, amount) VALUES (?, ?, ?)'
-        );
-        for (const did of delivery_ids) {
-          const d = db.prepare('SELECT cod_collected FROM deliveries WHERE id = ?').get(did);
-          insertItem.run(settlementId, did, d.cod_collected);
-          // Mark delivery COD as settled
-          db.prepare("UPDATE deliveries SET cod_status = 'collected', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(did);
-        }
-
-        return settlementId;
-      });
-
-      const settlementId = settleTx();
-      const settlement = db.prepare(`
-        SELECT ds.*, u.name as partner_name
-        FROM delivery_settlements ds LEFT JOIN users u ON ds.delivery_partner_id = u.id
-        WHERE ds.id = ?
-      `).get(settlementId);
-
-      res.status(201).json({ success: true, data: settlement });
-    } catch (err) {
-      if (err.message.includes('not found') || err.message.includes('already settled')) {
-        return res.status(400).json({ success: false, message: err.message });
-      }
-      next(err);
-    }
-  }
-);
+// NOTE: the old two-step "POST /settlements (create as pending) then PUT
+// /settlements/:id/verify" flow was removed 2026-09-01 (sub-project 4
+// simplification pass). Checked every call site in app/src and server —
+// nothing called either endpoint, and the live DB has zero settlements
+// with status='pending' (all 20 existing rows are already 'verified'),
+// confirming it was genuinely dead, not just unused in this session.
+// settle-now (below) is the only settlement-creation path and always has
+// been from the frontend's perspective — one atomic action instead of two
+// permission-gated steps to reason about.
 
 // ─── POST /api/deliveries/settlements/settle-now ─────────────
 // Atomic: create + immediately verify in one step. Supports:
@@ -1020,7 +991,7 @@ router.post(
 router.post(
   '/settlements/settle-now',
   authenticate,
-  authorize('owner', 'manager'),
+  authorize('owner', 'manager', 'employee', 'counter_staff'),
   [
     body('delivery_partner_id').isInt(),
     body('delivery_ids').optional().isArray({ min: 1 }),
@@ -1111,18 +1082,21 @@ router.post(
 
         // Credit the register with only the portion actually collected as cash —
         // UPI collections must not inflate expected_cash (see sumCollectionsByMethod).
+        // Hard-blocked if there's cash to credit and no open register — UPI-only
+        // settlements never need a register at all.
         const register = db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1').get(location_id);
-        if (register) {
-          const byMethod = sumCollectionsByMethod(db, delivery_ids, totalAmount);
-          if (byMethod.cash > 0) {
-            db.prepare(
-              'UPDATE cash_registers SET total_cash_sales = total_cash_sales + ?, expected_cash = expected_cash + ? WHERE id = ?'
-            ).run(byMethod.cash, byMethod.cash, register.id);
-          }
-          if (byMethod.upi > 0) {
-            db.prepare('UPDATE cash_registers SET total_upi_sales = total_upi_sales + ? WHERE id = ?')
-              .run(byMethod.upi, register.id);
-          }
+        const byMethod = sumCollectionsByMethod(db, delivery_ids, totalAmount);
+        if (byMethod.cash > 0 && !register) {
+          throw new Error(REGISTER_CLOSED_MESSAGE);
+        }
+        if (byMethod.cash > 0) {
+          db.prepare(
+            'UPDATE cash_registers SET total_cash_sales = total_cash_sales + ?, expected_cash = expected_cash + ? WHERE id = ?'
+          ).run(byMethod.cash, byMethod.cash, register.id);
+        }
+        if (byMethod.upi > 0 && register) {
+          db.prepare('UPDATE cash_registers SET total_upi_sales = total_upi_sales + ? WHERE id = ?')
+            .run(byMethod.upi, register.id);
         }
 
         return settlementId;
@@ -1140,7 +1114,7 @@ router.post(
 
       res.status(201).json({ success: true, data: settlement });
     } catch (err) {
-      if (err.message?.includes('not eligible') || err.message?.includes('already settled')) {
+      if (err.message?.includes('not eligible') || err.message?.includes('already settled') || err.message?.includes("Register isn't open")) {
         return res.status(400).json({ success: false, message: err.message });
       }
       next(err);
@@ -1148,84 +1122,13 @@ router.post(
   }
 );
 
-// ─── PUT /api/deliveries/settlements/:id/verify ──────────────
-// Manager/owner verifies the settlement (confirms money received)
-router.put(
-  '/settlements/:id(\\d+)/verify',
-  authenticate,
-  authorize('owner', 'manager'),
-  (req, res, next) => {
-    try {
-      const db = getDb();
-      const settlement = db.prepare('SELECT * FROM delivery_settlements WHERE id = ?').get(req.params.id);
-      if (!settlement) return res.status(404).json({ success: false, message: 'Settlement not found' });
-      if (settlement.status === 'verified') return res.status(400).json({ success: false, message: 'Already verified' });
-
-      const verifyTx = db.transaction(() => {
-        // Count successful and failed deliveries in this settlement
-        const deliveryStats = db.prepare(`
-          SELECT 
-            COUNT(*) as total,
-            SUM(CASE WHEN d.status = 'delivered' THEN 1 ELSE 0 END) as successful,
-            SUM(CASE WHEN d.status IN ('cancelled', 'failed', 'returned') THEN 1 ELSE 0 END) as failed
-          FROM delivery_settlement_items dsi
-          JOIN deliveries d ON dsi.delivery_id = d.id
-          WHERE dsi.settlement_id = ?
-        `).get(settlement.id);
-
-        db.prepare(`
-          UPDATE delivery_settlements 
-          SET status = 'verified', 
-              verified_by = ?, 
-              verified_at = CURRENT_TIMESTAMP,
-              successful_deliveries = ?,
-              failed_deliveries = ?
-          WHERE id = ?
-        `).run(
-          req.user.id,
-          deliveryStats?.successful || 0,
-          deliveryStats?.failed || 0,
-          settlement.id
-        );
-
-        // Add the settled amount to the cash register (find the open session, not by date) —
-        // but only the portion actually collected as cash; UPI collections must not
-        // inflate expected_cash (see sumCollectionsByMethod).
-        const register = db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1').get(settlement.location_id);
-        if (register) {
-          const settledDeliveryIds = db.prepare(
-            'SELECT delivery_id FROM delivery_settlement_items WHERE settlement_id = ?'
-          ).all(settlement.id).map(r => r.delivery_id);
-          const byMethod = sumCollectionsByMethod(db, settledDeliveryIds, settlement.total_amount);
-          if (byMethod.cash > 0) {
-            db.prepare('UPDATE cash_registers SET total_cash_sales = total_cash_sales + ?, expected_cash = expected_cash + ? WHERE id = ?')
-              .run(byMethod.cash, byMethod.cash, register.id);
-          }
-          if (byMethod.upi > 0) {
-            db.prepare('UPDATE cash_registers SET total_upi_sales = total_upi_sales + ? WHERE id = ?')
-              .run(byMethod.upi, register.id);
-          }
-        }
-      });
-
-      verifyTx();
-
-      const updated = db.prepare(`
-        SELECT ds.*, u.name as partner_name, v.name as verified_by_name
-        FROM delivery_settlements ds
-        LEFT JOIN users u ON ds.delivery_partner_id = u.id
-        LEFT JOIN users v ON ds.verified_by = v.id
-        WHERE ds.id = ?
-      `).get(settlement.id);
-
-      res.json({ success: true, data: updated });
-    } catch (err) { next(err); }
-  }
-);
+// NOTE: PUT /settlements/:id/verify (the second half of the old two-step
+// flow) was removed alongside POST /settlements above, 2026-09-01 — see
+// the comment there.
 
 // ─── GET /api/deliveries/settlements ─────────────────────────
 // List settlements
-router.get('/settlements', authenticate, authorize('owner', 'manager'), async (req, res, next) => {
+router.get('/settlements', authenticate, authorize('owner', 'manager', 'employee', 'counter_staff'), async (req, res, next) => {
   try {
     const db = await getAsyncDb();
     const { delivery_partner_id, status, limit: lim } = req.query;
@@ -1283,7 +1186,7 @@ router.get('/settlements', authenticate, authorize('owner', 'manager'), async (r
 router.put(
   '/pickup/:saleId/ready',
   authenticate,
-  authorize('owner', 'manager', 'employee'),
+  authorize('owner', 'manager', 'employee', 'counter_staff'),
   (req, res, next) => {
     try {
       const db = getDb();
@@ -1380,7 +1283,7 @@ router.put(
 router.put(
   '/pickup/:saleId/picked-up',
   authenticate,
-  authorize('owner', 'manager', 'employee'),
+  authorize('owner', 'manager', 'employee', 'counter_staff'),
   (req, res, next) => {
     try {
       const db = getDb();
@@ -1417,13 +1320,23 @@ router.put(
         const balanceDue = sale.grand_total - totalPaid;
 
         if (balanceDue > 0.01) {
-          // Only manager/owner can confirm pickup with payment
-          if (req.user.role !== 'owner' && req.user.role !== 'manager') {
-            throw new Error('Only manager/owner can confirm pickup payment');
+          // The route's own authorize() already allows counter_staff, but
+          // this inline check was never updated to match — missed by
+          // sub-project 2's counter_staff parity pass. Extended to match
+          // the exact precedent already set for refund/cancel (same trust
+          // as manager), rather than leaving counter staff — who actually
+          // run the counter and collect pickup payment in practice — hard
+          // blocked from confirming their own sale (found live during the
+          // sub-project 4 audit, 2026-09-01).
+          if (!['owner', 'manager', 'counter_staff'].includes(req.user.role)) {
+            throw new Error('Only manager/owner/counter staff can confirm pickup payment');
           }
           const paidNow = parseFloat(payment_amount) || 0;
           if (paidNow <= 0) {
             throw new Error(`Balance due: ₹${balanceDue.toFixed(2)}. Please collect payment before marking as picked up.`);
+          }
+          if ((payment_method || 'cash') === 'cash' && !hasOpenRegister(db, sale.location_id)) {
+            throw new Error(REGISTER_CLOSED_MESSAGE);
           }
           // Record the payment
           db.prepare(
@@ -1466,7 +1379,7 @@ router.put(
 
       res.json({ success: true, message: 'Order picked up by customer' });
     } catch (err) {
-      if (err.message.includes('Balance due') || err.message.includes('Only manager')) {
+      if (err.message.includes('Balance due') || err.message.includes('Only manager') || err.message.includes("Register isn't open")) {
         return res.status(400).json({ success: false, message: err.message });
       }
       next(err);
@@ -1517,7 +1430,7 @@ router.get('/customer/dues', authenticate, async (req, res, next) => {
     let customerId = req.user.id;
 
     // Manager/owner can query for a specific customer
-    if ((req.user.role === 'owner' || req.user.role === 'manager' || req.user.role === 'employee') && req.query.customer_id) {
+    if (['owner', 'manager', 'employee', 'counter_staff'].includes(req.user.role) && req.query.customer_id) {
       customerId = parseInt(req.query.customer_id);
     }
 

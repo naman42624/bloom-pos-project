@@ -204,6 +204,107 @@ router.post(
   }
 );
 
+// ─── POST /api/auth/staff-login ──────────────────────────────
+// Employee code + PIN login for the shared counter device.
+const { hashPin, verifyPin, PIN_MAX_ATTEMPTS, PIN_LOCKOUT_MINUTES } = require('../utils/pin');
+
+router.post(
+  '/staff-login',
+  [
+    body('employee_code').trim().notEmpty().withMessage('Employee code is required'),
+    body('pin').trim().isLength({ min: 4, max: 4 }).withMessage('Enter your 4-digit PIN'),
+  ],
+  async (req, res, next) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({ success: false, message: 'Validation failed', errors: errors.array() });
+      }
+
+      const { employee_code, pin } = req.body;
+      const db = await getAsyncDb();
+
+      const user = await db.prepare(
+        "SELECT * FROM users WHERE employee_code = ? AND role IN ('employee', 'counter_staff', 'florist_staff')"
+      ).get(employee_code);
+
+      if (!user) {
+        return res.status(401).json({ success: false, message: 'Employee code not recognized.' });
+      }
+
+      if (!user.is_active) {
+        return res.status(403).json({ success: false, message: 'Your account has been deactivated. Contact your manager.' });
+      }
+
+      if (user.pin_locked_until && new Date(user.pin_locked_until) > new Date()) {
+        return res.status(423).json({ success: false, message: `Too many wrong tries — ask your manager to unlock this in ${PIN_LOCKOUT_MINUTES} minutes.` });
+      }
+
+      const isValidPin = await verifyPin(pin, user.pin_hash);
+
+      if (!isValidPin) {
+        const attempts = (user.pin_failed_attempts || 0) + 1;
+        const locked = attempts >= PIN_MAX_ATTEMPTS;
+        await db.prepare(
+          'UPDATE users SET pin_failed_attempts = ?, pin_locked_until = ? WHERE id = ?'
+        ).run(attempts, locked ? new Date(Date.now() + PIN_LOCKOUT_MINUTES * 60000) : null, user.id);
+
+        if (locked) {
+          return res.status(423).json({ success: false, message: `Too many wrong tries — ask your manager to unlock this in ${PIN_LOCKOUT_MINUTES} minutes.` });
+        }
+        return res.status(401).json({ success: false, message: `Wrong PIN — ${PIN_MAX_ATTEMPTS - attempts} tries left.` });
+      }
+
+      await db.prepare(
+        'UPDATE users SET pin_failed_attempts = 0, pin_locked_until = NULL WHERE id = ?'
+      ).run(user.id);
+
+      const token = generateToken(user);
+      const { password: _pw, pin_hash: _pin, ...userWithoutSecrets } = user;
+
+      const locations = await db.prepare(
+        'SELECT l.id, l.name, l.type, l.latitude, l.longitude, l.geofence_radius, ul.is_primary FROM locations l JOIN user_locations ul ON ul.location_id = l.id WHERE ul.user_id = ? AND l.is_active = 1'
+      ).all(user.id);
+
+      res.json({
+        success: true,
+        message: 'Login successful',
+        data: { user: userWithoutSecrets, token, locations },
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+// ─── GET /api/auth/staff-roster ──────────────────────────────
+// Unauthenticated by design — shown on the lock screen before anyone
+// is logged in. Returns only non-sensitive display fields, scoped to
+// one location. See design spec §6/§7 for the accepted tradeoff.
+router.get('/staff-roster', async (req, res, next) => {
+  try {
+    const { location_id } = req.query;
+    if (!location_id) {
+      return res.status(400).json({ success: false, message: 'location_id is required' });
+    }
+    const db = await getAsyncDb();
+    const staff = await db.prepare(`
+      SELECT u.id, u.name, u.avatar, u.employee_code, u.job_title
+      FROM users u
+      JOIN user_locations ul ON ul.user_id = u.id
+      WHERE ul.location_id = ?
+        AND u.role IN ('employee', 'counter_staff', 'florist_staff')
+        AND u.is_active = 1
+        AND u.employee_code IS NOT NULL
+      ORDER BY u.name ASC
+    `).all(location_id);
+
+    res.json({ success: true, data: { staff } });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // ─── GET /api/auth/me ────────────────────────────────────────
 router.get('/me', authenticate, async (req, res, next) => {
   try {

@@ -7,7 +7,13 @@ const { authenticate, authorize } = require('../middleware/auth');
 const router = express.Router();
 
 // ─── GET /api/purchase-orders ────────────────────────────────
-router.get('/', authenticate, async (req, res, next) => {
+// Was authenticate-only (any role, including customer, could read supplier
+// names/item lists/statuses — pricing itself was already correctly hidden
+// below via supplier_manager_fields, this is the endpoint-reachability gap
+// on top of that). Matches POST /:id/receive's role list — staff doing the
+// physical receiving need to see what's incoming (sub-project 3 gap,
+// closed 2026-09-01). florist_staff/delivery_partner/customer stay excluded.
+router.get('/', authenticate, authorize('owner', 'manager', 'employee', 'counter_staff'), async (req, res, next) => {
   try {
     const db = await getAsyncDb();
     const { status, supplier_id, location_id, from_date, to_date } = req.query;
@@ -74,7 +80,8 @@ router.get('/', authenticate, async (req, res, next) => {
 });
 
 // ─── GET /api/purchase-orders/:id ────────────────────────────
-router.get('/:id', authenticate, async (req, res, next) => {
+// Same gap and same fix as GET / above.
+router.get('/:id', authenticate, authorize('owner', 'manager', 'employee', 'counter_staff'), async (req, res, next) => {
   try {
     const db = await getAsyncDb();
     const order = await db.prepare(`
@@ -355,7 +362,7 @@ router.put(
 router.post(
   '/:id/receive',
   authenticate,
-  authorize('owner', 'manager', 'employee'),
+  authorize('owner', 'manager', 'employee', 'counter_staff'),
   [
     body('items').isArray({ min: 1 }).withMessage('At least one item is required'),
     body('items.*.item_id').isInt().withMessage('Item ID is required'),
@@ -381,7 +388,7 @@ router.post(
       }
 
       // Employees can only receive at their assigned locations
-      if (req.user.role === 'employee') {
+      if (req.user.role === 'employee' || req.user.role === 'counter_staff') {
         const assigned = db.prepare(
           'SELECT id FROM user_locations WHERE user_id = ? AND location_id = ?'
         ).get(req.user.id, order.location_id);

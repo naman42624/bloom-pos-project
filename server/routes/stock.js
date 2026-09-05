@@ -52,7 +52,7 @@ router.get('/', authenticate, async (req, res, next) => {
 router.post(
   '/adjust',
   authenticate,
-  authorize('owner', 'manager', 'employee'),
+  authorize('owner', 'manager', 'employee', 'counter_staff', 'florist_staff'),
   [
     body('material_id').isInt().withMessage('Material ID is required'),
     body('location_id').isInt().withMessage('Location ID is required'),
@@ -184,7 +184,7 @@ router.get('/transactions', authenticate, async (req, res, next) => {
 router.post(
   '/reconcile',
   authenticate,
-  authorize('owner', 'manager', 'employee'),
+  authorize('owner', 'manager', 'employee', 'counter_staff', 'florist_staff'),
   [
     body('location_id').isInt().withMessage('Location ID is required'),
     body('entries').isArray({ min: 1 }).withMessage('At least one entry is required'),
@@ -417,7 +417,7 @@ router.get('/transfers', authenticate, async (req, res, next) => {
 router.put(
   '/transfers/:id/receive',
   authenticate,
-  authorize('owner', 'manager', 'employee'),
+  authorize('owner', 'manager', 'employee', 'counter_staff'),
   (req, res, next) => {
     try {
       const db = getDb();
@@ -431,7 +431,7 @@ router.put(
       }
 
       // Employees can only receive at their assigned locations
-      if (req.user.role === 'employee') {
+      if (['employee', 'counter_staff'].includes(req.user.role)) {
         const assigned = db.prepare(
           'SELECT id FROM user_locations WHERE user_id = ? AND location_id = ?'
         ).get(req.user.id, transfer.to_location_id);

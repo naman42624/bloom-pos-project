@@ -61,6 +61,21 @@ function bindParams(sql, params = []) {
   for (let i = 0; i < sql.length; i += 1) {
     const ch = sql[i];
 
+    // Skip `--` line comments outside a string, all the way to the next
+    // newline. Without this, a single stray apostrophe in a comment (e.g.
+    // "today's") flips `inString` and never flips back, silently
+    // desyncing every `?` placeholder for the rest of the query — this
+    // took down GET /production/my-tasks for every caller with no error
+    // until it was live-tested (found 2026-09-01). Comments are common in
+    // these hand-written multi-line queries; the parser needs to actually
+    // ignore them, not just hope no one ever writes a contraction in one.
+    if (!inString && ch === '-' && sql[i + 1] === '-') {
+      const nl = sql.indexOf('\n', i);
+      result += sql.slice(i, nl === -1 ? sql.length : nl);
+      i = (nl === -1 ? sql.length : nl) - 1;
+      continue;
+    }
+
     if (ch === "'") {
       if (inString && sql[i + 1] === "'") {
         result += "''";

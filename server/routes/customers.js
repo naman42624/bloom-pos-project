@@ -12,7 +12,7 @@ const { safeParseJSON } = require('../utils/json');
 
 // ─── GET /api/customers ─────────────────────────────────────
 // List all customers (users with role='customer') + any unique phones from sales
-router.get('/', authenticate, authorize('owner', 'manager', 'employee', 'delivery_partner'), async (req, res, next) => {
+router.get('/', authenticate, authorize('owner', 'manager', 'employee', 'counter_staff', 'delivery_partner'), async (req, res, next) => {
   try {
     const db = await getAsyncDb();
     const { search, limit = 50, offset = 0, sort = 'name_asc', has_due } = req.query;
@@ -351,7 +351,7 @@ router.get('/:id', authenticate, async (req, res, next) => {
 router.post(
   '/',
   authenticate,
-  authorize('owner', 'manager', 'employee'),
+  authorize('owner', 'manager', 'employee', 'counter_staff'),
   [
     body('name').trim().notEmpty().withMessage('Name is required'),
     body('phone').trim().matches(/^[6-9]\d{9}$/).withMessage('Valid 10-digit phone required'),
@@ -558,7 +558,7 @@ router.delete('/:id/addresses/:addressId', authenticate, (req, res, next) => {
 router.post(
   '/:id/credits',
   authenticate,
-  authorize('owner', 'manager', 'employee'),
+  authorize('owner', 'manager', 'employee', 'counter_staff'),
   [
     body('payments').optional().isArray(),
     body('payments.*.method').optional().isIn(['cash', 'card', 'upi']),

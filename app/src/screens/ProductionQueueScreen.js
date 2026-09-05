@@ -672,7 +672,7 @@ export default function ProductionQueueScreen({ navigation, route }) {
     try {
       const res = await api.getUsers();
       const allUsers = res.data?.users || res.data || [];
-      const staffList = (Array.isArray(allUsers) ? allUsers : []).filter(u => ['owner', 'manager', 'employee'].includes(u.role));
+      const staffList = (Array.isArray(allUsers) ? allUsers : []).filter(u => ['owner', 'manager', 'employee', 'counter_staff', 'florist_staff'].includes(u.role));
       setEmployees(staffList);
     } catch { }
     setShowAssign(true);

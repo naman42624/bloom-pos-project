@@ -46,7 +46,7 @@ export default function ShiftManagementScreen() {
       setShifts(shiftsRes.data || []);
       setLocations((locsRes.data?.locations || []).filter(l => (l.type === 'shop' || l.type == null) && l.is_active));
       const staff = (usersRes.data?.users || []).filter(
-        u => ['manager', 'employee', 'delivery_partner'].includes(u.role) && u.is_active
+        u => ['manager', 'employee', 'counter_staff', 'florist_staff', 'delivery_partner'].includes(u.role) && u.is_active
       );
       setStaffList(staff);
     } catch (e) {

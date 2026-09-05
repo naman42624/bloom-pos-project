@@ -106,6 +106,17 @@ class ApiService {
     });
   }
 
+  staffLogin(employeeCode, pin) {
+    return this.request('/auth/staff-login', {
+      method: 'POST',
+      body: JSON.stringify({ employee_code: employeeCode, pin }),
+    });
+  }
+
+  getStaffRoster(locationId) {
+    return this.request(`/auth/staff-roster?location_id=${locationId}`);
+  }
+
   getProfile() {
     return this.request('/auth/me');
   }
@@ -159,6 +170,13 @@ class ApiService {
     return this.request(`/users/${id}/change-role`, {
       method: 'PUT',
       body: JSON.stringify({ role }),
+    });
+  }
+
+  setUserPin(userId, pin) {
+    return this.request(`/users/${userId}/pin`, {
+      method: 'PUT',
+      body: JSON.stringify({ pin }),
     });
   }
 
@@ -816,6 +834,10 @@ class ApiService {
     return this.request(`/deliveries/at-risk${q ? `?${q}` : ''}`);
   }
 
+  getDeliveryPartners(locationId) {
+    return this.request(`/deliveries/partners${locationId ? `?location_id=${locationId}` : ''}`);
+  }
+
   getDelivery(id) {
     return this.request(`/deliveries/${id}`);
   }
@@ -896,14 +918,9 @@ class ApiService {
     return this.request(`/deliveries/settlements${q ? `?${q}` : ''}`);
   }
 
-  createSettlement(data) {
-    return this.request('/deliveries/settlements', { method: 'POST', body: JSON.stringify(data) });
-  }
-
-  verifySettlement(settlementId) {
-    return this.request(`/deliveries/settlements/${settlementId}/verify`, { method: 'PUT' });
-  }
-
+  // createSettlement/verifySettlement (the old two-step create-then-verify
+  // pair) were removed 2026-09-01 — nothing called them, settleNow below
+  // is the only settlement-creation path this app actually uses.
   settleNow(data) {
     // Single-step: create + verify settlement atomically, credits full amount to register immediately.
     // data: { delivery_partner_id, delivery_ids? (omit to settle all), location_id?, notes? }

@@ -8,6 +8,7 @@ import DateTimePickerModal from '../components/DateTimePickerModal';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import { useAuth } from '../context/AuthContext';
 import { getShopNow } from '../utils/datetime';
+import { bumpActivity } from '../hooks/useIdleLock';
 
 const CHANNELS = [
   { key: 'whatsapp', label: 'WhatsApp', icon: 'logo-whatsapp' },
@@ -484,7 +485,7 @@ export default function LogOrderScreen({ navigation }) {
 
         {/* Per-item voice note — one small modal reused for whichever item's mic icon was tapped. */}
         <Modal visible={itemVoiceModalIdx !== null} transparent animationType="slide" onRequestClose={() => setItemVoiceModalIdx(null)}>
-          <View style={styles.modalOverlay}>
+          <View style={styles.modalOverlay} onTouchStart={bumpActivity}>
             <View style={styles.modalContent}>
               <View style={styles.modalHeader}>
                 <Text style={styles.modalTitle}>

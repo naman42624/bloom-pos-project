@@ -4,6 +4,7 @@ const { getDb } = require('../config/database');
 const { getDb: getAsyncDb } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
 const { todayStr: localToday } = require('../utils/time');
+const { hasOpenRegister, REGISTER_CLOSED_MESSAGE } = require('../utils/register-guard');
 
 const router = express.Router();
 
@@ -47,7 +48,11 @@ function generateExpenseNumber(db, locationId) {
 }
 
 // ─── GET /api/expenses ───────────────────────────────────────
-router.get('/', authenticate, async (req, res, next) => {
+// Was authenticate-only (any role, including customer, could read expense
+// records) — matching the write side's role list here, since anyone who
+// can log an expense has an obvious need to see the expense list too
+// (sub-project 3 gap, closed 2026-09-01).
+router.get('/', authenticate, authorize('owner', 'manager', 'employee', 'counter_staff'), async (req, res, next) => {
   try {
     const db = await getAsyncDb();
     const { location_id, category, start_date, end_date } = req.query;
@@ -89,7 +94,7 @@ router.get('/', authenticate, async (req, res, next) => {
 router.post(
   '/',
   authenticate,
-  authorize('owner', 'manager', 'employee'),
+  authorize('owner', 'manager', 'employee', 'counter_staff'),
   [
     body('location_id').isInt(),
     body('category').isIn(['supplies', 'petty_cash', 'maintenance', 'transport', 'food', 'utilities', 'salary', 'other']),
@@ -106,6 +111,16 @@ router.post(
 
       const db = getDb();
       const { location_id, category, amount, description, payment_method, expense_date, is_return } = req.body;
+
+      // Cash expenses/returns move real money in or out of the drawer, same
+      // as a sale or refund — hard-block them with no open register instead
+      // of silently recording an expense that no session's expected_cash
+      // ever accounts for (found live during the sub-project 4 audit,
+      // 2026-09-01: this was the one cash-write site register-guard never
+      // reached in sub-project 3).
+      if (payment_method === 'cash' && !hasOpenRegister(db, location_id)) {
+        return res.status(400).json({ success: false, message: REGISTER_CLOSED_MESSAGE });
+      }
 
       // Look up the currently open register FIRST so we can store register_id on the expense.
       // This links the expense permanently to its session — critical for correct session-scoped queries
@@ -210,7 +225,8 @@ router.delete('/:id', authenticate, authorize('owner', 'manager'), (req, res, ne
 });
 
 // ─── GET /api/expenses/summary ───────────────────────────────
-router.get('/summary', authenticate, async (req, res, next) => {
+// Same gap as GET / above — was authenticate-only.
+router.get('/summary', authenticate, authorize('owner', 'manager', 'employee', 'counter_staff'), async (req, res, next) => {
   try {
     const db = await getAsyncDb();
     const { location_id, start_date, end_date } = req.query;

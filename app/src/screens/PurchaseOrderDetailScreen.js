@@ -168,7 +168,7 @@ export default function PurchaseOrderDetailScreen({ route, navigation }) {
           </View>
 
           {/* Action buttons */}
-          {!receiveMode && (canReceive || canEdit || canCancel) && (user?.role === 'owner' || user?.role === 'manager' || user?.role === 'employee') && (
+          {!receiveMode && (canReceive || canEdit || canCancel) && (user?.role === 'owner' || user?.role === 'manager' || user?.role === 'employee' || user?.role === 'counter_staff') && (
             <View style={styles.actionRow}>
               {canEdit && (user?.role === 'owner' || user?.role === 'manager') && (
                 <TouchableOpacity

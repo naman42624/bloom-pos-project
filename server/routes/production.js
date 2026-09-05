@@ -9,6 +9,146 @@ const { safeParseJSON } = require('../utils/json');
 
 const router = express.Router();
 
+// Batch-attaches a `materials` array (recipe/BOM or custom materials, with
+// live stock levels) to each task in place. Requires each task to already
+// carry `product_id`, `quantity`, `location_id`, and `custom_materials_json`
+// (aliased from sale_items.custom_materials) from the caller's SELECT.
+// Extracted from GET /tasks so GET /my-tasks (used by the Dashboard's
+// florist/employee task cards) can show the same "what to grab" info
+// without duplicating this batch-fetch logic (2026-08-31 follow-up).
+async function attachMaterialsToTasks(db, tasks) {
+  // ⚡ OPTIMIZATION: Batch fetch all BOMs at once (not per task)
+  const productIds = [...new Set(tasks.filter(t => t.product_id).map(t => t.product_id))];
+  const allBomsData = {};
+  if (productIds.length > 0) {
+    const placeholders = productIds.map(() => '?').join(',');
+    const boms = await db.prepare(`
+      SELECT pm.product_id, pm.material_id, pm.quantity as qty_per_unit,
+             mat.name as material_name, mat.sku as material_sku,
+             mat.image_url as material_image,
+             mc.name as category_name, mc.unit
+      FROM product_materials pm
+      JOIN materials mat ON pm.material_id = mat.id
+      LEFT JOIN material_categories mc ON mat.category_id = mc.id
+      WHERE pm.product_id IN (${placeholders})
+      ORDER BY mat.name
+    `).all(...productIds);
+
+    for (const bom of boms) {
+      if (!allBomsData[bom.product_id]) allBomsData[bom.product_id] = [];
+      allBomsData[bom.product_id].push(bom);
+    }
+  }
+
+  // ⚡ OPTIMIZATION: Batch fetch ALL material stock at once (not per task per material)
+  const materialIds = new Set();
+  for (const task of tasks) {
+    if (task.custom_materials) {
+      for (const cm of task.custom_materials) materialIds.add(cm.material_id);
+    }
+  }
+  for (const bom of Object.values(allBomsData).flat()) {
+    materialIds.add(bom.material_id);
+  }
+
+  const stockMap = new Map(); // Key: "materialId-locationId"
+  if (materialIds.size > 0) {
+    const locationIds = [...new Set(tasks.map(t => t.location_id))];
+    const matPlaceholders = [...materialIds].map(() => '?').join(',');
+    const locPlaceholders = locationIds.map(() => '?').join(',');
+    const stocks = await db.prepare(`
+      SELECT material_id, location_id, quantity
+      FROM material_stock
+      WHERE material_id IN (${matPlaceholders}) AND location_id IN (${locPlaceholders})
+    `).all(...materialIds, ...locationIds);
+
+    for (const stock of stocks) {
+      stockMap.set(`${stock.material_id}-${stock.location_id}`, stock.quantity);
+    }
+  }
+
+  // Attach materials to tasks with O(1) lookups
+  for (const task of tasks) {
+    task.custom_materials = safeParseJSON(task.custom_materials_json, null);
+    delete task.custom_materials_json;
+
+    if (task.custom_materials && task.custom_materials.length > 0) {
+      task.materials = task.custom_materials.map(cm => {
+        const quantity = stockMap.get(`${cm.material_id}-${task.location_id}`) || 0;
+        const needed = (cm.qty_per_unit || cm.qty || cm.quantity || 1) * task.quantity;
+        return {
+          material_id: cm.material_id,
+          material_name: cm.name || cm.material_name || 'Material',
+          qty_per_unit: cm.qty_per_unit || cm.qty || cm.quantity || 1,
+          total_needed: needed,
+          in_stock: quantity,
+          sufficient: quantity >= needed,
+        };
+      });
+    } else if (task.product_id && allBomsData[task.product_id]) {
+      task.materials = allBomsData[task.product_id].map(b => {
+        const quantity = stockMap.get(`${b.material_id}-${task.location_id}`) || 0;
+        const needed = b.qty_per_unit * task.quantity;
+        return {
+          ...b,
+          total_needed: needed,
+          in_stock: quantity,
+          sufficient: quantity >= needed,
+        };
+      });
+    } else {
+      task.materials = [];
+    }
+  }
+  return tasks;
+}
+
+// Batch-attaches a `voice_notes` array (from sale_attachments, type=voice_note)
+// to each task in place, keyed by the task's sale_id. A sale can carry more
+// than one voice note (e.g. a follow-up call changing instructions), so this
+// is a one-to-many fan-out done as a single grouped query, not per-task.
+async function attachVoiceNotesToTasks(db, tasks) {
+  const saleIds = [...new Set(tasks.filter(t => t.sale_id).map(t => t.sale_id))];
+  // Keyed by sale_id for order-level notes (sale_item_id IS NULL — a
+  // general instruction relevant to everyone prepping this order), and by
+  // "saleId:itemId" for notes tied to one specific item. Without this
+  // split every task on a multi-item order showed every voice note
+  // attached to the sale, regardless of which item it was actually about
+  // (2026-08-31 fix — sale_attachments.sale_item_id exists precisely to
+  // avoid this, it just wasn't being used here yet).
+  const orderLevelNotes = {};
+  const itemLevelNotes = {};
+  if (saleIds.length > 0) {
+    const placeholders = saleIds.map(() => '?').join(',');
+    const notes = await db.prepare(`
+      SELECT sa.id, sa.sale_id, sa.sale_item_id, sa.file_url, sa.duration_seconds, sa.created_at,
+             u.name as uploaded_by_name
+      FROM sale_attachments sa
+      LEFT JOIN users u ON sa.uploaded_by = u.id
+      WHERE sa.sale_id IN (${placeholders}) AND sa.type = 'voice_note'
+      ORDER BY sa.created_at ASC
+    `).all(...saleIds);
+    for (const note of notes) {
+      if (note.sale_item_id) {
+        const key = `${note.sale_id}:${note.sale_item_id}`;
+        if (!itemLevelNotes[key]) itemLevelNotes[key] = [];
+        itemLevelNotes[key].push(note);
+      } else {
+        if (!orderLevelNotes[note.sale_id]) orderLevelNotes[note.sale_id] = [];
+        orderLevelNotes[note.sale_id].push(note);
+      }
+    }
+  }
+  for (const task of tasks) {
+    const itemKey = `${task.sale_id}:${task.sale_item_id}`;
+    task.voice_notes = [
+      ...(orderLevelNotes[task.sale_id] || []),
+      ...(task.sale_item_id ? (itemLevelNotes[itemKey] || []) : []),
+    ];
+  }
+  return tasks;
+}
+
 // ═══════════════════════════════════════════════════════════════
 // PRODUCE — Staff makes products for display (not tied to an order)
 // ═══════════════════════════════════════════════════════════════
@@ -16,7 +156,7 @@ const router = express.Router();
 router.post(
   '/produce',
   authenticate,
-  authorize('owner', 'manager', 'employee'),
+  authorize('owner', 'manager', 'employee', 'counter_staff', 'florist_staff'),
   [
     body('product_id').isInt().withMessage('Product is required'),
     body('location_id').isInt().withMessage('Location is required'),
@@ -105,7 +245,7 @@ router.post(
 router.post(
   '/produce/custom',
   authenticate,
-  authorize('owner', 'manager', 'employee'),
+  authorize('owner', 'manager', 'employee', 'counter_staff', 'florist_staff'),
   [
     body('name').trim().notEmpty().withMessage('Name is required'),
     body('location_id').isInt().withMessage('Location is required'),
@@ -251,7 +391,7 @@ router.post(
 // ═══════════════════════════════════════════════════════════════
 
 // GET /api/production/tasks — Get all production tasks (queue)
-router.get('/tasks', authenticate, authorize('owner', 'manager', 'employee'), async (req, res, next) => {
+router.get('/tasks', authenticate, authorize('owner', 'manager', 'employee', 'counter_staff', 'florist_staff'), async (req, res, next) => {
   try {
     const db = await getAsyncDb();
     const { location_id, status, assigned_to, sale_id } = req.query;
@@ -297,7 +437,7 @@ router.get('/tasks', authenticate, authorize('owner', 'manager', 'employee'), as
     if (sale_id) { sql += ' AND pt.sale_id = ?'; params.push(Number(sale_id)); }
 
     // Scope by location for employees and managers
-    if (req.user.role === 'employee' || req.user.role === 'manager') {
+    if (['employee', 'counter_staff', 'florist_staff', 'manager'].includes(req.user.role)) {
       const userLocs = (await db.prepare('SELECT location_id FROM user_locations WHERE user_id = ?').all(req.user.id)).map(r => r.location_id);
       if (userLocs.length > 0 && !location_id) {
         sql += ` AND pt.location_id IN (${userLocs.map(() => '?').join(',')})`;
@@ -314,89 +454,8 @@ router.get('/tasks', authenticate, authorize('owner', 'manager', 'employee'), as
 
     const tasks = await db.prepare(sql).all(...params);
 
-    // ⚡ OPTIMIZATION: Batch fetch all BOMs at once (not per task)
-    const productIds = [...new Set(tasks.filter(t => t.product_id).map(t => t.product_id))];
-    const allBomsData = {};
-    if (productIds.length > 0) {
-      const placeholders = productIds.map(() => '?').join(',');
-      const boms = await db.prepare(`
-        SELECT pm.product_id, pm.material_id, pm.quantity as qty_per_unit,
-               mat.name as material_name, mat.sku as material_sku,
-               mat.image_url as material_image,
-               mc.name as category_name, mc.unit
-        FROM product_materials pm
-        JOIN materials mat ON pm.material_id = mat.id
-        LEFT JOIN material_categories mc ON mat.category_id = mc.id
-        WHERE pm.product_id IN (${placeholders})
-        ORDER BY mat.name
-      `).all(...productIds);
-      
-      for (const bom of boms) {
-        if (!allBomsData[bom.product_id]) allBomsData[bom.product_id] = [];
-        allBomsData[bom.product_id].push(bom);
-      }
-    }
-
-    // ⚡ OPTIMIZATION: Batch fetch ALL material stock at once (not per task per material)
-    const materialIds = new Set();
-    for (const task of tasks) {
-      if (task.custom_materials) {
-        for (const cm of task.custom_materials) materialIds.add(cm.material_id);
-      }
-    }
-    for (const bom of Object.values(allBomsData).flat()) {
-      materialIds.add(bom.material_id);
-    }
-    
-    const stockMap = new Map(); // Key: "materialId-locationId"
-    if (materialIds.size > 0) {
-      const locationIds = [...new Set(tasks.map(t => t.location_id))];
-      const matPlaceholders = [...materialIds].map(() => '?').join(',');
-      const locPlaceholders = locationIds.map(() => '?').join(',');
-      const stocks = await db.prepare(`
-        SELECT material_id, location_id, quantity
-        FROM material_stock
-        WHERE material_id IN (${matPlaceholders}) AND location_id IN (${locPlaceholders})
-      `).all(...materialIds, ...locationIds);
-      
-      for (const stock of stocks) {
-        stockMap.set(`${stock.material_id}-${stock.location_id}`, stock.quantity);
-      }
-    }
-
-    // Attach materials to tasks with O(1) lookups
-    for (const task of tasks) {
-      task.custom_materials = safeParseJSON(task.custom_materials_json, null);
-      delete task.custom_materials_json;
-
-      if (task.custom_materials && task.custom_materials.length > 0) {
-        task.materials = task.custom_materials.map(cm => {
-          const quantity = stockMap.get(`${cm.material_id}-${task.location_id}`) || 0;
-          const needed = (cm.qty_per_unit || cm.qty || cm.quantity || 1) * task.quantity;
-          return {
-            material_id: cm.material_id,
-            material_name: cm.name || cm.material_name || 'Material',
-            qty_per_unit: cm.qty_per_unit || cm.qty || cm.quantity || 1,
-            total_needed: needed,
-            in_stock: quantity,
-            sufficient: quantity >= needed,
-          };
-        });
-      } else if (task.product_id && allBomsData[task.product_id]) {
-        task.materials = allBomsData[task.product_id].map(b => {
-          const quantity = stockMap.get(`${b.material_id}-${task.location_id}`) || 0;
-          const needed = b.qty_per_unit * task.quantity;
-          return {
-            ...b,
-            total_needed: needed,
-            in_stock: quantity,
-            sufficient: quantity >= needed,
-          };
-        });
-      } else {
-        task.materials = [];
-      }
-    }
+    await attachMaterialsToTasks(db, tasks);
+    await attachVoiceNotesToTasks(db, tasks);
 
     res.json({ success: true, data: tasks });
   } catch (err) { next(err); }
@@ -411,6 +470,7 @@ router.get('/my-tasks', authenticate, async (req, res, next) => {
              p.name as product_name, p.sku as product_sku, p.image_url as product_image,
              s.sale_number, s.order_type, s.customer_name, s.scheduled_date, s.scheduled_time, s.special_instructions as order_special_instructions,
              si.product_name AS item_product_name, si.special_instructions AS item_special_instructions, si.image_url AS item_image_url,
+             si.custom_materials AS custom_materials_json,
              l.name as location_name
       FROM production_tasks pt
       LEFT JOIN products p ON pt.product_id = p.id
@@ -418,21 +478,42 @@ router.get('/my-tasks', authenticate, async (req, res, next) => {
       LEFT JOIN sale_items si ON pt.sale_item_id = si.id
       JOIN locations l ON pt.location_id = l.id
       WHERE (pt.assigned_to = ? OR pt.picked_by = ?)
-        AND pt.status IN ('assigned', 'in_progress')
+        AND (
+          pt.status IN ('assigned', 'in_progress')
+          -- "Done Today" on the dashboard needs same-day completions too --
+          -- the original query only ever returned assigned/in_progress,
+          -- so that stat was silently always zero (2026-08-31 fix).
+          -- NOTE: no apostrophes in this comment block, ever -- database-async.js's
+          -- bindParams() toggles its "inside a string" flag on every single quote
+          -- character with no awareness of -- comments, so one stray apostrophe
+          -- here desyncs placeholder counting for the rest of the query and 500s
+          -- this endpoint for every caller (found live, 2026-09-01: this exact
+          -- typo -- "today's" -- broke every florist/employee's My Tasks).
+          OR (pt.status = 'completed' AND pt.completed_at::date = (?)::date)
+        )
       ORDER BY
         CASE pt.priority WHEN 'urgent' THEN 0 ELSE 1 END,
         pt.created_at ASC
-    `).all(req.user.id, req.user.id);
+    `).all(req.user.id, req.user.id, localToday());
+
+    // Dashboard task cards show materials-to-grab + voice-note playback
+    // inline (2026-08-31 follow-up) — same batch helpers GET /tasks uses.
+    await attachMaterialsToTasks(db, tasks);
+    await attachVoiceNotesToTasks(db, tasks);
 
     res.json({ success: true, data: tasks });
   } catch (err) { next(err); }
 });
 
-// PUT /api/production/tasks/:id/assign — Manager assigns task to employee
+// PUT /api/production/tasks/:id/assign — Manager/counter staff assigns a
+// task to prep staff. Counter staff granted this 2026-08-31 — they're the
+// ones logging orders and are the natural person to hand a task to a
+// florist, and the assignable-staff picker already listed florist_staff
+// as an option without this actually working server-side.
 router.put(
   '/tasks/:id/assign',
   authenticate,
-  authorize('owner', 'manager'),
+  authorize('owner', 'manager', 'counter_staff'),
   [body('assigned_to').isInt().withMessage('Employee is required')],
   (req, res, next) => {
     try {
@@ -447,7 +528,7 @@ router.put(
       }
 
       const { assigned_to } = req.body;
-      const employee = db.prepare("SELECT id, name FROM users WHERE id = ? AND role IN ('employee','manager','owner')").get(assigned_to);
+      const employee = db.prepare("SELECT id, name FROM users WHERE id = ? AND role IN ('employee','counter_staff','florist_staff','manager','owner')").get(assigned_to);
       if (!employee) return res.status(404).json({ success: false, message: 'Employee not found' });
 
       db.prepare("UPDATE production_tasks SET assigned_to = ?, status = 'assigned', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(assigned_to, task.id);
@@ -478,7 +559,7 @@ router.put(
 router.put(
   '/tasks/:id/pick',
   authenticate,
-  authorize('owner', 'manager', 'employee'),
+  authorize('owner', 'manager', 'employee', 'counter_staff', 'florist_staff'),
   (req, res, next) => {
     try {
       const db = getDb();
@@ -508,7 +589,7 @@ router.put(
 router.put(
   '/tasks/:id/start',
   authenticate,
-  authorize('owner', 'manager', 'employee'),
+  authorize('owner', 'manager', 'employee', 'counter_staff', 'florist_staff'),
   (req, res, next) => {
     try {
       const db = getDb();
@@ -518,7 +599,7 @@ router.put(
         return res.status(400).json({ success: false, message: 'Only assigned tasks can be started' });
       }
       // Only the assigned person or a manager can start
-      if (req.user.role === 'employee' && task.assigned_to !== req.user.id) {
+      if (['employee', 'counter_staff', 'florist_staff'].includes(req.user.role) && task.assigned_to !== req.user.id) {
         return res.status(403).json({ success: false, message: 'Not your task' });
       }
 
@@ -535,11 +616,70 @@ router.put(
   }
 );
 
+// Real completion work for one task — material deduction (custom or BOM),
+// production logging, marking the task completed. Extracted 2026-09-01 so
+// the same TRUTHFUL logic can run from both a single-task complete and a
+// bulk "manager override" advance (see PUT /sales/:id/status), instead of
+// the override directly flipping production_tasks.status and claiming
+// stock_deducted=1 without ever actually deducting anything (found live —
+// a real, silent inventory-accuracy bug, not just a UX shortcut). Never
+// opens its own transaction — the caller wraps this (and, for a bulk
+// call, the loop over multiple tasks) in one db.transaction() so a
+// multi-task advance is atomic together. Returns the list of material_ids
+// touched, for the caller's own low-stock-alert check.
+function completeProductionTaskCore(db, task, userId) {
+  const standardBom = db.prepare('SELECT material_id, quantity as qty_needed FROM product_materials WHERE product_id = ?').all(task.product_id || 0);
+  const sale = db.prepare('SELECT sale_number FROM sales WHERE id = ?').get(task.sale_id);
+
+  let customMats = null;
+  if (task.sale_item_id) {
+    const si = db.prepare('SELECT custom_materials FROM sale_items WHERE id = ?').get(task.sale_item_id);
+    customMats = safeParseJSON(si?.custom_materials, null);
+  }
+
+  const materialsToDeduct = (customMats && customMats.length > 0)
+    ? customMats.map(cm => ({ material_id: cm.material_id, qty_needed: cm.qty_per_unit || cm.qty || cm.quantity || 1 }))
+    : standardBom;
+
+  if (materialsToDeduct.length > 0) {
+    const logPlaceholders = materialsToDeduct.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
+    const logParams = [];
+    for (const b of materialsToDeduct) {
+      const usedQty = b.qty_needed * task.quantity;
+      logParams.push(b.material_id, task.location_id, 'usage', usedQty, 'sale', task.sale_id, `Task #${task.id} for ${sale?.sale_number || ''}`, userId, nowLocal());
+    }
+    db.prepare(`INSERT INTO material_transactions (material_id, location_id, type, quantity, reference_type, reference_id, notes, created_by, created_at) VALUES ${logPlaceholders}`).run(...logParams);
+
+    let updateCases = '';
+    const updateParams = [];
+    for (const b of materialsToDeduct) {
+      const usedQty = b.qty_needed * task.quantity;
+      updateCases += ' WHEN material_id = ? THEN ?';
+      updateParams.push(b.material_id, usedQty);
+    }
+    const matIdPlaceholders = materialsToDeduct.map(() => '?').join(',');
+    const caseQuery = `UPDATE material_stock SET quantity = GREATEST(0, quantity - CASE ${updateCases} ELSE 0 END), updated_at = CURRENT_TIMESTAMP WHERE location_id = ? AND material_id IN (${matIdPlaceholders})`;
+    db.prepare(caseQuery).run(...updateParams, task.location_id, ...materialsToDeduct.map(b => b.material_id));
+  }
+
+  if (task.sale_item_id) {
+    db.prepare('UPDATE sale_items SET materials_deducted = 1 WHERE id = ?').run(task.sale_item_id);
+  }
+
+  db.prepare(
+    'INSERT INTO production_logs (product_id, location_id, quantity, sale_id, task_id, produced_by, notes) VALUES (?, ?, ?, ?, ?, ?, ?)'
+  ).run(task.product_id, task.location_id, task.quantity, task.sale_id, task.id, userId, `Order ${sale?.sale_number || ''}`);
+
+  db.prepare("UPDATE production_tasks SET status = 'completed', completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(task.id);
+
+  return materialsToDeduct.map((m) => m.material_id);
+}
+
 // PUT /api/production/tasks/:id/complete — Task done: deduct materials, log production
 router.put(
   '/tasks/:id/complete',
   authenticate,
-  authorize('owner', 'manager', 'employee'),
+  authorize('owner', 'manager', 'employee', 'counter_staff', 'florist_staff'),
   (req, res, next) => {
     try {
       const db = getDb();
@@ -548,71 +688,21 @@ router.put(
       if (task.status === 'completed' || task.status === 'cancelled') {
         return res.status(400).json({ success: false, message: 'Task already finished' });
       }
-      if (req.user.role === 'employee' && task.assigned_to !== req.user.id) {
+      if (['employee', 'counter_staff', 'florist_staff'].includes(req.user.role) && task.assigned_to !== req.user.id) {
         return res.status(403).json({ success: false, message: 'Not your task' });
       }
 
-      const product = db.prepare('SELECT id, name FROM products WHERE id = ?').get(task.product_id);
-      const standardBom = db.prepare('SELECT material_id, quantity as qty_needed FROM product_materials WHERE product_id = ?').all(task.product_id || 0);
-      const sale = db.prepare('SELECT sale_number FROM sales WHERE id = ?').get(task.sale_id);
-
-      // Check for custom_materials on the sale_item
-      let customMats = null;
-      if (task.sale_item_id) {
-        const si = db.prepare('SELECT custom_materials FROM sale_items WHERE id = ?').get(task.sale_item_id);
-        customMats = safeParseJSON(si?.custom_materials, null);
-      }
-
-      // Use custom materials if present, otherwise standard BOM
-      const materialsToDeduct = (customMats && customMats.length > 0)
-        ? customMats.map(cm => ({ material_id: cm.material_id, qty_needed: cm.qty_per_unit || cm.qty || cm.quantity || 1 }))
-        : standardBom;
-
+      let deductedMaterialIds = [];
       const completeTx = db.transaction(() => {
-        // 1. Deduct materials (custom or standard BOM)
-        if (materialsToDeduct.length > 0) {
-          // --- BATCH INSERT MATERIAL TRANSACTIONS ---
-          const logPlaceholders = materialsToDeduct.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
-          const logParams = [];
-          for (const b of materialsToDeduct) {
-             const usedQty = b.qty_needed * task.quantity;
-             logParams.push(b.material_id, task.location_id, 'usage', usedQty, 'sale', task.sale_id, `Task #${task.id} for ${sale?.sale_number || ''}`, req.user.id, nowLocal());
-          }
-          db.prepare(`INSERT INTO material_transactions (material_id, location_id, type, quantity, reference_type, reference_id, notes, created_by, created_at) VALUES ${logPlaceholders}`).run(...logParams);
+        deductedMaterialIds = completeProductionTaskCore(db, task, req.user.id);
 
-          // --- BATCH UPDATE MATERIAL STOCK ---
-          let updateCases = '';
-          const updateParams = [];
-          for (const b of materialsToDeduct) {
-             const usedQty = b.qty_needed * task.quantity;
-             updateCases += ' WHEN material_id = ? THEN ?';
-             updateParams.push(b.material_id, usedQty);
-          }
-          const matIdPlaceholders = materialsToDeduct.map(() => '?').join(',');
-          const caseQuery = `UPDATE material_stock SET quantity = GREATEST(0, quantity - CASE ${updateCases} ELSE 0 END), updated_at = CURRENT_TIMESTAMP WHERE location_id = ? AND material_id IN (${matIdPlaceholders})`;
-          db.prepare(caseQuery).run(...updateParams, task.location_id, ...materialsToDeduct.map(b => b.material_id));
-        }
-
-        // 2. Mark sale_item as materials_deducted
-        if (task.sale_item_id) {
-          db.prepare('UPDATE sale_items SET materials_deducted = 1 WHERE id = ?').run(task.sale_item_id);
-        }
-
-        // 3. Log production (for employee tracking/incentives)
-        db.prepare(
-          'INSERT INTO production_logs (product_id, location_id, quantity, sale_id, task_id, produced_by, notes) VALUES (?, ?, ?, ?, ?, ?, ?)'
-        ).run(task.product_id, task.location_id, task.quantity, task.sale_id, task.id, req.user.id, `Order ${sale?.sale_number || ''}`);
-
-        // 4. Mark task complete
-        db.prepare("UPDATE production_tasks SET status = 'completed', completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(task.id);
-
-        // 5. ⚡ OPTIMIZED: Use single JOIN query instead of COUNT subquery + multiple updates
+        // ⚡ OPTIMIZED: Use single JOIN query instead of COUNT subquery + multiple updates
         //    Determine sale status in one query: if any tasks remain (not completed/cancelled)
         const sql = `
-          UPDATE sales SET 
-            status = CASE 
+          UPDATE sales SET
+            status = CASE
               WHEN NOT EXISTS (
-                SELECT 1 FROM production_tasks 
+                SELECT 1 FROM production_tasks
                 WHERE sale_id = ? AND status NOT IN ('completed', 'cancelled')
               ) THEN 'ready'
               ELSE status
@@ -630,7 +720,7 @@ router.put(
       // Check for low stock alerts after material deduction (BATCHED)
       try {
         const db2 = getDb();
-        const matIds = materialsToDeduct.map(m => m.material_id);
+        const matIds = deductedMaterialIds;
         if (matIds.length > 0) {
           const placeholders = matIds.map(() => '?').join(',');
           const lowStocks = db2.prepare(`
@@ -688,7 +778,7 @@ router.put(
 // DASHBOARD SUMMARY — Counts for action items
 // ═══════════════════════════════════════════════════════════════
 
-router.get('/dashboard-summary', authenticate, authorize('owner', 'manager', 'employee'), async (req, res, next) => {
+router.get('/dashboard-summary', authenticate, authorize('owner', 'manager', 'employee', 'counter_staff', 'florist_staff'), async (req, res, next) => {
   try {
     const db = await getAsyncDb();
     const { location_id } = req.query;
@@ -1001,3 +1091,4 @@ router.get('/logs', authenticate, async (req, res, next) => {
 });
 
 module.exports = router;
+module.exports.completeProductionTaskCore = completeProductionTaskCore;

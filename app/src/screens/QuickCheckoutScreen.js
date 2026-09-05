@@ -14,6 +14,7 @@ import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import { getShopNow } from '../utils/datetime';
+import { bumpActivity } from '../hooks/useIdleLock';
 
 
 const ORDER_TYPES = [
@@ -138,7 +139,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     try {
       const res = await api.getUsers();
       const users = res.data?.users || res.data || [];
-      setEmployees(users.filter(u => ['owner', 'manager', 'employee'].includes(u.role)));
+      setEmployees(users.filter(u => ['owner', 'manager', 'employee', 'counter_staff', 'florist_staff'].includes(u.role)));
     } catch (e) { console.log(e); }
   };
 
@@ -2208,7 +2209,10 @@ export default function QuickCheckoutScreen({ navigation, route }) {
       </ScrollView>
 
       <Modal visible={draftPickerVisible} transparent animationType="slide" onRequestClose={() => setDraftPickerVisible(false)}>
-        <View style={styles.modalOverlay}>
+        {/* onTouchStart: RN Modal mounts into its own native root, so touches
+            here never reach RootNavigator's idle-timer wrapper — without this,
+            picking items/drafts here for 3+ minutes would idle-lock mid-order. */}
+        <View style={styles.modalOverlay} onTouchStart={bumpActivity}>
           <View style={[styles.modalCard, { alignSelf: 'center', paddingBottom: Platform.OS === 'ios' ? 40 : 20 }]}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Saved Drafts</Text>
@@ -2243,7 +2247,10 @@ export default function QuickCheckoutScreen({ navigation, route }) {
 
       {/* ── Product Picker Modal ── */}
       <Modal visible={showProductPicker} transparent animationType="slide">
-        <View style={styles.modalOverlay}>
+        {/* onTouchStart: RN Modal mounts into its own native root, so touches
+            here never reach RootNavigator's idle-timer wrapper — without this,
+            picking items/drafts here for 3+ minutes would idle-lock mid-order. */}
+        <View style={styles.modalOverlay} onTouchStart={bumpActivity}>
           <KeyboardAvoidingView
             behavior={Platform.OS === 'ios' ? 'padding' : undefined}
             style={{ width: '100%', alignItems: 'center' }}
@@ -2304,7 +2311,10 @@ export default function QuickCheckoutScreen({ navigation, route }) {
 
       {/* Material Picker Modal */}
       <Modal visible={showMaterialPicker} animationType="slide" transparent>
-        <View style={styles.modalOverlay}>
+        {/* onTouchStart: RN Modal mounts into its own native root, so touches
+            here never reach RootNavigator's idle-timer wrapper — without this,
+            picking items/drafts here for 3+ minutes would idle-lock mid-order. */}
+        <View style={styles.modalOverlay} onTouchStart={bumpActivity}>
           <KeyboardAvoidingView
             behavior={Platform.OS === 'ios' ? 'padding' : undefined}
             style={{ width: '100%', alignItems: 'center' }}
@@ -2380,7 +2390,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
 
       {/* Per-item voice note — one small modal reused for whichever item's mic icon was tapped. */}
       <Modal visible={itemVoiceModalIdx !== null} transparent animationType="slide" onRequestClose={() => setItemVoiceModalIdx(null)}>
-        <View style={styles.modalOverlay}>
+        <View style={styles.modalOverlay} onTouchStart={bumpActivity}>
           <View style={[styles.modalCard, { minHeight: undefined, paddingBottom: Platform.OS === 'ios' ? 40 : 20 }]}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>

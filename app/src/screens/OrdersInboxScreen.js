@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, FlatList, TouchableOpacity, RefreshControl, Act
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import api from '../services/api';
+import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import { formatCardDateTime } from '../utils/datetime';
 
@@ -28,6 +29,12 @@ function formatAmount(value) {
 }
 
 export default function OrdersInboxScreen({ navigation }) {
+  const { user } = useAuth();
+  // Owner/manager already have full Customers access via the More tab —
+  // this shortcut is only for employee/counter_staff, who don't have a
+  // 'Customers' route registered in their stack's owner/manager sibling
+  // (OrdersStack), so it must not render there.
+  const showCustomersShortcut = user?.role === 'employee' || user?.role === 'counter_staff';
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -114,6 +121,27 @@ export default function OrdersInboxScreen({ navigation }) {
 
   return (
     <View style={styles.container}>
+      {/* PickupOrdersScreen (the only screen with the "mark picked up /
+          collect payment" action) was never registered in this stack at
+          all — counter_staff had zero path to it, even after the backend
+          gained permission to confirm pickup payment. Owner/manager reach
+          it via their own OrdersHub, so this link is scoped to the roles
+          that only have this stack (2026-09-01, sub-project 4 audit).
+          DeliveriesList added the same day for the same reason, sub-
+          project 5 — the list/at-risk monitoring view, not just a single
+          delivery's own detail (already reachable via SaleDetail). */}
+      {showCustomersShortcut && (
+        <View style={styles.quickLinksRow}>
+          <TouchableOpacity style={styles.pickupLink} onPress={() => navigation.navigate('PickupOrders')}>
+            <Ionicons name="bag-handle-outline" size={16} color={Colors.primary} />
+            <Text style={styles.pickupLinkText}>Pickup Orders →</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.pickupLink} onPress={() => navigation.navigate('DeliveriesList')}>
+            <Ionicons name="bicycle-outline" size={16} color={Colors.primary} />
+            <Text style={styles.pickupLinkText}>Deliveries →</Text>
+          </TouchableOpacity>
+        </View>
+      )}
       <View style={styles.searchRow}>
         <Ionicons name="search" size={18} color={Colors.textLight} />
         <TextInput
@@ -161,6 +189,19 @@ export default function OrdersInboxScreen({ navigation }) {
         />
       )}
 
+      {/* Secondary action — smaller than the primary Log Order FAB, so it
+          doesn't compete for attention on a screen with one clear main task.
+          Lets counter staff check a customer's outstanding balance without
+          an active checkout (e.g. a phone call asking about dues). Owner/
+          manager already have this via the More tab, so it's hidden there —
+          this screen is also reachable by their OrdersStack, which has no
+          'Customers' route registered. */}
+      {showCustomersShortcut && (
+        <TouchableOpacity style={styles.fabSecondary} onPress={() => navigation.navigate('Customers')}>
+          <Ionicons name="people" size={22} color={Colors.primary} />
+        </TouchableOpacity>
+      )}
+
       <TouchableOpacity style={styles.fab} onPress={() => navigation.navigate('LogOrder')}>
         <Ionicons name="add" size={28} color={Colors.white} />
       </TouchableOpacity>
@@ -170,6 +211,14 @@ export default function OrdersInboxScreen({ navigation }) {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
+  quickLinksRow: {
+    flexDirection: 'row', justifyContent: 'flex-end', gap: Spacing.md,
+    paddingHorizontal: Spacing.md, paddingTop: Spacing.sm,
+  },
+  pickupLink: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+  },
+  pickupLinkText: { color: Colors.primary, fontWeight: '600', fontSize: FontSize.sm },
   searchRow: {
     flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
     backgroundColor: Colors.surface, borderRadius: BorderRadius.md,
@@ -195,4 +244,5 @@ const styles = StyleSheet.create({
   paymentBadge: { fontSize: FontSize.xs, fontWeight: '700', marginTop: 4 },
   empty: { textAlign: 'center', color: Colors.textLight, marginTop: 40 },
   fab: { position: 'absolute', right: Spacing.lg, bottom: Spacing.lg, width: 56, height: 56, borderRadius: 28, backgroundColor: Colors.primary, justifyContent: 'center', alignItems: 'center', elevation: 4, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 4 },
+  fabSecondary: { position: 'absolute', right: Spacing.lg, bottom: Spacing.lg + 68, width: 44, height: 44, borderRadius: 22, backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.border, justifyContent: 'center', alignItems: 'center', elevation: 3, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.15, shadowRadius: 3 },
 });

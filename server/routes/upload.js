@@ -24,7 +24,7 @@ const upload = multer({
 router.post(
   '/',
   authenticate,
-  authorize('owner', 'manager', 'employee'),
+  authorize('owner', 'manager', 'employee', 'counter_staff'),
   upload.single('image'),
   (req, res, next) => {
     try {

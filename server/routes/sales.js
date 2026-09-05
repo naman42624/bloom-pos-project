@@ -6,6 +6,8 @@ const { authenticate, authorize } = require('../middleware/auth');
 const { notifyByRole, createNotification } = require('./notifications');
 const { todayStr: localToday, nowLocal, nowTimeStr, parseServerDate } = require('../utils/time');
 const { safeParseJSON } = require('../utils/json');
+const { hasOpenRegister, REGISTER_CLOSED_MESSAGE } = require('../utils/register-guard');
+const { completeProductionTaskCore } = require('./production');
 
 const router = express.Router();
 
@@ -216,7 +218,7 @@ router.get('/', authenticate, async (req, res, next) => {
     }
 
     // Scope by location for non-owner roles
-    if (req.user.role === 'employee' || req.user.role === 'manager') {
+    if (['employee', 'counter_staff', 'manager'].includes(req.user.role)) {
       const userLocs = (await db.prepare('SELECT location_id FROM user_locations WHERE user_id = ?').all(req.user.id)).map(r => r.location_id);
       if (userLocs.length > 0 && !location_id) {
         sql += ` AND s.location_id IN (${userLocs.map(() => '?').join(',')})`;
@@ -358,7 +360,7 @@ router.get('/today-summary', authenticate, async (req, res, next) => {
 });
 
 // ─── GET /api/sales/drafts ──────────────────────────────────
-router.get('/drafts', authenticate, authorize('owner', 'manager', 'employee'), async (req, res, next) => {
+router.get('/drafts', authenticate, authorize('owner', 'manager', 'employee', 'counter_staff'), async (req, res, next) => {
   try {
     const db = await getAsyncDb();
     const { location_id, context, search } = req.query;
@@ -387,7 +389,7 @@ router.get('/drafts', authenticate, authorize('owner', 'manager', 'employee'), a
 });
 
 // ─── GET /api/sales/drafts/:id ──────────────────────────────
-router.get('/drafts/:id', authenticate, authorize('owner', 'manager', 'employee'), async (req, res, next) => {
+router.get('/drafts/:id', authenticate, authorize('owner', 'manager', 'employee', 'counter_staff'), async (req, res, next) => {
   try {
     const db = await getAsyncDb();
     const draft = await db.prepare(
@@ -406,7 +408,7 @@ router.get('/drafts/:id', authenticate, authorize('owner', 'manager', 'employee'
 router.post(
   '/drafts',
   authenticate,
-  authorize('owner', 'manager', 'employee'),
+  authorize('owner', 'manager', 'employee', 'counter_staff'),
   [
     body('id').optional({ nullable: true }).isInt(),
     body('location_id').optional({ nullable: true }).isInt(),
@@ -492,7 +494,7 @@ router.post(
 );
 
 // ─── DELETE /api/sales/drafts/:id ───────────────────────────
-router.delete('/drafts/:id', authenticate, authorize('owner', 'manager', 'employee'), (req, res, next) => {
+router.delete('/drafts/:id', authenticate, authorize('owner', 'manager', 'employee', 'counter_staff'), (req, res, next) => {
   try {
     const db = getDb();
     const existing = db.prepare('SELECT id FROM sale_drafts WHERE id = ? AND created_by = ?').get(req.params.id, req.user.id);
@@ -613,7 +615,7 @@ router.get('/register/status', authenticate, async (req, res, next) => {
 router.post(
   '/register/open',
   authenticate,
-  authorize('owner', 'manager', 'employee'),
+  authorize('owner', 'manager', 'employee', 'counter_staff'),
   [
     body('location_id').isInt(),
     body('opening_balance').isFloat({ min: 0 }),
@@ -658,7 +660,7 @@ router.post(
 router.put(
   '/register/close',
   authenticate,
-  authorize('owner', 'manager', 'employee'),
+  authorize('owner', 'manager', 'employee', 'counter_staff'),
   [
     body('location_id').isInt(),
     body('actual_cash').isFloat({ min: 0 }),
@@ -810,7 +812,7 @@ router.get('/register/history', authenticate, authorize('owner', 'manager'), asy
 router.get(
   '/production-queue',
   authenticate,
-  authorize('owner', 'manager', 'employee'),
+  authorize('owner', 'manager', 'employee', 'counter_staff', 'florist_staff'),
   async (req, res, next) => {
     try {
       const db = await getAsyncDb();
@@ -969,7 +971,7 @@ router.get('/:id/audit-logs', authenticate, authorize('owner', 'manager'), async
 });
 
 // ─── PUT /api/sales/:id ──────────────────────────────────────
-router.put('/:id', authenticate, authorize('owner', 'manager', 'employee'), async (req, res, next) => {
+router.put('/:id', authenticate, authorize('owner', 'manager', 'employee', 'counter_staff'), async (req, res, next) => {
   try {
     const db = await getAsyncDb();
     const saleId = req.params.id;
@@ -979,7 +981,7 @@ router.put('/:id', authenticate, authorize('owner', 'manager', 'employee'), asyn
     if (!oldSale) return res.status(404).json({ success: false, message: 'Sale not found' });
 
     // 1. Permission Check
-    if (req.user.role === 'employee' && oldSale.created_by !== req.user.id) {
+    if (['employee', 'counter_staff'].includes(req.user.role) && oldSale.created_by !== req.user.id) {
       return res.status(403).json({ success: false, message: 'Employees can only edit sales they created' });
     }
 
@@ -1290,7 +1292,7 @@ router.get('/:id', authenticate, async (req, res, next) => {
 router.post(
   '/',
   authenticate,
-  authorize('owner', 'manager', 'employee'),
+  authorize('owner', 'manager', 'employee', 'counter_staff'),
   [
     body('location_id').isInt().withMessage('Location is required'),
     body('order_type').isIn(['walk_in', 'pickup', 'delivery', 'pre_order']),
@@ -1354,6 +1356,12 @@ router.post(
       } = req.body;
       // Mutable alias — may be set by auto-create logic below
       let customer_id = customer_id_from_body || null;
+
+      // Hard register-open check — only when this sale actually writes cash.
+      // Card/UPI-only sales (or sales with no payment yet) are unaffected.
+      if (payments && payments.some((p) => p.method === 'cash') && !hasOpenRegister(db, location_id)) {
+        return res.status(400).json({ success: false, message: REGISTER_CLOSED_MESSAGE });
+      }
 
       const createSale = db.transaction(() => {
         // Calculate line items — supports both products and raw materials
@@ -1910,7 +1918,7 @@ router.post(
 router.post(
   '/:id/payments',
   authenticate,
-  authorize('owner', 'manager', 'employee'),
+  authorize('owner', 'manager', 'employee', 'counter_staff'),
   [
     body('payments').optional().isArray(),
     body('payments.*.method').optional().isIn(['cash', 'card', 'upi']),
@@ -1938,6 +1946,10 @@ router.post(
 
       if (paymentList.length === 0 && !write_off_amount) {
         return res.status(400).json({ success: false, message: 'No payments or write-off provided' });
+      }
+
+      if (paymentList.some((p) => p.method === 'cash') && !hasOpenRegister(db, sale.location_id)) {
+        return res.status(400).json({ success: false, message: REGISTER_CLOSED_MESSAGE });
       }
 
       const tx = db.transaction(() => {
@@ -2011,7 +2023,7 @@ router.post(
 router.put(
   '/:id/cancel',
   authenticate,
-  authorize('owner', 'manager'),
+  authorize('owner', 'manager', 'counter_staff'),
   (req, res, next) => {
     try {
       const db = getDb();
@@ -2019,31 +2031,47 @@ router.put(
       if (!sale) return res.status(404).json({ success: false, message: 'Sale not found' });
       if (sale.status === 'cancelled') return res.status(400).json({ success: false, message: 'Sale already cancelled' });
 
+      // A paid sale must be refunded, not silently cancelled. The old logic
+      // here reversed cash_registers totals for whatever payments existed,
+      // regardless of whether the sale was paid today or days ago — for a
+      // past-day cash payment that's a phantom write against TODAY's
+      // register (that cash was already counted/banked on a closed session
+      // days ago; nothing physically moves today). POST /:id/refund already
+      // gets this right (same-day vs past-day, and only touches the
+      // register for refund_method='cash') — route through it instead of
+      // duplicating that logic here with a bug.
+      //
+      // Block on UNREFUNDED balance, not on "a payment row exists" — a
+      // payment row is never deleted by a refund (it's the audit trail),
+      // so a plain paidCount>0 check would block cancel forever, even
+      // right after the sale was fully refunded. Compare what was paid
+      // against what's already been refunded instead.
+      const paymentTotal = Number(db.prepare('SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE sale_id = ?').get(sale.id).total);
+      const refundTotal = Number(db.prepare('SELECT COALESCE(SUM(amount), 0) as total FROM refunds WHERE sale_id = ?').get(sale.id).total);
+      const unrefundedBalance = paymentTotal - refundTotal;
+      if (unrefundedBalance > 0.01) {
+        return res.status(400).json({
+          success: false,
+          message: 'This sale has an unrefunded balance — refund it first, then cancel.',
+        });
+      }
+
       const cancelTx = db.transaction(() => {
         db.prepare("UPDATE sales SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(req.params.id);
 
-        // Revert customer total_spent and credit_balance
+        // Revert customer total_spent/credit_balance. total_spent was bumped
+        // by the full grand_total at creation regardless of payment status,
+        // so it always reverses by grand_total. credit_balance is different:
+        // it was only ever bumped by the UNPAID portion at creation (and
+        // reduced as payments came in) — refunds never touch it (see
+        // POST /:id/refund). So a sale that was paid in full then refunded
+        // has $0 sitting in credit_balance for it; reversing by the full
+        // grand_total there would wrongly wipe out real dues from other
+        // orders. Reverse by grand_total minus whatever was actually paid.
         const duesCustomerId = (sale.order_type === 'delivery' && sale.sender_customer_id) ? sale.sender_customer_id : sale.customer_id;
         if (duesCustomerId) {
-          const totalPaidObj = db.prepare('SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE sale_id = ?').get(sale.id);
-          const totalPaid = totalPaidObj ? totalPaidObj.total : 0;
-          const unpaid = Math.max(0, sale.grand_total - totalPaid);
-          db.prepare('UPDATE users SET total_spent = GREATEST(0, total_spent - ?), credit_balance = GREATEST(0, credit_balance - ?), updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(sale.grand_total, unpaid, duesCustomerId);
-        }
-
-        // Update cash register (decrement totals) if there's an open session
-        const register = db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1').get(sale.location_id);
-        if (register) {
-          const payments = db.prepare('SELECT method, amount FROM payments WHERE sale_id = ?').all(sale.id);
-          for (const pmt of payments) {
-            if (pmt.method === 'cash') {
-              db.prepare('UPDATE cash_registers SET total_cash_sales = total_cash_sales - ?, expected_cash = expected_cash - ? WHERE id = ?').run(pmt.amount, pmt.amount, register.id);
-            } else if (pmt.method === 'card') {
-              db.prepare('UPDATE cash_registers SET total_card_sales = total_card_sales - ? WHERE id = ?').run(pmt.amount, register.id);
-            } else if (pmt.method === 'upi') {
-              db.prepare('UPDATE cash_registers SET total_upi_sales = total_upi_sales - ? WHERE id = ?').run(pmt.amount, register.id);
-            }
-          }
+          const unpaidRemaining = Math.max(0, Number(sale.grand_total) - paymentTotal);
+          db.prepare('UPDATE users SET total_spent = GREATEST(0, total_spent - ?), credit_balance = GREATEST(0, credit_balance - ?), updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(sale.grand_total, unpaidRemaining, duesCustomerId);
         }
 
         // Cancel any pending/in-progress production tasks
@@ -2094,7 +2122,7 @@ router.put(
 router.put(
   '/:id/status',
   authenticate,
-  authorize('owner', 'manager', 'employee'),
+  authorize('owner', 'manager', 'employee', 'counter_staff'),
   [
     body('status').isIn(['pending', 'preparing', 'ready', 'completed']).withMessage('Invalid status'),
   ],
@@ -2127,9 +2155,33 @@ router.put(
 
       if (managerOverrideOn && (sale.order_type === 'pickup' || sale.order_type === 'delivery')) {
         if (status === 'preparing') {
+          // 'in_progress' has no material-deduction side effect in the real
+          // /tasks/:id/start endpoint either — this is just a status label,
+          // safe to flip directly.
           db.prepare("UPDATE production_tasks SET status = 'in_progress', picked_by = COALESCE(picked_by, ?), updated_at = CURRENT_TIMESTAMP WHERE sale_id = ? AND status IN ('pending', 'assigned')").run(req.user.id, sale.id);
         } else if (status === 'ready') {
-          db.prepare("UPDATE production_tasks SET status = 'completed', picked_by = COALESCE(picked_by, ?), updated_at = CURRENT_TIMESTAMP WHERE sale_id = ? AND status NOT IN ('completed', 'cancelled')").run(req.user.id, sale.id);
+          // Used to directly flip production_tasks.status = 'completed'
+          // here, bypassing the real completion logic entirely — no
+          // material deduction, no production log, and stock_deducted got
+          // set to 1 further down regardless, falsely claiming inventory
+          // was handled. This "manager override" is meant to save staff
+          // the per-item pick/start/complete dance when they're confident
+          // the order is actually done, not to skip inventory accounting —
+          // run the same real logic /tasks/:id/complete uses, for every
+          // task still open, in one transaction (found live, 2026-09-01;
+          // the Dashboard's own "Mark Ready" quick action made this
+          // shortcut more reachable without knowing what it was skipping).
+          const incompleteTasks = db.prepare(
+            "SELECT * FROM production_tasks WHERE sale_id = ? AND status NOT IN ('completed', 'cancelled')"
+          ).all(sale.id);
+          if (incompleteTasks.length > 0) {
+            const bulkCompleteTx = db.transaction(() => {
+              for (const t of incompleteTasks) {
+                completeProductionTaskCore(db, t, req.user.id);
+              }
+            });
+            bulkCompleteTx();
+          }
         }
       }
 
@@ -2215,7 +2267,7 @@ router.put(
 router.post(
   '/:id/fulfill-from-stock',
   authenticate,
-  authorize('owner', 'manager', 'employee'),
+  authorize('owner', 'manager', 'employee', 'counter_staff'),
   [
     body('sale_item_id').isInt({ min: 1 }).withMessage('sale_item_id is required'),
   ],
@@ -2490,7 +2542,7 @@ router.put(
 router.post(
   '/:id/refund',
   authenticate,
-  authorize('owner', 'manager'),
+  authorize('owner', 'manager', 'counter_staff'),
   [
     body('amount').isFloat({ min: 0.01 }),
     body('reason').trim().notEmpty().withMessage('Reason is required'),
@@ -2511,17 +2563,27 @@ router.post(
       const { amount, reason, refund_method } = req.body;
       if (Number(amount) > Number(sale.grand_total)) return res.status(400).json({ success: false, message: 'Refund amount cannot exceed sale total' });
 
-      // Enforce refund limit for managers
-      if (req.user.role === 'manager') {
+      // Enforce refund limit for managers and counter staff (same cap —
+      // counter_staff granted refund/cancel access 2026-08-31, reusing this
+      // existing limit rather than inventing a separate one).
+      if (req.user.role === 'manager' || req.user.role === 'counter_staff') {
         const refundLimit = parseFloat(
           (db.prepare("SELECT value FROM settings WHERE key = 'refund_manager_limit'").get() || {}).value || '10000'
         );
         if (amount > refundLimit) {
           return res.status(403).json({
             success: false,
-            message: `Refund of ₹${amount} exceeds manager limit (₹${refundLimit}). Only an owner can approve this refund.`,
+            message: `Refund of ₹${amount} exceeds the limit (₹${refundLimit}). Only an owner can approve this refund.`,
           });
         }
+      }
+
+      // A cash refund always touches today's register directly — both the
+      // same-day and past-day branches below (a past-day refund is real
+      // cash leaving TODAY's drawer, logged as an expense instead of a
+      // same-day refund line, but it's still today's physical cash).
+      if (refund_method === 'cash' && !hasOpenRegister(db, sale.location_id)) {
+        return res.status(400).json({ success: false, message: REGISTER_CLOSED_MESSAGE });
       }
 
       db.prepare(
@@ -2686,7 +2748,7 @@ router.post(
 router.post(
   '/custom-item',
   authenticate,
-  authorize('owner', 'manager', 'employee'),
+  authorize('owner', 'manager', 'employee', 'counter_staff'),
   [
     body('base_product_id').optional({ nullable: true }).isInt(),
     body('name').trim().notEmpty().withMessage('Name is required'),

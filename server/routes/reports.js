@@ -347,7 +347,7 @@ router.get('/employee-performance', authenticate, authorize('owner', 'manager'),
         COALESCE(AVG(s.grand_total), 0) as avg_sale
       FROM users u
       LEFT JOIN sales s ON s.created_by = u.id AND date(s.created_at) BETWEEN ? AND ? AND s.status != 'cancelled'
-      WHERE u.role IN ('owner', 'manager', 'employee') ${userFilter}
+      WHERE u.role IN ('owner', 'manager', 'employee', 'counter_staff') ${userFilter}
       GROUP BY u.id
       ORDER BY total_revenue DESC
     `).all(...params);
@@ -360,7 +360,7 @@ router.get('/employee-performance', authenticate, authorize('owner', 'manager'),
         COALESCE(SUM(pl.quantity), 0) as total_qty
       FROM users u
       LEFT JOIN production_logs pl ON pl.produced_by = u.id AND date(pl.created_at) BETWEEN ? AND ?
-      WHERE u.role IN ('owner', 'manager', 'employee') ${userFilter}
+      WHERE u.role IN ('owner', 'manager', 'employee', 'counter_staff') ${userFilter}
       GROUP BY u.id
       ORDER BY total_qty DESC
     `).all(...params);
@@ -374,7 +374,7 @@ router.get('/employee-performance', authenticate, authorize('owner', 'manager'),
         COUNT(DISTINCT CASE WHEN a.late_arrival = 1 THEN a.date END) as late_days
       FROM users u
       LEFT JOIN attendance a ON a.user_id = u.id AND a.date BETWEEN ? AND ? AND a.clock_in IS NOT NULL
-      WHERE u.role IN ('owner', 'manager', 'employee', 'delivery_partner') ${userFilter}
+      WHERE u.role IN ('owner', 'manager', 'employee', 'counter_staff', 'delivery_partner') ${userFilter}
       GROUP BY u.id
       ORDER BY total_hours DESC
     `).all(...params);

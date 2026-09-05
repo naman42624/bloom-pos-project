@@ -1,6 +1,6 @@
 ---
 name: staff-ux-checklist
-description: Use before finalizing the design of, or shipping code for, any staff-facing screen or flow in this app (counter/POS, order logging, tasks, delivery, attendance, cash register) — the people using it have never used any business software before and workflows must stay fast and simple without losing functionality.
+description: Use before finalizing the design of, or shipping code for, any staff-facing screen or flow in this app (counter/POS, order logging, tasks, delivery, attendance, cash register) — the people using it have never used any business software before and workflows must stay fast and simple without losing functionality. Also applies to backend-only changes (a new validation, a new blocked case, a new required step) reachable from a staff screen — not just new UI. If a change can make a staff member see a new error or hit a new dead end, it needs this checklist even if no screen file was touched.
 ---
 
 # Staff UX Checklist (Petal / BloomCart POS)
@@ -8,6 +8,10 @@ description: Use before finalizing the design of, or shipping code for, any staf
 The people who will use this app day-to-day — counter staff, florists, delivery riders — are, per the shop owner, using a system like this **for the first time in their working life**. This is not a generic "keep it simple" reminder; it's a specific, load-bearing design constraint. A screen that would be perfectly normal for an experienced retail-software user can still fail here.
 
 This checklist is for the *staff-facing* side of the app (POS/quick-sale, order logging, task queues, delivery flow, cash register, attendance clock-in). The owner/manager back-office side (reports, settings, catalog editing) can be denser — those users opted into the tool and use it less frequently under less time pressure.
+
+## This is not only for new screens
+
+A "flow" includes anything a backend change makes a staff member run into — a new server-side validation, a new blocked action, a new required prerequisite step. Adding a hard block like "you can't do X until Y" without also handling how a staff member discovers and does Y is half a fix. Concretely: don't ship a backend rule that can produce an error response to a staff screen without also checking (right then, not as a follow-up) whether that screen tells the person what to do about it — ideally *before* they hit the block, not after, per #6 below. A change described as "just a backend fix" is still in scope here the moment it's reachable from a staff-facing screen.
 
 ## Before finalizing a staff-facing screen or flow, check each of these
 

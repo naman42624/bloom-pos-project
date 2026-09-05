@@ -8,7 +8,6 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import * as ImagePicker from 'expo-image-picker';
-import { useAudioPlayer, useAudioPlayerStatus } from 'expo-audio';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
@@ -16,6 +15,7 @@ import { formatDateTime, formatCardDateTime, isToday } from '../utils/datetime';
 import { Image } from 'react-native';
 import ImageModal from '../components/ImageModal';
 import VoiceNoteRecorder from '../components/VoiceNoteRecorder';
+import AttachmentVoiceRow from '../components/AttachmentVoiceRow';
 
 const STATUS_COLORS = {
   completed: Colors.success,
@@ -114,41 +114,6 @@ function summarizeAuditChanges(log) {
 // instance (hooks must be called unconditionally per component instance,
 // so a list of N voice notes needs N sibling components, not N hook calls
 // inside a single .map()).
-function AttachmentVoiceRow({ attachment }) {
-  const player = useAudioPlayer(api.getMediaUrl(attachment.file_url));
-  const status = useAudioPlayerStatus(player);
-  const isPlaying = status.playing;
-
-  const togglePlay = () => {
-    if (isPlaying) {
-      player.pause();
-      return;
-    }
-    if (status.didJustFinish || (status.duration > 0 && status.currentTime >= status.duration)) {
-      player.seekTo(0);
-    }
-    player.play();
-  };
-
-  return (
-    <View style={styles.attachmentRow}>
-      <TouchableOpacity style={styles.voicePlayBtn} onPress={togglePlay}>
-        <Ionicons name={isPlaying ? 'pause' : 'play'} size={16} color={Colors.white} />
-      </TouchableOpacity>
-      <View style={{ flex: 1 }}>
-        <Text style={styles.attachmentLabel}>
-          Voice note{attachment.duration_seconds ? ` (${attachment.duration_seconds}s)` : ''}
-        </Text>
-        {attachment.uploaded_by_name ? (
-          <Text style={styles.attachmentMeta}>
-            {attachment.uploaded_by_name} • {formatDateTime(attachment.created_at)}
-          </Text>
-        ) : null}
-      </View>
-    </View>
-  );
-}
-
 export default function SaleDetailScreen({ route, navigation }) {
   const { saleId } = route.params;
   const { user, settings } = useAuth();
@@ -187,6 +152,27 @@ export default function SaleDetailScreen({ route, navigation }) {
   const canManage = user?.role === 'owner' || user?.role === 'manager';
   const canEdit = canManage || (sale?.created_by === user?.id);
   const isCustomer = user?.role === 'customer';
+  // Counter staff can cancel/refund at the counter (up to the same cap a
+  // manager has, enforced server-side — see the refund_manager_limit check
+  // on POST /:id/refund and PUT /:id/cancel). Everyone else keeps whatever
+  // canManage already grants (owner/manager only). Added 2026-08-31 after
+  // counter staff hit a live order needing a refund with no one able to
+  // process it without an owner/manager on hand.
+  const canCancelOrRefund = canManage || user?.role === 'counter_staff';
+  // Counter staff assign/reassign production tasks to florist staff as part
+  // of logging an order — the backend (PUT /production/tasks/:id/assign)
+  // already granted this 2026-08-31, but the button itself was still gated
+  // behind canManage, so it never actually appeared for them. Found live
+  // (2026-09-01): the picker already listed florist_staff as assignable,
+  // it just had no visible way to open it.
+  const canAssignTasks = canManage || user?.role === 'counter_staff';
+  // Florist/prep staff never touch payments (they only see this screen for
+  // the production tasks on an order) and customers viewing their own order
+  // can't record payments either (POST /:id/payments is staff-only
+  // server-side) — hide the button for both rather than letting them tap
+  // into a dead-end request. Delivery partners can't reach this screen at
+  // all (no SaleDetail route in their stack), so no check needed for them.
+  const canRecordPayment = !['florist_staff', 'customer'].includes(user?.role);
 
   // Convert order type state
   const [convertModalVisible, setConvertModalVisible] = useState(false);
@@ -248,7 +234,7 @@ export default function SaleDetailScreen({ route, navigation }) {
     ? null
     : !isToday(sale.created_at)
       ? 'Items can only be edited on the day the order was placed.'
-      : (user?.role === 'employee' && sale.created_by !== user?.id)
+      : (['employee', 'counter_staff'].includes(user?.role) && sale.created_by !== user?.id)
         ? 'You can only edit orders you created.'
         : null;
 
@@ -391,7 +377,34 @@ export default function SaleDetailScreen({ route, navigation }) {
     }
   };
 
+  const goToRefund = () => {
+    navigation.navigate('RefundSale', { saleId, grandTotal: sale.grand_total });
+  };
+
   const handleCancel = () => {
+    // The server blocks cancelling a sale with money still owed to the
+    // customer (refund it first — see PUT /sales/:id/cancel). Checking the
+    // same balance here means staff hit a clear "here's what to do" screen
+    // *before* confirming, instead of tapping "Yes, cancel" and landing on
+    // a dead-end error with no next step (staff-ux-checklist #6, added
+    // 2026-09-01 after exactly that happened in live testing).
+    const paidTotal = (sale.payments || []).reduce((sum, p) => sum + Number(p.amount || 0), 0);
+    const refundedTotal = Number(sale.refund?.amount || 0);
+    const unrefundedBalance = paidTotal - refundedTotal;
+
+    if (unrefundedBalance > 0.01) {
+      const message = `This order was paid ₹${unrefundedBalance.toFixed(2)}. Cancelling won't return that money on its own — refund the customer first, then cancel.`;
+      if (Platform.OS === 'web') {
+        if (window.confirm(`${message}\n\nOpen the refund screen now?`)) goToRefund();
+      } else {
+        Alert.alert('Refund needed first', message, [
+          { text: 'Not now', style: 'cancel' },
+          { text: 'Refund now', onPress: goToRefund },
+        ]);
+      }
+      return;
+    }
+
     const doCancel = async () => {
       try {
         await api.cancelSale(saleId);
@@ -412,7 +425,7 @@ export default function SaleDetailScreen({ route, navigation }) {
   };
 
   const handleRefund = () => {
-    navigation.navigate('RefundSale', { saleId, grandTotal: sale.grand_total });
+    goToRefund();
   };
 
   const handleViewLivePartner = () => {
@@ -563,10 +576,18 @@ export default function SaleDetailScreen({ route, navigation }) {
     setLoadingEmployees(true);
     setAssignModalVisible(true);
     try {
-      const res = await api.getUsers({ role: 'employee' });
-      // API returns { data: { users: [...], pagination } }
-      const list = res.data?.users || res.data || [];
-      setEmployees(Array.isArray(list) ? list : []);
+      // GET /users is owner/manager-only (it lists the whole account
+      // directory — owner/manager/customer included — which counter_staff
+      // has no business seeing just to pick who preps an order). Reuse
+      // /auth/staff-roster instead: same endpoint LockScreen already uses,
+      // pre-filtered server-side to exactly employee/counter_staff/
+      // florist_staff, scoped to this sale's own location, and safe for
+      // any authenticated role since it was already designed to be safe
+      // for NO role (LockScreen calls it unauthenticated). Switched
+      // 2026-09-01 so counter_staff's Assign button actually works instead
+      // of 403ing the moment the modal tried to load names.
+      const res = await api.getStaffRoster(sale.location_id);
+      setEmployees(res.data?.staff || []);
     } catch (err) {
       console.log('Failed to fetch employees:', err);
       setEmployees([]);
@@ -953,6 +974,14 @@ export default function SaleDetailScreen({ route, navigation }) {
           const hasCustomMaterials = parsedCustomMaterials && parsedCustomMaterials.length > 0;
           const hasMaterials = hasCustomMaterials || (item.materials && item.materials.length > 0);
           const isExpanded = expandedItems[idx];
+          // Voice notes recorded against THIS item specifically (see the
+          // Attachments section below for order-level notes, sale_item_id
+          // IS NULL). The data already carried sale_item_id — this screen
+          // just wasn't reading it, so every note showed in one flat list
+          // at the bottom regardless of which item it was actually about
+          // (found live, 2026-09-01 — the Dashboard task cards already got
+          // this same fix in production.js the session before).
+          const itemVoiceNotes = attachments.filter((a) => a.type === 'voice_note' && a.sale_item_id === item.id);
           return (
             <View key={idx} style={styles.itemRow}>
               <View style={{ flex: 1 }}>
@@ -973,6 +1002,13 @@ export default function SaleDetailScreen({ route, navigation }) {
                       {item.tax_rate > 0 ? ` (${item.tax_rate}% tax)` : ''}
                     </Text>
                     {item.special_instructions ? <Text style={{ fontSize: FontSize.xs, color: Colors.textLight, marginTop: 4 }}>Note: {item.special_instructions}</Text> : null}
+                    {itemVoiceNotes.length > 0 && (
+                      <View style={{ marginTop: 6, gap: 4 }}>
+                        {itemVoiceNotes.map((att) => (
+                          <AttachmentVoiceRow key={att.id} attachment={att} />
+                        ))}
+                      </View>
+                    )}
                     {/* Show custom image_url only if different from product_image */}
                     {item.image_url && item.product_image && item.image_url !== item.product_image ? (
                       <TouchableOpacity onPress={(e) => { e.stopPropagation(); setViewedImage(api.getMediaUrl(item.image_url)); }} style={{ marginTop: 8 }}>
@@ -1004,7 +1040,7 @@ export default function SaleDetailScreen({ route, navigation }) {
                               <Ionicons name="hand-left-outline" size={14} color={Colors.info} />
                               <Text style={[styles.taskActionText, { color: Colors.info }]}>Pick Up</Text>
                             </TouchableOpacity>
-                            {canManage && (
+                            {canAssignTasks && (
                               <TouchableOpacity style={[styles.taskActionBtn, { backgroundColor: '#9C27B0' + '15' }]} onPress={() => openAssignModal(task.id)}>
                                 <Ionicons name="person-add-outline" size={14} color="#9C27B0" />
                                 <Text style={[styles.taskActionText, { color: '#9C27B0' }]}>Assign</Text>
@@ -1014,7 +1050,7 @@ export default function SaleDetailScreen({ route, navigation }) {
                         )}
                         {task.status === 'assigned' && (
                           <>
-                            {canManage && (
+                            {canAssignTasks && (
                               <TouchableOpacity style={[styles.taskActionBtn, { backgroundColor: '#9C27B0' + '15' }]} onPress={() => openAssignModal(task.id)}>
                                 <Ionicons name="swap-horizontal-outline" size={14} color="#9C27B0" />
                                 <Text style={[styles.taskActionText, { color: '#9C27B0' }]}>Reassign</Text>
@@ -1236,25 +1272,44 @@ export default function SaleDetailScreen({ route, navigation }) {
           owner/manager/employee-only server-side (POST /attachments), so the
           add controls are hidden for the customer role to avoid a dead 403. */}
       <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Attachments ({attachments.length})</Text>
+        {/* Voice notes tied to one item (sale_item_id set) show with that
+            item above instead of here — this section is general/order-wide
+            notes only (sale_item_id IS NULL), so the count reflects what's
+            actually listed below it rather than double-counting notes
+            shown elsewhere (2026-09-01). */}
+        {(() => {
+          const photos = attachments.filter((a) => a.type === 'photo');
+          const generalVoiceNotes = attachments.filter((a) => a.type === 'voice_note' && !a.sale_item_id);
+          const hasItemNotes = attachments.some((a) => a.type === 'voice_note' && a.sale_item_id);
+          return (
+            <>
+              <Text style={styles.sectionTitle}>Attachments ({photos.length + generalVoiceNotes.length})</Text>
+              {hasItemNotes && (
+                <Text style={[styles.infoSubtext, { marginBottom: Spacing.xs }]}>
+                  Notes about a specific item are shown with that item above.
+                </Text>
+              )}
 
-        {attachments.filter(a => a.type === 'photo').length > 0 && (
-          <View style={styles.attachmentPhotoRow}>
-            {attachments.filter(a => a.type === 'photo').map((att) => (
-              <TouchableOpacity key={att.id} onPress={() => setViewedImage(api.getMediaUrl(att.file_url))}>
-                <Image source={{ uri: api.getMediaUrl(att.file_url) }} style={styles.attachmentThumb} />
-              </TouchableOpacity>
-            ))}
-          </View>
-        )}
+              {photos.length > 0 && (
+                <View style={styles.attachmentPhotoRow}>
+                  {photos.map((att) => (
+                    <TouchableOpacity key={att.id} onPress={() => setViewedImage(api.getMediaUrl(att.file_url))}>
+                      <Image source={{ uri: api.getMediaUrl(att.file_url) }} style={styles.attachmentThumb} />
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              )}
 
-        {attachments.filter(a => a.type === 'voice_note').map((att) => (
-          <AttachmentVoiceRow key={att.id} attachment={att} />
-        ))}
+              {generalVoiceNotes.map((att) => (
+                <AttachmentVoiceRow key={att.id} attachment={att} />
+              ))}
 
-        {attachments.length === 0 && (
-          <Text style={styles.infoSubtext}>No attachments yet.</Text>
-        )}
+              {photos.length === 0 && generalVoiceNotes.length === 0 && (
+                <Text style={styles.infoSubtext}>No general attachments yet.</Text>
+              )}
+            </>
+          );
+        })()}
 
         {!isCustomer && (
           <View style={{ marginTop: Spacing.sm, gap: Spacing.sm }}>
@@ -1281,7 +1336,7 @@ export default function SaleDetailScreen({ route, navigation }) {
             <Ionicons name="flame-outline" size={18} color={Colors.white} />
             <Text style={styles.actionBtnText}>Start Preparing</Text>
           </TouchableOpacity>
-          {canManage && (
+          {canCancelOrRefund && (
             <TouchableOpacity style={[styles.actionBtn, { backgroundColor: Colors.error }]} onPress={handleCancel}>
               <Ionicons name="close-circle" size={18} color={Colors.white} />
               <Text style={styles.actionBtnText}>Cancel</Text>
@@ -1302,7 +1357,7 @@ export default function SaleDetailScreen({ route, navigation }) {
               <Text style={styles.actionBtnText}>Waiting for Production ({sale.production_summary?.completed || 0}/{sale.production_summary?.total_tasks || 0})</Text>
             </View>
           )}
-          {canManage && (
+          {canCancelOrRefund && (
             <TouchableOpacity style={[styles.actionBtn, { backgroundColor: Colors.error }]} onPress={handleCancel}>
               <Ionicons name="close-circle" size={18} color={Colors.white} />
               <Text style={styles.actionBtnText}>Cancel</Text>
@@ -1320,7 +1375,7 @@ export default function SaleDetailScreen({ route, navigation }) {
       )}
 
       {/* Actions for completed orders */}
-      {canManage && sale.status === 'completed' && (
+      {canCancelOrRefund && sale.status === 'completed' && (
         <View style={styles.actions}>
           {!sale.refund && (
             <TouchableOpacity style={[styles.actionBtn, { backgroundColor: Colors.error }]} onPress={handleRefund}>
@@ -1336,7 +1391,7 @@ export default function SaleDetailScreen({ route, navigation }) {
       )}
 
       {/* Pay balance */}
-      {sale.status !== 'cancelled' && due > 0.01 && (
+      {sale.status !== 'cancelled' && due > 0.01 && canRecordPayment && (
         <TouchableOpacity
           style={[styles.actionBtn, { backgroundColor: Colors.success, alignSelf: 'stretch', marginHorizontal: 0 }]}
           onPress={() => navigation.navigate('AddPayment', { saleId, due })}
@@ -1896,17 +1951,6 @@ const styles = StyleSheet.create({
   // Attachments
   attachmentPhotoRow: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm, marginBottom: Spacing.sm },
   attachmentThumb: { width: 64, height: 64, borderRadius: BorderRadius.sm },
-  attachmentRow: {
-    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
-    paddingVertical: Spacing.sm, paddingHorizontal: Spacing.sm, borderRadius: BorderRadius.sm,
-    marginBottom: Spacing.xs, backgroundColor: Colors.background,
-  },
-  voicePlayBtn: {
-    width: 32, height: 32, borderRadius: 16, backgroundColor: Colors.primary,
-    justifyContent: 'center', alignItems: 'center',
-  },
-  attachmentLabel: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.text },
-  attachmentMeta: { fontSize: FontSize.xs, color: Colors.textLight, marginTop: 2 },
   addPhotoBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
     borderWidth: 1, borderColor: Colors.primary + '40', backgroundColor: Colors.primary + '10',

@@ -271,7 +271,7 @@ export default function ProductsScreen({ navigation }) {
         }
       />
 
-      {(user?.role === 'owner' || user?.role === 'manager' || user?.role === 'employee') && (
+      {(user?.role === 'owner' || user?.role === 'manager' || user?.role === 'employee' || user?.role === 'counter_staff') && (
         <TouchableOpacity
           style={styles.fab}
           onPress={() => navigation.navigate('ProductForm')}

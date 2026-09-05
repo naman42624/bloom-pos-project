@@ -60,7 +60,7 @@ async function cleanupUploadedFile(req) {
 }
 
 // ─── POST /api/sales/:saleId/attachments ──────────────────────
-router.post('/:saleId(\\d+)/attachments', authenticate, authorize('owner', 'manager', 'employee'), (req, res, next) => {
+router.post('/:saleId(\\d+)/attachments', authenticate, authorize('owner', 'manager', 'employee', 'counter_staff'), (req, res, next) => {
   upload.single('file')(req, res, (err) => {
     if (err) return handleMulterError(err, req, res, next);
     next();
