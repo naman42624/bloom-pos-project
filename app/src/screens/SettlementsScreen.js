@@ -9,6 +9,8 @@ import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 import { Colors, FontSize, Spacing, BorderRadius, Shadows } from '../constants/theme';
 import { formatDate } from '../utils/datetime';
+import useRegisterStatus from '../hooks/useRegisterStatus';
+import RegisterStatusBanner from '../components/RegisterStatusBanner';
 
 const fmt = (n) => Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 });
 
@@ -20,6 +22,16 @@ export default function SettlementsScreen({ navigation, route }) {
   const [locations, setLocations] = useState([]);
   const [selectedLocation, setSelectedLocation] = useState(initialLocationId || activeLocation?.id || null);
   const selectedLocRef = useRef(initialLocationId || activeLocation?.id || null);
+
+  // Same confirmed gap as Expenses/Refund — settle-now hard-requires an open
+  // register for whatever portion of the settlement was collected as cash
+  // (server/routes/deliveries.js, sumCollectionsByMethod) but this screen had
+  // no awareness of that before attempting it (2026-09-04 audit). Shown as a
+  // heads-up here rather than disabling anything outright: unlike a fresh
+  // cash expense/refund, settle-now's actual cash/UPI split isn't known
+  // until the call itself, so there's nothing to disable — a UPI-only
+  // settlement needs no register at all.
+  const registerStatus = useRegisterStatus(selectedLocation);
 
   const updateSelectedLocation = useCallback((locId) => {
     setSelectedLocation(locId);
@@ -73,6 +85,15 @@ export default function SettlementsScreen({ navigation, route }) {
       fetchData(route.params.locationId);
     }
   }, [route.params?.locationId, updateSelectedLocation, fetchData]);
+
+  // useRegisterStatus refetches on locationId change, not on focus — without
+  // this, opening the register from the banner and coming back would still
+  // show stale status.
+  useFocusEffect(
+    useCallback(() => {
+      registerStatus.refetch();
+    }, [registerStatus.refetch])
+  );
 
   // Handle focus
   useFocusEffect(
@@ -188,13 +209,28 @@ export default function SettlementsScreen({ navigation, route }) {
     if (!confirmData) return;
     setSettling(true);
     try {
-      await api.settleNow({
+      const res = await api.settleNow({
         delivery_partner_id: confirmData.partnerId,
         delivery_ids: confirmData.deliveryIds || undefined,
         location_id: selectedLocation,
       });
       setConfirmData(null);
-      const msg = `₹${fmt(confirmData.amount)} settled and added to cash register.`;
+      // by_method is the server's own real split (sumCollectionsByMethod) —
+      // this used to unconditionally say "added to cash register" even for
+      // a pure-UPI settlement, which never touches the cash drawer at all.
+      // Found live, 2026-09-04: a counter_staff selected UPI on Mark
+      // Delivered and this message still claimed it went to cash.
+      const byMethod = res?.data?.by_method || {};
+      const cashPart = Number(byMethod.cash || 0);
+      const upiPart = Number(byMethod.upi || 0);
+      let msg;
+      if (cashPart > 0 && upiPart > 0) {
+        msg = `₹${fmt(confirmData.amount)} settled — ₹${fmt(cashPart)} added to the cash register, ₹${fmt(upiPart)} was UPI (no change to cash).`;
+      } else if (upiPart > 0) {
+        msg = `₹${fmt(confirmData.amount)} settled via UPI — no change to the cash register.`;
+      } else {
+        msg = `₹${fmt(confirmData.amount)} settled and added to cash register.`;
+      }
       Platform.OS === 'web' ? window.alert(msg) : Alert.alert('✓ Settled', msg);
       fetchData(selectedLocation);
     } catch (err) {
@@ -392,6 +428,18 @@ export default function SettlementsScreen({ navigation, route }) {
         </View>
       )}
 
+      {!registerStatus.loading && (registerStatus.isStale || !registerStatus.isOpen) && (
+        <View style={{ paddingHorizontal: Spacing.md, paddingTop: Spacing.sm }}>
+          <RegisterStatusBanner
+            isOpen={registerStatus.isOpen}
+            isStale={registerStatus.isStale}
+            register={registerStatus.register}
+            onPress={() => navigation.navigate('CashRegister', { locationId: selectedLocation })}
+            closedMessage="Settling any cash-collected COD needs it open — UPI-only settlements are unaffected."
+          />
+        </View>
+      )}
+
       {/* Tab Row */}
       <View style={styles.tabRow}>
         <TouchableOpacity
@@ -497,11 +545,17 @@ export default function SettlementsScreen({ navigation, route }) {
                   <Text style={{ fontWeight: '700' }}>{confirmData.partnerName}</Text>
                 </Text>
                 <View style={styles.modalAmountBox}>
-                  <Text style={styles.modalAmountLabel}>Adding to Cash Register</Text>
+                  <Text style={styles.modalAmountLabel}>Settling</Text>
                   <Text style={styles.modalAmountValue}>₹{fmt(confirmData.amount)}</Text>
                 </View>
                 <Text style={styles.modalNote}>
-                  This will immediately credit the full amount to the open register and mark deliveries as settled.
+                  {/* Was unconditionally "credit the full amount to the open
+                      register" — wrong for anything collected via UPI, which
+                      never touches the cash drawer (server splits by the real
+                      collection method; see sumCollectionsByMethod,
+                      deliveries.js). The exact split shows in the confirmation
+                      after settling, since it isn't known until then. */}
+                  Cash collected will be added to the register; UPI or other non-cash amounts won't affect cash on hand. This will mark {confirmData.deliveryCount === 1 ? 'this delivery' : 'these deliveries'} as settled.
                 </Text>
               </>
             )}

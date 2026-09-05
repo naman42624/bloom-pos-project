@@ -1,15 +1,17 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import {
   View, Text, StyleSheet, FlatList, TextInput,
   TouchableOpacity, Alert, ScrollView, Modal, ActivityIndicator,
   KeyboardAvoidingView, Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
-import { getShopTodayStr } from '../utils/datetime';
+import { getShopTodayStr, formatTime } from '../utils/datetime';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
+import useRegisterStatus from '../hooks/useRegisterStatus';
+import RegisterStatusBanner from '../components/RegisterStatusBanner';
 
 const EXPENSE_CATEGORIES = [
   { key: 'supplies', label: 'Supplies', icon: 'cart' },
@@ -29,6 +31,7 @@ const PAYMENT_METHODS = [
 ];
 
 export default function ExpensesScreen() {
+  const navigation = useNavigation();
   const { settings } = useAuth();
   const timezone = settings?.timezone?.value || 'Asia/Kolkata';
   const [expenses, setExpenses] = useState([]);
@@ -46,6 +49,34 @@ export default function ExpensesScreen() {
   const [paymentMethod, setPaymentMethod] = useState('cash');
   const [isReturn, setIsReturn] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+
+  // Was the one confirmed gap in the register-awareness pattern: this
+  // screen let someone fill in a whole cash expense and only found out at
+  // submit that there was nowhere for it to go (server's plain-language
+  // REGISTER_CLOSED_MESSAGE, but reactive — staff-ux-checklist wants it
+  // caught before that). Same hook/banner the Dashboard's cash-sale flow
+  // already had; this was the screen that never got it (2026-09-04 audit).
+  const registerStatus = useRegisterStatus(selectedLocation);
+
+  // useRegisterStatus refetches on locationId change, not on focus — without
+  // this, opening the register via the banner below and coming back here
+  // would still show "closed" until something else happened to remount it.
+  useFocusEffect(
+    useCallback(() => {
+      registerStatus.refetch();
+    }, [registerStatus.refetch])
+  );
+
+  // Cash defaults to selected (see paymentMethod's initial state) — if the
+  // register turns out closed, move off it automatically rather than
+  // leaving a disabled option sitting selected. Only fires when it would
+  // actually change something, so it never fights a deliberate choice of
+  // card/UPI.
+  useEffect(() => {
+    if (!registerStatus.loading && !registerStatus.isOpen && paymentMethod === 'cash') {
+      setPaymentMethod('card');
+    }
+  }, [registerStatus.loading, registerStatus.isOpen, paymentMethod]);
 
   useFocusEffect(
     useCallback(() => {
@@ -158,6 +189,16 @@ export default function ExpensesScreen() {
         <Text style={styles.cardMeta}>
           {item.is_return ? 'RETURN • ' : ''}{getCatLabel(item.category)} • {item.payment_method.toUpperCase()} • {item.created_by_name}
         </Text>
+        {/* Which register session this belongs to — only meaningful for a
+            cash expense (register_id is always null otherwise), and only
+            worth a line when there's a session to name at all. Multiple
+            sessions a day are a regular occurrence at this shop, so this is
+            always shown for cash rather than only when 2+ sessions exist —
+            simpler rule, and never wrong even on a single-session day
+            (2026-09-04 audit). */}
+        {item.payment_method === 'cash' && item.register_opened_at && (
+          <Text style={styles.cardSession}>Session opened {formatTime(item.register_opened_at)}</Text>
+        )}
       </View>
       <View style={styles.cardRight}>
         <Text style={[styles.cardAmount, item.is_return && styles.cardAmountReturn]}>
@@ -192,6 +233,18 @@ export default function ExpensesScreen() {
             </TouchableOpacity>
           ))}
         </ScrollView>
+      )}
+
+      {!registerStatus.loading && (registerStatus.isStale || !registerStatus.isOpen) && (
+        <View style={{ paddingHorizontal: Spacing.md, paddingTop: Spacing.sm }}>
+          <RegisterStatusBanner
+            isOpen={registerStatus.isOpen}
+            isStale={registerStatus.isStale}
+            register={registerStatus.register}
+            onPress={() => navigation.navigate('CashRegister', { locationId: selectedLocation })}
+            closedMessage="Cash expenses need it open — Card/UPI still work either way."
+          />
+        </View>
       )}
 
       {/* Today's total */}
@@ -284,17 +337,35 @@ export default function ExpensesScreen() {
 
                 <Text style={styles.fieldLabel}>Payment Method</Text>
                 <View style={styles.chipRow}>
-                  {PAYMENT_METHODS.map((m) => (
-                    <TouchableOpacity
-                      key={m.key}
-                      style={[styles.chip, paymentMethod === m.key && styles.chipActive]}
-                      onPress={() => setPaymentMethod(m.key)}
-                    >
-                      <Ionicons name={m.icon} size={14} color={paymentMethod === m.key ? Colors.white : Colors.textSecondary} />
-                      <Text style={[styles.chipText, paymentMethod === m.key && styles.chipTextActive]}>{m.label}</Text>
-                    </TouchableOpacity>
-                  ))}
+                  {PAYMENT_METHODS.map((m) => {
+                    // Prevent, not just react to, the one confirmed gap this
+                    // screen had: Cash disabled outright when there's no
+                    // open register to log it against, instead of letting
+                    // the whole form fill in and fail at submit
+                    // (2026-09-04 audit).
+                    const disabled = m.key === 'cash' && !registerStatus.loading && !registerStatus.isOpen;
+                    const active = paymentMethod === m.key;
+                    return (
+                      <TouchableOpacity
+                        key={m.key}
+                        style={[styles.chip, active && styles.chipActive, disabled && styles.chipDisabled]}
+                        onPress={() => setPaymentMethod(m.key)}
+                        disabled={disabled}
+                      >
+                        <Ionicons name={m.icon} size={14} color={active ? Colors.white : disabled ? Colors.textLight : Colors.textSecondary} />
+                        <Text style={[styles.chipText, active && styles.chipTextActive, disabled && { color: Colors.textLight }]}>{m.label}</Text>
+                      </TouchableOpacity>
+                    );
+                  })}
                 </View>
+                {!registerStatus.loading && !registerStatus.isOpen && (
+                  <Text style={styles.fieldHint}>Open the register to log a cash expense.</Text>
+                )}
+                {paymentMethod === 'cash' && registerStatus.isOpen && (
+                  <Text style={styles.fieldHint}>
+                    Adding to the session opened {formatTime(registerStatus.register?.opening_time || registerStatus.register?.opened_at)}.
+                  </Text>
+                )}
 
                 <TouchableOpacity
                   style={[styles.submitBtn, submitting && { opacity: 0.6 }]}
@@ -361,6 +432,7 @@ const styles = StyleSheet.create({
   cardCenter: { flex: 1 },
   cardDesc: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.text },
   cardMeta: { fontSize: FontSize.xs, color: Colors.textLight, marginTop: 2 },
+  cardSession: { fontSize: FontSize.xs, color: Colors.textLight, marginTop: 1, fontStyle: 'italic' },
   cardRight: { alignItems: 'flex-end', gap: Spacing.xs },
   cardAmount: { fontSize: FontSize.md, fontWeight: '700', color: Colors.error },
   cardAmountReturn: { color: Colors.success },
@@ -408,8 +480,10 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: Colors.border,
   },
   chipActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
+  chipDisabled: { backgroundColor: Colors.surfaceAlt, borderColor: Colors.border, opacity: 0.6 },
   chipText: { fontSize: FontSize.xs, color: Colors.textSecondary },
   chipTextActive: { color: Colors.white, fontWeight: '600' },
+  fieldHint: { fontSize: FontSize.xs, color: Colors.textLight, marginTop: Spacing.xs, fontStyle: 'italic' },
 
   submitBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,

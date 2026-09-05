@@ -505,6 +505,72 @@ router.get('/my-tasks', authenticate, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// GET /api/production/assignable-staff — who can be given production work,
+// for the "who is preparing this?" picker.
+//
+// Deliberately NOT GET /auth/staff-roster: that endpoint is callable
+// unauthenticated (LockScreen uses it pre-login) and filters
+// `employee_code IS NOT NULL`, which is right for PIN entry and wrong here —
+// all four of this shop's live `employee` accounts have no code, so the roster
+// excludes exactly the people who do the prep work. It also returns no `role`,
+// so callers cannot filter to prep staff. Same narrow-endpoint precedent as
+// GET /deliveries/partners.
+//
+// The role list is NOT a judgement call — it is a transcription of the roles
+// PUT /production/tasks/:id/assign actually accepts as a task target (see its
+// `SELECT ... WHERE id = ? AND role IN (...)` guard below). The two must stay
+// in sync in BOTH directions: a role here that assign rejects is a dead option
+// that 404s the moment someone taps it, and a role assign accepts but that is
+// missing here is an ability silently taken away from whoever holds it today.
+//
+// It deliberately returns MORE than either caller shows, and does NOT
+// pre-filter. Both screens narrow client-side, to different subsets, on the
+// `role` this returns with every row. Both lists live in
+// app/src/constants/orderDisplay.js:
+//
+//   returned here            owner, manager, employee, counter_staff, florist_staff
+//   SaleDetailScreen shows          employee, counter_staff, florist_staff  <- ASSIGNABLE_STAFF_ROLES
+//   DashboardScreen shows           employee, florist_staff                 <- PREP_ROLES
+//
+// Manager and owner are genuinely assignable here (verified live: both return
+// 200 from the assign route) and are left off BOTH screens on purpose — a
+// picker read at counter speed gets worse with every name that is not the
+// answer. Counter staff can hold a task, which is why SaleDetail offers them,
+// but they do not make bouquets, which is why the dashboard does not.
+//
+// Those are per-screen editorial choices, and that is exactly why neither is a
+// query parameter: pushing one screen's subset into the server would put its
+// choice into a shared contract and break the other caller. One endpoint, one
+// meaning ("who may hold a production task"), and each screen decides how much
+// of it to show.
+//
+// DISTINCT is load-bearing, not decoration: the LEFT JOIN on user_locations
+// emits one row per location a person is attached to, so anyone assigned to
+// two shops would otherwise appear twice in the picker.
+router.get(
+  '/assignable-staff',
+  authenticate,
+  authorize('owner', 'manager', 'counter_staff'),
+  async (req, res, next) => {
+    try {
+      const db = await getAsyncDb();
+      const { location_id } = req.query;
+      let sql = `
+        SELECT DISTINCT u.id, u.name, u.role, u.job_title
+        FROM users u
+        LEFT JOIN user_locations ul ON ul.user_id = u.id
+        WHERE u.role IN ('owner', 'manager', 'employee', 'counter_staff', 'florist_staff')
+          AND u.is_active = 1
+      `;
+      const params = [];
+      if (location_id) { sql += ' AND ul.location_id = ?'; params.push(parseInt(location_id, 10)); }
+      sql += ' ORDER BY u.name ASC';
+      const staff = await db.prepare(sql).all(...params);
+      res.json({ success: true, staff });
+    } catch (err) { next(err); }
+  }
+);
+
 // PUT /api/production/tasks/:id/assign — Manager/counter staff assigns a
 // task to prep staff. Counter staff granted this 2026-08-31 — they're the
 // ones logging orders and are the natural person to hand a task to a

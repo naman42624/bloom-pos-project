@@ -8,6 +8,8 @@ import { useFocusEffect } from '@react-navigation/native';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius, Shadows, TouchTarget } from '../constants/theme';
+import { isRegisterStale } from '../hooks/useRegisterStatus';
+import { formatDateLabel } from '../utils/datetime';
 
 const formatTime = (timeStr) => {
   if (!timeStr) return '-';
@@ -185,6 +187,10 @@ export default function CashRegisterScreen({ navigation, route }) {
   const [pendingCodTotal, setPendingCodTotal] = useState(0);
   const [pendingCodDeliveries, setPendingCodDeliveries] = useState(0);
 
+  // Open, but opened on a day before today — see isRegisterStale's own
+  // comment (useRegisterStatus.js) for the full reasoning.
+  const isStale = isOpen && isRegisterStale(register);
+
   useFocusEffect(
     useCallback(() => {
       fetchLocations();
@@ -342,23 +348,35 @@ export default function CashRegisterScreen({ navigation, route }) {
         </TouchableOpacity>
       )}
 
-      {/* Main Status Hero */}
+      {/* Main Status Hero. isStale (open, but not opened today — spans a day
+          boundary) gets its own amber treatment rather than reading as a
+          normal "Open" — this text used to unconditionally say "Opened
+          today" even for a register left open from yesterday, an outright
+          false claim on the one screen whose whole job is telling staff the
+          truth about the register (found live, 2026-09-04 audit). Nothing
+          about actually USING the register changes here — closing still
+          requires a real physical cash count, so this is a heads-up, not a
+          block; see isRegisterStale's own comment for why auto-closing
+          isn't the answer. */}
       <View style={[
-        styles.heroCard, 
-        isOpen ? styles.heroCardOpen : styles.heroCardClosed
+        styles.heroCard,
+        isOpen ? (isStale ? styles.heroCardStale : styles.heroCardOpen) : styles.heroCardClosed
       ]}>
         <View style={styles.heroHeader}>
-          <View style={[styles.heroIconWrap, isOpen ? { backgroundColor: Colors.successLight } : { backgroundColor: Colors.surfaceAlt }]}>
-            <Ionicons name={isOpen ? 'lock-open' : 'lock-closed'} size={28} color={isOpen ? Colors.success : Colors.textSecondary} />
+          <View style={[styles.heroIconWrap, isOpen ? { backgroundColor: isStale ? '#FEF3C7' : Colors.successLight } : { backgroundColor: Colors.surfaceAlt }]}>
+            <Ionicons name={isOpen ? 'lock-open' : 'lock-closed'} size={28} color={isOpen ? (isStale ? '#92400E' : Colors.success) : Colors.textSecondary} />
           </View>
           <View style={{ flex: 1 }}>
             <Text style={styles.heroTitle}>{isOpen ? 'Register is Open' : 'Register is Closed'}</Text>
-            <Text style={styles.heroSub}>
+            <Text style={[styles.heroSub, isStale && { color: '#92400E', fontWeight: '600' }]}>
               {register ? (
-                isOpen ? `Opened today at ${formatTime(register.opening_time || register.opened_at)}` 
+                isOpen ? `Opened ${formatDateLabel(register.opening_time || register.opened_at)} at ${formatTime(register.opening_time || register.opened_at)}`
                        : `Last closed at ${formatTime(register.closing_time || register.closed_at)}`
               ) : 'No recent sessions'}
             </Text>
+            {isStale && (
+              <Text style={[styles.heroSub, { color: '#92400E', marginTop: 2 }]}>Nothing's blocked — close it out whenever you get a chance.</Text>
+            )}
           </View>
         </View>
 
@@ -575,6 +593,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   heroCardOpen: { borderColor: Colors.successLight },
+  heroCardStale: { borderColor: '#FDE68A', backgroundColor: '#FFFBEB' },
   heroCardClosed: { borderColor: Colors.border },
   
   heroHeader: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md },

@@ -536,6 +536,39 @@ function ensureCoreTables() {
   `);
   runPsql('CREATE INDEX IF NOT EXISTS idx_dpd_user_date ON delivery_partner_daily(user_id, date)');
 
+  // delivery_routes — manual grouping tag for dispatch, NOT a routing
+  // algorithm (explicitly deferred per spec §9.2). normalized_name strips
+  // ALL whitespace + lowercases so "Delhi"/"delhi"/"DeLhi"/" delhi"/
+  // "de lhi" all collapse to one row — see spec §8.2 for the trade-off
+  // this implies (also collapses e.g. "New Delhi"/"Newdelhi").
+  runPsql(`
+    CREATE TABLE IF NOT EXISTS delivery_routes (
+      id SERIAL PRIMARY KEY,
+      name VARCHAR(100) NOT NULL,
+      normalized_name VARCHAR(100) NOT NULL UNIQUE,
+      location_id INTEGER REFERENCES locations(id) ON DELETE SET NULL,
+      is_active BOOLEAN DEFAULT true,
+      created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  // delivery_load_checks — packing/manifest checklist, shared between
+  // counter-staff (pre-dispatch) and the rider (self-verifying) — ONE
+  // set of rows both sides read/write, not two parallel checklists. See
+  // spec §9.1.4.
+  runPsql(`
+    CREATE TABLE IF NOT EXISTS delivery_load_checks (
+      id SERIAL PRIMARY KEY,
+      delivery_id INTEGER NOT NULL REFERENCES deliveries(id) ON DELETE CASCADE,
+      sale_item_id INTEGER NOT NULL REFERENCES sale_items(id) ON DELETE CASCADE,
+      checked BOOLEAN DEFAULT false,
+      checked_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      checked_at TIMESTAMP,
+      UNIQUE(delivery_id, sale_item_id)
+    )
+  `);
+
   // Ensure partner_id column exists on delivery_settlements
   if (!hasColumn('delivery_settlements', 'partner_id')) {
     runPsql('ALTER TABLE delivery_settlements ADD COLUMN partner_id INTEGER REFERENCES users(id) ON DELETE SET NULL');
@@ -763,6 +796,7 @@ function ensureCompatibilityColumns() {
   ensureColumn('deliveries', 'assigned_at', 'TIMESTAMP');
   ensureColumn('deliveries', 'pickup_time', 'TIMESTAMP');
   ensureColumn('deliveries', 'delivered_time', 'TIMESTAMP');
+  ensureColumn('deliveries', 'route_id', 'INTEGER REFERENCES delivery_routes(id) ON DELETE SET NULL');
 
   ensureColumn('delivery_settlements', 'delivery_partner_id', 'INTEGER REFERENCES users(id) ON DELETE SET NULL');
   ensureColumn('delivery_settlements', 'verified_by', 'INTEGER REFERENCES users(id) ON DELETE SET NULL');
@@ -882,6 +916,7 @@ function ensureCompatibilityColumns() {
   ensureColumn('sales', 'sender_same_as_receiver', 'INTEGER DEFAULT 0');
   ensureColumn('sales', 'channel', "TEXT");
   ensureColumn('sales', 'priority', "TEXT DEFAULT 'normal'");
+  ensureColumn('sales', 'vendor_name', 'VARCHAR(150)');
   // Optional per-item attachment scoping: NULL = order-level (existing behavior
   // unchanged), set = this photo/voice note belongs to one specific line item.
   ensureColumn('sale_attachments', 'sale_item_id', 'INTEGER REFERENCES sale_items(id) ON DELETE CASCADE');

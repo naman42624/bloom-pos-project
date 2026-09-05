@@ -14,7 +14,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -29,8 +28,10 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import api from '../services/api';
+import { showAlert, showConfirm } from '../utils/alert';
 import { Colors } from '../constants/theme';
 import { generateDeliverySlip, generatePickupSlip } from '../utils/printHelpers';
+import StageBadge from './StageBadge';
 
 // ─── Shared constants ────────────────────────────────────────────────────────
 
@@ -39,16 +40,6 @@ const FONT_FAMILY =
     ? undefined
     : 'Inter, Geist, system-ui';
 
-const ORDER_STATUS_COLORS = {
-  pending: '#F59E0B',
-  confirmed: '#F59E0B',
-  preparing: '#0EA5E9',
-  ready: '#10B981',
-  completed: '#10B981',
-  cancelled: '#E11D48',
-  draft: '#9CA3AF',
-};
-
 const PAYMENT_STATUS_COLORS = {
   paid: '#10B981',
   partial: '#F59E0B',
@@ -56,16 +47,23 @@ const PAYMENT_STATUS_COLORS = {
   refunded: '#9CA3AF',
 };
 
-const PICKUP_STATUS_COLORS = {
-  waiting: '#F59E0B',
-  ready_for_pickup: '#10B981',
-  picked_up: '#6366F1',
-};
-
-const PICKUP_STATUS_LABELS = {
-  waiting: 'Waiting',
-  ready_for_pickup: 'Ready for Pickup',
-  picked_up: 'Picked Up',
+// Plain-language payment wording, matched word-for-word to the order card
+// (components/orderBoard/OrderCard.js). One entry per value the server can
+// actually write to sales.payment_status: 'pending'/'partial'/'paid' (computed
+// from payments vs grand_total in server/routes/sales.js) and 'refunded'
+// (server/routes/sales.js, the refund route).
+//
+// Deliberately a lookup, NOT a ternary with a 'Paid' fallback. PUT /api/sales/:id
+// passes a caller-supplied payment_status straight through with no whitelist,
+// and the live sales table has no CHECK constraint on the column, so the set is
+// not provably closed. An unrecognized value therefore renders no pill at all
+// rather than being announced as "Paid" — a wrong statement about money, read
+// at the counter with the customer standing there, is worse than no statement.
+const PAYMENT_LABELS = {
+  pending: 'Unpaid',
+  partial: 'Part paid',
+  paid: 'Paid',
+  refunded: 'Refunded',
 };
 
 const DELIVERY_STATUS_COLORS = {
@@ -115,6 +113,13 @@ function formatDateTime(dateStr, timeStr) {
     const ampm = hh >= 12 ? 'PM' : 'AM';
     return `${datePart}, ${hh % 12 || 12}:${String(mm || 0).padStart(2, '0')} ${ampm}`;
   } catch { return dateStr || ''; }
+}
+
+// A quick-action entry is one of two shapes: the server's computed stage
+// advance ({ action: nextAction }) or the local Cancel ({ next: 'cancelled' }).
+// Both need one stable key — for React and for the tap-again-to-confirm state.
+function actionKeyOf(action) {
+  return action?.next || 'advance';
 }
 
 function BadgePill({ label, color, size = 'sm' }) {
@@ -200,6 +205,10 @@ export function OrderQuickModal({
   onOpenDelivery,
   navigation,
   canManage,
+  // Optional. Given, the modal hands Start Preparing to the parent instead of
+  // firing it bare, so this entry point and the order card's button do the
+  // same thing. Omitted, the modal behaves exactly as it did before.
+  onPickPreparer,
 }) {
   const [actionLoading, setActionLoading] = useState(false);
   const [deliveryLoading, setDeliveryLoading] = useState(false);
@@ -213,7 +222,7 @@ export function OrderQuickModal({
   const [showEmployeePicker, setShowEmployeePicker] = useState(null); // taskId being assigned
   const [employees, setEmployees] = useState([]);
   const [employeesLoading, setEmployeesLoading] = useState(false);
-  const [confirmingStatus, setConfirmingStatus] = useState(null);
+  const [confirmingAction, setConfirmingAction] = useState(null);
   const [confirmingTask, setConfirmingTask] = useState(null);
 
   // Sync localTasks when tasks prop changes (e.g. on reopen)
@@ -248,37 +257,75 @@ export function OrderQuickModal({
       setActionLoading(false);
       setTaskLoading({});
       setShowEmployeePicker(null);
-      setConfirmingStatus(null);
+      setConfirmingAction(null);
       setConfirmingTask(null);
       return;
     }
     refreshDelivery();
   }, [visible, refreshDelivery]);
 
-  const doStatusChange = useCallback(async (nextStatus) => {
-    if (!order?.id) return;
+  // Takes a whole quick-action entry, not a status string, so it can dispatch
+  // both shapes: `action` = the server's display_stage.nextAction (endpoint +
+  // method + body already decided), `next` = the local Cancel status change.
+  const doStatusChange = useCallback(async (chosen) => {
+    if (!order?.id || !chosen) return;
     setActionLoading(true);
     try {
-      await api.updateOrderStatus(order.id, nextStatus);
+      if (chosen.action) {
+        await api.advanceOrder(chosen.action);
+      } else {
+        await api.updateOrderStatus(order.id, chosen.next);
+      }
       onRefresh?.();
       onClose();
     } catch (err) {
-      const msg = err?.message || 'Failed to update status';
-      Platform.OS === 'web' ? window.alert(msg) : Alert.alert('Error', msg);
+      const msg = err?.message || 'Could not update this order. Please try again.';
+      showAlert('Error', msg);
     } finally {
       setActionLoading(false);
     }
   }, [order?.id, onRefresh, onClose]);
 
-  const confirmAction = useCallback((label, nextStatus, msg) => {
-    if (confirmingStatus === nextStatus) {
-      setConfirmingStatus(null);
-      doStatusChange(nextStatus);
-    } else {
-      setConfirmingStatus(nextStatus);
-      setTimeout(() => setConfirmingStatus(null), 3000);
+  // A stage advance runs on the FIRST tap, with no prompt — the same as the
+  // order card. display_stage.nextAction is non-null only when the server has
+  // already decided the advance is safe to perform blind; asking again here
+  // would contradict that decision, and would make one button cost two taps
+  // from the modal and one from the card depending only on how the staff
+  // member happened to reach it. Double-firing is prevented by actionLoading,
+  // which disables the button for the whole request.
+  //
+  // Cancel is the exception and keeps tap-once-to-arm, tap-again-within-3s:
+  // it is genuinely destructive and has no nextAction equivalent, so it is the
+  // one case where the friction is worth it.
+  const confirmAction = useCallback((chosen) => {
+    if (!chosen) return;
+    if (chosen.action) {
+      // Start Preparing is the one advance that can also record WHO is making
+      // it (Task 15). This modal used to fire it bare, so the same order, on
+      // the same screen, under the same button label, assigned somebody when
+      // tapped on the card and nobody when tapped through the card body — the
+      // "two one-tap mechanisms coexist" divergence this plan exists to delete
+      // (CLAUDE.md already flags this file for it). Handing it to the parent
+      // routes it through the identical `pick_preparer` flow the card uses, and
+      // that flow re-asks the shared rule, so it still advances with no prompt
+      // whenever there is nothing to assign.
+      if (chosen.action?.body?.status === 'preparing' && onPickPreparer) {
+        onClose();
+        onPickPreparer(order);
+        return;
+      }
+      doStatusChange(chosen);
+      return;
     }
-  }, [doStatusChange, confirmingStatus]);
+    const key = actionKeyOf(chosen);
+    if (confirmingAction === key) {
+      setConfirmingAction(null);
+      doStatusChange(chosen);
+    } else {
+      setConfirmingAction(key);
+      setTimeout(() => setConfirmingAction(null), 3000);
+    }
+  }, [doStatusChange, confirmingAction, onPickPreparer, onClose, order]);
 
   // Task actions
   const openEmployeePicker = useCallback(async (taskId) => {
@@ -301,7 +348,7 @@ export function OrderQuickModal({
       onRefresh?.();
     } catch (err) {
       const msg = err?.message || 'Failed to assign';
-      Platform.OS === 'web' ? window.alert(msg) : Alert.alert('Error', msg);
+      showAlert('Error', msg);
     } finally {
       setTaskLoading((p) => ({ ...p, [taskId]: false }));
     }
@@ -315,7 +362,7 @@ export function OrderQuickModal({
       onRefresh?.();
     } catch (err) {
       const msg = err?.message || 'Failed to start';
-      Platform.OS === 'web' ? window.alert(msg) : Alert.alert('Error', msg);
+      showAlert('Error', msg);
     } finally {
       setTaskLoading((p) => ({ ...p, [taskId]: false }));
     }
@@ -331,7 +378,7 @@ export function OrderQuickModal({
         onRefresh?.();
       } catch (err) {
         const msg = err?.message || 'Failed to complete';
-        Platform.OS === 'web' ? window.alert(msg) : Alert.alert('Error', msg);
+        showAlert('Error', msg);
       } finally {
         setTaskLoading((p) => ({ ...p, [taskId]: false }));
       }
@@ -343,34 +390,32 @@ export function OrderQuickModal({
 
   if (!order) return null;
 
-  const orderStatus = order.status || 'pending';
   const orderType = order.order_type || 'walk_in';
-  const orderColor = ORDER_STATUS_COLORS[orderStatus] || '#9CA3AF';
   const isCredit = order.is_credit_sale === 1;
   const payColor = isCredit ? '#8B5CF6' : (PAYMENT_STATUS_COLORS[order.payment_status] || '#9CA3AF');
+  // undefined for a payment_status this app does not recognise — the pill is
+  // then not rendered at all. The column defaults to 'pending' server-side, so
+  // a missing value is read as unpaid rather than dropped.
+  const payLabel = isCredit ? 'Credit' : PAYMENT_LABELS[order.payment_status || 'pending'];
 
   const taskTotal = localTasks?.length || 0;
   const taskDone = localTasks?.filter((t) => t.status === 'completed').length || 0;
   const taskActive = localTasks?.filter((t) => ['pending', 'assigned', 'in_progress'].includes(t.status)).length || 0;
-  const isFinal = ['completed', 'cancelled'].includes(orderStatus);
 
   const delivColor = deliveryInfo ? (DELIVERY_STATUS_COLORS[deliveryInfo.status] || '#9CA3AF') : null;
 
-  // Contextual status actions
+  // One action, decided server-side (server/utils/order-stage.js), instead of
+  // four derived from raw status here. A null nextAction means advancing needs
+  // a human decision (assign a rider, take payment) — the card's dead-end
+  // routing and "Open Full Details" below cover those, so nothing is lost.
+  // Cancel is kept: it is not a stage advance and has no nextAction equivalent.
   const statusActions = [];
-  if (!isFinal) {
-    if (orderStatus === 'pending' || orderStatus === 'confirmed') {
-      statusActions.push({ label: 'Mark Preparing', next: 'preparing', color: '#0EA5E9', icon: 'construct-outline' });
-    }
-    if (orderStatus === 'preparing') {
-      statusActions.push({ label: 'Mark Ready', next: 'ready', color: '#10B981', icon: 'checkmark-circle-outline' });
-    }
-    if (orderStatus === 'ready' && orderType !== 'delivery') {
-      statusActions.push({ label: 'Complete Order', next: 'completed', color: '#6366F1', icon: 'bag-check-outline' });
-    }
-    if (canManage) {
-      statusActions.push({ label: 'Cancel Order', next: 'cancelled', color: '#E11D48', icon: 'close-circle-outline' });
-    }
+  const nextAction = order?.display_stage?.nextAction;
+  if (nextAction) {
+    statusActions.push({ label: nextAction.label, action: nextAction, color: '#10B981', icon: 'arrow-forward-circle-outline' });
+  }
+  if (canManage && !['completed', 'cancelled'].includes(order?.status)) {
+    statusActions.push({ label: 'Cancel Order', next: 'cancelled', color: '#E11D48', icon: 'close-circle-outline' });
   }
 
   return (
@@ -389,19 +434,12 @@ export function OrderQuickModal({
       </View>
 
       <ScrollView showsVerticalScrollIndicator={false} style={styles.sheetBody} keyboardShouldPersistTaps="handled">
-        {/* Status badges */}
+        {/* Stage (server-computed) + money. No pickup pill: PICKUP_STATUS_LABELS
+            said "Ready for Pickup"/"Picked Up" word-for-word beside a StageBadge
+            already saying the same thing, and "Waiting" restated New/Preparing. */}
         <View style={styles.badgesRow}>
-          <BadgePill label={(orderStatus).replace(/_/g, ' ').toUpperCase()} color={orderColor} />
-          <BadgePill
-            label={isCredit ? 'CREDIT' : order.payment_status === 'pending' ? 'PAY: UNPAID' : order.payment_status === 'partial' ? 'PAY: PARTIAL' : (order.payment_status || 'pending').toUpperCase()}
-            color={payColor}
-          />
-          {orderType === 'pickup' && order.pickup_status && (
-            <BadgePill
-              label={PICKUP_STATUS_LABELS[order.pickup_status] || order.pickup_status}
-              color={PICKUP_STATUS_COLORS[order.pickup_status] || '#9CA3AF'}
-            />
-          )}
+          <StageBadge stage={order.display_stage} />
+          {payLabel ? <BadgePill label={payLabel} color={payColor} /> : null}
         </View>
 
         {/* Key details */}
@@ -565,23 +603,23 @@ export function OrderQuickModal({
         )}
 
         {/* Quick status actions */}
-        {!isFinal && statusActions.length > 0 && canManage && (
+        {statusActions.length > 0 && (
           <View style={styles.actionsBlock}>
             <Text style={styles.actionsTitle}>Quick Actions</Text>
             <View style={{ gap: 8 }}>
               {statusActions.map((action) => (
                 <TouchableOpacity
-                  key={action.next}
+                  key={actionKeyOf(action)}
                   style={[styles.actionBtnFull, { backgroundColor: action.color, opacity: actionLoading ? 0.6 : 1 }]}
                   disabled={actionLoading}
-                  onPress={() => confirmAction(action.label, action.next)}
+                  onPress={() => confirmAction(action)}
                 >
                   {actionLoading ? (
                     <ActivityIndicator size="small" color="#fff" />
                   ) : (
                     <>
                       <Ionicons name={action.icon} size={16} color="#fff" />
-                      <Text style={styles.actionBtnText}>{confirmingStatus === action.next ? 'Tap again to confirm' : action.label}</Text>
+                      <Text style={styles.actionBtnText}>{confirmingAction === actionKeyOf(action) ? 'Tap again to confirm' : action.label}</Text>
                     </>
                   )}
                 </TouchableOpacity>
@@ -673,7 +711,7 @@ function DeliverySection({
       setShowFailForm(false);
     } catch (err) {
       const msg = err?.message || 'Action failed';
-      Platform.OS === 'web' ? window.alert(msg) : Alert.alert('Error', msg);
+      showAlert('Error', msg);
     } finally {
       setActionLoading(false);
     }
@@ -701,7 +739,7 @@ function DeliverySection({
       setShowAssign(false);
       await onRefresh?.();
     } catch (err) {
-      Alert.alert('Error', err?.message || 'Failed to assign partner');
+      showAlert('Error', err?.message || 'Failed to assign partner');
     } finally {
       setActionLoading(false);
     }
@@ -713,7 +751,7 @@ function DeliverySection({
       const amt = parseFloat(codAmount);
       if (isNaN(amt) || amt < 0) {
         const msg = 'Enter a valid COD amount';
-        Platform.OS === 'web' ? window.alert(msg) : Alert.alert('Error', msg);
+        showAlert('Error', msg);
         return;
       }
       data.cod_collected = amt;
@@ -725,7 +763,7 @@ function DeliverySection({
   const handleFail = () => {
     if (!failReason.trim()) {
       const msg = 'Please enter a reason for failure';
-      Platform.OS === 'web' ? window.alert(msg) : Alert.alert('Error', msg);
+      showAlert('Error', msg);
       return;
     }
     doAction('fail', { failure_reason: failReason.trim() });
@@ -746,7 +784,7 @@ function DeliverySection({
         if (onRefresh) await onRefresh();
       } catch (err) {
         const errorMsg = err.response?.data?.message || err.message || 'Failed to convert payment';
-        Platform.OS === 'web' ? window.alert(errorMsg) : Alert.alert('Error', errorMsg);
+        showAlert('Error', errorMsg);
       } finally {
         setActionLoading(false);
       }
@@ -858,7 +896,7 @@ function DeliverySection({
             <View style={{ flexDirection: 'row', gap: 8, marginHorizontal: 20, marginBottom: 16 }}>
               {isCredit ? (
                 <TouchableOpacity 
-                  style={[styles.actionBtn, { flex: 1, backgroundColor: '#E5E7EB', borderColor: '#D1D5DB', borderWidth: 1 }]} 
+                  style={[styles.actionBtnFull, { flex: 1, backgroundColor: '#E5E7EB', borderColor: '#D1D5DB', borderWidth: 1 }]} 
                   onPress={() => handleConvertPayment('to_cod')}
                   disabled={actionLoading}
                 >
@@ -867,7 +905,7 @@ function DeliverySection({
                 </TouchableOpacity>
               ) : (
                 <TouchableOpacity 
-                  style={[styles.actionBtn, { flex: 1, backgroundColor: '#E5E7EB', borderColor: '#D1D5DB', borderWidth: 1 }]} 
+                  style={[styles.actionBtnFull, { flex: 1, backgroundColor: '#E5E7EB', borderColor: '#D1D5DB', borderWidth: 1 }]} 
                   onPress={() => handleConvertPayment('to_credit')}
                   disabled={actionLoading}
                 >
@@ -1022,10 +1060,12 @@ function DeliverySection({
                   <TouchableOpacity
                     style={[styles.actionBtnFull, { backgroundColor: '#0EA5E9' }]}
                     onPress={() => {
-                      Alert.alert('Reattempt', 'Reset to assigned for another attempt?', [
-                        { text: 'Cancel', style: 'cancel' },
-                        { text: 'Reattempt', onPress: () => doAction('reattempt') },
-                      ]);
+                      showConfirm(
+                        'Reattempt',
+                        'Reset to assigned for another attempt?',
+                        () => doAction('reattempt'),
+                        { confirmLabel: 'Reattempt' },
+                      );
                     }}
                     disabled={actionLoading}
                   >

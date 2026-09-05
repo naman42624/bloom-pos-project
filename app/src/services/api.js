@@ -605,6 +605,28 @@ class ApiService {
     return this.request(`/sales/${saleId}/status`, { method: 'PUT', body: JSON.stringify({ status }) });
   }
 
+  // Generic dispatcher for a sale's computed `display_stage.nextAction`
+  // (server/utils/order-stage.js) — one-tap kanban/dashboard quick actions.
+  // Shared by OrderKanbanBoard (owner/manager dashboard) and reused wherever
+  // else `nextAction` is rendered, so the endpoint/method/body it carries
+  // never needs re-deriving client-side.
+  //
+  // `extraBody` (optional) is merged over the action's own body, for the one
+  // case where the caller knows something the server-computed action cannot:
+  // who is going to do the work. Today that is only `{ assigned_to }` on the
+  // Start Preparing action (Task 15) — and PUT /sales/:id/status acts on
+  // `assigned_to` ONLY when the status being set is 'preparing', so attaching
+  // it to any other action is a silent no-op (200, nothing assigned). Gate on
+  // `nextAction.body?.status === 'preparing'` before passing it. Never pass an
+  // empty string: the route parseInt()s any non-null value, so '' becomes NaN
+  // and 400s. Omit the key entirely when nobody was chosen.
+  advanceOrder(nextAction, extraBody) {
+    return this.request(nextAction.endpoint, {
+      method: nextAction.method,
+      body: JSON.stringify({ ...(nextAction.body || {}), ...(extraBody || {}) }),
+    });
+  }
+
   fulfillFromStock(saleId, saleItemId) {
     return this.request(`/sales/${saleId}/fulfill-from-stock`, { method: 'POST', body: JSON.stringify({ sale_item_id: saleItemId }) });
   }
@@ -838,6 +860,37 @@ class ApiService {
     return this.request(`/deliveries/partners${locationId ? `?location_id=${locationId}` : ''}`);
   }
 
+  // Everyone PUT /production/tasks/:id/assign will accept as the target of a
+  // production task: owner, manager, employee, counter_staff, florist_staff.
+  //
+  // READ THIS BEFORE USING IT — the server does NOT pre-filter, and that is
+  // deliberate. Two screens call this and they want different subsets, so the
+  // endpoint keeps one honest meaning ("who may hold a production task",
+  // a fact about the assign route) and returns `role` on every row so each
+  // caller narrows to what belongs on ITS screen. A third caller must do the
+  // same rather than assume this list is already the right one:
+  //   DashboardScreen  -> PREP_ROLES             (employee, florist_staff)
+  //   SaleDetailScreen -> ASSIGNABLE_STAFF_ROLES (+ counter_staff)
+  // Both live in constants/orderDisplay.js. Pushing either subset into the
+  // server would put one screen's editorial choice into a shared contract and
+  // break the other, which is why there is no ?prep_only= parameter.
+  //
+  // NOT getStaffRoster() — that one is the unauthenticated lock-screen list and
+  // only shows people who have an employee code, which excludes every one of
+  // this shop's `employee`-role prep staff (measured, Task 17).
+  getAssignableStaff(locationId) {
+    return this.request(`/production/assignable-staff${locationId ? `?location_id=${locationId}` : ''}`);
+  }
+
+  // ─── Delivery Routes ────────────────────────────────────
+  getDeliveryRoutes(locationId) {
+    return this.request(`/delivery-routes${locationId ? `?location_id=${locationId}` : ''}`);
+  }
+
+  createOrFindDeliveryRoute(name, locationId) {
+    return this.request('/delivery-routes', { method: 'POST', body: JSON.stringify({ name, location_id: locationId }) });
+  }
+
   getDelivery(id) {
     return this.request(`/deliveries/${id}`);
   }
@@ -883,6 +936,17 @@ class ApiService {
       method: 'POST',
       body: formData,
       headers: {}, // Let browser set Content-Type for FormData
+    });
+  }
+
+  getDeliveryChecklist(deliveryId) {
+    return this.request(`/deliveries/${deliveryId}/checklist`);
+  }
+
+  toggleDeliveryChecklistItem(deliveryId, saleItemId, checked) {
+    return this.request(`/deliveries/${deliveryId}/checklist/${saleItemId}`, {
+      method: 'PUT',
+      body: JSON.stringify({ checked }),
     });
   }
 

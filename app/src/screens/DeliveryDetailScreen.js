@@ -7,6 +7,7 @@ import * as Sharing from 'expo-sharing';
 import * as ImagePicker from 'expo-image-picker';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
+import DeliveryChecklist from '../components/DeliveryChecklist';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import { parseServerDate, formatDate, formatDateTime } from '../utils/datetime';
 
@@ -50,6 +51,7 @@ export default function DeliveryDetailScreen({ route, navigation }) {
   const [assignModalVisible, setAssignModalVisible] = useState(false);
   const [partners, setPartners] = useState([]);
   const [assignLoading, setAssignLoading] = useState(false);
+  const [checklistVisible, setChecklistVisible] = useState(false);
 
   const isPartner = user?.role === 'delivery_partner';
   const isManager = user?.role === 'owner' || user?.role === 'manager';
@@ -61,6 +63,14 @@ export default function DeliveryDetailScreen({ route, navigation }) {
   // to-Pickup stay isManager-only below, unchanged — those backend routes
   // are still owner/manager-only, out of scope for this pass.
   const canManageDeliveries = isManager || user?.role === 'counter_staff';
+  // Task 17: rider-side "Verify Load" access. Backend (`GET`/`PUT
+  // /deliveries/:id/checklist`) already 403s a delivery_partner touching a
+  // delivery that isn't theirs (`delivery.delivery_partner_id !==
+  // req.user.id`) — mirror that same ownership check here so the UI never
+  // offers a button that would just fail. Number() guards against a
+  // string/number id mismatch between `user.id` (auth context) and
+  // `delivery.delivery_partner_id` (raw DB value).
+  const isOwnDelivery = isPartner && delivery && Number(delivery.delivery_partner_id) === Number(user?.id);
 
   const takeProofPhoto = async () => {
     try {
@@ -558,7 +568,15 @@ export default function DeliveryDetailScreen({ route, navigation }) {
       {/* Items */}
       {delivery.items?.length > 0 && (
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Items ({delivery.items.length})</Text>
+          <View style={styles.itemsSectionHeader}>
+            <Text style={styles.sectionTitle}>Items ({delivery.items.length})</Text>
+            {(canManageDeliveries || isOwnDelivery) && !isFinal && (
+              <TouchableOpacity style={styles.verifyLoadBtn} onPress={() => setChecklistVisible(true)}>
+                <Ionicons name="checkbox-outline" size={16} color={Colors.primary} />
+                <Text style={styles.verifyLoadBtnText}>Verify Load</Text>
+              </TouchableOpacity>
+            )}
+          </View>
           {delivery.items.map((item, i) => {
             const canFulfill = !isFinal && item.product_id && !item.from_product_stock && canManageDeliveries;
             return (
@@ -886,6 +904,7 @@ export default function DeliveryDetailScreen({ route, navigation }) {
                   <View style={{ flex: 1 }}>
                     <Text style={styles.partnerName}>{p.name}</Text>
                     <Text style={styles.partnerPhone}>{p.phone}</Text>
+                    <Text style={styles.partnerLoad}>{p.active_delivery_count || 0} stop{Number(p.active_delivery_count) !== 1 ? 's' : ''} today</Text>
                   </View>
                   <Ionicons name="chevron-forward" size={20} color={Colors.textLight} />
                 </TouchableOpacity>
@@ -893,6 +912,26 @@ export default function DeliveryDetailScreen({ route, navigation }) {
             />
           )}
           {assignLoading && <ActivityIndicator style={{ padding: 10 }} color={Colors.primary} />}
+        </View>
+      </View>
+    </Modal>
+
+    {/* Verify Load Checklist Modal */}
+    <Modal visible={checklistVisible} animationType="slide" transparent onRequestClose={() => setChecklistVisible(false)}>
+      <View style={styles.modalOverlay}>
+        <View style={styles.checklistModal}>
+          <View style={styles.assignModalHeader}>
+            <View>
+              <Text style={styles.assignModalTitle}>Verify Load</Text>
+              <Text style={styles.checklistSubtitle}>{delivery.sale_number} — check off each item as it goes in</Text>
+            </View>
+            <TouchableOpacity onPress={() => setChecklistVisible(false)}>
+              <Ionicons name="close" size={24} color={Colors.text} />
+            </TouchableOpacity>
+          </View>
+          <View style={{ padding: Spacing.md, flex: 1 }}>
+            {checklistVisible && <DeliveryChecklist deliveryId={deliveryId} />}
+          </View>
         </View>
       </View>
     </Modal>
@@ -929,6 +968,9 @@ const styles = StyleSheet.create({
   infoLabel: { fontSize: FontSize.sm, color: Colors.textLight, width: 80 },
   infoValue: { fontSize: FontSize.sm, color: Colors.text, flex: 1, fontWeight: '500' },
   itemRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: Spacing.md, gap: 8, borderBottomWidth: 1, borderBottomColor: Colors.border },
+  itemsSectionHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 },
+  verifyLoadBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 8, borderRadius: BorderRadius.md, borderWidth: 1, borderColor: Colors.primary + '40', backgroundColor: Colors.primary + '08' },
+  verifyLoadBtnText: { fontSize: FontSize.sm, color: Colors.primary, fontWeight: '700' },
   saleDetailBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 8, borderRadius: BorderRadius.md, borderWidth: 1, borderColor: Colors.primary + '40', backgroundColor: Colors.primary + '08' },
   convertPickupBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 8, borderRadius: BorderRadius.md, borderWidth: 1, borderColor: Colors.primary + '40', backgroundColor: Colors.primary + '08' },
   saleDetailBtnText: { fontSize: FontSize.sm, color: Colors.primary, fontWeight: '600' },
@@ -963,7 +1005,10 @@ const styles = StyleSheet.create({
   assignModal: { backgroundColor: Colors.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, maxHeight: '60%', paddingBottom: 30 },
   assignModalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: Spacing.md, borderBottomWidth: 1, borderBottomColor: Colors.border },
   assignModalTitle: { fontSize: FontSize.lg, fontWeight: '700', color: Colors.text },
+  checklistModal: { backgroundColor: Colors.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, height: '80%' },
+  checklistSubtitle: { fontSize: FontSize.sm, color: Colors.textLight, marginTop: 2 },
   partnerItem: { flexDirection: 'row', alignItems: 'center', padding: Spacing.md, borderBottomWidth: 1, borderBottomColor: Colors.border },
   partnerName: { fontSize: FontSize.md, fontWeight: '600', color: Colors.text },
   partnerPhone: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: 2 },
+  partnerLoad: { fontSize: FontSize.sm, color: Colors.primary, marginTop: 2 },
 });

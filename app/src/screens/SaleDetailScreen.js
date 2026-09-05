@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useLayoutEffect, useCallback } from 'react';
 
 import {
-  View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, Platform, ActivityIndicator, Modal, TextInput, KeyboardAvoidingView,
+  View, Text, StyleSheet, ScrollView, TouchableOpacity, Platform, ActivityIndicator, Modal, TextInput, KeyboardAvoidingView,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
@@ -9,6 +9,7 @@ import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import * as ImagePicker from 'expo-image-picker';
 import api from '../services/api';
+import { showAlert, showConfirm } from '../utils/alert';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import { formatDateTime, formatCardDateTime, isToday } from '../utils/datetime';
@@ -16,15 +17,8 @@ import { Image } from 'react-native';
 import ImageModal from '../components/ImageModal';
 import VoiceNoteRecorder from '../components/VoiceNoteRecorder';
 import AttachmentVoiceRow from '../components/AttachmentVoiceRow';
-
-const STATUS_COLORS = {
-  completed: Colors.success,
-  cancelled: Colors.error,
-  draft: Colors.warning,
-  pending: Colors.warning,
-  preparing: Colors.info,
-  ready: Colors.success,
-};
+import StageBadge from '../components/StageBadge';
+import { formatMoney, STAFF_ROLE_LABELS, ASSIGNABLE_STAFF_ROLES } from '../constants/orderDisplay';
 
 // Duplicated locally (rather than imported from OrdersInboxScreen) to avoid
 // coupling this detail screen's import graph to an inbox screen.
@@ -166,6 +160,20 @@ export default function SaleDetailScreen({ route, navigation }) {
   // (2026-09-01): the picker already listed florist_staff as assignable,
   // it just had no visible way to open it.
   const canAssignTasks = canManage || user?.role === 'counter_staff';
+  // pref_flexible_task_assignment (owner-toggleable, default ON): lets any
+  // staff member start/complete a task regardless of who it's assigned to —
+  // restores the behavior from before per-assignee enforcement shipped,
+  // for shops that don't need the stricter gate (2026-09-04, user request).
+  const flexibleTaskAssignment = settings?.pref_flexible_task_assignment?.value !== '0';
+  // Whether THIS viewer may Start/Complete a given task. Mirrors the server
+  // guard exactly (production.js /tasks/:id/start, /tasks/:id/complete):
+  // owner/manager can always act on anyone's task; everyone else only their
+  // own, UNLESS flexibleTaskAssignment is on. A task with no assigned_to
+  // (assigned_to == null) belongs to nobody yet — canManage/flexible mode
+  // are the only things that check exempts, so an unassigned task otherwise
+  // requires Pick Up (self-assign) first, which is the 'pending' branch
+  // above and carries no ownership restriction.
+  const isTaskOwner = (task) => canManage || flexibleTaskAssignment || task.assigned_to === user?.id;
   // Florist/prep staff never touch payments (they only see this screen for
   // the production tasks on an order) and customers viewing their own order
   // can't record payments either (POST /:id/payments is staff-only
@@ -173,6 +181,18 @@ export default function SaleDetailScreen({ route, navigation }) {
   // into a dead-end request. Delivery partners can't reach this screen at
   // all (no SaleDetail route in their stack), so no check needed for them.
   const canRecordPayment = !['florist_staff', 'customer'].includes(user?.role);
+  // Assigning a rider and re-sending a failed delivery are both done on
+  // DeliveryDetailScreen, whose own gate (its canManageDeliveries, :65)
+  // mirrors PUT /deliveries/:id/assign and PUT /deliveries/:id/reattempt —
+  // both authorize('owner', 'manager', 'counter_staff'). Without this check an
+  // `employee` or `florist_staff` tapped a real-looking "Assign Rider" /
+  // "Delivery Failed — Send Again", landed on a screen showing none of those
+  // controls, and had nowhere to go: a dead end moved one level deeper rather
+  // than removed (review finding, 2026-09-02). Live-relevant, not theoretical
+  // — CLAUDE.md records four `employee` accounts that stay on that role
+  // indefinitely. Same role list as OrderCard's, kept in step on purpose
+  // (app/src/components/orderBoard/OrderCard.js).
+  const canManageDeliveries = ['owner', 'manager', 'counter_staff'].includes(user?.role);
 
   // Convert order type state
   const [convertModalVisible, setConvertModalVisible] = useState(false);
@@ -192,12 +212,50 @@ export default function SaleDetailScreen({ route, navigation }) {
   const [assignTaskId, setAssignTaskId] = useState(null);
   const [employees, setEmployees] = useState([]);
   const [loadingEmployees, setLoadingEmployees] = useState(false);
+  // True when the location-scoped staff list came back empty and we widened to
+  // every location. Never inferred at render time — the modal must be able to
+  // SAY it widened, and "showing everyone" above a genuinely empty list would
+  // be a lie.
+  const [employeesShowingEveryone, setEmployeesShowingEveryone] = useState(false);
+  // True when the staff fetch FAILED, as opposed to succeeding with nobody in
+  // it. Both end with an empty `employees`, and the modal used to tell staff the
+  // same thing either way — "ask the owner to add someone" — which on a dropped
+  // request is a false cause: it sends them to create accounts that already
+  // exist. The two cases now say different things.
+  const [employeesFailed, setEmployeesFailed] = useState(false);
 
   // Pickup Payment Modal
   const [pickupPayModalVisible, setPickupPayModalVisible] = useState(false);
   const [pickupPayments, setPickupPayments] = useState([{ method: 'cash', amount: '', reference_number: '' }]);
   const [pickupWriteOffAmount, setPickupWriteOffAmount] = useState('');
   const [confirmingPickup, setConfirmingPickup] = useState(false);
+  // The inline collect-payment modal has two callers. Complete Order's own
+  // guard opens it to take the money AND finish the order in one go (its
+  // long-standing behaviour). The "Collect ₹N" button opens it to take the
+  // money only — paying is not the same event as the customer physically
+  // collecting, so the refreshed stage decides what comes next.
+  const [pickupPayCompletesOrder, setPickupPayCompletesOrder] = useState(true);
+
+  // One-tap "Confirm Pickup" / "Mark Delivered" (Task 12, order-lifecycle
+  // plan, 2026-09-01) — separate from confirmingPickup above, which is the
+  // pay-balance modal's own loading flag. Keyed by nothing (single button on
+  // this screen, unlike OrderKanbanBoard's per-order map) since only one
+  // sale is ever in view here.
+  const [quickActionLoading, setQuickActionLoading] = useState(false);
+
+  // Opens the inline take-the-money modal pre-filled with the whole balance.
+  // Deliberately a modal on THIS screen rather than a navigate to AddPayment:
+  // a customer is standing at the counter while this runs, and collecting a
+  // balance is the shop's highest-frequency interaction, so it has to be the
+  // shortest path (CLAUDE.md, UX design principles). The dashboard card's
+  // Collect ₹N navigates instead only because a card has nowhere to put a
+  // modal; the label is kept identical so the two still read the same.
+  const openCollectPaymentModal = (completeAfter) => {
+    setPickupPayCompletesOrder(completeAfter);
+    setPickupPayments([{ method: 'cash', amount: Number(due).toFixed(0), reference_number: '' }]);
+    setPickupWriteOffAmount('');
+    setPickupPayModalVisible(true);
+  };
 
   const handleAddPickupPayment = () => setPickupPayments([...pickupPayments, { method: 'cash', amount: '', reference_number: '' }]);
   const updatePickupPayment = (index, field, value) => {
@@ -267,7 +325,7 @@ export default function SaleDetailScreen({ route, navigation }) {
     try {
       const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (status !== 'granted') {
-        Alert.alert('Permission Required', 'Please allow access to your photo library.');
+        showAlert('Permission Required', 'Please allow access to your photo library.');
         return;
       }
       const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.6 });
@@ -276,7 +334,7 @@ export default function SaleDetailScreen({ route, navigation }) {
       await api.uploadSaleAttachment(saleId, result.assets[0].uri, 'photo');
       await refreshAttachments();
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to upload photo');
+      showAlert('Error', err.message || 'Failed to upload photo');
     } finally {
       setUploadingAttachment(false);
     }
@@ -288,7 +346,7 @@ export default function SaleDetailScreen({ route, navigation }) {
       await api.uploadSaleAttachment(saleId, uri, 'voice_note', durationSeconds);
       await refreshAttachments();
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to upload voice note');
+      showAlert('Error', err.message || 'Failed to upload voice note');
     } finally {
       setUploadingAttachment(false);
     }
@@ -326,7 +384,7 @@ export default function SaleDetailScreen({ route, navigation }) {
       await api.updateSale(saleId, payload);
       setEditModalVisible(false);
       fetchSale();
-      Alert.alert('Success', 'Sale updated successfully.');
+      showAlert('Success', 'Sale updated successfully.');
     } catch (err) {
       setEditError(err.message || 'Failed to update sale');
     } finally {
@@ -338,8 +396,7 @@ export default function SaleDetailScreen({ route, navigation }) {
     if (itemEditBlockReason) {
       // Not editable right now — explain why in plain language rather than
       // opening an editor that will just fail on save.
-      if (Platform.OS === 'web') window.alert(itemEditBlockReason);
-      else Alert.alert('Cannot Edit Item', itemEditBlockReason);
+      showAlert('Cannot Edit Item', itemEditBlockReason);
       return;
     }
     setEditingItem(item);
@@ -378,7 +435,7 @@ export default function SaleDetailScreen({ route, navigation }) {
   };
 
   const goToRefund = () => {
-    navigation.navigate('RefundSale', { saleId, grandTotal: sale.grand_total });
+    navigation.navigate('RefundSale', { saleId, grandTotal: sale.grand_total, locationId: sale.location_id });
   };
 
   const handleCancel = () => {
@@ -394,14 +451,29 @@ export default function SaleDetailScreen({ route, navigation }) {
 
     if (unrefundedBalance > 0.01) {
       const message = `This order was paid ₹${unrefundedBalance.toFixed(2)}. Cancelling won't return that money on its own — refund the customer first, then cancel.`;
-      if (Platform.OS === 'web') {
-        if (window.confirm(`${message}\n\nOpen the refund screen now?`)) goToRefund();
-      } else {
-        Alert.alert('Refund needed first', message, [
-          { text: 'Not now', style: 'cancel' },
-          { text: 'Refund now', onPress: goToRefund },
-        ]);
-      }
+      showConfirm(
+        'Refund needed first',
+        `${message}\n\nOpen the refund screen now?`,
+        goToRefund,
+        { confirmLabel: 'Refund now', cancelLabel: 'Not now' },
+      );
+      return;
+    }
+
+    // Same "catch it before confirming" idiom as the balance check above,
+    // mirroring the server's own new guard (PUT /sales/:id/cancel): a
+    // delivery actually out (assigned/picked_up/in_transit) needs to be
+    // cancelled first — this route never touches the deliveries table, so
+    // cancelling underneath it left a rider "out" with an order the shop
+    // now considers cancelled, with no signal to them at all (found live
+    // during the 2026-09-04 order-flow audit).
+    if (sale.delivery && ['assigned', 'picked_up', 'in_transit'].includes(sale.delivery.status)) {
+      showConfirm(
+        'Cancel the delivery first',
+        'A rider is already out with this order. Cancel the delivery on the Delivery screen first, then come back and cancel the order.',
+        () => navigation.navigate('DeliveryDetail', { deliveryId: sale.delivery.id }),
+        { confirmLabel: 'Open delivery', cancelLabel: 'Not now' },
+      );
       return;
     }
 
@@ -409,19 +481,16 @@ export default function SaleDetailScreen({ route, navigation }) {
       try {
         await api.cancelSale(saleId);
         fetchSale();
-        Alert.alert('Cancelled', 'Sale has been cancelled');
+        showAlert('Cancelled', 'Sale has been cancelled');
       } catch (err) {
-        Alert.alert('Error', err.message || 'Failed to cancel');
+        showAlert('Error', err.message || 'Failed to cancel');
       }
     };
-    if (Platform.OS === 'web') {
-      if (window.confirm('Cancel this sale?')) doCancel();
-    } else {
-      Alert.alert('Cancel Sale', 'Are you sure?', [
-        { text: 'No', style: 'cancel' },
-        { text: 'Yes, cancel', style: 'destructive', onPress: doCancel },
-      ]);
-    }
+    showConfirm('Cancel Sale', 'Are you sure?', doCancel, {
+      confirmLabel: 'Yes, cancel',
+      cancelLabel: 'No',
+      destructive: true,
+    });
   };
 
   const handleRefund = () => {
@@ -438,14 +507,23 @@ export default function SaleDetailScreen({ route, navigation }) {
   };
 
   const handleStatusTransition = (nextStatus, label) => {
-    // Guard: delivery orders must be marked 'delivered' before completion
-    if (nextStatus === 'completed' && sale.order_type === 'delivery') {
-      const delStatus = sale.delivery?.status;
-      if (delStatus !== 'delivered') {
-        const msg = 'This delivery order cannot be completed until it has been delivered. Please mark the delivery as "Delivered" first.';
-        Platform.OS === 'web' ? window.alert(msg) : Alert.alert('Cannot Complete', msg);
-        return;
-      }
+    // Guard: an order with an OPEN delivery cannot be completed. Keyed on the
+    // delivery row rather than order_type (was `order_type === 'delivery'`) to
+    // match the backend guard re-keyed 2026-09-02 — a pre_order fulfilled by
+    // delivery slipped past this copy and got a raw 400 instead of a sentence.
+    // Kept as a safety net even though the button is now hidden for this shape:
+    // `sale` is only as fresh as the last fetch, and someone else can attach a
+    // delivery between that fetch and this tap.
+    if (nextStatus === 'completed' && hasOpenDelivery) {
+      // A failed delivery CANNOT be marked delivered — PUT /deliveries/:id/deliver
+      // only accepts 'picked_up'/'in_transit'. Its real recoveries are reattempt
+      // or cancel, so telling staff to "mark it delivered" would send them at an
+      // action the API refuses. Same split the backend message makes.
+      const msg = sale.delivery?.status === 'failed'
+        ? "This order's delivery did not go through. Send it out again, or cancel the delivery, then finish the order."
+        : 'This order cannot be finished until the delivery is done. Tap Delivery Status above, then mark it delivered.';
+      showAlert('Cannot Complete', msg);
+      return;
     }
 
     // Guard: cannot complete order if any production tasks are still pending/assigned/in_progress
@@ -453,42 +531,72 @@ export default function SaleDetailScreen({ route, navigation }) {
       const incompleteTasks = sale.production_tasks.filter(t => !['completed', 'cancelled'].includes(t.status));
       if (incompleteTasks.length > 0) {
         const msg = `Cannot complete this order — ${incompleteTasks.length} production task(s) are still ${incompleteTasks.map(t => t.status).join(', ')}. Please complete or cancel all tasks first.`;
-        Platform.OS === 'web' ? window.alert(msg) : Alert.alert('Cannot Complete', msg);
+        showAlert('Cannot Complete', msg);
         return;
       }
     }
 
-    // Guard: pickup orders must be fully paid before completion
-    if (nextStatus === 'completed' && sale.order_type === 'pickup' && due > 0.01) {
-      setPickupPayments([{ method: 'cash', amount: Number(due).toFixed(0), reference_number: '' }]);
-      setPickupWriteOffAmount('');
-      setPickupPayModalVisible(true);
+    // Guard: any NON-DELIVERY order must be settled before completion. Was
+    // `order_type === 'pickup' && due > 0.01`, so an unpaid walk_in/pre_order
+    // never reached this modal and hit the backend's payment guard as a raw
+    // 400 with no way to take the money. balanceBlocksCompletion is the same
+    // condition that guard now uses.
+    if (nextStatus === 'completed' && balanceBlocksCompletion) {
+      openCollectPaymentModal(true);
       return;
     }
 
     const msg = `${label} for this order?`;
     const onConfirm = async () => {
       try {
-        await api.updateOrderStatus(saleId, nextStatus);
+        // Converge on display_stage.nextAction where the server has already
+        // described this exact transition (endpoint + method + body), so the
+        // request stops being re-derived client-side — same api.advanceOrder
+        // path handleQuickAction and the dashboard card use. Falls back to the
+        // hand-built call whenever there is no matching nextAction (notably
+        // when the viewer's role is outside the endpoint's authorize() list, so
+        // the server sends none): behaviour is unchanged there, including the
+        // error it surfaces, rather than a button that silently does nothing.
+        const serverAction = nextAction && nextAction.body?.status === nextStatus ? nextAction : null;
+        if (serverAction) {
+          await api.advanceOrder(serverAction);
+        } else {
+          await api.updateOrderStatus(saleId, nextStatus);
+        }
         fetchSale();
       } catch (err) {
-        if (Platform.OS === 'web') {
-          window.alert('Error: ' + (err.message || 'Failed to update status'));
-        } else {
-          Alert.alert('Error', err.message || 'Failed to update status');
-        }
+        showAlert('Error', err.message || 'Failed to update status');
       }
     };
 
-    if (Platform.OS === 'web') {
-      setTimeout(() => {
-        if (window.confirm(msg)) onConfirm();
-      }, 50);
-    } else {
-      Alert.alert(label, msg, [
-        { text: 'Cancel', style: 'cancel' },
-        { text: label, onPress: onConfirm },
-      ]);
+    // The 50ms defer is web-only and pre-existing, kept as-is: window.confirm
+    // blocks synchronously, and firing it straight out of the tap handler ate
+    // the press. Native has never needed it.
+    const ask = () => showConfirm(label, msg, onConfirm, { confirmLabel: label });
+    if (Platform.OS === 'web') setTimeout(ask, 50);
+    else ask();
+  };
+
+  // One-tap dispatch for sale.display_stage.nextAction (server/utils/order-stage.js)
+  // — only ever rendered for 'Confirm Pickup'/'Mark Delivered', both of which
+  // the server only offers when there's nothing left to collect (no balance
+  // due, no COD outstanding). Same generic api.advanceOrder(nextAction) call
+  // Task 10 built for OrderKanbanBoard's handleQuickAction — reused as-is
+  // rather than duplicated into a shared orderActions.js helper, since the
+  // whole call is a single pass-through line with no logic of its own to
+  // share beyond what api.advanceOrder already centralizes.
+  const handleQuickAction = async () => {
+    const nextAction = sale?.display_stage?.nextAction;
+    if (!nextAction) return;
+    setQuickActionLoading(true);
+    try {
+      await api.advanceOrder(nextAction);
+      fetchSale();
+    } catch (err) {
+      const msg = err.message || 'Unable to update this order.';
+      showAlert('Order Update', msg);
+    } finally {
+      setQuickActionLoading(false);
     }
   };
 
@@ -498,7 +606,7 @@ export default function SaleDetailScreen({ route, navigation }) {
     const totalReduction = totalPayments + woAmount;
 
     if (totalReduction <= 0) {
-      Alert.alert('Invalid', 'Please enter a valid payment amount.');
+      showAlert('Invalid', 'Please enter a valid payment amount.');
       return;
     }
 
@@ -508,20 +616,65 @@ export default function SaleDetailScreen({ route, navigation }) {
         .map(p => ({ ...p, amount: parseFloat(p.amount) || 0 }))
         .filter(p => p.amount > 0);
 
-      // 1. Record payment
-      await api.addPaymentToSale(saleId, {
-        payments: formattedPayments,
-        write_off_amount: woAmount > 0 ? woAmount : undefined,
-      });
+      // ── Step 1: take the money ──
+      // Its own try/catch, deliberately NOT sharing one with step 2. When both
+      // awaits sat in a single block, a step-2 failure surfaced step 1's
+      // message — "Could not record the payment. Please try again." — while the
+      // money was already banked, with the modal still open and the full
+      // balance still pre-filled. Anyone who followed that instruction charged
+      // the customer twice. Never tell someone to retry a payment that
+      // succeeded (review finding, 2026-09-02).
+      try {
+        await api.addPaymentToSale(saleId, {
+          payments: formattedPayments,
+          write_off_amount: woAmount > 0 ? woAmount : undefined,
+        });
+      } catch (err) {
+        // Nothing was taken. Retrying really is the right instruction here, and
+        // the modal stays open with the amounts intact so it is one tap away.
+        showAlert('Error', err.message || 'Could not record the payment. Please try again.');
+        return;
+      }
 
-      // 2. Update status to completed
-      await api.updateOrderStatus(saleId, 'completed');
+      // ── Step 2: finish the order too ──
+      // ONLY when this modal was opened from Complete Order. Opened from
+      // "Collect ₹N" it just takes the money and lets the refreshed stage offer
+      // the real next step (Confirm Pickup for a pickup, Complete for a
+      // walk_in/pre_order) — force-completing there would mark a pickup
+      // 'picked_up' while the customer is still waiting for the flowers.
+      let completed = false;
+      if (pickupPayCompletesOrder) {
+        try {
+          await api.updateOrderStatus(saleId, 'completed');
+          completed = true;
+        } catch (err) {
+          // The payment IS recorded. Close the modal and refetch FIRST so the
+          // balance on screen is the real one and the correct next control is
+          // already rendered, then say what actually happened. fetchSale()
+          // swallows its own errors, so this cannot throw past the finally.
+          //
+          // The message deliberately does NOT name a button. The likeliest
+          // real cause of a step-2 failure is a PARTIAL payment (the modal
+          // allows one), and then the next control is another "Collect ₹N",
+          // not Complete Order or Confirm Pickup — naming one would send staff
+          // looking for a button that isn't there. The backend's own guard
+          // messages are already plain language ("Cannot complete — ₹100.00 is
+          // still due. Please collect payment first."), so pass that straight
+          // through as the reason, the same way OrderKanbanBoard's
+          // handleQuickAction does.
+          setPickupPayModalVisible(false);
+          await fetchSale();
+          const why = err?.message ? ' ' + err.message : '';
+          showAlert('Payment recorded', 'The payment is saved — do not collect it again. The order was not finished.' + why);
+          return;
+        }
+      }
 
       setPickupPayModalVisible(false);
-      fetchSale();
-      Alert.alert('Success', 'Payment recorded and order completed.');
-    } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to complete pickup payment');
+      // Awaited, not fire-and-forget: the next action has to be on screen the
+      // moment the modal closes, with no manual pull-to-refresh.
+      await fetchSale();
+      showAlert('Success', completed ? 'Payment recorded and order completed.' : 'Payment recorded.');
     } finally {
       setConfirmingPickup(false);
     }
@@ -533,30 +686,16 @@ export default function SaleDetailScreen({ route, navigation }) {
       try {
         await api.fulfillFromStock(saleId, saleItemId);
         fetchSale();
-        if (Platform.OS === 'web') {
-          window.alert(`"${productName}" fulfilled from stock`);
-        } else {
-          Alert.alert('Done', `"${productName}" fulfilled from stock`);
-        }
+        showAlert('Done', `"${productName}" fulfilled from stock`);
       } catch (err) {
-        if (Platform.OS === 'web') {
-          window.alert('Error: ' + (err.message || 'Failed to fulfill from stock'));
-        } else {
-          Alert.alert('Error', err.message || 'Failed to fulfill from stock');
-        }
+        showAlert('Error', err.message || 'Failed to fulfill from stock');
       }
     };
 
-    if (Platform.OS === 'web') {
-      setTimeout(() => {
-        if (window.confirm(msg)) onConfirm();
-      }, 50);
-    } else {
-      Alert.alert('Fulfill from Stock', msg, [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Fulfill', onPress: onConfirm },
-      ]);
-    }
+    // Web-only 50ms defer, pre-existing — see handleStatusTransition.
+    const ask = () => showConfirm('Fulfill from Stock', msg, onConfirm, { confirmLabel: 'Fulfill' });
+    if (Platform.OS === 'web') setTimeout(ask, 50);
+    else ask();
   };
 
   // Production task actions
@@ -567,7 +706,7 @@ export default function SaleDetailScreen({ route, navigation }) {
       else if (action === 'complete') await api.completeTask(taskId);
       fetchSale();
     } catch (err) {
-      Alert.alert('Error', err.message || `Failed to ${label}`);
+      showAlert('Error', err.message || `Failed to ${label}`);
     }
   };
 
@@ -575,22 +714,70 @@ export default function SaleDetailScreen({ route, navigation }) {
     setAssignTaskId(taskId);
     setLoadingEmployees(true);
     setAssignModalVisible(true);
+    setEmployeesShowingEveryone(false);
+    setEmployeesFailed(false);
     try {
-      // GET /users is owner/manager-only (it lists the whole account
-      // directory — owner/manager/customer included — which counter_staff
-      // has no business seeing just to pick who preps an order). Reuse
-      // /auth/staff-roster instead: same endpoint LockScreen already uses,
-      // pre-filtered server-side to exactly employee/counter_staff/
-      // florist_staff, scoped to this sale's own location, and safe for
-      // any authenticated role since it was already designed to be safe
-      // for NO role (LockScreen calls it unauthenticated). Switched
-      // 2026-09-01 so counter_staff's Assign button actually works instead
-      // of 403ing the moment the modal tried to load names.
-      const res = await api.getStaffRoster(sale.location_id);
-      setEmployees(res.data?.staff || []);
+      // GET /production/assignable-staff. NOT GET /users, which is
+      // owner/manager-only because it lists the whole account directory,
+      // customers included — counter_staff has no business seeing that just to
+      // pick who preps an order. And no longer GET /auth/staff-roster, which
+      // this screen used from 2026-09-01 until Task 17: that endpoint is the
+      // UNAUTHENTICATED lock-screen list, so it filters
+      // `employee_code IS NOT NULL` — right for PIN entry, since no code means
+      // no PIN login — and on live data that silently excluded all four of this
+      // shop's `employee` accounts, the exact people who do the prep work.
+      //
+      // The endpoint returns everyone PUT /production/tasks/:id/assign accepts,
+      // which is FIVE roles — it stays honest about what the server will take.
+      // This screen offers THREE of them, and the difference is on purpose:
+      //
+      // `manager` and `owner` are genuinely assignable server-side (verified
+      // live: both return 200 from the assign route). They are left out anyway.
+      // The defect Task 17 fixed was people MISSING from this list — the
+      // `employee_code` filter on the old staff-roster call was dropping the
+      // shop's actual prep staff — not roles being absent by design. These three
+      // are exactly what this modal has always offered; restoring them fixes the
+      // bug completely. Making the owner assignable is a separate product
+      // decision nobody has asked for, and a picker read at counter speed gets
+      // worse with every name that is not the answer.
+      //
+      // So: do NOT "fix" this apparent inconsistency by widening it to five.
+      // That is a deliberate change, and this comment is the reason it has not
+      // happened yet. (The dashboard picker narrows further still, to
+      // PREP_ROLES — counter staff can hold a task but do not make bouquets.)
+      //
+      // Filtering happens BEFORE the empty check below, never after. The other
+      // order is a silent dead end: at a location staffed only by managers the
+      // scoped call returns people, the fallback never fires, and the modal
+      // renders an empty list with nothing explaining why. That is not
+      // hypothetical — it is exactly what Test Loc looked like one commit ago.
+      const onlyStaff = (rows) =>
+        (Array.isArray(rows) ? rows : []).filter((p) => ASSIGNABLE_STAFF_ROLES.includes(p.role));
+      const res = await api.getAssignableStaff(sale.location_id);
+      let list = onlyStaff(res?.staff);
+      // Same empty-scoped-list fallback the dashboard pickers use, for the same
+      // reason: the location filter is a convenience, not a rule — the assign
+      // endpoint itself accepts any active staff account regardless of
+      // location. A shop whose staff have no user_locations row for it would
+      // otherwise get "No employees found" and a dead end on the one action
+      // this modal exists to perform. Flagged only when the wider call actually
+      // returned people, and surfaced in the modal rather than applied quietly.
+      if (list.length === 0 && sale.location_id) {
+        const all = await api.getAssignableStaff();
+        const allList = onlyStaff(all?.staff);
+        if (allList.length > 0) {
+          list = allList;
+          setEmployeesShowingEveryone(true);
+        }
+      }
+      setEmployees(list);
     } catch (err) {
       console.log('Failed to fetch employees:', err);
       setEmployees([]);
+      // Recorded, not asserted: an empty list after a failed request means we
+      // do not know who is assignable, which is a different thing from knowing
+      // there is nobody.
+      setEmployeesFailed(true);
     } finally {
       setLoadingEmployees(false);
     }
@@ -602,7 +789,7 @@ export default function SaleDetailScreen({ route, navigation }) {
       setAssignModalVisible(false);
       fetchSale();
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to assign');
+      showAlert('Error', err.message || 'Failed to assign');
     }
   };
 
@@ -635,15 +822,15 @@ export default function SaleDetailScreen({ route, navigation }) {
       const data = { new_order_type: convertTarget };
       if (convertTarget === 'delivery') {
         if (!convertAddress?.trim()) {
-          Alert.alert('Required', 'Delivery address is required');
+          showAlert('Required', 'Delivery address is required');
           return;
         }
         if (!convertSenderName?.trim() || !convertSenderPhone?.trim()) {
-          Alert.alert('Required', 'Sender name and phone are required');
+          showAlert('Required', 'Sender name and phone are required');
           return;
         }
         if (!convertSenderSameAsReceiver && (!convertReceiverName?.trim() || !convertReceiverPhone?.trim())) {
-          Alert.alert('Required', 'Receiver name and phone are required');
+          showAlert('Required', 'Receiver name and phone are required');
           return;
         }
 
@@ -663,9 +850,9 @@ export default function SaleDetailScreen({ route, navigation }) {
       await api.convertOrderType(saleId, data);
       setConvertModalVisible(false);
       fetchSale();
-      Alert.alert('Done', `Order converted to ${convertTarget}`);
+      showAlert('Done', `Order converted to ${convertTarget}`);
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to convert');
+      showAlert('Error', err.message || 'Failed to convert');
     }
   };
 
@@ -774,7 +961,7 @@ export default function SaleDetailScreen({ route, navigation }) {
       const { uri } = await Print.printToFileAsync({ html: receiptHtml, width: 300 });
       await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: `Receipt ${sale.sale_number}` });
     } catch (err) {
-      Alert.alert('Error', 'Could not generate receipt');
+      showAlert('Error', 'Could not generate receipt');
     }
   };
 
@@ -787,6 +974,85 @@ export default function SaleDetailScreen({ route, navigation }) {
 
   const paidAmount = (sale.payments || []).reduce((s, p) => s + Number(p.amount || 0), 0);
   const due = Number(sale.grand_total || 0) - paidAmount;
+
+  // True only when display_stage.nextAction (server/utils/order-stage.js) is
+  // the server's signal that this order's next step needs zero staff input —
+  // Confirm Pickup / Mark Delivered. Single source shared by both the
+  // "Complete Order" gate and the new inline quick-action button below it,
+  // so the two conditions can never drift apart (Task 12 fix round,
+  // 2026-09-01 — coordinator ruling: showing both at once for the same net
+  // effect reintroduces the old multi-button confusion this redesign exists
+  // to remove).
+  const nextAction = sale.display_stage?.nextAction;
+  const hasNoInputNextAction = nextAction?.label === 'Confirm Pickup' || nextAction?.label === 'Mark Delivered';
+
+  // ── What stops this order being marked ready ──
+  // PUT /sales/:id/status refuses 'ready' while the sale has any production
+  // task that is not completed or cancelled (server/routes/sales.js), and
+  // computeOrderStage() now nulls its Mark Ready nextAction for that same
+  // reason. This screen already gated its own Mark Ready button, so it never
+  // produced the dead end the dashboard card did — but it gated on
+  // production_summary.all_done, which PARAPHRASES the guard by naming three
+  // statuses (pending/assigned/in_progress). open_task_count is the guard's
+  // own COUNT, so preferring it keeps this screen, the card and the endpoint
+  // on one predicate.
+  //
+  // all_done stays as the fallback for a response that predates the field:
+  // treating an absent count as "blocked" would hide a Mark Ready button that
+  // actually works, which is worse than the paraphrase it replaces.
+  const openTaskCount = sale.open_task_count != null ? Number(sale.open_task_count) : null;
+  const readyBlockedByTasks = openTaskCount != null
+    ? openTaskCount > 0
+    : !sale.production_summary?.all_done;
+  // Word-for-word what the dashboard card shows for the same order
+  // (resolveDeadEnd in app/src/components/orderBoard/OrderCard.js), so the two
+  // surfaces can never describe one order differently. Replaces "Waiting for
+  // Production (0/2)": "Production" is jargon for a first-time user, and the
+  // counts it read from production_summary were arriving from pg as strings,
+  // rendering literally as "(0/02)" (fixed server-side in the same commit).
+  const tasksLeftLabel = openTaskCount == null
+    ? 'Tasks still to finish'
+    : openTaskCount === 1 ? '1 task to finish' : `${openTaskCount} tasks to finish`;
+
+  // ── The two things that make PUT /api/sales/:id/status refuse 'completed' ──
+  // Mirrors server/routes/sales.js's own guards, which were re-keyed 2026-09-02
+  // OFF order_type and ONTO the data: "does this sale have an open delivery
+  // row" and "is money owed on a non-delivery sale". This screen still carried
+  // the old order_type-keyed copies, so two shapes rendered a Complete Order
+  // button the endpoint now rejects with a raw 400: a pre_order fulfilled by
+  // delivery (not order_type 'delivery', so the delivery guard never fired),
+  // and an unpaid walk_in/pre_order (not order_type 'pickup', so the
+  // take-the-money modal never opened).
+  //
+  // Deliberately NOT keyed on `nextAction == null`, which is the same signal
+  // but strictly wider: an already-delivered delivery order whose sale is still
+  // 'ready' also has a null nextAction (stage 'delivered'), yet completing it
+  // is exactly what staff need to do and the endpoint accepts it. Hiding the
+  // button there would delete real functionality, so these mirror the guards
+  // themselves rather than the summary signal.
+  //
+  // Same decision resolveDeadEnd() makes for the dashboard card
+  // (app/src/components/orderBoard/OrderCard.js) — mirrored rather than
+  // imported, since that helper is card-shaped: it reads a flat list row
+  // (delivery_id / delivery_status / delivery_partner_name / total_paid) while
+  // this reads the nested sale.delivery object from GET /sales/:id.
+  //
+  // Labels, the failed-delivery branch and the who-can-assign role list are
+  // kept identical on purpose so the two surfaces can never say different
+  // things about one order. That claim was NOT true when it was first written:
+  // resolveDeadEnd had no 'failed' branch, so a failed delivery read
+  // "<rider> has it" on the dashboard while this screen said "Delivery Failed
+  // — Send Again". Fixed on both sides 2026-09-02; if you change one branch
+  // here, change its twin there in the same commit.
+  const hasOpenDelivery = !!sale.delivery && !['delivered', 'cancelled'].includes(sale.delivery.status);
+  // Deliveries are excluded: COD is collected by the rider at the door and
+  // reconciled through settlements, so a delivery legitimately completes with a
+  // balance outstanding — the backend guard carries the same exclusion.
+  const balanceBlocksCompletion = due > 0.01 && !sale.is_credit_sale && sale.order_type !== 'delivery';
+  const completionBlocked = hasOpenDelivery || balanceBlocksCompletion;
+  // Delivery first when both apply: for a pre_order going out by delivery the
+  // money is collected at the door, so the rider is genuinely the next step.
+  const showCollectAction = sale.status === 'ready' && balanceBlocksCompletion && !hasOpenDelivery && canRecordPayment;
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
@@ -809,11 +1075,7 @@ export default function SaleDetailScreen({ route, navigation }) {
                 <Text style={styles.rushBadgeText}>🔥 Rush</Text>
               </View>
             ) : null}
-            <View style={[styles.statusBadge, { backgroundColor: (STATUS_COLORS[sale.status] || Colors.textLight) + '20' }]}>
-              <Text style={[styles.statusText, { color: STATUS_COLORS[sale.status] || Colors.textLight }]}>
-                {sale.status?.toUpperCase()}
-              </Text>
-            </View>
+            <StageBadge stage={sale.display_stage} />
           </View>
         </View>
 
@@ -1056,23 +1318,36 @@ export default function SaleDetailScreen({ route, navigation }) {
                                 <Text style={[styles.taskActionText, { color: '#9C27B0' }]}>Reassign</Text>
                               </TouchableOpacity>
                             )}
-                            <TouchableOpacity style={[styles.taskActionBtn, { backgroundColor: '#00BCD4' + '15' }]} onPress={() => handleTaskAction(task.id, 'start', 'start')}>
-                              <Ionicons name="play-outline" size={14} color="#00BCD4" />
-                              <Text style={[styles.taskActionText, { color: '#00BCD4' }]}>Start</Text>
-                            </TouchableOpacity>
-                            <TouchableOpacity style={[styles.taskActionBtn, { backgroundColor: Colors.success + '15' }]} onPress={() => handleTaskAction(task.id, 'complete', 'complete')}>
-                              <Ionicons name="checkmark-circle" size={14} color={Colors.success} />
-                              <Text style={[styles.taskActionText, { color: Colors.success }]}>Complete</Text>
-                            </TouchableOpacity>
+                            {/* Start/Complete only for the assignee or owner/manager — the
+                                server refuses everyone else with 403 "Not your task"
+                                (production.js /tasks/:id/start, /tasks/:id/complete).
+                                Rendering these unconditionally for anyone who could see
+                                this screen was a real dead end: the button looked
+                                actionable, the tap always failed, and there was no
+                                indication why. Someone who cannot act on this task still
+                                sees who has it (the 👤 line above); Reassign is their only
+                                available move, gated separately on canAssignTasks. */}
+                            {isTaskOwner(task) && (
+                              <>
+                                <TouchableOpacity style={[styles.taskActionBtn, { backgroundColor: '#00BCD4' + '15' }]} onPress={() => handleTaskAction(task.id, 'start', 'start')}>
+                                  <Ionicons name="play-outline" size={14} color="#00BCD4" />
+                                  <Text style={[styles.taskActionText, { color: '#00BCD4' }]}>Start</Text>
+                                </TouchableOpacity>
+                                <TouchableOpacity style={[styles.taskActionBtn, { backgroundColor: Colors.success + '15' }]} onPress={() => handleTaskAction(task.id, 'complete', 'complete')}>
+                                  <Ionicons name="checkmark-circle" size={14} color={Colors.success} />
+                                  <Text style={[styles.taskActionText, { color: Colors.success }]}>Complete</Text>
+                                </TouchableOpacity>
+                              </>
+                            )}
                           </>
                         )}
-                        {task.status === 'pending' && task.picked_by_name && (
+                        {task.status === 'pending' && task.picked_by_name && isTaskOwner(task) && (
                           <TouchableOpacity style={[styles.taskActionBtn, { backgroundColor: '#00BCD4' + '15' }]} onPress={() => handleTaskAction(task.id, 'start', 'start')}>
                             <Ionicons name="play-outline" size={14} color="#00BCD4" />
                             <Text style={[styles.taskActionText, { color: '#00BCD4' }]}>Start</Text>
                           </TouchableOpacity>
                         )}
-                        {task.status === 'in_progress' && (
+                        {task.status === 'in_progress' && isTaskOwner(task) && (
                           <TouchableOpacity style={[styles.taskActionBtn, { backgroundColor: Colors.success + '15' }]} onPress={() => handleTaskAction(task.id, 'complete', 'complete')}>
                             <Ionicons name="checkmark-circle" size={14} color={Colors.success} />
                             <Text style={[styles.taskActionText, { color: Colors.success }]}>Complete</Text>
@@ -1346,7 +1621,7 @@ export default function SaleDetailScreen({ route, navigation }) {
       )}
       {sale.status === 'preparing' && (
         <View style={styles.actions}>
-          {sale.production_summary?.all_done ? (
+          {!readyBlockedByTasks ? (
             <TouchableOpacity style={[styles.actionBtn, { backgroundColor: Colors.success, flex: 1 }]} onPress={() => handleStatusTransition('ready', 'Mark Ready')}>
               <Ionicons name="checkmark-circle-outline" size={18} color={Colors.white} />
               <Text style={styles.actionBtnText}>Mark Ready</Text>
@@ -1354,7 +1629,7 @@ export default function SaleDetailScreen({ route, navigation }) {
           ) : (
             <View style={[styles.actionBtn, { backgroundColor: Colors.textLight, flex: 1, opacity: 0.6 }]}>
               <Ionicons name="time-outline" size={18} color={Colors.white} />
-              <Text style={styles.actionBtnText}>Waiting for Production ({sale.production_summary?.completed || 0}/{sale.production_summary?.total_tasks || 0})</Text>
+              <Text style={styles.actionBtnText}>{tasksLeftLabel}</Text>
             </View>
           )}
           {canCancelOrRefund && (
@@ -1365,13 +1640,139 @@ export default function SaleDetailScreen({ route, navigation }) {
           )}
         </View>
       )}
-      {sale.status === 'ready' && (
+      {/* "Complete Order" is suppressed in two cases, both computed above near
+          `due`. (1) hasNoInputNextAction — the dedicated "Confirm Pickup"/"Mark
+          Delivered" button below covers the same net effect, and showing both
+          reintroduces the multi-button confusion this redesign exists to remove
+          (coordinator ruling, 2026-09-01). (2) completionBlocked — the server
+          would refuse 'completed' outright, so the button was a guaranteed dead
+          end; the block underneath offers the action that actually clears the
+          blocker instead. Still renders for every 'ready' order the endpoint
+          will accept, including an already-delivered delivery order whose sale
+          is still 'ready' (null nextAction, nothing blocking — this button is
+          the only way to finish it). */}
+      {sale.status === 'ready' && !hasNoInputNextAction && !completionBlocked && (
         <View style={styles.actions}>
           <TouchableOpacity style={[styles.actionBtn, { backgroundColor: Colors.success, flex: 1 }]} onPress={() => handleStatusTransition('completed', 'Complete Order')}>
             <Ionicons name="checkmark-done-outline" size={18} color={Colors.white} />
             <Text style={styles.actionBtnText}>Complete Order</Text>
           </TouchableOpacity>
         </View>
+      )}
+
+      {/* ── What to do INSTEAD, when finishing the order is blocked ──
+          Never a dead end: whatever stops this order finishing gets exactly one
+          button pointing at the screen that clears it, with the same wording the
+          dashboard card uses (resolveDeadEnd in
+          app/src/components/orderBoard/OrderCard.js) so one order never reads
+          two different ways. When the blocker is not this person's job to clear,
+          it says so in a sentence rather than offering a button that 403s.
+
+          !hasNoInputNextAction (added 2026-09-02, review finding): a 'ready'
+          sale whose delivery is assigned/picked_up/in_transit with no COD
+          outstanding satisfies BOTH this gate and the one-tap gate below, so
+          the screen rendered "…tap Delivery Status above to follow it" with a
+          Mark Delivered button directly underneath contradicting it (live row
+          INV-MAIN-20260606-002 is exactly this shape). This note is for the
+          case where there is genuinely nothing to tap; whenever the server
+          does offer a one-tap action, that action is the whole answer. */}
+      {sale.status === 'ready' && completionBlocked && !hasNoInputNextAction && (
+        <View style={styles.actions}>
+          {hasOpenDelivery ? (
+            /* A FAILED delivery cannot be "marked delivered" — PUT
+               /deliveries/:id/deliver only accepts picked_up/in_transit. Its
+               real recoveries are Reattempt or Cancel, both on DeliveryDetail,
+               so it gets its own button rather than the rider sentence below.
+               Checked first: a failed delivery normally still has a partner
+               name attached, so it would otherwise fall into that sentence and
+               tell staff to wait for something that can never happen. */
+            sale.delivery.status === 'failed' ? (
+              canManageDeliveries ? (
+                <TouchableOpacity
+                  style={[styles.actionBtn, { backgroundColor: Colors.warning, flex: 1 }]}
+                  onPress={() => navigation.navigate('DeliveryDetail', { deliveryId: sale.delivery.id })}
+                >
+                  <Ionicons name="refresh-outline" size={18} color={Colors.white} />
+                  <Text style={styles.actionBtnText}>Delivery Failed — Send Again</Text>
+                </TouchableOpacity>
+              ) : (
+                <View style={styles.blockedNote}>
+                  <Ionicons name="alert-circle-outline" size={18} color={Colors.warning} />
+                  <Text style={styles.blockedNoteText}>
+                    This delivery came back undelivered. Counter staff will send it out again.
+                  </Text>
+                </View>
+              )
+            ) : sale.delivery.partner_name ? (
+              <View style={styles.blockedNote}>
+                <Ionicons name="bicycle-outline" size={18} color={Colors.info} />
+                <Text style={styles.blockedNoteText}>
+                  {sale.delivery.partner_name} has this order. It finishes on its own once the delivery is marked delivered — tap Delivery Status above to follow it.
+                </Text>
+              </View>
+            ) : canManageDeliveries ? (
+              <TouchableOpacity
+                style={[styles.actionBtn, { backgroundColor: Colors.info, flex: 1 }]}
+                onPress={() => navigation.navigate('DeliveryDetail', { deliveryId: sale.delivery.id })}
+              >
+                <Ionicons name="bicycle-outline" size={18} color={Colors.white} />
+                <Text style={styles.actionBtnText}>Assign Rider</Text>
+              </TouchableOpacity>
+            ) : (
+              <View style={styles.blockedNote}>
+                <Ionicons name="bicycle-outline" size={18} color={Colors.info} />
+                <Text style={styles.blockedNoteText}>
+                  Waiting for a rider. Counter staff give this order to one, and it finishes once it is delivered.
+                </Text>
+              </View>
+            )
+          ) : showCollectAction ? (
+            <TouchableOpacity
+              style={[styles.actionBtn, { backgroundColor: Colors.success, flex: 1 }]}
+              onPress={() => openCollectPaymentModal(false)}
+            >
+              <Ionicons name="cash" size={18} color={Colors.white} />
+              <Text style={styles.actionBtnText}>Collect {formatMoney(due)}</Text>
+            </TouchableOpacity>
+          ) : (
+            <View style={styles.blockedNote}>
+              <Ionicons name="cash-outline" size={18} color={Colors.warning} />
+              <Text style={styles.blockedNoteText}>
+                {formatMoney(due)} still to collect. Counter staff take the payment, then this order can be finished.
+              </Text>
+            </View>
+          )}
+        </View>
+      )}
+
+      {/* One-tap Confirm Pickup / Mark Delivered (Task 12, order-lifecycle
+          plan, 2026-09-01) — rendered only for the two labels the server's
+          display_stage.nextAction ever sends for the pickup/delivery
+          "nothing left to collect" case (server/utils/order-stage.js). When
+          a balance/COD is still outstanding, nextAction is null and this
+          button doesn't render — the Delivery Status section above (taps
+          through to DeliveryDetail) or the Complete Order button's own
+          pay-balance modal (for pickup) remain the way to finish the order,
+          same as before this task. */}
+      {hasNoInputNextAction && (
+        <TouchableOpacity
+          style={[
+            styles.actionBtn,
+            { backgroundColor: Colors.success, alignSelf: 'stretch', marginHorizontal: 0, marginTop: Spacing.sm, minHeight: 44 },
+            quickActionLoading && { opacity: 0.6 },
+          ]}
+          onPress={handleQuickAction}
+          disabled={quickActionLoading}
+        >
+          {quickActionLoading ? (
+            <ActivityIndicator color={Colors.white} size="small" />
+          ) : (
+            <>
+              <Ionicons name="checkmark-done-outline" size={18} color={Colors.white} />
+              <Text style={styles.actionBtnText}>{nextAction.label}</Text>
+            </>
+          )}
+        </TouchableOpacity>
       )}
 
       {/* Actions for completed orders */}
@@ -1391,7 +1792,7 @@ export default function SaleDetailScreen({ route, navigation }) {
       )}
 
       {/* Pay balance */}
-      {sale.status !== 'cancelled' && due > 0.01 && canRecordPayment && (
+      {sale.status !== 'cancelled' && due > 0.01 && canRecordPayment && !showCollectAction && (
         <TouchableOpacity
           style={[styles.actionBtn, { backgroundColor: Colors.success, alignSelf: 'stretch', marginHorizontal: 0 }]}
           onPress={() => navigation.navigate('AddPayment', { saleId, due })}
@@ -1605,10 +2006,36 @@ export default function SaleDetailScreen({ route, navigation }) {
                 <Ionicons name="close" size={24} color={Colors.text} />
               </TouchableOpacity>
             </View>
+            {/* Only ever shown when the list is not the one someone would
+                expect. Never on a normal scoped result. */}
+            {!loadingEmployees && employeesShowingEveryone && employees.length > 0 && (
+              <Text style={{ fontSize: FontSize.xs, lineHeight: 18, color: '#92400E', backgroundColor: Colors.warningLight, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 8, marginBottom: Spacing.sm }}>
+                Nobody is set up at this shop — showing everyone.
+              </Text>
+            )}
             {loadingEmployees ? (
               <ActivityIndicator color={Colors.primary} size="large" style={{ padding: 20 }} />
+            ) : employeesFailed ? (
+              // Never claim a cause we have not established. The request
+              // failed, so we do not know whether anyone is assignable — say
+              // that, and make "try again" something they can actually tap
+              // rather than an instruction to close and start over.
+              <View style={{ padding: 20, alignItems: 'center' }}>
+                <Text style={{ color: Colors.textLight, textAlign: 'center', marginBottom: Spacing.md }}>
+                  Could not load the staff list.
+                </Text>
+                <TouchableOpacity
+                  style={{ minHeight: 44, paddingHorizontal: Spacing.lg, justifyContent: 'center', borderRadius: BorderRadius.md, backgroundColor: Colors.primary }}
+                  activeOpacity={0.7}
+                  onPress={() => openAssignModal(assignTaskId)}
+                >
+                  <Text style={{ color: '#fff', fontSize: FontSize.md, fontWeight: '700' }}>Try Again</Text>
+                </TouchableOpacity>
+              </View>
             ) : employees.length === 0 ? (
-              <Text style={{ color: Colors.textLight, textAlign: 'center', padding: 20 }}>No employees found</Text>
+              <Text style={{ color: Colors.textLight, textAlign: 'center', padding: 20 }}>
+                No staff to assign yet. Ask the owner to add someone.
+              </Text>
             ) : (
               <ScrollView>
                 {employees.map(emp => (
@@ -1622,7 +2049,16 @@ export default function SaleDetailScreen({ route, navigation }) {
                     </View>
                     <View style={{ flex: 1 }}>
                       <Text style={{ fontSize: FontSize.md, fontWeight: '600', color: Colors.text }}>{emp.name}</Text>
-                      {emp.phone && <Text style={{ fontSize: FontSize.xs, color: Colors.textLight }}>{emp.phone}</Text>}
+                      {/* Was `emp.phone`, which staff-roster never returned —
+                          a subtitle that was always blank. The new endpoint
+                          carries job_title and role, and the role is only ever
+                          rendered through the shared plain-language map so
+                          nobody is shown the token `florist_staff`. */}
+                      {(emp.job_title || STAFF_ROLE_LABELS[emp.role]) && (
+                        <Text style={{ fontSize: FontSize.xs, color: Colors.textLight }}>
+                          {emp.job_title || STAFF_ROLE_LABELS[emp.role]}
+                        </Text>
+                      )}
                     </View>
                     <Ionicons name="chevron-forward" size={18} color={Colors.textLight} />
                   </TouchableOpacity>
@@ -1638,7 +2074,7 @@ export default function SaleDetailScreen({ route, navigation }) {
         <KeyboardAvoidingView style={styles.modalOverlay} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
           <View style={styles.modalContent}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Complete Pickup Payment</Text>
+              <Text style={styles.modalTitle}>{pickupPayCompletesOrder ? 'Take Payment & Finish Order' : 'Take Payment'}</Text>
               <TouchableOpacity onPress={() => setPickupPayModalVisible(false)}>
                 <Ionicons name="close" size={24} color={Colors.text} />
               </TouchableOpacity>
@@ -1697,7 +2133,7 @@ export default function SaleDetailScreen({ route, navigation }) {
               ) : (
                 <>
                   <Ionicons name="checkmark-circle" size={20} color="#fff" />
-                  <Text style={styles.confirmBtnText}>Confirm Payment & Complete</Text>
+                  <Text style={styles.confirmBtnText}>{pickupPayCompletesOrder ? 'Confirm Payment & Complete' : 'Confirm Payment'}</Text>
                 </>
               )}
             </TouchableOpacity>
@@ -1868,7 +2304,6 @@ const styles = StyleSheet.create({
   saleNumber: { fontSize: FontSize.lg, fontWeight: '700', color: Colors.text },
   saleDate: { fontSize: FontSize.xs, color: Colors.textLight, marginTop: 2 },
   statusBadge: { paddingHorizontal: Spacing.sm, paddingVertical: 2, borderRadius: BorderRadius.full },
-  statusText: { fontSize: FontSize.xs, fontWeight: '700' },
   metaItem: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   metaText: { fontSize: FontSize.xs, color: Colors.textSecondary },
   typeBadge: {
@@ -1958,6 +2393,17 @@ const styles = StyleSheet.create({
   },
   addPhotoBtnText: { fontSize: FontSize.sm, fontWeight: '700', color: Colors.primary },
 
+  blockedNote: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: Spacing.sm,
+    backgroundColor: Colors.background,
+    borderRadius: BorderRadius.md,
+    paddingVertical: Spacing.sm,
+    paddingHorizontal: Spacing.md,
+  },
+  blockedNoteText: { flex: 1, fontSize: FontSize.sm, color: Colors.textSecondary, lineHeight: 19 },
   actions: {
     flexDirection: 'row', gap: Spacing.sm, marginTop: Spacing.md,
   },

@@ -12,6 +12,8 @@ const fs = require('fs');
 const router = express.Router();
 const { normalizeDateFields } = require('../utils/normalizeDates');
 const { hasOpenRegister, REGISTER_CLOSED_MESSAGE } = require('../utils/register-guard');
+const { computeOrderStage, getStageFlags } = require('../utils/order-stage');
+const { sumCollectionsByMethod } = require('../utils/settlement-math');
 
 // Use todayStr() from time.js for timezone-aware date strings
 
@@ -33,46 +35,6 @@ function generateSettlementNumber(db, locationId) {
 
   const nextSeq = (maxSeq?.max_seq || 0) + 1;
   return `SETL-${dateCode}-${String(nextSeq).padStart(3, '0')}`;
-}
-
-// Split a set of deliveries' COD collections by the method actually used to
-// collect them (cash vs upi). `deliveries.cod_collected` (and a settlement's
-// total_amount) is a method-agnostic running total — the real per-collection
-// method lives on `delivery_collections`. Settlement register-crediting must
-// only add the cash portion to the cash drawer (expected_cash/total_cash_sales);
-// a UPI collection never touched cash.
-//
-// `expectedTotal` is the amount the caller believes was collected across these
-// deliveries (sum of cod_collected, or a settlement's total_amount). There's no
-// DB constraint tying delivery_collections rows to that total, and no CHECK on
-// `method` beyond what this app's own validator writes — so if a row is ever
-// missing (data-integrity drift, e.g. a manual DB fix) or carries a method this
-// app doesn't recognize, the unaccounted amount is folded into cash rather than
-// silently dropped from the register. This matches the pre-existing assume-cash
-// default and is logged so the drift stays visible instead of silent.
-function sumCollectionsByMethod(db, deliveryIds, expectedTotal) {
-  const totals = { cash: 0, upi: 0 };
-  let recognizedTotal = 0;
-  if (deliveryIds && deliveryIds.length > 0) {
-    const placeholders = deliveryIds.map(() => '?').join(',');
-    const rows = db.prepare(
-      `SELECT method, COALESCE(SUM(amount), 0) as total FROM delivery_collections WHERE delivery_id IN (${placeholders}) GROUP BY method`
-    ).all(...deliveryIds);
-    for (const row of rows) {
-      const amount = Number(row.total) || 0;
-      if (row.method === 'upi') totals.upi += amount;
-      else totals.cash += amount; // 'cash' and any unrecognized/legacy method both fold into cash
-      recognizedTotal += amount;
-    }
-  }
-  const unaccounted = (Number(expectedTotal) || 0) - recognizedTotal;
-  if (unaccounted > 0.01) {
-    console.warn(
-      `[settlements] delivery_collections under-account for ${unaccounted.toFixed(2)} across delivery ids [${(deliveryIds || []).join(',')}] — crediting the gap to cash so no settled money is dropped from the register.`
-    );
-    totals.cash += unaccounted;
-  }
-  return totals;
 }
 
 // ─── Photo upload config ────────────────────────────────────
@@ -122,7 +84,10 @@ router.get('/partners', authenticate, authorize('owner', 'manager', 'counter_sta
     const locFilter = location_id ? 'AND ul.location_id = ?' : '';
     const params = location_id ? [location_id] : [];
     const users = await db.prepare(`
-      SELECT DISTINCT u.id, u.name, u.phone, u.avatar
+      SELECT DISTINCT u.id, u.name, u.phone, u.avatar,
+        (SELECT COUNT(*) FROM deliveries d
+          WHERE d.delivery_partner_id = u.id
+            AND d.status IN ('assigned','picked_up','in_transit')) as active_delivery_count
       FROM users u
       LEFT JOIN user_locations ul ON ul.user_id = u.id
       WHERE u.role = 'delivery_partner' AND u.is_active = 1
@@ -140,17 +105,37 @@ router.get('/', authenticate, authorize('owner', 'manager', 'delivery_partner', 
     const db = await getAsyncDb();
     const { location_id, status, delivery_partner_id, date_from, date_to, limit: lim, offset: off } = req.query;
 
+    // `open_task_count` is a verbatim copy of the production-task guard in
+    // PUT /sales/:id/status ("Enforce production task completion before marking
+    // 'ready'") — same table, same NOT IN predicate, and character-identical to
+    // the copy in sales.js's GET / and GET /:id. computeOrderStage() reads it to
+    // decide whether a Mark Ready button is safe to offer; this route is its
+    // THIRD caller and was the one missed when the field was added, so a
+    // 'preparing' delivery with open tasks kept being handed a Mark Ready the
+    // endpoint is guaranteed to reject. All three copies MUST stay identical.
+    // Deliberately NOT a comment inside the SQL string below: bindParams() in
+    // database-async.js cannot tell an apostrophe in a SQL comment from a
+    // string boundary and would desync every ? placeholder after it
+    // (see CLAUDE.md, "Known structural debt").
     let sql = `
       SELECT d.*, s.sale_number, s.grand_total, s.payment_status, s.order_type,
-             s.status as order_status, s.special_instructions, s.is_credit_sale,
+             s.status as order_status, s.pickup_status, s.special_instructions, s.is_credit_sale,
+             COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.sale_id = d.sale_id), 0) as total_paid,
+             (SELECT COUNT(*) FROM production_tasks pt WHERE pt.sale_id = s.id AND pt.status NOT IN ('completed', 'cancelled')) as open_task_count,
+             -- Load-verify indicator — same fields/reasoning as sales.js's
+             -- GET / and GET /:id (see either for the full comment).
+             (SELECT COUNT(*) FROM sale_items si WHERE si.sale_id = s.id) as load_total_count,
+             (SELECT COUNT(*) FROM delivery_load_checks dlc WHERE dlc.delivery_id = d.id AND dlc.checked = true) as load_checked_count,
              u.name as partner_name, u.phone as partner_phone,
              l.name as location_name,
-             ab.name as assigned_by_name
+             ab.name as assigned_by_name,
+             r.name as route_name
       FROM deliveries d
       LEFT JOIN sales s ON d.sale_id = s.id
       LEFT JOIN users u ON d.delivery_partner_id = u.id
       LEFT JOIN locations l ON d.location_id = l.id
       LEFT JOIN users ab ON d.assigned_by = ab.id
+      LEFT JOIN delivery_routes r ON r.id = d.route_id
       WHERE 1=1
     `;
     const params = [];
@@ -227,7 +212,45 @@ router.get('/', authenticate, authorize('owner', 'manager', 'delivery_partner', 
       d.items = d.items.map(normalizeDateFields);
       return normalizeDateFields(d);
     });
-    res.json({ success: true, data: normalized });
+
+    // computeOrderStage() expects a SALE-shaped object. A delivery row is not
+    // one: its `status` is the delivery's status, the sale's is aliased to
+    // `order_status`, `id` is the delivery id and the sale id is `sale_id`.
+    // Passing the row through directly silently yields a wrong stage on every
+    // row, so map explicitly. Same adapter pattern as sales.js's GET /:id.
+    // `total_paid` must be a real number, never null: the shared
+    // walk_in/pre_order ladder is reachable from here (a pre_order whose
+    // delivery is cancelled or delivered but which still has a balance), and a
+    // null there reads as "nothing due" and emits a one-tap Complete that
+    // PUT /sales/:id/status would reject.
+    const stageFlags = await getStageFlags(db);
+    const withStage = normalized.map((row) => {
+      // Number() is not optional: pg hands COUNT back as a STRING and "0" is
+      // truthy, so an uncoerced "0" would block Mark Ready on every order whose
+      // prep work IS finished — the exact inverse of the bug being fixed.
+      // Coerced once and written back onto the row too, so the field this route
+      // puts on the wire is a real number for any future consumer.
+      const openTaskCount = Number(row.open_task_count || 0);
+      return {
+        ...row,
+        open_task_count: openTaskCount,
+        display_stage: computeOrderStage({
+          id: row.sale_id,
+          status: row.order_status,
+          order_type: row.order_type,
+          pickup_status: row.pickup_status,
+          delivery_status: row.status,
+          delivery_id: row.id,
+          grand_total: row.grand_total,
+          total_paid: row.total_paid,
+          is_credit_sale: row.is_credit_sale,
+          cod_amount: row.cod_amount,
+          cod_collected: row.cod_collected,
+          open_task_count: openTaskCount,
+        }, req.user.role, stageFlags),
+      };
+    });
+    res.json({ success: true, data: withStage });
   } catch (err) { next(err); }
 });
 
@@ -406,6 +429,56 @@ router.get('/:id(\\d+)', authenticate, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// GET /api/deliveries/:id/checklist — lazily creates one row per sale_item
+// on this delivery's sale, so an item added after assignment still shows
+// up next time this is viewed (spec §11, item 2's recommendation).
+router.get('/:id(\\d+)/checklist', authenticate, authorize('owner', 'manager', 'employee', 'counter_staff', 'delivery_partner'), async (req, res, next) => {
+  try {
+    const db = await getAsyncDb();
+    const delivery = await db.prepare('SELECT id, sale_id, delivery_partner_id, location_id FROM deliveries WHERE id = ?').get(req.params.id);
+    if (!delivery) return res.status(404).json({ success: false, message: 'Delivery not found' });
+    if (req.user.role === 'delivery_partner' && delivery.delivery_partner_id !== req.user.id) {
+      return res.status(403).json({ success: false, message: 'Not your delivery' });
+    }
+
+    const items = await db.prepare('SELECT id, product_name, quantity FROM sale_items WHERE sale_id = ?').all(delivery.sale_id);
+    for (const item of items) {
+      await db.prepare(
+        'INSERT INTO delivery_load_checks (delivery_id, sale_item_id) VALUES (?, ?) ON CONFLICT (delivery_id, sale_item_id) DO NOTHING'
+      ).run(delivery.id, item.id);
+    }
+
+    const checklist = await db.prepare(`
+      SELECT dlc.sale_item_id, dlc.checked, dlc.checked_by, dlc.checked_at, si.product_name, si.quantity, u.name as checked_by_name
+      FROM delivery_load_checks dlc
+      JOIN sale_items si ON si.id = dlc.sale_item_id
+      LEFT JOIN users u ON u.id = dlc.checked_by
+      WHERE dlc.delivery_id = ?
+      ORDER BY si.id ASC
+    `).all(delivery.id);
+
+    res.json({ success: true, data: checklist });
+  } catch (err) { next(err); }
+});
+
+// PUT /api/deliveries/:id/checklist/:saleItemId — toggle checked
+router.put('/:id(\\d+)/checklist/:saleItemId(\\d+)', authenticate, authorize('owner', 'manager', 'employee', 'counter_staff', 'delivery_partner'), async (req, res, next) => {
+  try {
+    const db = await getAsyncDb();
+    const delivery = await db.prepare('SELECT id, delivery_partner_id FROM deliveries WHERE id = ?').get(req.params.id);
+    if (!delivery) return res.status(404).json({ success: false, message: 'Delivery not found' });
+    if (req.user.role === 'delivery_partner' && delivery.delivery_partner_id !== req.user.id) {
+      return res.status(403).json({ success: false, message: 'Not your delivery' });
+    }
+    const { checked } = req.body;
+    await db.prepare(
+      `UPDATE delivery_load_checks SET checked = ?, checked_by = ?, checked_at = CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE NULL END
+       WHERE delivery_id = ? AND sale_item_id = ?`
+    ).run(!!checked, req.user.id, !!checked, req.params.id, req.params.saleItemId);
+    res.json({ success: true });
+  } catch (err) { next(err); }
+});
+
 // ─── PUT /api/deliveries/:id/assign ──────────────────────────
 // Widened to counter_staff 2026-09-01 (sub-project 5, user confirmed).
 router.put(
@@ -421,7 +494,14 @@ router.put(
       const db = getDb();
       const delivery = db.prepare('SELECT * FROM deliveries WHERE id = ?').get(req.params.id);
       if (!delivery) return res.status(404).json({ success: false, message: 'Delivery not found' });
-      if (!['pending', 'assigned', 'failed'].includes(delivery.status)) {
+      // 'cancelled' is included so a delivery cancelled via PUT /:id/cancel
+      // ("Cancel Delivery Only" on DeliveryDetailScreen — cancels the
+      // attempt, deliberately leaves the sale alive) can be handed to a new
+      // rider. Without it, that button was a dead end: the sale was never
+      // touched, but there was no way back to a working delivery for it —
+      // the assign endpoint rejected every attempt to reassign (found live
+      // during the 2026-09-04 order-flow audit).
+      if (!['pending', 'assigned', 'failed', 'cancelled'].includes(delivery.status)) {
         return res.status(400).json({ success: false, message: `Cannot assign delivery in ${delivery.status} status` });
       }
 
@@ -462,13 +542,24 @@ router.put(
 router.put(
   '/:id(\\d+)/pickup',
   authenticate,
-  authorize('delivery_partner', 'owner', 'manager'),
+  // counter_staff is in this list unconditionally — the real gate is the
+  // pref_counter_marks_pickup check just inside the handler below, same
+  // idiom as the ownership check right after it. authorize() itself can't
+  // read settings, so it stays coarse and the handler does the precise
+  // check, matching computeOrderStage()'s ENDPOINT_ROLES.DELIVERY_PICKUP +
+  // getStageFlags() mirror of this exact route (order-stage.js).
+  authorize('delivery_partner', 'owner', 'manager', 'counter_staff'),
   (req, res, next) => {
     try {
       const db = getDb();
       const delivery = db.prepare('SELECT * FROM deliveries WHERE id = ?').get(req.params.id);
       if (!delivery) return res.status(404).json({ success: false, message: 'Delivery not found' });
-      if (delivery.delivery_partner_id !== req.user.id && req.user.role !== 'owner' && req.user.role !== 'manager') {
+      if (req.user.role === 'counter_staff') {
+        const prefRow = db.prepare("SELECT value FROM settings WHERE key = 'pref_counter_marks_pickup'").get();
+        if (prefRow?.value !== '1') {
+          return res.status(403).json({ success: false, message: 'Not assigned to you' });
+        }
+      } else if (delivery.delivery_partner_id !== req.user.id && req.user.role !== 'owner' && req.user.role !== 'manager') {
         return res.status(403).json({ success: false, message: 'Not assigned to you' });
       }
       if (delivery.status !== 'assigned') {
@@ -523,7 +614,11 @@ router.put(
 router.put(
   '/:id(\\d+)/deliver',
   authenticate,
-  authorize('delivery_partner', 'owner', 'manager'),
+  // counter_staff is in this list unconditionally — see the matching comment
+  // on PUT /:id/pickup above; same idiom, same pref_counter_marks_delivered
+  // check just inside the handler, same ENDPOINT_ROLES.DELIVERY_DELIVER +
+  // getStageFlags() mirror in order-stage.js.
+  authorize('delivery_partner', 'owner', 'manager', 'counter_staff'),
   [
     body('delivery_notes').optional().trim(),
     body('cod_collected').optional().isFloat({ min: 0 }),
@@ -540,7 +635,12 @@ router.put(
       const db = getDb();
       const delivery = db.prepare('SELECT * FROM deliveries WHERE id = ?').get(req.params.id);
       if (!delivery) return res.status(404).json({ success: false, message: 'Delivery not found' });
-      if (delivery.delivery_partner_id !== req.user.id && req.user.role !== 'owner' && req.user.role !== 'manager') {
+      if (req.user.role === 'counter_staff') {
+        const prefRow = db.prepare("SELECT value FROM settings WHERE key = 'pref_counter_marks_delivered'").get();
+        if (prefRow?.value !== '1') {
+          return res.status(403).json({ success: false, message: 'Not assigned to you' });
+        }
+      } else if (delivery.delivery_partner_id !== req.user.id && req.user.role !== 'owner' && req.user.role !== 'manager') {
         return res.status(403).json({ success: false, message: 'Not assigned to you' });
       }
       if (!['picked_up', 'in_transit'].includes(delivery.status)) {
@@ -1099,10 +1199,10 @@ router.post(
             .run(byMethod.upi, register.id);
         }
 
-        return settlementId;
+        return { settlementId, byMethod };
       });
 
-      const settlementId = settleTx();
+      const { settlementId, byMethod } = settleTx();
 
       const settlement = db.prepare(`
         SELECT ds.*, u.name as partner_name, v.name as verified_by_name
@@ -1112,7 +1212,14 @@ router.post(
         WHERE ds.id = ?
       `).get(settlementId);
 
-      res.status(201).json({ success: true, data: settlement });
+      // by_method lets the client say what actually happened to the cash
+      // drawer instead of always claiming "added to cash register" — a
+      // UPI-only settlement never touches expected_cash (see
+      // sumCollectionsByMethod above), so that copy was actively wrong for
+      // exactly the case that prompted this (found live, 2026-09-04: a
+      // counter_staff selected UPI on Mark Delivered and the Settlements
+      // screen still described the whole amount as going to cash).
+      res.status(201).json({ success: true, data: { ...settlement, by_method: byMethod } });
     } catch (err) {
       if (err.message?.includes('not eligible') || err.message?.includes('already settled') || err.message?.includes("Register isn't open")) {
         return res.status(400).json({ success: false, message: err.message });
@@ -1319,7 +1426,13 @@ router.put(
         const totalPaid = db.prepare('SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE sale_id = ?').get(sale.id).total;
         const balanceDue = sale.grand_total - totalPaid;
 
-        if (balanceDue > 0.01) {
+        // Credit sales are deliberately unpaid at pickup time — the balance is
+        // settled later, out of band. computeOrderStage() (order-stage.js) and
+        // PUT /sales/:id/status already exclude is_credit_sale from this same
+        // gate; this route was the one place it was missed, so a credit order's
+        // own "Confirm Pickup" one-tap action (which the stage layer correctly
+        // offers) 400'd the moment it was tapped. Found live, 2026-09-04.
+        if (balanceDue > 0.01 && !sale.is_credit_sale) {
           // The route's own authorize() already allows counter_staff, but
           // this inline check was never updated to match — missed by
           // sub-project 2's counter_staff parity pass. Extended to match

@@ -1,220 +1,59 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
-  Animated,
   Modal,
   RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
   Image,
   Linking,
-  useWindowDimensions,
-  Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '../context/AuthContext';
+import useBreakpoint from '../hooks/useBreakpoint';
 import api from '../services/api';
+import { showAlert } from '../utils/alert';
 import { Colors, FontSize, Spacing } from '../constants/theme';
-import { formatDateTime, parseServerDate, getShopNow, getShopTodayStr, DEFAULT_TZ, minutesSinceServerDate, minutesUntilShopDateTime, formatTimeString } from '../utils/datetime';
+import { parseServerDate, getShopNow, getShopTodayStr, DEFAULT_TZ, formatTimeString, formatDateLabel } from '../utils/datetime';
+import { isRegisterStale } from '../hooks/useRegisterStatus';
 import { OrderQuickModal } from '../components/QuickModals';
+import OrderKanbanBoard from '../components/orderBoard/OrderKanbanBoard';
+import AssignPickerModal from '../components/orderBoard/AssignPickerModal';
+import DeliveryChecklist from '../components/DeliveryChecklist';
+// The one place the "does starting this need a preparer, and who decides?"
+// rule lives. Imported rather than restated so this screen, the order card and
+// the order modal cannot drift apart on it (Task 15 review).
+import { resolvePreparerStep } from '../components/orderBoard/OrderCard';
 import DateTimePickerModal from '../components/DateTimePickerModal';
 import AttachmentVoiceRow from '../components/AttachmentVoiceRow';
 import ImageModal from '../components/ImageModal';
+import {
+  ORDER_TYPES,
+  ORDER_STATUS_LABELS,
+  TASK_STATUS_LABELS,
+  DELIVERY_STATUS_COLORS,
+  DELIVERY_STATUS_LABELS,
+  FONT_FAMILY,
+  formatMoney,
+  getTaskChipColor,
+  STAFF_ROLE_LABELS,
+  PREP_ROLES,
+} from '../constants/orderDisplay';
 
-const ORDER_TYPES = ['delivery', 'pickup', 'walk_in'];
-const ORDER_TYPE_LABELS = {
-  delivery: 'Delivery Orders',
-  pickup: 'Pickup Orders',
-  walk_in: 'Walk-in Orders',
-};
-
-// Compact form of the above for inline card meta text ("Delivery · ₹500"),
-// where "Delivery Orders" would read oddly repeated per-card.
-const ORDER_TYPE_SHORT_LABELS = {
-  delivery: 'Delivery',
-  pickup: 'Pickup',
-  walk_in: 'Walk-in',
-  pre_order: 'Advance order',
-};
-
-const ORDER_STATUS_LABELS = {
-  pending: 'Pending',
-  confirmed: 'Confirmed',
-  preparing: 'Preparing',
-  ready: 'Ready',
-  completed: 'Completed',
-  cancelled: 'Cancelled',
-  draft: 'Draft',
-};
-
-// Matches OrdersInboxScreen's palette — same statuses should look the same
-// wherever staff see them. Used by the counter_staff dashboard's order
-// cards, which previously showed a hardcoded "PENDING" badge regardless of
-// the order's real status (found live, 2026-09-01).
-const ORDER_STATUS_COLORS = {
-  pending: Colors.warning,
-  confirmed: Colors.info,
-  preparing: Colors.info,
-  ready: Colors.success,
-  completed: Colors.textSecondary,
-  cancelled: Colors.error,
-  draft: Colors.textLight,
-};
-
-const TASK_STATUS_LABELS = {
-  pending: 'Queued',
-  assigned: 'Assigned',
-  in_progress: 'In Progress',
-  completed: 'Done',
-  cancelled: 'Cancelled',
-};
-
-const ORDER_PHASE_LABELS = {
-  pending: 'Pending',
-  preparing: 'Preparing',
-  ready: 'Ready',
-};
-
-const PICKUP_STATUS_COLORS = {
-  waiting: '#F59E0B',
-  ready_for_pickup: '#10B981',
-  picked_up: '#6366F1',
-};
-
-const PICKUP_STATUS_LABELS = {
-  waiting: 'Waiting',
-  ready_for_pickup: 'Ready to Collect',
-  picked_up: 'Picked Up',
-};
-
-const DELIVERY_STATUS_COLORS = {
-  pending: '#9CA3AF',
-  assigned: '#6366F1',
-  picked_up: '#F59E0B',
-  in_transit: '#0EA5E9',
-  delivered: '#10B981',
-  failed: '#E11D48',
-  cancelled: '#9CA3AF',
-};
-
-const DELIVERY_STATUS_LABELS = {
-  pending: 'Pending',
-  assigned: 'Assigned',
-  picked_up: 'Picked Up',
-  in_transit: 'In Transit',
-  delivered: 'Delivered',
-  failed: 'Failed',
-  cancelled: 'Cancelled',
-};
-
-const PAYMENT_STATUS_COLORS = {
-  paid: '#10B981',
-  partial: '#F59E0B',
-  pending: '#E11D48',
-  refunded: '#9CA3AF',
-};
-
-const FONT_FAMILY = typeof navigator !== 'undefined' && navigator.product === 'ReactNative'
-  ? undefined
-  : 'Inter, Geist, system-ui';
-
-function formatMoney(value) {
-  return `₹${Number(value || 0).toLocaleString('en-IN', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
-}
-
-function formatOrderType(value) {
-  return ORDER_TYPE_LABELS[value] || value || 'Order';
-}
-
-/**
- * Formats a date+time for display on order cards.
- * Handles both plain date strings (YYYY-MM-DD) and ISO datetime strings.
- * Returns e.g. "23 Apr, 3:40 PM" or "23 Apr" if no time.
- */
-function formatCardDateTime(dateStr, timeStr, timezone) {
-  try {
-    // Build a clear local datetime from the date + time parts
-    if (dateStr) {
-      // If dateStr is a full ISO string, extract the local date using the shop timezone
-      let localDate = dateStr;
-      if (dateStr.includes('T') || dateStr.includes('Z') || dateStr.includes('+')) {
-        const d = new Date(dateStr);
-        if (!isNaN(d.getTime())) {
-          localDate = d.toLocaleDateString('en-CA', { timeZone: timezone || 'Asia/Kolkata' });
-        }
-      }
-      // Format the date part
-      const [year, month, day] = localDate.split('-').map(Number);
-      const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-      const datePart = `${day} ${months[month - 1]}`;
-
-      if (!timeStr) return datePart;
-
-      return `${datePart}, ${formatTimeString(timeStr)}`;
-    }
-  } catch {}
-  return dateStr || '';
-}
-
-function getTaskChipColor(status) {
-  if (status === 'completed') return '#10B981';
-  if (status === 'in_progress') return '#0EA5E9';
-  if (status === 'assigned') return '#6366F1';
-  if (status === 'pending') return '#F59E0B';
-  return '#9CA3AF';
-}
-
-function getOrderStatusTone(status) {
-  if (status === 'ready' || status === 'completed') return '#10B981';
-  if (status === 'preparing') return '#0EA5E9';
-  if (status === 'pending' || status === 'confirmed') return '#F59E0B';
-  if (status === 'cancelled') return '#E11D48';
-  return '#6B7280';
-}
-
-function normalizeOrderPhase(status) {
-  if (status === 'confirmed') return 'pending';
-  if (status === 'completed') return 'ready';
-  return status;
-}
-
-function getLaneTheme(laneKey) {
-  if (laneKey === 'pending') return { border: '#F59E0B66', background: '#FFFBEB', badge: '#B45309' };
-  if (laneKey === 'preparing') return { border: '#0EA5E966', background: '#EFF6FF', badge: '#075985' };
-  if (laneKey === 'in_transit') return { border: '#6366F166', background: '#EEF2FF', badge: '#4338CA' };
-  return { border: '#10B98166', background: '#ECFDF5', badge: '#065F46' };
-}
-
-function getOrderLaneSla(order, timezone) {
-  if (!order || ['ready', 'completed', 'cancelled', 'draft'].includes(order.status)) return null;
-
-  if (order.order_type === 'walk_in') {
-    const diffMins = minutesSinceServerDate(order.created_at, timezone);
-    if (diffMins == null) return null;
-    if (diffMins > 20) return 'overdue';
-    if (diffMins > 10) return 'dueSoon';
-    return null;
-  }
-
-  const schedDate = order.scheduled_date || null;
-  const schedTime = order.scheduled_time || null;
-  if (!schedDate || !schedTime) return null;
-
-  const remainingMins = minutesUntilShopDateTime(schedDate, schedTime, timezone);
-  if (remainingMins == null) return null;
-  if (remainingMins < 0) return 'overdue';
-  if (remainingMins <= 60) return 'dueSoon';
-  return null;
-}
-
-function RegisterCard({ item, onPress }) {
-  const { locationName, isOpen, register } = item;
-  const tone = isOpen ? '#10B981' : '#E11D48';
+function RegisterCard({ item, onPress, onSettlePress }) {
+  const { locationName, isOpen, register, pendingCodTotal, pendingCodDeliveries } = item;
+  // Open but opened before today (spans a day boundary) gets its own amber
+  // tone instead of reading as a plain, healthy "OPEN" — same reasoning as
+  // CashRegisterScreen.js's hero card (isRegisterStale's own comment has the
+  // full story). Nothing here blocks anything; it's a heads-up.
+  const isStale = isOpen && isRegisterStale(register);
+  const tone = isOpen ? (isStale ? '#D97706' : '#10B981') : '#E11D48';
+  const codPending = Number(pendingCodTotal || 0) > 0;
   return (
     <TouchableOpacity
       style={[styles.registerCard, { borderLeftColor: tone, borderLeftWidth: 4 }]}
@@ -225,7 +64,7 @@ function RegisterCard({ item, onPress }) {
         <View style={{ flex: 1 }}>
           <Text style={styles.registerTitle}>{locationName}</Text>
           <Text style={[styles.registerStatus, { color: tone }]}>
-            {isOpen ? '● OPEN' : '● CLOSED'}
+            {isOpen ? (isStale ? `● OPEN since ${formatDateLabel(register?.opening_time || register?.opened_at)}` : '● OPEN') : '● CLOSED'}
           </Text>
         </View>
         <View style={{ alignItems: 'flex-end' }}>
@@ -244,6 +83,28 @@ function RegisterCard({ item, onPress }) {
           <Text style={styles.registerValue}>{formatMoney(register?.total_cash_sales || 0)}</Text>
         </View>
       </View>
+      {/* Money a delivery partner has collected for THIS location but hasn't
+          handed over yet. Existed in the pre-redesign dashboard (V2) as a
+          per-register alert; dropped when RegisterCard was rewritten — the
+          owner's registerCalls map never extracted pendingCodTotal/
+          pendingCodDeliveries from getRegisterStatus()'s response even
+          though the counter_staff/employee branches read the exact same
+          call's fields (see registerCalls above). Restored 2026-09-04, same
+          "which location" context (locationName above), matching the
+          compact banner counter staff already have on their own dashboard. */}
+      {codPending && (
+        <TouchableOpacity
+          style={[styles.codBannerCompact, { marginTop: 8 }]}
+          onPress={onSettlePress}
+          activeOpacity={0.75}
+        >
+          <Ionicons name="alert-circle" size={18} color="#92400E" />
+          <Text style={styles.codBannerCompactText}>
+            ₹{Number(pendingCodTotal).toLocaleString('en-IN', { maximumFractionDigits: 0 })} from {pendingCodDeliveries} deliver{pendingCodDeliveries !== 1 ? 'ies' : 'y'} not settled — Settle Now
+          </Text>
+          <Ionicons name="chevron-forward" size={16} color="#92400E" />
+        </TouchableOpacity>
+      )}
     </TouchableOpacity>
   );
 }
@@ -348,183 +209,10 @@ function TaskDetailModal({ visible, task, onClose, onAdvance, loading }) {
   );
 }
 
-function TaskPill({ task, onPress, loading }) {
-  const color = getTaskChipColor(task.status);
-  const isFinal = task.status === 'completed' || task.status === 'cancelled';
-  
-  return (
-    <TouchableOpacity
-      disabled={loading}
-      onPress={onPress}
-      style={[styles.taskPill, { borderColor: color + '40', backgroundColor: color + '12', opacity: loading ? 0.7 : 1 }]}
-      activeOpacity={0.7}
-    >
-      <View style={[styles.taskPillDot, { backgroundColor: color }]} />
-      <Text style={[styles.taskPillText, { color }]} numberOfLines={1}>
-        {task.item_product_name || task.product_name || 'Task'}
-      </Text>
-      <Text style={[styles.taskPillStatus, { color }]}>{TASK_STATUS_LABELS[task.status] || task.status}</Text>
-      {!isFinal && <Ionicons name="chevron-forward" size={13} color={color} />}
-      {loading && <ActivityIndicator size="small" color={color} style={{ marginLeft: 4 }} />}
-    </TouchableOpacity>
-  );
-}
-
-function OrderCard({ order, tasks, hasPendingProduction, pulseOpacity, onTaskClick, taskActionLoading, onOpen, timezone }) {
-  const phaseStatus = normalizeOrderPhase(order.status);
-  const statusTone = getOrderStatusTone(phaseStatus);
-  const stats = {
-    pending: tasks.filter((t) => t.status === 'pending').length,
-    assigned: tasks.filter((t) => t.status === 'assigned').length,
-    inProgress: tasks.filter((t) => t.status === 'in_progress').length,
-    done: tasks.filter((t) => t.status === 'completed').length,
-  };
-  const totalTasks = tasks.length;
-
-  // Delivery / pickup sub-status
-  const pickupColor = order.pickup_status ? (PICKUP_STATUS_COLORS[order.pickup_status] || '#9CA3AF') : null;
-  const pickupLabel = order.pickup_status ? (PICKUP_STATUS_LABELS[order.pickup_status] || order.pickup_status) : null;
-  const delivStatus = order.delivery_status; // available if API includes it
-  const delivColor = delivStatus ? (DELIVERY_STATUS_COLORS[delivStatus] || '#9CA3AF') : null;
-  const delivLabel = delivStatus ? (DELIVERY_STATUS_LABELS[delivStatus] || delivStatus) : null;
-
-  // Payment status
-  const isCredit = order.is_credit_sale === 1;
-  const payColor = isCredit ? '#8B5CF6' : (PAYMENT_STATUS_COLORS[order.payment_status] || '#9CA3AF');
-
-  return (
-    <TouchableOpacity
-      style={[styles.orderCard, {
-        borderColor: hasPendingProduction ? statusTone : '#E5E7EB',
-        borderLeftColor: statusTone,
-        borderLeftWidth: 3,
-      }]}
-      onPress={onOpen}
-      activeOpacity={0.85}
-    >
-      {hasPendingProduction && (
-        <Animated.View
-          pointerEvents="none"
-          style={[
-            StyleSheet.absoluteFillObject,
-            styles.pulseBorderOverlay,
-            { opacity: pulseOpacity, borderColor: statusTone },
-          ]}
-        />
-      )}
-
-      <View style={styles.orderHeader}>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.orderNumber}>#{order.sale_number}</Text>
-          <Text style={styles.orderMeta}>{order.customer_name || 'Guest'}</Text>
-          <Text style={styles.orderAmount}>{formatMoney(order.grand_total)}</Text>
-        </View>
-        <View style={{ alignItems: 'flex-end', gap: 4 }}>
-          <View style={[styles.statusBadge, { backgroundColor: statusTone + '15', borderColor: statusTone }]}>
-            <Text style={[styles.statusBadgeText, { color: statusTone }]}>
-              {ORDER_PHASE_LABELS[phaseStatus] || ORDER_STATUS_LABELS[order.status] || order.status}
-            </Text>
-          </View>
-          {/* Payment status badge */}
-          {(isCredit || (order.payment_status && order.payment_status !== 'paid')) && (
-            <View style={[styles.statusBadge, { backgroundColor: payColor + '15', borderColor: payColor }]}>
-              <Text style={[styles.statusBadgeText, { color: payColor }]}>
-                {isCredit ? 'CREDIT' : 
-                 order.payment_status === 'pending' ? 'PAY: UNPAID' :
-                 order.payment_status === 'partial' ? 'PAY: PARTIAL' :
-                 ('PAY: ' + (order.payment_status || '').toUpperCase())}
-              </Text>
-            </View>
-          )}
-        </View>
-      </View>
-
-      {/* Delivery sub-status */}
-      {order.order_type === 'delivery' && delivLabel && (
-        <View style={[styles.subStatusRow, { backgroundColor: delivColor + '10' }]}>
-          <View style={[styles.subStatusDot, { backgroundColor: delivColor }]} />
-          <Text style={[styles.subStatusText, { color: delivColor }]}>{delivLabel}</Text>
-        </View>
-      )}
-
-      {/* Pickup sub-status */}
-      {order.order_type === 'pickup' && pickupLabel && (
-        <View style={[styles.subStatusRow, { backgroundColor: pickupColor + '10' }]}>
-          <View style={[styles.subStatusDot, { backgroundColor: pickupColor }]} />
-          <Text style={[styles.subStatusText, { color: pickupColor }]}>{pickupLabel}</Text>
-        </View>
-      )}
-
-      {/* Created time — keep consistent across screens */}
-      {order.created_at && (
-        <View style={styles.scheduledRow}>
-          <Ionicons name="time-outline" size={11} color="#9CA3AF" />
-          <Text style={[styles.scheduledText, { color: '#9CA3AF' }]}>\
-            Placed: {formatDateTime(order.created_at)}
-          </Text>
-        </View>
-      )}
-
-      {/* Scheduled date — delivery/pickup */}
-      {order.scheduled_date && (
-        <View style={styles.scheduledRow}>
-          <Ionicons name="calendar-outline" size={11} color="#6366F1" />
-          <Text style={styles.scheduledText}>
-            Scheduled: {formatCardDateTime(order.scheduled_date, order.scheduled_time, timezone)}
-          </Text>
-        </View>
-      )}
-
-      {totalTasks > 0 ? (
-        <>
-          <View style={styles.pipelineRow}>
-            <View style={[styles.pipelineStep, { opacity: stats.pending > 0 ? 1 : 0.4 }]}>
-              <Text style={styles.pipelineStepLabel}>Q</Text>
-              <Text style={styles.pipelineStepCount}>{stats.pending}</Text>
-            </View>
-            <View style={styles.pipelineConnector} />
-            <View style={[styles.pipelineStep, { opacity: stats.assigned > 0 ? 1 : 0.4 }]}>
-              <Text style={styles.pipelineStepLabel}>A</Text>
-              <Text style={styles.pipelineStepCount}>{stats.assigned}</Text>
-            </View>
-            <View style={styles.pipelineConnector} />
-            <View style={[styles.pipelineStep, { opacity: stats.inProgress > 0 ? 1 : 0.4 }]}>
-              <Text style={styles.pipelineStepLabel}>IP</Text>
-              <Text style={styles.pipelineStepCount}>{stats.inProgress}</Text>
-            </View>
-            <View style={styles.pipelineConnector} />
-            <View style={[styles.pipelineStep, { opacity: stats.done > 0 ? 1 : 0.4 }]}>
-              <Text style={styles.pipelineStepLabel}>D</Text>
-              <Text style={styles.pipelineStepCount}>{stats.done}</Text>
-            </View>
-          </View>
-
-          <View style={{ gap: 5 }}>
-            {tasks.slice(0, 2).map((task) => (
-              <TaskPill
-                key={task.id}
-                task={task}
-                onPress={() => onTaskClick(task)}
-                loading={!!taskActionLoading[task.id]}
-              />
-            ))}
-            {tasks.length > 2 && (
-              <Text style={styles.moreTasksLabel}>+{tasks.length - 2} more</Text>
-            )}
-          </View>
-        </>
-      ) : (
-        <View style={styles.noTasksRow}>
-          <Ionicons name="checkmark-done-outline" size={13} color={Colors.textLight} />
-          <Text style={styles.noTasksLabel}>No production tasks</Text>
-        </View>
-      )}
-    </TouchableOpacity>
-  );
-}
-
 export default function DashboardScreen({ navigation }) {
-  const { width } = useWindowDimensions();
+  // Page-layout threshold (1100), deliberately NOT the board's 900 — see the
+  // doc comment in hooks/useBreakpoint.js for why these are two numbers.
+  const { isDesktop } = useBreakpoint();
   const { user, activeLocation, settings, locked } = useAuth();
   const timezone = settings?.timezone?.value || 'Asia/Kolkata';
 
@@ -534,6 +222,42 @@ export default function DashboardScreen({ navigation }) {
   const [viewedImage, setViewedImage] = useState(null); // task-card product photo, tap to enlarge
   const [selectedTaskModal, setSelectedTaskModal] = useState(null);
   const [selectedOrderModal, setSelectedOrderModal] = useState(null); // { order, tasks }
+  // { deliveryId, saleId, loading, people, showingEveryone } while the
+  // assign-a-rider picker is open, null when it is closed (Task 14).
+  const [riderPicker, setRiderPicker] = useState(null);
+  // Monotonic request token for everything the picker awaits. Bumped when a
+  // request STARTS and when the picker CLOSES; a resolved promise applies its
+  // result only if the token still matches, so a slow response can never
+  // reopen a closed picker or overwrite a newer one's deliveryId. Every bump
+  // is paired with an owner that ends in a settled state (a fresh
+  // loading:true request, or null), so a discarded response can never strand
+  // the picker mid-spinner.
+  const riderReqRef = useRef(0);
+  // { order, mode, loading, people } while the who-is-making-this picker is
+  // open, null when it is closed (Task 15). `mode` is 'start' when picking
+  // also starts preparation (the Start Preparing action carries assigned_to),
+  // or 'assign' when the order is already preparing and this is purely a
+  // correction — see handleResolveAction's pick_preparer branch.
+  const [preparerPicker, setPreparerPicker] = useState(null);
+  // Same monotonic request token as riderReqRef above, for the same reasons and
+  // with the same pairing rule (every bump is owned by something that settles).
+  // Without it: cancelling during the staff-list fetch reopens the picker the
+  // person just dismissed; and open-A, cancel, open-B, with A resolving last,
+  // rebuilds the whole state object from A's closure — the title is static, so
+  // the modal still LOOKS like B while pointing at A, and the next tap acts on
+  // A. In 'start' mode that flips a live sale to preparing.
+  const preparerReqRef = useRef(0);
+
+  // { order, amount, method, reference, loading } while the Mark Delivered
+  // COD-entry prompt is open, null when closed — see resolveDeliverStep
+  // (OrderCard.js) and handleResolveAction's 'collect_cod' branch. Same
+  // shape/purpose as preparerPicker above, one level simpler: no staff list
+  // to fetch, just a form, so it opens filled-in rather than loading.
+  const [codCollectPicker, setCodCollectPicker] = useState(null);
+  // The order whose load checklist is open in a modal, null when closed —
+  // OrderCard's load pill (onVerifyLoad). Holds the whole order (not just a
+  // delivery id) so the modal's title can name the order.
+  const [loadChecklistOrder, setLoadChecklistOrder] = useState(null);
 
   const [locations, setLocations] = useState([]);
   const [locationScope, setLocationScope] = useState(null);
@@ -541,6 +265,13 @@ export default function DashboardScreen({ navigation }) {
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [sales, setSales] = useState([]);
   const [taskRows, setTaskRows] = useState([]);
+  // Real count of orders completed TODAY (shop timezone), independent of
+  // whatever the board's own `sales`/`counterPendingOrders` fetch contains —
+  // see the "Done today" chip on OrderKanbanBoard. Both role branches below
+  // fetch it directly with status=completed&limit=1 and read the API's
+  // accurate `total`, rather than deriving it by counting whatever happens
+  // to already be in the open-orders array.
+  const [doneTodayCount, setDoneTodayCount] = useState(0);
   const [staffPulse, setStaffPulse] = useState([]);
   const [registers, setRegisters] = useState([]);
   const [reportKPIs, setReportKPIs] = useState(null);
@@ -550,9 +281,8 @@ export default function DashboardScreen({ navigation }) {
   // Role-specific dashboard state
   const [myTasks, setMyTasks] = useState([]); // employee's/florist's own production tasks
   const [myDeliveries, setMyDeliveries] = useState([]); // delivery partner's own deliveries
-  const [counterStats, setCounterStats] = useState({ salesCount: 0, registerOpen: null, registerOpenedBy: null });
+  const [counterStats, setCounterStats] = useState({ salesCount: 0, registerOpen: null, registerOpenedBy: null, registerOpenedAt: null });
   const [counterPendingOrders, setCounterPendingOrders] = useState([]);
-  const [orderActionLoading, setOrderActionLoading] = useState({});
 
   const role = user?.role;
   const isOwner = role === 'owner';
@@ -566,27 +296,34 @@ export default function DashboardScreen({ navigation }) {
   const isEmployee = role === 'employee' || role === 'florist_staff';
   const isCounterStaff = role === 'counter_staff';
   const isDeliveryPartner = role === 'delivery_partner';
-  const isDesktop = width >= 1100;
-
-  const pulseAnim = useRef(new Animated.Value(0)).current;
-  useEffect(() => {
-    const loop = Animated.loop(
-      Animated.sequence([
-        Animated.timing(pulseAnim, { toValue: 1, duration: 1200, useNativeDriver: true }),
-        Animated.timing(pulseAnim, { toValue: 0, duration: 1200, useNativeDriver: true }),
-      ])
-    );
-    loop.start();
-    return () => loop.stop();
-  }, [pulseAnim]);
-
-  const pulseOpacity = pulseAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0.1, 0.6],
-  });
+  // Customers reach this screen too: MainNavigator.js registers the Dashboard
+  // tab with NO role gate, so `customer` gets Shop and MyOrders *in addition
+  // to* Home, not instead of it. Without this flag `role === 'customer'`
+  // matched none of the tests above and fell through to the owner/manager
+  // branch — fetching shop-wide sales onto a customer's device and rendering
+  // them on the operations board. Both halves are closed below: the fetch
+  // (fetchDashboard's early return) and the render (the isCustomer branch).
+  const isCustomer = role === 'customer';
+  // NOTE: the card pulse-border animation (pulseAnim/pulseOpacity) that used
+  // to live here moved into the old components/OrderKanbanBoard.js along with
+  // OrderCard, the only thing that ever consumed it (Task 9, order-lifecycle
+  // plan, 2026-09-01). Both that file and the animation are gone now — the
+  // Stage board's OrderCard does not pulse. Kept as a breadcrumb only.
 
   const fetchDashboard = useCallback(async () => {
     try {
+      // ─── Customer: fetch nothing ─────────────────────────────
+      // Deliberately first, and deliberately before any request: this screen
+      // has no customer-facing data to show, and GET /api/sales has no
+      // server-side role guard (CLAUDE.md), so issuing the shop-wide sales
+      // request here would put every order in the shop on a customer's
+      // device. Their own orders live on the MyOrders tab.
+      if (isCustomer) {
+        setLoading(false);
+        setRefreshing(false);
+        return;
+      }
+
       // ─── Delivery Partner: lightweight fetch ─────────────────
       if (isDeliveryPartner) {
         const [delivRes, unsettledRes] = await Promise.all([
@@ -621,6 +358,7 @@ export default function DashboardScreen({ navigation }) {
             ...prev,
             registerOpen: registerRes?.data ? !registerRes.data.closed_at : null,
             registerOpenedBy: registerRes?.data?.opened_by_name || null,
+            registerOpenedAt: registerRes?.data?.opening_time || registerRes?.data?.opened_at || null,
             pendingCodTotal: Number(registerRes?.pendingCodTotal || 0),
             pendingCodDeliveries: Number(registerRes?.pendingCodDeliveries || 0),
           }));
@@ -633,13 +371,19 @@ export default function DashboardScreen({ navigation }) {
       // ─── Counter Staff: sales-focused fetch (counts/status only —
       // no revenue totals or cash amounts, per role scope) ──────
       if (isCounterStaff) {
-        const [summaryRes, registerRes, pendingRes, preparingRes] = await Promise.all([
+        const [summaryRes, registerRes, pendingRes, confirmedRes, preparingRes, readyRes, tasksRes, doneTodayRes] = await Promise.all([
           api.getTodaySummary(activeLocation?.id).catch(() => ({ data: { total_sales: 0 } })),
           activeLocation?.id ? api.getRegisterStatus(activeLocation.id).catch(() => ({ data: null })) : Promise.resolve({ data: null }),
           // Fetched wider than the 5 we display so the today/future split
           // below has real data to count against, not just the first 5
           // pending orders regardless of date (2026-08-31 fix).
           api.getSales({ status: 'pending', location_id: activeLocation?.id, limit: 30 }).catch(() => ({ data: { sales: [] } })),
+          // 'confirmed' is pending-equivalent everywhere (the kanban buckets
+          // it into the same lane as pending, and computeOrderStage() now
+          // returns the same 'new' stage for it) — it's what a reattempted
+          // delivery is set to. Without its own call it never reached this
+          // dashboard at all (2026-09-01 final-review fix, alongside 'ready').
+          api.getSales({ status: 'confirmed', location_id: activeLocation?.id, limit: 30 }).catch(() => ({ data: { sales: [] } })),
           // GET /sales only takes one status value per call, so 'preparing'
           // needs its own request. Without this, an order advanced out of
           // 'pending' vanished from the dashboard entirely — no way to see
@@ -647,11 +391,36 @@ export default function DashboardScreen({ navigation }) {
           // alongside adding the "Mark Ready"/"Start Preparing" quick
           // actions these two statuses need).
           api.getSales({ status: 'preparing', location_id: activeLocation?.id, limit: 30 }).catch(() => ({ data: { sales: [] } })),
+          // Same one-status-per-call reason as 'preparing' above: without its
+          // own request, an order marked Ready vanished from this dashboard,
+          // leaving the Ready / Out-for-Delivery kanban lanes permanently
+          // empty for counter staff — so "Confirm Pickup"/"Mark Delivered"
+          // could never appear here even though counter staff are exactly
+          // who hands a ready order over (2026-09-01 final-review fix).
+          api.getSales({ status: 'ready', location_id: activeLocation?.id, limit: 30 }).catch(() => ({ data: { sales: [] } })),
+          // Production tasks, needed so OrderKanbanBoard's per-card task
+          // pills/pipeline counts (Task 11, order-lifecycle plan — rebuilding
+          // this dashboard onto the kanban board) reflect real prep state
+          // instead of always reading empty. Same endpoint/call the isEmployee
+          // branch above uses; GET /production/tasks already authorizes
+          // counter_staff and auto-scopes to their assigned location(s)
+          // server-side, and carries no cost/margin fields (verified against
+          // attachMaterialsToTasks in server/routes/production.js).
+          api.getProductionTasks({}).catch(() => ({ data: [] })),
+          // "Done today" chip: this dashboard's four fetches above only ever
+          // request pending/confirmed/preparing/ready, so a completed order
+          // never enters counterPendingOrders and the chip's count was always
+          // 0 by construction, not merely 0 today — no live data state could
+          // ever have populated it. One row is enough; GET /sales computes an
+          // accurate `total` regardless of `limit`.
+          api.getSales({ status: 'completed', location_id: activeLocation?.id, filter_date: getShopTodayStr(DEFAULT_TZ), limit: 1 })
+            .catch(() => ({ data: { total: 0 } })),
         ]);
         setCounterStats({
           salesCount: Number(summaryRes?.data?.total_sales || 0),
           registerOpen: registerRes?.data ? !registerRes.data.closed_at : null,
           registerOpenedBy: registerRes?.data?.opened_by_name || null,
+          registerOpenedAt: registerRes?.data?.opening_time || registerRes?.data?.opened_at || null,
           // Money a delivery partner has collected (cash or UPI) but hasn't
           // handed over/been settled yet — was only ever shown on
           // CashRegisterScreen, and only to owner/manager there, so
@@ -662,8 +431,12 @@ export default function DashboardScreen({ navigation }) {
           pendingCodDeliveries: Number(registerRes?.pendingCodDeliveries || 0),
         });
         const pendingList = pendingRes?.data?.sales || pendingRes?.data || [];
+        const confirmedList = confirmedRes?.data?.sales || confirmedRes?.data || [];
         const preparingList = preparingRes?.data?.sales || preparingRes?.data || [];
-        setCounterPendingOrders([...pendingList, ...preparingList]);
+        const readyList = readyRes?.data?.sales || readyRes?.data || [];
+        setCounterPendingOrders([...pendingList, ...confirmedList, ...preparingList, ...readyList]);
+        setTaskRows(Array.isArray(tasksRes?.data) ? tasksRes.data : []);
+        setDoneTodayCount(Number(doneTodayRes?.data?.total || 0));
         setLoading(false);
         setRefreshing(false);
         return;
@@ -682,14 +455,25 @@ export default function DashboardScreen({ navigation }) {
       } else {
         locationId = activeLocation?.id || locationList?.[0]?.id || null;
       }
+      // `filters` (with filter_date) drives the DATE-SCOPED widgets below —
+      // Staff Today, Reports — which legitimately mean "today" or whatever
+      // day dateScope is set to. It no longer drives the board's own sales
+      // fetch (see boardFilters) — an owner/manager viewing the board got
+      // ZERO cards whenever nothing was created or scheduled on that exact
+      // date, even with dozens of open orders sitting at the location.
+      // Live-reproduced 2026-09-03: 0 rows at BOTH locations tested, against
+      // 26 (Main Shop) / 67 (Test Loc) real open orders. The board answers
+      // "what needs doing", which isn't a function of when the order was
+      // created — the counter_staff dashboard already fetches this way.
       const filters = locationId ? { location_id: locationId } : {};
       if (dateScope) {
         const pad = n => String(n).padStart(2, '0');
         filters.filter_date = `${dateScope.getFullYear()}-${pad(dateScope.getMonth() + 1)}-${pad(dateScope.getDate())}`;
       }
+      const boardFilters = locationId ? { location_id: locationId } : {};
 
       const reqs = [
-        api.getSales({ ...filters, limit: 500 }),
+        api.getSales({ ...boardFilters, limit: 500 }),
         api.getProductionTasks({}),
       ];
 
@@ -699,16 +483,29 @@ export default function DashboardScreen({ navigation }) {
       } else if (isStaff) {
         reqs.push(api.getMyTasks().catch(() => ({ data: [] })));
       }
+      // "Done today" chip: literal today regardless of dateScope (the chip
+      // says "today", not "the scoped day"), and independent of the now
+      // date-unfiltered board fetch above — that fetch will include
+      // completed orders from any day once the filter is gone, so counting
+      // off it would no longer mean "today". One row is enough; GET /sales
+      // computes an accurate `total` regardless of `limit`.
+      const doneTodayIdx = reqs.length;
+      reqs.push(
+        api.getSales({ ...boardFilters, status: 'completed', filter_date: getShopTodayStr(DEFAULT_TZ), limit: 1 })
+          .catch(() => ({ data: { total: 0 } }))
+      );
 
       const results = await Promise.all(reqs);
       const salesRes = results[0];
       const tasksRes = results[1];
+      const doneTodayRes = results[doneTodayIdx];
 
       const salesRows = salesRes?.data?.sales || salesRes?.data || [];
       const tasks = tasksRes?.data || [];
 
       setSales(Array.isArray(salesRows) ? salesRows.filter((s) => ORDER_TYPES.includes(s.order_type)) : []);
       setTaskRows(Array.isArray(tasks) ? tasks : []);
+      setDoneTodayCount(Number(doneTodayRes?.data?.total || 0));
 
       if (isOwnerOrManager) {
         const staffRes = results[2];
@@ -788,6 +585,13 @@ export default function DashboardScreen({ navigation }) {
                 locationName: loc.name,
                 isOpen: reg?.isOpen === true,
                 register: reg?.data || null,
+                // getRegisterStatus() has returned these two fields all along
+                // (the counter_staff/employee branches above already read them
+                // off the same call) — this owner-facing map just never
+                // extracted them, so RegisterCard had nothing to show even
+                // after being given a COD row to render. Restored 2026-09-04.
+                pendingCodTotal: Number(reg?.pendingCodTotal || 0),
+                pendingCodDeliveries: Number(reg?.pendingCodDeliveries || 0),
               };
             } catch {
               return {
@@ -804,12 +608,12 @@ export default function DashboardScreen({ navigation }) {
         setRegisters([]);
       }
     } catch (err) {
-      Alert.alert('Dashboard', err?.message || 'Failed to load dashboard data.');
+      showAlert('Dashboard', err?.message || 'Failed to load dashboard data.');
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [activeLocation?.id, isOwner, isOwnerOrManager, isStaff, isEmployee, isCounterStaff, isDeliveryPartner, locationScope, dateScope, role, user?.id, user?.name]);
+  }, [activeLocation?.id, isOwner, isOwnerOrManager, isStaff, isEmployee, isCounterStaff, isDeliveryPartner, isCustomer, locationScope, dateScope, role, user?.id, user?.name]);
 
   useEffect(() => {
     if (locationScope != null) return;
@@ -862,44 +666,6 @@ export default function DashboardScreen({ navigation }) {
     return map;
   }, [taskRows]);
 
-  const ordersByTypeAndStatus = useMemo(() => {
-    const base = {
-      delivery: { pending: [], preparing: [], ready: [], in_transit: [], completed: [] },
-      pickup: { pending: [], preparing: [], ready: [], completed: [] },
-      walk_in: { pending: [], preparing: [], ready: [], completed: [] },
-    };
-
-    for (const order of sales) {
-      if (!ORDER_TYPES.includes(order.order_type)) continue;
-      if (order.status === 'cancelled' || order.status === 'draft') continue;
-
-      // For delivery orders: route dispatched ones to in_transit bucket
-      if (order.order_type === 'delivery') {
-        // delivery_status may be a flat field or nested under order.delivery.status
-        const delStatus = order.delivery_status ?? order.delivery?.status;
-        const isDispatched = ['picked_up', 'in_transit'].includes(delStatus);
-        if (isDispatched) {
-          base.delivery.in_transit.push(order);
-          continue;
-        }
-      }
-
-      // Do not show completed orders for walkin, pickup, and delivery order types
-      if (order.status === 'completed' && ['walk_in', 'pickup', 'delivery'].includes(order.order_type)) continue;
-
-      const normalizedPhase = normalizeOrderPhase(order.status);
-      const bucket = normalizedPhase === 'ready'
-        ? 'ready'
-        : normalizedPhase === 'preparing'
-          ? 'preparing'
-          : 'pending';
-
-      base[order.order_type][bucket].push(order);
-    }
-
-    return base;
-  }, [sales]);
-
   const advanceTaskStatus = useCallback(async (task) => {
     if (!task?.id) return;
     if (task.status === 'completed' || task.status === 'cancelled') return;
@@ -916,188 +682,540 @@ export default function DashboardScreen({ navigation }) {
       setSelectedTaskModal(null);
       await fetchDashboard();
     } catch (err) {
-      Alert.alert('Task Update', err?.message || 'Unable to update task status.');
+      showAlert('Task Update', err?.message || 'Unable to update task status.');
     } finally {
       setTaskActionLoading((prev) => ({ ...prev, [task.id]: false }));
     }
   }, [fetchDashboard]);
 
-  // Counter staff's one-tap "advance this order" quick action — pending ->
-  // preparing, or preparing -> ready. Deliberately stops at 'ready': the
-  // next step (pickup/delivery completion) can require collecting a
-  // payment, which isn't safe as a blind one-tap card action, so those
-  // orders route to the full SaleDetail screen instead (2026-09-01).
-  const advanceOrderStatus = useCallback(async (order) => {
-    const nextStatus = order.status === 'pending' ? 'preparing' : order.status === 'preparing' ? 'ready' : null;
-    if (!nextStatus) return;
-    setOrderActionLoading((prev) => ({ ...prev, [order.id]: true }));
+  // Counter staff's per-order one-tap stage-advance now lives inside
+  // OrderKanbanBoard itself (its own handleQuickAction, driven by the
+  // server-computed `display_stage.nextAction` via api.advanceOrder) —
+  // this screen-local version (pending -> preparing -> ready via
+  // api.updateOrderStatus) was only ever used by the flat card list it
+  // replaced (Task 11, order-lifecycle plan, 2026-09-01) and is gone with it.
+
+  // Routing for a card whose display_stage.nextAction is null — the card
+  // decides WHAT to offer (components/orderBoard/OrderCard.js resolveDeadEnd),
+  // this decides WHERE it goes, because only the screen knows the navigator
+  // layout. Spec §7.
+  const handleResolveAction = useCallback(async (order, kind) => {
+    if (kind === 'collect_payment') {
+      const due = Number(order.grand_total || 0) - Number(order.total_paid || 0);
+      navigation.navigate('POS', { screen: 'AddPayment', params: { saleId: order.id, due } });
+      return;
+    }
+    // Picking a rider is one of the most repeated actions in the shop, so it
+    // happens right here in a modal rather than costing a screen change plus
+    // three more taps on DeliveryDetail (Task 14). DeliveryDetail is untouched
+    // and still the home of everything else a delivery needs — reattempt,
+    // cancel, convert-to-pickup, live tracking. This removes a detour, not a
+    // screen. OrderCard only ever emits 'assign_rider' for a viewer whose role
+    // can actually assign (its canManageDeliveries, mirroring
+    // deliveries.js's authorize('owner','manager','counter_staff')), so by the
+    // time this runs the role check has already passed — do not re-check or
+    // relax it here.
+    if (kind === 'assign_rider') {
+      if (!order.delivery_id) {
+        // A delivery order with no delivery row is a data problem, not a
+        // dead end — send them to the order where they can see why.
+        navigation.navigate('SaleDetail', { saleId: order.id });
+        return;
+      }
+      const reqId = ++riderReqRef.current;
+      setRiderPicker({ deliveryId: order.delivery_id, saleId: order.id, loading: true, people: [] });
+      try {
+        // Scope to the ORDER's own location, not the viewer's activeLocation:
+        // an owner on "All locations" has no meaningful activeLocation, and a
+        // delivery belongs to the shop that took it. Matches what
+        // DeliveryDetailScreen already passes (delivery.location_id).
+        const locId = order.location_id || activeLocation?.id;
+        const res = await api.getDeliveryPartners(locId);
+        let list = res?.data?.users || res?.data || [];
+        if (!Array.isArray(list)) list = [];
+        // The location filter is a convenience, not a rule — PUT
+        // /deliveries/:id/assign accepts any active delivery_partner
+        // regardless of location. Riders missing a user_locations row for this
+        // shop come back as an empty list (verified live: location_id=2 and 3
+        // return [] while three active riders exist), which would show
+        // "Nobody is available right now" and dead-end the one action this
+        // card exists to offer. So an empty scoped list retries unscoped.
+        // ...but the fallback must never be SILENT. One shop today, more soon
+        // (CLAUDE.md): the moment there are two, quietly widening the list means
+        // someone hands an order to a rider standing in another shop with no
+        // sign that is what happened. So we record that it happened and the
+        // picker says so. Flagged true only when the wider call actually
+        // produced riders — if it comes back empty too, the list is genuinely
+        // empty and "showing everyone" would be a lie.
+        let showingEveryone = false;
+        if (list.length === 0 && locId) {
+          const all = await api.getDeliveryPartners();
+          const allList = all?.data?.users || all?.data || [];
+          if (Array.isArray(allList) && allList.length > 0) {
+            list = allList;
+            showingEveryone = true;
+          }
+        }
+        // Superseded while we were awaiting — the user cancelled, or opened a
+        // different order's picker. Dropping the result is the whole point:
+        // this setState rebuilds the object from THIS closure, deliveryId
+        // included, so applying it late would silently repoint a picker
+        // showing order B at order A's delivery and send the flowers to the
+        // wrong address.
+        if (riderReqRef.current !== reqId) return;
+        setRiderPicker({
+          deliveryId: order.delivery_id,
+          saleId: order.id,
+          loading: false,
+          showingEveryone,
+          people: list.map((p) => {
+            // active_delivery_count comes back from pg as a STRING ("1", "7"),
+            // so it needs Number() before any comparison. Shown so staff can
+            // hand the next job to whoever is least loaded.
+            const busy = Number(p.active_delivery_count || 0);
+            return {
+              id: p.id,
+              name: p.name,
+              meta: busy === 0 ? 'Free right now' : busy === 1 ? '1 on the road' : `${busy} on the road`,
+            };
+          }),
+        });
+      } catch (err) {
+        // Same guard on the failure path: a stale error must not close a
+        // picker the user has since reopened, nor alert about a request they
+        // already walked away from.
+        if (riderReqRef.current !== reqId) return;
+        setRiderPicker(null);
+        showAlert('Riders', err?.message || 'Could not load the rider list. Please try again.');
+      }
+      return;
+    }
+    // Who is making this? Same two-tap shape as the rider picker above, and
+    // the same reason: assigning prep work is a constant action, and making it
+    // cost a screen change is why nobody did it (Task 15).
+    //
+    // ONE kind covers two writes, because the card asks the same question in
+    // two situations and the person is not asked to care which:
+    //   'start'  — the card's Start Preparing action is still available, so
+    //              picking someone rides along with it in one request
+    //              (PUT /sales/:id/status, the only transition that acts on
+    //              assigned_to at all).
+    //   'assign' — the order is ALREADY preparing, so its nextAction is Mark
+    //              Ready. Sending assigned_to there would both skip the order
+    //              forward a stage AND assign nobody. This path therefore
+    //              writes the tasks directly instead (PUT
+    //              /production/tasks/:id/assign), touching no status.
+    // OrderCard only emits this kind for owner/manager/counter_staff, which is
+    // exactly that route's authorize() list — do not relax it here.
+    if (kind === 'pick_preparer') {
+      const nextAction = order.display_stage?.nextAction;
+      const mode = nextAction?.body?.status === 'preparing' ? 'start' : 'assign';
+
+      // This branch is entered from TWO places now — the card's primary action
+      // and the order modal's copy of the same button (QuickModals.js) — so it
+      // re-asks the shared rule rather than assuming the caller pre-filtered.
+      // The card does pre-filter; the modal deliberately does not, which is how
+      // it stops silently advancing with nobody attached.
+      if (mode === 'start') {
+        const step = resolvePreparerStep({
+          order,
+          tasks: tasksBySaleId.get(order.id),
+          viewerRole: user?.role,
+          viewerId: user?.id,
+        });
+        if (step.kind !== 'pick') {
+          // 'advance' (nothing unassigned — asking would change nothing) or
+          // 'self' (an employee takes it themselves). Either way: no prompt.
+          try {
+            await api.advanceOrder(nextAction, step.kind === 'self' ? { assigned_to: step.assignedTo } : undefined);
+          } catch (err) {
+            showAlert('Start Preparing', err?.message || 'Could not start this order. Please try again.');
+            return;
+          }
+          await fetchDashboard();
+          return;
+        }
+      }
+
+      // Scope to the ORDER's own location for the same reason the rider picker
+      // does: an owner on "All locations" has no meaningful activeLocation.
+      const locId = order.location_id || activeLocation?.id;
+      if (!locId) {
+        // Defensive only — every sale carries a location. Send them somewhere
+        // real rather than opening an empty picker.
+        showAlert('Assign', 'Could not tell which shop this order belongs to. Open the order to assign someone.');
+        navigation.navigate('SaleDetail', { saleId: order.id });
+        return;
+      }
+      const reqId = ++preparerReqRef.current;
+      setPreparerPicker({ order, mode, loading: true, people: [] });
+      try {
+        // GET /production/assignable-staff — not GET /users (the account
+        // directory is owner/manager-only and far too broad for "who preps
+        // this", CLAUDE.md) and no longer GET /auth/staff-roster, which Task 15
+        // used and which measurement proved was the wrong list. The roster is
+        // the UNAUTHENTICATED lock-screen list, so it filters
+        // `employee_code IS NOT NULL` — correct there, because no code means no
+        // PIN login — and returns no `role`. On live data that excluded all four
+        // `employee` accounts, the exact people who do this shop's prep work,
+        // while including the counter staff this picker is meant to leave out.
+        // Widening the roster was rejected: it would break that screen's meaning
+        // and widen what an unauthenticated caller can enumerate. The new
+        // endpoint is authenticated and carries `role` (Task 17) — same
+        // narrow-endpoint precedent as GET /deliveries/partners.
+        //
+        // It does NOT pre-filter. It returns everyone
+        // PUT /production/tasks/:id/assign will accept — counter staff,
+        // managers and the owner included — because that is the one thing the
+        // server actually knows, and two screens want different subsets of it.
+        // Each narrows to what belongs on its own screen: this picker to
+        // PREP_ROLES, SaleDetailScreen's assign modal to ASSIGNABLE_STAFF_ROLES
+        // (the same three roles it has always offered). So narrowing happens
+        // HERE rather than via a query parameter, which would put this screen's
+        // editorial choice into a shared contract and break the other caller.
+        //
+        // THIS picker asks the narrowest question of the three: counter staff
+        // can hold a task, but they are not the ones making the bouquet, and
+        // padding a list read at counter speed with names that are never the
+        // answer is its own cost.
+        //
+        // Narrowing happens BEFORE the empty check below, not after. The other
+        // order would be a silent dead end: at a location staffed only by
+        // counter staff the scoped call returns people, so the fallback would
+        // never fire, and the picker would render an empty list with no notice
+        // explaining it.
+        const onlyPrep = (rows) =>
+          (Array.isArray(rows) ? rows : []).filter((p) => PREP_ROLES.includes(p.role));
+        const res = await api.getAssignableStaff(locId);
+        let list = onlyPrep(res?.staff);
+        // Identical empty-scoped-list fallback to the rider picker above, for
+        // the identical reason: the location filter is a convenience, not a
+        // rule — PUT /production/tasks/:id/assign accepts any active staff
+        // account regardless of location. Three of this shop's four live
+        // `employee` accounts carry a user_locations row for one shop only, so
+        // any other location comes back empty and would dead-end the one action
+        // this card exists to offer. And as with riders, the widening is never
+        // SILENT: one shop today, more soon (CLAUDE.md), and quietly listing
+        // someone standing in a different shop is how prep work lands on the
+        // wrong person with no sign that is what happened. Flagged true only
+        // when the wider call actually produced people — if that comes back
+        // empty too, the list is genuinely empty and "showing everyone" would
+        // be a lie.
+        let showingEveryone = false;
+        if (list.length === 0 && locId) {
+          const all = await api.getAssignableStaff();
+          const allList = onlyPrep(all?.staff);
+          if (allList.length > 0) {
+            list = allList;
+            showingEveryone = true;
+          }
+        }
+        // Superseded while awaiting — cancelled, or a different order's picker
+        // was opened. This setState rebuilds the object from THIS closure,
+        // `order` included, so applying it late would leave the picker showing
+        // one order and writing to another. Identical guard, identical reason,
+        // to the rider branch above.
+        if (preparerReqRef.current !== reqId) return;
+        setPreparerPicker({
+          order,
+          mode,
+          loading: false,
+          showingEveryone,
+          people: list.map((p) => ({
+            id: p.id,
+            name: p.name,
+            // A real job title wins; the role is only the fallback, and only
+            // ever in plain words (see STAFF_ROLE_LABELS).
+            meta: p.job_title || STAFF_ROLE_LABELS[p.role] || null,
+          })),
+        });
+      } catch (err) {
+        // Same guard on the failure path: a stale error must not close a picker
+        // the person has since reopened, nor talk to them about a request they
+        // already walked away from.
+        if (preparerReqRef.current !== reqId) return;
+        setPreparerPicker(null);
+        showAlert('Staff', err?.message || 'Could not load the staff list. Please try again.');
+      }
+      return;
+    }
+    // 'reattempt_delivery' still goes to DeliveryDetail — its Reattempt/Cancel
+    // controls live there and there is no one-tap equivalent. OrderCard only
+    // emits it for a viewer whose role can use them, so this never routes
+    // anyone into a screen that will refuse them.
+    if (kind === 'reattempt_delivery') {
+      if (order.delivery_id) {
+        navigation.navigate('DeliveryDetail', { deliveryId: order.delivery_id });
+      } else {
+        navigation.navigate('SaleDetail', { saleId: order.id });
+      }
+      return;
+    }
+    // Nothing to pick and nobody to choose: the open production tasks ARE the
+    // blocker, and they live on the order. Deliberately the same destination
+    // the card body already leads to — the button exists so the reason is
+    // stated in words instead of relying on someone guessing that the whole
+    // card is tappable (staff-ux-checklist #1: no hidden gestures). No role
+    // check for the same reason: every viewer who can see this card can
+    // already open the order by tapping it.
+    if (kind === 'finish_tasks') {
+      navigation.navigate('SaleDetail', { saleId: order.id });
+      return;
+    }
+    if (kind === 'record_cod') {
+      navigation.navigate('POS', { screen: 'Settlements' });
+      return;
+    }
+    // OrderCard only emits this when resolveDeliverStep found real money
+    // outstanding on a Mark Delivered nextAction it already knows this viewer
+    // is allowed to fire (see that function) — so no role check here either,
+    // same idiom as pick_preparer above. Opens filled in with the exact
+    // outstanding amount; cash/upi mirrors PUT /deliveries/:id/deliver's own
+    // validation (body('cod_method').isIn(['cash','upi'])).
+    if (kind === 'collect_cod') {
+      const outstanding = Number(order.cod_amount || 0) - Number(order.cod_collected || 0);
+      setCodCollectPicker({
+        order,
+        amount: outstanding > 0 ? outstanding.toFixed(2) : '',
+        method: 'cash',
+        reference: '',
+        loading: false,
+      });
+    }
+  }, [navigation, activeLocation?.id, tasksBySaleId, user?.role, user?.id, fetchDashboard]);
+
+  // Closing is also a cancellation: bumping the token orphans any in-flight
+  // partner fetch or assign so it cannot resurrect the picker after the user
+  // has deliberately dismissed it.
+  const closeRiderPicker = useCallback(() => {
+    riderReqRef.current += 1;
+    setRiderPicker(null);
+  }, []);
+
+  // Second (and last) tap of the two-tap assign: pick a rider, write it,
+  // refresh the board. The picker is put back into its loading state for the
+  // duration so the rows are gone and a double-tap cannot fire two assigns.
+  const handlePickRider = useCallback(async (person) => {
+    const deliveryId = riderPicker?.deliveryId;
+    if (!deliveryId || riderPicker?.loading) return;
+    const reqId = ++riderReqRef.current;
+    setRiderPicker((prev) => (prev ? { ...prev, loading: true } : prev));
     try {
-      await api.updateOrderStatus(order.id, nextStatus);
+      await api.assignDelivery(deliveryId, { delivery_partner_id: person.id });
+      // Only this interaction's own picker gets closed. If it was superseded,
+      // whatever superseded it owns the UI now and must not be dismissed.
+      if (riderReqRef.current === reqId) setRiderPicker(null);
+      // Refreshed either way: the write DID land on the server, so the board
+      // must show it regardless of what the user has since tapped.
       await fetchDashboard();
     } catch (err) {
-      // The backend's guard messages are already plain-language (e.g. "3
-      // production task(s) still pending") — pass them straight through.
-      Alert.alert('Order Update', err?.message || 'Unable to update this order.');
-    } finally {
-      setOrderActionLoading((prev) => ({ ...prev, [order.id]: false }));
+      // Backend's own message, verbatim — it says the useful thing
+      // ("Cannot assign delivery in delivered status", "Delivery partner not
+      // found or inactive"). Picker closes first so the message is not stuck
+      // behind a modal on web.
+      if (riderReqRef.current !== reqId) return;
+      setRiderPicker(null);
+      showAlert('Assign Rider', err?.message || 'Could not assign this rider. Please try again.');
     }
+  }, [riderPicker, fetchDashboard]);
+
+  // The order modal's Start Preparing, routed into the identical flow as the
+  // card's. It re-reads the order from `sales` rather than trusting the object
+  // the modal was opened with, which can be a refresh behind.
+  const handlePickPreparerFromModal = useCallback((order) => {
+    if (!order?.id) return;
+    const fresh = sales.find((s) => s.id === order.id)
+      || counterPendingOrders.find((s) => s.id === order.id)
+      || order;
+    handleResolveAction(fresh, 'pick_preparer');
+  }, [sales, counterPendingOrders, handleResolveAction]);
+
+  // Same idea, for the order modal's Mark Delivered when COD is outstanding
+  // (see QuickModals.js's confirmAction for why this exists at all — the
+  // modal used to fire /deliver bare with no COD form, unlike the card).
+  const handleCollectCodFromModal = useCallback((order) => {
+    if (!order?.id) return;
+    const fresh = sales.find((s) => s.id === order.id)
+      || counterPendingOrders.find((s) => s.id === order.id)
+      || order;
+    handleResolveAction(fresh, 'collect_cod');
+  }, [sales, counterPendingOrders, handleResolveAction]);
+
+  // Closing is also a cancellation — same contract as closeRiderPicker.
+  const closePreparerPicker = useCallback(() => {
+    preparerReqRef.current += 1;
+    setPreparerPicker(null);
+  }, []);
+
+  // Second tap of the who-is-making-this pick. Same loading-lock shape as
+  // handlePickRider so a double-tap cannot fire two writes.
+  const handlePickPreparer = useCallback(async (person) => {
+    const picker = preparerPicker;
+    if (!picker?.order || picker.loading) return;
+    const reqId = ++preparerReqRef.current;
+    setPreparerPicker((prev) => (prev ? { ...prev, loading: true } : prev));
+    let wrote = false;
+    try {
+      if (picker.mode === 'start') {
+        const nextAction = picker.order.display_stage?.nextAction;
+        if (!nextAction) throw new Error('This order has already moved on. Pull down to refresh.');
+        await api.advanceOrder(nextAction, { assigned_to: person.id });
+        wrote = true;
+      } else {
+        // Already preparing: name the owner of the work without touching the
+        // order's status. One task per line item, so this is a handful of
+        // requests at most. 'completed'/'cancelled' are skipped because the
+        // route refuses them ("Cannot assign a finished task") — sending them
+        // would fail the whole pick over work that is already done.
+        const openTasks = (tasksBySaleId.get(picker.order.id) || []).filter(
+          (t) => t.status !== 'completed' && t.status !== 'cancelled'
+        );
+        // ── Fill the free work first; never quietly take work off someone ──
+        // When anything is unassigned, this fills ONLY that — the same set the
+        // server's own `WHERE assigned_to IS NULL` would touch on the 'start'
+        // path, so both modes of this one button mean the same thing. Only when
+        // everything is already held does picking someone genuinely move the
+        // work, and that is the case where the card says `change` rather than
+        // `assign`. Reassigning a task another person is actively holding, one
+        // at a time, stays on Sale Detail — one level deeper, not deleted.
+        const free = openTasks.filter((t) => t.assigned_to == null);
+        const targets = free.length > 0 ? free : openTasks;
+        if (targets.length === 0) {
+          throw new Error('There is no prep work left on this order to hand over.');
+        }
+        for (const t of targets) {
+          // Re-checked INSIDE the loop, not just before it: a multi-item sale
+          // issues several writes and the picker can be dismissed partway
+          // through. Checking once at the top would leave the rest of the loop
+          // running against a picker the person has already walked away from.
+          if (preparerReqRef.current !== reqId) return;
+          await api.assignTask(t.id, { assigned_to: person.id });
+          wrote = true;
+        }
+      }
+      // Only this interaction's own picker gets closed; if it was superseded,
+      // whatever superseded it owns the UI now.
+      if (preparerReqRef.current === reqId) setPreparerPicker(null);
+      // Refreshed either way — the writes DID land, so the board must show them
+      // regardless of what has been tapped since.
+      await fetchDashboard();
+    } catch (err) {
+      if (preparerReqRef.current !== reqId) {
+        // Superseded: say nothing, but still reconcile the board if a partial
+        // write got out before the failure.
+        if (wrote) { try { await fetchDashboard(); } catch (e) { /* stale board is recoverable */ } }
+        return;
+      }
+      // Picker closes first so the message is not stuck behind a modal on web.
+      setPreparerPicker(null);
+      showAlert('Assign', err?.message || 'Could not assign this person. Please try again.');
+      // A multi-task assign can fail halfway. Refresh so the card shows what
+      // actually landed rather than what it looked like before the tap.
+      if (wrote) { try { await fetchDashboard(); } catch (e) { /* see above */ } }
+    }
+  }, [preparerPicker, tasksBySaleId, fetchDashboard]);
+
+  // "Leave for now" — start preparing without naming anybody. Assignment is
+  // an improvement on the old flow, never a new gate in front of it: someone
+  // mid-rush must always be able to move the order and sort out who is making
+  // it afterwards (the card's "Nobody assigned yet · assign" line is exactly
+  // that afterwards). Only offered in 'start' mode; in 'assign' mode there is
+  // nothing to advance and Cancel already means "leave it".
+  const handleLeavePreparerForNow = useCallback(async () => {
+    const picker = preparerPicker;
+    if (!picker?.order || picker.loading) return;
+    const reqId = ++preparerReqRef.current;
+    setPreparerPicker((prev) => (prev ? { ...prev, loading: true } : prev));
+    try {
+      const nextAction = picker.order.display_stage?.nextAction;
+      if (!nextAction) throw new Error('This order has already moved on. Pull down to refresh.');
+      // No assigned_to key at all — NOT an empty string, which the route
+      // parseInt()s into NaN and rejects with a 400.
+      await api.advanceOrder(nextAction);
+      if (preparerReqRef.current === reqId) setPreparerPicker(null);
+      await fetchDashboard();
+    } catch (err) {
+      if (preparerReqRef.current !== reqId) return;
+      setPreparerPicker(null);
+      showAlert('Start Preparing', err?.message || 'Could not start this order. Please try again.');
+    }
+  }, [preparerPicker, fetchDashboard]);
+
+  const closeCodCollectPicker = useCallback(() => setCodCollectPicker(null), []);
+
+  // Refetch on close (not on every checkbox toggle inside the checklist) so
+  // the card's "N/M" pill and completion color are current the moment the
+  // modal is dismissed, without a request per tap while it's open.
+  const closeLoadChecklist = useCallback(() => {
+    setLoadChecklistOrder(null);
+    fetchDashboard();
   }, [fetchDashboard]);
 
-  const handleNavigateToQueue = useCallback((orderType, status) => {
-    navigation.navigate('ProductionQueue', {
-      applyId: Date.now(),
-      initialViewMode: 'orders',
-      initialOrderType: orderType,
-      initialStatus: status || '',
-      initialLocationId: locationScope === 'all' ? null : (locationScope || activeLocation?.id || null),
-      initialShowFilters: false,
-    });
-  }, [navigation, activeLocation?.id, locationScope]);
-
-  const renderStatusLane = (type, laneKey, laneLabel, orders) => {
-    const previewCount = isDesktop ? 2 : 1;
-    const previewOrders = orders.slice(0, previewCount);
-    const hiddenCount = Math.max(orders.length - previewOrders.length, 0);
-    const laneTheme = getLaneTheme(laneKey);
-    const overdueCount = orders.filter((o) => getOrderLaneSla(o, timezone) === 'overdue').length;
-    const dueSoonCount = orders.filter((o) => getOrderLaneSla(o, timezone) === 'dueSoon').length;
-    const lifecycleHint = laneKey === 'pending' ? 'incl. confirmed' : laneKey === 'ready' ? 'incl. completed' : null;
-
-    // Delivery sub-status summary for delivery lane
-    let deliverySubHint = null;
-    if (type === 'delivery' && orders.length > 0) {
-      const assignedCount = orders.filter((o) => o.delivery_status === 'assigned').length;
-      const inTransitCount = orders.filter((o) => o.delivery_status === 'in_transit').length;
-      const failedCount = orders.filter((o) => o.delivery_status === 'failed').length;
-      const parts = [];
-      if (assignedCount > 0) parts.push(`${assignedCount} assigned`);
-      if (inTransitCount > 0) parts.push(`${inTransitCount} in transit`);
-      if (failedCount > 0) parts.push(`${failedCount} failed`);
-      if (parts.length > 0) deliverySubHint = parts.join(' · ');
+  // Submits Mark Delivered with the entered COD amount/method in one request —
+  // same endpoint resolveDeliverStep found outstanding money on
+  // (PUT /deliveries/:id/deliver), just no longer fired blind. Amount is
+  // capped to what's actually outstanding so a typo can't overshoot into the
+  // server's own "COD collection exceeds remaining amount" 400.
+  const handleSubmitCodCollect = useCallback(async () => {
+    const picker = codCollectPicker;
+    if (!picker?.order || picker.loading) return;
+    const nextAction = picker.order.display_stage?.nextAction;
+    if (!nextAction) {
+      setCodCollectPicker(null);
+      showAlert('Mark Delivered', 'This order has already moved on. Pull down to refresh.');
+      return;
     }
-    // Pickup sub-status summary
-    let pickupSubHint = null;
-    if (type === 'pickup' && orders.length > 0) {
-      const readyCount = orders.filter((o) => o.pickup_status === 'ready_for_pickup').length;
-      const waitingCount = orders.filter((o) => o.pickup_status === 'waiting').length;
-      const parts = [];
-      if (readyCount > 0) parts.push(`${readyCount} ready to collect`);
-      if (waitingCount > 0) parts.push(`${waitingCount} waiting`);
-      if (parts.length > 0) pickupSubHint = parts.join(' · ');
+    const entered = parseFloat(picker.amount) || 0;
+    const outstanding = Number(picker.order.cod_amount || 0) - Number(picker.order.cod_collected || 0);
+    if (entered <= 0) {
+      showAlert('Mark Delivered', 'Enter the amount collected, or the exact outstanding amount if paid in full.');
+      return;
     }
+    if (entered > outstanding + 0.01) {
+      showAlert('Mark Delivered', `Only ₹${outstanding.toFixed(2)} is outstanding on this order.`);
+      return;
+    }
+    setCodCollectPicker((prev) => (prev ? { ...prev, loading: true } : prev));
+    try {
+      await api.advanceOrder(nextAction, {
+        cod_collected: entered,
+        cod_method: picker.method,
+        cod_reference: picker.reference?.trim() || undefined,
+      });
+      setCodCollectPicker(null);
+      await fetchDashboard();
+    } catch (err) {
+      setCodCollectPicker((prev) => (prev ? { ...prev, loading: false } : prev));
+      showAlert('Mark Delivered', err?.message || 'Could not record this. Please try again.');
+    }
+  }, [codCollectPicker, fetchDashboard]);
 
-    return (
-      <TouchableOpacity
-        key={`${type}-${laneKey}`}
-        style={[styles.statusLaneContainer, { borderColor: laneTheme.border, backgroundColor: laneTheme.background }]}
-        onPress={() => handleNavigateToQueue(type, laneKey)}
-        activeOpacity={0.82}
-      >
-        <View style={styles.laneTitleRow}>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.laneTitle}>{laneLabel}</Text>
-            <View style={styles.laneMetaRow}>
-              <Text style={[styles.laneCount, { color: laneTheme.badge }]}>{orders.length} order{orders.length !== 1 ? 's' : ''}</Text>
-              {!!lifecycleHint && <Text style={styles.laneHint}>• {lifecycleHint}</Text>}
-            </View>
-            {!!(deliverySubHint || pickupSubHint) && (
-              <Text style={styles.laneSubHint}>{deliverySubHint || pickupSubHint}</Text>
-            )}
-          </View>
-          <Ionicons name="chevron-forward" size={16} color={laneTheme.badge} />
-        </View>
+  // Same destination screen, two different tabs: owner/manager reach Orders
+  // Inbox via the `Orders` tab, counter staff via `EmployeeOrders`
+  // (MainNavigator.js registers one or the other for a role, never both).
+  // Hardcoding 'EmployeeOrders' would make either handler below a dead tap
+  // for the owner — React Navigation drops a navigate to a route no
+  // navigator in the tree owns, so nothing at all would happen.
+  const ordersInboxTab = isOwnerOrManager ? 'Orders' : 'EmployeeOrders';
 
-        {(overdueCount > 0 || dueSoonCount > 0) && (
-          <View style={styles.laneBadgesRow}>
-            {overdueCount > 0 && (
-              <View style={styles.laneSlaDangerBadge}>
-                <Ionicons name="alert-circle" size={11} color="#DC2626" />
-                <Text style={styles.laneSlaDangerText}>{overdueCount} overdue</Text>
-              </View>
-            )}
-            {dueSoonCount > 0 && (
-              <View style={styles.laneSlaWarnBadge}>
-                <Ionicons name="time" size={11} color="#B45309" />
-                <Text style={styles.laneSlaWarnText}>{dueSoonCount} due soon</Text>
-              </View>
-            )}
-          </View>
-        )}
+  // "Done today · N" chip — the only tap in this file that means "show me
+  // completed orders", so it's the only one that should carry that filter.
+  const handleNavigateToDone = useCallback(() => {
+    navigation.navigate(ordersInboxTab, { screen: 'OrdersInbox', params: { status: 'completed' } });
+  }, [navigation, ordersInboxTab]);
 
-        {orders.length === 0 ? (
-          <Text style={styles.laneEmpty}>No orders</Text>
-        ) : (
-          <View style={{ gap: 6 }}>
-            {previewOrders.map((order) => {
-              const orderTasks = tasksBySaleId.get(order.id) || [];
-              const hasPendingProduction = orderTasks.some((t) => ['pending', 'assigned', 'in_progress'].includes(t.status));
-              return (
-                <OrderCard
-                  key={order.id}
-                  order={order}
-                  tasks={orderTasks}
-                  hasPendingProduction={hasPendingProduction}
-                  pulseOpacity={pulseOpacity}
-                  taskActionLoading={taskActionLoading}
-                  onTaskClick={(task) => setSelectedTaskModal(task)}
-                  onOpen={() => setSelectedOrderModal({ order, tasks: orderTasks })}
-                  timezone={timezone}
-                />
-              );
-            })}
-            {hiddenCount > 0 && (
-              <View style={styles.viewMoreRow}>
-                <Ionicons name="arrow-forward" size={14} color="#047857" />
-                <Text style={styles.viewMoreText}>View {hiddenCount} more</Text>
-              </View>
-            )}
-          </View>
-        )}
-      </TouchableOpacity>
-    );
-  };
-
-  const renderOrderTypeSection = (type) => {
-    const groups = ordersByTypeAndStatus[type] || { pending: [], preparing: [], ready: [], in_transit: [], completed: [] };
-
-    // Build lanes — delivery gets 4 lanes including In Transit
-    const lanes = type === 'delivery'
-      ? [
-          { key: 'pending',    label: 'Pending',            rows: groups.pending },
-          { key: 'preparing',  label: 'Preparing',          rows: groups.preparing },
-          { key: 'ready',      label: 'Ready to Dispatch',  rows: groups.ready },
-          { key: 'in_transit', label: 'In Transit',         rows: groups.in_transit || [] },
-        ]
-      : [
-          { key: 'pending',   label: 'Pending',   rows: groups.pending },
-          { key: 'preparing', label: 'Preparing', rows: groups.preparing },
-          { key: 'ready',     label: 'Ready',     rows: groups.ready },
-        ];
-
-    const totalOrders = lanes.reduce((sum, lane) => sum + lane.rows.length, 0);
-
-    const typeTheme = type === 'delivery'
-      ? { bg: '#F8FAFC', border: '#BFDBFE', icon: '#2563EB' }
-      : type === 'pickup'
-        ? { bg: '#F0FDF4', border: '#BBF7D0', icon: '#047857' }
-        : { bg: '#FFF7ED', border: '#FED7AA', icon: '#C2410C' };
-
-    return (
-      <View key={type} style={[styles.typeCard, { backgroundColor: typeTheme.bg, borderColor: typeTheme.border }]}>
-        <View style={styles.typeCardHeader}>
-          <View>
-            <Text style={styles.typeCardTitle}>{formatOrderType(type)}</Text>
-            <Text style={styles.typeCardSubtitle}>{totalOrders} active order{totalOrders !== 1 ? 's' : ''}</Text>
-          </View>
-          <Ionicons name={type === 'delivery' ? 'bicycle' : type === 'pickup' ? 'bag-handle' : 'storefront'} size={22} color={typeTheme.icon} />
-        </View>
-
-        <View style={{ gap: 8 }}>
-          {lanes.map((lane) => renderStatusLane(type, lane.key, lane.label, lane.rows))}
-        </View>
-      </View>
-    );
-  };
+  // "N more — see all" on any Stage column (onShowAll, passed to every
+  // column alike — see OrderKanbanBoard/StageColumn). This is a generic
+  // overflow escape hatch, not specific to "done" — it used to share
+  // handleNavigateToDone because both were unfiltered, but that handler now
+  // hardcodes status=completed, which would silently mis-filter the "N
+  // more" link on every other column (e.g. Preparing) to show completed
+  // orders instead. Kept unfiltered here, matching pre-existing behaviour;
+  // making this respect the column's own stage is a separate improvement,
+  // not part of this fix.
+  const handleShowAllOrders = useCallback(() => {
+    navigation.navigate(ordersInboxTab, { screen: 'OrdersInbox' });
+  }, [navigation, ordersInboxTab]);
 
   const activeOrderModalData = useMemo(() => {
     if (!selectedOrderModal) return null;
@@ -1105,6 +1223,13 @@ export default function DashboardScreen({ navigation }) {
     const freshTasks = tasksBySaleId.get(selectedOrderModal.order.id) || selectedOrderModal.tasks;
     return { order: freshOrder, tasks: freshTasks };
   }, [selectedOrderModal, sales, tasksBySaleId]);
+
+  // Counter/employee register widget: open, but opened before today. Same
+  // reasoning and treatment as CashRegisterScreen.js's hero card and the
+  // owner's RegisterCard — see isRegisterStale's own comment. This is the
+  // widget counter staff (the people who'd actually forget to close it)
+  // look at every day, so it matters more here than anywhere else.
+  const counterRegisterStale = !!counterStats.registerOpen && isRegisterStale({ opening_time: counterStats.registerOpenedAt });
 
   // Counter staff dashboard: split today/unscheduled orders from
   // future-scheduled ones — otherwise a delivery due in 5 days sits mixed
@@ -1116,6 +1241,25 @@ export default function DashboardScreen({ navigation }) {
       scheduledLater: counterPendingOrders.filter((o) => o.scheduled_date && o.scheduled_date > todayStr),
     };
   }, [counterPendingOrders]);
+
+  // Same today/future split as counterOrdersSplit, applied to the owner/
+  // manager board's own `sales` fetch. That fetch is deliberately
+  // date-unfiltered now (see the comment above `boardFilters` — an
+  // owner/manager viewing the board went to ZERO cards on any day nothing
+  // was created/scheduled exactly then), which fixed that bug but
+  // reintroduced the one this split exists to solve: a pre_order/delivery
+  // scheduled days out sat mixed into "New" today, cluttering the board
+  // with nothing actionable. This is a different axis than that fetch-time
+  // date filter — it's the order's own scheduled_date, checked client-side
+  // after the fetch — so restoring it here does not bring back the 0-cards
+  // bug (2026-09-04).
+  const ordersSplit = useMemo(() => {
+    const todayStr = getShopTodayStr(DEFAULT_TZ);
+    return {
+      dueToday: sales.filter((o) => !o.scheduled_date || o.scheduled_date <= todayStr),
+      scheduledLater: sales.filter((o) => o.scheduled_date && o.scheduled_date > todayStr),
+    };
+  }, [sales]);
 
   // Florist/employee task dashboard: same today/future split, applied to
   // the active (not completed/cancelled) task list (2026-08-31 fix).
@@ -1138,7 +1282,7 @@ export default function DashboardScreen({ navigation }) {
         <View style={styles.heroCard}>
           <View style={[styles.rowBetween, { marginBottom: 4 }]}>
             <View style={{ flex: 1 }}>
-              <Text style={styles.heroEyebrow}>Operations Dashboard</Text>
+              <Text style={styles.heroEyebrow}>{isCustomer ? 'Your Account' : 'Operations Dashboard'}</Text>
               <Text style={styles.heroTitle}>Welcome, {(user?.name || 'Team').split(' ')[0]}</Text>
             </View>
             <View style={styles.heroIcon}>
@@ -1146,7 +1290,8 @@ export default function DashboardScreen({ navigation }) {
             </View>
           </View>
           <Text style={styles.heroSub}>
-            {isDeliveryPartner ? 'Your active deliveries and earnings at a glance'
+            {isCustomer ? 'Shop for flowers and track your orders'
+              : isDeliveryPartner ? 'Your active deliveries and earnings at a glance'
               : isCounterStaff ? "Today's sales and orders at a glance"
               : isEmployee ? 'Your production tasks and work queue'
               : 'Real-time order flow, production pipeline, and operational health metrics'}
@@ -1154,7 +1299,7 @@ export default function DashboardScreen({ navigation }) {
         </View>
 
         {/* Location & Date picker — owner/manager only */}
-        {!isEmployee && !isCounterStaff && !isDeliveryPartner && (locations.length > 0 || isOwnerOrManager) && (
+        {!isEmployee && !isCounterStaff && !isDeliveryPartner && !isCustomer && (locations.length > 0 || isOwnerOrManager) && (
           <View style={styles.scopeCard}>
             <View style={[styles.rowBetween, { marginBottom: 8 }]}>
               <Text style={styles.scopeLabel}>Dashboard Filter</Text>
@@ -1362,14 +1507,24 @@ export default function DashboardScreen({ navigation }) {
                   at all to reach CashRegisterScreen to close it at end of
                   shift (found live, 2026-09-01). Always tappable now. */}
               <TouchableOpacity
-                style={[styles.roleStatCard, { borderLeftColor: counterStats.registerOpen ? '#10B981' : '#EF4444' }]}
+                style={[styles.roleStatCard, { borderLeftColor: counterStats.registerOpen ? (counterRegisterStale ? '#D97706' : '#10B981') : '#EF4444' }]}
                 onPress={() => navigation.navigate('POS', { screen: 'CashRegister' })}
               >
-                <Ionicons name={counterStats.registerOpen ? 'lock-open-outline' : 'lock-closed-outline'} size={20} color={counterStats.registerOpen ? '#10B981' : '#EF4444'} />
+                <Ionicons name={counterStats.registerOpen ? 'lock-open-outline' : 'lock-closed-outline'} size={20} color={counterStats.registerOpen ? (counterRegisterStale ? '#D97706' : '#10B981') : '#EF4444'} />
                 <Text style={[styles.roleStatCount, { fontSize: 14 }]}>{counterStats.registerOpen === null ? '—' : counterStats.registerOpen ? 'Open' : 'Closed'}</Text>
                 <Text style={styles.roleStatLabel}>Register</Text>
               </TouchableOpacity>
             </View>
+
+            {counterRegisterStale && (
+              <TouchableOpacity style={styles.codBannerCompact} onPress={() => navigation.navigate('POS', { screen: 'CashRegister' })}>
+                <Ionicons name="time-outline" size={20} color="#92400E" />
+                <Text style={styles.codBannerCompactText}>
+                  Register open since {formatDateLabel(counterStats.registerOpenedAt)} — close it out when you get a chance
+                </Text>
+                <Ionicons name="chevron-forward" size={16} color="#92400E" />
+              </TouchableOpacity>
+            )}
 
             {!counterStats.registerOpen && counterStats.registerOpen !== null && (
               <TouchableOpacity style={styles.roleEmptyCard} onPress={() => navigation.navigate('POS', { screen: 'CashRegister' })}>
@@ -1413,89 +1568,37 @@ export default function DashboardScreen({ navigation }) {
               </View>
             ) : (
               <>
-                {counterOrdersSplit.dueToday.map((order) => {
-                  // Card was a bare sale_number + hardcoded "PENDING" badge
-                  // regardless of real status, with zero order info and no
-                  // way to act without leaving the dashboard (found live,
-                  // 2026-09-01). Now shows real status/type/amount and one
-                  // next-step action, mirroring OrdersInboxScreen's info
-                  // density and the guardrails PUT /:id/status already
-                  // enforces (e.g. can't mark Ready with prep unfinished —
-                  // surfaced as a plain Alert if tapped too early).
-                  const statusColor = ORDER_STATUS_COLORS[order.status] || Colors.textSecondary;
-                  const statusLabel = ORDER_STATUS_LABELS[order.status] || order.status;
-                  const isUnpaid = order.payment_status && order.payment_status !== 'paid' && order.payment_status !== 'refunded';
-                  const contactPhone = order.customer_phone || order.receiver_phone;
-                  const nextActionLabel = order.status === 'pending' ? 'Start Preparing' : order.status === 'preparing' ? 'Mark Ready' : null;
-                  const isOrderLoading = !!orderActionLoading[order.id];
-                  return (
-                    <TouchableOpacity
-                      key={order.id}
-                      style={[styles.roleTaskCard, { borderLeftColor: statusColor }]}
-                      onPress={() => navigation.navigate('SaleDetail', { saleId: order.id })}
-                      activeOpacity={0.8}
-                    >
-                      <View style={styles.roleTaskHeader}>
-                        <Text style={styles.roleTaskName} numberOfLines={1}>
-                          {order.sale_number}{order.priority === 'rush' ? '  🔥' : ''} — {order.customer_name || order.customer_display_name || 'Walk-in'}
-                        </Text>
-                        <View style={[styles.roleTaskBadge, { backgroundColor: statusColor + '20' }]}>
-                          <Text style={[styles.roleTaskBadgeText, { color: statusColor }]}>{statusLabel.toUpperCase()}</Text>
-                        </View>
-                      </View>
-
-                      <Text style={styles.roleTaskMeta}>
-                        {ORDER_TYPE_SHORT_LABELS[order.order_type] || order.order_type} · ₹{Number(order.grand_total || 0).toFixed(0)}
-                        {order.scheduled_time ? ` · ${formatTimeString(order.scheduled_time)}` : ''}
-                        {isUnpaid ? ` · ${order.payment_status === 'partial' ? 'Partly paid' : 'Unpaid'}` : ''}
-                      </Text>
-
-                      <View style={{ flexDirection: 'row', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
-                        {contactPhone && (
-                          <TouchableOpacity
-                            style={styles.orderQuickActionBtn}
-                            onPress={(e) => { e.stopPropagation(); Linking.openURL(`tel:${contactPhone}`); }}
-                          >
-                            <Ionicons name="call-outline" size={14} color={Colors.info} />
-                            <Text style={[styles.orderQuickActionText, { color: Colors.info }]}>Call</Text>
-                          </TouchableOpacity>
-                        )}
-                        {contactPhone && (
-                          <TouchableOpacity
-                            style={styles.orderQuickActionBtn}
-                            onPress={(e) => {
-                              e.stopPropagation();
-                              Linking.openURL(`https://wa.me/91${contactPhone}?text=${encodeURIComponent(`Hi, this is about your order ${order.sale_number}`)}`);
-                            }}
-                          >
-                            <Ionicons name="logo-whatsapp" size={14} color={Colors.success} />
-                            <Text style={[styles.orderQuickActionText, { color: Colors.success }]}>WhatsApp</Text>
-                          </TouchableOpacity>
-                        )}
-                        {nextActionLabel && (
-                          <TouchableOpacity
-                            style={[styles.orderQuickActionBtn, { backgroundColor: Colors.primary + '15', opacity: isOrderLoading ? 0.6 : 1 }]}
-                            onPress={(e) => { e.stopPropagation(); advanceOrderStatus(order); }}
-                            disabled={isOrderLoading}
-                          >
-                            {isOrderLoading ? (
-                              <ActivityIndicator size="small" color={Colors.primary} />
-                            ) : (
-                              <>
-                                <Ionicons name="arrow-forward-circle-outline" size={14} color={Colors.primary} />
-                                <Text style={[styles.orderQuickActionText, { color: Colors.primary }]}>{nextActionLabel}</Text>
-                              </>
-                            )}
-                          </TouchableOpacity>
-                        )}
-                      </View>
-                    </TouchableOpacity>
-                  );
-                })}
+                {/* Rebuilt onto the same order-kanban board owner/manager uses
+                    (Task 11, order-lifecycle plan, 2026-09-01) — grouped by
+                    order type + status lane with inline one-tap stage-advance
+                    and production-task pills, matching the explicit brainstorm
+                    ask: "a mix of both, the current manager dashboard and the
+                    current counter dashboard... grouping and viewing and
+                    updating in a single quick way." Fed `counterOrdersSplit.dueToday`
+                    (not the full counterPendingOrders fetch) to keep the
+                    existing today/future split intent intact — a delivery
+                    scheduled days out still shouldn't clutter what needs
+                    attention right now; see the note below for the rest. */}
+                <OrderKanbanBoard
+                  sales={counterOrdersSplit.dueToday}
+                  onOrderPress={(order) => setSelectedOrderModal({ order, tasks: tasksBySaleId.get(order.id) })}
+                  onResolveAction={handleResolveAction}
+                  onVerifyLoad={(order) => setLoadChecklistOrder(order)}
+                  onNavigateToDone={handleNavigateToDone}
+                  onShowAll={handleShowAllOrders}
+                  tasksBySaleId={tasksBySaleId}
+                  timezone={timezone}
+                  viewerRole={user?.role}
+                  viewerId={user?.id}
+                  onRefresh={fetchDashboard}
+                  doneCountOverride={doneTodayCount}
+                />
                 {counterOrdersSplit.scheduledLater.length > 0 && (
-                  <Text style={{ fontSize: 12, color: '#6B7280', textAlign: 'center', marginTop: 4 }}>
-                    +{counterOrdersSplit.scheduledLater.length} more scheduled for later
-                  </Text>
+                  <TouchableOpacity onPress={handleShowAllOrders} activeOpacity={0.7}>
+                    <Text style={{ fontSize: 12, color: '#6B7280', textAlign: 'center', marginTop: 4, textDecorationLine: 'underline' }}>
+                      +{counterOrdersSplit.scheduledLater.length} more scheduled for later
+                    </Text>
+                  </TouchableOpacity>
                 )}
               </>
             )}
@@ -1526,15 +1629,25 @@ export default function DashboardScreen({ navigation }) {
                   as the counter_staff fix above. */}
               {role === 'employee' && (
                 <TouchableOpacity
-                  style={[styles.roleStatCard, { borderLeftColor: counterStats.registerOpen ? '#10B981' : '#EF4444' }]}
+                  style={[styles.roleStatCard, { borderLeftColor: counterStats.registerOpen ? (counterRegisterStale ? '#D97706' : '#10B981') : '#EF4444' }]}
                   onPress={() => navigation.navigate('POS', { screen: 'CashRegister' })}
                 >
-                  <Ionicons name={counterStats.registerOpen ? 'lock-open-outline' : 'lock-closed-outline'} size={20} color={counterStats.registerOpen ? '#10B981' : '#EF4444'} />
+                  <Ionicons name={counterStats.registerOpen ? 'lock-open-outline' : 'lock-closed-outline'} size={20} color={counterStats.registerOpen ? (counterRegisterStale ? '#D97706' : '#10B981') : '#EF4444'} />
                   <Text style={[styles.roleStatCount, { fontSize: 14 }]}>{counterStats.registerOpen === null ? '—' : counterStats.registerOpen ? 'Open' : 'Closed'}</Text>
                   <Text style={styles.roleStatLabel}>Register</Text>
                 </TouchableOpacity>
               )}
             </View>
+
+            {role === 'employee' && counterRegisterStale && (
+              <TouchableOpacity style={styles.codBannerCompact} onPress={() => navigation.navigate('POS', { screen: 'CashRegister' })}>
+                <Ionicons name="time-outline" size={20} color="#92400E" />
+                <Text style={styles.codBannerCompactText}>
+                  Register open since {formatDateLabel(counterStats.registerOpenedAt)} — close it out when you get a chance
+                </Text>
+                <Ionicons name="chevron-forward" size={16} color="#92400E" />
+              </TouchableOpacity>
+            )}
 
             {role === 'employee' && !counterStats.registerOpen && counterStats.registerOpen !== null && (
               <TouchableOpacity style={styles.roleEmptyCard} onPress={() => navigation.navigate('POS', { screen: 'CashRegister' })}>
@@ -1730,98 +1843,175 @@ export default function DashboardScreen({ navigation }) {
               </>
             )}
           </View>
+        ) : isCustomer ? (
+          /* ═══ CUSTOMER ═══
+             Must stay ahead of the owner/manager fall-through below: without
+             this branch a customer landed on the operations dashboard itself
+             (order board, revenue, registers, staff). Nothing here is shop
+             data — just the two places a customer actually has. */
+          <View style={{ gap: 12 }}>
+            <View style={styles.customerCard}>
+              <Ionicons name="flower-outline" size={40} color={Colors.primary} />
+              <Text style={styles.customerCardTitle}>Welcome to the shop</Text>
+              <Text style={styles.customerCardText}>
+                Browse what's in stock, or check on an order you've already placed.
+              </Text>
+            </View>
+
+            <TouchableOpacity
+              style={styles.customerBtn}
+              onPress={() => navigation.navigate('Shop')}
+              activeOpacity={0.85}
+            >
+              <Ionicons name="storefront-outline" size={22} color="#fff" />
+              <Text style={styles.customerBtnText}>Browse Flowers</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.customerBtnSecondary}
+              onPress={() => navigation.navigate('MyOrders')}
+              activeOpacity={0.85}
+            >
+              <Ionicons name="receipt-outline" size={22} color={Colors.primary} />
+              <Text style={styles.customerBtnSecondaryText}>My Orders</Text>
+            </TouchableOpacity>
+          </View>
         ) : (
           /* ═══ OWNER / MANAGER DASHBOARD ═══ */
-          <View style={[styles.layout, isDesktop && styles.layoutDesktop]}>
-            <View style={[styles.feedCol, isDesktop && { flex: 2 }]}>
+          /* Board gets the full width on every screen size — Team & Finance
+             moves BELOW it rather than squeezing it into 2/3 width, per the
+             owner's direct request (2026-09-04). Was a row-on-desktop split
+             (feedCol flex:2 / healthCol flex:1); the "1/3 width" complaint
+             was structural for anyone who isn't `owner`, since a manager
+             only ever sees Staff Pulse there — Registers and Revenue are
+             owner-only — so a manager lost a third of the page's width to
+             one small widget. `layoutDesktop`/the flex overrides are gone;
+             `layout`'s plain `{ gap: 16 }` already stacks correctly. */
+          <View style={styles.layout}>
+            <View style={styles.feedCol}>
               <View style={styles.sectionHeader}>
                 <View>
                   <Text style={styles.sectionTitle}>Order Management</Text>
-                  <Text style={styles.sectionSubtitle}>Tap on any status lane to view full queue</Text>
+                  <Text style={styles.sectionSubtitle}>Tap an order to see details, or use its button to move it forward</Text>
                 </View>
               </View>
 
               <View style={{ gap: 12 }}>
-                {ORDER_TYPES.map(renderOrderTypeSection)}
+                <OrderKanbanBoard
+                  sales={ordersSplit.dueToday}
+                  onOrderPress={(order) => setSelectedOrderModal({ order, tasks: tasksBySaleId.get(order.id) })}
+                  onResolveAction={handleResolveAction}
+                  onVerifyLoad={(order) => setLoadChecklistOrder(order)}
+                  onNavigateToDone={handleNavigateToDone}
+                  onShowAll={handleShowAllOrders}
+                  tasksBySaleId={tasksBySaleId}
+                  timezone={timezone}
+                  viewerRole={user?.role}
+                  viewerId={user?.id}
+                  onRefresh={fetchDashboard}
+                  doneCountOverride={doneTodayCount}
+                />
+                {ordersSplit.scheduledLater.length > 0 && (
+                  <TouchableOpacity onPress={handleShowAllOrders} activeOpacity={0.7}>
+                    <Text style={{ fontSize: 12, color: '#6B7280', textAlign: 'center' }}>
+                      +{ordersSplit.scheduledLater.length} more scheduled for later
+                    </Text>
+                  </TouchableOpacity>
+                )}
               </View>
             </View>
 
-            <View style={[styles.healthCol, isDesktop && { flex: 1 }]}>
+            <View style={styles.healthCol}>
               <View style={styles.sectionHeader}>
                 <Text style={styles.sectionTitle}>Team & Finance</Text>
               </View>
 
-              {/* Staff Pulse Widget */}
-              <View style={styles.widgetCard}>
-                <View style={styles.widgetHeader}>
-                  <Text style={styles.widgetTitle}>Staff Pulse</Text>
-                  <TouchableOpacity onPress={() => isOwnerOrManager ? navigation.navigate('More', { screen: 'Staff', initial: false }) : null}>
-                    <Ionicons name="open" size={14} color="#9CA3AF" />
-                  </TouchableOpacity>
+              {/* The three widget groups below sit in a row on wide screens
+                  (isDesktop, 1100px — the same threshold the board itself no
+                  longer needs but this section still benefits from) and stack
+                  on narrow ones. Full-width real estate is now available here
+                  precisely because the board above stopped needing to share
+                  it, so laying these out side by side uses it rather than
+                  leaving it as the same cramped single column, just moved. */}
+              <View style={[styles.healthRow, isDesktop && styles.healthRowDesktop]}>
+                {/* Staff Pulse Widget */}
+                <View style={[styles.healthGroup, isDesktop && styles.healthGroupDesktop]}>
+                  <View style={styles.widgetCard}>
+                    <View style={styles.widgetHeader}>
+                      <Text style={styles.widgetTitle}>Staff Pulse</Text>
+                      <TouchableOpacity onPress={() => isOwnerOrManager ? navigation.navigate('More', { screen: 'Staff', initial: false }) : null}>
+                        <Ionicons name="open" size={14} color="#9CA3AF" />
+                      </TouchableOpacity>
+                    </View>
+
+                    {staffPulse.length === 0 ? (
+                      <Text style={styles.emptyWidgetText}>No staff data</Text>
+                    ) : (
+                      <View style={{ gap: 6 }}>
+                        {staffPulse.map((s) => <StaffPulseRow key={s.id} staff={s} />)}
+                      </View>
+                    )}
+                  </View>
                 </View>
 
-                {staffPulse.length === 0 ? (
-                  <Text style={styles.emptyWidgetText}>No staff data</Text>
-                ) : (
-                  <View style={{ gap: 6 }}>
-                    {staffPulse.map((s) => <StaffPulseRow key={s.id} staff={s} />)}
+                {/* Cash Register Widget */}
+                {isOwner && (
+                  <View style={[styles.healthGroup, isDesktop && styles.healthGroupDesktop]}>
+                    <View style={styles.sectionHeader}>
+                      <Text style={styles.sectionTitle}>Registers</Text>
+                    </View>
+
+                    <View style={{ gap: 8 }}>
+                      {registers.length === 0 ? (
+                        <View style={styles.widgetCard}>
+                          <Text style={styles.emptyWidgetText}>No register data</Text>
+                        </View>
+                      ) : (
+                        registers.map((r) => (
+                          <RegisterCard
+                            key={r.locationId}
+                            item={r}
+                            onPress={() => navigation.navigate('POS', {
+                              screen: 'CashRegister',
+                              params: { locationId: r.locationId }
+                            })}
+                            onSettlePress={() => navigation.navigate('POS', {
+                              screen: 'Settlements',
+                              params: { locationId: r.locationId }
+                            })}
+                          />
+                        ))
+                      )}
+                    </View>
+                  </View>
+                )}
+
+                {/* Revenue Snapshot */}
+                {isOwner && reportKPIs && (
+                  <View style={[styles.healthGroup, isDesktop && styles.healthGroupDesktop]}>
+                    <View style={styles.sectionHeader}>
+                      <Text style={styles.sectionTitle}>Revenue</Text>
+                    </View>
+                    <View style={styles.widgetCard}>
+                      <View style={styles.revenueStat}>
+                        <Text style={styles.revenueLabel}>Today</Text>
+                        <Text style={styles.revenueValue}>{formatMoney(reportKPIs?.today?.revenue)}</Text>
+                      </View>
+                      <View style={[styles.divider, { marginVertical: 10 }]} />
+                      <View style={[styles.rowBetween, { marginBottom: 8 }]}>
+                        <View style={styles.revenueStat}>
+                          <Text style={styles.revenueLabel}>Yesterday</Text>
+                          <Text style={styles.revenueValue}>{formatMoney(reportKPIs?.yesterday?.revenue)}</Text>
+                        </View>
+                        <View style={styles.revenueStat}>
+                          <Text style={styles.revenueLabel}>Week</Text>
+                          <Text style={styles.revenueValue}>{formatMoney(reportKPIs?.week?.revenue)}</Text>
+                        </View>
+                      </View>
+                    </View>
                   </View>
                 )}
               </View>
-
-              {/* Cash Register Widget */}
-              {isOwner && (
-                <>
-                  <View style={styles.sectionHeader}>
-                    <Text style={styles.sectionTitle}>Registers</Text>
-                  </View>
-
-                  <View style={{ gap: 8 }}>
-                    {registers.length === 0 ? (
-                      <View style={styles.widgetCard}>
-                        <Text style={styles.emptyWidgetText}>No register data</Text>
-                      </View>
-                    ) : (
-                      registers.map((r) => (
-                        <RegisterCard
-                          key={r.locationId}
-                          item={r}
-                          onPress={() => navigation.navigate('POS', {
-                            screen: 'CashRegister',
-                            params: { locationId: r.locationId }
-                          })}
-                        />
-                      ))
-                    )}
-                  </View>
-                </>
-              )}
-
-              {/* Revenue Snapshot */}
-              {isOwner && reportKPIs && (
-                <>
-                  <View style={styles.sectionHeader}>
-                    <Text style={styles.sectionTitle}>Revenue</Text>
-                  </View>
-                  <View style={styles.widgetCard}>
-                    <View style={styles.revenueStat}>
-                      <Text style={styles.revenueLabel}>Today</Text>
-                      <Text style={styles.revenueValue}>{formatMoney(reportKPIs?.today?.revenue)}</Text>
-                    </View>
-                    <View style={[styles.divider, { marginVertical: 10 }]} />
-                    <View style={[styles.rowBetween, { marginBottom: 8 }]}>
-                      <View style={styles.revenueStat}>
-                        <Text style={styles.revenueLabel}>Yesterday</Text>
-                        <Text style={styles.revenueValue}>{formatMoney(reportKPIs?.yesterday?.revenue)}</Text>
-                      </View>
-                      <View style={styles.revenueStat}>
-                        <Text style={styles.revenueLabel}>Week</Text>
-                        <Text style={styles.revenueValue}>{formatMoney(reportKPIs?.week?.revenue)}</Text>
-                      </View>
-                    </View>
-                  </View>
-                </>
-              )}
             </View>
           </View>
         )}
@@ -1868,7 +2058,178 @@ export default function DashboardScreen({ navigation }) {
         onRefresh={fetchDashboard}
         navigation={navigation}
         canManage={isOwnerOrManager}
+        // Same flow the card's Start Preparing uses, so which part of the card
+        // someone happened to tap cannot change what the button does.
+        onPickPreparer={handlePickPreparerFromModal}
+        onCollectCod={handleCollectCodFromModal}
       />
+
+      {/* Two-tap assign: "Assign Rider" on the card opens this, one tap on a
+          name writes it. Rendered once here (not inside OrderKanbanBoard,
+          which this screen mounts in two different branches) so there is only
+          ever one picker in the tree. */}
+      <AssignPickerModal
+        visible={riderPicker !== null}
+        title="Who is delivering this?"
+        notice={riderPicker?.showingEveryone
+          ? 'No riders are set up for this location — showing everyone.'
+          : null}
+        people={riderPicker?.people || []}
+        loading={!!riderPicker?.loading}
+        onPick={handlePickRider}
+        onClose={closeRiderPicker}
+        footer={
+          // Never a dead end: with no rider to pick, the only thing left to do
+          // with this order lives on Delivery Detail (reattempt, cancel,
+          // convert to pickup). Only shown when there is genuinely nothing to
+          // tap above — the normal path never sees it.
+          !riderPicker?.loading && (riderPicker?.people || []).length === 0 && riderPicker?.deliveryId ? (
+            <TouchableOpacity
+              style={styles.pickerFallbackBtn}
+              activeOpacity={0.7}
+              onPress={() => {
+                const deliveryId = riderPicker.deliveryId;
+                closeRiderPicker();
+                navigation.navigate('DeliveryDetail', { deliveryId });
+              }}
+            >
+              <Text style={styles.pickerFallbackText}>Open Delivery Details</Text>
+            </TouchableOpacity>
+          ) : null
+        }
+      />
+
+      {/* Who is making this (Task 15). A separate instance rather than a mode
+          flag on the rider picker above: the two answer different questions,
+          write to different endpoints, and are never open at the same time, so
+          sharing one would only make each branch harder to read. Same reason
+          both live here and not inside OrderKanbanBoard — this screen mounts
+          that board in two branches, and one picker in the tree is enough. */}
+      <AssignPickerModal
+        visible={preparerPicker !== null}
+        title="Who is making this?"
+        notice={
+          // Only ever shown when the list is not what someone would expect —
+          // never on a normal result. This used to explain the employee-code
+          // gap; Task 17 fixed that gap, so saying it now would be a lie about
+          // a problem that no longer exists. What remains true are the two
+          // cases the rider picker also has: the list was widened past this
+          // location, or there is genuinely nobody to show.
+          preparerPicker?.loading ? null
+            : preparerPicker?.showingEveryone
+              ? 'Nobody is set up as prep staff at this location — showing everyone.'
+              : (preparerPicker?.people || []).length === 0
+                ? 'No prep staff yet. Ask the owner to add someone as Florist/Prep Staff.'
+                : null
+        }
+        people={preparerPicker?.people || []}
+        loading={!!preparerPicker?.loading}
+        onPick={handlePickPreparer}
+        onClose={closePreparerPicker}
+        footer={
+          preparerPicker?.loading ? null
+            // Never a gate: with nobody to pick — or nobody they want to pick —
+            // the order still has to be able to move. 'start' mode has
+            // something to advance, so that is the offer.
+            : preparerPicker?.mode === 'start' ? (
+              <TouchableOpacity
+                style={styles.pickerFallbackBtn}
+                activeOpacity={0.7}
+                onPress={handleLeavePreparerForNow}
+              >
+                <Text style={styles.pickerFallbackText}>Leave for now</Text>
+              </TouchableOpacity>
+            )
+            // 'assign' mode has nothing to advance, so an empty list would
+            // otherwise leave Cancel as the only way out — a soft dead end on
+            // the one action this line exists to offer. Sale Detail assigns
+            // per task and is the real home of the deeper case.
+            : (preparerPicker?.people || []).length === 0 && preparerPicker?.order ? (
+              <TouchableOpacity
+                style={styles.pickerFallbackBtn}
+                activeOpacity={0.7}
+                onPress={() => {
+                  const saleId = preparerPicker.order.id;
+                  closePreparerPicker();
+                  navigation.navigate('SaleDetail', { saleId });
+                }}
+              >
+                <Text style={styles.pickerFallbackText}>Open this order</Text>
+              </TouchableOpacity>
+            ) : null
+        }
+      />
+
+      {/* Mark Delivered with COD outstanding (resolveDeliverStep, OrderCard.js).
+          One request: PUT /deliveries/:id/deliver already accepts
+          cod_collected/cod_method/cod_reference and marks the order delivered
+          in the same call — no separate "record it, then deliver" trip. */}
+      <Modal visible={codCollectPicker !== null} transparent animationType="fade" onRequestClose={closeCodCollectPicker}>
+        <TouchableOpacity style={styles.modalBackdrop} activeOpacity={1} onPress={closeCodCollectPicker}>
+          <TouchableOpacity activeOpacity={1} style={styles.taskModalCard} onPress={(e) => e.stopPropagation()}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Collect COD & Mark Delivered</Text>
+              <TouchableOpacity onPress={closeCodCollectPicker} hitSlop={5}>
+                <Ionicons name="close" size={20} color="#6B7280" />
+              </TouchableOpacity>
+            </View>
+            <View style={styles.modalContent}>
+              <Text style={styles.detailLabel}>Amount Collected</Text>
+              <TextInput
+                style={styles.codAmountInput}
+                value={codCollectPicker?.amount || ''}
+                onChangeText={(v) => setCodCollectPicker((prev) => (prev ? { ...prev, amount: v } : prev))}
+                keyboardType="numeric"
+                placeholder="0"
+                placeholderTextColor="#9CA3AF"
+                editable={!codCollectPicker?.loading}
+              />
+              <Text style={styles.detailLabel}>Method</Text>
+              <View style={{ flexDirection: 'row', gap: 8 }}>
+                {['cash', 'upi'].map((m) => (
+                  <TouchableOpacity
+                    key={m}
+                    style={[styles.codMethodChip, codCollectPicker?.method === m && styles.codMethodChipActive]}
+                    onPress={() => setCodCollectPicker((prev) => (prev ? { ...prev, method: m } : prev))}
+                    disabled={codCollectPicker?.loading}
+                  >
+                    <Text style={[styles.codMethodChipText, codCollectPicker?.method === m && styles.codMethodChipTextActive]}>
+                      {m.toUpperCase()}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+            <TouchableOpacity
+              style={[styles.actionBtnPrimary, codCollectPicker?.loading && { opacity: 0.6 }]}
+              onPress={handleSubmitCodCollect}
+              disabled={!!codCollectPicker?.loading}
+            >
+              {codCollectPicker?.loading
+                ? <ActivityIndicator color="#fff" />
+                : <Text style={styles.actionBtnPrimaryText}>Confirm & Mark Delivered</Text>}
+            </TouchableOpacity>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* Load-verify quick flow (OrderCard's load pill) — the same
+          DeliveryChecklist component DeliveryDetailScreen uses, opened right
+          from the board instead of navigating there. Refetches the board on
+          close so the pill's count/color is current. */}
+      <Modal visible={loadChecklistOrder !== null} animationType="slide" transparent onRequestClose={closeLoadChecklist}>
+        <TouchableOpacity style={styles.modalBackdrop} activeOpacity={1} onPress={closeLoadChecklist}>
+          <TouchableOpacity activeOpacity={1} style={[styles.taskModalCard, { height: '70%' }]} onPress={(e) => e.stopPropagation()}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Verify Load — #{loadChecklistOrder?.sale_number}</Text>
+              <TouchableOpacity onPress={closeLoadChecklist} hitSlop={5}>
+                <Ionicons name="close" size={20} color="#6B7280" />
+              </TouchableOpacity>
+            </View>
+            {loadChecklistOrder && <DeliveryChecklist deliveryId={loadChecklistOrder.delivery_id} />}
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
 
       <Modal visible={fabVisible} transparent animationType="fade" onRequestClose={() => setFabVisible(false)}>
         <TouchableOpacity style={styles.modalBackdrop} activeOpacity={1} onPress={() => setFabVisible(false)}>
@@ -2050,9 +2411,14 @@ const styles = StyleSheet.create({
   },
 
   layout: { gap: 16 },
-  layoutDesktop: { flexDirection: 'row', alignItems: 'flex-start' },
   feedCol: { gap: 8 },
   healthCol: { gap: 8 },
+  // The three Team & Finance widget groups: stacked by default, a row that
+  // wraps once there is real width to use (isDesktop, 1100px).
+  healthRow: { gap: 8 },
+  healthRowDesktop: { flexDirection: 'row', alignItems: 'flex-start', flexWrap: 'wrap' },
+  healthGroup: { gap: 8 },
+  healthGroupDesktop: { flex: 1, minWidth: 260 },
 
   sectionHeader: {
     marginBottom: 12,
@@ -2068,301 +2434,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: Colors.textLight,
     marginTop: 3,
-    fontFamily: FONT_FAMILY,
-  },
-
-  typeCard: {
-    borderRadius: 14,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderWidth: 1,
-    shadowColor: '#0F172A',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.07,
-    shadowRadius: 8,
-    elevation: 3,
-  },
-  typeCardHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 9,
-  },
-  typeCardTitle: {
-    fontSize: 15,
-    fontWeight: '800',
-    color: Colors.text,
-    fontFamily: FONT_FAMILY,
-  },
-  typeCardSubtitle: {
-    fontSize: 12,
-    color: Colors.textSecondary,
-    marginTop: 3,
-    fontFamily: FONT_FAMILY,
-  },
-
-  statusLaneContainer: {
-    borderWidth: 1,
-    borderRadius: 10,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    gap: 6,
-  },
-  laneTitleRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  laneTitle: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#374151',
-    fontFamily: FONT_FAMILY,
-  },
-  laneCount: {
-    fontSize: 11,
-    fontWeight: '800',
-    fontFamily: FONT_FAMILY,
-  },
-  laneMetaRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    marginTop: 2,
-  },
-  laneHint: {
-    fontSize: 10,
-    color: '#64748B',
-    fontFamily: FONT_FAMILY,
-    fontWeight: '600',
-  },
-  laneBadgesRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    flexWrap: 'wrap',
-  },
-  laneSlaDangerBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    paddingHorizontal: 7,
-    paddingVertical: 3,
-    borderRadius: 999,
-    backgroundColor: '#FEE2E2',
-    borderWidth: 1,
-    borderColor: '#FCA5A5',
-  },
-  laneSlaDangerText: {
-    color: '#B91C1C',
-    fontSize: 10,
-    fontWeight: '700',
-    fontFamily: FONT_FAMILY,
-  },
-  laneSlaWarnBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    paddingHorizontal: 7,
-    paddingVertical: 3,
-    borderRadius: 999,
-    backgroundColor: '#FEF3C7',
-    borderWidth: 1,
-    borderColor: '#FCD34D',
-  },
-  laneSlaWarnText: {
-    color: '#92400E',
-    fontSize: 10,
-    fontWeight: '700',
-    fontFamily: FONT_FAMILY,
-  },
-  laneEmpty: {
-    fontSize: 12,
-    color: Colors.textLight,
-    fontStyle: 'italic',
-    fontFamily: FONT_FAMILY,
-  },
-
-  orderCard: {
-    borderRadius: 10,
-    borderWidth: 1,
-    paddingHorizontal: 9,
-    paddingVertical: 7,
-    backgroundColor: '#fff',
-    position: 'relative',
-    overflow: 'hidden',
-  },
-  pulseBorderOverlay: {
-    borderRadius: 10,
-    borderWidth: 2,
-  },
-
-  orderHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    gap: 8,
-    marginBottom: 6,
-  },
-  orderNumber: {
-    fontSize: 13,
-    color: Colors.text,
-    fontWeight: '800',
-    fontFamily: FONT_FAMILY,
-  },
-  orderMeta: {
-    fontSize: 11,
-    color: Colors.textSecondary,
-    marginTop: 2,
-    fontFamily: FONT_FAMILY,
-  },
-  orderAmount: {
-    fontSize: 12,
-    color: Colors.secondary,
-    fontWeight: '700',
-    marginTop: 2,
-    fontFamily: FONT_FAMILY,
-  },
-
-  statusBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 5,
-    borderRadius: 8,
-    borderWidth: 1,
-  },
-  statusBadgeText: {
-    fontSize: 10,
-    fontWeight: '800',
-    fontFamily: FONT_FAMILY,
-  },
-
-  pipelineRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    marginVertical: 5,
-  },
-  pipelineStep: {
-    borderWidth: 1,
-    borderColor: '#D1D5DB',
-    borderRadius: 6,
-    width: 32,
-    height: 32,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: '#F9FAFB',
-  },
-  pipelineStepLabel: {
-    fontSize: 9,
-    color: Colors.textSecondary,
-    fontWeight: '700',
-    fontFamily: FONT_FAMILY,
-  },
-  pipelineStepCount: {
-    fontSize: 10,
-    color: Colors.text,
-    fontWeight: '800',
-    fontFamily: FONT_FAMILY,
-  },
-  pipelineConnector: {
-    flex: 1,
-    height: 1,
-    backgroundColor: '#D1D5DB',
-  },
-
-  taskPill: {
-    borderWidth: 1,
-    borderRadius: 8,
-    paddingVertical: 6,
-    paddingHorizontal: 8,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  taskPillDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-  },
-  taskPillText: {
-    fontSize: 11,
-    fontWeight: '700',
-    flex: 1,
-    fontFamily: FONT_FAMILY,
-  },
-  taskPillStatus: {
-    fontSize: 9,
-    fontWeight: '800',
-    fontFamily: FONT_FAMILY,
-  },
-  moreTasksLabel: {
-    fontSize: 11,
-    color: Colors.textLight,
-    fontFamily: FONT_FAMILY,
-    fontStyle: 'italic',
-  },
-  noTasksRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    marginTop: 4,
-  },
-  noTasksLabel: {
-    fontSize: 11,
-    color: Colors.textLight,
-    fontStyle: 'italic',
-    fontFamily: FONT_FAMILY,
-  },
-  subStatusRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    paddingHorizontal: 7,
-    paddingVertical: 3,
-    borderRadius: 6,
-    alignSelf: 'flex-start',
-    marginBottom: 4,
-  },
-  subStatusDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-  },
-  subStatusText: {
-    fontSize: 10,
-    fontWeight: '700',
-    fontFamily: FONT_FAMILY,
-  },
-  scheduledRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    marginBottom: 4,
-  },
-  scheduledText: {
-    fontSize: 10,
-    color: '#6366F1',
-    fontWeight: '600',
-    fontFamily: FONT_FAMILY,
-  },
-  laneSubHint: {
-    fontSize: 10,
-    color: '#64748B',
-    fontFamily: FONT_FAMILY,
-    fontWeight: '600',
-    marginTop: 1,
-  },
-
-  viewMoreRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingVertical: 6,
-  },
-  viewMoreText: {
-    fontSize: 11,
-    color: Colors.secondary,
-    fontWeight: '700',
     fontFamily: FONT_FAMILY,
   },
 
@@ -2527,6 +2598,73 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: 'rgba(15, 23, 42, 0.5)',
     justifyContent: 'flex-end',
+  },
+  // AssignPickerModal's empty-state escape hatch (Task 14). Sized like a real
+  // button, not a text link — 48px tall, full width, tapped in a hurry.
+  pickerFallbackBtn: {
+    minHeight: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.surfaceAlt,
+    marginTop: 4,
+    marginBottom: 4,
+  },
+  pickerFallbackText: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: Colors.primary,
+    fontFamily: FONT_FAMILY,
+  },
+  // Collect COD & Mark Delivered modal (resolveDeliverStep, OrderCard.js).
+  codAmountInput: {
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#111827',
+    fontFamily: FONT_FAMILY,
+  },
+  codMethodChip: {
+    flex: 1,
+    minHeight: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.surfaceAlt,
+  },
+  codMethodChipActive: {
+    borderColor: Colors.primary,
+    backgroundColor: Colors.primary + '18',
+  },
+  codMethodChipText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#6B7280',
+    fontFamily: FONT_FAMILY,
+  },
+  codMethodChipTextActive: {
+    color: Colors.primary,
+  },
+  actionBtnPrimary: {
+    minHeight: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 10,
+    backgroundColor: Colors.primary,
+  },
+  actionBtnPrimaryText: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#fff',
+    fontFamily: FONT_FAMILY,
   },
   quickActionsCard: {
     backgroundColor: '#fff',
@@ -2785,6 +2923,60 @@ const styles = StyleSheet.create({
   roleEmptyText: {
     fontSize: 13,
     color: '#6B7280',
+    fontFamily: FONT_FAMILY,
+  },
+
+  // Customer view (see the isCustomer branch). Deliberately big, plain and
+  // two-choice — this is the whole screen for that role.
+  customerCard: {
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    padding: 24,
+    alignItems: 'center',
+    gap: 8,
+  },
+  customerCardTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#111827',
+    fontFamily: FONT_FAMILY,
+  },
+  customerCardText: {
+    fontSize: 14,
+    color: '#6B7280',
+    textAlign: 'center',
+    fontFamily: FONT_FAMILY,
+  },
+  customerBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    minHeight: 56,
+    borderRadius: 12,
+    backgroundColor: Colors.primary,
+  },
+  customerBtnText: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#fff',
+    fontFamily: FONT_FAMILY,
+  },
+  customerBtnSecondary: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    minHeight: 56,
+    borderRadius: 12,
+    backgroundColor: '#fff',
+    borderWidth: 1,
+    borderColor: Colors.primary,
+  },
+  customerBtnSecondaryText: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: Colors.primary,
     fontFamily: FONT_FAMILY,
   },
 });
