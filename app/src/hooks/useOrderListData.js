@@ -19,12 +19,24 @@ export default function useOrderListData(fetchFn, { pageSize = 50 } = {}) {
   const requestIdRef = useRef(0);
   const searchTimerRef = useRef(null);
   const offsetRef = useRef(0);
+  // "Latest ref" pattern (fixes a stale-closure bug found in task review):
+  // the debounce timer below is scheduled once and fires later, after
+  // possibly several more renders (and possibly several more keystrokes)
+  // have happened. A setTimeout callback that calls a useCallback-memoized
+  // function captures whichever version of that function existed AT
+  // SCHEDULE TIME, not fire time — so without this ref, a fetch fired by
+  // the debounce timer would use the search text as it was one keystroke
+  // ago, not the text the timer was actually scheduled in response to.
+  // searchValueRef always holds the most recently *requested* search text
+  // (set synchronously in setSearch below), independent of React's render
+  // cycle, so the timer reads the true latest value at fire time.
+  const searchValueRef = useRef('');
 
-  const runFetch = useCallback((append) => {
+  const runFetch = useCallback((append, opts = {}) => {
     const myRequestId = ++requestIdRef.current;
-    if (!append) setLoading(true);
+    if (!append && !opts.silent) setLoading(true);
     const offset = append ? offsetRef.current : 0;
-    const params = { ...filters, search, limit: pageSize, offset, ...(sort ? { sort } : {}) };
+    const params = { ...filters, search: searchValueRef.current, limit: pageSize, offset, ...(sort ? { sort } : {}) };
 
     return fetchFn(params).then(({ items: newItems, total: newTotal }) => {
       if (myRequestId !== requestIdRef.current) return; // a newer request already landed
@@ -38,7 +50,14 @@ export default function useOrderListData(fetchFn, { pageSize = 50 } = {}) {
       setLoading(false);
       setRefreshing(false);
     });
-  }, [fetchFn, filters, search, sort, pageSize]);
+  }, [fetchFn, filters, sort, pageSize]); // search intentionally NOT a dependency — runFetch reads searchValueRef.current instead, so it no longer needs to be recreated (and stale-closed-over) on every keystroke
+
+  // Latest-ref for runFetch itself, for the same stale-closure reason as
+  // searchValueRef above: the debounce timer must call whichever runFetch
+  // is current AT FIRE TIME (reflecting the latest filters/sort/fetchFn),
+  // not whichever version existed when the timer was scheduled.
+  const runFetchRef = useRef(runFetch);
+  useEffect(() => { runFetchRef.current = runFetch; });
 
   useEffect(() => {
     offsetRef.current = 0;
@@ -47,13 +66,14 @@ export default function useOrderListData(fetchFn, { pageSize = 50 } = {}) {
   }, [filters, sort]);
 
   const setSearch = useCallback((value) => {
+    searchValueRef.current = value;
     setSearchState(value);
     if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
     searchTimerRef.current = setTimeout(() => {
       offsetRef.current = 0;
-      runFetch(false);
+      runFetchRef.current(false);
     }, SEARCH_DEBOUNCE_MS);
-  }, [runFetch]);
+  }, []);
 
   const setFilter = useCallback((key, value) => {
     setFilters((prev) => ({ ...prev, [key]: value }));
@@ -64,7 +84,7 @@ export default function useOrderListData(fetchFn, { pageSize = 50 } = {}) {
   const refresh = useCallback(() => {
     setRefreshing(true);
     offsetRef.current = 0;
-    runFetch(false);
+    runFetch(false, { silent: true });
   }, [runFetch]);
 
   const loadMore = useCallback(() => {
