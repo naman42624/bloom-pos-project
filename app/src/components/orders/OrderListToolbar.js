@@ -1,0 +1,72 @@
+// The bounded search+filters+sort row that replaces the old per-filter-row
+// pattern (one permanent row per filter dimension, stacking indefinitely).
+// This component NEVER grows past 2 rows regardless of how many filter
+// dimensions a screen adds to FilterDrawer's `sections` prop — it doesn't
+// even receive `sections`, only a count and an "open the drawer" callback.
+// See design doc §3.1a / §3.2.
+import React from 'react';
+import { View, TextInput, TouchableOpacity, Text, StyleSheet } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
+import { Colors, Spacing, BorderRadius, FontSize } from '../../constants/theme';
+import SortControl from './SortControl';
+
+export default function OrderListToolbar({ search, onSearchChange, activeFilterCount = 0, onOpenFilters, sortProps, viewModeProps, placeholder }) {
+  return (
+    <View>
+      <View style={styles.row1}>
+        <View style={styles.searchBox}>
+          <Ionicons name="search" size={18} color={Colors.textLight} />
+          <TextInput
+            style={styles.searchInput}
+            value={search}
+            onChangeText={onSearchChange}
+            placeholder={placeholder || 'Search anything…'}
+            placeholderTextColor={Colors.textLight}
+          />
+        </View>
+        <TouchableOpacity style={styles.filtersBtn} onPress={onOpenFilters}>
+          <Ionicons name="options-outline" size={18} color={Colors.primary} />
+          <Text style={styles.filtersBtnText}>Filters</Text>
+          {activeFilterCount > 0 && (
+            <View style={styles.badge}><Text style={styles.badgeText}>{activeFilterCount}</Text></View>
+          )}
+        </TouchableOpacity>
+      </View>
+
+      {(viewModeProps || sortProps) && (
+        <View style={styles.row2}>
+          {viewModeProps ? (
+            <View style={styles.viewModeGroup}>
+              {viewModeProps.options.map((o) => (
+                <TouchableOpacity
+                  key={o.value}
+                  style={[styles.viewModeBtn, viewModeProps.value === o.value && styles.viewModeBtnActive]}
+                  onPress={() => viewModeProps.onChange(o.value)}
+                >
+                  <Text style={[styles.viewModeText, viewModeProps.value === o.value && styles.viewModeTextActive]}>{o.label}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          ) : <View />}
+          {sortProps && <SortControl {...sortProps} />}
+        </View>
+      )}
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  row1: { flexDirection: 'row', gap: Spacing.sm, padding: Spacing.md, paddingBottom: Spacing.sm },
+  searchBox: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: Spacing.xs, backgroundColor: Colors.surfaceAlt, borderRadius: BorderRadius.md, paddingHorizontal: Spacing.sm, minHeight: 44 },
+  searchInput: { flex: 1, fontSize: FontSize.md, color: Colors.text, paddingVertical: 8 },
+  filtersBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: Colors.surfaceAlt, borderRadius: BorderRadius.md, paddingHorizontal: Spacing.sm, minHeight: 44 },
+  filtersBtnText: { fontSize: FontSize.sm, color: Colors.primary, fontWeight: '600' },
+  badge: { backgroundColor: Colors.primary, borderRadius: BorderRadius.full, minWidth: 18, height: 18, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4 },
+  badgeText: { color: Colors.white, fontSize: 11, fontWeight: '700' },
+  row2: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: Spacing.md, paddingBottom: Spacing.sm },
+  viewModeGroup: { flexDirection: 'row', backgroundColor: Colors.surfaceAlt, borderRadius: BorderRadius.md, padding: 2 },
+  viewModeBtn: { paddingVertical: 6, paddingHorizontal: Spacing.sm, borderRadius: BorderRadius.sm, minHeight: 44, justifyContent: 'center' },
+  viewModeBtnActive: { backgroundColor: Colors.primary },
+  viewModeText: { fontSize: FontSize.xs, color: Colors.textSecondary },
+  viewModeTextActive: { color: Colors.white, fontWeight: '600' },
+});
