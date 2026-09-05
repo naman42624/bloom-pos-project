@@ -49,7 +49,7 @@ const styles = StyleSheet.create({
   sheet: { backgroundColor: Colors.surface, borderTopLeftRadius: BorderRadius.lg, borderTopRightRadius: BorderRadius.lg, maxHeight: '75%', paddingBottom: Spacing.lg },
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: Spacing.md, borderBottomWidth: 1, borderBottomColor: Colors.border },
   title: { fontSize: FontSize.lg, fontWeight: '700', color: Colors.text },
-  doneText: { fontSize: FontSize.md, color: Colors.primary, fontWeight: '600' },
+  doneText: { fontSize: FontSize.md, color: Colors.primary, fontWeight: '600', minHeight: 44, justifyContent: 'center' },
   body: { paddingHorizontal: Spacing.md },
   section: { marginTop: Spacing.md },
   sectionLabel: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.textSecondary, marginBottom: Spacing.xs },
@@ -58,6 +58,6 @@ const styles = StyleSheet.create({
   chipActive: { backgroundColor: Colors.primary },
   chipText: { fontSize: FontSize.sm, color: Colors.text },
   chipTextActive: { color: Colors.white, fontWeight: '600' },
-  clearAllBtn: { marginTop: Spacing.md, marginHorizontal: Spacing.md, alignItems: 'center', paddingVertical: Spacing.sm },
+  clearAllBtn: { marginTop: Spacing.md, marginHorizontal: Spacing.md, alignItems: 'center', paddingVertical: Spacing.sm, minHeight: 44, justifyContent: 'center' },
   clearAllText: { color: Colors.textLight, textDecorationLine: 'underline', fontSize: FontSize.sm },
 });
