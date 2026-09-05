@@ -31,6 +31,12 @@ const STAGE_COLORS = {
 //                       server/routes/sales.js  (router.put('/:id/status', ...))
 //   PICKUP_PICKED_UP -> PUT /api/deliveries/pickup/:saleId/picked-up
 //                       server/routes/deliveries.js
+//   DELIVERY_PICKUP  -> PUT /api/deliveries/:id/pickup
+//                       server/routes/deliveries.js — NOT the same route as
+//                       PICKUP_PICKED_UP above despite the similar name: this
+//                       is the delivery PARTNER picking the order up from the
+//                       shop (order_type='delivery'), the other is a
+//                       CUSTOMER picking up in-store (order_type='pickup').
 //   DELIVERY_DELIVER -> PUT /api/deliveries/:id/deliver
 //                       server/routes/deliveries.js
 //
@@ -40,19 +46,47 @@ const STAGE_COLORS = {
 const ENDPOINT_ROLES = {
   SALE_STATUS: ['owner', 'manager', 'employee', 'counter_staff'],
   PICKUP_PICKED_UP: ['owner', 'manager', 'employee', 'counter_staff'],
+  DELIVERY_PICKUP: ['delivery_partner', 'owner', 'manager'],
   DELIVERY_DELIVER: ['delivery_partner', 'owner', 'manager'],
 };
 
 // Fail closed: an unknown/missing viewer role gets no one-tap action. Callers
 // must pass req.user.role explicitly (both call sites in routes/sales.js do).
-function actionFor(endpointKey, viewerRole, action) {
+// `extraRoles` is the pref_counter_marks_pickup/pref_counter_marks_delivered
+// mechanism (see getStageFlags below): DELIVERY_PICKUP/DELIVERY_DELIVER's base
+// list mirrors the route's authorize() call verbatim and must stay that way,
+// so the owner-toggleable widening is layered on here instead of mutating it.
+function actionFor(endpointKey, viewerRole, action, extraRoles) {
   if (!viewerRole) return null;
-  return ENDPOINT_ROLES[endpointKey].includes(viewerRole) ? action : null;
+  const allowed = extraRoles && extraRoles.length
+    ? [...ENDPOINT_ROLES[endpointKey], ...extraRoles]
+    : ENDPOINT_ROLES[endpointKey];
+  return allowed.includes(viewerRole) ? action : null;
+}
+
+// Reads the two counter_staff delivery-action preferences once per request
+// (never per-row — settings are global, not per-sale) and hands back the
+// extraRoles arrays actionFor() expects. Async pg.Pool db only — all three
+// callers of computeOrderStage() already use getAsyncDb() for everything
+// else on these routes.
+async function getStageFlags(db) {
+  const rows = await db.prepare(
+    "SELECT key, value FROM settings WHERE key IN ('pref_counter_marks_pickup', 'pref_counter_marks_delivered')"
+  ).all();
+  const map = Object.fromEntries((rows || []).map((r) => [r.key, r.value]));
+  return {
+    counterCanMarkPickedUp: map.pref_counter_marks_pickup === '1' ? ['counter_staff'] : [],
+    counterCanMarkDelivered: map.pref_counter_marks_delivered === '1' ? ['counter_staff'] : [],
+  };
 }
 
 // viewerRole — the role of the user this stage is being rendered for. Only
 // affects nextAction (the one-tap button); key/label/color are role-neutral.
-function computeOrderStage(sale, viewerRole) {
+// flags — from getStageFlags() above, default {} so the two existing callers
+// that haven't been touched to fetch it yet still work (both delivery
+// extraRoles arrays are then simply empty, i.e. no widening — the same
+// behavior as before this parameter existed).
+function computeOrderStage(sale, viewerRole, flags = {}) {
   if (sale.status === 'cancelled') {
     return { key: 'cancelled', label: 'Cancelled', color: STAGE_COLORS.cancelled, nextAction: null };
   }
@@ -152,17 +186,51 @@ function computeOrderStage(sale, viewerRole) {
       return { key: 'preparing', label: 'Preparing', color: STAGE_COLORS.preparing, nextAction: markReadyAction };
     }
     if (sale.status === 'ready' && !['picked_up', 'in_transit', 'delivered'].includes(sale.delivery_status)) {
-      return { key: 'ready', label: 'Ready', color: STAGE_COLORS.ready, nextAction: null }; // assigning a rider needs the picker — no one-tap here
+      // A rider already assigned (delivery_status === 'assigned') is a real,
+      // one-tap-able next step — PUT /deliveries/:id/pickup, the shop handing
+      // the order to whoever is taking it out. Previously this whole branch
+      // returned nextAction: null unconditionally, on the theory that
+      // "assigning a rider needs the picker" — true for the NO-rider-yet case
+      // below, but that reasoning doesn't apply once a rider is already
+      // attached: nothing here needs a human decision, and the null left
+      // counter staff and even owner/manager stuck on a status line
+      // ("<rider> has it", see OrderCard's resolveDeadEnd) with no action
+      // until the rider or a manager acted from DeliveryDetailScreen (found
+      // live, 2026-09-04 — this is also the "delivery-ladder reorder" item
+      // CLAUDE.md already flagged as deferred debt).
+      if (sale.delivery_status === 'assigned') {
+        return {
+          key: 'ready',
+          label: 'Ready',
+          color: STAGE_COLORS.ready,
+          nextAction: actionFor(
+            'DELIVERY_PICKUP', viewerRole,
+            { label: 'Mark Picked Up', endpoint: `/deliveries/${sale.delivery_id}/pickup`, method: 'PUT', body: {} },
+            flags.counterCanMarkPickedUp
+          ),
+        };
+      }
+      return { key: 'ready', label: 'Ready', color: STAGE_COLORS.ready, nextAction: null }; // no rider yet — assigning needs the picker, no one-tap here
     }
     if (['assigned', 'picked_up', 'in_transit'].includes(sale.delivery_status)) {
-      const codOutstanding = Number(sale.cod_amount || 0) > Number(sale.cod_collected || 0);
+      // COD outstanding no longer blanks this to null for everyone — PUT
+      // /deliveries/:id/deliver has never hard-required cod_collected to
+      // equal cod_amount (it records whatever is passed, or nothing), so the
+      // block was a stage-layer decision, not a server safety requirement.
+      // The frontend (OrderCard's resolveDeliverStep) now checks cod_amount/
+      // cod_collected itself and prompts for the amount inline before firing
+      // when it's genuinely outstanding, instead of the button not existing
+      // at all — the same "route to a screen vs. ask a quick question inline"
+      // upgrade Task 15 already gave Start Preparing.
       return {
         key: 'out_for_delivery',
         label: 'Out for Delivery',
         color: STAGE_COLORS.out_for_delivery,
-        nextAction: codOutstanding
-          ? null
-          : actionFor('DELIVERY_DELIVER', viewerRole, { label: 'Mark Delivered', endpoint: `/deliveries/${sale.delivery_id}/deliver`, method: 'PUT', body: {} }),
+        nextAction: actionFor(
+          'DELIVERY_DELIVER', viewerRole,
+          { label: 'Mark Delivered', endpoint: `/deliveries/${sale.delivery_id}/deliver`, method: 'PUT', body: {} },
+          flags.counterCanMarkDelivered
+        ),
       };
     }
     if (sale.delivery_status === 'delivered' || sale.status === 'completed') {
@@ -205,4 +273,4 @@ function computeOrderStage(sale, viewerRole) {
   return { key: 'completed', label: 'Completed', color: STAGE_COLORS.completed, nextAction: null };
 }
 
-module.exports = { computeOrderStage };
+module.exports = { computeOrderStage, getStageFlags };

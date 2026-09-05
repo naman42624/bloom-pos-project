@@ -215,22 +215,60 @@ check('florist_staff can reach production tasks but NOT checkout/payments/expens
   }
 });
 
-check('florist_staff cannot start a task assigned to someone else (ownership check holds for the new role)', async () => {
-  const owner = await staffLoginAsTestOwner();
-  const floristA = await createAndLoginTestStaff('florist_staff', owner.token);
-  const floristB = await createAndLoginTestStaff('florist_staff', owner.token);
+check('florist_staff cannot start a task assigned to someone else, when pref_flexible_task_assignment is off (ownership check holds for the new role)', async () => {
+  // pref_flexible_task_assignment (2026-09-04, default ON) deliberately lets
+  // any staff member work any task — this check exists to prove the
+  // per-assignee ownership gate ITSELF still works, so it forces the
+  // preference off for the duration of the test rather than assuming a
+  // stricter global default that is no longer true. Restored in `finally`
+  // so a thrown assertion can't leave it stuck off for every other caller
+  // of this script or the live app.
+  const db = await getDb();
+  const prevPref = await db.prepare("SELECT value FROM settings WHERE key = 'pref_flexible_task_assignment'").get();
+  await db.prepare("UPDATE settings SET value = '0' WHERE key = 'pref_flexible_task_assignment'").run();
+  try {
+    const owner = await staffLoginAsTestOwner();
+    const floristA = await createAndLoginTestStaff('florist_staff', owner.token);
+    const floristB = await createAndLoginTestStaff('florist_staff', owner.token);
 
-  const tasksRes = await fetch(`${API_BASE}/production/tasks`, { headers: { Authorization: `Bearer ${floristA.token}` } });
-  const tasks = (await tasksRes.json()).data;
-  const pending = tasks.find((t) => t.status === 'pending');
-  if (!pending) {
-    console.log('   (skipped — no pending production task in dev DB to test against)');
-    return;
+    const tasksRes = await fetch(`${API_BASE}/production/tasks`, { headers: { Authorization: `Bearer ${floristA.token}` } });
+    const tasks = (await tasksRes.json()).data;
+    const pending = tasks.find((t) => t.status === 'pending');
+    if (!pending) {
+      console.log('   (skipped — no pending production task in dev DB to test against)');
+      return;
+    }
+    // floristA picks it (assigns to self), then floristB must be rejected on /start
+    await fetch(`${API_BASE}/production/tasks/${pending.id}/pick`, { method: 'PUT', headers: { Authorization: `Bearer ${floristA.token}` } });
+    const startRes = await fetch(`${API_BASE}/production/tasks/${pending.id}/start`, { method: 'PUT', headers: { Authorization: `Bearer ${floristB.token}` } });
+    if (startRes.status !== 403) throw new Error(`Expected floristB to be BLOCKED from starting floristA's task, got ${startRes.status}`);
+  } finally {
+    await db.prepare("UPDATE settings SET value = ? WHERE key = 'pref_flexible_task_assignment'").run(prevPref?.value ?? '1');
   }
-  // floristA picks it (assigns to self), then floristB must be rejected on /start
-  await fetch(`${API_BASE}/production/tasks/${pending.id}/pick`, { method: 'PUT', headers: { Authorization: `Bearer ${floristA.token}` } });
-  const startRes = await fetch(`${API_BASE}/production/tasks/${pending.id}/start`, { method: 'PUT', headers: { Authorization: `Bearer ${floristB.token}` } });
-  if (startRes.status !== 403) throw new Error(`Expected floristB to be BLOCKED from starting floristA's task, got ${startRes.status}`);
+});
+
+check('florist_staff CAN start a task assigned to someone else, when pref_flexible_task_assignment is on (the owner-toggleable override actually overrides)', async () => {
+  const db = await getDb();
+  const prevPref = await db.prepare("SELECT value FROM settings WHERE key = 'pref_flexible_task_assignment'").get();
+  await db.prepare("UPDATE settings SET value = '1' WHERE key = 'pref_flexible_task_assignment'").run();
+  try {
+    const owner = await staffLoginAsTestOwner();
+    const floristA = await createAndLoginTestStaff('florist_staff', owner.token);
+    const floristB = await createAndLoginTestStaff('florist_staff', owner.token);
+
+    const tasksRes = await fetch(`${API_BASE}/production/tasks`, { headers: { Authorization: `Bearer ${floristA.token}` } });
+    const tasks = (await tasksRes.json()).data;
+    const pending = tasks.find((t) => t.status === 'pending');
+    if (!pending) {
+      console.log('   (skipped — no pending production task in dev DB to test against)');
+      return;
+    }
+    await fetch(`${API_BASE}/production/tasks/${pending.id}/pick`, { method: 'PUT', headers: { Authorization: `Bearer ${floristA.token}` } });
+    const startRes = await fetch(`${API_BASE}/production/tasks/${pending.id}/start`, { method: 'PUT', headers: { Authorization: `Bearer ${floristB.token}` } });
+    if (startRes.status !== 200) throw new Error(`Expected floristB to be ALLOWED to start floristA's task with the pref on, got ${startRes.status}`);
+  } finally {
+    await db.prepare("UPDATE settings SET value = ? WHERE key = 'pref_flexible_task_assignment'").run(prevPref?.value ?? '1');
+  }
 });
 
 // ─── Run ──────────────────────────────────────────────────────
