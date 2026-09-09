@@ -1,5 +1,5 @@
-import React, { useCallback, useEffect, useState } from 'react';
-import { View, Text, StyleSheet, FlatList, TouchableOpacity, RefreshControl, ActivityIndicator, ScrollView } from 'react-native';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { View, Text, StyleSheet, FlatList, SectionList, TouchableOpacity, RefreshControl, ActivityIndicator, ScrollView } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import api from '../services/api';
@@ -11,6 +11,9 @@ import useOrderListData from '../hooks/useOrderListData';
 import OrderListToolbar from '../components/orders/OrderListToolbar';
 import FilterDrawer from '../components/orders/FilterDrawer';
 import ActiveFilterChips from '../components/orders/ActiveFilterChips';
+import DateSessionHeader from '../components/orders/DateSessionHeader';
+import useSessionsForDates from '../hooks/useSessionsForDates';
+import { getSingleLocationId, groupOrdersByDay, groupOrdersBySession, sumGrandTotal } from '../utils/orderGrouping';
 
 const STATUS_LABELS = { pending: 'Received', confirmed: 'Confirmed', preparing: 'In Preparation', ready: 'Ready', completed: 'Completed', cancelled: 'Cancelled', draft: 'Draft' };
 const ORDER_TYPE_LABELS = { pickup: 'Pickup', delivery: 'Delivery', walk_in: 'Walk-in', pre_order: 'Advance order' };
@@ -46,6 +49,44 @@ export default function OrdersInboxScreen({ navigation, route }) {
   );
   const list = useOrderListData(fetchFn, { pageSize: 50 });
   const [filtersOpen, setFiltersOpen] = useState(false);
+
+  const singleLocationId = useMemo(() => getSingleLocationId(list.items), [list.items]);
+  const dayGroups = useMemo(() => groupOrdersByDay(list.items), [list.items]);
+  const dateKeysNeedingSessions = useMemo(
+    () => (singleLocationId ? dayGroups.map((d) => d.dateKey).filter(Boolean) : []),
+    [singleLocationId, dayGroups]
+  );
+  const { sessionsByDate } = useSessionsForDates(singleLocationId, dateKeysNeedingSessions);
+
+  const sections = useMemo(() => {
+    if (list.sort === 'urgency') {
+      // Guard against a real SectionList quirk: a section object with an
+      // empty `data` array still counts as 2 "items" internally (header +
+      // footer slots), so ListEmptyComponent would never show for a filter
+      // combo with zero results while sorted by urgency. Returning [] here
+      // (rather than one section with data: []) keeps the existing
+      // "flat, no headers, server order" behavior for any non-empty case
+      // while letting the normal empty state show correctly.
+      return list.items.length === 0 ? [] : [{ key: 'urgent', dateLabel: null, sessionLabel: null, data: list.items }];
+    }
+    const result = [];
+    for (const day of dayGroups) {
+      if (singleLocationId && day.dateKey) {
+        const sessionGroups = groupOrdersBySession(day.orders, sessionsByDate[day.dateKey] || []);
+        for (const sg of sessionGroups) {
+          result.push({
+            key: `${day.dateKey}:${sg.sessionLabel || '_none'}`,
+            dateLabel: day.dateLabel,
+            sessionLabel: sg.sessionLabel,
+            data: sg.orders,
+          });
+        }
+      } else {
+        result.push({ key: day.dateKey || '_unknown', dateLabel: day.dateLabel, sessionLabel: null, data: day.orders });
+      }
+    }
+    return result;
+  }, [list.items, list.sort, singleLocationId, dayGroups, sessionsByDate]);
 
   // Seeded from an incoming `status` param (the Dashboard's Done chip lands
   // here with { status: 'completed' }) — same intent as the original file's
@@ -176,13 +217,23 @@ export default function OrdersInboxScreen({ navigation, route }) {
       {list.loading ? (
         <ActivityIndicator style={{ marginTop: 40 }} color={Colors.primary} />
       ) : (
-        <FlatList
-          data={list.items}
+        <SectionList
+          sections={sections}
           keyExtractor={(item) => String(item.id)}
           renderItem={renderItem}
+          renderSectionHeader={({ section }) =>
+            section.key === 'urgent' ? null : (
+              <DateSessionHeader
+                dateLabel={section.dateLabel}
+                sessionLabel={section.sessionLabel}
+                totalAmount={sumGrandTotal(section.data)}
+              />
+            )
+          }
           refreshControl={<RefreshControl refreshing={list.refreshing} onRefresh={list.refresh} colors={[Colors.primary]} />}
           ListEmptyComponent={<Text style={styles.empty}>No orders match these filters.</Text>}
           contentContainerStyle={{ padding: Spacing.md }}
+          stickySectionHeadersEnabled={false}
         />
       )}
 
