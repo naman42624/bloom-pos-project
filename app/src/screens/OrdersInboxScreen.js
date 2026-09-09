@@ -285,6 +285,13 @@ export default function OrdersInboxScreen({ navigation, route }) {
           }
           refreshControl={<RefreshControl refreshing={list.refreshing} onRefresh={list.refresh} colors={[Colors.primary]} />}
           ListEmptyComponent={<Text style={styles.empty}>No orders match these filters.</Text>}
+          ListFooterComponent={
+            list.hasMore ? (
+              <TouchableOpacity style={styles.loadMoreBtn} onPress={list.loadMore} disabled={list.loading}>
+                {list.loading ? <ActivityIndicator color={Colors.primary} /> : <Text style={styles.loadMoreText}>Load more</Text>}
+              </TouchableOpacity>
+            ) : null
+          }
           contentContainerStyle={{ padding: Spacing.md }}
           stickySectionHeadersEnabled={false}
         />
@@ -344,6 +351,8 @@ const styles = StyleSheet.create({
   errorBanner: { backgroundColor: Colors.error + '15', padding: Spacing.sm, marginHorizontal: Spacing.md, borderRadius: BorderRadius.md },
   errorBannerText: { color: Colors.error, fontSize: FontSize.sm },
   empty: { textAlign: 'center', color: Colors.textLight, marginTop: 40 },
+  loadMoreBtn: { alignItems: 'center', paddingVertical: Spacing.md, minHeight: 44, justifyContent: 'center' },
+  loadMoreText: { color: Colors.primary, fontWeight: '600' },
   fab: { position: 'absolute', right: Spacing.lg, bottom: Spacing.lg, width: 56, height: 56, borderRadius: 28, backgroundColor: Colors.primary, justifyContent: 'center', alignItems: 'center', elevation: 4, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 4 },
   fabSecondary: { position: 'absolute', right: Spacing.lg, bottom: Spacing.lg + 68, width: 44, height: 44, borderRadius: 22, backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.border, justifyContent: 'center', alignItems: 'center', elevation: 3, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.15, shadowRadius: 3 },
 });
