@@ -7,11 +7,23 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 
 const SEARCH_DEBOUNCE_MS = 300;
 
+// Single source of truth for "how many filters are active" — the number
+// shown on OrderListToolbar's Filters button badge. Colocated here (not
+// re-derived per screen) so every future consumer of this hook lands on
+// the same count rather than each screen writing its own copy — the exact
+// "two divergent calculations for one conceptual value" bug pattern this
+// codebase has already had to fix repeatedly in its register/settlement
+// math (see CLAUDE.md's "Known structural debt").
+function countActiveFilters(filters) {
+  return Object.values(filters || {}).filter((v) => v !== undefined && v !== null && v !== '').length;
+}
+
 export default function useOrderListData(fetchFn, { pageSize = 50 } = {}) {
   const [items, setItems] = useState([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState(null);
   const [search, setSearchState] = useState('');
   const [filters, setFilters] = useState({});
   const [sort, setSort] = useState(null); // null = server default; e.g. 'urgency' when opted in
@@ -36,17 +48,29 @@ export default function useOrderListData(fetchFn, { pageSize = 50 } = {}) {
     const myRequestId = ++requestIdRef.current;
     if (!append && !opts.silent) setLoading(true);
     const offset = append ? offsetRef.current : 0;
-    const params = { ...filters, search: searchValueRef.current, limit: pageSize, offset, ...(sort ? { sort } : {}) };
+    const merged = { ...filters, search: searchValueRef.current, limit: pageSize, offset, ...(sort ? { sort } : {}) };
+    // A "removed" filter (ActiveFilterChips's onRemove calls setFilter(key,
+    // undefined)) must leave that key entirely absent from the outgoing
+    // request, not present with value undefined — URLSearchParams would
+    // otherwise serialize it to the literal string "undefined", which the
+    // server matches as a real (non-matching) filter value, zeroing out
+    // results. Confirmed live: GET /sales?limit=3&status=undefined -> total:
+    // 0 vs total: 227 without it.
+    const params = Object.fromEntries(
+      Object.entries(merged).filter(([, v]) => v !== undefined && v !== null && v !== '')
+    );
 
     return fetchFn(params).then(({ items: newItems, total: newTotal }) => {
       if (myRequestId !== requestIdRef.current) return; // a newer request already landed
       setItems((prev) => (append ? [...prev, ...newItems] : newItems));
       setTotal(newTotal);
       offsetRef.current = offset + newItems.length;
+      setError(null);
       setLoading(false);
       setRefreshing(false);
-    }).catch(() => {
-      if (myRequestId !== requestIdRef.current) return;
+    }).catch((err) => {
+      if (myRequestId !== requestIdRef.current) return; // a superseded request's error must not overwrite a later request's state
+      setError(err?.message || 'Could not load orders. Pull down to try again.');
       setLoading(false);
       setRefreshing(false);
     });
@@ -94,5 +118,9 @@ export default function useOrderListData(fetchFn, { pageSize = 50 } = {}) {
 
   const hasMore = items.length < total;
 
-  return { items, loading, refreshing, total, hasMore, loadMore, refresh, search, setSearch, filters, setFilter, clearFilters, sort, setSort };
+  return {
+    items, loading, refreshing, error, total, hasMore, loadMore, refresh,
+    search, setSearch, filters, setFilter, clearFilters, sort, setSort,
+    activeFilterCount: countActiveFilters(filters),
+  };
 }

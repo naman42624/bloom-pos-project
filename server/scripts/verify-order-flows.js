@@ -1012,6 +1012,47 @@ check('FIXED: sort=urgency puts rush orders first without changing the default s
   assert(olderIdx < newerIdx, `Expected the older order to sort before the newer order under sort=urgency when both are non-rush (oldest-pending logic), got older at ${olderIdx}, newer at ${newerIdx}`);
 });
 
+check('sort=<unrecognized value> falls back to the same default ordering as no sort param at all (final review Bundled Addition A, 2026-09-09)', async () => {
+  // Only the literal string 'urgency' should opt into urgency ordering —
+  // any other value (typo, stale client, future removed sort name) must
+  // fall through to the same plain-recency default as omitting `sort`
+  // entirely, not silently 500 or silently apply urgency ordering anyway.
+  const owner = await loginOwner();
+  const noSortRes = await api('GET', `/sales?location_id=${TEST_LOCATION_ID}&limit=5`, owner.token);
+  const bogusSortRes = await api('GET', `/sales?location_id=${TEST_LOCATION_ID}&sort=bogus&limit=5`, owner.token);
+  assert(noSortRes.status === 200 && bogusSortRes.status === 200, `Expected both requests to succeed, got ${noSortRes.status} and ${bogusSortRes.status}`);
+  const noSortIds = noSortRes.body.data.sales.map((s) => s.id);
+  const bogusSortIds = bogusSortRes.body.data.sales.map((s) => s.id);
+  assert(noSortIds.length > 0, 'Expected at least one sale in the default-sort result to make this assertion meaningful');
+  assert(
+    noSortIds.length === bogusSortIds.length && noSortIds.every((id, i) => id === bogusSortIds[i]),
+    `Expected sort=bogus to produce the exact same row ordering as omitting sort entirely, got no-sort=[${noSortIds}] vs sort=bogus=[${bogusSortIds}]`
+  );
+});
+
+check('a filter arriving as the literal string "undefined" is NOT a magic value the server treats specially — it is matched as a real (non-matching) filter value, which is exactly why Finding 2\'s CLIENT-side fix (stripping undefined/null/empty before building request params) is load-bearing (final review Bundled Addition A, 2026-09-09)', async () => {
+  const owner = await loginOwner();
+  // Confirm the baseline: there ARE real, non-cancelled sales at this
+  // location today, so a 0-result response below can only be explained by
+  // the literal string 'undefined' failing to match any real status value
+  // — not by there simply being no data.
+  const baselineRes = await api('GET', `/sales?location_id=${TEST_LOCATION_ID}&limit=3`, owner.token);
+  assert(baselineRes.status === 200, `Expected 200, got ${baselineRes.status}`);
+  // Note: total comes back from Postgres COUNT(*) as a numeric-looking
+  // STRING (bigint-as-string, to avoid precision loss), not a JS number —
+  // Number(...) it before comparing, same as the route's own internal
+  // handling of the equivalent COUNT(*) result (see deliveries.js's
+  // `const total = Number(countRow?.total || 0);`).
+  assert(Number(baselineRes.body.data.total) > 0, 'Expected real sales to exist at Test Loc for this assertion to be meaningful');
+
+  const undefinedStatusRes = await api('GET', `/sales?location_id=${TEST_LOCATION_ID}&limit=3&status=undefined`, owner.token);
+  assert(undefinedStatusRes.status === 200, `Expected 200 (not a 500) even for this nonsensical filter value, got ${undefinedStatusRes.status}`);
+  assert(
+    Number(undefinedStatusRes.body.data.total) === 0,
+    `Expected status=undefined to match ZERO rows (the server has no special-casing for this string — it is compared literally as "AND s.status = 'undefined'"), got total ${undefinedStatusRes.body.data.total}. If this ever starts matching real rows, something changed the server's filter handling in a way the client-side fix (useOrderListData.js stripping undefined/null/'' before building request params) was specifically written to route around.`
+  );
+});
+
 check('FIXED: GET /deliveries returns an accurate total alongside the (still limited) array', async () => {
   const owner = await loginOwner();
   const res = await api('GET', `/deliveries?location_id=${TEST_LOCATION_ID}&limit=1`, owner.token);
