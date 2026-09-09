@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+import React, { useCallback, useEffect } from 'react';
 import { View, Text, StyleSheet, FlatList, TouchableOpacity, RefreshControl, ActivityIndicator, TextInput, ScrollView } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
@@ -7,6 +7,7 @@ import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import { formatCardDateTime } from '../utils/datetime';
 import StageBadge from '../components/StageBadge';
+import useOrderListData from '../hooks/useOrderListData';
 
 const STATUS_LABELS = { pending: 'Received', confirmed: 'Confirmed', preparing: 'In Preparation', ready: 'Ready', completed: 'Completed', cancelled: 'Cancelled', draft: 'Draft' };
 const ORDER_TYPE_LABELS = { pickup: 'Pickup', delivery: 'Delivery', walk_in: 'Walk-in', pre_order: 'Advance order' };
@@ -35,71 +36,40 @@ export default function OrdersInboxScreen({ navigation, route }) {
   // 'Customers' route registered in their stack's owner/manager sibling
   // (OrdersStack), so it must not render there.
   const showCustomersShortcut = user?.role === 'employee' || user?.role === 'counter_staff';
-  const [orders, setOrders] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
+
+  const fetchFn = useCallback(
+    (params) => api.getSales(params).then((res) => ({ items: res.data?.sales || [], total: res.data?.total || 0 })),
+    []
+  );
+  const list = useOrderListData(fetchFn, { pageSize: 50 });
+
   // Seeded from an incoming `status` param (the Dashboard's Done chip lands
-  // here with { status: 'completed' }) so the inbox opens pre-filtered
-  // instead of the tap just parking on an unfiltered "All" list.
-  const [statusFilter, setStatusFilter] = useState(route.params?.status ?? null);
-  const [channelFilter, setChannelFilter] = useState(null);
-  const [priorityOnly, setPriorityOnly] = useState(false);
-  const [search, setSearch] = useState('');
-  const requestIdRef = useRef(0);
-  const searchTimer = useRef(null);
-  // fetchOrders reads the search term from this ref, not the `search` state,
-  // so its identity (and therefore the useFocusEffect below) doesn't change on
-  // every keystroke — only on an actual filter change or a debounced search
-  // fetch. `search` state still drives the TextInput's displayed value.
-  const searchRef = useRef('');
-
-  const fetchOrders = useCallback(async (searchOverride) => {
-    const requestId = ++requestIdRef.current;
-    try {
-      const params = { limit: 100 };
-      if (statusFilter) params.status = statusFilter;
-      if (channelFilter) params.channel = channelFilter;
-      if (priorityOnly) params.priority = 'rush';
-      const activeSearch = searchOverride !== undefined ? searchOverride : searchRef.current;
-      if (activeSearch.trim()) params.search = activeSearch.trim();
-      const res = await api.getSales(params);
-      if (requestId !== requestIdRef.current) return; // a newer request superseded this one
-      setOrders(res.data?.sales || []);
-    } catch {
-      if (requestId !== requestIdRef.current) return;
-      setOrders([]);
-    } finally {
-      if (requestId === requestIdRef.current) {
-        setLoading(false);
-        setRefreshing(false);
-      }
-    }
-  }, [statusFilter, channelFilter, priorityOnly]);
-
-  // Re-sync if the screen was already mounted and a new `status` param
-  // arrives (e.g. Done chip tapped again from Dashboard while Orders Inbox
-  // is still alive in the stack). setStatusFilter here changes fetchOrders'
-  // identity, which the useFocusEffect below already re-runs on — no
-  // separate refetch call needed.
+  // here with { status: 'completed' }) — same intent as the original file's
+  // comment, now driven through setFilter instead of local state.
   useEffect(() => {
-    if (route.params?.status !== undefined) setStatusFilter(route.params.status);
+    if (route.params?.status !== undefined) list.setFilter('status', route.params.status || undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [route.params?.status]);
 
-  useFocusEffect(useCallback(() => { setLoading(true); fetchOrders(); }, [fetchOrders]));
+  // list.refresh() depends on `filters` (and therefore, e.g., the status
+  // filter above) — so unlike the ORIGINAL file's fetchOrders (which only
+  // changed identity on an actual filter change), this refetches on every
+  // filter change too, in addition to every focus. That's a deliberate,
+  // accepted minor inefficiency (a double-fetch immediately after changing
+  // a filter while this screen has focus) — the alternative, freezing the
+  // dependency array to [], would replay a STALE list.refresh closure after
+  // any filter change, which is worse (silently ignores the new filter on
+  // next focus). Do not "fix" this by reverting to [].
+  useFocusEffect(useCallback(() => { list.refresh(); }, [list.refresh]));
 
-  const handleSearchChange = (text) => {
-    setSearch(text);
-    searchRef.current = text;
-    if (searchTimer.current) clearTimeout(searchTimer.current);
-    searchTimer.current = setTimeout(() => fetchOrders(text), 300);
-  };
-
-  const clearSearch = () => {
-    setSearch('');
-    searchRef.current = '';
-    if (searchTimer.current) clearTimeout(searchTimer.current);
-    fetchOrders('');
-  };
+  // Derived, null-based mirrors of list.filters for the still-flat chip rows
+  // below (Task 6 replaces this whole toolbar block with
+  // OrderListToolbar+FilterDrawer+ActiveFilterChips) — kept so the chip
+  // selection comparisons read the same as the original statusFilter/
+  // channelFilter/priorityOnly local state did.
+  const activeStatus = list.filters.status || null;
+  const activeChannel = list.filters.channel || null;
+  const priorityOnly = list.filters.priority === 'rush';
 
   const renderItem = ({ item }) => {
     const itemsSummary = formatItemsSummary(item.items);
@@ -157,13 +127,13 @@ export default function OrdersInboxScreen({ navigation, route }) {
         <Ionicons name="search" size={18} color={Colors.textLight} />
         <TextInput
           style={styles.searchInput}
-          value={search}
-          onChangeText={handleSearchChange}
+          value={list.search}
+          onChangeText={list.setSearch}
           placeholder="Search order #, customer, phone, item…"
           placeholderTextColor={Colors.textLight}
         />
-        {search.length > 0 && (
-          <TouchableOpacity onPress={clearSearch}>
+        {list.search.length > 0 && (
+          <TouchableOpacity onPress={() => list.setSearch('')}>
             <Ionicons name="close-circle" size={18} color={Colors.textLight} />
           </TouchableOpacity>
         )}
@@ -171,30 +141,30 @@ export default function OrdersInboxScreen({ navigation, route }) {
 
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
         {STATUS_FILTERS.map((s) => (
-          <TouchableOpacity key={s || 'all'} style={[styles.filterChip, statusFilter === s && styles.filterChipSelected]} onPress={() => setStatusFilter(s)}>
-            <Text style={[styles.filterChipText, statusFilter === s && styles.filterChipTextSelected]}>{s ? STATUS_LABELS[s] : 'All'}</Text>
+          <TouchableOpacity key={s || 'all'} style={[styles.filterChip, activeStatus === s && styles.filterChipSelected]} onPress={() => list.setFilter('status', s)}>
+            <Text style={[styles.filterChipText, activeStatus === s && styles.filterChipTextSelected]}>{s ? STATUS_LABELS[s] : 'All'}</Text>
           </TouchableOpacity>
         ))}
       </ScrollView>
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
         {CHANNEL_FILTERS.map((c) => (
-          <TouchableOpacity key={c || 'all'} style={[styles.filterChip, channelFilter === c && styles.filterChipSelected]} onPress={() => setChannelFilter(c)}>
-            <Text style={[styles.filterChipText, channelFilter === c && styles.filterChipTextSelected]}>{c || 'Any channel'}</Text>
+          <TouchableOpacity key={c || 'all'} style={[styles.filterChip, activeChannel === c && styles.filterChipSelected]} onPress={() => list.setFilter('channel', c)}>
+            <Text style={[styles.filterChipText, activeChannel === c && styles.filterChipTextSelected]}>{c || 'Any channel'}</Text>
           </TouchableOpacity>
         ))}
-        <TouchableOpacity style={[styles.filterChip, priorityOnly && styles.filterChipSelected]} onPress={() => setPriorityOnly((v) => !v)}>
+        <TouchableOpacity style={[styles.filterChip, priorityOnly && styles.filterChipSelected]} onPress={() => list.setFilter('priority', priorityOnly ? undefined : 'rush')}>
           <Text style={[styles.filterChipText, priorityOnly && styles.filterChipTextSelected]}>🔥 Rush only</Text>
         </TouchableOpacity>
       </ScrollView>
 
-      {loading ? (
+      {list.loading ? (
         <ActivityIndicator style={{ marginTop: 40 }} color={Colors.primary} />
       ) : (
         <FlatList
-          data={orders}
+          data={list.items}
           keyExtractor={(item) => String(item.id)}
           renderItem={renderItem}
-          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); fetchOrders(); }} colors={[Colors.primary]} />}
+          refreshControl={<RefreshControl refreshing={list.refreshing} onRefresh={list.refresh} colors={[Colors.primary]} />}
           ListEmptyComponent={<Text style={styles.empty}>No orders match these filters.</Text>}
           contentContainerStyle={{ padding: Spacing.md }}
         />
