@@ -24,7 +24,7 @@ export default function OrderListToolbar({ search, onSearchChange, activeFilterC
             placeholderTextColor={Colors.textLight}
           />
           {search && search.length > 0 && (
-            <TouchableOpacity onPress={() => onSearchChange('')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+            <TouchableOpacity onPress={() => onSearchChange('')} style={styles.clearBtn}>
               <Ionicons name="close-circle" size={18} color={Colors.textLight} />
             </TouchableOpacity>
           )}
@@ -64,6 +64,10 @@ const styles = StyleSheet.create({
   row1: { flexDirection: 'row', gap: Spacing.sm, padding: Spacing.md, paddingBottom: Spacing.sm },
   searchBox: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: Spacing.xs, backgroundColor: Colors.surfaceAlt, borderRadius: BorderRadius.md, paddingHorizontal: Spacing.sm, minHeight: 44 },
   searchInput: { flex: 1, fontSize: FontSize.md, color: Colors.text, paddingVertical: 8 },
+  // Explicit minWidth/minHeight (not hitSlop) to hit the app's 44x44pt
+  // minimum tap target — matches filtersBtn's minHeight:44 convention
+  // below rather than introducing a hitSlop-based pattern.
+  clearBtn: { minWidth: 44, minHeight: 44, alignItems: 'center', justifyContent: 'center' },
   filtersBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: Colors.surfaceAlt, borderRadius: BorderRadius.md, paddingHorizontal: Spacing.sm, minHeight: 44 },
   filtersBtnText: { fontSize: FontSize.sm, color: Colors.primary, fontWeight: '600' },
   badge: { backgroundColor: Colors.primary, borderRadius: BorderRadius.full, minWidth: 18, height: 18, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4 },
