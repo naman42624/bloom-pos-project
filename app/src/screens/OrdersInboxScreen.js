@@ -5,8 +5,10 @@ import { useFocusEffect } from '@react-navigation/native';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
-import { formatCardDateTime } from '../utils/datetime';
+import { formatCardDateTime, formatTime } from '../utils/datetime';
+import { showAlert } from '../utils/alert';
 import StageBadge from '../components/StageBadge';
+import ContactButtons from '../components/orders/ContactButtons';
 import useOrderListData from '../hooks/useOrderListData';
 import OrderListToolbar from '../components/orders/OrderListToolbar';
 import FilterDrawer from '../components/orders/FilterDrawer';
@@ -111,26 +113,71 @@ export default function OrdersInboxScreen({ navigation, route }) {
     const itemsSummary = formatItemsSummary(item.items);
     const orderTypeLabel = ORDER_TYPE_LABELS[item.order_type] || item.order_type;
     const isUnpaid = item.payment_status && item.payment_status !== 'paid' && item.payment_status !== 'refunded';
+    const nextAction = item.display_stage?.nextAction;
+    const needsResolution = nextAction && (nextAction.body?.status === 'preparing' || nextAction.endpoint?.endsWith('/deliver'));
+    const showActionButton = nextAction && !needsResolution;
+
+    const handleAdvance = async () => {
+      try {
+        // api.advanceOrder(nextAction) — NOT (id, nextAction). The sale id is
+        // already baked into nextAction.endpoint (e.g. `/sales/${id}/status`);
+        // passing an extra leading id argument would silently shift it into
+        // advanceOrder's `extraBody` parameter instead. Matches every other
+        // caller of this same helper (DashboardScreen.js, SaleDetailScreen.js,
+        // OrderKanbanBoard.js) — none of them pass an id either.
+        await api.advanceOrder(nextAction);
+        list.refresh();
+      } catch (err) {
+        // err?.message, not err?.response?.data?.message — api.js's request()
+        // throws a plain Error whose .message is already the server's plain-
+        // language text; every other screen's catch (err) block reads it this
+        // way (DashboardScreen.js is the clearest precedent).
+        showAlert('Could not update this order', err?.message || 'Please try again, or open the order to see what it needs.');
+      }
+    };
 
     return (
       <TouchableOpacity style={styles.row} onPress={() => navigation.navigate('SaleDetail', { saleId: item.id })}>
-        <Ionicons name={CHANNEL_ICONS[item.channel] || 'ellipse'} size={20} color={Colors.textSecondary} style={styles.channelIcon} />
-        <View style={styles.rowMain}>
-          <Text style={styles.saleNumber}>{item.sale_number}{item.priority === 'rush' ? '  🔥 Rush' : ''}</Text>
-          <Text style={styles.customerName}>{item.customer_display_name || item.customer_name || 'Walk-in'} · {orderTypeLabel}</Text>
-          {itemsSummary && <Text style={styles.itemsSummary} numberOfLines={1}>{itemsSummary}</Text>}
-          {item.scheduled_date && (
-            <Text style={styles.scheduled}>📅 {formatCardDateTime(item.scheduled_date, item.scheduled_time)}</Text>
-          )}
+        <View style={styles.rowTop}>
+          <Ionicons name={CHANNEL_ICONS[item.channel] || 'ellipse'} size={20} color={Colors.textSecondary} style={styles.channelIcon} />
+          <View style={styles.rowMain}>
+            <Text style={styles.saleNumber}>{item.sale_number}{item.priority === 'rush' ? '  🔥 Rush' : ''}</Text>
+            <Text style={styles.customerName}>{item.customer_display_name || item.customer_name || 'Walk-in'} · {orderTypeLabel}</Text>
+            {item.location_name && <Text style={styles.locationName}>{item.location_name}</Text>}
+            {itemsSummary && <Text style={styles.itemsSummary} numberOfLines={1}>{itemsSummary}</Text>}
+            <Text style={styles.timeText}>{formatTime(item.created_at)}</Text>
+            {item.scheduled_date && (
+              <Text style={styles.scheduled}>📅 {formatCardDateTime(item.scheduled_date, item.scheduled_time)}</Text>
+            )}
+          </View>
+          <View style={styles.rowSide}>
+            <StageBadge stage={item.display_stage} size="sm" />
+            <Text style={styles.amount}>{formatAmount(item.grand_total)}</Text>
+            {isUnpaid && (
+              <Text style={[styles.paymentBadge, { color: PAYMENT_STATUS_COLORS[item.payment_status] || Colors.error }]}>
+                {item.payment_status === 'partial' ? 'Partly paid' : 'Unpaid'}
+              </Text>
+            )}
+          </View>
         </View>
-        <View style={styles.rowSide}>
-          <StageBadge stage={item.display_stage} size="sm" />
-          <Text style={styles.amount}>{formatAmount(item.grand_total)}</Text>
-          {isUnpaid && (
-            <Text style={[styles.paymentBadge, { color: PAYMENT_STATUS_COLORS[item.payment_status] || Colors.error }]}>
-              {item.payment_status === 'partial' ? 'Partly paid' : 'Unpaid'}
-            </Text>
-          )}
+        <View style={styles.actionsRow}>
+          {showActionButton ? (
+            <TouchableOpacity style={styles.actionBtn} onPress={(e) => { e.stopPropagation(); handleAdvance(); }} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+              <Text style={styles.actionBtnText}>{nextAction.label || 'Next step'}</Text>
+            </TouchableOpacity>
+          ) : <View style={{ flex: 1 }} />}
+          <ContactButtons
+            contacts={[
+              { label: 'Customer', phone: item.customer_display_phone || item.customer_phone },
+              { label: 'Recipient', phone: item.receiver_display_phone },
+            ]}
+            context={{
+              type: item.display_stage?.key === 'ready_for_pickup' ? 'order_ready_pickup'
+                : item.display_stage?.key === 'out_for_delivery' ? 'order_out_for_delivery'
+                : 'general_inquiry',
+              params: { sale_number: item.sale_number, location_name: item.location_name },
+            }}
+          />
         </View>
       </TouchableOpacity>
     );
@@ -214,6 +261,12 @@ export default function OrdersInboxScreen({ navigation, route }) {
         ]}
       />
 
+      {list.error && (
+        <View style={styles.errorBanner}>
+          <Text style={styles.errorBannerText}>{list.error}</Text>
+        </View>
+      )}
+
       {list.loading ? (
         <ActivityIndicator style={{ marginTop: 40 }} color={Colors.primary} />
       ) : (
@@ -272,16 +325,24 @@ const styles = StyleSheet.create({
   filterChipSelected: { backgroundColor: Colors.primary, borderColor: Colors.primary },
   filterChipText: { fontSize: FontSize.sm, color: Colors.text, fontWeight: '600' },
   filterChipTextSelected: { color: Colors.white },
-  row: { flexDirection: 'row', alignItems: 'flex-start', backgroundColor: Colors.surface, borderRadius: BorderRadius.lg, padding: Spacing.md, marginBottom: Spacing.sm },
+  row: { backgroundColor: Colors.surface, borderRadius: BorderRadius.lg, padding: Spacing.md, marginBottom: Spacing.sm },
+  rowTop: { flexDirection: 'row', alignItems: 'flex-start' },
   channelIcon: { marginRight: Spacing.sm, marginTop: 2 },
   rowMain: { flex: 1 },
   saleNumber: { fontSize: FontSize.md, fontWeight: '700', color: Colors.text },
   customerName: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: 2 },
+  locationName: { fontSize: FontSize.xs, color: Colors.textLight, marginTop: 2 },
   itemsSummary: { fontSize: FontSize.sm, color: Colors.text, marginTop: 4 },
+  timeText: { fontSize: FontSize.xs, color: Colors.textLight, marginTop: 2 },
   scheduled: { fontSize: FontSize.xs, color: Colors.info, fontWeight: '600', marginTop: 4 },
   rowSide: { alignItems: 'flex-end', marginLeft: Spacing.sm },
   amount: { fontSize: FontSize.sm, fontWeight: '700', color: Colors.text, marginTop: 4 },
   paymentBadge: { fontSize: FontSize.xs, fontWeight: '700', marginTop: 4 },
+  actionsRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: Spacing.sm, paddingTop: Spacing.sm, borderTopWidth: 1, borderTopColor: Colors.border },
+  actionBtn: { backgroundColor: Colors.primary, borderRadius: BorderRadius.md, paddingVertical: Spacing.sm, paddingHorizontal: Spacing.md, minHeight: 44, justifyContent: 'center' },
+  actionBtnText: { color: Colors.white, fontWeight: '600', fontSize: FontSize.sm },
+  errorBanner: { backgroundColor: Colors.error + '15', padding: Spacing.sm, marginHorizontal: Spacing.md, borderRadius: BorderRadius.md },
+  errorBannerText: { color: Colors.error, fontSize: FontSize.sm },
   empty: { textAlign: 'center', color: Colors.textLight, marginTop: 40 },
   fab: { position: 'absolute', right: Spacing.lg, bottom: Spacing.lg, width: 56, height: 56, borderRadius: 28, backgroundColor: Colors.primary, justifyContent: 'center', alignItems: 'center', elevation: 4, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 4 },
   fabSecondary: { position: 'absolute', right: Spacing.lg, bottom: Spacing.lg + 68, width: 44, height: 44, borderRadius: 22, backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.border, justifyContent: 'center', alignItems: 'center', elevation: 3, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.15, shadowRadius: 3 },
