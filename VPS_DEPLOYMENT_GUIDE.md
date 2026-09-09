@@ -180,7 +180,10 @@ JWT_SECRET=flowerpoint
 JWT_EXPIRES_IN=7d
 DATABASE_URL=postgresql://bloomcart:bloomcartFlowerPoint@127.0.0.1:5432/bloomcart
 TRACKING_LINK_SECRET=<a-different-strong-random-string>
+PUBLIC_APP_URL=https://your-shop-domain.com
 ```
+
+`PUBLIC_APP_URL` is the public base URL customers' tracking links resolve against (e.g. `https://your-shop-domain.com`). Required in production; defaults to `http://localhost:19006` locally — leaving it unset in production means customer-facing tracking links point at `localhost`.
 
 Notes:
 - Use `127.0.0.1` instead of `localhost` to avoid socket/driver mismatch edge-cases.
@@ -404,6 +407,7 @@ pm2 restart bloomcart-api
 ## 15) Security Hardening Checklist
 
 - Use strong random `JWT_SECRET` and `TRACKING_LINK_SECRET` (different values — see §6.3)
+- Set `PUBLIC_APP_URL` to your real shop domain (see §6.3) — otherwise customer-facing tracking links point at `localhost`
 - Restrict CORS origins in production
 - Disable wildcard DB network access
 - Rotate DB credentials periodically

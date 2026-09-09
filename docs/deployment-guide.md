@@ -42,6 +42,7 @@ NODE_ENV=production
 JWT_SECRET=your-strong-random-secret-here-min-32-chars
 JWT_EXPIRES_IN=7d
 TRACKING_LINK_SECRET=a-different-strong-random-secret-here
+PUBLIC_APP_URL=https://your-shop-domain.com
 ```
 
 **Important:** Generate a strong JWT secret:
@@ -255,7 +256,8 @@ eas update --branch production --message "Bug fix v1.0.1"
 | `NODE_ENV` | Yes | `development` | Set to `production` for deployment |
 | `JWT_SECRET` | **Yes** | None (will crash) | Secret key for JWT signing |
 | `JWT_EXPIRES_IN` | No | `7d` | Token expiration time |
-| `TRACKING_LINK_SECRET` | No | `bloomcart-tracking-secret-2026` (dev fallback — set a real one in production) | HMAC secret signing public order-tracking links (`GET /api/track/:token`) |
+| `TRACKING_LINK_SECRET` | **Yes (production)** | a long random string — do not use the source code's development fallback | HMAC secret signing public order-tracking links (`GET /api/track/:token`) |
+| `PUBLIC_APP_URL` | **Yes (production)** | `http://localhost:19006` (dev fallback) | Public base URL customers' tracking links resolve against, e.g. `https://your-shop-domain.com` — without it in production, tracking links point at `localhost` |
 
 ### App Configuration
 

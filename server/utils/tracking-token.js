@@ -17,6 +17,10 @@ const crypto = require('crypto');
 
 const SECRET = process.env.TRACKING_LINK_SECRET || 'bloomcart-tracking-secret-2026';
 
+if (process.env.NODE_ENV === 'production' && !process.env.TRACKING_LINK_SECRET) {
+  throw new Error('TRACKING_LINK_SECRET must be set in production — the public order-tracking endpoint is otherwise forgeable by anyone who has read this repo.');
+}
+
 function sign(saleId) {
   return crypto.createHmac('sha256', SECRET).update(String(saleId)).digest('hex').slice(0, 32);
 }
