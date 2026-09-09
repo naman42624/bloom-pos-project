@@ -1053,6 +1053,41 @@ check('a filter arriving as the literal string "undefined" is NOT a magic value 
   );
 });
 
+check('FIXED: GET /sales total mirrors the real filtered query when search + pickup_status are combined (2026-09-09 — the old hand-duplicated countSql omitted both filters, plus non-owner location-scoping)', async () => {
+  const owner = await loginOwner();
+  // Unique per run, so only the sales this check creates can ever match it —
+  // any pre-existing ambient sales at Test Loc (real production/other-run
+  // data) are guaranteed non-matches.
+  const searchTerm = `CountBugCheck${Date.now()}`;
+  const createdIds = [];
+  for (let i = 0; i < 2; i++) {
+    const res = await api('POST', '/sales', owner.token, {
+      location_id: TEST_LOCATION_ID, order_type: 'pickup', channel: 'phone',
+      customer_name: searchTerm,
+      items: [{ quantity: 1, unit_price: 100, product_name: 'Test Count Bug Item' }],
+    });
+    assert(res.status === 201, `Expected sale creation to succeed, got ${res.status}: ${JSON.stringify(res.body)}`);
+    createdSaleIds.push(res.body.data.id);
+    createdIds.push(res.body.data.id);
+  }
+
+  // pickup_status is server-managed, not client-settable on POST /sales — an
+  // order_type: 'pickup' sale is always auto-set to pickup_status: 'waiting'
+  // at creation (see the "Auto-set pickup_status for pickup orders" comment
+  // in server/routes/sales.js). Filter on that real, reachable value so this
+  // still exercises the exact search + pickup_status combination the old
+  // countSql got wrong.
+  const res = await api('GET', `/sales?location_id=${TEST_LOCATION_ID}&search=${searchTerm}&pickup_status=waiting`, owner.token);
+  assert(res.status === 200, `Expected 200, got ${res.status}: ${JSON.stringify(res.body)}`);
+  const sales = res.body.data.sales;
+  const total = Number(res.body.data.total); // COUNT(*) comes back bigint-as-string
+  assert(sales.length === createdIds.length, `Expected exactly the ${createdIds.length} sale(s) just created to match search=${searchTerm}&pickup_status=waiting, got ${sales.length}`);
+  assert(
+    total === sales.length,
+    `total (${total}) must equal actual matching rows (${sales.length}) when search+pickup_status are both applied — the old hand-duplicated countSql omitted both filters entirely, so total came back as the count of ALL non-cancelled sales at this location instead of just the ${sales.length} that actually match`
+  );
+});
+
 check('FIXED: GET /deliveries returns an accurate total alongside the (still limited) array', async () => {
   const owner = await loginOwner();
   const res = await api('GET', `/deliveries?location_id=${TEST_LOCATION_ID}&limit=1`, owner.token);

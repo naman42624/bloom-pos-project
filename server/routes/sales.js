@@ -252,6 +252,13 @@ router.get('/', authenticate, async (req, res, next) => {
       }
     }
 
+    // Snapshot the fully-filtered query BEFORE ORDER BY/LIMIT/OFFSET are
+    // appended below, so the count query is guaranteed to apply the exact
+    // same filters as the real one — no second hand-written copy to drift
+    // out of sync. Same fix pattern as GET /deliveries (foundation plan).
+    const countBaseSql = sql;
+    const countBaseParams = [...params];
+
     if (sort === 'urgency') {
       sql += ` ORDER BY
         (s.priority = 'rush') DESC,
@@ -298,23 +305,11 @@ router.get('/', authenticate, async (req, res, next) => {
       }
     }
 
-    // Get total count for pagination
-    let countSql = `SELECT COUNT(*) as total FROM sales s WHERE 1=1`;
-    const countParams = [];
-    if (location_id) { countSql += ' AND s.location_id = ?'; countParams.push(location_id); }
-    if (order_type) { countSql += ' AND s.order_type = ?'; countParams.push(order_type); }
-    if (payment_status) { countSql += ' AND s.payment_status = ?'; countParams.push(payment_status); }
-    if (status) { countSql += ' AND s.status = ?'; countParams.push(status); }
-    else { countSql += " AND s.status != 'cancelled'"; }
-    if (channel) { countSql += ' AND s.channel = ?'; countParams.push(channel); }
-    if (priority) { countSql += ' AND s.priority = ?'; countParams.push(priority); }
-    if (date_from) { countSql += ' AND s.created_at >= (?::date)'; countParams.push(date_from); }
-    if (date_to) { countSql += " AND s.created_at < (?::date + INTERVAL '1 day')"; countParams.push(date_to); }
-    if (filter_date) {
-      countSql += " AND (s.scheduled_date = ? OR (s.scheduled_date IS NULL AND s.created_at >= (?::date) AND s.created_at < (?::date + INTERVAL '1 day')))";
-      countParams.push(filter_date, filter_date, filter_date);
-    }
-    const { total } = await db.prepare(countSql).get(...countParams);
+    // Get total count for pagination — from the exact filtered query
+    // snapshotted above, not a separately hand-written duplicate (see
+    // comment at the snapshot site for why that broke `search`/
+    // `pickup_status`/non-owner scoping).
+    const { total } = await db.prepare(`SELECT COUNT(*) as total FROM (${countBaseSql}) as sub`).get(...countBaseParams);
 
     // One read for the whole list, not per row — these are global
     // preferences, not per-sale data.
