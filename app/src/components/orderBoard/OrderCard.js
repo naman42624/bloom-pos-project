@@ -5,6 +5,7 @@ import { Colors } from '../../constants/theme';
 import { FONT_FAMILY, formatMoney } from '../../constants/orderDisplay';
 import { TYPE_ICONS } from '../../constants/orderStages';
 import { formatCardDateTime, minutesSinceServerDate, minutesUntilShopDateTime } from '../../utils/datetime';
+import { waLink, buildMessage } from '../../utils/contact';
 import StageBadge from '../StageBadge';
 
 /**
@@ -470,7 +471,7 @@ export default function OrderCard({
               style={[styles.contactBtn, { backgroundColor: Colors.success + '15' }]}
               onPress={(e) => {
                 e.stopPropagation();
-                Linking.openURL(`https://wa.me/91${contactPhone}?text=${encodeURIComponent(`Hi, this is about your order ${order.sale_number}`)}`);
+                Linking.openURL(waLink(contactPhone, buildMessage('general_inquiry', { sale_number: order.sale_number })));
               }}
               hitSlop={12}
             >

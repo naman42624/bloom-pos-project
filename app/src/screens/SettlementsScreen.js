@@ -9,6 +9,7 @@ import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 import { Colors, FontSize, Spacing, BorderRadius, Shadows } from '../constants/theme';
 import { formatDate } from '../utils/datetime';
+import { waLink } from '../utils/contact';
 import useRegisterStatus from '../hooks/useRegisterStatus';
 import RegisterStatusBanner from '../components/RegisterStatusBanner';
 
@@ -303,7 +304,7 @@ export default function SettlementsScreen({ navigation, route }) {
               onPress={(e) => {
                 e.stopPropagation();
                 const msg = `Hi ${partner.partner_name || ''}, please hand over ₹${fmt(partner.total_cod)} from ${partner.delivery_count} deliver${partner.delivery_count !== 1 ? 'ies' : 'y'} when you're at the shop.`;
-                Linking.openURL(`https://wa.me/91${partner.partner_phone}?text=${encodeURIComponent(msg)}`);
+                Linking.openURL(waLink(partner.partner_phone, msg));
               }}
             >
               <Ionicons name="logo-whatsapp" size={20} color={Colors.success} />
