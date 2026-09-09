@@ -996,7 +996,13 @@ check('FIXED: sort=urgency puts rush orders first without changing the default s
   // sort=urgency: rush leads regardless of recency — should come before the
   // newer non-rush order, proving urgency sort is working. Among non-rush
   // orders, oldest-pending (created_at ASC) comes first, so older comes before newer.
-  const urgencyRes = await api('GET', `/sales?location_id=${TEST_LOCATION_ID}&sort=urgency&limit=50`, owner.token);
+  // limit is generously high (not 50) because TEST_LOCATION_ID accumulates real
+  // rows across every task's regression run this whole project — a tight limit
+  // combined with sort=urgency's oldest-pending tiebreak can push this run's own
+  // freshly-created non-rush "older" test row out of the page entirely once
+  // enough older ambient debris exists (found live, 2026-09-09: 109 non-cancelled
+  // sales already at Test Loc).
+  const urgencyRes = await api('GET', `/sales?location_id=${TEST_LOCATION_ID}&sort=urgency&limit=500`, owner.token);
   const ids = urgencyRes.body.data.sales.map((s) => s.id);
   const rushIdx = ids.indexOf(rush.body.data.id);
   const newerIdx = ids.indexOf(newer.body.data.id);
