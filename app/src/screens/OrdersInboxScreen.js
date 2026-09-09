@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { View, Text, StyleSheet, FlatList, SectionList, TouchableOpacity, RefreshControl, ActivityIndicator, ScrollView } from 'react-native';
+import { View, Text, StyleSheet, SectionList, TouchableOpacity, RefreshControl, ActivityIndicator, ScrollView } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import api from '../services/api';
@@ -46,7 +46,7 @@ export default function OrdersInboxScreen({ navigation, route }) {
   const showCustomersShortcut = user?.role === 'employee' || user?.role === 'counter_staff';
 
   const fetchFn = useCallback(
-    (params) => api.getSales(params).then((res) => ({ items: res.data?.sales || [], total: res.data?.total || 0 })),
+    (params) => api.getSales(params).then((res) => ({ items: res.data?.sales || [], total: Number(res.data?.total) || 0 })),
     []
   );
   const list = useOrderListData(fetchFn, { pageSize: 50 });
@@ -55,8 +55,12 @@ export default function OrdersInboxScreen({ navigation, route }) {
   const singleLocationId = useMemo(() => getSingleLocationId(list.items), [list.items]);
   const dayGroups = useMemo(() => groupOrdersByDay(list.items), [list.items]);
   const dateKeysNeedingSessions = useMemo(
-    () => (singleLocationId ? dayGroups.map((d) => d.dateKey).filter(Boolean) : []),
-    [singleLocationId, dayGroups]
+    // Under urgency sort, grouping (including session sub-grouping) is fully
+    // suppressed — one flat list, no headers (spec §2) — so there's nothing
+    // to fetch session data for; skip the fan-out entirely rather than
+    // fetching and then throwing every result away.
+    () => (singleLocationId && list.sort !== 'urgency' ? dayGroups.map((d) => d.dateKey).filter(Boolean) : []),
+    [singleLocationId, list.sort, dayGroups]
   );
   const { sessionsByDate } = useSessionsForDates(singleLocationId, dateKeysNeedingSessions);
 
@@ -209,7 +213,7 @@ export default function OrdersInboxScreen({ navigation, route }) {
       <OrderListToolbar
         search={list.search}
         onSearchChange={list.setSearch}
-        activeFilterCount={list.activeFilterCount}
+        activeFilterCount={list.activeFilterCount - (list.filters.status ? 1 : 0)}
         onOpenFilters={() => setFiltersOpen(true)}
         sortProps={{
           value: list.sort,
@@ -235,6 +239,10 @@ export default function OrdersInboxScreen({ navigation, route }) {
           order_type: (v) => `Type: ${ORDER_TYPE_LABELS[v] || v}`,
         }}
         onRemove={(key) => list.setFilter(key, undefined)}
+        // Not list.clearFilters() — that clears status too, and Status has
+        // its own always-visible chip row that "Clear all" deliberately
+        // leaves alone (spec §3), so each filter is cleared individually
+        // here instead.
         onClearAll={() => { list.setFilter('channel', undefined); list.setFilter('priority', undefined); list.setFilter('order_type', undefined); }}
       />
 
@@ -267,7 +275,7 @@ export default function OrdersInboxScreen({ navigation, route }) {
         </View>
       )}
 
-      {list.loading ? (
+      {list.loading && list.items.length === 0 ? (
         <ActivityIndicator style={{ marginTop: 40 }} color={Colors.primary} />
       ) : (
         <SectionList
@@ -287,7 +295,7 @@ export default function OrdersInboxScreen({ navigation, route }) {
           ListEmptyComponent={<Text style={styles.empty}>No orders match these filters.</Text>}
           ListFooterComponent={
             list.hasMore ? (
-              <TouchableOpacity style={styles.loadMoreBtn} onPress={list.loadMore} disabled={list.loading}>
+              <TouchableOpacity style={styles.loadMoreBtn} onPress={list.loadMore} disabled={list.loading || list.refreshing}>
                 {list.loading ? <ActivityIndicator color={Colors.primary} /> : <Text style={styles.loadMoreText}>Load more</Text>}
               </TouchableOpacity>
             ) : null
