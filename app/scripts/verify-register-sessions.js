@@ -8,12 +8,29 @@ const assert = require('assert');
 // module, so this test exercises the exact function real consumers get.
 const { matchSessionLabel } = require('../src/utils/registerSessions');
 
-// Build ISO timestamps from local wall-clock components so this script's
-// expected strings (which encode formatTime's toLocaleTimeString output)
-// hold regardless of which timezone the machine running this script is in
-// — construction and formatting both happen in local time, so they always
-// round-trip together.
-function t(h, m) { return new Date(2026, 8, 4, h, m, 0).toISOString(); }
+// Build a UTC-instant ISO string representing `h:m` in the SHOP's own
+// timezone (Asia/Kolkata, UTC+5:30, no DST) on 2026-09-04 — deliberately
+// NOT device-local wall-clock components (`new Date(2026,8,4,h,m,0)`).
+// This function used to build from local components on the theory that
+// "construction and formatting both happen in local time, so they always
+// round-trip together" — true only while formatTime displayed in
+// *device*-local time. Finding 6 (final whole-branch review,
+// 2026-09-09) fixed formatTime to force Asia/Kolkata display regardless of
+// device timezone (matching every other time display in this app, see
+// CLAUDE.md) — which means the OLD local-component construction no longer
+// round-trips: it silently produced different (wrong) expected labels
+// depending on the machine's own timezone (confirmed live: this test
+// failed under TZ=America/New_York with the local-component version,
+// producing "6:32pm" instead of "9:02am" for the same nominal h:m).
+// Building the instant directly from the known, fixed UTC offset makes
+// this test's assertions genuinely timezone-independent, which is what
+// the original comment intended but the local-component implementation
+// didn't actually achieve once formatTime became timezone-forcing.
+const SHOP_UTC_OFFSET_MINUTES = 5 * 60 + 30; // Asia/Kolkata is UTC+5:30, no DST
+function t(h, m) {
+  const utcMinutesFromMidnight = h * 60 + m - SHOP_UTC_OFFSET_MINUTES;
+  return new Date(Date.UTC(2026, 8, 4, 0, utcMinutesFromMidnight, 0)).toISOString();
+}
 
 const sessionA = { id: 1, opening_time: t(9, 2), closed_at: t(13, 15) }; // closed session
 const sessionB = { id: 2, opening_time: t(14, 0), closed_at: null }; // still-open session ("now")

@@ -11,9 +11,20 @@
 // interop lets the hook file still `import { matchSessionLabel } from
 // './registerSessions'` normally.
 
+// Wraps datetime.js's shared formatTime, which forces display in shop time
+// (Asia/Kolkata) regardless of device timezone — every other time display
+// in this app deliberately does this (see CLAUDE.md), and this file's own
+// local formatTime previously didn't, so session labels would show
+// device-local time next to order rows showing shop time. The options
+// override below reproduces the "9:02am" styling (no leading zero, no
+// space, lowercase am/pm) matchSessionLabel's session labels need, while
+// still going through parseServerDate + the forced shop timeZone.
+const { formatTime: sharedFormatTime } = require('./datetime');
+
 function formatTime(isoString) {
-  const d = new Date(isoString);
-  return d.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', hour12: true }).replace(' ', '').toLowerCase();
+  return sharedFormatTime(isoString, 'en-IN', { hour: 'numeric', minute: '2-digit', hour12: true })
+    .replace(' ', '')
+    .toLowerCase();
 }
 
 // Given the sessions already fetched for a (location, date) pair, find
