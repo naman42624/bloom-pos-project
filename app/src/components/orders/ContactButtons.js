@@ -14,7 +14,22 @@ export default function ContactButtons({ contacts = [], context = {} }) {
   const [pickerFor, setPickerFor] = useState(null); // 'call' | 'whatsapp' | null
 
   const usable = contacts.filter((c) => normalizePhone(c.phone));
-  if (usable.length === 0) return null;
+  // Dedupe by normalized phone number, not raw contact count: the design
+  // intent is "multiple contacts with DIFFERENT phone numbers -> show a
+  // picker; otherwise -> act immediately" — most delivery orders have the
+  // same person as buyer and recipient, so branching on usable.length
+  // alone showed a pointless disambiguation sheet for two contacts sharing
+  // one number. Deduping also removes the picker's key={c.label} collision
+  // risk noted in review, since two differently-labeled contacts (e.g.
+  // "Buyer" and "Recipient") sharing one phone number now collapse to a
+  // single picker row instead of two.
+  const uniqueByPhone = [];
+  const seenPhones = new Set();
+  for (const c of usable) {
+    const p = normalizePhone(c.phone);
+    if (!seenPhones.has(p)) { seenPhones.add(p); uniqueByPhone.push(c); }
+  }
+  if (uniqueByPhone.length === 0) return null;
 
   const openLink = (url) => {
     Linking.canOpenURL(url).then((supported) => {
@@ -31,8 +46,8 @@ export default function ContactButtons({ contacts = [], context = {} }) {
   };
 
   const handlePress = (kind) => {
-    if (usable.length === 1) {
-      act(kind, usable[0]);
+    if (uniqueByPhone.length === 1) {
+      act(kind, uniqueByPhone[0]);
     } else {
       setPickerFor(kind);
     }
@@ -51,7 +66,7 @@ export default function ContactButtons({ contacts = [], context = {} }) {
         <View style={styles.overlay}>
           <TouchableOpacity style={styles.backdrop} activeOpacity={1} onPress={() => setPickerFor(null)} />
           <View style={styles.sheet}>
-            {usable.map((c) => (
+            {uniqueByPhone.map((c) => (
               <TouchableOpacity
                 key={c.label}
                 style={styles.pickerRow}
