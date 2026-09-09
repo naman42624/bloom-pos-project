@@ -1,5 +1,5 @@
-import React, { useCallback, useEffect } from 'react';
-import { View, Text, StyleSheet, FlatList, TouchableOpacity, RefreshControl, ActivityIndicator, TextInput, ScrollView } from 'react-native';
+import React, { useCallback, useEffect, useState } from 'react';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, RefreshControl, ActivityIndicator, ScrollView } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import api from '../services/api';
@@ -8,6 +8,9 @@ import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import { formatCardDateTime } from '../utils/datetime';
 import StageBadge from '../components/StageBadge';
 import useOrderListData from '../hooks/useOrderListData';
+import OrderListToolbar from '../components/orders/OrderListToolbar';
+import FilterDrawer from '../components/orders/FilterDrawer';
+import ActiveFilterChips from '../components/orders/ActiveFilterChips';
 
 const STATUS_LABELS = { pending: 'Received', confirmed: 'Confirmed', preparing: 'In Preparation', ready: 'Ready', completed: 'Completed', cancelled: 'Cancelled', draft: 'Draft' };
 const ORDER_TYPE_LABELS = { pickup: 'Pickup', delivery: 'Delivery', walk_in: 'Walk-in', pre_order: 'Advance order' };
@@ -42,6 +45,7 @@ export default function OrdersInboxScreen({ navigation, route }) {
     []
   );
   const list = useOrderListData(fetchFn, { pageSize: 50 });
+  const [filtersOpen, setFiltersOpen] = useState(false);
 
   // Seeded from an incoming `status` param (the Dashboard's Done chip lands
   // here with { status: 'completed' }) — same intent as the original file's
@@ -61,15 +65,6 @@ export default function OrdersInboxScreen({ navigation, route }) {
   // any filter change, which is worse (silently ignores the new filter on
   // next focus). Do not "fix" this by reverting to [].
   useFocusEffect(useCallback(() => { list.refresh(); }, [list.refresh]));
-
-  // Derived, null-based mirrors of list.filters for the still-flat chip rows
-  // below (Task 6 replaces this whole toolbar block with
-  // OrderListToolbar+FilterDrawer+ActiveFilterChips) — kept so the chip
-  // selection comparisons read the same as the original statusFilter/
-  // channelFilter/priorityOnly local state did.
-  const activeStatus = list.filters.status || null;
-  const activeChannel = list.filters.channel || null;
-  const priorityOnly = list.filters.priority === 'rush';
 
   const renderItem = ({ item }) => {
     const itemsSummary = formatItemsSummary(item.items);
@@ -123,39 +118,60 @@ export default function OrdersInboxScreen({ navigation, route }) {
           </TouchableOpacity>
         </View>
       )}
-      <View style={styles.searchRow}>
-        <Ionicons name="search" size={18} color={Colors.textLight} />
-        <TextInput
-          style={styles.searchInput}
-          value={list.search}
-          onChangeText={list.setSearch}
-          placeholder="Search order #, customer, phone, item…"
-          placeholderTextColor={Colors.textLight}
-        />
-        {list.search.length > 0 && (
-          <TouchableOpacity onPress={() => list.setSearch('')}>
-            <Ionicons name="close-circle" size={18} color={Colors.textLight} />
-          </TouchableOpacity>
-        )}
-      </View>
+      <OrderListToolbar
+        search={list.search}
+        onSearchChange={list.setSearch}
+        activeFilterCount={list.activeFilterCount}
+        onOpenFilters={() => setFiltersOpen(true)}
+        sortProps={{
+          value: list.sort,
+          onChange: list.setSort,
+          options: [{ value: null, label: 'Recent' }, { value: 'urgency', label: 'Urgent first' }],
+        }}
+        placeholder="Search order #, customer, phone, item…"
+      />
 
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
         {STATUS_FILTERS.map((s) => (
-          <TouchableOpacity key={s || 'all'} style={[styles.filterChip, activeStatus === s && styles.filterChipSelected]} onPress={() => list.setFilter('status', s)}>
-            <Text style={[styles.filterChipText, activeStatus === s && styles.filterChipTextSelected]}>{s ? STATUS_LABELS[s] : 'All'}</Text>
+          <TouchableOpacity key={s || 'all'} style={[styles.filterChip, (list.filters.status ?? null) === s && styles.filterChipSelected]} onPress={() => list.setFilter('status', s || undefined)}>
+            <Text style={[styles.filterChipText, (list.filters.status ?? null) === s && styles.filterChipTextSelected]}>{s ? STATUS_LABELS[s] : 'All'}</Text>
           </TouchableOpacity>
         ))}
       </ScrollView>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
-        {CHANNEL_FILTERS.map((c) => (
-          <TouchableOpacity key={c || 'all'} style={[styles.filterChip, activeChannel === c && styles.filterChipSelected]} onPress={() => list.setFilter('channel', c)}>
-            <Text style={[styles.filterChipText, activeChannel === c && styles.filterChipTextSelected]}>{c || 'Any channel'}</Text>
-          </TouchableOpacity>
-        ))}
-        <TouchableOpacity style={[styles.filterChip, priorityOnly && styles.filterChipSelected]} onPress={() => list.setFilter('priority', priorityOnly ? undefined : 'rush')}>
-          <Text style={[styles.filterChipText, priorityOnly && styles.filterChipTextSelected]}>🔥 Rush only</Text>
-        </TouchableOpacity>
-      </ScrollView>
+
+      <ActiveFilterChips
+        filters={{ channel: list.filters.channel, priority: list.filters.priority, order_type: list.filters.order_type }}
+        labels={{
+          channel: (v) => `Channel: ${v}`,
+          priority: () => '🔥 Rush only',
+          order_type: (v) => `Type: ${ORDER_TYPE_LABELS[v] || v}`,
+        }}
+        onRemove={(key) => list.setFilter(key, undefined)}
+        onClearAll={() => { list.setFilter('channel', undefined); list.setFilter('priority', undefined); list.setFilter('order_type', undefined); }}
+      />
+
+      <FilterDrawer
+        visible={filtersOpen}
+        onClose={() => setFiltersOpen(false)}
+        onClearAll={() => { list.setFilter('channel', undefined); list.setFilter('priority', undefined); list.setFilter('order_type', undefined); setFiltersOpen(false); }}
+        sections={[
+          {
+            key: 'channel', label: 'Channel', value: list.filters.channel ?? null,
+            onChange: (v) => list.setFilter('channel', v || undefined),
+            options: CHANNEL_FILTERS.map((c) => ({ value: c, label: c || 'Any channel' })),
+          },
+          {
+            key: 'rush', label: 'Rush', value: list.filters.priority ?? null,
+            onChange: (v) => list.setFilter('priority', v || undefined),
+            options: [{ value: null, label: 'All orders' }, { value: 'rush', label: '🔥 Rush only' }],
+          },
+          {
+            key: 'order_type', label: 'Order type', value: list.filters.order_type ?? null,
+            onChange: (v) => list.setFilter('order_type', v || undefined),
+            options: [null, 'walk_in', 'pickup', 'delivery', 'pre_order'].map((t) => ({ value: t, label: t ? (ORDER_TYPE_LABELS[t] || t) : 'All types' })),
+          },
+        ]}
+      />
 
       {list.loading ? (
         <ActivityIndicator style={{ marginTop: 40 }} color={Colors.primary} />
@@ -200,13 +216,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row', alignItems: 'center', gap: 4,
   },
   pickupLinkText: { color: Colors.primary, fontWeight: '600', fontSize: FontSize.sm },
-  searchRow: {
-    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
-    backgroundColor: Colors.surface, borderRadius: BorderRadius.md,
-    paddingHorizontal: Spacing.sm, marginHorizontal: Spacing.md, marginTop: Spacing.sm,
-    borderWidth: 1, borderColor: Colors.border,
-  },
-  searchInput: { flex: 1, fontSize: FontSize.md, color: Colors.text, minHeight: 44 },
   filterRow: { flexDirection: 'row', gap: 6, paddingHorizontal: Spacing.md, paddingTop: Spacing.sm },
   filterChip: { paddingVertical: 8, paddingHorizontal: 12, borderRadius: BorderRadius.lg, backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.border, minHeight: 36 },
   filterChipSelected: { backgroundColor: Colors.primary, borderColor: Colors.primary },

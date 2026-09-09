@@ -23,6 +23,11 @@ export default function OrderListToolbar({ search, onSearchChange, activeFilterC
             placeholder={placeholder || 'Search anything…'}
             placeholderTextColor={Colors.textLight}
           />
+          {search && search.length > 0 && (
+            <TouchableOpacity onPress={() => onSearchChange('')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+              <Ionicons name="close-circle" size={18} color={Colors.textLight} />
+            </TouchableOpacity>
+          )}
         </View>
         <TouchableOpacity style={styles.filtersBtn} onPress={onOpenFilters}>
           <Ionicons name="options-outline" size={18} color={Colors.primary} />
