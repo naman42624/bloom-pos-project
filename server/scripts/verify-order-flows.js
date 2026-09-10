@@ -363,6 +363,14 @@ check('pickup full happy path: create → start → complete task → ready → 
   // "skip-start" check too.
   const saleReady = await api('GET', `/sales/${saleId}`, owner.token);
   assert(saleReady.body.data.status === 'ready', `Expected sale to auto-advance to 'ready' after the last task completed, got '${saleReady.body.data.status}'`);
+  // FIXED 2026-09-11: this same auto-advance used to update only `status`,
+  // never `pickup_status` — found live (sale 305 stuck showing under
+  // "Preparing" on PickupOrdersScreen with status already 'ready', since
+  // nothing except the screen's own separate Mark Ready button ever touched
+  // pickup_status). Without this fix, PickupOrdersScreen's tab filter
+  // (pickup_status-driven) would never show this order as ready even though
+  // it actually is.
+  assert(saleReady.body.data.pickup_status === 'ready_for_pickup', `Expected pickup_status to auto-advance to 'ready_for_pickup' alongside status, got '${saleReady.body.data.pickup_status}'`);
   const pickupRes = await api('PUT', `/deliveries/pickup/${saleId}/picked-up`, owner.token, {});
   assert(pickupRes.status === 200, `Confirm Pickup failed: ${JSON.stringify(pickupRes.body)}`);
   const saleAfter = await api('GET', `/sales/${saleId}`, owner.token);
