@@ -104,7 +104,7 @@ router.get('/partners', authenticate, authorize('owner', 'manager', 'counter_sta
 router.get('/', authenticate, authorize('owner', 'manager', 'delivery_partner', 'employee', 'counter_staff'), async (req, res, next) => {
   try {
     const db = await getAsyncDb();
-    const { location_id, status, delivery_partner_id, date_from, date_to, limit: lim, offset: off } = req.query;
+    const { location_id, status, delivery_partner_id, date_from, date_to, search, limit: lim, offset: off } = req.query;
 
     // `open_task_count` is a verbatim copy of the production-task guard in
     // PUT /sales/:id/status ("Enforce production task completion before marking
@@ -114,6 +114,8 @@ router.get('/', authenticate, authorize('owner', 'manager', 'delivery_partner', 
     // THIRD caller and was the one missed when the field was added, so a
     // 'preparing' delivery with open tasks kept being handed a Mark Ready the
     // endpoint is guaranteed to reject. All three copies MUST stay identical.
+    // `has_unassigned_open_task` is a fourth copy of the same kind of guard field,
+    // added 2026-09-10 (Deliveries redesign). Must stay identical to sales.js.
     // Deliberately NOT a comment inside the SQL string below: bindParams() in
     // database-async.js cannot tell an apostrophe in a SQL comment from a
     // string boundary and would desync every ? placeholder after it
@@ -123,6 +125,11 @@ router.get('/', authenticate, authorize('owner', 'manager', 'delivery_partner', 
              s.status as order_status, s.pickup_status, s.special_instructions, s.is_credit_sale,
              COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.sale_id = d.sale_id), 0) as total_paid,
              (SELECT COUNT(*) FROM production_tasks pt WHERE pt.sale_id = s.id AND pt.status NOT IN ('completed', 'cancelled')) as open_task_count,
+             EXISTS(
+               SELECT 1 FROM production_tasks ptu
+               WHERE ptu.sale_id = s.id AND ptu.assigned_to IS NULL
+                 AND ptu.status IN ('pending', 'in_progress')
+             ) as has_unassigned_open_task,
              -- Load-verify indicator — same fields/reasoning as sales.js's
              -- GET / and GET /:id (see either for the full comment).
              (SELECT COUNT(*) FROM sale_items si WHERE si.sale_id = s.id) as load_total_count,
@@ -160,6 +167,18 @@ router.get('/', authenticate, authorize('owner', 'manager', 'delivery_partner', 
     }
     if (date_from) { sql += ' AND DATE(d.created_at) >= ?'; params.push(date_from); }
     if (date_to) { sql += ' AND DATE(d.created_at) <= ?'; params.push(date_to); }
+
+    if (search) {
+      const s = `%${search}%`;
+      sql += ` AND (
+        s.sale_number ILIKE ?
+        OR d.customer_name ILIKE ?
+        OR d.customer_phone ILIKE ?
+        OR d.delivery_address ILIKE ?
+        OR u.name ILIKE ?
+      )`;
+      params.push(s, s, s, s, s);
+    }
 
     // Scope managers to their locations
     if (req.user.role === 'manager' && !location_id) {

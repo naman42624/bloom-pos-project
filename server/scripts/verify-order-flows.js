@@ -1140,6 +1140,68 @@ check('NEW: GET /sales list rows carry has_unassigned_open_task, flipping false 
   );
 });
 
+check('NEW: GET /deliveries list rows carry has_unassigned_open_task, flipping false once the task is assigned (2026-09-10 — Deliveries one-tap Start Preparing fix)', async () => {
+  const db = await getDb();
+  const owner = await loginOwner();
+  const createRes = await api('POST', '/sales', owner.token, {
+    location_id: TEST_LOCATION_ID, order_type: 'delivery', channel: 'phone',
+    customer_name: `DeliveryUnassignedTaskCheck${Date.now()}`,
+    delivery_address: '123 Test St', receiver_name: 'Test Receiver', receiver_phone: '9998887777',
+    items: [{ quantity: 1, unit_price: 100, product_name: 'Test Delivery Unassigned Task Item' }],
+  });
+  assert(createRes.status === 201, `Expected sale creation to succeed, got ${createRes.status}: ${JSON.stringify(createRes.body)}`);
+  const saleId = createRes.body.data.id;
+  createdSaleIds.push(saleId);
+
+  const task = await db.prepare('SELECT id, assigned_to FROM production_tasks WHERE sale_id = ? LIMIT 1').get(saleId);
+  assert(task, `Expected a production_tasks row to exist for a freshly created delivery sale (id ${saleId}), found none`);
+  assert(task.assigned_to == null, `Expected the freshly created task to start unassigned, got assigned_to=${task.assigned_to}`);
+
+  const beforeRes = await api('GET', `/deliveries?location_id=${TEST_LOCATION_ID}&limit=200`, owner.token);
+  assert(beforeRes.status === 200, `Expected 200, got ${beforeRes.status}: ${JSON.stringify(beforeRes.body)}`);
+  const beforeRow = beforeRes.body.data.deliveries.find((d) => d.sale_id === saleId);
+  assert(beforeRow, `Expected a deliveries row for sale ${saleId} to appear`);
+  assert(beforeRow.has_unassigned_open_task === true, `Expected has_unassigned_open_task=true before assignment, got ${JSON.stringify(beforeRow.has_unassigned_open_task)}`);
+
+  const assignRes = await api('PUT', `/production/tasks/${task.id}/assign`, owner.token, { assigned_to: owner.id });
+  assert(assignRes.status === 200, `Expected task assignment to succeed, got ${assignRes.status}: ${JSON.stringify(assignRes.body)}`);
+
+  const afterRes = await api('GET', `/deliveries?location_id=${TEST_LOCATION_ID}&limit=200`, owner.token);
+  const afterRow = afterRes.body.data.deliveries.find((d) => d.sale_id === saleId);
+  assert(afterRow, `Expected the deliveries row for sale ${saleId} to still appear after assignment`);
+  assert(
+    afterRow.has_unassigned_open_task === false,
+    `Expected has_unassigned_open_task=false once the task is assigned, got ${JSON.stringify(afterRow.has_unassigned_open_task)}`
+  );
+});
+
+check('NEW: GET /deliveries supports a search param over sale number, customer name/phone, delivery address, and rider name (controller-added, pre-flight scan, 2026-09-10)', async () => {
+  const owner = await loginOwner();
+  const uniqueReceiverName = `DeliverySearchReceiver${Date.now()}`;
+  const createRes = await api('POST', '/sales', owner.token, {
+    location_id: TEST_LOCATION_ID, order_type: 'delivery', channel: 'phone',
+    customer_name: 'Order Customer',
+    delivery_address: '456 Search Ave', receiver_name: uniqueReceiverName, receiver_phone: '9997776666',
+    items: [{ quantity: 1, unit_price: 100, product_name: 'Test Search Item' }],
+  });
+  assert(createRes.status === 201, `Expected sale creation to succeed, got ${createRes.status}: ${JSON.stringify(createRes.body)}`);
+  createdSaleIds.push(createRes.body.data.id);
+
+  const hitRes = await api('GET', `/deliveries?location_id=${TEST_LOCATION_ID}&search=${encodeURIComponent(uniqueReceiverName)}&limit=200`, owner.token);
+  assert(hitRes.status === 200, `Expected 200, got ${hitRes.status}: ${JSON.stringify(hitRes.body)}`);
+  assert(
+    hitRes.body.data.deliveries.some((d) => d.sale_id === createRes.body.data.id),
+    `Expected searching for the unique receiver name to find the new delivery, found ${hitRes.body.data.deliveries.length} rows`
+  );
+
+  const missRes = await api('GET', `/deliveries?location_id=${TEST_LOCATION_ID}&search=NoSuchCustomerXYZ${Date.now()}&limit=200`, owner.token);
+  assert(missRes.status === 200, `Expected 200, got ${missRes.status}: ${JSON.stringify(missRes.body)}`);
+  assert(
+    missRes.body.data.deliveries.length === 0,
+    `Expected searching for a nonexistent customer to return zero rows, got ${missRes.body.data.deliveries.length}`
+  );
+});
+
 check('FIXED: GET /deliveries returns an accurate total alongside the (still limited) array', async () => {
   const owner = await loginOwner();
   const res = await api('GET', `/deliveries?location_id=${TEST_LOCATION_ID}&limit=1`, owner.token);
