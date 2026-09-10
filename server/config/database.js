@@ -694,6 +694,18 @@ function ensureCompatibilityColumns() {
   ensureColumn('users', 'pin_locked_until', 'TIMESTAMP');
   ensureColumn('users', 'job_title', 'TEXT');
 
+  // users_role_check (from schema.sql's original 5-role enum) was only ever
+  // dropped by hand on the local dev DB when counter_staff/florist_staff
+  // were added (sub-project 2, fe5d442) — never codified as a patch here,
+  // so production kept enforcing the stale constraint and every attempt to
+  // create/promote a user into either new role 500'd there (found live in
+  // prod logs 2026-09-10: "violates check constraint users_role_check").
+  // Recreate it with the full current role set (routes/users.js VALID_ROLES + 'owner').
+  try { runPsql('ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check'); } catch (_) {}
+  try {
+    runPsql("ALTER TABLE users ADD CONSTRAINT users_role_check CHECK(role IN ('owner', 'manager', 'employee', 'counter_staff', 'florist_staff', 'delivery_partner', 'customer'))");
+  } catch (_) {}
+
   ensureColumn('settings', 'updated_by', 'INTEGER REFERENCES users(id) ON DELETE SET NULL');
   ensureColumn('expenses', 'is_return', 'INTEGER DEFAULT 0');
   ensureColumn('locations', 'gst_number', 'VARCHAR(50)');
@@ -840,6 +852,16 @@ function ensureCompatibilityColumns() {
   }
 
   // ─── refunds ────────────────────────────────────────────
+  // requested_by/approved_by were added to the local dev DB by hand at some
+  // point and never codified here — the INSERT in routes/sales.js's refund
+  // route (search "INSERT INTO refunds") has required both since commit
+  // c5b865e9 (2026-03-08), so every refund attempt in production has 500'd
+  // ("column requested_by of relation refunds does not exist", found live
+  // in prod logs 2026-09-10) — no refund has ever actually been recorded
+  // there. Both requester and approver are the same person in this app's
+  // single-step refund flow (see the route), same as refunded_by already was.
+  ensureColumn('refunds', 'requested_by', 'INTEGER REFERENCES users(id) ON DELETE SET NULL');
+  ensureColumn('refunds', 'approved_by', 'INTEGER REFERENCES users(id) ON DELETE SET NULL');
   ensureColumn('refunds', 'refund_method', 'VARCHAR(50)');
   ensureColumn('refunds', 'status', "VARCHAR(50) DEFAULT 'processed'");
   ensureColumn('refunds', 'processed_at', 'TIMESTAMP');
@@ -1220,6 +1242,9 @@ function getDb() {
     runPsql(`INSERT INTO settings (key, value, description) VALUES ('pref_delivery_auto_complete', '0', 'Auto-complete delivery orders when all production tasks are marked done') ON CONFLICT (key) DO NOTHING`);
     runPsql(`INSERT INTO settings (key, value, description) VALUES ('pref_new_v2_ui', '0', 'Enable the redesigned V2 Dashboard UI with unified order panels and inline task management') ON CONFLICT (key) DO NOTHING`);
     runPsql(`INSERT INTO settings (key, value, description) VALUES ('pref_manager_override', '0', 'Manager Override: Assume only manager/owner are operating, auto-managing tasks and attendance') ON CONFLICT (key) DO NOTHING`);
+    runPsql(`INSERT INTO settings (key, value, description) VALUES ('pref_flexible_task_assignment', '1', 'Let any staff member start/complete a production task even if it is assigned to someone else') ON CONFLICT (key) DO NOTHING`);
+    runPsql(`INSERT INTO settings (key, value, description) VALUES ('pref_counter_marks_pickup', '0', 'Let counter staff mark a delivery picked up from the shop on behalf of the delivery partner') ON CONFLICT (key) DO NOTHING`);
+    runPsql(`INSERT INTO settings (key, value, description) VALUES ('pref_counter_marks_delivered', '0', 'Let counter staff mark a delivery as delivered (and record COD collected) on behalf of the delivery partner') ON CONFLICT (key) DO NOTHING`);
 
     initialized = true;
     console.log('✅ Connected to PostgreSQL');
