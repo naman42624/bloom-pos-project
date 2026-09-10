@@ -400,7 +400,7 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
   quickLinksRow: {
     flexDirection: 'row', justifyContent: 'flex-end', gap: Spacing.md,
-    paddingHorizontal: Spacing.md, paddingTop: Spacing.sm,
+    paddingHorizontal: Spacing.md, paddingTop: Spacing.xs,
   },
   pickupLink: {
     flexDirection: 'row', alignItems: 'center', gap: 4,
@@ -415,7 +415,7 @@ const styles = StyleSheet.create({
   // Matches the already-working pattern in DeliveriesScreen.js's
   // tabsRow/locationTabsRow; native is unaffected either way.
   filterRowScroll: { flexGrow: 0, flexShrink: 0 },
-  filterRow: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: Spacing.md, paddingTop: Spacing.sm },
+  filterRow: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: Spacing.md, paddingTop: Spacing.xs },
   // minHeight 44, not the pre-existing screen's 36 — Status is now the ONLY
   // always-visible filter row on this redesigned screen (staff-ux-checklist
   // #7 / this plan's own 44x44pt global constraint), so it doesn't get to

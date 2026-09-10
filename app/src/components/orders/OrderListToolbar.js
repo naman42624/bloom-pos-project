@@ -10,6 +10,15 @@ import { Ionicons } from '@expo/vector-icons';
 import { Colors, Spacing, BorderRadius, FontSize } from '../../constants/theme';
 import SortControl from './SortControl';
 
+// row2 exists only to hold a view-mode toggle (Route/Date/By Rider, etc.) —
+// a screen with no viewModeProps has nothing that needs its own row, so its
+// sortProps (if any) rides inline in row1 next to Filters instead. A whole
+// extra 44pt-tall row holding one small dropdown, alone, with empty space to
+// its left, was real wasted vertical space on a screen that already stacks
+// several toolbar rows (live-reported, 2026-09-10) — this isn't decorative
+// tightening, it was a measurable density problem. Screens that DO need
+// view-mode (Deliveries) keep the original 2-row shape, sort included there
+// too, unchanged.
 export default function OrderListToolbar({ search, onSearchChange, activeFilterCount = 0, onOpenFilters, sortProps, viewModeProps, placeholder }) {
   return (
     <View>
@@ -36,23 +45,22 @@ export default function OrderListToolbar({ search, onSearchChange, activeFilterC
             <View style={styles.badge}><Text style={styles.badgeText}>{activeFilterCount}</Text></View>
           )}
         </TouchableOpacity>
+        {!viewModeProps && sortProps && <SortControl {...sortProps} />}
       </View>
 
-      {(viewModeProps || sortProps) && (
+      {viewModeProps && (
         <View style={styles.row2}>
-          {viewModeProps ? (
-            <View style={styles.viewModeGroup}>
-              {viewModeProps.options.map((o) => (
-                <TouchableOpacity
-                  key={o.value}
-                  style={[styles.viewModeBtn, viewModeProps.value === o.value && styles.viewModeBtnActive]}
-                  onPress={() => viewModeProps.onChange(o.value)}
-                >
-                  <Text style={[styles.viewModeText, viewModeProps.value === o.value && styles.viewModeTextActive]}>{o.label}</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-          ) : <View />}
+          <View style={styles.viewModeGroup}>
+            {viewModeProps.options.map((o) => (
+              <TouchableOpacity
+                key={o.value}
+                style={[styles.viewModeBtn, viewModeProps.value === o.value && styles.viewModeBtnActive]}
+                onPress={() => viewModeProps.onChange(o.value)}
+              >
+                <Text style={[styles.viewModeText, viewModeProps.value === o.value && styles.viewModeTextActive]}>{o.label}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
           {sortProps && <SortControl {...sortProps} />}
         </View>
       )}
@@ -61,7 +69,7 @@ export default function OrderListToolbar({ search, onSearchChange, activeFilterC
 }
 
 const styles = StyleSheet.create({
-  row1: { flexDirection: 'row', gap: Spacing.sm, padding: Spacing.md, paddingBottom: Spacing.sm },
+  row1: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, paddingHorizontal: Spacing.md, paddingTop: Spacing.sm, paddingBottom: Spacing.xs },
   searchBox: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: Spacing.xs, backgroundColor: Colors.surfaceAlt, borderRadius: BorderRadius.md, paddingHorizontal: Spacing.sm, minHeight: 44 },
   searchInput: { flex: 1, fontSize: FontSize.md, color: Colors.text, paddingVertical: 8 },
   // Explicit minWidth/minHeight (not hitSlop) to hit the app's 44x44pt

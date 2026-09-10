@@ -1286,7 +1286,7 @@ export default function DashboardScreen({ navigation }) {
               <Text style={styles.heroTitle}>Welcome, {(user?.name || 'Team').split(' ')[0]}</Text>
             </View>
             <View style={styles.heroIcon}>
-              <Ionicons name="pulse" size={24} color="#fff" />
+              <Ionicons name="pulse" size={18} color="#fff" />
             </View>
           </View>
           <Text style={styles.heroSub}>
@@ -2318,19 +2318,25 @@ const styles = StyleSheet.create({
     fontFamily: FONT_FAMILY,
   },
 
+  // Sizing tightened 2026-09-10 (live-reported: this banner ate a lot of
+  // above-the-fold space every time the dashboard opened, for content —
+  // eyebrow + name + a generic one-line subtitle — that's low-value on
+  // every visit after the first). Nothing was removed, only made smaller,
+  // per CLAUDE.md's "never cut functionality" — this is a visual-density
+  // change, not a content change.
   heroCard: {
     backgroundColor: Colors.primary,
-    borderRadius: 16,
-    paddingHorizontal: 18,
-    paddingVertical: 18,
-    marginBottom: 20,
+    borderRadius: 14,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    marginBottom: 14,
     borderWidth: 1,
     borderColor: Colors.primaryDark,
     shadowColor: Colors.primary,
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.22,
-    shadowRadius: 16,
-    elevation: 8,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.18,
+    shadowRadius: 10,
+    elevation: 5,
   },
   rowBetween: {
     flexDirection: 'row',
@@ -2339,32 +2345,32 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   heroIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 10,
+    width: 32,
+    height: 32,
+    borderRadius: 9,
     backgroundColor: Colors.primaryDark,
     justifyContent: 'center',
     alignItems: 'center',
   },
   heroEyebrow: {
-    fontSize: 12,
+    fontSize: 11,
     color: Colors.primaryLight,
     fontWeight: '600',
     fontFamily: FONT_FAMILY,
     letterSpacing: 0.5,
   },
   heroTitle: {
-    fontSize: 24,
+    fontSize: 19,
     color: '#fff',
     fontWeight: '800',
-    marginTop: 4,
+    marginTop: 2,
     fontFamily: FONT_FAMILY,
   },
   heroSub: {
-    fontSize: 13,
+    fontSize: 12,
     color: Colors.primaryGlow,
-    marginTop: 8,
-    lineHeight: 18,
+    marginTop: 3,
+    lineHeight: 16,
     fontFamily: FONT_FAMILY,
   },
 
