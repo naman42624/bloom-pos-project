@@ -175,10 +175,21 @@ export default function DeliveriesScreen({ navigation }) {
       const y = new Date(Date.now() - 86400000).toLocaleDateString('en-CA', { timeZone: timezone });
       list.setFilter('date_from', y); list.setFilter('date_to', y);
     } else if (preset === 'this_week') {
-      const now = getShopNow(timezone);
-      const day = now.getDay(); // 0 = Sunday
-      const monday = new Date(now); monday.setDate(now.getDate() - ((day + 6) % 7));
-      const mondayStr = monday.toLocaleDateString('en-CA', { timeZone: timezone });
+      // Fix (Task 4 fix round): the previous version read getShopNow()'s
+      // pseudo-local Date (only safe via LOCAL getters like .getDay()), then
+      // mutated it with .setDate() (a local-timezone op) and ran the result
+      // through a SECOND, real timezone conversion via toLocaleDateString(
+      // ..., { timeZone }). That double conversion only happened to agree
+      // with the shop's actual Monday when the device's own system timezone
+      // matched `timezone` — wrong in `UTC`/`America/Los_Angeles` device
+      // timezones, confirmed by trace (see task-4-report.md fix-round note).
+      // Fixed the same safe way `yesterday` above already does: keep
+      // getShopNow(timezone).getDay() for the weekday number (correct,
+      // verified), but compute Monday via real epoch arithmetic off
+      // Date.now() and a SINGLE real timeZone-aware conversion at the end.
+      const day = getShopNow(timezone).getDay(); // weekday in shop-local time (0=Sunday)
+      const mondayOffsetDays = (day + 6) % 7;
+      const mondayStr = new Date(Date.now() - mondayOffsetDays * 86400000).toLocaleDateString('en-CA', { timeZone: timezone });
       list.setFilter('date_from', mondayStr); list.setFilter('date_to', todayStr);
     } else {
       list.setFilter('date_from', undefined); list.setFilter('date_to', undefined);
