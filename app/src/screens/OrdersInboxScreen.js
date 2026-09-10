@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, StyleSheet, SectionList, TouchableOpacity, RefreshControl, ActivityIndicator, ScrollView } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
@@ -16,6 +16,9 @@ import ActiveFilterChips from '../components/orders/ActiveFilterChips';
 import DateSessionHeader from '../components/orders/DateSessionHeader';
 import useSessionsForDates from '../hooks/useSessionsForDates';
 import { getSingleLocationId, groupOrdersByDay, groupOrdersBySession } from '../utils/orderGrouping';
+import AssignPickerModal from '../components/orderBoard/AssignPickerModal';
+import CollectCodModal from '../components/orderBoard/CollectCodModal';
+import { PREP_ROLES, STAFF_ROLE_LABELS } from '../constants/orderDisplay';
 
 const STATUS_LABELS = { pending: 'Received', confirmed: 'Confirmed', preparing: 'In Preparation', ready: 'Ready', completed: 'Completed', cancelled: 'Cancelled', draft: 'Draft' };
 const ORDER_TYPE_LABELS = { pickup: 'Pickup', delivery: 'Delivery', walk_in: 'Walk-in', pre_order: 'Advance order' };
@@ -61,6 +64,21 @@ export default function OrdersInboxScreen({ navigation, route }) {
   // Which row's next-action button is mid-request — drives the disabled/
   // spinner state below so a double-tap can't fire the same advance twice.
   const [advancingId, setAdvancingId] = useState(null);
+  // { order, loading, showingEveryone, people } while the "who is making
+  // this?" picker is open, null when closed — mirrors DashboardScreen.js's
+  // preparerPicker (2026-09-10, live-reported gap: this screen used to just
+  // hide the Start Preparing button whenever a preparer needed picking,
+  // rather than actually offering the picker like the Dashboard does).
+  // 'start' mode only — this screen never shows a next-action for an
+  // already-preparing order in the first place (display_stage.nextAction is
+  // null until every task is done), so the dashboard's 'assign' mode (fixing
+  // an ALREADY-preparing order's assignment) never applies here.
+  const [preparerPicker, setPreparerPicker] = useState(null);
+  const preparerReqRef = useRef(0);
+  // The order the Collect COD & Mark Delivered modal is open for, null when
+  // closed — see CollectCodModal.js, which owns the amount/method form and
+  // submission itself.
+  const [codCollectOrder, setCodCollectOrder] = useState(null);
 
   const singleLocationId = useMemo(() => getSingleLocationId(list.items), [list.items]);
   const dayGroups = useMemo(() => groupOrdersByDay(list.items), [list.items]);
@@ -126,48 +144,123 @@ export default function OrdersInboxScreen({ navigation, route }) {
     setSessionsResetToken((g) => g + 1);
   }, [list.refresh]));
 
+  // Opens the "who is making this?" picker for a Start Preparing order with
+  // a genuinely unassigned task — the 'start'-mode half of DashboardScreen.js's
+  // handleResolveAction 'pick_preparer' branch, trimmed to what this screen
+  // ever needs (it never shows a next-action for an already-preparing order,
+  // so 'assign' mode — reassigning an EXISTING preparing order's task —
+  // never applies here). Fetch logic (location fallback + honest
+  // "showingEveryone" notice) mirrors that branch exactly; see it for the
+  // full reasoning.
+  const openPreparerPicker = useCallback(async (order) => {
+    const locId = order.location_id;
+    if (!locId) {
+      showAlert('Assign', 'Could not tell which shop this order belongs to. Open the order to assign someone.');
+      navigation.navigate('SaleDetail', { saleId: order.id });
+      return;
+    }
+    const reqId = ++preparerReqRef.current;
+    setPreparerPicker({ order, loading: true, people: [] });
+    try {
+      const onlyPrep = (rows) => (Array.isArray(rows) ? rows : []).filter((p) => PREP_ROLES.includes(p.role));
+      const res = await api.getAssignableStaff(locId);
+      let list = onlyPrep(res?.staff);
+      let showingEveryone = false;
+      if (list.length === 0) {
+        const all = await api.getAssignableStaff();
+        const allList = onlyPrep(all?.staff);
+        if (allList.length > 0) { list = allList; showingEveryone = true; }
+      }
+      if (preparerReqRef.current !== reqId) return;
+      setPreparerPicker({
+        order, loading: false, showingEveryone,
+        people: list.map((p) => ({ id: p.id, name: p.name, meta: p.job_title || STAFF_ROLE_LABELS[p.role] || null })),
+      });
+    } catch (err) {
+      if (preparerReqRef.current !== reqId) return;
+      setPreparerPicker(null);
+      showAlert('Staff', err?.message || 'Could not load the staff list. Please try again.');
+    }
+  }, [navigation]);
+
+  const closePreparerPicker = useCallback(() => {
+    preparerReqRef.current += 1;
+    setPreparerPicker(null);
+  }, []);
+
+  const handlePickPreparer = useCallback(async (person) => {
+    const picker = preparerPicker;
+    if (!picker?.order || picker.loading) return;
+    const nextAction = picker.order.display_stage?.nextAction;
+    if (!nextAction) {
+      setPreparerPicker(null);
+      showAlert('Start Preparing', 'This order has already moved on. Pull down to refresh.');
+      return;
+    }
+    const reqId = ++preparerReqRef.current;
+    setPreparerPicker((prev) => (prev ? { ...prev, loading: true } : prev));
+    try {
+      await api.advanceOrder(nextAction, { assigned_to: person.id });
+      if (preparerReqRef.current === reqId) setPreparerPicker(null);
+      list.refresh();
+    } catch (err) {
+      if (preparerReqRef.current !== reqId) return;
+      setPreparerPicker(null);
+      showAlert('Start Preparing', err?.message || 'Could not start this order. Please try again.');
+    }
+  }, [preparerPicker, list.refresh]);
+
+  // "Leave for now" — Start Preparing without naming anybody. Someone
+  // mid-rush must always be able to move the order along and sort out who is
+  // making it afterwards; matches DashboardScreen.js's identically-named
+  // escape hatch.
+  const handleLeavePreparerForNow = useCallback(async () => {
+    const picker = preparerPicker;
+    if (!picker?.order || picker.loading) return;
+    const nextAction = picker.order.display_stage?.nextAction;
+    if (!nextAction) {
+      setPreparerPicker(null);
+      showAlert('Start Preparing', 'This order has already moved on. Pull down to refresh.');
+      return;
+    }
+    const reqId = ++preparerReqRef.current;
+    setPreparerPicker((prev) => (prev ? { ...prev, loading: true } : prev));
+    try {
+      await api.advanceOrder(nextAction);
+      if (preparerReqRef.current === reqId) setPreparerPicker(null);
+      list.refresh();
+    } catch (err) {
+      if (preparerReqRef.current !== reqId) return;
+      setPreparerPicker(null);
+      showAlert('Start Preparing', err?.message || 'Could not start this order. Please try again.');
+    }
+  }, [preparerPicker, list.refresh]);
+
   const renderItem = ({ item }) => {
     const itemsSummary = formatItemsSummary(item.items);
     const orderTypeLabel = ORDER_TYPE_LABELS[item.order_type] || item.order_type;
     const isUnpaid = item.payment_status && item.payment_status !== 'paid' && item.payment_status !== 'refunded';
     const nextAction = item.display_stage?.nextAction;
-    // Mirrors resolvePreparerStep/resolveDeliverStep (OrderCard.js) as
-    // closely as a LIST row's data allows — see docs/superpowers/specs/
-    // 2026-09-09-orders-inbox-redesign-design.md §5's 2026-09-10 revision.
-    // Both are fully re-derivable from fields GET /sales already returns
-    // (has_unassigned_open_task added for exactly this purpose; cod_amount/
-    // cod_collected were already there):
-    //   Start Preparing (body.status === 'preparing'):
-    //     no unassigned task -> resolvePreparerStep would say 'advance' ->
-    //       safe, one tap, no extra body.
-    //     unassigned task + viewer is 'employee' -> 'self' -> still one
-    //       tap, just needs assigned_to on the request body.
-    //     unassigned task + any other role -> 'pick' -> a real picker is
-    //       needed; no inline button, falls back to tap-to-SaleDetail.
-    //   Mark Delivered (endpoint ends '/deliver'):
-    //     nothing outstanding -> 'advance', safe, one tap.
-    //     COD still outstanding -> 'collect_cod', needs an amount; no
-    //       inline button, falls back to tap-to-SaleDetail.
-    //   Everything else (Mark Ready, Confirm Pickup, Mark Picked Up,
-    //     Complete) was already unconditionally safe — no resolution step
-    //     exists for these in OrderCard.js either.
-    let showActionButton = false;
-    let advanceExtraBody;
-    if (nextAction) {
-      if (nextAction.body?.status === 'preparing') {
-        if (!item.has_unassigned_open_task) {
-          showActionButton = true;
-        } else if (user?.role === 'employee' && user?.id != null) {
-          showActionButton = true;
-          advanceExtraBody = { assigned_to: user.id };
-        } // else: needs a real picker, leave showActionButton false
-      } else if (nextAction.endpoint?.endsWith('/deliver')) {
-        const outstanding = Number(item.cod_amount || 0) - Number(item.cod_collected || 0);
-        showActionButton = outstanding <= 0.01;
-      } else {
-        showActionButton = true;
-      }
-    }
+    // Mirrors OrderCard.js's handlePrimaryPress: whenever a nextAction
+    // exists, ALWAYS show ONE primary button (never silently hide it) —
+    // the button itself decides whether to fire directly or open a small
+    // resolution step first, exactly like the Dashboard's cards already do.
+    // The first version of this screen (2026-09-09) hid the button whenever
+    // resolution was needed rather than actually offering it — live-reported
+    // as "next actions aren't visible," since Start Preparing is the single
+    // most common action and needed resolution roughly half the time in
+    // real data. Fixed 2026-09-10 by reusing the Dashboard's exact flows
+    // (AssignPickerModal + CollectCodModal, extracted to be shared) instead
+    // of a second, divergent copy.
+    const needsPreparerPick = nextAction?.body?.status === 'preparing'
+      && item.has_unassigned_open_task && user?.role !== 'employee';
+    const needsCodCollect = nextAction?.endpoint?.endsWith('/deliver')
+      && (Number(item.cod_amount || 0) - Number(item.cod_collected || 0)) > 0.01;
+    // 'employee' viewer + an unassigned task: resolvePreparerStep's 'self'
+    // case — still one tap, just needs assigned_to attached.
+    const selfAssign = nextAction?.body?.status === 'preparing'
+      && item.has_unassigned_open_task && user?.role === 'employee' && user?.id != null
+      ? { assigned_to: user.id } : undefined;
     const isAdvancing = advancingId === item.id;
 
     const handleAdvance = async () => {
@@ -185,7 +278,7 @@ export default function OrdersInboxScreen({ navigation, route }) {
         // would silently shift it into advanceOrder's `extraBody` parameter
         // instead. Matches every other caller of this same helper
         // (DashboardScreen.js, SaleDetailScreen.js, OrderKanbanBoard.js).
-        await api.advanceOrder(nextAction, advanceExtraBody);
+        await api.advanceOrder(nextAction, selfAssign);
         list.refresh();
       } catch (err) {
         // err?.message, not err?.response?.data?.message — api.js's request()
@@ -196,6 +289,12 @@ export default function OrdersInboxScreen({ navigation, route }) {
       } finally {
         setAdvancingId(null);
       }
+    };
+
+    const handlePress = () => {
+      if (needsPreparerPick) { openPreparerPicker(item); return; }
+      if (needsCodCollect) { setCodCollectOrder(item); return; }
+      handleAdvance();
     };
 
     return (
@@ -223,10 +322,10 @@ export default function OrdersInboxScreen({ navigation, route }) {
           </View>
         </View>
         <View style={styles.actionsRow}>
-          {showActionButton ? (
+          {nextAction ? (
             <TouchableOpacity
               style={[styles.actionBtn, isAdvancing && styles.actionBtnDisabled]}
-              onPress={(e) => { e.stopPropagation(); handleAdvance(); }}
+              onPress={(e) => { e.stopPropagation(); handlePress(); }}
               disabled={isAdvancing}
               hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
             >
@@ -332,6 +431,42 @@ export default function OrdersInboxScreen({ navigation, route }) {
             options: [null, 'walk_in', 'pickup', 'delivery', 'pre_order'].map((t) => ({ value: t, label: t ? (ORDER_TYPE_LABELS[t] || t) : 'All types' })),
           },
         ]}
+      />
+
+      {/* "Who is making this?" — Start Preparing when a real preparer needs
+          picking (has_unassigned_open_task). Same shared component and
+          fetch/write flow as DashboardScreen.js's identical picker. */}
+      <AssignPickerModal
+        visible={preparerPicker !== null}
+        title="Who is making this?"
+        notice={
+          preparerPicker?.loading ? null
+            : preparerPicker?.showingEveryone
+              ? 'Nobody is set up as prep staff at this location — showing everyone.'
+              : (preparerPicker?.people || []).length === 0
+                ? 'No prep staff yet. Ask the owner to add someone as Florist/Prep Staff.'
+                : null
+        }
+        people={preparerPicker?.people || []}
+        loading={!!preparerPicker?.loading}
+        onPick={handlePickPreparer}
+        onClose={closePreparerPicker}
+        footer={
+          preparerPicker?.loading ? null : (
+            <TouchableOpacity style={styles.pickerFallbackBtn} activeOpacity={0.7} onPress={handleLeavePreparerForNow}>
+              <Text style={styles.pickerFallbackText}>Leave for now</Text>
+            </TouchableOpacity>
+          )
+        }
+      />
+
+      {/* Mark Delivered with COD outstanding — same shared component and
+          flow as DashboardScreen.js's identical modal. */}
+      <CollectCodModal
+        visible={codCollectOrder !== null}
+        order={codCollectOrder}
+        onClose={() => setCodCollectOrder(null)}
+        onDone={() => { setCodCollectOrder(null); list.refresh(); }}
       />
 
       {list.error && (
@@ -446,6 +581,11 @@ const styles = StyleSheet.create({
   empty: { textAlign: 'center', color: Colors.textLight, marginTop: 40 },
   loadMoreBtn: { alignItems: 'center', paddingVertical: Spacing.md, minHeight: 44, justifyContent: 'center' },
   loadMoreText: { color: Colors.primary, fontWeight: '600' },
+  // AssignPickerModal's "Leave for now" escape hatch (matches
+  // DashboardScreen.js's identically-purposed style, sans FONT_FAMILY since
+  // nothing else on this screen sets one either).
+  pickerFallbackBtn: { minHeight: 48, alignItems: 'center', justifyContent: 'center', borderRadius: BorderRadius.md, borderWidth: 1, borderColor: Colors.border, backgroundColor: Colors.surfaceAlt, marginTop: 4 },
+  pickerFallbackText: { fontSize: FontSize.md, fontWeight: '700', color: Colors.primary },
   fab: { position: 'absolute', right: Spacing.lg, bottom: Spacing.lg, width: 56, height: 56, borderRadius: 28, backgroundColor: Colors.primary, justifyContent: 'center', alignItems: 'center', elevation: 4, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 4 },
   fabSecondary: { position: 'absolute', right: Spacing.lg, bottom: Spacing.lg + 68, width: 44, height: 44, borderRadius: 22, backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.border, justifyContent: 'center', alignItems: 'center', elevation: 3, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.15, shadowRadius: 3 },
 });

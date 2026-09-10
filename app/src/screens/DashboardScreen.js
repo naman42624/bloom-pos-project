@@ -6,7 +6,6 @@ import {
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   TouchableOpacity,
   View,
   Image,
@@ -29,6 +28,7 @@ import DeliveryChecklist from '../components/DeliveryChecklist';
 // rule lives. Imported rather than restated so this screen, the order card and
 // the order modal cannot drift apart on it (Task 15 review).
 import { resolvePreparerStep } from '../components/orderBoard/OrderCard';
+import CollectCodModal from '../components/orderBoard/CollectCodModal';
 import DateTimePickerModal from '../components/DateTimePickerModal';
 import AttachmentVoiceRow from '../components/AttachmentVoiceRow';
 import ImageModal from '../components/ImageModal';
@@ -248,11 +248,11 @@ export default function DashboardScreen({ navigation }) {
   // A. In 'start' mode that flips a live sale to preparing.
   const preparerReqRef = useRef(0);
 
-  // { order, amount, method, reference, loading } while the Mark Delivered
-  // COD-entry prompt is open, null when closed — see resolveDeliverStep
-  // (OrderCard.js) and handleResolveAction's 'collect_cod' branch. Same
-  // shape/purpose as preparerPicker above, one level simpler: no staff list
-  // to fetch, just a form, so it opens filled-in rather than loading.
+  // The order the Mark Delivered COD-entry prompt is open for, null when
+  // closed — see resolveDeliverStep (OrderCard.js) and handleResolveAction's
+  // 'collect_cod' branch. Amount/method/loading now live inside
+  // CollectCodModal itself (extracted 2026-09-10 so Orders Inbox's inline
+  // resolution can use the identical flow) — this only tracks WHICH order.
   const [codCollectPicker, setCodCollectPicker] = useState(null);
   // The order whose load checklist is open in a modal, null when closed —
   // OrderCard's load pill (onVerifyLoad). Holds the whole order (not just a
@@ -973,14 +973,7 @@ export default function DashboardScreen({ navigation }) {
     // outstanding amount; cash/upi mirrors PUT /deliveries/:id/deliver's own
     // validation (body('cod_method').isIn(['cash','upi'])).
     if (kind === 'collect_cod') {
-      const outstanding = Number(order.cod_amount || 0) - Number(order.cod_collected || 0);
-      setCodCollectPicker({
-        order,
-        amount: outstanding > 0 ? outstanding.toFixed(2) : '',
-        method: 'cash',
-        reference: '',
-        loading: false,
-      });
+      setCodCollectPicker(order);
     }
   }, [navigation, activeLocation?.id, tasksBySaleId, user?.role, user?.id, fetchDashboard]);
 
@@ -1151,44 +1144,8 @@ export default function DashboardScreen({ navigation }) {
     fetchDashboard();
   }, [fetchDashboard]);
 
-  // Submits Mark Delivered with the entered COD amount/method in one request —
-  // same endpoint resolveDeliverStep found outstanding money on
-  // (PUT /deliveries/:id/deliver), just no longer fired blind. Amount is
-  // capped to what's actually outstanding so a typo can't overshoot into the
-  // server's own "COD collection exceeds remaining amount" 400.
-  const handleSubmitCodCollect = useCallback(async () => {
-    const picker = codCollectPicker;
-    if (!picker?.order || picker.loading) return;
-    const nextAction = picker.order.display_stage?.nextAction;
-    if (!nextAction) {
-      setCodCollectPicker(null);
-      showAlert('Mark Delivered', 'This order has already moved on. Pull down to refresh.');
-      return;
-    }
-    const entered = parseFloat(picker.amount) || 0;
-    const outstanding = Number(picker.order.cod_amount || 0) - Number(picker.order.cod_collected || 0);
-    if (entered <= 0) {
-      showAlert('Mark Delivered', 'Enter the amount collected, or the exact outstanding amount if paid in full.');
-      return;
-    }
-    if (entered > outstanding + 0.01) {
-      showAlert('Mark Delivered', `Only ₹${outstanding.toFixed(2)} is outstanding on this order.`);
-      return;
-    }
-    setCodCollectPicker((prev) => (prev ? { ...prev, loading: true } : prev));
-    try {
-      await api.advanceOrder(nextAction, {
-        cod_collected: entered,
-        cod_method: picker.method,
-        cod_reference: picker.reference?.trim() || undefined,
-      });
-      setCodCollectPicker(null);
-      await fetchDashboard();
-    } catch (err) {
-      setCodCollectPicker((prev) => (prev ? { ...prev, loading: false } : prev));
-      showAlert('Mark Delivered', err?.message || 'Could not record this. Please try again.');
-    }
-  }, [codCollectPicker, fetchDashboard]);
+  // Submit/validation logic now lives inside CollectCodModal itself
+  // (extracted 2026-09-10) — see that component.
 
   // Same destination screen, two different tabs: owner/manager reach Orders
   // Inbox via the `Orders` tab, counter staff via `EmployeeOrders`
@@ -2161,57 +2118,14 @@ export default function DashboardScreen({ navigation }) {
       />
 
       {/* Mark Delivered with COD outstanding (resolveDeliverStep, OrderCard.js).
-          One request: PUT /deliveries/:id/deliver already accepts
-          cod_collected/cod_method/cod_reference and marks the order delivered
-          in the same call — no separate "record it, then deliver" trip. */}
-      <Modal visible={codCollectPicker !== null} transparent animationType="fade" onRequestClose={closeCodCollectPicker}>
-        <TouchableOpacity style={styles.modalBackdrop} activeOpacity={1} onPress={closeCodCollectPicker}>
-          <TouchableOpacity activeOpacity={1} style={styles.taskModalCard} onPress={(e) => e.stopPropagation()}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Collect COD & Mark Delivered</Text>
-              <TouchableOpacity onPress={closeCodCollectPicker} hitSlop={5}>
-                <Ionicons name="close" size={20} color="#6B7280" />
-              </TouchableOpacity>
-            </View>
-            <View style={styles.modalContent}>
-              <Text style={styles.detailLabel}>Amount Collected</Text>
-              <TextInput
-                style={styles.codAmountInput}
-                value={codCollectPicker?.amount || ''}
-                onChangeText={(v) => setCodCollectPicker((prev) => (prev ? { ...prev, amount: v } : prev))}
-                keyboardType="numeric"
-                placeholder="0"
-                placeholderTextColor="#9CA3AF"
-                editable={!codCollectPicker?.loading}
-              />
-              <Text style={styles.detailLabel}>Method</Text>
-              <View style={{ flexDirection: 'row', gap: 8 }}>
-                {['cash', 'upi'].map((m) => (
-                  <TouchableOpacity
-                    key={m}
-                    style={[styles.codMethodChip, codCollectPicker?.method === m && styles.codMethodChipActive]}
-                    onPress={() => setCodCollectPicker((prev) => (prev ? { ...prev, method: m } : prev))}
-                    disabled={codCollectPicker?.loading}
-                  >
-                    <Text style={[styles.codMethodChipText, codCollectPicker?.method === m && styles.codMethodChipTextActive]}>
-                      {m.toUpperCase()}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            </View>
-            <TouchableOpacity
-              style={[styles.actionBtnPrimary, codCollectPicker?.loading && { opacity: 0.6 }]}
-              onPress={handleSubmitCodCollect}
-              disabled={!!codCollectPicker?.loading}
-            >
-              {codCollectPicker?.loading
-                ? <ActivityIndicator color="#fff" />
-                : <Text style={styles.actionBtnPrimaryText}>Confirm & Mark Delivered</Text>}
-            </TouchableOpacity>
-          </TouchableOpacity>
-        </TouchableOpacity>
-      </Modal>
+          Extracted into CollectCodModal (2026-09-10) so Orders Inbox's
+          inline resolution uses the identical, already-tested flow. */}
+      <CollectCodModal
+        visible={codCollectPicker !== null}
+        order={codCollectPicker}
+        onClose={closeCodCollectPicker}
+        onDone={() => { setCodCollectPicker(null); fetchDashboard(); }}
+      />
 
       {/* Load-verify quick flow (OrderCard's load pill) — the same
           DeliveryChecklist component DeliveryDetailScreen uses, opened right
@@ -2624,54 +2538,8 @@ const styles = StyleSheet.create({
     color: Colors.primary,
     fontFamily: FONT_FAMILY,
   },
-  // Collect COD & Mark Delivered modal (resolveDeliverStep, OrderCard.js).
-  codAmountInput: {
-    borderWidth: 1,
-    borderColor: Colors.border,
-    borderRadius: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#111827',
-    fontFamily: FONT_FAMILY,
-  },
-  codMethodChip: {
-    flex: 1,
-    minHeight: 44,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    backgroundColor: Colors.surfaceAlt,
-  },
-  codMethodChipActive: {
-    borderColor: Colors.primary,
-    backgroundColor: Colors.primary + '18',
-  },
-  codMethodChipText: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#6B7280',
-    fontFamily: FONT_FAMILY,
-  },
-  codMethodChipTextActive: {
-    color: Colors.primary,
-  },
-  actionBtnPrimary: {
-    minHeight: 48,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: 10,
-    backgroundColor: Colors.primary,
-  },
-  actionBtnPrimaryText: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#fff',
-    fontFamily: FONT_FAMILY,
-  },
+  // Collect COD & Mark Delivered modal's own styles moved into
+  // CollectCodModal.js with the rest of that component (2026-09-10).
   quickActionsCard: {
     backgroundColor: '#fff',
     borderTopLeftRadius: 16,
