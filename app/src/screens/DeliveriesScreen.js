@@ -11,6 +11,8 @@ import {
   getShopNow, getShopTodayStr, getShopTomorrowStr, DEFAULT_TZ
 } from '../utils/datetime';
 import StageBadge from '../components/StageBadge';
+import useOrderListData from '../hooks/useOrderListData';
+import useAtRiskIds from '../hooks/useAtRiskIds';
 
 
 const STATUS_TABS = [
@@ -54,14 +56,11 @@ export default function DeliveriesScreen({ navigation }) {
     return raw.split('T')[0] || '';
   };
 
-  const [deliveries, setDeliveries] = useState([]);
-  const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState('active');
   const [search, setSearch] = useState('');
   const [assignModalVisible, setAssignModalVisible] = useState(false);
   const [selectedDelivery, setSelectedDelivery] = useState(null);
   const [partners, setPartners] = useState([]);
-  const [atRiskIds, setAtRiskIds] = useState(new Set());
   const [now, setNow] = useState(getShopNow(timezone));
 
   const tickRef = useRef(null);
@@ -119,35 +118,30 @@ export default function DeliveriesScreen({ navigation }) {
 
   useFocusEffect(useCallback(() => { fetchLocations(); }, [fetchLocations]));
 
-  const fetchDeliveries = useCallback(async () => {
-    try {
-      setLoading(true);
-      const params = { limit: 200 };
-      if (selectedLocation) params.location_id = selectedLocation;
-      if (statusFilter !== 'all') params.status = statusFilter;
+  const fetchFn = useCallback(
+    (params) => api.getDeliveries(params).then((res) => ({ items: res.data?.deliveries || [], total: Number(res.data?.total) || 0 })),
+    []
+  );
+  const list = useOrderListData(fetchFn, { pageSize: 50 });
+  // Bumped on every focus-regain (see useFocusEffect below) — same reset-
+  // token pattern useSessionsForDates/useAtRiskIds both use, for the same
+  // reason (this screen never unmounts on a focus loss/regain).
+  const [resetToken, setResetToken] = useState(0);
+  const { atRiskIds } = useAtRiskIds(list.filters.location_id, resetToken);
 
-      const [deliveriesRes, atRiskRes] = await Promise.all([
-        api.getDeliveries(params),
-        canManageDeliveries ? api.getAtRiskOrders(selectedLocation ? { location_id: selectedLocation } : {}).catch(() => ({ data: [] })) : Promise.resolve({ data: [] }),
-      ]);
+  // Actual location filtering still lives in local `selectedLocation` state
+  // (chip-row UI untouched until Task 4 moves it into FilterDrawer) — this
+  // effect is the single wire keeping `list`'s own fetch and useAtRiskIds
+  // above in sync with it, without a bigger rewrite in this task.
+  useEffect(() => {
+    list.setFilter('location_id', selectedLocation || undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedLocation]);
 
-      setDeliveries(deliveriesRes.data?.deliveries || []);
-      // total available at res.data.total for future pagination
-
-      // Build set of at-risk delivery IDs
-      const riskIds = new Set();
-      for (const r of (atRiskRes.data || [])) {
-        if (r.delivery_id) riskIds.add(r.delivery_id);
-      }
-      setAtRiskIds(riskIds);
-    } catch (err) {
-      console.error('Fetch deliveries error:', err);
-    } finally {
-      setLoading(false);
-    }
-  }, [selectedLocation, statusFilter, canManageDeliveries]);
-
-  useFocusEffect(useCallback(() => { fetchDeliveries(); }, [fetchDeliveries]));
+  useFocusEffect(useCallback(() => {
+    list.refresh();
+    setResetToken((g) => g + 1);
+  }, [list.refresh]));
 
   const openAssignModal = async (delivery) => {
     setSelectedDelivery(delivery);
@@ -181,7 +175,7 @@ export default function DeliveriesScreen({ navigation }) {
         await api.assignDelivery(selectedDelivery.id, { delivery_partner_id: partnerId });
       }
       setAssignModalVisible(false);
-      fetchDeliveries();
+      list.refresh();
     } catch (err) {
       const msg = err.message || 'Failed to assign';
       showAlert('Error', msg);
@@ -259,12 +253,12 @@ export default function DeliveriesScreen({ navigation }) {
   };
 
   const filteredDeliveries = search
-    ? deliveries.filter(d =>
+    ? list.items.filter(d =>
       (d.sale_number || '').toLowerCase().includes(search.toLowerCase()) ||
       (d.customer_name || '').toLowerCase().includes(search.toLowerCase()) ||
       (d.partner_name || '').toLowerCase().includes(search.toLowerCase())
     )
-    : deliveries;
+    : list.items;
 
   // Sort by scheduled date+time (earliest first, no-date last)
   const sortedDeliveries = [...filteredDeliveries].sort((a, b) => {
@@ -635,8 +629,8 @@ export default function DeliveriesScreen({ navigation }) {
         // section, once in its own route group. No collision.
         keyExtractor={item => String(item.id)}
         contentContainerStyle={{ padding: Spacing.md, paddingBottom: 100 }}
-        refreshing={loading}
-        onRefresh={fetchDeliveries}
+        refreshing={list.refreshing}
+        onRefresh={list.refresh}
         stickySectionHeadersEnabled={false}
         ListEmptyComponent={
           <View style={styles.empty}>
