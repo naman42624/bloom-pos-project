@@ -114,6 +114,18 @@ export default function DeliveriesScreen({ navigation }) {
   // role check belongs here at all even though a null nextAction already
   // encodes the server's own decision about the ACTION.
   const canTakeMoney = ['owner', 'manager', 'employee', 'counter_staff'].includes(user?.role);
+  // Exact role list copied from GET /production/tasks's own authorize() —
+  // excludes delivery_partner, who this screen (DeliveriesScreen/
+  // MyDeliveries) also serves as their own home screen. resolveDeadEnd's
+  // finish_tasks branch (OrderCard.js) deliberately has no role gate of its
+  // own — correct for its native callers (Dashboard/Orders Inbox, neither of
+  // which serves delivery_partner) — so this is a LOCAL downgrade in this
+  // screen's own renderDelivery, not a change to the shared helper. Without
+  // it, a rider tapping "N tasks to finish" opened TaskCompletionModal, whose
+  // GET /production/tasks 403'd silently and rendered as an empty "all done"
+  // list — directly contradicting the card behind it, which still said "N
+  // tasks to finish."
+  const canViewTasks = ['owner', 'manager', 'employee', 'counter_staff', 'florist_staff'].includes(user?.role);
 
   const [batchMode, setBatchMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState(new Set());
@@ -625,7 +637,15 @@ export default function DeliveriesScreen({ navigation }) {
       ? { assigned_to: user.id } : undefined;
     // Dead-end parity — a null nextAction means "advancing needs a human
     // decision," not "nothing can be done" (resolveDeadEnd's own doc comment).
-    const deadEnd = !nextAction ? resolveDeadEnd(saleShaped, canManageDeliveries, canTakeMoney) : null;
+    let deadEnd = !nextAction ? resolveDeadEnd(saleShaped, canManageDeliveries, canTakeMoney) : null;
+    // Local downgrade for a viewer TaskCompletionModal's own fetch would
+    // 403 (see canViewTasks above) — turns the button into a plain status
+    // line instead of a route to a dead end. handleDeadEndPress below
+    // already only dispatches for deadEnd.type === 'route', so this alone
+    // is enough to stop the modal from opening for this role.
+    if (deadEnd?.kind === 'finish_tasks' && !canViewTasks) {
+      deadEnd = { type: 'status', text: `${deadEnd.label} — ask the counter` };
+    }
     const isAdvancing = advancingId === item.id;
 
     const handleAdvance = async () => {
@@ -647,6 +667,11 @@ export default function DeliveriesScreen({ navigation }) {
     };
 
     const handlePress = () => {
+      // Belt-and-suspenders alongside the render-side canSelect gate below:
+      // this card is in "tap toggles selection" mode, so nothing here may
+      // fire a real transition even if some future change ends up calling
+      // this a second way.
+      if (canSelect) return;
       if (needsPreparerPick) { openPreparerPicker(saleShaped); return; }
       if (needsCodCollect) { setCodCollectOrder(saleShaped); return; }
       handleAdvance();
@@ -659,6 +684,8 @@ export default function DeliveriesScreen({ navigation }) {
     // screen's own openAssignModal(item) — Task 7 replaces that call site,
     // not this task (see brief's explicit note).
     const handleDeadEndPress = () => {
+      // Same belt-and-suspenders as handlePress above.
+      if (canSelect) return;
       if (!deadEnd || deadEnd.type !== 'route') return;
       if (deadEnd.kind === 'assign_rider') { openAssignModal(item); return; }
       if (deadEnd.kind === 'finish_tasks') { setTaskCompletionOrder(saleShaped); return; }
@@ -760,6 +787,13 @@ export default function DeliveriesScreen({ navigation }) {
           <TouchableOpacity
             onPress={(e) => { e.stopPropagation(); setExpandedItemsId((id) => (id === item.id ? null : item.id)); }}
             style={{ marginHorizontal: Spacing.md, marginTop: 8 }}
+            // Collapsed content is one small text line, well under the
+            // 44x44pt minimum tap target (staff-ux-checklist #7) — this
+            // task's own two action buttons already have minHeight/minWidth
+            // 44 for the same reason; this is the disclosure's equivalent.
+            // Larger than this file's usual 8pt hitSlop since the text
+            // itself is this small.
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
           >
             <Text style={{ fontSize: FontSize.sm, color: Colors.primary, fontWeight: '600' }}>
               {expandedItemsId === item.id ? '▾' : '▸'} {item.items.length} item{item.items.length !== 1 ? 's' : ''}
@@ -796,7 +830,16 @@ export default function DeliveriesScreen({ navigation }) {
         </View>
 
         <View style={styles.actionsRow}>
-          {nextAction ? (
+          {/* canSelect (batch mode + this card is selectable) takes over the
+              card's own onPress for toggling selection — a staff member
+              sweeping down a route ticking cards for batch-assign must never
+              land on this button and silently fire a real state transition
+              instead. The mutating action button (actionBtn/deadEndBtn) is
+              withheld entirely while canSelect is true; ContactButtons below
+              stays live regardless — calling/WhatsApp is harmless mid-sweep. */}
+          {canSelect ? (
+            <View style={{ flex: 1 }} />
+          ) : nextAction ? (
             <TouchableOpacity
               style={[styles.actionBtn, isAdvancing && styles.actionBtnDisabled]}
               onPress={(e) => { e.stopPropagation(); handlePress(); }}
