@@ -20,7 +20,7 @@ export default function FilterDrawer({ visible, onClose, sections, onClearAll })
             {sections.map((section) => (
               <View key={section.key} style={styles.section}>
                 <Text style={styles.sectionLabel}>{section.label}</Text>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chipScroll} contentContainerStyle={styles.chipRow}>
                   {section.options.map((opt) => (
                     <TouchableOpacity
                       key={String(opt.value)}
@@ -53,7 +53,11 @@ const styles = StyleSheet.create({
   body: { paddingHorizontal: Spacing.md },
   section: { marginTop: Spacing.md },
   sectionLabel: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.textSecondary, marginBottom: Spacing.xs },
-  chipRow: { gap: Spacing.xs },
+  // flexGrow/flexShrink: 0 on the ScrollView's own style — see
+  // ActiveFilterChips.js's `scroll` style for the full explanation (same
+  // react-native-web horizontal-ScrollView-stretch bug).
+  chipScroll: { flexGrow: 0, flexShrink: 0 },
+  chipRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs },
   chip: { paddingVertical: Spacing.sm, paddingHorizontal: Spacing.md, borderRadius: BorderRadius.full, backgroundColor: Colors.surfaceAlt, minHeight: 44, justifyContent: 'center' },
   chipActive: { backgroundColor: Colors.primary },
   chipText: { fontSize: FontSize.sm, color: Colors.text },

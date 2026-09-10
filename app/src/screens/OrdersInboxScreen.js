@@ -288,7 +288,7 @@ export default function OrdersInboxScreen({ navigation, route }) {
         placeholder="Search order #, customer, phone, item…"
       />
 
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.filterRowScroll} contentContainerStyle={styles.filterRow}>
         {STATUS_FILTERS.map((s) => (
           <TouchableOpacity key={s || 'all'} style={[styles.filterChip, (list.filters.status ?? null) === s && styles.filterChipSelected]} onPress={() => list.setFilter('status', s || undefined)}>
             <Text style={[styles.filterChipText, (list.filters.status ?? null) === s && styles.filterChipTextSelected]}>{s ? STATUS_LABELS[s] : 'All'}</Text>
@@ -406,7 +406,16 @@ const styles = StyleSheet.create({
     flexDirection: 'row', alignItems: 'center', gap: 4,
   },
   pickupLinkText: { color: Colors.primary, fontWeight: '600', fontSize: FontSize.sm },
-  filterRow: { flexDirection: 'row', gap: 6, paddingHorizontal: Spacing.md, paddingTop: Spacing.sm },
+  // flexGrow/flexShrink: 0 on the ScrollView's own style (not
+  // contentContainerStyle) — without it, react-native-web lets a
+  // horizontal ScrollView stretch to fill all remaining vertical space in
+  // its flex-column parent, distorting each pill-shaped chip into a
+  // near-circle and making the row compete with the SectionList below for
+  // space (confirmed live, 2026-09-10 — screenshots showed exactly this).
+  // Matches the already-working pattern in DeliveriesScreen.js's
+  // tabsRow/locationTabsRow; native is unaffected either way.
+  filterRowScroll: { flexGrow: 0, flexShrink: 0 },
+  filterRow: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: Spacing.md, paddingTop: Spacing.sm },
   // minHeight 44, not the pre-existing screen's 36 — Status is now the ONLY
   // always-visible filter row on this redesigned screen (staff-ux-checklist
   // #7 / this plan's own 44x44pt global constraint), so it doesn't get to
