@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { View, Text, SectionList, TouchableOpacity, StyleSheet, Modal, ScrollView } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, Modal, ScrollView, RefreshControl } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '../context/AuthContext';
@@ -16,6 +16,7 @@ import useAtRiskIds from '../hooks/useAtRiskIds';
 import OrderListToolbar from '../components/orders/OrderListToolbar';
 import FilterDrawer from '../components/orders/FilterDrawer';
 import ActiveFilterChips from '../components/orders/ActiveFilterChips';
+import CollapsibleSection from '../components/orders/CollapsibleSection';
 
 
 const STATUS_TABS = [
@@ -312,25 +313,16 @@ export default function DeliveriesScreen({ navigation }) {
   // since later code (and Task 5) references it directly.
   const filteredDeliveries = list.items;
 
-  // Sort by scheduled date+time (earliest first, no-date last)
-  const sortedDeliveries = [...filteredDeliveries].sort((a, b) => {
-    const dA = extractLocalDate(a.scheduled_date);
-    const dB = extractLocalDate(b.scheduled_date);
-    const dtA = dA ? `${dA} ${a.scheduled_time || '00:00'}` : 'zzzz';
-    const dtB = dB ? `${dB} ${b.scheduled_time || '00:00'}` : 'zzzz';
-    return dtA.localeCompare(dtB);
-  });
-
   // Group by date for section headers
   const getDateLabel = (dateStr) => formatShopDateLabel(dateStr, timezone);
 
 
   const dateSections = [];
   const grouped = {};
-  for (const item of sortedDeliveries) {
+  for (const item of filteredDeliveries) {
     const key = extractLocalDate(item.scheduled_date) || '_unscheduled';
     if (!grouped[key]) {
-      grouped[key] = { key, title: getDateLabel(key), data: [], isAtRisk: false, isRoute: false };
+      grouped[key] = { key, title: key === '_unscheduled' ? 'No Date Set' : getDateLabel(key), data: [], isAtRisk: false, isRoute: false };
       dateSections.push(grouped[key]);
     }
     grouped[key].data.push(item);
@@ -343,13 +335,13 @@ export default function DeliveriesScreen({ navigation }) {
   // the route group would make "select all in route" silently skip them.
   const NO_ROUTE_KEY = '_no_route';
   const routeSections = [];
-  const atRiskItems = sortedDeliveries.filter(d => atRiskIds.has(d.id));
+  const atRiskItems = filteredDeliveries.filter(d => atRiskIds.has(d.id));
   if (atRiskItems.length > 0) {
     routeSections.push({ key: '_at_risk', title: `Needs Attention (${atRiskItems.length})`, data: atRiskItems, isAtRisk: true, isRoute: false });
   }
   const byRoute = {};
   const routeKeys = [];
-  for (const item of sortedDeliveries) {
+  for (const item of filteredDeliveries) {
     const key = item.route_name || NO_ROUTE_KEY;
     if (!byRoute[key]) {
       byRoute[key] = { key, title: item.route_name || 'No Route Assigned', data: [], isAtRisk: false, isRoute: true };
@@ -364,7 +356,38 @@ export default function DeliveriesScreen({ navigation }) {
   });
   for (const key of routeKeys) routeSections.push(byRoute[key]);
 
-  const sections = effectiveViewMode === 'route' ? routeSections : dateSections;
+  // By-rider grouping (new, alongside route/date). Same NO_*_KEY-last sort
+  // convention as routeSections above, keyed on partner_name since that's
+  // what the delivery list already carries (no separate partner-id lookup
+  // needed here).
+  const NO_RIDER_KEY = '_no_rider';
+  const riderSections = [];
+  const byRider = {};
+  const riderKeys = [];
+  for (const item of filteredDeliveries) {
+    const key = item.partner_name || NO_RIDER_KEY;
+    if (!byRider[key]) {
+      byRider[key] = { key, title: item.partner_name || 'Unassigned', data: [], isAtRisk: false, isRoute: false };
+      riderKeys.push(key);
+    }
+    byRider[key].data.push(item);
+  }
+  riderKeys.sort((a, b) => {
+    if (a === NO_RIDER_KEY) return 1;
+    if (b === NO_RIDER_KEY) return -1;
+    return a.localeCompare(b);
+  });
+  for (const key of riderKeys) riderSections.push(byRider[key]);
+
+  // sort==='urgency' wins over any view-mode toggle: one flat, server-
+  // ordered list with no headers and no at-risk lead section (spec §4) —
+  // the whole point of "Urgent first" is a single ranked queue, not another
+  // grouping axis.
+  const sections = list.sort === 'urgency'
+    ? [{ key: '_flat', title: null, data: filteredDeliveries, isAtRisk: false, isRoute: false }]
+    : effectiveViewMode === 'route' ? routeSections
+    : effectiveViewMode === 'rider' ? riderSections
+    : dateSections;
 
   const getTimeInfo = (item) => {
     // For delivered/failed orders, show completion time instead of countdown
@@ -647,57 +670,41 @@ export default function DeliveriesScreen({ navigation }) {
         </View>
       )}
 
-      {/* List — grouped by route (default) or by date, toggled above */}
-      <SectionList
+      {/* List — grouped by route/date/rider (toggled above), or one flat
+          urgency-ranked list with no grouping when sort==='urgency'. Was a
+          SectionList; now a plain ScrollView of CollapsibleSections so each
+          group can be independently collapsed/expanded (spec §4). */}
+      <ScrollView
         style={{ flex: 1 }}
-        sections={sections}
-        renderItem={renderDelivery}
-        renderSectionHeader={({ section }) => {
-          // Counts only what "select all" will actually select — see
-          // isDueForDispatch: today/overdue/undated, never future-dated.
-          const selectableCount = section.isRoute
-            ? section.data.filter(isDueForDispatch).length
-            : 0;
-          return (
-            <View style={styles.sectionHeader}>
-              <View style={styles.sectionHeaderLeft}>
-                <Ionicons
-                  name={section.isAtRisk ? 'warning' : section.isRoute ? 'navigate-outline' : 'calendar-outline'}
-                  size={16}
-                  color={section.isAtRisk ? '#FF6D00' : Colors.primary}
-                />
-                <Text style={[styles.sectionHeaderText, section.isAtRisk && styles.sectionHeaderTextAtRisk]}>{section.title}</Text>
-              </View>
-              {section.isRoute && canManageDeliveries && selectableCount > 0 && (
-                <TouchableOpacity
-                  style={styles.selectRouteBtn}
-                  onPress={() => selectAllInRoute(section.data)}
-                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                >
-                  <Ionicons name="checkmark-done-outline" size={16} color={Colors.primary} />
-                  <Text style={styles.selectRouteBtnText}>Select today's ({selectableCount})</Text>
-                </TouchableOpacity>
-              )}
-            </View>
-          );
-        }}
-        // SectionList already namespaces each item's key by its own
-        // section (VirtualizedSectionList._subExtractor), so item.id alone
-        // stays a safe key even though an at-risk delivery deliberately
-        // appears twice in route view — once in the "Needs Attention" lead
-        // section, once in its own route group. No collision.
-        keyExtractor={item => String(item.id)}
+        refreshControl={<RefreshControl refreshing={list.refreshing} onRefresh={list.refresh} colors={[Colors.primary]} />}
         contentContainerStyle={{ padding: Spacing.md, paddingBottom: 100 }}
-        refreshing={list.refreshing}
-        onRefresh={list.refresh}
-        stickySectionHeadersEnabled={false}
-        ListEmptyComponent={
+      >
+        {sections.length === 0 ? (
           <View style={styles.empty}>
             <Ionicons name="bicycle-outline" size={48} color={Colors.textLight} />
             <Text style={styles.emptyText}>No deliveries found</Text>
           </View>
-        }
-      />
+        ) : list.sort === 'urgency' ? (
+          sections[0].data.map((item) => <View key={item.id}>{renderDelivery({ item })}</View>)
+        ) : (
+          sections.map((section) => {
+            // Counts only what "select all" will actually select — see
+            // isDueForDispatch: today/overdue/undated, never future-dated.
+            const selectableCount = section.isRoute ? section.data.filter(isDueForDispatch).length : 0;
+            return (
+              <CollapsibleSection key={section.key} title={section.title} count={section.data.length} defaultExpanded>
+                {section.isRoute && canManageDeliveries && selectableCount > 0 && (
+                  <TouchableOpacity style={styles.selectRouteBtn} onPress={() => selectAllInRoute(section.data)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                    <Ionicons name="checkmark-done-outline" size={16} color={Colors.primary} />
+                    <Text style={styles.selectRouteBtnText}>Select today's ({selectableCount})</Text>
+                  </TouchableOpacity>
+                )}
+                {section.data.map((item) => <View key={item.id}>{renderDelivery({ item })}</View>)}
+              </CollapsibleSection>
+            );
+          })
+        )}
+      </ScrollView>
 
       {/* Assign Modal */}
       <Modal visible={assignModalVisible} transparent animationType="slide">
