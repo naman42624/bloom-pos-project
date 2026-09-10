@@ -7,10 +7,17 @@
 import { useState, useEffect } from 'react';
 import api from '../services/api';
 
-export default function useAtRiskIds(locationId, resetToken) {
+export default function useAtRiskIds(locationId, resetToken, enabled = true) {
   const [atRiskIds, setAtRiskIds] = useState(new Set());
 
   useEffect(() => {
+    // `enabled` (final whole-branch review byproduct, 2026-09-10): lets a
+    // caller skip the fetch entirely for a viewer who'd always 403 anyway
+    // (e.g. delivery_partner on DeliveriesScreen — harmless today since a
+    // 403 resolves to an empty Set either way, but this avoids firing a
+    // request that can never succeed). Defaults to true so every other/
+    // future caller behaves exactly as before.
+    if (!enabled) { setAtRiskIds(new Set()); return; }
     let cancelled = false;
     api.getAtRiskOrders(locationId ? { location_id: locationId } : {})
       .then((res) => {
@@ -23,7 +30,7 @@ export default function useAtRiskIds(locationId, resetToken) {
       })
       .catch(() => { if (!cancelled) setAtRiskIds(new Set()); });
     return () => { cancelled = true; };
-  }, [locationId, resetToken]);
+  }, [locationId, resetToken, enabled]);
 
   return { atRiskIds };
 }

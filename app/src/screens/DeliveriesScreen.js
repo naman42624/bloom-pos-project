@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect, useRef } from 'react';
+import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, ScrollView, RefreshControl, ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
@@ -187,7 +187,12 @@ export default function DeliveriesScreen({ navigation }) {
   // token pattern useSessionsForDates/useAtRiskIds both use, for the same
   // reason (this screen never unmounts on a focus loss/regain).
   const [resetToken, setResetToken] = useState(0);
-  const { atRiskIds } = useAtRiskIds(list.filters.location_id, resetToken);
+  // Gated to canManageDeliveries (byproduct, final whole-branch review,
+  // 2026-09-10) — a delivery_partner viewer always 403s GET /deliveries/
+  // at-risk (owner/manager/employee/counter_staff-only), harmlessly resolving
+  // to an empty Set either way, but there's no reason to fire a request that
+  // can never succeed for that audience.
+  const { atRiskIds } = useAtRiskIds(list.filters.location_id, resetToken, canManageDeliveries);
 
   // Location and status filtering still live in local `selectedLocation`/
   // `statusFilter` state — location's UI trigger is now the FilterDrawer's
@@ -487,100 +492,115 @@ export default function DeliveriesScreen({ navigation }) {
   // Group by date for section headers
   const getDateLabel = (dateStr) => formatShopDateLabel(dateStr, timezone);
 
-
-  const dateSections = [];
-  const grouped = {};
-  for (const item of filteredDeliveries) {
-    const key = extractLocalDate(item.scheduled_date) || '_unscheduled';
-    if (!grouped[key]) {
-      grouped[key] = { key, title: key === '_unscheduled' ? 'No Date Set' : getDateLabel(key), data: [], isAtRisk: false, isRoute: false };
-      dateSections.push(grouped[key]);
+  // Finding #5 (final whole-branch review, 2026-09-10): this whole grouping
+  // computation used to run on every render — including the 60s `now` tick
+  // (see the setInterval above), which re-renders the whole screen but never
+  // changes the underlying data — rebuilding dateSections/routeSections/
+  // riderSections from scratch against what can now be a 200-item page
+  // (raised from 50 in an earlier fix round). Spec §4 explicitly calls for a
+  // `useMemo` here. Deps: `filteredDeliveries`/`list.sort`/`effectiveViewMode`
+  // per the spec's own (list.items, list.sort, viewMode) triple, PLUS
+  // `atRiskIds` and `timezone` — both genuinely read inside this computation
+  // (atRiskIds for the "Needs Attention" lead section, timezone via
+  // extractLocalDate/getDateLabel for date-bucket keys/labels) and left out
+  // of the spec's own dependency list; omitting either would leave the
+  // at-risk section or date labels silently stale after an at-risk refetch
+  // or a timezone setting change.
+  const sections = useMemo(() => {
+    const dateSections = [];
+    const grouped = {};
+    for (const item of filteredDeliveries) {
+      const key = extractLocalDate(item.scheduled_date) || '_unscheduled';
+      if (!grouped[key]) {
+        grouped[key] = { key, title: key === '_unscheduled' ? 'No Date Set' : getDateLabel(key), data: [], isAtRisk: false, isRoute: false };
+        dateSections.push(grouped[key]);
+      }
+      grouped[key].data.push(item);
     }
-    grouped[key].data.push(item);
-  }
-  // Spec §4: Date view sections and their items must come out chronological
-  // by scheduled date/time. That used to fall out for free from iterating
-  // the (now-deleted) client-presorted `sortedDeliveries` list — Route/
-  // Rider don't need an equivalent fix since both already have their own
-  // explicit alphabetical `.sort()` on their section-key arrays, independent
-  // of item order; date grouping had no such sort of its own, so it needs
-  // one explicitly now that the upstream presort is gone. Scoped to just
-  // this block — does not touch filteredDeliveries or any other section
-  // builder.
-  dateSections.sort((a, b) => {
-    if (a.key === '_unscheduled') return 1;
-    if (b.key === '_unscheduled') return -1;
-    return a.key.localeCompare(b.key);
-  });
-  for (const section of dateSections) {
-    section.data.sort((a, b) => (a.scheduled_time || '00:00').localeCompare(b.scheduled_time || '00:00'));
-  }
-
-  // Dispatch/route view — at-risk deliveries lead (regardless of route, so
-  // nothing urgent gets buried inside a route group), then every delivery
-  // grouped by route. At-risk items still also appear in their route group
-  // below (still carrying their "LATE" badge there) — dropping them out of
-  // the route group would make "select all in route" silently skip them.
-  const NO_ROUTE_KEY = '_no_route';
-  const routeSections = [];
-  const atRiskItems = filteredDeliveries.filter(d => atRiskIds.has(d.id));
-  if (atRiskItems.length > 0) {
-    // Plain title, no embedded count — CollapsibleSection's own `count`
-    // prop (section.data.length) supplies the "(N)" on its own now that
-    // this renders through CollapsibleSection instead of the old custom
-    // renderSectionHeader. Embedding a count here too produced a double
-    // "(N) (N)" (fix-round finding, see task-5-report.md).
-    routeSections.push({ key: '_at_risk', title: 'Needs Attention', data: atRiskItems, isAtRisk: true, isRoute: false });
-  }
-  const byRoute = {};
-  const routeKeys = [];
-  for (const item of filteredDeliveries) {
-    const key = item.route_name || NO_ROUTE_KEY;
-    if (!byRoute[key]) {
-      byRoute[key] = { key, title: item.route_name || 'No Route Assigned', data: [], isAtRisk: false, isRoute: true };
-      routeKeys.push(key);
+    // Spec §4: Date view sections and their items must come out chronological
+    // by scheduled date/time. That used to fall out for free from iterating
+    // the (now-deleted) client-presorted `sortedDeliveries` list — Route/
+    // Rider don't need an equivalent fix since both already have their own
+    // explicit alphabetical `.sort()` on their section-key arrays, independent
+    // of item order; date grouping had no such sort of its own, so it needs
+    // one explicitly now that the upstream presort is gone. Scoped to just
+    // this block — does not touch filteredDeliveries or any other section
+    // builder.
+    dateSections.sort((a, b) => {
+      if (a.key === '_unscheduled') return 1;
+      if (b.key === '_unscheduled') return -1;
+      return a.key.localeCompare(b.key);
+    });
+    for (const section of dateSections) {
+      section.data.sort((a, b) => (a.scheduled_time || '00:00').localeCompare(b.scheduled_time || '00:00'));
     }
-    byRoute[key].data.push(item);
-  }
-  routeKeys.sort((a, b) => {
-    if (a === NO_ROUTE_KEY) return 1;
-    if (b === NO_ROUTE_KEY) return -1;
-    return a.localeCompare(b);
-  });
-  for (const key of routeKeys) routeSections.push(byRoute[key]);
 
-  // By-rider grouping (new, alongside route/date). Same NO_*_KEY-last sort
-  // convention as routeSections above, keyed on partner_name since that's
-  // what the delivery list already carries (no separate partner-id lookup
-  // needed here).
-  const NO_RIDER_KEY = '_no_rider';
-  const riderSections = [];
-  const byRider = {};
-  const riderKeys = [];
-  for (const item of filteredDeliveries) {
-    const key = item.partner_name || NO_RIDER_KEY;
-    if (!byRider[key]) {
-      byRider[key] = { key, title: item.partner_name || 'Unassigned', data: [], isAtRisk: false, isRoute: false };
-      riderKeys.push(key);
+    // Dispatch/route view — at-risk deliveries lead (regardless of route, so
+    // nothing urgent gets buried inside a route group), then every delivery
+    // grouped by route. At-risk items still also appear in their route group
+    // below (still carrying their "LATE" badge there) — dropping them out of
+    // the route group would make "select all in route" silently skip them.
+    const NO_ROUTE_KEY = '_no_route';
+    const routeSections = [];
+    const atRiskItems = filteredDeliveries.filter(d => atRiskIds.has(d.id));
+    if (atRiskItems.length > 0) {
+      // Plain title, no embedded count — CollapsibleSection's own `count`
+      // prop (section.data.length) supplies the "(N)" on its own now that
+      // this renders through CollapsibleSection instead of the old custom
+      // renderSectionHeader. Embedding a count here too produced a double
+      // "(N) (N)" (fix-round finding, see task-5-report.md).
+      routeSections.push({ key: '_at_risk', title: 'Needs Attention', data: atRiskItems, isAtRisk: true, isRoute: false });
     }
-    byRider[key].data.push(item);
-  }
-  riderKeys.sort((a, b) => {
-    if (a === NO_RIDER_KEY) return 1;
-    if (b === NO_RIDER_KEY) return -1;
-    return a.localeCompare(b);
-  });
-  for (const key of riderKeys) riderSections.push(byRider[key]);
+    const byRoute = {};
+    const routeKeys = [];
+    for (const item of filteredDeliveries) {
+      const key = item.route_name || NO_ROUTE_KEY;
+      if (!byRoute[key]) {
+        byRoute[key] = { key, title: item.route_name || 'No Route Assigned', data: [], isAtRisk: false, isRoute: true };
+        routeKeys.push(key);
+      }
+      byRoute[key].data.push(item);
+    }
+    routeKeys.sort((a, b) => {
+      if (a === NO_ROUTE_KEY) return 1;
+      if (b === NO_ROUTE_KEY) return -1;
+      return a.localeCompare(b);
+    });
+    for (const key of routeKeys) routeSections.push(byRoute[key]);
 
-  // sort==='urgency' wins over any view-mode toggle: one flat, server-
-  // ordered list with no headers and no at-risk lead section (spec §4) —
-  // the whole point of "Urgent first" is a single ranked queue, not another
-  // grouping axis.
-  const sections = list.sort === 'urgency'
-    ? [{ key: '_flat', title: null, data: filteredDeliveries, isAtRisk: false, isRoute: false }]
-    : effectiveViewMode === 'route' ? routeSections
-    : effectiveViewMode === 'rider' ? riderSections
-    : dateSections;
+    // By-rider grouping (new, alongside route/date). Same NO_*_KEY-last sort
+    // convention as routeSections above, keyed on partner_name since that's
+    // what the delivery list already carries (no separate partner-id lookup
+    // needed here).
+    const NO_RIDER_KEY = '_no_rider';
+    const riderSections = [];
+    const byRider = {};
+    const riderKeys = [];
+    for (const item of filteredDeliveries) {
+      const key = item.partner_name || NO_RIDER_KEY;
+      if (!byRider[key]) {
+        byRider[key] = { key, title: item.partner_name || 'Unassigned', data: [], isAtRisk: false, isRoute: false };
+        riderKeys.push(key);
+      }
+      byRider[key].data.push(item);
+    }
+    riderKeys.sort((a, b) => {
+      if (a === NO_RIDER_KEY) return 1;
+      if (b === NO_RIDER_KEY) return -1;
+      return a.localeCompare(b);
+    });
+    for (const key of riderKeys) riderSections.push(byRider[key]);
+
+    // sort==='urgency' wins over any view-mode toggle: one flat, server-
+    // ordered list with no headers and no at-risk lead section (spec §4) —
+    // the whole point of "Urgent first" is a single ranked queue, not another
+    // grouping axis.
+    return list.sort === 'urgency'
+      ? [{ key: '_flat', title: null, data: filteredDeliveries, isAtRisk: false, isRoute: false }]
+      : effectiveViewMode === 'route' ? routeSections
+      : effectiveViewMode === 'rider' ? riderSections
+      : dateSections;
+  }, [filteredDeliveries, list.sort, effectiveViewMode, atRiskIds, timezone]);
 
   const getTimeInfo = (item) => {
     // For delivered/failed orders, show completion time instead of countdown
@@ -861,15 +881,25 @@ export default function DeliveriesScreen({ navigation }) {
         </View>
 
         <View style={styles.actionsRow}>
-          {/* canSelect (batch mode + this card is selectable) takes over the
-              card's own onPress for toggling selection — a staff member
-              sweeping down a route ticking cards for batch-assign must never
-              land on this button and silently fire a real state transition
-              instead. The mutating action button (actionBtn/deadEndBtn) is
-              withheld entirely while canSelect is true; ContactButtons below
-              stays live regardless — calling/WhatsApp is harmless mid-sweep. */}
-          {canSelect ? (
-            <View style={{ flex: 1 }} />
+          {/* Gate is `batchMode`, not `canSelect` (fix-round finding —
+              canSelect was one predicate too narrow: batchMode AND this
+              card's status is in ASSIGNABLE_STATUSES). A card interleaved in
+              the same route group whose status ISN'T assignable (e.g.
+              picked_up/in_transit) still has batchMode true but canSelect
+              false, and used to fall through to a live, unguarded
+              actionBtn/deadEndBtn here — a mis-tap during a batch sweep would
+              fire a real transition. The mutating action button is withheld
+              for EVERY card while batchMode is true, regardless of canSelect;
+              the plain-text status line stays visible even in batch mode —
+              informational only, not mutating, no risk there. ContactButtons
+              below stays live regardless — calling/WhatsApp is harmless
+              mid-sweep. */}
+          {batchMode ? (
+            deadEnd?.type === 'status' ? (
+              <Text style={styles.deadEndStatus}>{deadEnd.text}</Text>
+            ) : (
+              <View style={{ flex: 1 }} />
+            )
           ) : nextAction ? (
             <TouchableOpacity
               style={[styles.actionBtn, isAdvancing && styles.actionBtnDisabled]}
@@ -912,7 +942,17 @@ export default function DeliveriesScreen({ navigation }) {
       <OrderListToolbar
         search={list.search}
         onSearchChange={list.setSearch}
-        activeFilterCount={list.activeFilterCount}
+        // Subtract the two filters that are always auto-set rather than
+        // user-chosen, mirroring OrdersInboxScreen.js's identical fix for
+        // `status` (fix-round finding #3): `status` defaults to 'active' and
+        // is never absent, so it always counted as "1 active filter" even
+        // with nothing picked; `location_id` is auto-scoped for every
+        // non-manager role (see fetchLocations above) with no drawer control
+        // to even change it (FilterDrawer's Location section is
+        // isManager-only, same flag used here), so it's not a user choice
+        // for that audience either. For isManager, location_id stays a real,
+        // user-changeable filter and is NOT subtracted.
+        activeFilterCount={list.activeFilterCount - (list.filters.status ? 1 : 0) - (list.filters.location_id && !isManager ? 1 : 0)}
         onOpenFilters={() => setFiltersOpen(true)}
         viewModeProps={canManageDeliveries ? {
           value: viewMode,
@@ -932,21 +972,39 @@ export default function DeliveriesScreen({ navigation }) {
       />
 
       <ActiveFilterChips
-        filters={{ location_id: list.filters.location_id, delivery_partner_id: list.filters.delivery_partner_id, date_from: list.filters.date_from, date_to: list.filters.date_to }}
+        // location_id is only included for isManager (fix-round finding #6)
+        // — FilterDrawer's Location section below is gated to isManager
+        // only, so a counter_staff/employee/delivery_partner viewer was
+        // never shown a control for this filter in the first place, yet saw
+        // a removable "Location: X" chip for it anyway. Removing that chip
+        // would un-scope their view (the backend doesn't location-scope
+        // those roles at all when location_id is omitted — only 'manager'),
+        // so it must not be offered as something to remove. The underlying
+        // list.filters.location_id sync (from selectedLocation, Task 3)
+        // stays as-is — this only changes what's shown/removable here.
+        filters={{ ...(isManager ? { location_id: list.filters.location_id } : {}), delivery_partner_id: list.filters.delivery_partner_id, date_from: list.filters.date_from, date_to: list.filters.date_to }}
         labels={{
           location_id: (v) => `Location: ${locations.find((l) => l.id === v)?.name || v}`,
           delivery_partner_id: (v) => `Rider: ${partners.find((p) => p.id === v)?.name || v}`,
           date_from: (v) => `From: ${v}`,
           date_to: (v) => `To: ${v}`,
         }}
-        onRemove={(key) => { if (key === 'location_id') setSelectedLocation(null); else list.setFilter(key, undefined); }}
-        onClearAll={() => { setSelectedLocation(null); list.setFilter('delivery_partner_id', undefined); list.setFilter('date_from', undefined); list.setFilter('date_to', undefined); }}
+        onRemove={(key) => {
+          if (key === 'location_id') { setSelectedLocation(null); return; }
+          list.setFilter(key, undefined);
+          // Byproduct (final whole-branch review, 2026-09-10): removing a
+          // date chip must also drop the drawer's own preset highlight
+          // (Today/Yesterday/This Week), which otherwise stayed stale-active
+          // even though the actual date_from/date_to filter had cleared.
+          if (key === 'date_from' || key === 'date_to') setDateRangePreset(null);
+        }}
+        onClearAll={() => { if (isManager) setSelectedLocation(null); list.setFilter('delivery_partner_id', undefined); list.setFilter('date_from', undefined); list.setFilter('date_to', undefined); setDateRangePreset(null); }}
       />
 
       <FilterDrawer
         visible={filtersOpen}
         onClose={() => setFiltersOpen(false)}
-        onClearAll={() => { setSelectedLocation(null); list.setFilter('delivery_partner_id', undefined); list.setFilter('date_from', undefined); list.setFilter('date_to', undefined); setFiltersOpen(false); }}
+        onClearAll={() => { if (isManager) setSelectedLocation(null); list.setFilter('delivery_partner_id', undefined); list.setFilter('date_from', undefined); list.setFilter('date_to', undefined); setDateRangePreset(null); setFiltersOpen(false); }}
         sections={[
           ...(isManager ? [{
             key: 'location', label: 'Location', value: selectedLocation ?? null,
@@ -1005,41 +1063,56 @@ export default function DeliveriesScreen({ navigation }) {
         </View>
       )}
 
+      {/* Fetch errors were previously invisible — a dropped/failed request
+          just fell through to the plain "No deliveries found" empty state
+          below, a false statement about live data (fix-round finding #2).
+          Same error-banner + initial-load-spinner pattern as
+          OrdersInboxScreen.js's identical block. */}
+      {list.error && (
+        <View style={styles.errorBanner}>
+          <Text style={styles.errorBannerText}>{list.error}</Text>
+        </View>
+      )}
+
       {/* List — grouped by route/date/rider (toggled above), or one flat
           urgency-ranked list with no grouping when sort==='urgency'. Was a
           SectionList; now a plain ScrollView of CollapsibleSections so each
           group can be independently collapsed/expanded (spec §4). */}
-      <ScrollView
-        style={{ flex: 1 }}
-        refreshControl={<RefreshControl refreshing={list.refreshing} onRefresh={list.refresh} colors={[Colors.primary]} />}
-        contentContainerStyle={{ padding: Spacing.md, paddingBottom: 100 }}
-      >
-        {filteredDeliveries.length === 0 ? (
-          <View style={styles.empty}>
-            <Ionicons name="bicycle-outline" size={48} color={Colors.textLight} />
-            <Text style={styles.emptyText}>No deliveries found</Text>
-          </View>
-        ) : list.sort === 'urgency' ? (
-          sections[0].data.map((item) => <View key={item.id}>{renderDelivery({ item })}</View>)
-        ) : (
-          sections.map((section) => {
-            // Counts only what "select all" will actually select — see
-            // isDueForDispatch: today/overdue/undated, never future-dated.
-            const selectableCount = section.isRoute ? section.data.filter(isDueForDispatch).length : 0;
-            return (
-              <CollapsibleSection key={section.key} title={section.title} count={section.data.length} defaultExpanded>
-                {section.isRoute && canManageDeliveries && selectableCount > 0 && (
-                  <TouchableOpacity style={styles.selectRouteBtn} onPress={() => selectAllInRoute(section.data)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-                    <Ionicons name="checkmark-done-outline" size={16} color={Colors.primary} />
-                    <Text style={styles.selectRouteBtnText}>Select today's ({selectableCount})</Text>
-                  </TouchableOpacity>
-                )}
-                {section.data.map((item) => <View key={item.id}>{renderDelivery({ item })}</View>)}
-              </CollapsibleSection>
-            );
-          })
-        )}
-      </ScrollView>
+      {list.loading && list.items.length === 0 ? (
+        <ActivityIndicator style={{ marginTop: 40 }} color={Colors.primary} />
+      ) : (
+        <ScrollView
+          style={{ flex: 1 }}
+          refreshControl={<RefreshControl refreshing={list.refreshing} onRefresh={list.refresh} colors={[Colors.primary]} />}
+          contentContainerStyle={{ padding: Spacing.md, paddingBottom: 100 }}
+        >
+          {filteredDeliveries.length === 0 ? (
+            <View style={styles.empty}>
+              <Ionicons name="bicycle-outline" size={48} color={Colors.textLight} />
+              <Text style={styles.emptyText}>No deliveries found</Text>
+            </View>
+          ) : list.sort === 'urgency' ? (
+            sections[0].data.map((item) => <View key={item.id}>{renderDelivery({ item })}</View>)
+          ) : (
+            sections.map((section) => {
+              // Counts only what "select all" will actually select — see
+              // isDueForDispatch: today/overdue/undated, never future-dated.
+              const selectableCount = section.isRoute ? section.data.filter(isDueForDispatch).length : 0;
+              return (
+                <CollapsibleSection key={section.key} title={section.title} count={section.data.length} defaultExpanded>
+                  {section.isRoute && canManageDeliveries && selectableCount > 0 && (
+                    <TouchableOpacity style={styles.selectRouteBtn} onPress={() => selectAllInRoute(section.data)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                      <Ionicons name="checkmark-done-outline" size={16} color={Colors.primary} />
+                      <Text style={styles.selectRouteBtnText}>Select today's ({selectableCount})</Text>
+                    </TouchableOpacity>
+                  )}
+                  {section.data.map((item) => <View key={item.id}>{renderDelivery({ item })}</View>)}
+                </CollapsibleSection>
+              );
+            })
+          )}
+        </ScrollView>
+      )}
 
       {/* Assign Delivery Partner — single-delivery (safe-action row / dead-end
           "Assign" tap) and batch ("Assign All" / "Select all in this route")
@@ -1184,6 +1257,10 @@ const styles = StyleSheet.create({
   selectRouteBtnText: { fontSize: FontSize.sm, fontWeight: '700', color: Colors.primary },
   empty: { alignItems: 'center', marginTop: 60 },
   emptyText: { fontSize: FontSize.md, color: Colors.textLight, marginTop: 8, textAlign: 'center' },
+  // Matches OrdersInboxScreen.js's identical errorBanner/errorBannerText
+  // (fix-round finding #2 — fetch errors were previously invisible here).
+  errorBanner: { backgroundColor: Colors.error + '15', padding: Spacing.sm, marginHorizontal: Spacing.md, borderRadius: BorderRadius.md, marginTop: Spacing.xs },
+  errorBannerText: { color: Colors.error, fontSize: FontSize.sm },
   urgentBadge: { flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: '#FFF3E0', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 },
   urgentText: { fontSize: 8, fontWeight: '800', color: '#FF6D00' },
   // Batch mode
