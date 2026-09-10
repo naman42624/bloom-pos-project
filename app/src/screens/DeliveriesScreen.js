@@ -327,6 +327,23 @@ export default function DeliveriesScreen({ navigation }) {
     }
     grouped[key].data.push(item);
   }
+  // Spec §4: Date view sections and their items must come out chronological
+  // by scheduled date/time. That used to fall out for free from iterating
+  // the (now-deleted) client-presorted `sortedDeliveries` list — Route/
+  // Rider don't need an equivalent fix since both already have their own
+  // explicit alphabetical `.sort()` on their section-key arrays, independent
+  // of item order; date grouping had no such sort of its own, so it needs
+  // one explicitly now that the upstream presort is gone. Scoped to just
+  // this block — does not touch filteredDeliveries or any other section
+  // builder.
+  dateSections.sort((a, b) => {
+    if (a.key === '_unscheduled') return 1;
+    if (b.key === '_unscheduled') return -1;
+    return a.key.localeCompare(b.key);
+  });
+  for (const section of dateSections) {
+    section.data.sort((a, b) => (a.scheduled_time || '00:00').localeCompare(b.scheduled_time || '00:00'));
+  }
 
   // Dispatch/route view — at-risk deliveries lead (regardless of route, so
   // nothing urgent gets buried inside a route group), then every delivery
@@ -337,7 +354,12 @@ export default function DeliveriesScreen({ navigation }) {
   const routeSections = [];
   const atRiskItems = filteredDeliveries.filter(d => atRiskIds.has(d.id));
   if (atRiskItems.length > 0) {
-    routeSections.push({ key: '_at_risk', title: `Needs Attention (${atRiskItems.length})`, data: atRiskItems, isAtRisk: true, isRoute: false });
+    // Plain title, no embedded count — CollapsibleSection's own `count`
+    // prop (section.data.length) supplies the "(N)" on its own now that
+    // this renders through CollapsibleSection instead of the old custom
+    // renderSectionHeader. Embedding a count here too produced a double
+    // "(N) (N)" (fix-round finding, see task-5-report.md).
+    routeSections.push({ key: '_at_risk', title: 'Needs Attention', data: atRiskItems, isAtRisk: true, isRoute: false });
   }
   const byRoute = {};
   const routeKeys = [];
