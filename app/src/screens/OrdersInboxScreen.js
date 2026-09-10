@@ -18,6 +18,7 @@ import useSessionsForDates from '../hooks/useSessionsForDates';
 import { getSingleLocationId, groupOrdersByDay, groupOrdersBySession } from '../utils/orderGrouping';
 import AssignPickerModal from '../components/orderBoard/AssignPickerModal';
 import CollectCodModal from '../components/orderBoard/CollectCodModal';
+import TaskCompletionModal from '../components/orderBoard/TaskCompletionModal';
 import { resolveDeadEnd } from '../components/orderBoard/OrderCard';
 import { PREP_ROLES, STAFF_ROLE_LABELS } from '../constants/orderDisplay';
 
@@ -96,6 +97,12 @@ export default function OrdersInboxScreen({ navigation, route }) {
   // nothing on this screen at all).
   const [riderPicker, setRiderPicker] = useState(null);
   const riderReqRef = useRef(0);
+  // The order the "Finish Tasks" modal is open for, null when closed — see
+  // TaskCompletionModal.js, which owns its own task-list fetch/complete
+  // flow. Replaces resolveDeadEnd's 'finish_tasks' case navigating away to
+  // SaleDetail (2026-09-10, requested directly — matches the other dead-end
+  // resolutions living in a modal rather than a screen change).
+  const [taskCompletionOrder, setTaskCompletionOrder] = useState(null);
 
   const singleLocationId = useMemo(() => getSingleLocationId(list.items), [list.items]);
   const dayGroups = useMemo(() => groupOrdersByDay(list.items), [list.items]);
@@ -380,26 +387,34 @@ export default function OrdersInboxScreen({ navigation, route }) {
       handleAdvance();
     };
 
-    // Dispatches a resolveDeadEnd 'route' kind — same destinations
-    // DashboardScreen.js's handleResolveAction sends these to. finish_tasks/
-    // reattempt_delivery/collect_payment/record_cod are all plain
-    // navigation, no picker; assign_rider opens the rider picker below.
+    // Dispatches a resolveDeadEnd 'route' kind. reattempt_delivery/
+    // collect_payment/record_cod are plain navigation (same destinations
+    // DashboardScreen.js's handleResolveAction sends these to);
+    // assign_rider and finish_tasks open a modal instead.
     const handleDeadEndPress = () => {
       if (!deadEnd || deadEnd.type !== 'route') return;
       if (deadEnd.kind === 'assign_rider') { openRiderPicker(item); return; }
-      if (deadEnd.kind === 'finish_tasks') { navigation.navigate('SaleDetail', { saleId: item.id }); return; }
+      if (deadEnd.kind === 'finish_tasks') { setTaskCompletionOrder(item); return; }
       if (deadEnd.kind === 'reattempt_delivery') {
         if (item.delivery_id) navigation.navigate('DeliveryDetail', { deliveryId: item.delivery_id });
         else navigation.navigate('SaleDetail', { saleId: item.id });
         return;
       }
       if (deadEnd.kind === 'collect_payment') {
+        // AddPayment (and Settlements below), not navigate('POS', {screen:
+        // 'AddPayment', ...}) — MainNavigator.js registers AddPayment
+        // locally inside OrdersStack/EmployeeOrdersStack (not only inside
+        // POSStack) specifically so it stays on THIS stack; going via 'POS'
+        // force-jumps to a different tab, whose own stack has no memory of
+        // Orders Inbox, so AddPaymentScreen's navigation.goBack() on submit
+        // lands on the POS tab's own root instead of back here (live-
+        // reported, 2026-09-10).
         const due = Number(item.grand_total || 0) - Number(item.total_paid || 0);
-        navigation.navigate('POS', { screen: 'AddPayment', params: { saleId: item.id, due } });
+        navigation.navigate('AddPayment', { saleId: item.id, due });
         return;
       }
       if (deadEnd.kind === 'record_cod') {
-        navigation.navigate('POS', { screen: 'Settlements' });
+        navigation.navigate('Settlements');
       }
     };
 
@@ -603,6 +618,16 @@ export default function OrdersInboxScreen({ navigation, route }) {
         loading={!!riderPicker?.loading}
         onPick={handlePickRider}
         onClose={closeRiderPicker}
+      />
+
+      {/* Finish Tasks (resolveDeadEnd's 'finish_tasks' case) — a preparing
+          order whose tasks aren't all done. Same shared component as
+          Dashboard uses. */}
+      <TaskCompletionModal
+        visible={taskCompletionOrder !== null}
+        order={taskCompletionOrder}
+        onClose={() => setTaskCompletionOrder(null)}
+        onDone={() => list.refresh()}
       />
 
       {list.error && (

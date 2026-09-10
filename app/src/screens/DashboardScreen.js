@@ -29,6 +29,7 @@ import DeliveryChecklist from '../components/DeliveryChecklist';
 // the order modal cannot drift apart on it (Task 15 review).
 import { resolvePreparerStep } from '../components/orderBoard/OrderCard';
 import CollectCodModal from '../components/orderBoard/CollectCodModal';
+import TaskCompletionModal from '../components/orderBoard/TaskCompletionModal';
 import DateTimePickerModal from '../components/DateTimePickerModal';
 import AttachmentVoiceRow from '../components/AttachmentVoiceRow';
 import ImageModal from '../components/ImageModal';
@@ -254,6 +255,9 @@ export default function DashboardScreen({ navigation }) {
   // CollectCodModal itself (extracted 2026-09-10 so Orders Inbox's inline
   // resolution can use the identical flow) — this only tracks WHICH order.
   const [codCollectPicker, setCodCollectPicker] = useState(null);
+  // The order the "Finish Tasks" modal is open for, null when closed — see
+  // TaskCompletionModal.js and handleResolveAction's 'finish_tasks' branch.
+  const [taskCompletionOrder, setTaskCompletionOrder] = useState(null);
   // The order whose load checklist is open in a modal, null when closed —
   // OrderCard's load pill (onVerifyLoad). Holds the whole order (not just a
   // delivery id) so the modal's title can name the order.
@@ -701,8 +705,17 @@ export default function DashboardScreen({ navigation }) {
   // layout. Spec §7.
   const handleResolveAction = useCallback(async (order, kind) => {
     if (kind === 'collect_payment') {
+      // AddPayment, not navigate('POS', {screen: 'AddPayment', ...}) —
+      // MainNavigator.js registers AddPayment locally inside DashboardStack
+      // (not only inside POSStack) specifically so it stays on this stack;
+      // going via 'POS' force-jumps to a different tab whose own stack has
+      // no memory of where the user actually was, so AddPaymentScreen's
+      // navigation.goBack() on submit lands on the POS tab's own root
+      // instead of back here (live-reported from Orders Inbox, 2026-09-10,
+      // where the same bug was far more visible — from Dashboard it
+      // happened to land back on a screen that looked plausible).
       const due = Number(order.grand_total || 0) - Number(order.total_paid || 0);
-      navigation.navigate('POS', { screen: 'AddPayment', params: { saleId: order.id, due } });
+      navigation.navigate('AddPayment', { saleId: order.id, due });
       return;
     }
     // Picking a rider is one of the most repeated actions in the shop, so it
@@ -951,15 +964,15 @@ export default function DashboardScreen({ navigation }) {
       }
       return;
     }
-    // Nothing to pick and nobody to choose: the open production tasks ARE the
-    // blocker, and they live on the order. Deliberately the same destination
-    // the card body already leads to — the button exists so the reason is
-    // stated in words instead of relying on someone guessing that the whole
-    // card is tappable (staff-ux-checklist #1: no hidden gestures). No role
-    // check for the same reason: every viewer who can see this card can
-    // already open the order by tapping it.
+    // The open production tasks ARE the blocker, and used to send the
+    // viewer to SaleDetail to finish them — replaced with TaskCompletionModal
+    // (2026-09-10, requested directly: a modal here like every other
+    // dead-end/resolution action, not a screen change). No role check, same
+    // reason as before: every viewer who can see this card can already open
+    // the order by tapping it, so this offers nothing a tap couldn't already
+    // reach — it just saves the round trip.
     if (kind === 'finish_tasks') {
-      navigation.navigate('SaleDetail', { saleId: order.id });
+      setTaskCompletionOrder(order);
       return;
     }
     if (kind === 'record_cod') {
@@ -2125,6 +2138,15 @@ export default function DashboardScreen({ navigation }) {
         order={codCollectPicker}
         onClose={closeCodCollectPicker}
         onDone={() => { setCodCollectPicker(null); fetchDashboard(); }}
+      />
+
+      {/* Finish Tasks (resolveDeadEnd's 'finish_tasks' case) — a preparing
+          order whose tasks aren't all done. */}
+      <TaskCompletionModal
+        visible={taskCompletionOrder !== null}
+        order={taskCompletionOrder}
+        onClose={() => setTaskCompletionOrder(null)}
+        onDone={fetchDashboard}
       />
 
       {/* Load-verify quick flow (OrderCard's load pill) — the same
