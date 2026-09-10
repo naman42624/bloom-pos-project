@@ -1106,6 +1106,40 @@ check('FIXED: GET /sales total mirrors the real filtered query when search + pic
   );
 });
 
+check('NEW: GET /sales list rows carry has_unassigned_open_task, flipping false once the task is assigned (2026-09-10 — Orders Inbox one-tap Start Preparing fix)', async () => {
+  const db = await getDb();
+  const owner = await loginOwner();
+  const createRes = await api('POST', '/sales', owner.token, {
+    location_id: TEST_LOCATION_ID, order_type: 'pickup', channel: 'phone',
+    customer_name: `UnassignedTaskCheck${Date.now()}`,
+    items: [{ quantity: 1, unit_price: 100, product_name: 'Test Unassigned Task Item' }],
+  });
+  assert(createRes.status === 201, `Expected sale creation to succeed, got ${createRes.status}: ${JSON.stringify(createRes.body)}`);
+  const saleId = createRes.body.data.id;
+  createdSaleIds.push(saleId);
+
+  const task = await db.prepare('SELECT id, assigned_to, status FROM production_tasks WHERE sale_id = ? LIMIT 1').get(saleId);
+  assert(task, `Expected a production_tasks row to exist for a freshly created sale (id ${saleId}), found none`);
+  assert(task.assigned_to == null, `Expected the freshly created task to start unassigned, got assigned_to=${task.assigned_to}`);
+
+  const beforeRes = await api('GET', `/sales?location_id=${TEST_LOCATION_ID}&order_type=pickup&status=pending&limit=200`, owner.token);
+  assert(beforeRes.status === 200, `Expected 200, got ${beforeRes.status}: ${JSON.stringify(beforeRes.body)}`);
+  const beforeRow = beforeRes.body.data.sales.find((s) => s.id === saleId);
+  assert(beforeRow, `Expected sale ${saleId} to appear in the pending pickup list`);
+  assert(beforeRow.has_unassigned_open_task === true, `Expected has_unassigned_open_task=true before assignment, got ${JSON.stringify(beforeRow.has_unassigned_open_task)}`);
+
+  const assignRes = await api('PUT', `/production/tasks/${task.id}/assign`, owner.token, { assigned_to: owner.id });
+  assert(assignRes.status === 200, `Expected task assignment to succeed, got ${assignRes.status}: ${JSON.stringify(assignRes.body)}`);
+
+  const afterRes = await api('GET', `/sales?location_id=${TEST_LOCATION_ID}&order_type=pickup&status=pending&limit=200`, owner.token);
+  const afterRow = afterRes.body.data.sales.find((s) => s.id === saleId);
+  assert(afterRow, `Expected sale ${saleId} to still appear in the pending pickup list after assignment`);
+  assert(
+    afterRow.has_unassigned_open_task === false,
+    `Expected has_unassigned_open_task=false once the task is assigned — mirrors hasUnassignedTasks()'s predicate in OrderCard.js (assigned_to IS NULL AND status IN pending/in_progress), and 'assigned' matches neither, got ${JSON.stringify(afterRow.has_unassigned_open_task)}`
+  );
+});
+
 check('FIXED: GET /deliveries returns an accurate total alongside the (still limited) array', async () => {
   const owner = await loginOwner();
   const res = await api('GET', `/deliveries?location_id=${TEST_LOCATION_ID}&limit=1`, owner.token);

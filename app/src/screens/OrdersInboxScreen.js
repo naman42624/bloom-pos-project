@@ -131,8 +131,43 @@ export default function OrdersInboxScreen({ navigation, route }) {
     const orderTypeLabel = ORDER_TYPE_LABELS[item.order_type] || item.order_type;
     const isUnpaid = item.payment_status && item.payment_status !== 'paid' && item.payment_status !== 'refunded';
     const nextAction = item.display_stage?.nextAction;
-    const needsResolution = nextAction && (nextAction.body?.status === 'preparing' || nextAction.endpoint?.endsWith('/deliver'));
-    const showActionButton = nextAction && !needsResolution;
+    // Mirrors resolvePreparerStep/resolveDeliverStep (OrderCard.js) as
+    // closely as a LIST row's data allows — see docs/superpowers/specs/
+    // 2026-09-09-orders-inbox-redesign-design.md §5's 2026-09-10 revision.
+    // Both are fully re-derivable from fields GET /sales already returns
+    // (has_unassigned_open_task added for exactly this purpose; cod_amount/
+    // cod_collected were already there):
+    //   Start Preparing (body.status === 'preparing'):
+    //     no unassigned task -> resolvePreparerStep would say 'advance' ->
+    //       safe, one tap, no extra body.
+    //     unassigned task + viewer is 'employee' -> 'self' -> still one
+    //       tap, just needs assigned_to on the request body.
+    //     unassigned task + any other role -> 'pick' -> a real picker is
+    //       needed; no inline button, falls back to tap-to-SaleDetail.
+    //   Mark Delivered (endpoint ends '/deliver'):
+    //     nothing outstanding -> 'advance', safe, one tap.
+    //     COD still outstanding -> 'collect_cod', needs an amount; no
+    //       inline button, falls back to tap-to-SaleDetail.
+    //   Everything else (Mark Ready, Confirm Pickup, Mark Picked Up,
+    //     Complete) was already unconditionally safe — no resolution step
+    //     exists for these in OrderCard.js either.
+    let showActionButton = false;
+    let advanceExtraBody;
+    if (nextAction) {
+      if (nextAction.body?.status === 'preparing') {
+        if (!item.has_unassigned_open_task) {
+          showActionButton = true;
+        } else if (user?.role === 'employee' && user?.id != null) {
+          showActionButton = true;
+          advanceExtraBody = { assigned_to: user.id };
+        } // else: needs a real picker, leave showActionButton false
+      } else if (nextAction.endpoint?.endsWith('/deliver')) {
+        const outstanding = Number(item.cod_amount || 0) - Number(item.cod_collected || 0);
+        showActionButton = outstanding <= 0.01;
+      } else {
+        showActionButton = true;
+      }
+    }
     const isAdvancing = advancingId === item.id;
 
     const handleAdvance = async () => {
@@ -144,13 +179,13 @@ export default function OrdersInboxScreen({ navigation, route }) {
       if (advancingId) return;
       setAdvancingId(item.id);
       try {
-        // api.advanceOrder(nextAction) — NOT (id, nextAction). The sale id is
-        // already baked into nextAction.endpoint (e.g. `/sales/${id}/status`);
-        // passing an extra leading id argument would silently shift it into
-        // advanceOrder's `extraBody` parameter instead. Matches every other
-        // caller of this same helper (DashboardScreen.js, SaleDetailScreen.js,
-        // OrderKanbanBoard.js) — none of them pass an id either.
-        await api.advanceOrder(nextAction);
+        // api.advanceOrder(nextAction, extraBody) — NOT (id, nextAction).
+        // The sale id is already baked into nextAction.endpoint (e.g.
+        // `/sales/${id}/status`); passing an extra leading id argument
+        // would silently shift it into advanceOrder's `extraBody` parameter
+        // instead. Matches every other caller of this same helper
+        // (DashboardScreen.js, SaleDetailScreen.js, OrderKanbanBoard.js).
+        await api.advanceOrder(nextAction, advanceExtraBody);
         list.refresh();
       } catch (err) {
         // err?.message, not err?.response?.data?.message — api.js's request()

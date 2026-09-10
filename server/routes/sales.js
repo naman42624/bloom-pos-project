@@ -170,6 +170,18 @@ router.get('/', authenticate, async (req, res, next) => {
     // 'ready'") — same table, same NOT IN predicate. computeOrderStage() reads
     // it to decide whether a Mark Ready button is safe to offer, so the two
     // MUST stay character-identical; if that guard changes, change this too.
+    // `has_unassigned_open_task` is a verbatim copy of hasUnassignedTasks()'s
+    // predicate in app/src/components/orderBoard/OrderCard.js (`assigned_to
+    // IS NULL AND status IN ('pending','in_progress')`) — resolvePreparerStep
+    // needs the full tasks array to decide 'advance' vs 'self' vs 'pick', but
+    // a plain boolean is enough for a LIST row (unlike SaleDetail/OrderCard,
+    // which already have the full tasks array from their own detail fetch):
+    // false means resolvePreparerStep would return 'advance' regardless of
+    // viewer role, no matter what tasks/order values it's given, so it's safe
+    // to one-tap Start Preparing from here without replicating the full
+    // resolution UI (see docs/superpowers/specs/2026-09-09-orders-inbox-
+    // redesign-design.md §5's revision, 2026-09-10). Keep both predicates in
+    // sync the same way open_task_count's comment above requires.
     // Deliberately NOT a comment inside the SQL string below: bindParams() in
     // database-async.js cannot tell an apostrophe in a SQL comment from a
     // string boundary and would desync every ? placeholder after it
@@ -181,6 +193,11 @@ router.get('/', authenticate, async (req, res, next) => {
               rcv.name as receiver_display_name, rcv.phone as receiver_display_phone,
              COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.sale_id = s.id), 0) as total_paid,
              (SELECT COUNT(*) FROM production_tasks pt WHERE pt.sale_id = s.id AND pt.status NOT IN ('completed', 'cancelled')) as open_task_count,
+             EXISTS(
+               SELECT 1 FROM production_tasks ptu
+               WHERE ptu.sale_id = s.id AND ptu.assigned_to IS NULL
+                 AND ptu.status IN ('pending', 'in_progress')
+             ) as has_unassigned_open_task,
              d.status as delivery_status, d.id as delivery_id, d.cod_amount, d.cod_collected,
              dpart.name as delivery_partner_name,
              -- Load-verify indicator (2026-09-04): how much of this delivery's
