@@ -40,16 +40,6 @@ const STATUS_TABS = [
 // select long-press affordance and the per-card checkbox eligibility.
 const ASSIGNABLE_STATUSES = ['pending', 'assigned', 'failed'];
 
-const STATUS_COLORS = {
-  pending: '#FF9800',
-  assigned: '#2196F3',
-  picked_up: '#9C27B0',
-  in_transit: '#00BCD4',
-  delivered: '#4CAF50',
-  failed: '#F44336',
-  cancelled: '#9E9E9E',
-};
-
 // GET /deliveries rows aren't sale-shaped — resolveDeadEnd/resolvePreparerStep/
 // resolveDeliverStep (OrderCard.js) were built against GET /sales rows. See
 // this task's own interface note in docs/superpowers/plans/2026-09-10-
@@ -658,7 +648,6 @@ export default function DeliveriesScreen({ navigation }) {
   };
 
   const renderDelivery = ({ item }) => {
-    const statusColor = STATUS_COLORS[item.status] || '#999';
     const isAtRisk = atRiskIds.has(item.id);
     const timeInfo = getTimeInfo(item);
     const canSelect = batchMode && ASSIGNABLE_STATUSES.includes(item.status);
@@ -799,14 +788,7 @@ export default function DeliveriesScreen({ navigation }) {
             )}
           </View>
 
-          <View style={styles.badgeStack}>
-            <StageBadge stage={item.display_stage} size="sm" />
-            <View style={[styles.badge, { backgroundColor: statusColor + '20' }]}>
-              <Text style={[styles.badgeText, { color: statusColor }]}>
-                {item.status.replace(/_/g, ' ').toUpperCase()}
-              </Text>
-            </View>
-          </View>
+          <StageBadge stage={item.display_stage} size="sm" />
         </View>
 
         <View style={styles.cardBody}>
