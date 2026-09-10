@@ -15,7 +15,7 @@ import FilterDrawer from '../components/orders/FilterDrawer';
 import ActiveFilterChips from '../components/orders/ActiveFilterChips';
 import DateSessionHeader from '../components/orders/DateSessionHeader';
 import useSessionsForDates from '../hooks/useSessionsForDates';
-import { getSingleLocationId, groupOrdersByDay, groupOrdersBySession, sumGrandTotal } from '../utils/orderGrouping';
+import { getSingleLocationId, groupOrdersByDay, groupOrdersBySession } from '../utils/orderGrouping';
 
 const STATUS_LABELS = { pending: 'Received', confirmed: 'Confirmed', preparing: 'In Preparation', ready: 'Ready', completed: 'Completed', cancelled: 'Cancelled', draft: 'Draft' };
 const ORDER_TYPE_LABELS = { pickup: 'Pickup', delivery: 'Delivery', walk_in: 'Walk-in', pre_order: 'Advance order' };
@@ -313,11 +313,17 @@ export default function OrdersInboxScreen({ navigation, route }) {
           keyExtractor={(item) => String(item.id)}
           renderItem={renderItem}
           renderSectionHeader={({ section }) =>
+            // No totalAmount here — sumGrandTotal(section.data) only sums the
+            // currently-loaded/filtered page, which with a 50-row page size
+            // and any Status filter active would look like a complete
+            // session reconciliation figure without being one. The real
+            // total lives on the Cash Register close screen; this row is
+            // for browsing, not reconciling. (Post-implementation review,
+            // 2026-09-10 — user chose "drop the total for now.")
             section.key === 'urgent' ? null : (
               <DateSessionHeader
                 dateLabel={section.dateLabel}
                 sessionLabel={section.sessionLabel}
-                totalAmount={sumGrandTotal(section.data)}
               />
             )
           }
