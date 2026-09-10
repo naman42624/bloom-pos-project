@@ -701,7 +701,7 @@ export default function DeliveriesScreen({ navigation }) {
         refreshControl={<RefreshControl refreshing={list.refreshing} onRefresh={list.refresh} colors={[Colors.primary]} />}
         contentContainerStyle={{ padding: Spacing.md, paddingBottom: 100 }}
       >
-        {sections.length === 0 ? (
+        {filteredDeliveries.length === 0 ? (
           <View style={styles.empty}>
             <Ionicons name="bicycle-outline" size={48} color={Colors.textLight} />
             <Text style={styles.emptyText}>No deliveries found</Text>
