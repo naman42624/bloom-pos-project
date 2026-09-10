@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { View, Text, SectionList, TouchableOpacity, StyleSheet, TextInput, Modal, ScrollView } from 'react-native';
+import { View, Text, SectionList, TouchableOpacity, StyleSheet, Modal, ScrollView } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '../context/AuthContext';
@@ -13,6 +13,9 @@ import {
 import StageBadge from '../components/StageBadge';
 import useOrderListData from '../hooks/useOrderListData';
 import useAtRiskIds from '../hooks/useAtRiskIds';
+import OrderListToolbar from '../components/orders/OrderListToolbar';
+import FilterDrawer from '../components/orders/FilterDrawer';
+import ActiveFilterChips from '../components/orders/ActiveFilterChips';
 
 
 const STATUS_TABS = [
@@ -57,7 +60,7 @@ export default function DeliveriesScreen({ navigation }) {
   };
 
   const [statusFilter, setStatusFilter] = useState('active');
-  const [search, setSearch] = useState('');
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const [assignModalVisible, setAssignModalVisible] = useState(false);
   const [selectedDelivery, setSelectedDelivery] = useState(null);
   const [partners, setPartners] = useState([]);
@@ -130,14 +133,15 @@ export default function DeliveriesScreen({ navigation }) {
   const { atRiskIds } = useAtRiskIds(list.filters.location_id, resetToken);
 
   // Location and status filtering still live in local `selectedLocation`/
-  // `statusFilter` state (chip-row UI untouched until Task 4 moves both into
-  // FilterDrawer) — this effect is the single wire keeping `list`'s own
-  // fetch (and, for location, useAtRiskIds above) in sync with them,
-  // without a bigger rewrite in this task. Mirrors the old `fetchDeliveries`
-  // exactly: `if (statusFilter !== 'all') params.status = statusFilter;` —
-  // passing `undefined` for 'all' correctly omits the `status` param
-  // entirely, since useOrderListData strips undefined filter values before
-  // sending the request.
+  // `statusFilter` state — location's UI trigger is now the FilterDrawer's
+  // Location section (Task 4), status stays its own always-visible chip row
+  // (spec §2: status is a one-tap row, never moved into the drawer) — this
+  // effect is the single wire keeping `list`'s own fetch (and, for location,
+  // useAtRiskIds above) in sync with them, without a bigger rewrite in this
+  // task. Mirrors the old `fetchDeliveries` exactly: `if (statusFilter !==
+  // 'all') params.status = statusFilter;` — passing `undefined` for 'all'
+  // correctly omits the `status` param entirely, since useOrderListData
+  // strips undefined filter values before sending the request.
   useEffect(() => {
     list.setFilter('location_id', selectedLocation || undefined);
     list.setFilter('status', statusFilter === 'all' ? undefined : statusFilter);
@@ -148,6 +152,38 @@ export default function DeliveriesScreen({ navigation }) {
     list.refresh();
     setResetToken((g) => g + 1);
   }, [list.refresh]));
+
+  // The FilterDrawer's Rider section (and ActiveFilterChips' rider label
+  // lookup) needs `partners` populated as soon as the drawer can be opened —
+  // not lazily on assign-modal-open like `openAssignModal`/
+  // `openBatchAssignModal` below already do, which would leave the drawer's
+  // rider list empty on first render.
+  useEffect(() => {
+    api.getDeliveryPartners(selectedLocation).then((res) => {
+      const users = res.data?.users || res.data || [];
+      setPartners(Array.isArray(users) ? users : []);
+    }).catch(() => {});
+  }, [selectedLocation]);
+
+  const [dateRangePreset, setDateRangePreset] = useState(null);
+  const applyDateRangePreset = (preset) => {
+    setDateRangePreset(preset);
+    const todayStr = getShopTodayStr(timezone);
+    if (preset === 'today') {
+      list.setFilter('date_from', todayStr); list.setFilter('date_to', todayStr);
+    } else if (preset === 'yesterday') {
+      const y = new Date(Date.now() - 86400000).toLocaleDateString('en-CA', { timeZone: timezone });
+      list.setFilter('date_from', y); list.setFilter('date_to', y);
+    } else if (preset === 'this_week') {
+      const now = getShopNow(timezone);
+      const day = now.getDay(); // 0 = Sunday
+      const monday = new Date(now); monday.setDate(now.getDate() - ((day + 6) % 7));
+      const mondayStr = monday.toLocaleDateString('en-CA', { timeZone: timezone });
+      list.setFilter('date_from', mondayStr); list.setFilter('date_to', todayStr);
+    } else {
+      list.setFilter('date_from', undefined); list.setFilter('date_to', undefined);
+    }
+  };
 
   const openAssignModal = async (delivery) => {
     setSelectedDelivery(delivery);
@@ -258,13 +294,12 @@ export default function DeliveriesScreen({ navigation }) {
     openBatchAssignModal(ids);
   };
 
-  const filteredDeliveries = search
-    ? list.items.filter(d =>
-      (d.sale_number || '').toLowerCase().includes(search.toLowerCase()) ||
-      (d.customer_name || '').toLowerCase().includes(search.toLowerCase()) ||
-      (d.partner_name || '').toLowerCase().includes(search.toLowerCase())
-    )
-    : list.items;
+  // Text search now happens server-side (list.search, via OrderListToolbar) —
+  // GET /deliveries already filters by sale_number/customer_name/
+  // customer_phone/delivery_address/partner name (Task 1), so no client-side
+  // text predicate is needed here anymore. Name kept as `filteredDeliveries`
+  // since later code (and Task 5) references it directly.
+  const filteredDeliveries = list.items;
 
   // Sort by scheduled date+time (earliest first, no-date last)
   const sortedDeliveries = [...filteredDeliveries].sort((a, b) => {
@@ -505,17 +540,67 @@ export default function DeliveriesScreen({ navigation }) {
 
   return (
     <View style={styles.container}>
-      {/* Search */}
-      <View style={styles.searchRow}>
-        <Ionicons name="search" size={18} color={Colors.textLight} style={{ marginRight: 6 }} />
-        <TextInput
-          style={styles.searchInput}
-          placeholder="Search by order #, customer, partner..."
-          value={search}
-          onChangeText={setSearch}
-          placeholderTextColor={Colors.textLight}
-        />
-      </View>
+      <OrderListToolbar
+        search={list.search}
+        onSearchChange={list.setSearch}
+        activeFilterCount={list.activeFilterCount}
+        onOpenFilters={() => setFiltersOpen(true)}
+        viewModeProps={canManageDeliveries ? {
+          value: viewMode,
+          onChange: setViewMode,
+          options: [
+            { value: 'route', label: 'By Route' },
+            { value: 'date', label: 'By Date' },
+            { value: 'rider', label: 'By Rider' },
+          ],
+        } : undefined}
+        sortProps={{
+          value: list.sort,
+          onChange: list.setSort,
+          options: [{ value: null, label: 'Recent' }, { value: 'urgency', label: 'Urgent first' }],
+        }}
+        placeholder="Search by order #, customer, partner…"
+      />
+
+      <ActiveFilterChips
+        filters={{ location_id: list.filters.location_id, delivery_partner_id: list.filters.delivery_partner_id, date_from: list.filters.date_from, date_to: list.filters.date_to }}
+        labels={{
+          location_id: (v) => `Location: ${locations.find((l) => l.id === v)?.name || v}`,
+          delivery_partner_id: (v) => `Rider: ${partners.find((p) => p.id === v)?.name || v}`,
+          date_from: (v) => `From: ${v}`,
+          date_to: (v) => `To: ${v}`,
+        }}
+        onRemove={(key) => { if (key === 'location_id') setSelectedLocation(null); else list.setFilter(key, undefined); }}
+        onClearAll={() => { setSelectedLocation(null); list.setFilter('delivery_partner_id', undefined); list.setFilter('date_from', undefined); list.setFilter('date_to', undefined); }}
+      />
+
+      <FilterDrawer
+        visible={filtersOpen}
+        onClose={() => setFiltersOpen(false)}
+        onClearAll={() => { setSelectedLocation(null); list.setFilter('delivery_partner_id', undefined); list.setFilter('date_from', undefined); list.setFilter('date_to', undefined); setFiltersOpen(false); }}
+        sections={[
+          ...(isManager ? [{
+            key: 'location', label: 'Location', value: selectedLocation ?? null,
+            onChange: (v) => setSelectedLocation(v),
+            options: [{ value: null, label: isOwner ? 'All Locations' : 'My Location' }, ...locations.map((l) => ({ value: l.id, label: l.name }))],
+          }] : []),
+          {
+            key: 'rider', label: 'Rider', value: list.filters.delivery_partner_id ?? null,
+            onChange: (v) => list.setFilter('delivery_partner_id', v || undefined),
+            options: [{ value: null, label: 'Any rider' }, ...partners.map((p) => ({ value: p.id, label: p.name }))],
+          },
+          {
+            key: 'date_range', label: 'Date range', value: dateRangePreset ?? null,
+            onChange: (v) => applyDateRangePreset(v),
+            options: [
+              { value: null, label: 'All dates' },
+              { value: 'today', label: 'Today' },
+              { value: 'yesterday', label: 'Yesterday' },
+              { value: 'this_week', label: 'This Week' },
+            ],
+          },
+        ]}
+      />
 
       {/* Status tabs */}
       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.tabsRow}>
@@ -531,49 +616,6 @@ export default function DeliveriesScreen({ navigation }) {
           </TouchableOpacity>
         ))}
       </ScrollView>
-
-      {/* Location filter */}
-      {(locations.length > 0 && isManager) && (
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.locationTabsRow}>
-          {isOwner && (
-            <TouchableOpacity
-              style={[styles.locationChip, selectedLocation === null && styles.locationChipActive]}
-              onPress={() => setSelectedLocation(null)}
-            >
-              <Text style={[styles.locationChipText, selectedLocation === null && styles.locationChipTextActive]}>All Locations</Text>
-            </TouchableOpacity>
-          )}
-          {locations.map(loc => (
-            <TouchableOpacity
-              key={loc.id}
-              style={[styles.locationChip, selectedLocation === loc.id && styles.locationChipActive]}
-              onPress={() => setSelectedLocation(loc.id)}
-            >
-              <Text style={[styles.locationChipText, selectedLocation === loc.id && styles.locationChipTextActive]}>{loc.name}</Text>
-            </TouchableOpacity>
-          ))}
-        </ScrollView>
-      )}
-
-      {/* View mode: route (dispatch) view vs plain date view — both stay available */}
-      {canManageDeliveries && (
-        <View style={styles.viewModeRow}>
-          <TouchableOpacity
-            style={[styles.viewModeBtn, viewMode === 'route' && styles.viewModeBtnActive]}
-            onPress={() => setViewMode('route')}
-          >
-            <Ionicons name="navigate-outline" size={16} color={viewMode === 'route' ? '#fff' : Colors.textLight} />
-            <Text style={[styles.viewModeText, viewMode === 'route' && styles.viewModeTextActive]}>By Route</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.viewModeBtn, viewMode === 'date' && styles.viewModeBtnActive]}
-            onPress={() => setViewMode('date')}
-          >
-            <Ionicons name="calendar-outline" size={16} color={viewMode === 'date' ? '#fff' : Colors.textLight} />
-            <Text style={[styles.viewModeText, viewMode === 'date' && styles.viewModeTextActive]}>By Date</Text>
-          </TouchableOpacity>
-        </View>
-      )}
 
       {/* Batch mode bar */}
       {canManageDeliveries && batchMode && (
@@ -687,18 +729,11 @@ export default function DeliveriesScreen({ navigation }) {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
-  searchRow: { flexDirection: 'row', alignItems: 'center', margin: Spacing.md, marginBottom: 0, backgroundColor: Colors.surface, borderRadius: BorderRadius.md, paddingHorizontal: 12, paddingVertical: 8, flexShrink: 0 },
-  searchInput: { flex: 1, fontSize: FontSize.md, color: Colors.text },
   tabsRow: { flexGrow: 0, flexShrink: 0, paddingHorizontal: Spacing.md, paddingTop: Spacing.sm },
   tab: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, backgroundColor: Colors.surface, marginRight: 8, borderWidth: 1, borderColor: Colors.border },
   tabActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
   tabText: { fontSize: FontSize.sm, color: Colors.textLight },
   tabTextActive: { color: '#fff', fontWeight: '600' },
-  locationTabsRow: { flexGrow: 0, flexShrink: 0, paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm, marginBottom: Spacing.sm },
-  locationChip: { paddingHorizontal: 16, paddingVertical: 6, borderRadius: 20, backgroundColor: Colors.surface, marginRight: 8, borderWidth: 1, borderColor: Colors.border, borderStyle: 'dashed' },
-  locationChipActive: { backgroundColor: Colors.primary + '15', borderColor: Colors.primary, borderStyle: 'solid' },
-  locationChipText: { fontSize: FontSize.sm, color: Colors.textSecondary },
-  locationChipTextActive: { color: Colors.primary, fontWeight: '700' },
   card: { backgroundColor: Colors.surface, borderRadius: BorderRadius.lg, padding: Spacing.md, marginBottom: Spacing.md, shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 4, elevation: 2 },
   cardAtRisk: { borderWidth: 2, borderColor: '#FF6D00' },
   timeHeader: { backgroundColor: Colors.primary + '10', borderRadius: BorderRadius.sm, padding: Spacing.sm, marginBottom: Spacing.sm, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
@@ -737,16 +772,6 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.primary + '15', borderWidth: 1, borderColor: Colors.primary + '30',
   },
   selectRouteBtnText: { fontSize: FontSize.sm, fontWeight: '700', color: Colors.primary },
-  // View mode toggle (route-grouped dispatch view vs date-grouped view)
-  viewModeRow: { flexDirection: 'row', gap: Spacing.sm, paddingHorizontal: Spacing.md, marginBottom: Spacing.sm, flexShrink: 0 },
-  viewModeBtn: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, flex: 1,
-    paddingVertical: 10, borderRadius: BorderRadius.md, backgroundColor: Colors.surface,
-    borderWidth: 1, borderColor: Colors.border,
-  },
-  viewModeBtnActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
-  viewModeText: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.textLight },
-  viewModeTextActive: { color: '#fff' },
   empty: { alignItems: 'center', marginTop: 60 },
   emptyText: { fontSize: FontSize.md, color: Colors.textLight, marginTop: 8, textAlign: 'center' },
   urgentBadge: { flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: '#FFF3E0', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 },
