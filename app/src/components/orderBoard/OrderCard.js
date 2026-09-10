@@ -56,7 +56,7 @@ import StageBadge from '../StageBadge';
  *
  * See docs/superpowers/specs/2026-09-01-dashboard-stage-ui-redesign-design.md §7.
  */
-function resolveDeadEnd(order, canManageDeliveries, canTakeMoney) {
+export function resolveDeadEnd(order, canManageDeliveries, canTakeMoney) {
   const stageKey = order.display_stage?.key;
 
   // ── Being prepared, but not markable ready yet ──

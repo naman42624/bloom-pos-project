@@ -18,6 +18,7 @@ import useSessionsForDates from '../hooks/useSessionsForDates';
 import { getSingleLocationId, groupOrdersByDay, groupOrdersBySession } from '../utils/orderGrouping';
 import AssignPickerModal from '../components/orderBoard/AssignPickerModal';
 import CollectCodModal from '../components/orderBoard/CollectCodModal';
+import { resolveDeadEnd } from '../components/orderBoard/OrderCard';
 import { PREP_ROLES, STAFF_ROLE_LABELS } from '../constants/orderDisplay';
 
 const STATUS_LABELS = { pending: 'Received', confirmed: 'Confirmed', preparing: 'In Preparation', ready: 'Ready', completed: 'Completed', cancelled: 'Cancelled', draft: 'Draft' };
@@ -47,6 +48,14 @@ export default function OrdersInboxScreen({ navigation, route }) {
   // 'Customers' route registered in their stack's owner/manager sibling
   // (OrdersStack), so it must not render there.
   const showCustomersShortcut = user?.role === 'employee' || user?.role === 'counter_staff';
+  // Exact role lists copied from OrderCard.js's own canManageDeliveries/
+  // canTakeMoney (not re-derived) — they mirror real authorize() lists on
+  // the destination routes/screens; see resolveDeadEnd's doc comment in
+  // that file for the full reasoning on why a role check belongs here at
+  // all even though a null nextAction already encodes the server's own
+  // decision about the ACTION.
+  const canManageDeliveries = ['owner', 'manager', 'counter_staff'].includes(user?.role);
+  const canTakeMoney = ['owner', 'manager', 'employee', 'counter_staff'].includes(user?.role);
 
   const fetchFn = useCallback(
     (params) => api.getSales(params).then((res) => ({ items: res.data?.sales || [], total: Number(res.data?.total) || 0 })),
@@ -79,6 +88,14 @@ export default function OrdersInboxScreen({ navigation, route }) {
   // closed — see CollectCodModal.js, which owns the amount/method form and
   // submission itself.
   const [codCollectOrder, setCodCollectOrder] = useState(null);
+  // { deliveryId, saleId, loading, showingEveryone, people } while the
+  // "assign a rider" picker is open, null when closed — same AssignPickerModal
+  // and fetch/write flow as DashboardScreen.js's identical riderPicker
+  // (2026-09-10, full dead-end parity: a "Ready" delivery order with no
+  // rider yet, resolveDeadEnd's 'assign_rider' case, previously rendered
+  // nothing on this screen at all).
+  const [riderPicker, setRiderPicker] = useState(null);
+  const riderReqRef = useRef(0);
 
   const singleLocationId = useMemo(() => getSingleLocationId(list.items), [list.items]);
   const dayGroups = useMemo(() => groupOrdersByDay(list.items), [list.items]);
@@ -236,6 +253,64 @@ export default function OrdersInboxScreen({ navigation, route }) {
     }
   }, [preparerPicker, list.refresh]);
 
+  // resolveDeadEnd's 'assign_rider' case — a "Ready" delivery order with no
+  // rider yet, or a failed/cancelled delivery needing a new one. Same fetch/
+  // fallback shape as openPreparerPicker above; see DashboardScreen.js's
+  // handleResolveAction 'assign_rider' branch for the original context.
+  const openRiderPicker = useCallback(async (order) => {
+    if (!order.delivery_id) {
+      navigation.navigate('SaleDetail', { saleId: order.id });
+      return;
+    }
+    const locId = order.location_id;
+    const reqId = ++riderReqRef.current;
+    setRiderPicker({ deliveryId: order.delivery_id, saleId: order.id, loading: true, people: [] });
+    try {
+      const res = await api.getDeliveryPartners(locId);
+      let people = res?.data?.users || res?.data || [];
+      if (!Array.isArray(people)) people = [];
+      let showingEveryone = false;
+      if (people.length === 0 && locId) {
+        const all = await api.getDeliveryPartners();
+        const allList = all?.data?.users || all?.data || [];
+        if (Array.isArray(allList) && allList.length > 0) { people = allList; showingEveryone = true; }
+      }
+      if (riderReqRef.current !== reqId) return;
+      setRiderPicker({
+        deliveryId: order.delivery_id, saleId: order.id, loading: false, showingEveryone,
+        people: people.map((p) => {
+          const busy = Number(p.active_delivery_count || 0);
+          return { id: p.id, name: p.name, meta: busy === 0 ? 'Free right now' : busy === 1 ? '1 on the road' : `${busy} on the road` };
+        }),
+      });
+    } catch (err) {
+      if (riderReqRef.current !== reqId) return;
+      setRiderPicker(null);
+      showAlert('Riders', err?.message || 'Could not load the rider list. Please try again.');
+    }
+  }, [navigation]);
+
+  const closeRiderPicker = useCallback(() => {
+    riderReqRef.current += 1;
+    setRiderPicker(null);
+  }, []);
+
+  const handlePickRider = useCallback(async (person) => {
+    const deliveryId = riderPicker?.deliveryId;
+    if (!deliveryId || riderPicker?.loading) return;
+    const reqId = ++riderReqRef.current;
+    setRiderPicker((prev) => (prev ? { ...prev, loading: true } : prev));
+    try {
+      await api.assignDelivery(deliveryId, { delivery_partner_id: person.id });
+      if (riderReqRef.current === reqId) setRiderPicker(null);
+      list.refresh();
+    } catch (err) {
+      if (riderReqRef.current !== reqId) return;
+      setRiderPicker(null);
+      showAlert('Assign Rider', err?.message || 'Could not assign this rider. Please try again.');
+    }
+  }, [riderPicker, list.refresh]);
+
   const renderItem = ({ item }) => {
     const itemsSummary = formatItemsSummary(item.items);
     const orderTypeLabel = ORDER_TYPE_LABELS[item.order_type] || item.order_type;
@@ -261,6 +336,14 @@ export default function OrdersInboxScreen({ navigation, route }) {
     const selfAssign = nextAction?.body?.status === 'preparing'
       && item.has_unassigned_open_task && user?.role === 'employee' && user?.id != null
       ? { assigned_to: user.id } : undefined;
+    // Dead-end parity (2026-09-10): a null nextAction means "advancing needs
+    // a human decision," not "nothing can be done" (OrderCard.js's own
+    // doc comment on resolveDeadEnd). Reused directly rather than
+    // re-derived — covers assign-a-rider, finish-open-tasks,
+    // collect-payment, record-COD, and reattempt-a-failed-delivery, plus
+    // the plain-language status lines for a viewer whose role can't act
+    // on it (staff-ux-checklist #6/#8).
+    const deadEnd = !nextAction ? resolveDeadEnd(item, canManageDeliveries, canTakeMoney) : null;
     const isAdvancing = advancingId === item.id;
 
     const handleAdvance = async () => {
@@ -295,6 +378,29 @@ export default function OrdersInboxScreen({ navigation, route }) {
       if (needsPreparerPick) { openPreparerPicker(item); return; }
       if (needsCodCollect) { setCodCollectOrder(item); return; }
       handleAdvance();
+    };
+
+    // Dispatches a resolveDeadEnd 'route' kind — same destinations
+    // DashboardScreen.js's handleResolveAction sends these to. finish_tasks/
+    // reattempt_delivery/collect_payment/record_cod are all plain
+    // navigation, no picker; assign_rider opens the rider picker below.
+    const handleDeadEndPress = () => {
+      if (!deadEnd || deadEnd.type !== 'route') return;
+      if (deadEnd.kind === 'assign_rider') { openRiderPicker(item); return; }
+      if (deadEnd.kind === 'finish_tasks') { navigation.navigate('SaleDetail', { saleId: item.id }); return; }
+      if (deadEnd.kind === 'reattempt_delivery') {
+        if (item.delivery_id) navigation.navigate('DeliveryDetail', { deliveryId: item.delivery_id });
+        else navigation.navigate('SaleDetail', { saleId: item.id });
+        return;
+      }
+      if (deadEnd.kind === 'collect_payment') {
+        const due = Number(item.grand_total || 0) - Number(item.total_paid || 0);
+        navigation.navigate('POS', { screen: 'AddPayment', params: { saleId: item.id, due } });
+        return;
+      }
+      if (deadEnd.kind === 'record_cod') {
+        navigation.navigate('POS', { screen: 'Settlements' });
+      }
     };
 
     return (
@@ -333,6 +439,16 @@ export default function OrdersInboxScreen({ navigation, route }) {
                 ? <ActivityIndicator size="small" color={Colors.white} />
                 : <Text style={styles.actionBtnText}>{nextAction.label || 'Next step'}</Text>}
             </TouchableOpacity>
+          ) : deadEnd?.type === 'route' ? (
+            <TouchableOpacity
+              style={styles.deadEndBtn}
+              onPress={(e) => { e.stopPropagation(); handleDeadEndPress(); }}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
+              <Text style={styles.deadEndBtnText}>{deadEnd.label}</Text>
+            </TouchableOpacity>
+          ) : deadEnd?.type === 'status' ? (
+            <Text style={styles.deadEndStatus}>{deadEnd.text}</Text>
           ) : <View style={{ flex: 1 }} />}
           <ContactButtons
             contacts={[
@@ -469,6 +585,26 @@ export default function OrdersInboxScreen({ navigation, route }) {
         onDone={() => { setCodCollectOrder(null); list.refresh(); }}
       />
 
+      {/* Assign a rider (resolveDeadEnd's 'assign_rider' case) — same shared
+          component and fetch/write flow as DashboardScreen.js's identical
+          picker. */}
+      <AssignPickerModal
+        visible={riderPicker !== null}
+        title="Assign Rider"
+        notice={
+          riderPicker?.loading ? null
+            : riderPicker?.showingEveryone
+              ? 'No riders set up at this location — showing everyone.'
+              : (riderPicker?.people || []).length === 0
+                ? 'No delivery partners yet. Ask the owner to add someone as a Delivery Rider.'
+                : null
+        }
+        people={riderPicker?.people || []}
+        loading={!!riderPicker?.loading}
+        onPick={handlePickRider}
+        onClose={closeRiderPicker}
+      />
+
       {list.error && (
         <View style={styles.errorBanner}>
           <Text style={styles.errorBannerText}>{list.error}</Text>
@@ -586,6 +722,13 @@ const styles = StyleSheet.create({
   // nothing else on this screen sets one either).
   pickerFallbackBtn: { minHeight: 48, alignItems: 'center', justifyContent: 'center', borderRadius: BorderRadius.md, borderWidth: 1, borderColor: Colors.border, backgroundColor: Colors.surfaceAlt, marginTop: 4 },
   pickerFallbackText: { fontSize: FontSize.md, fontWeight: '700', color: Colors.primary },
+  // Dead-end resolution (resolveDeadEnd, OrderCard.js) — visually secondary
+  // to actionBtn (outlined, not filled) since these are "figure out what to
+  // do" routes (assign a rider, go collect payment) rather than a clean
+  // one-tap advance. Matches OrderCard.js's own secondaryAction/statusLine.
+  deadEndBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', minHeight: 44, minWidth: 44, paddingHorizontal: Spacing.md, borderRadius: BorderRadius.md, borderWidth: 1.5, borderColor: Colors.primary, backgroundColor: Colors.primary + '10' },
+  deadEndBtnText: { fontSize: FontSize.sm, fontWeight: '700', color: Colors.primary },
+  deadEndStatus: { flex: 1, fontSize: FontSize.sm, color: Colors.textSecondary, fontStyle: 'italic' },
   fab: { position: 'absolute', right: Spacing.lg, bottom: Spacing.lg, width: 56, height: 56, borderRadius: 28, backgroundColor: Colors.primary, justifyContent: 'center', alignItems: 'center', elevation: 4, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 4 },
   fabSecondary: { position: 'absolute', right: Spacing.lg, bottom: Spacing.lg + 68, width: 44, height: 44, borderRadius: 22, backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.border, justifyContent: 'center', alignItems: 'center', elevation: 3, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.15, shadowRadius: 3 },
 });
