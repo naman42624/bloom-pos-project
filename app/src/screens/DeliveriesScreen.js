@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Modal, ScrollView, RefreshControl } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, Modal, ScrollView, RefreshControl, ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '../context/AuthContext';
@@ -17,6 +17,12 @@ import OrderListToolbar from '../components/orders/OrderListToolbar';
 import FilterDrawer from '../components/orders/FilterDrawer';
 import ActiveFilterChips from '../components/orders/ActiveFilterChips';
 import CollapsibleSection from '../components/orders/CollapsibleSection';
+import ContactButtons from '../components/orders/ContactButtons';
+import AssignPickerModal from '../components/orderBoard/AssignPickerModal';
+import CollectCodModal from '../components/orderBoard/CollectCodModal';
+import TaskCompletionModal from '../components/orderBoard/TaskCompletionModal';
+import { resolveDeadEnd } from '../components/orderBoard/OrderCard';
+import { PREP_ROLES, STAFF_ROLE_LABELS } from '../constants/orderDisplay';
 
 
 const STATUS_TABS = [
@@ -43,6 +49,21 @@ const STATUS_COLORS = {
   failed: '#F44336',
   cancelled: '#9E9E9E',
 };
+
+// GET /deliveries rows aren't sale-shaped — resolveDeadEnd/resolvePreparerStep/
+// resolveDeliverStep (OrderCard.js) were built against GET /sales rows. See
+// this task's own interface note in docs/superpowers/plans/2026-09-10-
+// deliveries-redesign.md Task 6 for the full field-name mapping and why it's
+// required, not optional.
+function toSaleShape(delivery) {
+  return {
+    ...delivery,
+    id: delivery.sale_id,
+    delivery_id: delivery.id,
+    delivery_status: delivery.status,
+    delivery_partner_name: delivery.partner_name,
+  };
+}
 
 export default function DeliveriesScreen({ navigation }) {
   const { user, activeLocation, settings } = useAuth();
@@ -88,9 +109,34 @@ export default function DeliveriesScreen({ navigation }) {
   // counter_staff already gets auto-scoped to their own location, same as
   // non-owner managers, via the !isOwner check in fetchLocations below).
   const canManageDeliveries = isManager || user?.role === 'counter_staff';
+  // Exact role list copied from OrderCard.js's own canTakeMoney (not
+  // re-derived) — see resolveDeadEnd's doc comment in that file for why a
+  // role check belongs here at all even though a null nextAction already
+  // encodes the server's own decision about the ACTION.
+  const canTakeMoney = ['owner', 'manager', 'employee', 'counter_staff'].includes(user?.role);
 
   const [batchMode, setBatchMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState(new Set());
+  // Which card's item list is expanded behind the disclosure — a single id
+  // at component scope is enough since only one card is likely to be
+  // expanded at a time in practice (matches assignModalVisible-style single-
+  // item state elsewhere in this file).
+  const [expandedItemsId, setExpandedItemsId] = useState(null);
+  // The order the Collect COD & Mark Delivered modal is open for, null when
+  // closed — see CollectCodModal.js, which owns the amount/method form and
+  // submission itself.
+  const [codCollectOrder, setCodCollectOrder] = useState(null);
+  // The order the "Finish Tasks" modal is open for, null when closed — see
+  // TaskCompletionModal.js, which owns its own task-list fetch/complete flow.
+  const [taskCompletionOrder, setTaskCompletionOrder] = useState(null);
+  // Which row's next-action button is mid-request — drives the disabled/
+  // spinner state below so a double-tap can't fire the same advance twice.
+  const [advancingId, setAdvancingId] = useState(null);
+  // { order, loading, showingEveryone, people } while the "who is making
+  // this?" picker is open, null when closed — mirrors OrdersInboxScreen.js's
+  // identical preparerPicker (copied, not re-derived; see this task's brief).
+  const [preparerPicker, setPreparerPicker] = useState(null);
+  const preparerReqRef = useRef(0);
 
   // Dispatch view: with 50+ deliveries/day, different areas, and a handful
   // of delivery partners, a flat date list stops being manageable (design
@@ -196,6 +242,95 @@ export default function DeliveriesScreen({ navigation }) {
       list.setFilter('date_from', undefined); list.setFilter('date_to', undefined);
     }
   };
+
+  // Opens the "who is making this?" picker for a Start Preparing order with
+  // a genuinely unassigned task — copied verbatim from OrdersInboxScreen.js's
+  // own openPreparerPicker (not re-derived), just against `saleShaped` order
+  // objects (toSaleShape-adapted delivery rows) instead of GET /sales rows.
+  // See that file for the full fetch/fallback reasoning.
+  const openPreparerPicker = useCallback(async (order) => {
+    const locId = order.location_id;
+    if (!locId) {
+      showAlert('Assign', 'Could not tell which shop this order belongs to. Open the order to assign someone.');
+      navigation.navigate('SaleDetail', { saleId: order.id });
+      return;
+    }
+    const reqId = ++preparerReqRef.current;
+    setPreparerPicker({ order, loading: true, people: [] });
+    try {
+      const onlyPrep = (rows) => (Array.isArray(rows) ? rows : []).filter((p) => PREP_ROLES.includes(p.role));
+      const res = await api.getAssignableStaff(locId);
+      let staffList = onlyPrep(res?.staff);
+      let showingEveryone = false;
+      if (staffList.length === 0) {
+        const all = await api.getAssignableStaff();
+        const allList = onlyPrep(all?.staff);
+        if (allList.length > 0) { staffList = allList; showingEveryone = true; }
+      }
+      if (preparerReqRef.current !== reqId) return;
+      setPreparerPicker({
+        order, loading: false, showingEveryone,
+        people: staffList.map((p) => ({ id: p.id, name: p.name, meta: p.job_title || STAFF_ROLE_LABELS[p.role] || null })),
+      });
+    } catch (err) {
+      if (preparerReqRef.current !== reqId) return;
+      setPreparerPicker(null);
+      showAlert('Staff', err?.message || 'Could not load the staff list. Please try again.');
+    }
+  }, [navigation]);
+
+  const closePreparerPicker = useCallback(() => {
+    preparerReqRef.current += 1;
+    setPreparerPicker(null);
+  }, []);
+
+  const handlePickPreparer = useCallback(async (person) => {
+    const picker = preparerPicker;
+    if (!picker?.order || picker.loading) return;
+    const nextAction = picker.order.display_stage?.nextAction;
+    if (!nextAction) {
+      setPreparerPicker(null);
+      showAlert('Start Preparing', 'This order has already moved on. Pull down to refresh.');
+      return;
+    }
+    const reqId = ++preparerReqRef.current;
+    setPreparerPicker((prev) => (prev ? { ...prev, loading: true } : prev));
+    try {
+      await api.advanceOrder(nextAction, { assigned_to: person.id });
+      if (preparerReqRef.current === reqId) setPreparerPicker(null);
+      list.refresh();
+    } catch (err) {
+      if (preparerReqRef.current !== reqId) return;
+      setPreparerPicker(null);
+      showAlert('Start Preparing', err?.message || 'Could not start this order. Please try again.');
+    }
+  }, [preparerPicker, list.refresh]);
+
+  // "Leave for now" — Start Preparing without naming anybody. Someone
+  // mid-rush must always be able to move the order along and sort out who is
+  // making it afterwards; matches OrdersInboxScreen.js's identically-named
+  // escape hatch.
+  const handleLeavePreparerForNow = useCallback(async () => {
+    const picker = preparerPicker;
+    if (!picker?.order || picker.loading) return;
+    const nextAction = picker.order.display_stage?.nextAction;
+    if (!nextAction) {
+      setPreparerPicker(null);
+      showAlert('Start Preparing', 'This order has already moved on. Pull down to refresh.');
+      return;
+    }
+    const reqId = ++preparerReqRef.current;
+    setPreparerPicker((prev) => (prev ? { ...prev, loading: true } : prev));
+    try {
+      await api.advanceOrder(nextAction);
+      if (preparerReqRef.current === reqId) setPreparerPicker(null);
+      list.refresh();
+    } catch (err) {
+      if (preparerReqRef.current !== reqId) return;
+      setPreparerPicker(null);
+      showAlert('Start Preparing', err?.message || 'Could not start this order. Please try again.');
+    }
+  }, [preparerPicker, list.refresh]);
 
   const openAssignModal = async (delivery) => {
     setSelectedDelivery(delivery);
@@ -472,6 +607,70 @@ export default function DeliveriesScreen({ navigation }) {
     const timeInfo = getTimeInfo(item);
     const canSelect = batchMode && ASSIGNABLE_STATUSES.includes(item.status);
     const isSelected = selectedIds.has(item.id);
+
+    // Safe-action guard — a near-verbatim copy of OrdersInboxScreen.js's own
+    // renderItem guard (not re-derived), adapted to this screen's
+    // toSaleShape'd delivery rows. See resolvePreparerStep/resolveDeliverStep
+    // (OrderCard.js) for the underlying rules this mirrors inline.
+    const saleShaped = toSaleShape(item);
+    const nextAction = saleShaped.display_stage?.nextAction;
+    const needsPreparerPick = nextAction?.body?.status === 'preparing'
+      && item.has_unassigned_open_task && user?.role !== 'employee';
+    const needsCodCollect = nextAction?.endpoint?.endsWith('/deliver')
+      && (Number(item.cod_amount || 0) - Number(item.cod_collected || 0)) > 0.01;
+    // 'employee' viewer + an unassigned task: resolvePreparerStep's 'self'
+    // case — still one tap, just needs assigned_to attached.
+    const selfAssign = nextAction?.body?.status === 'preparing'
+      && item.has_unassigned_open_task && user?.role === 'employee' && user?.id != null
+      ? { assigned_to: user.id } : undefined;
+    // Dead-end parity — a null nextAction means "advancing needs a human
+    // decision," not "nothing can be done" (resolveDeadEnd's own doc comment).
+    const deadEnd = !nextAction ? resolveDeadEnd(saleShaped, canManageDeliveries, canTakeMoney) : null;
+    const isAdvancing = advancingId === item.id;
+
+    const handleAdvance = async () => {
+      // Guard against a double-tap firing this twice while the first call is
+      // still in flight — see OrdersInboxScreen.js's identical guard for the
+      // full reasoning (a second tap during the round trip would otherwise
+      // hit the server's own transition guard and show a confusing error as
+      // if the FIRST tap had failed).
+      if (advancingId) return;
+      setAdvancingId(item.id);
+      try {
+        await api.advanceOrder(nextAction, selfAssign);
+        list.refresh();
+      } catch (err) {
+        showAlert('Could not update this order', err?.message || 'Please try again, or open the order to see what it needs.');
+      } finally {
+        setAdvancingId(null);
+      }
+    };
+
+    const handlePress = () => {
+      if (needsPreparerPick) { openPreparerPicker(saleShaped); return; }
+      if (needsCodCollect) { setCodCollectOrder(saleShaped); return; }
+      handleAdvance();
+    };
+
+    // Dispatches a resolveDeadEnd 'route' kind. reattempt_delivery/
+    // collect_payment/record_cod are plain navigation (same destinations
+    // OrdersInboxScreen.js's identical handler sends these to); assign_rider
+    // and finish_tasks open a modal instead. assign_rider still uses this
+    // screen's own openAssignModal(item) — Task 7 replaces that call site,
+    // not this task (see brief's explicit note).
+    const handleDeadEndPress = () => {
+      if (!deadEnd || deadEnd.type !== 'route') return;
+      if (deadEnd.kind === 'assign_rider') { openAssignModal(item); return; }
+      if (deadEnd.kind === 'finish_tasks') { setTaskCompletionOrder(saleShaped); return; }
+      if (deadEnd.kind === 'reattempt_delivery') { navigation.navigate('DeliveryDetail', { deliveryId: item.id }); return; }
+      if (deadEnd.kind === 'collect_payment') {
+        const due = Number(item.grand_total || 0) - Number(item.total_paid || 0);
+        navigation.navigate('AddPayment', { saleId: item.sale_id, due });
+        return;
+      }
+      if (deadEnd.kind === 'record_cod') { navigation.navigate('Settlements'); }
+    };
+
     return (
       <TouchableOpacity
         style={[styles.card, isAtRisk && styles.cardAtRisk, isSelected && styles.cardSelected]}
@@ -558,16 +757,26 @@ export default function DeliveriesScreen({ navigation }) {
         )}
 
         {(item.items && item.items.length > 0) && (
-          <View style={{ marginHorizontal: Spacing.md, marginTop: 8, backgroundColor: Colors.background, padding: 8, borderRadius: 6 }}>
-            {item.items.map((it, idx) => (
-              <View key={idx} style={{ marginBottom: idx === item.items.length - 1 ? 0 : 4 }}>
-                <Text style={{ fontSize: FontSize.sm, color: Colors.textSecondary }}>{it.quantity}x {it.product_name}</Text>
-                {it.item_special_instructions ? (
-                  <Text style={{ fontSize: FontSize.xs, color: '#F57C00', marginLeft: 8, fontWeight: '500' }}>* {it.item_special_instructions}</Text>
-                ) : null}
+          <TouchableOpacity
+            onPress={(e) => { e.stopPropagation(); setExpandedItemsId((id) => (id === item.id ? null : item.id)); }}
+            style={{ marginHorizontal: Spacing.md, marginTop: 8 }}
+          >
+            <Text style={{ fontSize: FontSize.sm, color: Colors.primary, fontWeight: '600' }}>
+              {expandedItemsId === item.id ? '▾' : '▸'} {item.items.length} item{item.items.length !== 1 ? 's' : ''}
+            </Text>
+            {expandedItemsId === item.id && (
+              <View style={{ marginTop: 8, backgroundColor: Colors.background, padding: 8, borderRadius: 6 }}>
+                {item.items.map((it, idx) => (
+                  <View key={idx} style={{ marginBottom: idx === item.items.length - 1 ? 0 : 4 }}>
+                    <Text style={{ fontSize: FontSize.sm, color: Colors.textSecondary }}>{it.quantity}x {it.product_name}</Text>
+                    {it.item_special_instructions ? (
+                      <Text style={{ fontSize: FontSize.xs, color: '#F57C00', marginLeft: 8, fontWeight: '500' }}>* {it.item_special_instructions}</Text>
+                    ) : null}
+                  </View>
+                ))}
               </View>
-            ))}
-          </View>
+            )}
+          </TouchableOpacity>
         )}
 
         <View style={styles.cardFooter}>
@@ -584,11 +793,41 @@ export default function DeliveriesScreen({ navigation }) {
               <Text style={styles.codText}>Prepaid ✓</Text>
             </View>
           )}
-          {canManageDeliveries && item.status === 'pending' && (
-            <TouchableOpacity style={styles.assignBtn} onPress={() => openAssignModal(item)}>
-              <Text style={styles.assignBtnText}>Assign</Text>
+        </View>
+
+        <View style={styles.actionsRow}>
+          {nextAction ? (
+            <TouchableOpacity
+              style={[styles.actionBtn, isAdvancing && styles.actionBtnDisabled]}
+              onPress={(e) => { e.stopPropagation(); handlePress(); }}
+              disabled={isAdvancing}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
+              {isAdvancing
+                ? <ActivityIndicator size="small" color={Colors.white} />
+                : <Text style={styles.actionBtnText}>{nextAction.label || 'Next step'}</Text>}
             </TouchableOpacity>
-          )}
+          ) : deadEnd?.type === 'route' ? (
+            <TouchableOpacity
+              style={styles.deadEndBtn}
+              onPress={(e) => { e.stopPropagation(); handleDeadEndPress(); }}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
+              <Text style={styles.deadEndBtnText}>{deadEnd.label}</Text>
+            </TouchableOpacity>
+          ) : deadEnd?.type === 'status' ? (
+            <Text style={styles.deadEndStatus}>{deadEnd.text}</Text>
+          ) : <View style={{ flex: 1 }} />}
+          <ContactButtons
+            contacts={[
+              { label: 'Customer', phone: item.customer_phone },
+              { label: 'Rider', phone: item.partner_phone },
+            ]}
+            context={{
+              type: item.status === 'in_transit' ? 'order_out_for_delivery' : 'general_inquiry',
+              params: { sale_number: item.sale_number, location_name: item.location_name },
+            }}
+          />
         </View>
       </TouchableOpacity>
     );
@@ -763,6 +1002,52 @@ export default function DeliveriesScreen({ navigation }) {
           </View>
         </View>
       </Modal>
+
+      {/* "Who is making this?" — Start Preparing when a real preparer needs
+          picking (has_unassigned_open_task). Same shared component and
+          fetch/write flow as OrdersInboxScreen.js's identical picker. */}
+      <AssignPickerModal
+        visible={preparerPicker !== null}
+        title="Who is making this?"
+        notice={
+          preparerPicker?.loading ? null
+            : preparerPicker?.showingEveryone
+              ? 'Nobody is set up as prep staff at this location — showing everyone.'
+              : (preparerPicker?.people || []).length === 0
+                ? 'No prep staff yet. Ask the owner to add someone as Florist/Prep Staff.'
+                : null
+        }
+        people={preparerPicker?.people || []}
+        loading={!!preparerPicker?.loading}
+        onPick={handlePickPreparer}
+        onClose={closePreparerPicker}
+        footer={
+          preparerPicker?.loading ? null : (
+            <TouchableOpacity style={styles.pickerFallbackBtn} activeOpacity={0.7} onPress={handleLeavePreparerForNow}>
+              <Text style={styles.pickerFallbackText}>Leave for now</Text>
+            </TouchableOpacity>
+          )
+        }
+      />
+
+      {/* Mark Delivered with COD outstanding — same shared component and
+          flow as OrdersInboxScreen.js's identical modal. */}
+      <CollectCodModal
+        visible={codCollectOrder !== null}
+        order={codCollectOrder}
+        onClose={() => setCodCollectOrder(null)}
+        onDone={() => { setCodCollectOrder(null); list.refresh(); }}
+      />
+
+      {/* Finish Tasks (resolveDeadEnd's 'finish_tasks' case) — a preparing
+          order whose tasks aren't all done. Same shared component
+          OrdersInboxScreen.js uses. */}
+      <TaskCompletionModal
+        visible={taskCompletionOrder !== null}
+        order={taskCompletionOrder}
+        onClose={() => setTaskCompletionOrder(null)}
+        onDone={() => list.refresh()}
+      />
     </View>
   );
 }
@@ -802,6 +1087,20 @@ const styles = StyleSheet.create({
   codText: { fontSize: FontSize.xs, fontWeight: '600', color: '#E65100' },
   assignBtn: { backgroundColor: Colors.primary, paddingHorizontal: 16, paddingVertical: 8, borderRadius: BorderRadius.md },
   assignBtnText: { color: '#fff', fontWeight: '600', fontSize: FontSize.sm },
+  // Safe-action row (Task 6) — matches OrdersInboxScreen.js's actionsRow/
+  // actionBtn/deadEndBtn/deadEndStatus styles exactly, so the same one-tap
+  // pattern reads identically across both screens.
+  actionsRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: Spacing.sm, paddingTop: Spacing.sm, borderTopWidth: 1, borderTopColor: Colors.border },
+  actionBtn: { backgroundColor: Colors.primary, borderRadius: BorderRadius.md, paddingVertical: Spacing.sm, paddingHorizontal: Spacing.md, minHeight: 44, minWidth: 44, justifyContent: 'center', alignItems: 'center' },
+  actionBtnDisabled: { opacity: 0.6 },
+  actionBtnText: { color: Colors.white, fontWeight: '600', fontSize: FontSize.sm },
+  deadEndBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', minHeight: 44, minWidth: 44, paddingHorizontal: Spacing.md, borderRadius: BorderRadius.md, borderWidth: 1.5, borderColor: Colors.primary, backgroundColor: Colors.primary + '10' },
+  deadEndBtnText: { fontSize: FontSize.sm, fontWeight: '700', color: Colors.primary },
+  deadEndStatus: { flex: 1, fontSize: FontSize.sm, color: Colors.textSecondary, fontStyle: 'italic' },
+  // AssignPickerModal's "Leave for now" escape hatch (matches
+  // OrdersInboxScreen.js's identically-purposed style).
+  pickerFallbackBtn: { minHeight: 48, alignItems: 'center', justifyContent: 'center', borderRadius: BorderRadius.md, borderWidth: 1, borderColor: Colors.border, backgroundColor: Colors.surfaceAlt, marginTop: 4 },
+  pickerFallbackText: { fontSize: FontSize.md, fontWeight: '700', color: Colors.primary },
   sectionHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 10, paddingHorizontal: 4, marginTop: 8 },
   sectionHeaderLeft: { flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1, flexShrink: 1 },
   sectionHeaderText: { fontSize: FontSize.md, fontWeight: '700', color: Colors.primary },
