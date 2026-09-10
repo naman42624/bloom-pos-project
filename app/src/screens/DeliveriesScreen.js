@@ -129,14 +129,20 @@ export default function DeliveriesScreen({ navigation }) {
   const [resetToken, setResetToken] = useState(0);
   const { atRiskIds } = useAtRiskIds(list.filters.location_id, resetToken);
 
-  // Actual location filtering still lives in local `selectedLocation` state
-  // (chip-row UI untouched until Task 4 moves it into FilterDrawer) — this
-  // effect is the single wire keeping `list`'s own fetch and useAtRiskIds
-  // above in sync with it, without a bigger rewrite in this task.
+  // Location and status filtering still live in local `selectedLocation`/
+  // `statusFilter` state (chip-row UI untouched until Task 4 moves both into
+  // FilterDrawer) — this effect is the single wire keeping `list`'s own
+  // fetch (and, for location, useAtRiskIds above) in sync with them,
+  // without a bigger rewrite in this task. Mirrors the old `fetchDeliveries`
+  // exactly: `if (statusFilter !== 'all') params.status = statusFilter;` —
+  // passing `undefined` for 'all' correctly omits the `status` param
+  // entirely, since useOrderListData strips undefined filter values before
+  // sending the request.
   useEffect(() => {
     list.setFilter('location_id', selectedLocation || undefined);
+    list.setFilter('status', statusFilter === 'all' ? undefined : statusFilter);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedLocation]);
+  }, [selectedLocation, statusFilter]);
 
   useFocusEffect(useCallback(() => {
     list.refresh();
