@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Modal, ScrollView, RefreshControl, ActivityIndicator } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, ScrollView, RefreshControl, ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '../context/AuthContext';
@@ -83,8 +83,6 @@ export default function DeliveriesScreen({ navigation }) {
 
   const [statusFilter, setStatusFilter] = useState('active');
   const [filtersOpen, setFiltersOpen] = useState(false);
-  const [assignModalVisible, setAssignModalVisible] = useState(false);
-  const [selectedDelivery, setSelectedDelivery] = useState(null);
   const [partners, setPartners] = useState([]);
   const [now, setNow] = useState(getShopNow(timezone));
 
@@ -131,8 +129,8 @@ export default function DeliveriesScreen({ navigation }) {
   const [selectedIds, setSelectedIds] = useState(new Set());
   // Which card's item list is expanded behind the disclosure — a single id
   // at component scope is enough since only one card is likely to be
-  // expanded at a time in practice (matches assignModalVisible-style single-
-  // item state elsewhere in this file).
+  // expanded at a time in practice (matches riderPicker-style single-item
+  // state elsewhere in this file).
   const [expandedItemsId, setExpandedItemsId] = useState(null);
   // The order the Collect COD & Mark Delivered modal is open for, null when
   // closed — see CollectCodModal.js, which owns the amount/method form and
@@ -214,9 +212,8 @@ export default function DeliveriesScreen({ navigation }) {
 
   // The FilterDrawer's Rider section (and ActiveFilterChips' rider label
   // lookup) needs `partners` populated as soon as the drawer can be opened —
-  // not lazily on assign-modal-open like `openAssignModal`/
-  // `openBatchAssignModal` below already do, which would leave the drawer's
-  // rider list empty on first render.
+  // not lazily on rider-picker-open like `openRiderPickerFor` below already
+  // does, which would leave the drawer's rider list empty on first render.
   useEffect(() => {
     api.getDeliveryPartners(selectedLocation).then((res) => {
       const users = res.data?.users || res.data || [];
@@ -344,44 +341,69 @@ export default function DeliveriesScreen({ navigation }) {
     }
   }, [preparerPicker, list.refresh]);
 
-  const openAssignModal = async (delivery) => {
-    setSelectedDelivery(delivery);
+  // Consolidated rider picker — replaces the old openAssignModal/handleAssign/
+  // openBatchAssignModal-driven custom <Modal> with the same AssignPickerModal
+  // component OrdersInboxScreen.js's preparerPicker above already uses.
+  // { deliveryIds: Set, loading, showingEveryone, people } while open, null
+  // when closed. A single deliveryIds Set carries both the single- and
+  // batch-assign case — handlePickRiderConsolidated picks the right API call
+  // by its size, so this screen never needs two parallel pickers.
+  const [riderPicker, setRiderPicker] = useState(null);
+  const riderReqRef = useRef(0);
+
+  const openRiderPickerFor = useCallback(async (deliveryIds) => {
+    const reqId = ++riderReqRef.current;
+    setRiderPicker({ deliveryIds, loading: true, people: [] });
     try {
       // GET /deliveries/partners (not GET /users, which is owner/manager-
       // only) — already scoped to active delivery_partner accounts server-
       // side, and reachable by counter_staff now that they can assign a
       // rider (2026-09-01, sub-project 5).
       const res = await api.getDeliveryPartners(selectedLocation);
-      const users = res.data?.users || res.data || [];
-      setPartners(Array.isArray(users) ? users : []);
-    } catch (err) {
-      console.error('Fetch partners error:', err);
-      setPartners([]);
-    }
-    setAssignModalVisible(true);
-  };
-
-  const handleAssign = async (partnerId) => {
-    try {
-      if (batchMode && selectedIds.size > 0) {
-        const res = await api.batchAssignDeliveries({
-          delivery_ids: Array.from(selectedIds),
-          delivery_partner_id: partnerId,
-        });
-        const msg = res.message || `Assigned ${selectedIds.size} deliveries`;
-        showAlert('Success', msg);
-        setSelectedIds(new Set());
-        setBatchMode(false);
-      } else {
-        await api.assignDelivery(selectedDelivery.id, { delivery_partner_id: partnerId });
+      let people = res.data?.users || res.data || [];
+      if (!Array.isArray(people)) people = [];
+      let showingEveryone = false;
+      if (people.length === 0 && selectedLocation) {
+        const all = await api.getDeliveryPartners();
+        const allList = all.data?.users || all.data || [];
+        if (Array.isArray(allList) && allList.length > 0) { people = allList; showingEveryone = true; }
       }
-      setAssignModalVisible(false);
+      if (riderReqRef.current !== reqId) return;
+      setRiderPicker({
+        deliveryIds, loading: false, showingEveryone,
+        people: people.map((p) => ({ id: p.id, name: p.name, meta: `${p.active_delivery_count || 0} stop${Number(p.active_delivery_count) !== 1 ? 's' : ''} today` })),
+      });
+    } catch (err) {
+      if (riderReqRef.current !== reqId) return;
+      setRiderPicker(null);
+      showAlert('Riders', err?.message || 'Could not load the rider list. Please try again.');
+    }
+  }, [selectedLocation]);
+
+  const closeRiderPicker = useCallback(() => { riderReqRef.current += 1; setRiderPicker(null); }, []);
+
+  const handlePickRiderConsolidated = useCallback(async (person) => {
+    const picker = riderPicker;
+    if (!picker || picker.loading) return;
+    const reqId = ++riderReqRef.current;
+    setRiderPicker((prev) => (prev ? { ...prev, loading: true } : prev));
+    try {
+      if (picker.deliveryIds.size > 1) {
+        const res = await api.batchAssignDeliveries({ delivery_ids: Array.from(picker.deliveryIds), delivery_partner_id: person.id });
+        showAlert('Success', res.message || `Assigned ${picker.deliveryIds.size} deliveries`);
+      } else {
+        await api.assignDelivery(Array.from(picker.deliveryIds)[0], { delivery_partner_id: person.id });
+      }
+      if (riderReqRef.current === reqId) setRiderPicker(null);
+      setBatchMode(false);
+      setSelectedIds(new Set());
       list.refresh();
     } catch (err) {
-      const msg = err.message || 'Failed to assign';
-      showAlert('Error', msg);
+      if (riderReqRef.current !== reqId) return;
+      setRiderPicker(null);
+      showAlert('Error', err?.message || 'Failed to assign');
     }
-  };
+  }, [riderPicker, list.refresh]);
 
   const toggleSelect = (id) => {
     setSelectedIds(prev => {
@@ -405,19 +427,7 @@ export default function DeliveriesScreen({ navigation }) {
     }
     setBatchMode(true);
     setSelectedIds(ids);
-    try {
-      // GET /deliveries/partners (not GET /users, which is owner/manager-
-      // only) — already scoped to active delivery_partner accounts server-
-      // side, and reachable by counter_staff now that they can assign a
-      // rider (2026-09-01, sub-project 5).
-      const res = await api.getDeliveryPartners(selectedLocation);
-      const users = res.data?.users || res.data || [];
-      setPartners(Array.isArray(users) ? users : []);
-    } catch (err) {
-      console.error('Fetch partners error:', err);
-      setPartners([]);
-    }
-    setAssignModalVisible(true);
+    openRiderPickerFor(ids);
   };
 
   // A route tag carries no date, so a route group mixes today's stops with
@@ -680,14 +690,15 @@ export default function DeliveriesScreen({ navigation }) {
     // Dispatches a resolveDeadEnd 'route' kind. reattempt_delivery/
     // collect_payment/record_cod are plain navigation (same destinations
     // OrdersInboxScreen.js's identical handler sends these to); assign_rider
-    // and finish_tasks open a modal instead. assign_rider still uses this
-    // screen's own openAssignModal(item) — Task 7 replaces that call site,
-    // not this task (see brief's explicit note).
+    // and finish_tasks open a modal instead. assign_rider routes through the
+    // same consolidated rider picker single- and batch-assign both use
+    // (Task 7) — a single-item Set makes handlePickRiderConsolidated take
+    // the api.assignDelivery (not batch) branch.
     const handleDeadEndPress = () => {
       // Same belt-and-suspenders as handlePress above.
       if (canSelect) return;
       if (!deadEnd || deadEnd.type !== 'route') return;
-      if (deadEnd.kind === 'assign_rider') { openAssignModal(item); return; }
+      if (deadEnd.kind === 'assign_rider') { openRiderPickerFor(new Set([item.id])); return; }
       if (deadEnd.kind === 'finish_tasks') { setTaskCompletionOrder(saleShaped); return; }
       if (deadEnd.kind === 'reattempt_delivery') { navigation.navigate('DeliveryDetail', { deliveryId: item.id }); return; }
       if (deadEnd.kind === 'collect_payment') {
@@ -1010,41 +1021,26 @@ export default function DeliveriesScreen({ navigation }) {
         )}
       </ScrollView>
 
-      {/* Assign Modal */}
-      <Modal visible={assignModalVisible} transparent animationType="slide">
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Assign Delivery Partner</Text>
-              <TouchableOpacity onPress={() => setAssignModalVisible(false)}>
-                <Ionicons name="close" size={24} color={Colors.text} />
-              </TouchableOpacity>
-            </View>
-            {batchMode ? (
-              <Text style={styles.modalSubtitle}>Assign {selectedIds.size} deliveries to a partner</Text>
-            ) : selectedDelivery ? (
-              <Text style={styles.modalSubtitle}>{selectedDelivery.sale_number} — {selectedDelivery.customer_name || 'Customer'}</Text>
-            ) : null}
-            <ScrollView style={{ maxHeight: 300 }}>
-              {partners.length === 0 ? (
-                <Text style={styles.emptyText}>No delivery partners found. Add staff with "delivery_partner" role.</Text>
-              ) : (
-                partners.map(p => (
-                  <TouchableOpacity key={p.id} style={styles.partnerItem} onPress={() => handleAssign(p.id)}>
-                    <Ionicons name="person-circle" size={36} color={Colors.primary} />
-                    <View style={{ marginLeft: 12, flex: 1 }}>
-                      <Text style={styles.partnerName}>{p.name}</Text>
-                      <Text style={styles.partnerPhone}>{p.phone}</Text>
-                      <Text style={styles.partnerLoad}>{p.active_delivery_count || 0} stop{Number(p.active_delivery_count) !== 1 ? 's' : ''} today</Text>
-                    </View>
-                    <Ionicons name="chevron-forward" size={20} color={Colors.textLight} />
-                  </TouchableOpacity>
-                ))
-              )}
-            </ScrollView>
-          </View>
-        </View>
-      </Modal>
+      {/* Assign Delivery Partner — single-delivery (safe-action row / dead-end
+          "Assign" tap) and batch ("Assign All" / "Select all in this route")
+          share this one picker; handlePickRiderConsolidated picks
+          api.assignDelivery vs api.batchAssignDeliveries by deliveryIds.size. */}
+      <AssignPickerModal
+        visible={riderPicker !== null}
+        title={riderPicker?.deliveryIds?.size > 1 ? `Assign ${riderPicker.deliveryIds.size} Deliveries` : 'Assign Delivery Partner'}
+        notice={
+          riderPicker?.loading ? null
+            : riderPicker?.showingEveryone
+              ? 'No delivery partners set up at this location — showing everyone.'
+              : (riderPicker?.people || []).length === 0
+                ? 'No delivery partners found. Add staff with the "delivery_partner" role.'
+                : null
+        }
+        people={riderPicker?.people || []}
+        loading={!!riderPicker?.loading}
+        onPick={handlePickRiderConsolidated}
+        onClose={closeRiderPicker}
+      />
 
       {/* "Who is making this?" — Start Preparing when a real preparer needs
           picking (has_unassigned_open_task). Same shared component and
@@ -1158,15 +1154,6 @@ const styles = StyleSheet.create({
   emptyText: { fontSize: FontSize.md, color: Colors.textLight, marginTop: 8, textAlign: 'center' },
   urgentBadge: { flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: '#FFF3E0', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 },
   urgentText: { fontSize: 8, fontWeight: '800', color: '#FF6D00' },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
-  modalContent: { backgroundColor: Colors.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: Spacing.lg, maxHeight: '70%' },
-  modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 },
-  modalTitle: { fontSize: FontSize.lg, fontWeight: '700', color: Colors.text },
-  modalSubtitle: { fontSize: FontSize.sm, color: Colors.textLight, marginBottom: Spacing.md },
-  partnerItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: Colors.border },
-  partnerName: { fontSize: FontSize.md, fontWeight: '600', color: Colors.text },
-  partnerPhone: { fontSize: FontSize.sm, color: Colors.textLight },
-  partnerLoad: { fontSize: FontSize.sm, color: Colors.primary, marginTop: 2 },
   // Batch mode
   cardSelected: { borderWidth: 2, borderColor: Colors.primary, backgroundColor: Colors.primary + '08' },
   selectCheck: { position: 'absolute', top: Spacing.sm, right: Spacing.sm, zIndex: 1 },
