@@ -344,16 +344,23 @@ export default function DeliveriesScreen({ navigation }) {
   // Consolidated rider picker — replaces the old openAssignModal/handleAssign/
   // openBatchAssignModal-driven custom <Modal> with the same AssignPickerModal
   // component OrdersInboxScreen.js's preparerPicker above already uses.
-  // { deliveryIds: Set, loading, showingEveryone, people } while open, null
-  // when closed. A single deliveryIds Set carries both the single- and
+  // { deliveryIds: Set, label, loading, showingEveryone, people } while open,
+  // null when closed. A single deliveryIds Set carries both the single- and
   // batch-assign case — handlePickRiderConsolidated picks the right API call
-  // by its size, so this screen never needs two parallel pickers.
+  // by its size, so this screen never needs two parallel pickers. `label`
+  // (optional — only the single-delivery dead-end call site has an order in
+  // scope to build one from) identifies which order is being assigned, shown
+  // in the single-item title so a staff member sweeping similar-looking
+  // stacked cards in a route group has an in-modal sanity check before
+  // picking a name (fix-round finding: the deleted custom modal used to show
+  // this as a subtitle; consolidating onto AssignPickerModal silently
+  // dropped it).
   const [riderPicker, setRiderPicker] = useState(null);
   const riderReqRef = useRef(0);
 
-  const openRiderPickerFor = useCallback(async (deliveryIds) => {
+  const openRiderPickerFor = useCallback(async (deliveryIds, label) => {
     const reqId = ++riderReqRef.current;
-    setRiderPicker({ deliveryIds, loading: true, people: [] });
+    setRiderPicker({ deliveryIds, label, loading: true, people: [] });
     try {
       // GET /deliveries/partners (not GET /users, which is owner/manager-
       // only) — already scoped to active delivery_partner accounts server-
@@ -370,8 +377,15 @@ export default function DeliveriesScreen({ navigation }) {
       }
       if (riderReqRef.current !== reqId) return;
       setRiderPicker({
-        deliveryIds, loading: false, showingEveryone,
-        people: people.map((p) => ({ id: p.id, name: p.name, meta: `${p.active_delivery_count || 0} stop${Number(p.active_delivery_count) !== 1 ? 's' : ''} today` })),
+        deliveryIds, label, loading: false, showingEveryone,
+        // Matches OrdersInboxScreen.js's own openRiderPicker meta phrasing
+        // exactly (fix-round finding — was drifted, and "N stops today"
+        // overclaimed since active_delivery_count has no date filter
+        // server-side).
+        people: people.map((p) => {
+          const busy = Number(p.active_delivery_count || 0);
+          return { id: p.id, name: p.name, meta: busy === 0 ? 'Free right now' : busy === 1 ? '1 on the road' : `${busy} on the road` };
+        }),
       });
     } catch (err) {
       if (riderReqRef.current !== reqId) return;
@@ -693,12 +707,18 @@ export default function DeliveriesScreen({ navigation }) {
     // and finish_tasks open a modal instead. assign_rider routes through the
     // same consolidated rider picker single- and batch-assign both use
     // (Task 7) — a single-item Set makes handlePickRiderConsolidated take
-    // the api.assignDelivery (not batch) branch.
+    // the api.assignDelivery (not batch) branch. The label (sale number +
+    // customer name, same format the deleted custom modal's subtitle used)
+    // is only buildable here, where a single real order is in scope — the
+    // batch entry points (openBatchAssignModal) pass no label.
     const handleDeadEndPress = () => {
       // Same belt-and-suspenders as handlePress above.
       if (canSelect) return;
       if (!deadEnd || deadEnd.type !== 'route') return;
-      if (deadEnd.kind === 'assign_rider') { openRiderPickerFor(new Set([item.id])); return; }
+      if (deadEnd.kind === 'assign_rider') {
+        openRiderPickerFor(new Set([item.id]), `${item.sale_number} — ${item.customer_name || 'Customer'}`);
+        return;
+      }
       if (deadEnd.kind === 'finish_tasks') { setTaskCompletionOrder(saleShaped); return; }
       if (deadEnd.kind === 'reattempt_delivery') { navigation.navigate('DeliveryDetail', { deliveryId: item.id }); return; }
       if (deadEnd.kind === 'collect_payment') {
@@ -1024,16 +1044,28 @@ export default function DeliveriesScreen({ navigation }) {
       {/* Assign Delivery Partner — single-delivery (safe-action row / dead-end
           "Assign" tap) and batch ("Assign All" / "Select all in this route")
           share this one picker; handlePickRiderConsolidated picks
-          api.assignDelivery vs api.batchAssignDeliveries by deliveryIds.size. */}
+          api.assignDelivery vs api.batchAssignDeliveries by deliveryIds.size.
+          Title/notice/meta copy matches OrdersInboxScreen.js's own
+          openRiderPicker exactly (fix-round finding — was drifted, including
+          raw-jargon "delivery_partner" role text) — batch's "Assign N
+          Deliveries" has no Orders Inbox equivalent to match since that
+          screen's picker is always single-item, so it stays as-is; the
+          single-item title appends riderPicker.label (order identity) when
+          the call site provided one, so a staff member always has an
+          in-modal sanity check on which delivery they're assigning. */}
       <AssignPickerModal
         visible={riderPicker !== null}
-        title={riderPicker?.deliveryIds?.size > 1 ? `Assign ${riderPicker.deliveryIds.size} Deliveries` : 'Assign Delivery Partner'}
+        title={
+          riderPicker?.deliveryIds?.size > 1
+            ? `Assign ${riderPicker.deliveryIds.size} Deliveries`
+            : riderPicker?.label ? `Assign Rider — ${riderPicker.label}` : 'Assign Rider'
+        }
         notice={
           riderPicker?.loading ? null
             : riderPicker?.showingEveryone
-              ? 'No delivery partners set up at this location — showing everyone.'
+              ? 'No riders set up at this location — showing everyone.'
               : (riderPicker?.people || []).length === 0
-                ? 'No delivery partners found. Add staff with the "delivery_partner" role.'
+                ? 'No delivery partners yet. Ask the owner to add someone as a Delivery Rider.'
                 : null
         }
         people={riderPicker?.people || []}
