@@ -26,13 +26,15 @@
 ### Task 1: Backend — `has_unassigned_open_task` on `GET /deliveries`
 
 **Files:**
-- Modify: `server/routes/deliveries.js:121-141` (the `GET /` route's main SELECT)
-- Test: `server/scripts/verify-order-flows.js` (add a check)
+- Modify: `server/routes/deliveries.js:104-172` (the `GET /` route's query-param destructure, main SELECT, and WHERE-clause construction — widened per the controller ruling above; originally scoped to just `:121-141`)
+- Test: `server/scripts/verify-order-flows.js` (add checks)
 
 **Interfaces:**
 - Produces: `has_unassigned_open_task` (boolean) on every `GET /deliveries` row — same name, same predicate as `GET /sales`'s field of the same name (`server/routes/sales.js`, added 2026-09-10).
 
 **Why:** a delivery order in its 'new'/pending stage gets a "Start Preparing" `nextAction` exactly like any other order type (order-stage.js's delivery branch reuses the same walk-in/pickup 'new' case). Without this field, Task 6's safe-resolution guard for that action would have no way to know whether firing it blind is safe — the exact gap that made Orders Inbox's next-actions "disappear" before the 2026-09-10 fix. Copy that fix here rather than let Deliveries ship with the same latent gap.
+
+**Controller ruling (pre-flight scan, 2026-09-10):** this task's scope is extended to also add server-side search support to `GET /deliveries` — a real gap, not a hypothetical one. Confirmed by reading the route: its `GET /` handler destructures `{ location_id, status, delivery_partner_id, date_from, date_to, limit, offset }` from `req.query` and never references `search` anywhere in its WHERE-clause construction (contrast `GET /sales`, `server/routes/sales.js:166,240-241`, which does implement it). `useOrderListData` (`app/src/hooks/useOrderListData.js:51`) unconditionally sends `search: searchValueRef.current` on every fetch, and Task 4 wires `OrderListToolbar`'s search box directly to `list.search`/`list.setSearch` — the server-side flow this hook assumes throughout, with no client-side re-filter of its own. Task 4's own addendum (see that task) retires the screen's current client-side text filter as redundant once the server is assumed to do this filtering. Left unfixed, the combination is a silent regression: typing in the search box would send a `search` param the server ignores, and nothing else would filter the results — search would appear to work (no error, no warning) while doing nothing. Confirmed this table has the fields needed for a same-shaped fix: `deliveries.customer_name`/`deliveries.customer_phone`/`deliveries.delivery_address` all exist as real columns (verified against the live dev DB's `\d deliveries`), `s.sale_number` and `u.name` (partner name) are already joined into this same query.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -76,6 +78,37 @@ check('NEW: GET /deliveries list rows carry has_unassigned_open_task, flipping f
 ```
 
 (This reuses `createdSaleIds`/`TEST_LOCATION_ID`/`loginOwner`/`api`/`check`/`assert`/`getDb` — all already in scope in this file. The request body's exact required fields — `delivery_address`, `receiver_name`, `receiver_phone` — are copied verbatim from this same file's existing `createReadyDelivery` helper (search for `order_type: 'delivery'` in this file). Do NOT call that helper directly for this check — it also advances the task through 'preparing' → 'completed', which would defeat the point of this test; build the request body inline as shown above instead.)
+
+**Controller-added check (pre-flight scan ruling, see this task's own Why section):** add a second new check directly after the one above, covering the search-param fix:
+
+```js
+check('NEW: GET /deliveries supports a search param over sale number, customer name/phone, delivery address, and rider name (controller-added, pre-flight scan, 2026-09-10)', async () => {
+  const owner = await loginOwner();
+  const uniqueName = `DeliverySearchCheck${Date.now()}`;
+  const createRes = await api('POST', '/sales', owner.token, {
+    location_id: TEST_LOCATION_ID, order_type: 'delivery', channel: 'phone',
+    customer_name: uniqueName,
+    delivery_address: '456 Search Ave', receiver_name: 'Test Receiver', receiver_phone: '9997776666',
+    items: [{ quantity: 1, unit_price: 100, product_name: 'Test Search Item' }],
+  });
+  assert(createRes.status === 201, `Expected sale creation to succeed, got ${createRes.status}: ${JSON.stringify(createRes.body)}`);
+  createdSaleIds.push(createRes.body.data.id);
+
+  const hitRes = await api('GET', `/deliveries?location_id=${TEST_LOCATION_ID}&search=${encodeURIComponent(uniqueName)}&limit=200`, owner.token);
+  assert(hitRes.status === 200, `Expected 200, got ${hitRes.status}: ${JSON.stringify(hitRes.body)}`);
+  assert(
+    hitRes.body.data.deliveries.some((d) => d.sale_id === createRes.body.data.id),
+    `Expected searching for the unique customer name to find the new delivery, found ${hitRes.body.data.deliveries.length} rows`
+  );
+
+  const missRes = await api('GET', `/deliveries?location_id=${TEST_LOCATION_ID}&search=NoSuchCustomerXYZ${Date.now()}&limit=200`, owner.token);
+  assert(missRes.status === 200, `Expected 200, got ${missRes.status}: ${JSON.stringify(missRes.body)}`);
+  assert(
+    missRes.body.data.deliveries.length === 0,
+    `Expected searching for a nonexistent customer to return zero rows, got ${missRes.body.data.deliveries.length}`
+  );
+});
+```
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -126,6 +159,24 @@ Add `has_unassigned_open_task` right after `open_task_count`, mirroring `sales.j
 ```
 
 Add a one-line comment above the `let sql =` line (immediately after the existing `open_task_count` comment block that ends `// All three copies MUST stay identical.`), noting this is a fourth copy of the same kind of guard field and must stay in sync with `sales.js`'s `has_unassigned_open_task`.
+
+**Controller-added implementation (pre-flight scan ruling, see this task's own Why section):** add search support in the same edit. First, destructure `search` alongside the route's other query params (this line currently reads `const { location_id, status, delivery_partner_id, date_from, date_to, limit: lim, offset: off } = req.query;` — add `search` to it: `const { location_id, status, delivery_partner_id, date_from, date_to, search, limit: lim, offset: off } = req.query;`).
+
+Then, directly after the existing `if (date_to) { sql += ' AND DATE(d.created_at) <= ?'; params.push(date_to); }` line and before the `// Scope managers to their locations` comment, add:
+```js
+    if (search) {
+      const s = `%${search}%`;
+      sql += ` AND (
+        s.sale_number ILIKE ?
+        OR d.customer_name ILIKE ?
+        OR d.customer_phone ILIKE ?
+        OR d.delivery_address ILIKE ?
+        OR u.name ILIKE ?
+      )`;
+      params.push(s, s, s, s, s);
+    }
+```
+(No comment text inside this SQL template string — matching the file's own existing practice a few lines above, which explicitly avoids putting comments inside SQL strings because of `bindParams()`'s apostrophe-vs-string-boundary footgun on `--` comments; CLAUDE.md, "Known structural debt.") The count-snapshot a few lines below (`SELECT COUNT(*) as total FROM (${sql}) as filtered`) already re-uses whatever `sql`/`params` looks like at that point, so this addition automatically flows through to `total` too — no separate fix needed there.
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -312,6 +363,8 @@ Remove the manual `searchRow` `TextInput` block and the `locationTabsRow` `Scrol
 (`viewModeProps` undefined for a `delivery_partner` viewer — matches today's `canManageDeliveries` gate on the existing view-mode row exactly; their view stays forced to `'date'`, unchanged, via the existing `effectiveViewMode` logic already in the file.)
 
 Add `const [filtersOpen, setFiltersOpen] = useState(false);` near the other `useState` declarations.
+
+**Controller addendum (pre-flight scan ruling — see Task 1's own Why section for the full reasoning):** Task 1 added server-side search support to `GET /deliveries`, matching what `useOrderListData`/`OrderListToolbar` assume. Wiring the toolbar above to `list.search`/`list.setSearch` permanently orphans this screen's pre-existing local `const [search, setSearch] = useState('');` (line ~60, confirmed the only other references are the `filteredDeliveries` predicate at lines ~261-266 and the now-removed TextInput's `value={search}`) — nothing calls its `setSearch` anymore once the old TextInput is gone. Left in place, `filteredDeliveries`'s `search ? deliveries.filter(...) : deliveries` permanently takes the unfiltered branch (local `search` frozen at `''` forever) — it reads as working (no crash, no lint warning) while silently filtering nothing beyond what the server already filtered. In this same step: delete the local `search`/`setSearch` `useState` declaration entirely, and change `filteredDeliveries`'s definition to `const filteredDeliveries = list.items;` (keep the name — Task 5's text still references `filteredDeliveries` directly) now that the server does this filtering via `list.search`.
 
 Keep the existing `STATUS_TABS` `ScrollView` chip row exactly as it is (spec §2: Status stays a visible one-tap row) — only wrap its outer `<ScrollView horizontal ...>` with `style={styles.statusTabsScroll}` if it doesn't already have an explicit `style` prop with `flexGrow: 0, flexShrink: 0` (check the existing `tabsRow` style — if it already has `flexGrow: 0, flexShrink: 0` as its `style` prop value, as `DeliveriesScreen.js`'s current styles already do per the spec's own §0.3 note that this pattern already existed here, no change needed).
 
@@ -673,6 +726,8 @@ Render, replacing the existing bare `cardFooter` COD-badge/Assign-button block's
   />
 </View>
 ```
+(Controller note, pre-flight scan: add the import `import ContactButtons from '../components/orders/ContactButtons';` — confirmed this is the real path, matching `OrdersInboxScreen.js:11`'s own import of the same component; the plan text above names `ContactButtons` as an existing consumed interface but doesn't spell out its import path the way it does for `CollectCodModal`/`TaskCompletionModal` in Step 6.)
+
 Remove the now-redundant existing `canManageDeliveries && item.status === 'pending' && (<TouchableOpacity ... Assign ...>)` block from `cardFooter` — the safe-action row above covers this via `resolveDeadEnd`'s own `assign_rider` case (which already handles the `status === 'pending'` / no-rider-yet condition, among the other cases `resolveDeadEnd` covers that the old bare "Assign" button didn't — failed/cancelled deliveries needing reassignment).
 
 - [ ] **Step 5: Add the preparer-picker (copy from `OrdersInboxScreen.js`, do not re-derive)**
