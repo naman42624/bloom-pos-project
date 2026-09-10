@@ -5,7 +5,22 @@
 import { useState, useEffect, useRef } from 'react';
 import api from '../services/api';
 
-export default function useSessionsForDates(locationId, dateKeys) {
+// `resetToken`: the spec's own residual-limitation note claims "navigating
+// away and back... refetches fresh" — but the Orders Inbox screen this hook
+// serves never actually unmounts on a focus loss/regain (tab/stack
+// navigators keep it mounted), so the "skip already-cached keys"
+// optimization below would otherwise silently keep serving a stale session
+// list forever within one visit. Concrete failure this closes: register
+// opens 9am (session 1, still-open / closed_at null), a staff member stays
+// on this screen, closes+reopens the register at 2pm (session 2) — every
+// afternoon order would keep matching session 1's now-stale still-open
+// window and mislabel under "Session 1" indefinitely. The caller bumps
+// resetToken on every focus-regain (see OrdersInboxScreen.js's
+// useFocusEffect), and a change here is treated exactly like a location
+// change: clear the cache, refetch everything currently needed. This
+// restores the behavior the spec actually described rather than the
+// narrower one the cache accidentally shipped with.
+export default function useSessionsForDates(locationId, dateKeys, resetToken) {
   const [sessionsByDate, setSessionsByDate] = useState({});
   const [loading, setLoading] = useState(false);
   // Array identity changes every render even with the same contents (a new
@@ -26,6 +41,9 @@ export default function useSessionsForDates(locationId, dateKeys) {
   // the "skip already-fetched keys" logic would wrongly skip re-fetching
   // same-named date keys for the NEW location.
   const cachedLocationIdRef = useRef(locationId);
+  // Tracks the resetToken the cache was built for — see the file-header
+  // comment on the `resetToken` param above for why this exists.
+  const cachedResetTokenRef = useRef(resetToken);
 
   useEffect(() => {
     const keys = keysSignature ? keysSignature.split(',') : [];
@@ -33,17 +51,22 @@ export default function useSessionsForDates(locationId, dateKeys) {
       setSessionsByDate({});
       sessionsByDateRef.current = {};
       cachedLocationIdRef.current = locationId;
+      cachedResetTokenRef.current = resetToken;
       return;
     }
     const locationChanged = cachedLocationIdRef.current !== locationId;
-    if (locationChanged) {
+    const resetRequested = cachedResetTokenRef.current !== resetToken;
+    if (locationChanged || resetRequested) {
       // A different location means the cached entries belong to the WRONG
       // location's sessions — start fresh rather than treating those dates
       // as already-fetched (which would both wrongly skip fetching them for
       // the new location, and leak the old location's session labels into
-      // this render until a fetch happened to overwrite that key again).
+      // this render until a fetch happened to overwrite that key again). A
+      // bumped resetToken means the caller regained focus on this screen
+      // and wants a fresh look at session data too (see param comment).
       sessionsByDateRef.current = {};
       cachedLocationIdRef.current = locationId;
+      cachedResetTokenRef.current = resetToken;
       setSessionsByDate({});
     }
     // Only fetch days not already present in the cache — pagination ("Load
@@ -71,7 +94,7 @@ export default function useSessionsForDates(locationId, dateKeys) {
     });
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [locationId, keysSignature]);
+  }, [locationId, keysSignature, resetToken]);
 
   return { sessionsByDate, loading };
 }

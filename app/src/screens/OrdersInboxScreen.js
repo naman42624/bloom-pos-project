@@ -51,6 +51,16 @@ export default function OrdersInboxScreen({ navigation, route }) {
   );
   const list = useOrderListData(fetchFn, { pageSize: 50 });
   const [filtersOpen, setFiltersOpen] = useState(false);
+  // Bumped on every focus-regain (see useFocusEffect below) and handed to
+  // useSessionsForDates as a cache-reset signal — this screen never
+  // actually unmounts on a focus loss/regain (tab/stack navigators keep it
+  // mounted), so without this, a register close/reopen while a staff member
+  // stays on this screen would leave session labels stale indefinitely. See
+  // useSessionsForDates.js's resetToken comment for the full failure case.
+  const [sessionsResetToken, setSessionsResetToken] = useState(0);
+  // Which row's next-action button is mid-request — drives the disabled/
+  // spinner state below so a double-tap can't fire the same advance twice.
+  const [advancingId, setAdvancingId] = useState(null);
 
   const singleLocationId = useMemo(() => getSingleLocationId(list.items), [list.items]);
   const dayGroups = useMemo(() => groupOrdersByDay(list.items), [list.items]);
@@ -62,7 +72,7 @@ export default function OrdersInboxScreen({ navigation, route }) {
     () => (singleLocationId && list.sort !== 'urgency' ? dayGroups.map((d) => d.dateKey).filter(Boolean) : []),
     [singleLocationId, list.sort, dayGroups]
   );
-  const { sessionsByDate } = useSessionsForDates(singleLocationId, dateKeysNeedingSessions);
+  const { sessionsByDate } = useSessionsForDates(singleLocationId, dateKeysNeedingSessions, sessionsResetToken);
 
   const sections = useMemo(() => {
     if (list.sort === 'urgency') {
@@ -111,7 +121,10 @@ export default function OrdersInboxScreen({ navigation, route }) {
   // dependency array to [], would replay a STALE list.refresh closure after
   // any filter change, which is worse (silently ignores the new filter on
   // next focus). Do not "fix" this by reverting to [].
-  useFocusEffect(useCallback(() => { list.refresh(); }, [list.refresh]));
+  useFocusEffect(useCallback(() => {
+    list.refresh();
+    setSessionsResetToken((g) => g + 1);
+  }, [list.refresh]));
 
   const renderItem = ({ item }) => {
     const itemsSummary = formatItemsSummary(item.items);
@@ -120,8 +133,16 @@ export default function OrdersInboxScreen({ navigation, route }) {
     const nextAction = item.display_stage?.nextAction;
     const needsResolution = nextAction && (nextAction.body?.status === 'preparing' || nextAction.endpoint?.endsWith('/deliver'));
     const showActionButton = nextAction && !needsResolution;
+    const isAdvancing = advancingId === item.id;
 
     const handleAdvance = async () => {
+      // Guard against a double-tap firing this twice while the first call
+      // is still in flight — without it, a second tap during the ~500ms-
+      // 1s round trip hits the server's own transition guard (e.g. "Cannot
+      // transition from ready to ready") and shows that raw, confusing
+      // message as if the FIRST tap had failed, when it actually succeeded.
+      if (advancingId) return;
+      setAdvancingId(item.id);
       try {
         // api.advanceOrder(nextAction) — NOT (id, nextAction). The sale id is
         // already baked into nextAction.endpoint (e.g. `/sales/${id}/status`);
@@ -137,6 +158,8 @@ export default function OrdersInboxScreen({ navigation, route }) {
         // language text; every other screen's catch (err) block reads it this
         // way (DashboardScreen.js is the clearest precedent).
         showAlert('Could not update this order', err?.message || 'Please try again, or open the order to see what it needs.');
+      } finally {
+        setAdvancingId(null);
       }
     };
 
@@ -166,8 +189,15 @@ export default function OrdersInboxScreen({ navigation, route }) {
         </View>
         <View style={styles.actionsRow}>
           {showActionButton ? (
-            <TouchableOpacity style={styles.actionBtn} onPress={(e) => { e.stopPropagation(); handleAdvance(); }} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-              <Text style={styles.actionBtnText}>{nextAction.label || 'Next step'}</Text>
+            <TouchableOpacity
+              style={[styles.actionBtn, isAdvancing && styles.actionBtnDisabled]}
+              onPress={(e) => { e.stopPropagation(); handleAdvance(); }}
+              disabled={isAdvancing}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
+              {isAdvancing
+                ? <ActivityIndicator size="small" color={Colors.white} />
+                : <Text style={styles.actionBtnText}>{nextAction.label || 'Next step'}</Text>}
             </TouchableOpacity>
           ) : <View style={{ flex: 1 }} />}
           <ContactButtons
@@ -336,7 +366,11 @@ const styles = StyleSheet.create({
   },
   pickupLinkText: { color: Colors.primary, fontWeight: '600', fontSize: FontSize.sm },
   filterRow: { flexDirection: 'row', gap: 6, paddingHorizontal: Spacing.md, paddingTop: Spacing.sm },
-  filterChip: { paddingVertical: 8, paddingHorizontal: 12, borderRadius: BorderRadius.lg, backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.border, minHeight: 36 },
+  // minHeight 44, not the pre-existing screen's 36 — Status is now the ONLY
+  // always-visible filter row on this redesigned screen (staff-ux-checklist
+  // #7 / this plan's own 44x44pt global constraint), so it doesn't get to
+  // quietly stay under-sized just because it's visually unchanged from before.
+  filterChip: { paddingVertical: 8, paddingHorizontal: 12, borderRadius: BorderRadius.lg, backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.border, minHeight: 44, justifyContent: 'center' },
   filterChipSelected: { backgroundColor: Colors.primary, borderColor: Colors.primary },
   filterChipText: { fontSize: FontSize.sm, color: Colors.text, fontWeight: '600' },
   filterChipTextSelected: { color: Colors.white },
@@ -354,7 +388,8 @@ const styles = StyleSheet.create({
   amount: { fontSize: FontSize.sm, fontWeight: '700', color: Colors.text, marginTop: 4 },
   paymentBadge: { fontSize: FontSize.xs, fontWeight: '700', marginTop: 4 },
   actionsRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: Spacing.sm, paddingTop: Spacing.sm, borderTopWidth: 1, borderTopColor: Colors.border },
-  actionBtn: { backgroundColor: Colors.primary, borderRadius: BorderRadius.md, paddingVertical: Spacing.sm, paddingHorizontal: Spacing.md, minHeight: 44, justifyContent: 'center' },
+  actionBtn: { backgroundColor: Colors.primary, borderRadius: BorderRadius.md, paddingVertical: Spacing.sm, paddingHorizontal: Spacing.md, minHeight: 44, minWidth: 44, justifyContent: 'center', alignItems: 'center' },
+  actionBtnDisabled: { opacity: 0.6 },
   actionBtnText: { color: Colors.white, fontWeight: '600', fontSize: FontSize.sm },
   errorBanner: { backgroundColor: Colors.error + '15', padding: Spacing.sm, marginHorizontal: Spacing.md, borderRadius: BorderRadius.md },
   errorBannerText: { color: Colors.error, fontSize: FontSize.sm },

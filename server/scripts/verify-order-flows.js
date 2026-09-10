@@ -1086,6 +1086,24 @@ check('FIXED: GET /sales total mirrors the real filtered query when search + pic
     total === sales.length,
     `total (${total}) must equal actual matching rows (${sales.length}) when search+pickup_status are both applied — the old hand-duplicated countSql omitted both filters entirely, so total came back as the count of ALL non-cancelled sales at this location instead of just the ${sales.length} that actually match`
   );
+
+  // The check above always passed an explicit location_id as owner — it
+  // never actually exercised the non-owner auto-scoping branch (sales.js's
+  // "Scope by location for non-owner roles" block, which only applies when
+  // location_id is OMITTED), even though this check's own title claims that
+  // coverage. Close that gap: same search+pickup_status combo, but as a
+  // counter_staff with no location_id param at all, relying entirely on
+  // their user_locations assignment.
+  const staff = await createStaff('counter_staff', owner.token);
+  const staffRes = await api('GET', `/sales?search=${searchTerm}&pickup_status=waiting`, staff.token);
+  assert(staffRes.status === 200, `Expected 200 for non-owner auto-scoped request, got ${staffRes.status}: ${JSON.stringify(staffRes.body)}`);
+  const staffSales = staffRes.body.data.sales;
+  const staffTotal = Number(staffRes.body.data.total);
+  assert(staffSales.length === createdIds.length, `Expected the counter_staff's location-scoped request to also match exactly the ${createdIds.length} sale(s), got ${staffSales.length}`);
+  assert(
+    staffTotal === staffSales.length,
+    `total (${staffTotal}) must equal actual matching rows (${staffSales.length}) for a non-owner request with no explicit location_id — the old countSql's separately-hand-written filter block never applied the "Scope by location for non-owner roles" clause at all, so a counter_staff/employee/manager request without location_id would have returned a total counting sales at every location, not just their own`
+  );
 });
 
 check('FIXED: GET /deliveries returns an accurate total alongside the (still limited) array', async () => {
