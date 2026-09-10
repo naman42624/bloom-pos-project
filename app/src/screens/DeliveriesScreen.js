@@ -122,7 +122,7 @@ export default function DeliveriesScreen({ navigation }) {
     (params) => api.getDeliveries(params).then((res) => ({ items: res.data?.deliveries || [], total: Number(res.data?.total) || 0 })),
     []
   );
-  const list = useOrderListData(fetchFn, { pageSize: 50 });
+  const list = useOrderListData(fetchFn, { pageSize: 200 });
   // Bumped on every focus-regain (see useFocusEffect below) — same reset-
   // token pattern useSessionsForDates/useAtRiskIds both use, for the same
   // reason (this screen never unmounts on a focus loss/regain).
