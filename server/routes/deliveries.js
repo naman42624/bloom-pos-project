@@ -104,7 +104,7 @@ router.get('/partners', authenticate, authorize('owner', 'manager', 'counter_sta
 router.get('/', authenticate, authorize('owner', 'manager', 'delivery_partner', 'employee', 'counter_staff'), async (req, res, next) => {
   try {
     const db = await getAsyncDb();
-    const { location_id, status, delivery_partner_id, date_from, date_to, search, limit: lim, offset: off } = req.query;
+    const { location_id, status, delivery_partner_id, date_from, date_to, search, sort, limit: lim, offset: off } = req.query;
 
     // `open_task_count` is a verbatim copy of the production-task guard in
     // PUT /sales/:id/status ("Enforce production task completion before marking
@@ -196,7 +196,22 @@ router.get('/', authenticate, authorize('owner', 'manager', 'delivery_partner', 
     const countRow = await db.prepare(`SELECT COUNT(*) as total FROM (${sql}) as filtered`).get(...params);
     const total = Number(countRow?.total || 0);
 
-    sql += ' ORDER BY CASE d.status WHEN \'pending\' THEN 1 WHEN \'assigned\' THEN 2 WHEN \'picked_up\' THEN 3 WHEN \'in_transit\' THEN 4 WHEN \'delivered\' THEN 5 WHEN \'failed\' THEN 6 WHEN \'cancelled\' THEN 7 END, d.scheduled_date ASC NULLS LAST, d.created_at DESC';
+    // sort==='urgency' (added for the "Urgent first" toolbar option —
+    // previously silently ignored here, see CLAUDE.md-linked spec accuracy
+    // note): mirrors GET /sales's own urgency ORDER BY (server/routes/
+    // sales.js, search `sort === 'urgency'`), adapted to this route's
+    // deliveries/sales join — priority lives on `s` (sales), scheduled
+    // date/time and created_at live on `d` (deliveries), not `s`.
+    if (sort === 'urgency') {
+      sql += ` ORDER BY
+        (s.priority = 'rush') DESC,
+        (d.scheduled_date IS NOT NULL) DESC,
+        d.scheduled_date ASC NULLS LAST,
+        d.scheduled_time ASC NULLS LAST,
+        d.created_at ASC`;
+    } else {
+      sql += ' ORDER BY CASE d.status WHEN \'pending\' THEN 1 WHEN \'assigned\' THEN 2 WHEN \'picked_up\' THEN 3 WHEN \'in_transit\' THEN 4 WHEN \'delivered\' THEN 5 WHEN \'failed\' THEN 6 WHEN \'cancelled\' THEN 7 END, d.scheduled_date ASC NULLS LAST, d.created_at DESC';
+    }
 
     const limit = parseInt(lim) || 200;
     const offset = parseInt(off) || 0;

@@ -1202,6 +1202,85 @@ check('NEW: GET /deliveries supports a search param over sale number, customer n
   );
 });
 
+check('NEW: GET /deliveries sort=urgency puts rush deliveries first without changing the default sort (2026-09-10, final fix wave — sort param was previously silently ignored)', async () => {
+  const owner = await loginOwner();
+  const older = await api('POST', '/sales', owner.token, {
+    location_id: TEST_LOCATION_ID, order_type: 'delivery', channel: 'phone',
+    customer_name: 'Delivery Urgency Older',
+    delivery_address: '1 Urgency Older St', receiver_name: 'Urgency Older Receiver', receiver_phone: '9990000001',
+    items: [{ quantity: 1, unit_price: 100, product_name: 'Test Delivery Urgency Older Item' }],
+  });
+  assert(older.status === 201, `Expected sale creation to succeed, got ${older.status}: ${JSON.stringify(older.body)}`);
+  createdSaleIds.push(older.body.data.id);
+
+  const rush = await api('POST', '/sales', owner.token, {
+    location_id: TEST_LOCATION_ID, order_type: 'delivery', channel: 'phone', priority: 'rush',
+    customer_name: 'Delivery Urgency Rush',
+    delivery_address: '2 Urgency Rush St', receiver_name: 'Urgency Rush Receiver', receiver_phone: '9990000002',
+    items: [{ quantity: 1, unit_price: 100, product_name: 'Test Delivery Urgency Rush Item' }],
+  });
+  assert(rush.status === 201, `Expected sale creation to succeed, got ${rush.status}: ${JSON.stringify(rush.body)}`);
+  createdSaleIds.push(rush.body.data.id);
+
+  // Created AFTER the rush order so plain recency sort would put it first —
+  // proves urgency sort isn't accidentally passing just because rush happens
+  // to be newest (same reasoning as GET /sales's identical check).
+  const newer = await api('POST', '/sales', owner.token, {
+    location_id: TEST_LOCATION_ID, order_type: 'delivery', channel: 'phone',
+    customer_name: 'Delivery Urgency Newer',
+    delivery_address: '3 Urgency Newer St', receiver_name: 'Urgency Newer Receiver', receiver_phone: '9990000003',
+    items: [{ quantity: 1, unit_price: 100, product_name: 'Test Delivery Urgency Newer Item' }],
+  });
+  assert(newer.status === 201, `Expected sale creation to succeed, got ${newer.status}: ${JSON.stringify(newer.body)}`);
+  createdSaleIds.push(newer.body.data.id);
+
+  // Default (no sort param): unchanged status-ladder/scheduled_date/recency
+  // order, proving the default sort ignores priority. Checked by RELATIVE
+  // position among just our own three test rows (not "is newer row 0 of a
+  // 3-item page") — TEST_LOCATION_ID accumulates real ambient deliveries
+  // across every check in this suite, some carrying a real (non-null)
+  // scheduled_date, which the default ORDER BY's `d.scheduled_date ASC NULLS
+  // LAST` clause sorts ahead of our undated test rows regardless of
+  // recency; a tight limit/first-row assertion is flaky against that
+  // ambient data (confirmed live). All three test deliveries are undated, so
+  // they tie on status and scheduled_date and fall through to
+  // `d.created_at DESC` among themselves — the newest must sort before the
+  // rush one, which must sort before the oldest, purely by recency.
+  const defaultRes = await api('GET', `/deliveries?location_id=${TEST_LOCATION_ID}&limit=500`, owner.token);
+  assert(defaultRes.status === 200, `Expected 200, got ${defaultRes.status}: ${JSON.stringify(defaultRes.body)}`);
+  const defaultSaleIdsInOrder = defaultRes.body.data.deliveries.map((d) => d.sale_id);
+  const defaultNewerIdx = defaultSaleIdsInOrder.indexOf(newer.body.data.id);
+  const defaultRushIdx = defaultSaleIdsInOrder.indexOf(rush.body.data.id);
+  const defaultOlderIdx = defaultSaleIdsInOrder.indexOf(older.body.data.id);
+  assert(
+    defaultNewerIdx !== -1 && defaultRushIdx !== -1 && defaultOlderIdx !== -1,
+    `Expected all three test deliveries to appear under the default sort, got indices newer=${defaultNewerIdx} rush=${defaultRushIdx} older=${defaultOlderIdx}`
+  );
+  assert(
+    defaultNewerIdx < defaultRushIdx,
+    `Expected default sort to still be plain recency (newest first) among our own undated test rows, and the newer (non-rush) delivery should sort before the rush one, got newer at ${defaultNewerIdx}, rush at ${defaultRushIdx}`
+  );
+  assert(
+    defaultRushIdx < defaultOlderIdx,
+    `Expected the rush delivery to sort before the older delivery under the default sort too (recency only, no priority weighting), got rush at ${defaultRushIdx}, older at ${defaultOlderIdx}`
+  );
+
+  // sort=urgency: rush leads regardless of recency; among the non-rush
+  // deliveries (both undated here), the oldest-created comes first. limit is
+  // generously high, matching GET /sales's own urgency check, since
+  // TEST_LOCATION_ID accumulates real rows across every check in this suite.
+  const urgencyRes = await api('GET', `/deliveries?location_id=${TEST_LOCATION_ID}&sort=urgency&limit=500`, owner.token);
+  assert(urgencyRes.status === 200, `Expected 200, got ${urgencyRes.status}: ${JSON.stringify(urgencyRes.body)}`);
+  const saleIdsInOrder = urgencyRes.body.data.deliveries.map((d) => d.sale_id);
+  const rushIdx = saleIdsInOrder.indexOf(rush.body.data.id);
+  const newerIdx = saleIdsInOrder.indexOf(newer.body.data.id);
+  const olderIdx = saleIdsInOrder.indexOf(older.body.data.id);
+  assert(rushIdx !== -1 && newerIdx !== -1 && olderIdx !== -1, `Expected all three test deliveries to appear under sort=urgency, got indices rush=${rushIdx} newer=${newerIdx} older=${olderIdx}`);
+  assert(rushIdx < newerIdx, `Expected the rush delivery to sort before the newer non-rush delivery under sort=urgency (proves urgency sort differs from default), got rush at ${rushIdx}, newer at ${newerIdx}`);
+  assert(rushIdx < olderIdx, `Expected the rush delivery to sort before the older non-rush delivery too (priority beats recency), got rush at ${rushIdx}, older at ${olderIdx}`);
+  assert(olderIdx < newerIdx, `Expected the older delivery to sort before the newer delivery among non-rush rows (oldest-created tiebreak, both undated), got older at ${olderIdx}, newer at ${newerIdx}`);
+});
+
 check('FIXED: GET /deliveries returns an accurate total alongside the (still limited) array', async () => {
   const owner = await loginOwner();
   const res = await api('GET', `/deliveries?location_id=${TEST_LOCATION_ID}&limit=1`, owner.token);

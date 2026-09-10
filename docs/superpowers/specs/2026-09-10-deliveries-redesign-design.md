@@ -14,6 +14,8 @@
 
 Redesigns `app/src/screens/DeliveriesScreen.js` only. No backend changes are anticipated — §3 confirms every field the new logic needs already exists on `GET /deliveries` rows or is fetched the same way the current screen already fetches it. `DeliveryDetailScreen.js` (per-delivery detail, reattempt/cancel/convert controls, live map) is untouched — this screen's role stays "list, triage, batch-dispatch," not detail management.
 
+**Accuracy note (final whole-branch review, 2026-09-10):** this "no backend changes" claim turned out to be wrong — `GET /deliveries` never actually implemented `sort=urgency` (it was assumed to exist by analogy with `GET /sales`, but no one grepped for it), so the "Urgent first" toolbar option silently did nothing server-side while the client dropped its own grouping/at-risk-lead section. Fixed by adding real `sort=urgency` handling to `server/routes/deliveries.js`, mirroring `GET /sales`'s implementation. See §4's own accuracy note too.
+
 ## 2. Toolbar & filters
 
 - Search and the **view-mode toggle stay always-visible, primary controls** — never in the drawer. View-mode gains a third option, **By Rider** (groups the already-fetched batch by `partner_name`, same client-side technique as Route grouping), alongside the existing Route (management default) and Date (forced for `delivery_partner`'s own simplified view — unchanged).
@@ -32,7 +34,7 @@ At-risk detection stays a **separate fetch**, not folded into `fetchFn` — it's
 
 Sections are computed with a `useMemo` over `list.items`, keyed on `(list.items, list.sort, viewMode)`:
 
-- **`sort === 'urgency'`:** one flat section, no headers, server order (rush → soonest-scheduled → oldest), matching Orders Inbox's rule exactly.
+- **`sort === 'urgency'`:** one flat section, no headers, server order (rush → soonest-scheduled → oldest), matching Orders Inbox's rule exactly. **Accuracy note (final whole-branch review, 2026-09-10):** at the time this was written, "server order" here was actually describing `GET /sales`'s behavior, not `GET /deliveries`'s — `GET /deliveries` had no `sort` handling at all yet (see §1's accuracy note). Now true: `GET /deliveries` implements the same rush → soonest-scheduled → oldest ordering directly.
 - **Route view (management default):** at-risk items lead in their own section (`Needs Attention (N)`) regardless of route, exactly as today — still also appearing in their own route group below (dropping them would break "select all in route"). Then one `CollapsibleSection` per route (`route_name` or "No Route Assigned," sorted alphabetically with "No Route Assigned" last — unchanged from today's logic).
 - **Date view:** one `CollapsibleSection` per date, ordered by scheduled date/time. The blank `_unscheduled` section header bug (`formatShopDateLabel('_unscheduled')` → `''`) gets a real label: "No Date Set."
 - **By Rider (new):** one `CollapsibleSection` per `partner_name` (or "Unassigned"), same grouping technique as Route.
