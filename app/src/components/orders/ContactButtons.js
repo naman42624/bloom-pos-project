@@ -68,7 +68,13 @@ export default function ContactButtons({ contacts = [], context = {} }) {
           <View style={styles.sheet}>
             {uniqueByPhone.map((c) => (
               <TouchableOpacity
-                key={c.label}
+                // Keyed on the normalized phone, not c.label (PR review
+                // finding, 2026-09-09): two contacts sharing a label string
+                // is a real possibility this dedup-by-phone loop doesn't
+                // rule out on its own — phone is what's actually guaranteed
+                // unique here, since that's the exact value uniqueByPhone
+                // just deduped on above.
+                key={normalizePhone(c.phone)}
                 style={styles.pickerRow}
                 onPress={() => { act(pickerFor, c); setPickerFor(null); }}
               >

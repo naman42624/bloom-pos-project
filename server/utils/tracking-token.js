@@ -46,6 +46,16 @@ function verifyTrackingToken(token) {
   return parseInt(idPart, 10);
 }
 
+// Flagged in PR review (2026-09-09): this used to fall back silently to
+// localhost in production too, not just in dev — meaning a mis-set or
+// forgotten NODE_ENV/PUBLIC_APP_URL wouldn't error, it would just quietly
+// hand every customer a tracking link that only resolves on the machine
+// that generated it. Mirrors the TRACKING_LINK_SECRET fail-fast right
+// above: production must set this explicitly, dev/test keep the
+// localhost fallback since there's no real customer on the other end.
+if (process.env.NODE_ENV === 'production' && !process.env.PUBLIC_APP_URL) {
+  throw new Error('PUBLIC_APP_URL must be set in production — otherwise customer-facing tracking links point at localhost.');
+}
 const PUBLIC_APP_URL = process.env.PUBLIC_APP_URL || 'http://localhost:19006';
 
 function buildTrackingUrl(saleId) {

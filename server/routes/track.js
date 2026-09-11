@@ -9,8 +9,43 @@ const { getDb: getAsyncDb } = require('../config/database-async');
 const { verifyTrackingToken } = require('../utils/tracking-token');
 const { computeOrderStage } = require('../utils/order-stage');
 
+// Minimal in-memory per-IP rate limiter, scoped to this one router — not a
+// new dependency, since the app has no rate limiting anywhere else either
+// (see CLAUDE.md's "Known structural debt" bullet on this route: "the
+// server currently has no rate limiter at all"). Flagged in PR review: sale
+// IDs are sequential and guessable (tracking-token.js's own doc comment
+// already says so — the HMAC signature is what actually protects a guess,
+// not the ID's obscurity), so this endpoint is a natural target for an
+// ID-probing sweep even though each individual forged token still fails
+// verification. Fixed-window, per-process — this app runs a single PM2
+// process per VPS_DEPLOYMENT_GUIDE.md, so "per-process" is "per-deployment"
+// in practice, not a gap introduced by this being in-memory.
+const RATE_LIMIT_WINDOW_MS = 60 * 1000;
+const RATE_LIMIT_MAX = 30; // generous for a customer re-opening/refreshing their own link a few times
+const rateLimitBuckets = new Map(); // ip -> { count, windowStart }
+
+function isRateLimited(ip) {
+  // Crude unbounded-growth guard: a real attacker rotating IPs to dodge
+  // the limiter would also inflate this map, so cap it rather than let it
+  // grow forever. Clearing it outright on overflow is safe — worst case
+  // is a few extra requests through right at the reset, never a false
+  // block — and simpler than a proper LRU for a low-traffic shop app.
+  if (rateLimitBuckets.size > 10000) rateLimitBuckets.clear();
+  const now = Date.now();
+  const bucket = rateLimitBuckets.get(ip);
+  if (!bucket || now - bucket.windowStart >= RATE_LIMIT_WINDOW_MS) {
+    rateLimitBuckets.set(ip, { count: 1, windowStart: now });
+    return false;
+  }
+  bucket.count += 1;
+  return bucket.count > RATE_LIMIT_MAX;
+}
+
 router.get('/:token', async (req, res, next) => {
   try {
+    if (isRateLimited(req.ip)) {
+      return res.status(429).json({ success: false, message: 'Too many requests. Please try again in a minute.' });
+    }
     const saleId = verifyTrackingToken(req.params.token);
     if (saleId === null) return res.status(404).json({ success: false, message: 'Not found' });
 

@@ -111,7 +111,7 @@ In psql:
 
 ```sql
 CREATE DATABASE bloomcart;
-CREATE USER bloomcart WITH ENCRYPTED PASSWORD 'bloomcartFlowerPoint';
+CREATE USER bloomcart WITH ENCRYPTED PASSWORD 'REPLACE_WITH_STRONG_PASSWORD';
 GRANT ALL PRIVILEGES ON DATABASE bloomcart TO bloomcart;
 ALTER DATABASE bloomcart OWNER TO bloomcart;
 \c bloomcart
@@ -119,6 +119,8 @@ ALTER SCHEMA public OWNER TO bloomcart;
 GRANT ALL ON SCHEMA public TO bloomcart;
 \q
 ```
+
+Generate a real password rather than typing one in — e.g. `openssl rand -base64 24` — and use that same value everywhere this guide says `REPLACE_WITH_STRONG_PASSWORD` (§6.3's `DATABASE_URL`, §12.2's backup script, §13's DBeaver password). PR review flagged this section for previously hardcoding a real-looking password directly in the doc (`bloomcartFlowerPoint`) instead of a placeholder — fixed to match the placeholder convention the rest of this guide already uses.
 
 ### 5.3 Optional: allow remote DB access (for DBeaver)
 
@@ -176,14 +178,16 @@ Create `server/.env`:
 ```env
 PORT=3001
 NODE_ENV=production
-JWT_SECRET=flowerpoint
+JWT_SECRET=<a-strong-random-string>
 JWT_EXPIRES_IN=7d
-DATABASE_URL=postgresql://bloomcart:bloomcartFlowerPoint@127.0.0.1:5432/bloomcart
+DATABASE_URL=postgresql://bloomcart:REPLACE_WITH_STRONG_PASSWORD@127.0.0.1:5432/bloomcart
 TRACKING_LINK_SECRET=<a-different-strong-random-string>
 PUBLIC_APP_URL=https://your-shop-domain.com
 ```
 
-`PUBLIC_APP_URL` is the public base URL customers' tracking links resolve against (e.g. `https://your-shop-domain.com`). Required in production; defaults to `http://localhost:19006` locally — leaving it unset in production means customer-facing tracking links point at `localhost`.
+`PUBLIC_APP_URL` is the public base URL customers' tracking links resolve against (e.g. `https://your-shop-domain.com`). Required in production — `server/utils/tracking-token.js` now fails fast at boot (`NODE_ENV=production` with no `PUBLIC_APP_URL` set throws instead of starting) rather than the old behavior of silently defaulting to `http://localhost:19006` and shipping customers a dead link.
+
+Generate real values for `JWT_SECRET` and `DATABASE_URL`'s password — don't type in your own or reuse the ones shown above as literal text; they're placeholders, not real secrets, and this file is committed to git. `openssl rand -base64 32` works for both. `REPLACE_WITH_STRONG_PASSWORD` here must match whatever password you actually set in §5.2. PR review flagged this section for previously showing real-looking hardcoded values (`flowerpoint`, `bloomcartFlowerPoint`) instead of placeholders — fixed to match the placeholder convention already used elsewhere in this guide (§12.2, §13).
 
 Notes:
 - Use `127.0.0.1` instead of `localhost` to avoid socket/driver mismatch edge-cases.
