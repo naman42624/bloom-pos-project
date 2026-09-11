@@ -9,7 +9,7 @@ import { formatCardDateTime, formatTime } from '../utils/datetime';
 import { showAlert } from '../utils/alert';
 import StageBadge from '../components/StageBadge';
 import ContactButtons from '../components/orders/ContactButtons';
-import { waLink, buildMessage } from '../utils/contact';
+import { waLink, buildMessage, normalizePhone } from '../utils/contact';
 import useOrderListData from '../hooks/useOrderListData';
 import OrderListToolbar from '../components/orders/OrderListToolbar';
 import FilterDrawer from '../components/orders/FilterDrawer';
@@ -504,7 +504,14 @@ export default function OrdersInboxScreen({ navigation, route }) {
               params: { sale_number: item.sale_number, location_name: item.location_name },
             }}
           />
-          {item.tracking_url && (item.customer_display_phone || item.customer_phone) && (
+          {/* Guard uses normalizePhone (fix-round finding B4, whole-branch
+              review 2026-09-11), not raw truthiness — a garbage value like
+              "NA" is truthy but normalizes to '', which would otherwise
+              still render a live-looking button whose waLink() produces a
+              dead wa.me/91 link with no number. Same rule ContactButtons
+              already follows internally for its own "never a dead button"
+              guarantee. */}
+          {item.tracking_url && normalizePhone(item.customer_display_phone || item.customer_phone) && (
             <TouchableOpacity
               style={styles.shareLinkBtn}
               onPress={(e) => {
