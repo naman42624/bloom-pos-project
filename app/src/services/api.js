@@ -908,6 +908,14 @@ class ApiService {
     return this.request('/deliveries/batch-assign', { method: 'POST', body: JSON.stringify(data) });
   }
 
+  assignDeliveryRoute(deliveryId, data) {
+    return this.request(`/deliveries/${deliveryId}/route`, { method: 'PUT', body: JSON.stringify(data) });
+  }
+
+  batchAssignRoute(data) {
+    return this.request('/deliveries/batch-assign-route', { method: 'POST', body: JSON.stringify(data) });
+  }
+
   pickupDelivery(deliveryId) {
     return this.request(`/deliveries/${deliveryId}/pickup`, { method: 'PUT' });
   }
