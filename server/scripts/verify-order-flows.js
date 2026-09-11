@@ -678,6 +678,48 @@ check('sales-level cancel is NOT blocked when the delivery is merely pending (no
   assert(cancelFailed.status === 200, `Expected cancel to succeed on a failed (not active) delivery, got ${cancelFailed.status}: ${JSON.stringify(cancelFailed.body)}`);
 });
 
+check('FIXED: cancelling a sale cascades to cancel its orphaned pending/failed deliveries row (was left stuck, decoupled from the now-cancelled sale)', async () => {
+  const db = await getDb();
+  const owner = await loginOwner();
+
+  // Case 1: delivery still 'pending' (no rider ever assigned).
+  const { saleId: saleId1, deliveryId: deliveryId1 } = await createReadyDelivery(owner.token, {});
+  const cancelPending = await api('PUT', `/sales/${saleId1}/cancel`, owner.token);
+  assert(cancelPending.status === 200, `Expected cancel to succeed, got ${cancelPending.status}: ${JSON.stringify(cancelPending.body)}`);
+  const deliveryAfterPending = await db.prepare('SELECT status, failure_reason FROM deliveries WHERE id = ?').get(deliveryId1);
+  assert(
+    deliveryAfterPending.status === 'cancelled',
+    `Expected the 'pending' delivery row to be cascaded to 'cancelled' once its sale is cancelled, got '${deliveryAfterPending.status}' — this was the orphaned-deliveries bug: sales.js's cancel route never touched the deliveries table when the delivery was merely 'pending'/'failed', leaving it stuck forever (still assignable via DeliveryDetailScreen's "Assign Partner" for an order the shop already considers cancelled)`
+  );
+  assert(deliveryAfterPending.failure_reason === 'Order cancelled', `Expected failure_reason 'Order cancelled', got '${deliveryAfterPending.failure_reason}'`);
+
+  // Case 2: delivery already 'failed' (a rider tried and failed, never reassigned).
+  const { saleId: saleId2, deliveryId: deliveryId2 } = await createReadyDelivery(owner.token, {});
+  await api('PUT', `/deliveries/${deliveryId2}/assign`, owner.token, { delivery_partner_id: 9 });
+  await api('PUT', `/deliveries/${deliveryId2}/pickup`, owner.token, {});
+  await api('PUT', `/deliveries/${deliveryId2}/fail`, owner.token, { failure_reason: 'Customer not home' });
+  const cancelFailed2 = await api('PUT', `/sales/${saleId2}/cancel`, owner.token);
+  assert(cancelFailed2.status === 200, `Expected cancel to succeed, got ${cancelFailed2.status}: ${JSON.stringify(cancelFailed2.body)}`);
+  const deliveryAfterFailed = await db.prepare('SELECT status, failure_reason FROM deliveries WHERE id = ?').get(deliveryId2);
+  assert(
+    deliveryAfterFailed.status === 'cancelled',
+    `Expected the 'failed' delivery row to be cascaded to 'cancelled' once its sale is cancelled, got '${deliveryAfterFailed.status}'`
+  );
+
+  // Sanity check: the existing active-delivery guard (in_transit etc.) must
+  // still block, untouched by this cascade — same scenario as the check
+  // above this one, re-asserted here so a future edit to this cascade can't
+  // silently widen it to override that guard.
+  const { saleId: saleId3, deliveryId: deliveryId3 } = await createReadyDelivery(owner.token, {});
+  await api('PUT', `/deliveries/${deliveryId3}/assign`, owner.token, { delivery_partner_id: 9 });
+  await api('PUT', `/deliveries/${deliveryId3}/pickup`, owner.token, {});
+  await api('PUT', `/deliveries/${deliveryId3}/in-transit`, owner.token, {});
+  const cancelBlocked = await api('PUT', `/sales/${saleId3}/cancel`, owner.token);
+  assert(cancelBlocked.status === 400, `Expected cancel to still be blocked while a rider is in_transit, got ${cancelBlocked.status}`);
+  const deliveryStillActive = await db.prepare('SELECT status FROM deliveries WHERE id = ?').get(deliveryId3);
+  assert(deliveryStillActive.status === 'in_transit', `Expected the in_transit delivery to remain untouched, got '${deliveryStillActive.status}'`);
+});
+
 // ═══════════════════════════════════════════════════════════════
 // PHASE 4 — pre_order
 // ═══════════════════════════════════════════════════════════════

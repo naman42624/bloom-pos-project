@@ -2369,6 +2369,27 @@ router.put(
         }
 
         db.prepare('UPDATE sales SET stock_deducted = 0 WHERE id = ?').run(req.params.id);
+
+        // Cascade to any deliveries row still sitting 'pending' or 'failed'
+        // for this sale — the guard above already blocked cancel outright
+        // for an ACTIVE delivery (assigned/picked_up/in_transit), but
+        // 'pending'/'failed' were deliberately let through (nobody is
+        // physically holding the order, so no rider needs a warning). That
+        // reasoning only covered whether a rider needs telling — it left the
+        // deliveries row itself orphaned, still 'pending'/'failed' forever,
+        // decoupled from the sale now being cancelled. Downstream this kept
+        // showing up in DeliveriesScreen and, worse, let staff still tap
+        // "Assign Partner" (DeliveryDetailScreen gates purely on
+        // delivery.status === 'pending') and send a real rider after a
+        // cancelled order. Same three fields PUT /deliveries/:id/cancel sets
+        // — deliberately NOT its stock-return loop over completed
+        // production tasks, since this transaction already ran its own
+        // stock-return loop over sale_items above; re-running that one too
+        // would double-credit stock for any item where both happen to be true.
+        db.prepare(`
+          UPDATE deliveries SET status = 'cancelled', failure_reason = 'Order cancelled', updated_at = CURRENT_TIMESTAMP
+          WHERE sale_id = ? AND status IN ('pending', 'failed')
+        `).run(req.params.id);
       });
       cancelTx();
 
