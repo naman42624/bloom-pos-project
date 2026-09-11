@@ -435,7 +435,7 @@ check('NEW: GET /register/sessions lists every session for a given date, not jus
   assert(res.status === 200, `Expected 200, got ${res.status}: ${JSON.stringify(res.body)}`);
   const ids = res.body.data.sessions.map((s) => s.id);
   assert(ids.includes(reg1.id) && ids.includes(reg2.id), `Expected both today's sessions (${reg1.id}, ${reg2.id}) in the list, got ${JSON.stringify(ids)}`);
-  
+
   // Check that reg1 comes before reg2 (ordered oldest-first by ID)
   const reg1Index = ids.indexOf(reg1.id);
   const reg2Index = ids.indexOf(reg2.id);
@@ -443,7 +443,6 @@ check('NEW: GET /register/sessions lists every session for a given date, not jus
 
   await closeRegisterWith(owner.token, TEST_LOCATION_ID, 700);
 });
-
 
 // ─── Run ──────────────────────────────────────────────────────
 async function cleanup() {
