@@ -113,8 +113,14 @@ In psql:
 CREATE DATABASE bloomcart;
 CREATE USER bloomcart WITH ENCRYPTED PASSWORD 'REPLACE_WITH_STRONG_PASSWORD';
 GRANT ALL PRIVILEGES ON DATABASE bloomcart TO bloomcart;
+ALTER DATABASE bloomcart OWNER TO bloomcart;
+\c bloomcart
+ALTER SCHEMA public OWNER TO bloomcart;
+GRANT ALL ON SCHEMA public TO bloomcart;
 \q
 ```
+
+Generate a real password rather than typing one in — e.g. `openssl rand -base64 24` — and use that same value everywhere this guide says `REPLACE_WITH_STRONG_PASSWORD` (§6.3's `DATABASE_URL`, §12.2's backup script, §13's DBeaver password). PR review flagged this section for previously hardcoding a real-looking password directly in the doc (`bloomcartFlowerPoint`) instead of a placeholder — fixed to match the placeholder convention the rest of this guide already uses.
 
 ### 5.3 Optional: allow remote DB access (for DBeaver)
 
@@ -172,10 +178,16 @@ Create `server/.env`:
 ```env
 PORT=3001
 NODE_ENV=production
-JWT_SECRET=REPLACE_WITH_LONG_RANDOM_SECRET
+JWT_SECRET=<a-strong-random-string>
 JWT_EXPIRES_IN=7d
 DATABASE_URL=postgresql://bloomcart:REPLACE_WITH_STRONG_PASSWORD@127.0.0.1:5432/bloomcart
+TRACKING_LINK_SECRET=<a-different-strong-random-string>
+PUBLIC_APP_URL=https://your-shop-domain.com
 ```
+
+`PUBLIC_APP_URL` is the public base URL customers' tracking links resolve against (e.g. `https://your-shop-domain.com`). Required in production — `server/utils/tracking-token.js` now fails fast at boot (`NODE_ENV=production` with no `PUBLIC_APP_URL` set throws instead of starting) rather than the old behavior of silently defaulting to `http://localhost:19006` and shipping customers a dead link.
+
+Generate real values for `JWT_SECRET` and `DATABASE_URL`'s password — don't type in your own or reuse the ones shown above as literal text; they're placeholders, not real secrets, and this file is committed to git. `openssl rand -base64 32` works for both. `REPLACE_WITH_STRONG_PASSWORD` here must match whatever password you actually set in §5.2. PR review flagged this section for previously showing real-looking hardcoded values (`flowerpoint`, `bloomcartFlowerPoint`) instead of placeholders — fixed to match the placeholder convention already used elsewhere in this guide (§12.2, §13).
 
 Notes:
 - Use `127.0.0.1` instead of `localhost` to avoid socket/driver mismatch edge-cases.
@@ -190,14 +202,24 @@ Choose one strategy:
 ### Option A: Fresh production schema
 
 ```bash
-psql "postgresql://bloomcart:REPLACE_WITH_STRONG_PASSWORD@127.0.0.1:5432/bloomcart" -f server/config/schema.sql
+psql "postgresql://bloomcart:bloomcartFlowerPoint@127.0.0.1:5432/bloomcart" -f server/config/schema.sql
 ```
 
-### Option B: Migrate existing SQLite data
+If you see `permission denied for schema public`, run this one-time fix as postgres:
+
+```bash
+sudo -u postgres psql -d bloomcart -c "ALTER DATABASE bloomcart OWNER TO bloomcart;"
+sudo -u postgres psql -d bloomcart -c "ALTER SCHEMA public OWNER TO bloomcart;"
+sudo -u postgres psql -d bloomcart -c "GRANT ALL ON SCHEMA public TO bloomcart;"
+```
+
+Then rerun the schema command.
+
+### Option B: Restore existing PostgreSQL backup
 
 ```bash
 cd server
-node scripts/smart-migrate.js
+psql "postgresql://bloomcart:REPLACE_WITH_STRONG_PASSWORD@127.0.0.1:5432/bloomcart" < backups/pre_purge_backup_YYYYMMDD.sql
 ```
 
 Then validate:
@@ -246,7 +268,7 @@ Use:
 ```nginx
 server {
     listen 80;
-    server_name api.yourdomain.com;
+    server_name _;
 
     client_max_body_size 20M;
 
@@ -275,6 +297,8 @@ sudo systemctl reload nginx
 
 ## 10) Enable HTTPS (Let's Encrypt)
 
+Requires a real domain. If you are deploying via IP only (e.g. `159.89.173.40`), skip this section for now.
+
 ```bash
 sudo apt install -y certbot python3-certbot-nginx
 sudo certbot --nginx -d api.yourdomain.com
@@ -294,7 +318,7 @@ sudo certbot renew --dry-run
 Update mobile app API base URL to:
 
 ```text
-https://api.yourdomain.com/api
+http://159.89.173.40/api
 ```
 
 If using Expo:
@@ -386,7 +410,8 @@ pm2 restart bloomcart-api
 
 ## 15) Security Hardening Checklist
 
-- Use strong random `JWT_SECRET`
+- Use strong random `JWT_SECRET` and `TRACKING_LINK_SECRET` (different values — see §6.3)
+- Set `PUBLIC_APP_URL` to your real shop domain (see §6.3) — otherwise customer-facing tracking links point at `localhost`
 - Restrict CORS origins in production
 - Disable wildcard DB network access
 - Rotate DB credentials periodically
@@ -399,3 +424,56 @@ pm2 restart bloomcart-api
 ## 16) Current Project-Specific Note
 
 Before deleting SQLite permanently, ensure runtime in `server/config/database.js` is fully switched to PostgreSQL and all routes are validated against PostgreSQL.
+
+---
+
+## 17) ⚠️ Customer Tracking Link — Web Hosting Not Yet Set Up (Action Required Before This Feature Works in Production)
+
+**Status as of 2026-09-11: not built, not deployed. Documented here so this isn't silently assumed to work.**
+
+This guide's whole scope (see §1/title) is the **backend API only** — a Node/Express process behind Nginx on `:3001`. The customer-facing order-tracking page (`app/src/screens/TrackingScreen.js`, reached at `<PUBLIC_APP_URL>/track/<token>` — the link sent via the Share Tracking Link button and the `tracking_link` WhatsApp message template) is a **web build of the Expo app**, and nothing in this repo or this guide builds or serves one. §6.3 documents setting `PUBLIC_APP_URL` so the *link itself* points at the right domain, but that domain currently has nothing at `/track/*` to serve.
+
+**What actually happens today if a customer taps a tracking link in production:** §9's Nginx config proxies `location / { proxy_pass http://127.0.0.1:3001; }` — literally every path, unconditionally — straight to the Express API process. Express has no route for `/track/<token>` (only `GET /api/track/<token>` exists, under `/api`). The request 404s at the Express layer. The customer never sees `TrackingScreen.js` at all; nothing in the current deployment path can reach it.
+
+**What's actually needed (not done here — this section is documentation, not a build step):**
+
+1. **Produce a static web build of the app.** No build script for this exists in `app/package.json` today (only `expo start --web`, a dev server). The likely command is:
+   ```bash
+   cd app
+   npx expo export -p web
+   ```
+   Confirm the actual output directory name for the Expo SDK version this project pins (`dist/` on recent SDKs, `web-build/` on older ones) — verify by running it once rather than assuming. This has never been run for this project; treat the first attempt as a spike, not a known-working step. Given this app uses React Navigation (not Expo Router), also confirm the export succeeds cleanly and `App.js`'s pathname-bypass check (see `App.js`, the `/^\/track\/([^/]+)$/` match before `AuthProvider` mounts) actually runs correctly from the exported static bundle before trusting this in production.
+
+2. **Serve that build from Nginx with SPA-style fallback routing**, as a *separate* server block from §9's API-only config — today's single `location / { proxy_pass ...}` block cannot do both jobs. Sketch (adapt paths/domain, verify before using):
+   ```nginx
+   server {
+       listen 80;
+       server_name your-shop-domain.com;   # same domain as PUBLIC_APP_URL
+
+       root /var/www/bloomcart/app/dist;   # verify actual export output dir, see step 1
+       index index.html;
+
+       # API calls from the exported web bundle itself still need to reach
+       # the backend — proxy /api/ through, same target §9 already uses.
+       location /api/ {
+           proxy_pass http://127.0.0.1:3001;
+           proxy_http_version 1.1;
+           proxy_set_header Host $host;
+           proxy_set_header X-Real-IP $remote_addr;
+           proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+           proxy_set_header X-Forwarded-Proto $scheme;
+       }
+
+       # Everything else (including /track/<token>) falls back to
+       # index.html so the app's own client-side path check can run —
+       # this is the actual fix for the 404 described above.
+       location / {
+           try_files $uri $uri/ /index.html;
+       }
+   }
+   ```
+   If `PUBLIC_APP_URL` and the API's own public domain (§9) are meant to be the same domain, these two server blocks need reconciling (e.g. one Nginx site handling both `/api/*` → backend and everything else → the static web build) rather than run as truly independent configs — work out the real domain/subdomain split for this shop's setup before wiring TLS (§10) for it.
+
+3. **Re-verify after wiring this up**, the same way the original tracking-page plan's own testing section (`docs/superpowers/specs/2026-09-11-customer-tracking-page-design.md` §7) verified it locally: open a real `tracking_url` in a private/incognito browser tab against the *production* domain, confirm it renders `TrackingScreen.js` and never touches the login screen, confirm an invalid token shows the friendly not-found state, confirm the Share Tracking Link button's WhatsApp message opens a link that actually resolves to the tracking page rather than a 404.
+
+**Until this is done, treat the tracking-link feature as backend-complete but not customer-reachable in production** — the Share Tracking Link buttons on Orders Inbox/Deliveries and the `tracking_link` WhatsApp message will all produce links that currently 404 for a real customer.

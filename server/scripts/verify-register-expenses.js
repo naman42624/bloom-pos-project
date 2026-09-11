@@ -423,6 +423,26 @@ check('multi-delivery batched settlement: TWO deliveries collected via DIFFERENT
   assert(Number(closed.total_cash_sales) === 300, `Expected total_cash_sales 300 (only delivery A's cash), got ${closed.total_cash_sales}`);
   assert(Number(closed.total_upi_sales) === 400, `Expected total_upi_sales 400 (only delivery B's upi), got ${closed.total_upi_sales}`);
 });
+check('NEW: GET /register/sessions lists every session for a given date, not just today', async () => {
+  const owner = await loginOwner();
+  const reg1 = await openRegister(owner.token, TEST_LOCATION_ID, 500);
+  await closeRegisterWith(owner.token, TEST_LOCATION_ID, 500);
+  const reg2 = await openRegister(owner.token, TEST_LOCATION_ID, 700);
+
+  // Use the actual session date from reg1 (which is stored in local timezone)
+  const sessionDate = reg1.date; // e.g., "2026-09-05" in local timezone
+  const res = await api('GET', `/sales/register/sessions?location_id=${TEST_LOCATION_ID}&date=${sessionDate}`, owner.token);
+  assert(res.status === 200, `Expected 200, got ${res.status}: ${JSON.stringify(res.body)}`);
+  const ids = res.body.data.sessions.map((s) => s.id);
+  assert(ids.includes(reg1.id) && ids.includes(reg2.id), `Expected both today's sessions (${reg1.id}, ${reg2.id}) in the list, got ${JSON.stringify(ids)}`);
+
+  // Check that reg1 comes before reg2 (ordered oldest-first by ID)
+  const reg1Index = ids.indexOf(reg1.id);
+  const reg2Index = ids.indexOf(reg2.id);
+  assert(reg1Index < reg2Index, `Expected reg1 (ID=${reg1.id}, index=${reg1Index}) to come before reg2 (ID=${reg2.id}, index=${reg2Index})`);
+
+  await closeRegisterWith(owner.token, TEST_LOCATION_ID, 700);
+});
 
 // ─── Run ──────────────────────────────────────────────────────
 async function cleanup() {

@@ -363,6 +363,14 @@ check('pickup full happy path: create → start → complete task → ready → 
   // "skip-start" check too.
   const saleReady = await api('GET', `/sales/${saleId}`, owner.token);
   assert(saleReady.body.data.status === 'ready', `Expected sale to auto-advance to 'ready' after the last task completed, got '${saleReady.body.data.status}'`);
+  // FIXED 2026-09-11: this same auto-advance used to update only `status`,
+  // never `pickup_status` — found live (sale 305 stuck showing under
+  // "Preparing" on PickupOrdersScreen with status already 'ready', since
+  // nothing except the screen's own separate Mark Ready button ever touched
+  // pickup_status). Without this fix, PickupOrdersScreen's tab filter
+  // (pickup_status-driven) would never show this order as ready even though
+  // it actually is.
+  assert(saleReady.body.data.pickup_status === 'ready_for_pickup', `Expected pickup_status to auto-advance to 'ready_for_pickup' alongside status, got '${saleReady.body.data.pickup_status}'`);
   const pickupRes = await api('PUT', `/deliveries/pickup/${saleId}/picked-up`, owner.token, {});
   assert(pickupRes.status === 200, `Confirm Pickup failed: ${JSON.stringify(pickupRes.body)}`);
   const saleAfter = await api('GET', `/sales/${saleId}`, owner.token);
@@ -670,6 +678,48 @@ check('sales-level cancel is NOT blocked when the delivery is merely pending (no
   assert(cancelFailed.status === 200, `Expected cancel to succeed on a failed (not active) delivery, got ${cancelFailed.status}: ${JSON.stringify(cancelFailed.body)}`);
 });
 
+check('FIXED: cancelling a sale cascades to cancel its orphaned pending/failed deliveries row (was left stuck, decoupled from the now-cancelled sale)', async () => {
+  const db = await getDb();
+  const owner = await loginOwner();
+
+  // Case 1: delivery still 'pending' (no rider ever assigned).
+  const { saleId: saleId1, deliveryId: deliveryId1 } = await createReadyDelivery(owner.token, {});
+  const cancelPending = await api('PUT', `/sales/${saleId1}/cancel`, owner.token);
+  assert(cancelPending.status === 200, `Expected cancel to succeed, got ${cancelPending.status}: ${JSON.stringify(cancelPending.body)}`);
+  const deliveryAfterPending = await db.prepare('SELECT status, failure_reason FROM deliveries WHERE id = ?').get(deliveryId1);
+  assert(
+    deliveryAfterPending.status === 'cancelled',
+    `Expected the 'pending' delivery row to be cascaded to 'cancelled' once its sale is cancelled, got '${deliveryAfterPending.status}' — this was the orphaned-deliveries bug: sales.js's cancel route never touched the deliveries table when the delivery was merely 'pending'/'failed', leaving it stuck forever (still assignable via DeliveryDetailScreen's "Assign Partner" for an order the shop already considers cancelled)`
+  );
+  assert(deliveryAfterPending.failure_reason === 'Order cancelled', `Expected failure_reason 'Order cancelled', got '${deliveryAfterPending.failure_reason}'`);
+
+  // Case 2: delivery already 'failed' (a rider tried and failed, never reassigned).
+  const { saleId: saleId2, deliveryId: deliveryId2 } = await createReadyDelivery(owner.token, {});
+  await api('PUT', `/deliveries/${deliveryId2}/assign`, owner.token, { delivery_partner_id: 9 });
+  await api('PUT', `/deliveries/${deliveryId2}/pickup`, owner.token, {});
+  await api('PUT', `/deliveries/${deliveryId2}/fail`, owner.token, { failure_reason: 'Customer not home' });
+  const cancelFailed2 = await api('PUT', `/sales/${saleId2}/cancel`, owner.token);
+  assert(cancelFailed2.status === 200, `Expected cancel to succeed, got ${cancelFailed2.status}: ${JSON.stringify(cancelFailed2.body)}`);
+  const deliveryAfterFailed = await db.prepare('SELECT status, failure_reason FROM deliveries WHERE id = ?').get(deliveryId2);
+  assert(
+    deliveryAfterFailed.status === 'cancelled',
+    `Expected the 'failed' delivery row to be cascaded to 'cancelled' once its sale is cancelled, got '${deliveryAfterFailed.status}'`
+  );
+
+  // Sanity check: the existing active-delivery guard (in_transit etc.) must
+  // still block, untouched by this cascade — same scenario as the check
+  // above this one, re-asserted here so a future edit to this cascade can't
+  // silently widen it to override that guard.
+  const { saleId: saleId3, deliveryId: deliveryId3 } = await createReadyDelivery(owner.token, {});
+  await api('PUT', `/deliveries/${deliveryId3}/assign`, owner.token, { delivery_partner_id: 9 });
+  await api('PUT', `/deliveries/${deliveryId3}/pickup`, owner.token, {});
+  await api('PUT', `/deliveries/${deliveryId3}/in-transit`, owner.token, {});
+  const cancelBlocked = await api('PUT', `/sales/${saleId3}/cancel`, owner.token);
+  assert(cancelBlocked.status === 400, `Expected cancel to still be blocked while a rider is in_transit, got ${cancelBlocked.status}`);
+  const deliveryStillActive = await db.prepare('SELECT status FROM deliveries WHERE id = ?').get(deliveryId3);
+  assert(deliveryStillActive.status === 'in_transit', `Expected the in_transit delivery to remain untouched, got '${deliveryStillActive.status}'`);
+});
+
 // ═══════════════════════════════════════════════════════════════
 // PHASE 4 — pre_order
 // ═══════════════════════════════════════════════════════════════
@@ -965,6 +1015,485 @@ check('recurring order processor: runs without a register/payment side effect (d
   await processRecurringOrders();
   const after = await db.prepare('SELECT COUNT(*) as cnt FROM payments').get();
   assert(Number(before.cnt) === Number(after.cnt), `Expected zero new payment rows from the recurring processor, went from ${before.cnt} to ${after.cnt}`);
+});
+
+check('FIXED: sort=urgency puts rush orders first without changing the default sort', async () => {
+  const owner = await loginOwner();
+  const older = await api('POST', '/sales', owner.token, {
+    location_id: TEST_LOCATION_ID, order_type: 'walk_in', channel: 'walk_in',
+    items: [{ quantity: 1, unit_price: 100, product_name: 'Test Urgency Sort Older' }],
+  });
+  createdSaleIds.push(older.body.data.id);
+  const rush = await api('POST', '/sales', owner.token, {
+    location_id: TEST_LOCATION_ID, order_type: 'walk_in', channel: 'walk_in', priority: 'rush',
+    items: [{ quantity: 1, unit_price: 100, product_name: 'Test Urgency Sort Rush' }],
+  });
+  createdSaleIds.push(rush.body.data.id);
+  // Add a third order created AFTER the rush order so that plain recency sort
+  // would put it first (proving we're not just accidentally passing because
+  // the rush order happens to be newest).
+  const newer = await api('POST', '/sales', owner.token, {
+    location_id: TEST_LOCATION_ID, order_type: 'walk_in', channel: 'walk_in',
+    items: [{ quantity: 1, unit_price: 100, product_name: 'Test Urgency Sort Newer' }],
+  });
+  createdSaleIds.push(newer.body.data.id);
+
+  // Default (no sort param): unchanged, most-recent-first — the newest (non-rush)
+  // order created last must be first, proving the default sort ignores priority.
+  const defaultRes = await api('GET', `/sales?location_id=${TEST_LOCATION_ID}&limit=3`, owner.token);
+  assert(defaultRes.body.data.sales[0].id === newer.body.data.id, 'Expected default sort to still be plain recency (newest first), and newer (non-rush) should be first');
+
+  // sort=urgency: rush leads regardless of recency — should come before the
+  // newer non-rush order, proving urgency sort is working. Among non-rush
+  // orders, oldest-pending (created_at ASC) comes first, so older comes before newer.
+  // limit is generously high (not 50) because TEST_LOCATION_ID accumulates real
+  // rows across every task's regression run this whole project — a tight limit
+  // combined with sort=urgency's oldest-pending tiebreak can push this run's own
+  // freshly-created non-rush "older" test row out of the page entirely once
+  // enough older ambient debris exists (found live, 2026-09-09: 109 non-cancelled
+  // sales already at Test Loc).
+  const urgencyRes = await api('GET', `/sales?location_id=${TEST_LOCATION_ID}&sort=urgency&limit=500`, owner.token);
+  const ids = urgencyRes.body.data.sales.map((s) => s.id);
+  const rushIdx = ids.indexOf(rush.body.data.id);
+  const newerIdx = ids.indexOf(newer.body.data.id);
+  const olderIdx = ids.indexOf(older.body.data.id);
+  assert(rushIdx !== -1 && newerIdx !== -1 && olderIdx !== -1, 'Expected all three test sales in the urgency-sorted result');
+  assert(rushIdx < newerIdx, `Expected the rush order to sort before the newer non-rush order under sort=urgency (this proves urgency sort differs from default), got rush at ${rushIdx}, newer at ${newerIdx}`);
+  assert(olderIdx < newerIdx, `Expected the older order to sort before the newer order under sort=urgency when both are non-rush (oldest-pending logic), got older at ${olderIdx}, newer at ${newerIdx}`);
+});
+
+check('sort=<unrecognized value> falls back to the same default ordering as no sort param at all (final review Bundled Addition A, 2026-09-09)', async () => {
+  // Only the literal string 'urgency' should opt into urgency ordering —
+  // any other value (typo, stale client, future removed sort name) must
+  // fall through to the same plain-recency default as omitting `sort`
+  // entirely, not silently 500 or silently apply urgency ordering anyway.
+  const owner = await loginOwner();
+  const noSortRes = await api('GET', `/sales?location_id=${TEST_LOCATION_ID}&limit=5`, owner.token);
+  const bogusSortRes = await api('GET', `/sales?location_id=${TEST_LOCATION_ID}&sort=bogus&limit=5`, owner.token);
+  assert(noSortRes.status === 200 && bogusSortRes.status === 200, `Expected both requests to succeed, got ${noSortRes.status} and ${bogusSortRes.status}`);
+  const noSortIds = noSortRes.body.data.sales.map((s) => s.id);
+  const bogusSortIds = bogusSortRes.body.data.sales.map((s) => s.id);
+  assert(noSortIds.length > 0, 'Expected at least one sale in the default-sort result to make this assertion meaningful');
+  assert(
+    noSortIds.length === bogusSortIds.length && noSortIds.every((id, i) => id === bogusSortIds[i]),
+    `Expected sort=bogus to produce the exact same row ordering as omitting sort entirely, got no-sort=[${noSortIds}] vs sort=bogus=[${bogusSortIds}]`
+  );
+});
+
+check('a filter arriving as the literal string "undefined" is NOT a magic value the server treats specially — it is matched as a real (non-matching) filter value, which is exactly why Finding 2\'s CLIENT-side fix (stripping undefined/null/empty before building request params) is load-bearing (final review Bundled Addition A, 2026-09-09)', async () => {
+  const owner = await loginOwner();
+  // Confirm the baseline: there ARE real, non-cancelled sales at this
+  // location today, so a 0-result response below can only be explained by
+  // the literal string 'undefined' failing to match any real status value
+  // — not by there simply being no data.
+  const baselineRes = await api('GET', `/sales?location_id=${TEST_LOCATION_ID}&limit=3`, owner.token);
+  assert(baselineRes.status === 200, `Expected 200, got ${baselineRes.status}`);
+  // Note: total comes back from Postgres COUNT(*) as a numeric-looking
+  // STRING (bigint-as-string, to avoid precision loss), not a JS number —
+  // Number(...) it before comparing, same as the route's own internal
+  // handling of the equivalent COUNT(*) result (see deliveries.js's
+  // `const total = Number(countRow?.total || 0);`).
+  assert(Number(baselineRes.body.data.total) > 0, 'Expected real sales to exist at Test Loc for this assertion to be meaningful');
+
+  const undefinedStatusRes = await api('GET', `/sales?location_id=${TEST_LOCATION_ID}&limit=3&status=undefined`, owner.token);
+  assert(undefinedStatusRes.status === 200, `Expected 200 (not a 500) even for this nonsensical filter value, got ${undefinedStatusRes.status}`);
+  assert(
+    Number(undefinedStatusRes.body.data.total) === 0,
+    `Expected status=undefined to match ZERO rows (the server has no special-casing for this string — it is compared literally as "AND s.status = 'undefined'"), got total ${undefinedStatusRes.body.data.total}. If this ever starts matching real rows, something changed the server's filter handling in a way the client-side fix (useOrderListData.js stripping undefined/null/'' before building request params) was specifically written to route around.`
+  );
+});
+
+check('FIXED: GET /sales total mirrors the real filtered query when search + pickup_status are combined (2026-09-09 — the old hand-duplicated countSql omitted both filters, plus non-owner location-scoping)', async () => {
+  const owner = await loginOwner();
+  // Unique per run, so only the sales this check creates can ever match it —
+  // any pre-existing ambient sales at Test Loc (real production/other-run
+  // data) are guaranteed non-matches.
+  const searchTerm = `CountBugCheck${Date.now()}`;
+  const createdIds = [];
+  for (let i = 0; i < 2; i++) {
+    const res = await api('POST', '/sales', owner.token, {
+      location_id: TEST_LOCATION_ID, order_type: 'pickup', channel: 'phone',
+      customer_name: searchTerm,
+      items: [{ quantity: 1, unit_price: 100, product_name: 'Test Count Bug Item' }],
+    });
+    assert(res.status === 201, `Expected sale creation to succeed, got ${res.status}: ${JSON.stringify(res.body)}`);
+    createdSaleIds.push(res.body.data.id);
+    createdIds.push(res.body.data.id);
+  }
+
+  // pickup_status is server-managed, not client-settable on POST /sales — an
+  // order_type: 'pickup' sale is always auto-set to pickup_status: 'waiting'
+  // at creation (see the "Auto-set pickup_status for pickup orders" comment
+  // in server/routes/sales.js). Filter on that real, reachable value so this
+  // still exercises the exact search + pickup_status combination the old
+  // countSql got wrong.
+  const res = await api('GET', `/sales?location_id=${TEST_LOCATION_ID}&search=${searchTerm}&pickup_status=waiting`, owner.token);
+  assert(res.status === 200, `Expected 200, got ${res.status}: ${JSON.stringify(res.body)}`);
+  const sales = res.body.data.sales;
+  const total = Number(res.body.data.total); // COUNT(*) comes back bigint-as-string
+  assert(sales.length === createdIds.length, `Expected exactly the ${createdIds.length} sale(s) just created to match search=${searchTerm}&pickup_status=waiting, got ${sales.length}`);
+  assert(
+    total === sales.length,
+    `total (${total}) must equal actual matching rows (${sales.length}) when search+pickup_status are both applied — the old hand-duplicated countSql omitted both filters entirely, so total came back as the count of ALL non-cancelled sales at this location instead of just the ${sales.length} that actually match`
+  );
+
+  // The check above always passed an explicit location_id as owner — it
+  // never actually exercised the non-owner auto-scoping branch (sales.js's
+  // "Scope by location for non-owner roles" block, which only applies when
+  // location_id is OMITTED), even though this check's own title claims that
+  // coverage. Close that gap: same search+pickup_status combo, but as a
+  // counter_staff with no location_id param at all, relying entirely on
+  // their user_locations assignment.
+  const staff = await createStaff('counter_staff', owner.token);
+  const staffRes = await api('GET', `/sales?search=${searchTerm}&pickup_status=waiting`, staff.token);
+  assert(staffRes.status === 200, `Expected 200 for non-owner auto-scoped request, got ${staffRes.status}: ${JSON.stringify(staffRes.body)}`);
+  const staffSales = staffRes.body.data.sales;
+  const staffTotal = Number(staffRes.body.data.total);
+  assert(staffSales.length === createdIds.length, `Expected the counter_staff's location-scoped request to also match exactly the ${createdIds.length} sale(s), got ${staffSales.length}`);
+  assert(
+    staffTotal === staffSales.length,
+    `total (${staffTotal}) must equal actual matching rows (${staffSales.length}) for a non-owner request with no explicit location_id — the old countSql's separately-hand-written filter block never applied the "Scope by location for non-owner roles" clause at all, so a counter_staff/employee/manager request without location_id would have returned a total counting sales at every location, not just their own`
+  );
+});
+
+check('NEW: GET /sales list rows carry has_unassigned_open_task, flipping false once the task is assigned (2026-09-10 — Orders Inbox one-tap Start Preparing fix)', async () => {
+  const db = await getDb();
+  const owner = await loginOwner();
+  const createRes = await api('POST', '/sales', owner.token, {
+    location_id: TEST_LOCATION_ID, order_type: 'pickup', channel: 'phone',
+    customer_name: `UnassignedTaskCheck${Date.now()}`,
+    items: [{ quantity: 1, unit_price: 100, product_name: 'Test Unassigned Task Item' }],
+  });
+  assert(createRes.status === 201, `Expected sale creation to succeed, got ${createRes.status}: ${JSON.stringify(createRes.body)}`);
+  const saleId = createRes.body.data.id;
+  createdSaleIds.push(saleId);
+
+  const task = await db.prepare('SELECT id, assigned_to, status FROM production_tasks WHERE sale_id = ? LIMIT 1').get(saleId);
+  assert(task, `Expected a production_tasks row to exist for a freshly created sale (id ${saleId}), found none`);
+  assert(task.assigned_to == null, `Expected the freshly created task to start unassigned, got assigned_to=${task.assigned_to}`);
+
+  const beforeRes = await api('GET', `/sales?location_id=${TEST_LOCATION_ID}&order_type=pickup&status=pending&limit=200`, owner.token);
+  assert(beforeRes.status === 200, `Expected 200, got ${beforeRes.status}: ${JSON.stringify(beforeRes.body)}`);
+  const beforeRow = beforeRes.body.data.sales.find((s) => s.id === saleId);
+  assert(beforeRow, `Expected sale ${saleId} to appear in the pending pickup list`);
+  assert(beforeRow.has_unassigned_open_task === true, `Expected has_unassigned_open_task=true before assignment, got ${JSON.stringify(beforeRow.has_unassigned_open_task)}`);
+
+  const assignRes = await api('PUT', `/production/tasks/${task.id}/assign`, owner.token, { assigned_to: owner.id });
+  assert(assignRes.status === 200, `Expected task assignment to succeed, got ${assignRes.status}: ${JSON.stringify(assignRes.body)}`);
+
+  const afterRes = await api('GET', `/sales?location_id=${TEST_LOCATION_ID}&order_type=pickup&status=pending&limit=200`, owner.token);
+  const afterRow = afterRes.body.data.sales.find((s) => s.id === saleId);
+  assert(afterRow, `Expected sale ${saleId} to still appear in the pending pickup list after assignment`);
+  assert(
+    afterRow.has_unassigned_open_task === false,
+    `Expected has_unassigned_open_task=false once the task is assigned — mirrors hasUnassignedTasks()'s predicate in OrderCard.js (assigned_to IS NULL AND status IN pending/in_progress), and 'assigned' matches neither, got ${JSON.stringify(afterRow.has_unassigned_open_task)}`
+  );
+});
+
+check('NEW: GET /deliveries list rows carry has_unassigned_open_task, flipping false once the task is assigned (2026-09-10 — Deliveries one-tap Start Preparing fix)', async () => {
+  const db = await getDb();
+  const owner = await loginOwner();
+  const createRes = await api('POST', '/sales', owner.token, {
+    location_id: TEST_LOCATION_ID, order_type: 'delivery', channel: 'phone',
+    customer_name: `DeliveryUnassignedTaskCheck${Date.now()}`,
+    delivery_address: '123 Test St', receiver_name: 'Test Receiver', receiver_phone: '9998887777',
+    items: [{ quantity: 1, unit_price: 100, product_name: 'Test Delivery Unassigned Task Item' }],
+  });
+  assert(createRes.status === 201, `Expected sale creation to succeed, got ${createRes.status}: ${JSON.stringify(createRes.body)}`);
+  const saleId = createRes.body.data.id;
+  createdSaleIds.push(saleId);
+
+  const task = await db.prepare('SELECT id, assigned_to FROM production_tasks WHERE sale_id = ? LIMIT 1').get(saleId);
+  assert(task, `Expected a production_tasks row to exist for a freshly created delivery sale (id ${saleId}), found none`);
+  assert(task.assigned_to == null, `Expected the freshly created task to start unassigned, got assigned_to=${task.assigned_to}`);
+
+  const beforeRes = await api('GET', `/deliveries?location_id=${TEST_LOCATION_ID}&limit=200`, owner.token);
+  assert(beforeRes.status === 200, `Expected 200, got ${beforeRes.status}: ${JSON.stringify(beforeRes.body)}`);
+  const beforeRow = beforeRes.body.data.deliveries.find((d) => d.sale_id === saleId);
+  assert(beforeRow, `Expected a deliveries row for sale ${saleId} to appear`);
+  assert(beforeRow.has_unassigned_open_task === true, `Expected has_unassigned_open_task=true before assignment, got ${JSON.stringify(beforeRow.has_unassigned_open_task)}`);
+
+  const assignRes = await api('PUT', `/production/tasks/${task.id}/assign`, owner.token, { assigned_to: owner.id });
+  assert(assignRes.status === 200, `Expected task assignment to succeed, got ${assignRes.status}: ${JSON.stringify(assignRes.body)}`);
+
+  const afterRes = await api('GET', `/deliveries?location_id=${TEST_LOCATION_ID}&limit=200`, owner.token);
+  const afterRow = afterRes.body.data.deliveries.find((d) => d.sale_id === saleId);
+  assert(afterRow, `Expected the deliveries row for sale ${saleId} to still appear after assignment`);
+  assert(
+    afterRow.has_unassigned_open_task === false,
+    `Expected has_unassigned_open_task=false once the task is assigned, got ${JSON.stringify(afterRow.has_unassigned_open_task)}`
+  );
+});
+
+check('NEW: GET /deliveries supports a search param over sale number, customer name/phone, delivery address, and rider name (controller-added, pre-flight scan, 2026-09-10)', async () => {
+  const owner = await loginOwner();
+  const uniqueReceiverName = `DeliverySearchReceiver${Date.now()}`;
+  const createRes = await api('POST', '/sales', owner.token, {
+    location_id: TEST_LOCATION_ID, order_type: 'delivery', channel: 'phone',
+    customer_name: 'Order Customer',
+    delivery_address: '456 Search Ave', receiver_name: uniqueReceiverName, receiver_phone: '9997776666',
+    items: [{ quantity: 1, unit_price: 100, product_name: 'Test Search Item' }],
+  });
+  assert(createRes.status === 201, `Expected sale creation to succeed, got ${createRes.status}: ${JSON.stringify(createRes.body)}`);
+  createdSaleIds.push(createRes.body.data.id);
+
+  const hitRes = await api('GET', `/deliveries?location_id=${TEST_LOCATION_ID}&search=${encodeURIComponent(uniqueReceiverName)}&limit=200`, owner.token);
+  assert(hitRes.status === 200, `Expected 200, got ${hitRes.status}: ${JSON.stringify(hitRes.body)}`);
+  assert(
+    hitRes.body.data.deliveries.some((d) => d.sale_id === createRes.body.data.id),
+    `Expected searching for the unique receiver name to find the new delivery, found ${hitRes.body.data.deliveries.length} rows`
+  );
+
+  const missRes = await api('GET', `/deliveries?location_id=${TEST_LOCATION_ID}&search=NoSuchCustomerXYZ${Date.now()}&limit=200`, owner.token);
+  assert(missRes.status === 200, `Expected 200, got ${missRes.status}: ${JSON.stringify(missRes.body)}`);
+  assert(
+    missRes.body.data.deliveries.length === 0,
+    `Expected searching for a nonexistent customer to return zero rows, got ${missRes.body.data.deliveries.length}`
+  );
+});
+
+check('NEW: GET /deliveries sort=urgency puts rush deliveries first without changing the default sort (2026-09-10, final fix wave — sort param was previously silently ignored)', async () => {
+  const owner = await loginOwner();
+  const older = await api('POST', '/sales', owner.token, {
+    location_id: TEST_LOCATION_ID, order_type: 'delivery', channel: 'phone',
+    customer_name: 'Delivery Urgency Older',
+    delivery_address: '1 Urgency Older St', receiver_name: 'Urgency Older Receiver', receiver_phone: '9990000001',
+    items: [{ quantity: 1, unit_price: 100, product_name: 'Test Delivery Urgency Older Item' }],
+  });
+  assert(older.status === 201, `Expected sale creation to succeed, got ${older.status}: ${JSON.stringify(older.body)}`);
+  createdSaleIds.push(older.body.data.id);
+
+  const rush = await api('POST', '/sales', owner.token, {
+    location_id: TEST_LOCATION_ID, order_type: 'delivery', channel: 'phone', priority: 'rush',
+    customer_name: 'Delivery Urgency Rush',
+    delivery_address: '2 Urgency Rush St', receiver_name: 'Urgency Rush Receiver', receiver_phone: '9990000002',
+    items: [{ quantity: 1, unit_price: 100, product_name: 'Test Delivery Urgency Rush Item' }],
+  });
+  assert(rush.status === 201, `Expected sale creation to succeed, got ${rush.status}: ${JSON.stringify(rush.body)}`);
+  createdSaleIds.push(rush.body.data.id);
+
+  // Created AFTER the rush order so plain recency sort would put it first —
+  // proves urgency sort isn't accidentally passing just because rush happens
+  // to be newest (same reasoning as GET /sales's identical check).
+  const newer = await api('POST', '/sales', owner.token, {
+    location_id: TEST_LOCATION_ID, order_type: 'delivery', channel: 'phone',
+    customer_name: 'Delivery Urgency Newer',
+    delivery_address: '3 Urgency Newer St', receiver_name: 'Urgency Newer Receiver', receiver_phone: '9990000003',
+    items: [{ quantity: 1, unit_price: 100, product_name: 'Test Delivery Urgency Newer Item' }],
+  });
+  assert(newer.status === 201, `Expected sale creation to succeed, got ${newer.status}: ${JSON.stringify(newer.body)}`);
+  createdSaleIds.push(newer.body.data.id);
+
+  // Default (no sort param): unchanged status-ladder/scheduled_date/recency
+  // order, proving the default sort ignores priority. Checked by RELATIVE
+  // position among just our own three test rows (not "is newer row 0 of a
+  // 3-item page") — TEST_LOCATION_ID accumulates real ambient deliveries
+  // across every check in this suite, some carrying a real (non-null)
+  // scheduled_date, which the default ORDER BY's `d.scheduled_date ASC NULLS
+  // LAST` clause sorts ahead of our undated test rows regardless of
+  // recency; a tight limit/first-row assertion is flaky against that
+  // ambient data (confirmed live). All three test deliveries are undated, so
+  // they tie on status and scheduled_date and fall through to
+  // `d.created_at DESC` among themselves — the newest must sort before the
+  // rush one, which must sort before the oldest, purely by recency.
+  const defaultRes = await api('GET', `/deliveries?location_id=${TEST_LOCATION_ID}&limit=500`, owner.token);
+  assert(defaultRes.status === 200, `Expected 200, got ${defaultRes.status}: ${JSON.stringify(defaultRes.body)}`);
+  const defaultSaleIdsInOrder = defaultRes.body.data.deliveries.map((d) => d.sale_id);
+  const defaultNewerIdx = defaultSaleIdsInOrder.indexOf(newer.body.data.id);
+  const defaultRushIdx = defaultSaleIdsInOrder.indexOf(rush.body.data.id);
+  const defaultOlderIdx = defaultSaleIdsInOrder.indexOf(older.body.data.id);
+  assert(
+    defaultNewerIdx !== -1 && defaultRushIdx !== -1 && defaultOlderIdx !== -1,
+    `Expected all three test deliveries to appear under the default sort, got indices newer=${defaultNewerIdx} rush=${defaultRushIdx} older=${defaultOlderIdx}`
+  );
+  assert(
+    defaultNewerIdx < defaultRushIdx,
+    `Expected default sort to still be plain recency (newest first) among our own undated test rows, and the newer (non-rush) delivery should sort before the rush one, got newer at ${defaultNewerIdx}, rush at ${defaultRushIdx}`
+  );
+  assert(
+    defaultRushIdx < defaultOlderIdx,
+    `Expected the rush delivery to sort before the older delivery under the default sort too (recency only, no priority weighting), got rush at ${defaultRushIdx}, older at ${defaultOlderIdx}`
+  );
+
+  // sort=urgency: rush leads regardless of recency; among the non-rush
+  // deliveries (both undated here), the oldest-created comes first. limit is
+  // generously high, matching GET /sales's own urgency check, since
+  // TEST_LOCATION_ID accumulates real rows across every check in this suite.
+  const urgencyRes = await api('GET', `/deliveries?location_id=${TEST_LOCATION_ID}&sort=urgency&limit=500`, owner.token);
+  assert(urgencyRes.status === 200, `Expected 200, got ${urgencyRes.status}: ${JSON.stringify(urgencyRes.body)}`);
+  const saleIdsInOrder = urgencyRes.body.data.deliveries.map((d) => d.sale_id);
+  const rushIdx = saleIdsInOrder.indexOf(rush.body.data.id);
+  const newerIdx = saleIdsInOrder.indexOf(newer.body.data.id);
+  const olderIdx = saleIdsInOrder.indexOf(older.body.data.id);
+  assert(rushIdx !== -1 && newerIdx !== -1 && olderIdx !== -1, `Expected all three test deliveries to appear under sort=urgency, got indices rush=${rushIdx} newer=${newerIdx} older=${olderIdx}`);
+  assert(rushIdx < newerIdx, `Expected the rush delivery to sort before the newer non-rush delivery under sort=urgency (proves urgency sort differs from default), got rush at ${rushIdx}, newer at ${newerIdx}`);
+  assert(rushIdx < olderIdx, `Expected the rush delivery to sort before the older non-rush delivery too (priority beats recency), got rush at ${rushIdx}, older at ${olderIdx}`);
+  assert(olderIdx < newerIdx, `Expected the older delivery to sort before the newer delivery among non-rush rows (oldest-created tiebreak, both undated), got older at ${olderIdx}, newer at ${newerIdx}`);
+});
+
+check('NEW: PUT /deliveries/:id/route assigns, reassigns, and clears a delivery route (2026-09-11 — bulk actions)', async () => {
+  const owner = await loginOwner();
+  const createRes = await api('POST', '/sales', owner.token, {
+    location_id: TEST_LOCATION_ID, order_type: 'delivery', channel: 'phone',
+    customer_name: `RouteAssignSingleCheck${Date.now()}`,
+    delivery_address: '789 Route St', receiver_name: 'Test Receiver', receiver_phone: '9995554444',
+    items: [{ quantity: 1, unit_price: 100, product_name: 'Test Route Item' }],
+  });
+  assert(createRes.status === 201, `Expected sale creation to succeed, got ${createRes.status}: ${JSON.stringify(createRes.body)}`);
+  const saleId = createRes.body.data.id;
+  createdSaleIds.push(saleId);
+
+  const db = await getDb();
+  const delivery = await db.prepare('SELECT id FROM deliveries WHERE sale_id = ?').get(saleId);
+  assert(delivery, `Expected a deliveries row for sale ${saleId}`);
+
+  const routeAName = `Test Route A ${Date.now()}`;
+  const routeARes = await api('POST', '/delivery-routes', owner.token, { name: routeAName, location_id: TEST_LOCATION_ID });
+  assert(routeARes.status === 201 || routeARes.status === 200, `Expected route creation to succeed, got ${routeARes.status}: ${JSON.stringify(routeARes.body)}`);
+  const routeAId = routeARes.body.data.id;
+
+  const assignRes = await api('PUT', `/deliveries/${delivery.id}/route`, owner.token, { route_id: routeAId });
+  assert(assignRes.status === 200, `Expected 200, got ${assignRes.status}: ${JSON.stringify(assignRes.body)}`);
+  assert(assignRes.body.data.route_id === routeAId, `Expected route_id ${routeAId}, got ${assignRes.body.data.route_id}`);
+  assert(assignRes.body.data.route_name === routeAName, `Expected route_name ${routeAName}, got ${assignRes.body.data.route_name}`);
+
+  const routeBName = `Test Route B ${Date.now()}`;
+  const routeBRes = await api('POST', '/delivery-routes', owner.token, { name: routeBName, location_id: TEST_LOCATION_ID });
+  const routeBId = routeBRes.body.data.id;
+  const reassignRes = await api('PUT', `/deliveries/${delivery.id}/route`, owner.token, { route_id: routeBId });
+  assert(reassignRes.status === 200, `Expected reassign to succeed, got ${reassignRes.status}: ${JSON.stringify(reassignRes.body)}`);
+  assert(reassignRes.body.data.route_id === routeBId, `Expected overwrite to route_id ${routeBId}, got ${reassignRes.body.data.route_id}`);
+
+  const clearRes = await api('PUT', `/deliveries/${delivery.id}/route`, owner.token, { route_id: null });
+  assert(clearRes.status === 200, `Expected clear to succeed, got ${clearRes.status}: ${JSON.stringify(clearRes.body)}`);
+  assert(clearRes.body.data.route_id === null, `Expected route_id null after clear, got ${JSON.stringify(clearRes.body.data.route_id)}`);
+
+  const missingKeyRes = await api('PUT', `/deliveries/${delivery.id}/route`, owner.token, {});
+  assert(missingKeyRes.status === 400, `Expected 400 when route_id key is missing entirely, got ${missingKeyRes.status}`);
+
+  const badRouteRes = await api('PUT', `/deliveries/${delivery.id}/route`, owner.token, { route_id: 999999999 });
+  assert(badRouteRes.status === 404, `Expected 404 for a nonexistent route_id, got ${badRouteRes.status}`);
+});
+
+check('NEW: PUT /deliveries/:id/route refuses a delivered or cancelled delivery (2026-09-11 — bulk actions)', async () => {
+  const owner = await loginOwner();
+  const createRes = await api('POST', '/sales', owner.token, {
+    location_id: TEST_LOCATION_ID, order_type: 'delivery', channel: 'phone',
+    customer_name: `RouteAssignCancelledCheck${Date.now()}`,
+    delivery_address: '321 Cancelled St', receiver_name: 'Test Receiver', receiver_phone: '9994443333',
+    items: [{ quantity: 1, unit_price: 100, product_name: 'Test Cancelled Item' }],
+  });
+  assert(createRes.status === 201, `Expected sale creation to succeed, got ${createRes.status}: ${JSON.stringify(createRes.body)}`);
+  const saleId = createRes.body.data.id;
+  createdSaleIds.push(saleId);
+
+  const db = await getDb();
+  const delivery = await db.prepare('SELECT id FROM deliveries WHERE sale_id = ?').get(saleId);
+  await db.prepare("UPDATE deliveries SET status = 'cancelled' WHERE id = ?").run(delivery.id);
+
+  const res = await api('PUT', `/deliveries/${delivery.id}/route`, owner.token, { route_id: null });
+  assert(res.status === 400, `Expected 400 for a cancelled delivery, got ${res.status}: ${JSON.stringify(res.body)}`);
+});
+
+check('NEW: POST /deliveries/batch-assign-route assigns to multiple deliveries and skips terminal ones (2026-09-11 — bulk actions)', async () => {
+  const owner = await loginOwner();
+  const ids = [];
+  for (let i = 0; i < 3; i++) {
+    const createRes = await api('POST', '/sales', owner.token, {
+      location_id: TEST_LOCATION_ID, order_type: 'delivery', channel: 'phone',
+      customer_name: `RouteAssignBatchCheck${Date.now()}_${i}`,
+      delivery_address: `${i} Batch Route St`, receiver_name: 'Test Receiver', receiver_phone: '9993332222',
+      items: [{ quantity: 1, unit_price: 100, product_name: 'Test Batch Route Item' }],
+    });
+    assert(createRes.status === 201, `Expected sale ${i} creation to succeed, got ${createRes.status}: ${JSON.stringify(createRes.body)}`);
+    createdSaleIds.push(createRes.body.data.id);
+    const db = await getDb();
+    const delivery = await db.prepare('SELECT id FROM deliveries WHERE sale_id = ?').get(createRes.body.data.id);
+    ids.push(delivery.id);
+  }
+  // Mark the third one delivered so it must be skipped, not assigned.
+  const db = await getDb();
+  await db.prepare("UPDATE deliveries SET status = 'delivered' WHERE id = ?").run(ids[2]);
+
+  const routeRes = await api('POST', '/delivery-routes', owner.token, { name: `Test Batch Route ${Date.now()}`, location_id: TEST_LOCATION_ID });
+  const routeId = routeRes.body.data.id;
+
+  const batchRes = await api('POST', '/deliveries/batch-assign-route', owner.token, { delivery_ids: ids, route_id: routeId });
+  assert(batchRes.status === 200, `Expected 200, got ${batchRes.status}: ${JSON.stringify(batchRes.body)}`);
+  assert(batchRes.body.data.assigned === 2, `Expected 2 assigned (first two, both non-terminal), got ${batchRes.body.data.assigned}`);
+  assert(batchRes.body.data.skipped === 1, `Expected 1 skipped (the delivered one), got ${batchRes.body.data.skipped}`);
+
+  const first = await db.prepare('SELECT route_id FROM deliveries WHERE id = ?').get(ids[0]);
+  assert(first.route_id === routeId, `Expected first delivery's route_id to be ${routeId}, got ${first.route_id}`);
+  const third = await db.prepare('SELECT route_id FROM deliveries WHERE id = ?').get(ids[2]);
+  assert(third.route_id === null, `Expected the delivered (skipped) delivery to keep route_id null, got ${third.route_id}`);
+});
+
+check('NEW: POST /deliveries/batch-assign-route requires delivery_ids and route_id key (2026-09-11 — bulk actions)', async () => {
+  const owner = await loginOwner();
+  const noIdsRes = await api('POST', '/deliveries/batch-assign-route', owner.token, { route_id: null });
+  assert(noIdsRes.status === 400, `Expected 400 with no delivery_ids, got ${noIdsRes.status}`);
+
+  const noRouteKeyRes = await api('POST', '/deliveries/batch-assign-route', owner.token, { delivery_ids: [1] });
+  assert(noRouteKeyRes.status === 400, `Expected 400 when route_id key is missing entirely, got ${noRouteKeyRes.status}`);
+});
+
+check('FIXED: GET /deliveries returns an accurate total alongside the (still limited) array', async () => {
+  const owner = await loginOwner();
+  const res = await api('GET', `/deliveries?location_id=${TEST_LOCATION_ID}&limit=1`, owner.token);
+  assert(res.status === 200, `Expected 200, got ${res.status}: ${JSON.stringify(res.body)}`);
+  assert(Array.isArray(res.body.data.deliveries), `Expected data.deliveries to be an array, got ${JSON.stringify(res.body.data)}`);
+  assert(typeof res.body.data.total === 'number', `Expected data.total to be a number, got ${JSON.stringify(res.body.data.total)}`);
+  assert(res.body.data.total >= res.body.data.deliveries.length, `Expected total (${res.body.data.total}) to be >= the returned page length (${res.body.data.deliveries.length})`);
+});
+
+check('NEW: GET /api/track/:token returns status-only data for a valid token, generic 404 otherwise', async () => {
+  const owner = await loginOwner();
+  const { body: saleBody } = await api('POST', '/sales', owner.token, {
+    location_id: TEST_LOCATION_ID, order_type: 'pickup', channel: 'walk_in',
+    items: [{ quantity: 1, unit_price: 200, product_name: 'Test Tracking Link Item' }],
+  });
+  const saleId = saleBody.data.id;
+  createdSaleIds.push(saleId);
+
+  const { generateTrackingToken, verifyTrackingToken } = require('../utils/tracking-token');
+
+  // Task 5 attached a real `tracking_url` field to GET /sales/:id — exercise
+  // that field directly now instead of constructing the token by hand, so
+  // this check also proves the wiring, not just the token math.
+  const { body: detailBody } = await api('GET', `/sales/${saleId}`, owner.token);
+  assert(detailBody.data.tracking_url, `Expected GET /sales/:id to include a tracking_url field, got ${JSON.stringify(detailBody.data.tracking_url)}`);
+  const trackUrlMatch = detailBody.data.tracking_url.match(/\/track\/([^/?]+)$/);
+  assert(trackUrlMatch, `Expected tracking_url to end in /track/<token>, got ${detailBody.data.tracking_url}`);
+  const token = trackUrlMatch[1];
+  assert(verifyTrackingToken(token) === saleId, `Expected the token embedded in tracking_url to verify back to sale ${saleId}, got ${verifyTrackingToken(token)}`);
+
+  // No auth header at all — this must work fully unauthenticated.
+  const trackRes = await api('GET', `/track/${token}`, null);
+  assert(trackRes.status === 200, `Expected 200 for a valid token, got ${trackRes.status}: ${JSON.stringify(trackRes.body)}`);
+  assert(trackRes.body.data.sale_number === saleBody.data.sale_number, 'Expected the right sale_number back');
+  assert(trackRes.body.data.stage_label, 'Expected a stage_label field');
+  // Never leak sensitive fields on the public endpoint.
+  assert(trackRes.body.data.grand_total === undefined, 'tracking endpoint must never return grand_total');
+  assert(trackRes.body.data.payment_status === undefined, 'tracking endpoint must never return payment_status');
+  assert(trackRes.body.data.customer_phone === undefined, 'tracking endpoint must never return a phone number');
+  assert(trackRes.body.data.delivery_address === undefined, 'tracking endpoint must never return an address');
+  assert(trackRes.body.data.customer_name === undefined, 'tracking endpoint must never return the customer name');
+
+  const forged = await api('GET', `/track/${saleId}.0000000000000000000000000000000`, null);
+  assert(forged.status === 404, `Expected 404 for a forged token, got ${forged.status}`);
+  assert(JSON.stringify(forged.body) === JSON.stringify({ success: false, message: 'Not found' }), `Expected the generic 404 body, got ${JSON.stringify(forged.body)}`);
+
+  const malformed = await api('GET', `/track/not-a-real-token`, null);
+  assert(malformed.status === 404, `Expected 404 for a malformed token, got ${malformed.status}`);
+  assert(JSON.stringify(malformed.body) === JSON.stringify({ success: false, message: 'Not found' }), `Expected the identical generic 404 body for malformed input too (never a different message than the forged-signature case), got ${JSON.stringify(malformed.body)}`);
+
+  const empty = await api('GET', `/track/`, null);
+  assert(empty.status === 404, `Expected 404 for an empty token path, got ${empty.status}`);
+
+  const nonexistentSale = await api('GET', `/track/${generateTrackingToken(999999999)}`, null);
+  assert(nonexistentSale.status === 404, `Expected 404 for a validly-signed token pointing at a sale ID that doesn't exist, got ${nonexistentSale.status}`);
+  assert(JSON.stringify(nonexistentSale.body) === JSON.stringify({ success: false, message: 'Not found' }), `Expected the same generic 404 body for a nonexistent sale, got ${JSON.stringify(nonexistentSale.body)}`);
 });
 
 // ─── Run ──────────────────────────────────────────────────────

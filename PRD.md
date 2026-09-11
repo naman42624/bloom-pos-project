@@ -3,7 +3,7 @@
 **Project**: BloomPOS – Point-of-Sale & Operations Platform for Flower Shops  
 **Version**: 1.1  
 **Date**: 7 March 2026  
-**Stack**: React Native (Expo) + Express.js + SQLite (expandable to PostgreSQL)
+**Stack**: React Native (Expo) + Express.js + PostgreSQL
 
 ### Registration & Onboarding
 - **Customers**: Can self-register via the app OR be created by Employees/Managers
@@ -1213,8 +1213,8 @@ server/
 
 ### 15.3 Database
 
-- **Development**: SQLite (better-sqlite3) — current setup
-- **Production-ready**: Can migrate to PostgreSQL when needed
+- **Database**: PostgreSQL (pg)
+- **Environment**: Configure with `DATABASE_URL`
 - All tables include `created_at`, `updated_at` timestamps
 - Soft deletes where appropriate (`is_active` flag)
 - Proper indexing on foreign keys and frequently queried columns

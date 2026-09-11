@@ -65,7 +65,7 @@
 - Cache GPS breadcrumbs locally when network is unavailable
 - Batch-upload when connectivity is restored
 - The current `expo-task-manager` background task should be enhanced to queue failed API calls
-- Use AsyncStorage or SQLite on device for local queue
+- Use AsyncStorage on device for the local queue
 
 ### 8. Privacy & Consent
 

@@ -48,7 +48,7 @@ npm install
 npm run dev        # Starts on http://localhost:3001
 ```
 
-The server uses **SQLite** (via better-sqlite3) so no external database setup is needed.
+The server uses **PostgreSQL**. Configure `DATABASE_URL` in `server/.env` before starting.
 
 ### 2. Start the Frontend
 
@@ -107,7 +107,7 @@ Then press:
 
 ### Backend
 - **Express.js 4** — API server
-- **better-sqlite3** — Zero-config embedded database
+- **pg** — PostgreSQL client for Node.js
 - **jsonwebtoken** — JWT authentication
 - **bcryptjs** — Password hashing
 - **express-validator** — Request validation
@@ -124,11 +124,16 @@ Then press:
 | Variable       | Default                                    | Description              |
 |----------------|--------------------------------------------|--------------------------|
 | `PORT`         | `3001`                                     | Server port              |
+| `DATABASE_URL` | `postgresql://user:password@localhost:5432/bloomcart` | PostgreSQL connection URL |
 | `JWT_SECRET`   | `your-super-secret-jwt-key-...`            | JWT signing secret       |
 | `JWT_EXPIRES_IN` | `7d`                                     | Token expiration         |
 | `NODE_ENV`     | `development`                              | Environment mode         |
+| `TRACKING_LINK_SECRET` | a long random string — do not use the source code's development fallback | HMAC secret signing public order-tracking links (`GET /api/track/:token`) — never stored, verified fresh per request |
+| `PUBLIC_APP_URL` | `http://localhost:19006` (dev fallback) | Public base URL customers' tracking links resolve against, e.g. `https://your-shop-domain.com` |
 
 > ⚠️ **Change `JWT_SECRET`** to a strong random string before deploying!
+> ⚠️ **Set `TRACKING_LINK_SECRET`** to a strong random string before deploying — required in production (the app fails to start in production without it).
+> ⚠️ **Set `PUBLIC_APP_URL`** to your real shop domain before deploying — otherwise customer-facing tracking links point at `localhost`.
 
 ---
 

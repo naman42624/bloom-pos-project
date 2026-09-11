@@ -247,17 +247,30 @@ export function getShopTomorrowStr(timezone = DEFAULT_TZ) {
 export function formatShopDateLabel(value, timezone = DEFAULT_TZ) {
   const d = parseServerDate(value);
   if (!d) return '';
-  
+
   const shopNow = getShopNow(timezone);
   const today = new Date(shopNow.getFullYear(), shopNow.getMonth(), shopNow.getDate());
   const target = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-  
+
   const diffDays = Math.round((today - target) / (1000 * 60 * 60 * 24));
-  
+
   if (diffDays === 0) return 'Today';
   if (diffDays === 1) return 'Yesterday';
   if (diffDays === -1) return 'Tomorrow';
-  
+
   return formatDate(value);
+}
+
+/**
+ * Shop-timezone YYYY-MM-DD key for grouping orders by calendar day,
+ * regardless of device timezone. Returns null for an unparseable value —
+ * callers (e.g. groupOrdersByDay) must handle that, not assume a string.
+ */
+export function extractShopDateKey(value) {
+  const d = parseServerDate(value);
+  if (!d) return null;
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: DEFAULT_TZ, year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(d);
 }
 

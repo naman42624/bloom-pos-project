@@ -10,6 +10,7 @@ const { hasOpenRegister, REGISTER_CLOSED_MESSAGE } = require('../utils/register-
 const { completeProductionTaskCore } = require('./production');
 const { computeOrderStage, getStageFlags } = require('../utils/order-stage');
 const { sumCollectionsByMethod } = require('../utils/settlement-math');
+const { buildTrackingUrl } = require('../utils/tracking-token');
 
 const router = express.Router();
 
@@ -162,13 +163,25 @@ function mapSaleDraftRow(draft) {
 router.get('/', authenticate, async (req, res, next) => {
   try {
     const db = await getAsyncDb();
-    const { location_id, order_type, payment_status, status, pickup_status, channel, priority, date_from, date_to, filter_date, search, limit: lim, offset: off } = req.query;
+    const { location_id, order_type, payment_status, status, pickup_status, channel, priority, date_from, date_to, filter_date, search, sort, limit: lim, offset: off } = req.query;
 
     // `open_task_count` is a verbatim copy of the production-task guard in
     // PUT /:id/status ("Enforce production task completion before marking
     // 'ready'") — same table, same NOT IN predicate. computeOrderStage() reads
     // it to decide whether a Mark Ready button is safe to offer, so the two
     // MUST stay character-identical; if that guard changes, change this too.
+    // `has_unassigned_open_task` is a verbatim copy of hasUnassignedTasks()'s
+    // predicate in app/src/components/orderBoard/OrderCard.js (`assigned_to
+    // IS NULL AND status IN ('pending','in_progress')`) — resolvePreparerStep
+    // needs the full tasks array to decide 'advance' vs 'self' vs 'pick', but
+    // a plain boolean is enough for a LIST row (unlike SaleDetail/OrderCard,
+    // which already have the full tasks array from their own detail fetch):
+    // false means resolvePreparerStep would return 'advance' regardless of
+    // viewer role, no matter what tasks/order values it's given, so it's safe
+    // to one-tap Start Preparing from here without replicating the full
+    // resolution UI (see docs/superpowers/specs/2026-09-09-orders-inbox-
+    // redesign-design.md §5's revision, 2026-09-10). Keep both predicates in
+    // sync the same way open_task_count's comment above requires.
     // Deliberately NOT a comment inside the SQL string below: bindParams() in
     // database-async.js cannot tell an apostrophe in a SQL comment from a
     // string boundary and would desync every ? placeholder after it
@@ -180,6 +193,11 @@ router.get('/', authenticate, async (req, res, next) => {
               rcv.name as receiver_display_name, rcv.phone as receiver_display_phone,
              COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.sale_id = s.id), 0) as total_paid,
              (SELECT COUNT(*) FROM production_tasks pt WHERE pt.sale_id = s.id AND pt.status NOT IN ('completed', 'cancelled')) as open_task_count,
+             EXISTS(
+               SELECT 1 FROM production_tasks ptu
+               WHERE ptu.sale_id = s.id AND ptu.assigned_to IS NULL
+                 AND ptu.status IN ('pending', 'in_progress')
+             ) as has_unassigned_open_task,
              d.status as delivery_status, d.id as delivery_id, d.cod_amount, d.cod_collected,
              dpart.name as delivery_partner_name,
              -- Load-verify indicator (2026-09-04): how much of this delivery's
@@ -251,7 +269,23 @@ router.get('/', authenticate, async (req, res, next) => {
       }
     }
 
-    sql += ' ORDER BY s.created_at DESC';
+    // Snapshot the fully-filtered query BEFORE ORDER BY/LIMIT/OFFSET are
+    // appended below, so the count query is guaranteed to apply the exact
+    // same filters as the real one — no second hand-written copy to drift
+    // out of sync. Same fix pattern as GET /deliveries (foundation plan).
+    const countBaseSql = sql;
+    const countBaseParams = [...params];
+
+    if (sort === 'urgency') {
+      sql += ` ORDER BY
+        (s.priority = 'rush') DESC,
+        (s.scheduled_date IS NOT NULL) DESC,
+        s.scheduled_date ASC NULLS LAST,
+        s.scheduled_time ASC NULLS LAST,
+        s.created_at ASC`;
+    } else {
+      sql += ' ORDER BY s.created_at DESC';
+    }
 
     const limit = parseInt(lim) || 200;
     const offset = parseInt(off) || 0;
@@ -288,23 +322,11 @@ router.get('/', authenticate, async (req, res, next) => {
       }
     }
 
-    // Get total count for pagination
-    let countSql = `SELECT COUNT(*) as total FROM sales s WHERE 1=1`;
-    const countParams = [];
-    if (location_id) { countSql += ' AND s.location_id = ?'; countParams.push(location_id); }
-    if (order_type) { countSql += ' AND s.order_type = ?'; countParams.push(order_type); }
-    if (payment_status) { countSql += ' AND s.payment_status = ?'; countParams.push(payment_status); }
-    if (status) { countSql += ' AND s.status = ?'; countParams.push(status); }
-    else { countSql += " AND s.status != 'cancelled'"; }
-    if (channel) { countSql += ' AND s.channel = ?'; countParams.push(channel); }
-    if (priority) { countSql += ' AND s.priority = ?'; countParams.push(priority); }
-    if (date_from) { countSql += ' AND s.created_at >= (?::date)'; countParams.push(date_from); }
-    if (date_to) { countSql += " AND s.created_at < (?::date + INTERVAL '1 day')"; countParams.push(date_to); }
-    if (filter_date) {
-      countSql += " AND (s.scheduled_date = ? OR (s.scheduled_date IS NULL AND s.created_at >= (?::date) AND s.created_at < (?::date + INTERVAL '1 day')))";
-      countParams.push(filter_date, filter_date, filter_date);
-    }
-    const { total } = await db.prepare(countSql).get(...countParams);
+    // Get total count for pagination — from the exact filtered query
+    // snapshotted above, not a separately hand-written duplicate (see
+    // comment at the snapshot site for why that broke `search`/
+    // `pickup_status`/non-owner scoping).
+    const { total } = await db.prepare(`SELECT COUNT(*) as total FROM (${countBaseSql}) as sub`).get(...countBaseParams);
 
     // One read for the whole list, not per row — these are global
     // preferences, not per-sale data.
@@ -319,6 +341,7 @@ router.get('/', authenticate, async (req, res, next) => {
       // authorize() list so we never render a one-tap button that 403s.
       normalized.display_stage = computeOrderStage(normalized, req.user.role, stageFlags);
       if (req.user.role !== 'owner') delete normalized.vendor_name;
+      normalized.tracking_url = buildTrackingUrl(normalized.id);
       return normalized;
     });
 
@@ -861,6 +884,34 @@ router.get('/register/history', authenticate, authorize('owner', 'manager'), asy
   } catch (err) { next(err); }
 });
 
+
+// ─── GET /api/sales/register/sessions ────────────────────────
+// Every register session (open or closed) for one location on one date —
+// the data DateSessionHeader (app/src/components/orders/DateSessionHeader.js)
+// needs to label which session an order's timestamp falls into. Deliberately
+// its own route rather than widening /register/status (different semantics —
+// that route answers "what's open right now", scoped to today only) or
+// /register/history (owner/manager-only; this needs to work for
+// counter_staff/employee too, since they use the Orders Inbox).
+router.get('/register/sessions', authenticate, authorize('owner', 'manager', 'employee', 'counter_staff'), async (req, res, next) => {
+  try {
+    const db = await getAsyncDb();
+    const { location_id, date } = req.query;
+    if (!location_id) return res.status(400).json({ success: false, message: 'location_id is required' });
+    const targetDate = date || localToday();
+
+    const sessions = await db.prepare(`
+      SELECT cr.*, u1.name as opened_by_name, u2.name as closed_by_name
+      FROM cash_registers cr
+      LEFT JOIN users u1 ON cr.opened_by = u1.id
+      LEFT JOIN users u2 ON cr.closed_by = u2.id
+      WHERE cr.location_id = ? AND cr.date = ?
+      ORDER BY cr.id ASC
+    `).all(location_id, targetDate);
+
+    res.json({ success: true, data: { sessions } });
+  } catch (err) { next(err); }
+});
 // ─── GET /api/sales/production-queue ─────────────────────────
 // Returns orders that need to be prepared (pending/preparing/ready)
 router.get(
@@ -1463,6 +1514,8 @@ router.get('/:id', authenticate, async (req, res, next) => {
     }, req.user.role, stageFlags);
 
     if (req.user.role !== 'owner') delete sale.vendor_name;
+
+    sale.tracking_url = buildTrackingUrl(sale.id);
 
     res.json({ success: true, data: sale });
   } catch (err) { next(err); }
@@ -2316,6 +2369,27 @@ router.put(
         }
 
         db.prepare('UPDATE sales SET stock_deducted = 0 WHERE id = ?').run(req.params.id);
+
+        // Cascade to any deliveries row still sitting 'pending' or 'failed'
+        // for this sale — the guard above already blocked cancel outright
+        // for an ACTIVE delivery (assigned/picked_up/in_transit), but
+        // 'pending'/'failed' were deliberately let through (nobody is
+        // physically holding the order, so no rider needs a warning). That
+        // reasoning only covered whether a rider needs telling — it left the
+        // deliveries row itself orphaned, still 'pending'/'failed' forever,
+        // decoupled from the sale now being cancelled. Downstream this kept
+        // showing up in DeliveriesScreen and, worse, let staff still tap
+        // "Assign Partner" (DeliveryDetailScreen gates purely on
+        // delivery.status === 'pending') and send a real rider after a
+        // cancelled order. Same three fields PUT /deliveries/:id/cancel sets
+        // — deliberately NOT its stock-return loop over completed
+        // production tasks, since this transaction already ran its own
+        // stock-return loop over sale_items above; re-running that one too
+        // would double-credit stock for any item where both happen to be true.
+        db.prepare(`
+          UPDATE deliveries SET status = 'cancelled', failure_reason = 'Order cancelled', updated_at = CURRENT_TIMESTAMP
+          WHERE sale_id = ? AND status IN ('pending', 'failed')
+        `).run(req.params.id);
       });
       cancelTx();
 
