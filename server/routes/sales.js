@@ -2773,6 +2773,19 @@ router.put(
       const sale = db.prepare('SELECT * FROM sales WHERE id = ?').get(req.params.id);
       if (!sale) return res.status(404).json({ success: false, message: 'Sale not found' });
       if (sale.status === 'cancelled') return res.status(400).json({ success: false, message: 'Cannot convert cancelled order' });
+      // Fixed (root-caused live, 2026-09-12): converting an already-completed
+      // pickup order to delivery created a fresh `deliveries` row (defaulting
+      // to status='pending', no rider assigned) but never touched
+      // sales.status, which stayed 'completed' from the original pickup
+      // fulfillment. computeOrderStage()'s delivery branch trusts
+      // sale.status === 'completed' as a "Delivered" signal — so the order
+      // displayed "Delivered" everywhere while its own newly-created delivery
+      // sat at raw status 'pending' (never dispatched), a direct contradiction
+      // found live on a real order. Converting a finished order doesn't match
+      // any real workflow either way, so this is blocked outright rather than
+      // trying to "fix" it by resetting status — matches the cancelled-order
+      // guard right above.
+      if (sale.status === 'completed') return res.status(400).json({ success: false, message: 'Cannot convert a completed order.' });
       if (sale.order_type !== 'pickup' && sale.order_type !== 'delivery') {
         return res.status(400).json({ success: false, message: 'Can only convert between pickup and delivery' });
       }

@@ -418,6 +418,55 @@ check('pickup credit sale: Confirm Pickup succeeds with zero payment (this sessi
   assert(pickupRes.status === 200, `Expected 200 (credit sale, no payment needed), got ${pickupRes.status}: ${JSON.stringify(pickupRes.body)}`);
 });
 
+check('FIXED: converting an already-completed pickup order to delivery is blocked (was creating a "Delivered" order whose real delivery sat at raw status pending)', async () => {
+  const owner = await loginOwner();
+  const { body: saleBody } = await api('POST', '/sales', owner.token, {
+    location_id: TEST_LOCATION_ID, order_type: 'pickup', channel: 'phone',
+    items: [{ quantity: 1, unit_price: 150, product_name: 'Test Convert-Completed Pickup' }],
+    is_credit_sale: true,
+  });
+  const saleId = saleBody.data.id;
+  createdSaleIds.push(saleId);
+  await api('PUT', `/sales/${saleId}/status`, owner.token, { status: 'preparing' });
+  const tasksRes = await api('GET', `/production/tasks?sale_id=${saleId}`, owner.token);
+  const task = tasksRes.body.data.find((t) => t.sale_id === saleId);
+  await api('PUT', `/production/tasks/${task.id}/complete`, owner.token);
+  await api('PUT', `/sales/${saleId}/status`, owner.token, { status: 'ready' });
+  const pickupRes = await api('PUT', `/deliveries/pickup/${saleId}/picked-up`, owner.token, {});
+  assert(pickupRes.status === 200, `Setup: expected Confirm Pickup to succeed, got ${pickupRes.status}: ${JSON.stringify(pickupRes.body)}`);
+
+  const saleAfterPickup = await api('GET', `/sales/${saleId}`, owner.token);
+  assert(saleAfterPickup.body.data.status === 'completed', `Setup: expected sales.status 'completed' after pickup, got '${saleAfterPickup.body.data.status}'`);
+
+  // Root cause: convert-type used to only guard against a cancelled sale —
+  // converting this already-completed one to delivery would create a fresh
+  // deliveries row (status defaults to 'pending', no rider ever assigned)
+  // while leaving sales.status at 'completed' from its prior pickup life.
+  // computeOrderStage() then showed "Delivered" (trusting the stale
+  // sales.status) directly alongside the real delivery's raw 'pending'
+  // status — found live on a real order.
+  const convertRes = await api('PUT', `/sales/${saleId}/convert-type`, owner.token, {
+    new_order_type: 'delivery', delivery_address: '123 Test St',
+  });
+  assert(convertRes.status === 400, `Expected 400 (cannot convert a completed order), got ${convertRes.status}: ${JSON.stringify(convertRes.body)}`);
+  assert(/completed/i.test(convertRes.body?.message || ''), `Expected a plain-language "completed" message, got: ${convertRes.body?.message}`);
+
+  // Direct check of computeOrderStage() itself, against the exact reported
+  // data shape — belt-and-suspenders alongside the guard above: even if some
+  // OTHER path ever produces this same sale/delivery combination again, the
+  // stage computation itself must not claim "Delivered" over a real
+  // 'pending'/'assigned'/'failed' delivery_status.
+  const { computeOrderStage } = require('../utils/order-stage');
+  const buggyShape = { order_type: 'delivery', status: 'completed', delivery_status: 'pending' };
+  const stage = computeOrderStage(buggyShape, 'owner', {});
+  assert(stage.key !== 'delivered', `Expected computeOrderStage to NOT report 'delivered' for a completed sale with a real pending delivery, got key '${stage.key}'`);
+  // Sanity: the legitimate case (delivery_status genuinely 'delivered')
+  // must still work — this fix narrows the fallback, it must not break the
+  // real signal.
+  const legitShape = { order_type: 'delivery', status: 'completed', delivery_status: 'delivered' };
+  assert(computeOrderStage(legitShape, 'owner', {}).key === 'delivered', `Expected a genuinely delivered delivery to still report 'delivered'`);
+});
+
 check('pickup Confirm Pickup payment collection blocked when register is closed', async () => {
   const owner = await loginOwner();
   await ensureRegisterOpen(owner.token, TEST_LOCATION_ID);
