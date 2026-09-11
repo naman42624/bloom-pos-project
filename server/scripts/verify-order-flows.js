@@ -1331,6 +1331,113 @@ check('NEW: GET /deliveries sort=urgency puts rush deliveries first without chan
   assert(olderIdx < newerIdx, `Expected the older delivery to sort before the newer delivery among non-rush rows (oldest-created tiebreak, both undated), got older at ${olderIdx}, newer at ${newerIdx}`);
 });
 
+check('NEW: PUT /deliveries/:id/route assigns, reassigns, and clears a delivery route (2026-09-11 — bulk actions)', async () => {
+  const owner = await loginOwner();
+  const createRes = await api('POST', '/sales', owner.token, {
+    location_id: TEST_LOCATION_ID, order_type: 'delivery', channel: 'phone',
+    customer_name: `RouteAssignSingleCheck${Date.now()}`,
+    delivery_address: '789 Route St', receiver_name: 'Test Receiver', receiver_phone: '9995554444',
+    items: [{ quantity: 1, unit_price: 100, product_name: 'Test Route Item' }],
+  });
+  assert(createRes.status === 201, `Expected sale creation to succeed, got ${createRes.status}: ${JSON.stringify(createRes.body)}`);
+  const saleId = createRes.body.data.id;
+  createdSaleIds.push(saleId);
+
+  const db = await getDb();
+  const delivery = await db.prepare('SELECT id FROM deliveries WHERE sale_id = ?').get(saleId);
+  assert(delivery, `Expected a deliveries row for sale ${saleId}`);
+
+  const routeAName = `Test Route A ${Date.now()}`;
+  const routeARes = await api('POST', '/delivery-routes', owner.token, { name: routeAName, location_id: TEST_LOCATION_ID });
+  assert(routeARes.status === 201 || routeARes.status === 200, `Expected route creation to succeed, got ${routeARes.status}: ${JSON.stringify(routeARes.body)}`);
+  const routeAId = routeARes.body.data.id;
+
+  const assignRes = await api('PUT', `/deliveries/${delivery.id}/route`, owner.token, { route_id: routeAId });
+  assert(assignRes.status === 200, `Expected 200, got ${assignRes.status}: ${JSON.stringify(assignRes.body)}`);
+  assert(assignRes.body.data.route_id === routeAId, `Expected route_id ${routeAId}, got ${assignRes.body.data.route_id}`);
+  assert(assignRes.body.data.route_name === routeAName, `Expected route_name ${routeAName}, got ${assignRes.body.data.route_name}`);
+
+  const routeBName = `Test Route B ${Date.now()}`;
+  const routeBRes = await api('POST', '/delivery-routes', owner.token, { name: routeBName, location_id: TEST_LOCATION_ID });
+  const routeBId = routeBRes.body.data.id;
+  const reassignRes = await api('PUT', `/deliveries/${delivery.id}/route`, owner.token, { route_id: routeBId });
+  assert(reassignRes.status === 200, `Expected reassign to succeed, got ${reassignRes.status}: ${JSON.stringify(reassignRes.body)}`);
+  assert(reassignRes.body.data.route_id === routeBId, `Expected overwrite to route_id ${routeBId}, got ${reassignRes.body.data.route_id}`);
+
+  const clearRes = await api('PUT', `/deliveries/${delivery.id}/route`, owner.token, { route_id: null });
+  assert(clearRes.status === 200, `Expected clear to succeed, got ${clearRes.status}: ${JSON.stringify(clearRes.body)}`);
+  assert(clearRes.body.data.route_id === null, `Expected route_id null after clear, got ${JSON.stringify(clearRes.body.data.route_id)}`);
+
+  const missingKeyRes = await api('PUT', `/deliveries/${delivery.id}/route`, owner.token, {});
+  assert(missingKeyRes.status === 400, `Expected 400 when route_id key is missing entirely, got ${missingKeyRes.status}`);
+
+  const badRouteRes = await api('PUT', `/deliveries/${delivery.id}/route`, owner.token, { route_id: 999999999 });
+  assert(badRouteRes.status === 404, `Expected 404 for a nonexistent route_id, got ${badRouteRes.status}`);
+});
+
+check('NEW: PUT /deliveries/:id/route refuses a delivered or cancelled delivery (2026-09-11 — bulk actions)', async () => {
+  const owner = await loginOwner();
+  const createRes = await api('POST', '/sales', owner.token, {
+    location_id: TEST_LOCATION_ID, order_type: 'delivery', channel: 'phone',
+    customer_name: `RouteAssignCancelledCheck${Date.now()}`,
+    delivery_address: '321 Cancelled St', receiver_name: 'Test Receiver', receiver_phone: '9994443333',
+    items: [{ quantity: 1, unit_price: 100, product_name: 'Test Cancelled Item' }],
+  });
+  assert(createRes.status === 201, `Expected sale creation to succeed, got ${createRes.status}: ${JSON.stringify(createRes.body)}`);
+  const saleId = createRes.body.data.id;
+  createdSaleIds.push(saleId);
+
+  const db = await getDb();
+  const delivery = await db.prepare('SELECT id FROM deliveries WHERE sale_id = ?').get(saleId);
+  await db.prepare("UPDATE deliveries SET status = 'cancelled' WHERE id = ?").run(delivery.id);
+
+  const res = await api('PUT', `/deliveries/${delivery.id}/route`, owner.token, { route_id: null });
+  assert(res.status === 400, `Expected 400 for a cancelled delivery, got ${res.status}: ${JSON.stringify(res.body)}`);
+});
+
+check('NEW: POST /deliveries/batch-assign-route assigns to multiple deliveries and skips terminal ones (2026-09-11 — bulk actions)', async () => {
+  const owner = await loginOwner();
+  const ids = [];
+  for (let i = 0; i < 3; i++) {
+    const createRes = await api('POST', '/sales', owner.token, {
+      location_id: TEST_LOCATION_ID, order_type: 'delivery', channel: 'phone',
+      customer_name: `RouteAssignBatchCheck${Date.now()}_${i}`,
+      delivery_address: `${i} Batch Route St`, receiver_name: 'Test Receiver', receiver_phone: '9993332222',
+      items: [{ quantity: 1, unit_price: 100, product_name: 'Test Batch Route Item' }],
+    });
+    assert(createRes.status === 201, `Expected sale ${i} creation to succeed, got ${createRes.status}: ${JSON.stringify(createRes.body)}`);
+    createdSaleIds.push(createRes.body.data.id);
+    const db = await getDb();
+    const delivery = await db.prepare('SELECT id FROM deliveries WHERE sale_id = ?').get(createRes.body.data.id);
+    ids.push(delivery.id);
+  }
+  // Mark the third one delivered so it must be skipped, not assigned.
+  const db = await getDb();
+  await db.prepare("UPDATE deliveries SET status = 'delivered' WHERE id = ?").run(ids[2]);
+
+  const routeRes = await api('POST', '/delivery-routes', owner.token, { name: `Test Batch Route ${Date.now()}`, location_id: TEST_LOCATION_ID });
+  const routeId = routeRes.body.data.id;
+
+  const batchRes = await api('POST', '/deliveries/batch-assign-route', owner.token, { delivery_ids: ids, route_id: routeId });
+  assert(batchRes.status === 200, `Expected 200, got ${batchRes.status}: ${JSON.stringify(batchRes.body)}`);
+  assert(batchRes.body.data.assigned === 2, `Expected 2 assigned (first two, both non-terminal), got ${batchRes.body.data.assigned}`);
+  assert(batchRes.body.data.skipped === 1, `Expected 1 skipped (the delivered one), got ${batchRes.body.data.skipped}`);
+
+  const first = await db.prepare('SELECT route_id FROM deliveries WHERE id = ?').get(ids[0]);
+  assert(first.route_id === routeId, `Expected first delivery's route_id to be ${routeId}, got ${first.route_id}`);
+  const third = await db.prepare('SELECT route_id FROM deliveries WHERE id = ?').get(ids[2]);
+  assert(third.route_id === null, `Expected the delivered (skipped) delivery to keep route_id null, got ${third.route_id}`);
+});
+
+check('NEW: POST /deliveries/batch-assign-route requires delivery_ids and route_id key (2026-09-11 — bulk actions)', async () => {
+  const owner = await loginOwner();
+  const noIdsRes = await api('POST', '/deliveries/batch-assign-route', owner.token, { route_id: null });
+  assert(noIdsRes.status === 400, `Expected 400 with no delivery_ids, got ${noIdsRes.status}`);
+
+  const noRouteKeyRes = await api('POST', '/deliveries/batch-assign-route', owner.token, { delivery_ids: [1] });
+  assert(noRouteKeyRes.status === 400, `Expected 400 when route_id key is missing entirely, got ${noRouteKeyRes.status}`);
+});
+
 check('FIXED: GET /deliveries returns an accurate total alongside the (still limited) array', async () => {
   const owner = await loginOwner();
   const res = await api('GET', `/deliveries?location_id=${TEST_LOCATION_ID}&limit=1`, owner.token);

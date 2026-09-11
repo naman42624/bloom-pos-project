@@ -419,6 +419,64 @@ router.post(
   }
 );
 
+// ─── POST /api/deliveries/batch-assign-route ─────────────────
+// Bulk route assignment — mirrors /batch-assign's exact per-id
+// WHERE-filtered UPDATE + affected-row counting pattern. Excludes only
+// the two terminal statuses (a route tag on a finished/cancelled delivery
+// is meaningless); every other status is eligible, wider than
+// /batch-assign's rider allow-list since a route tag stays meaningful
+// through picked_up/in_transit.
+router.post(
+  '/batch-assign-route',
+  authenticate,
+  authorize('owner', 'manager', 'counter_staff'),
+  (req, res, next) => {
+    try {
+      const { delivery_ids } = req.body;
+      if (!Array.isArray(delivery_ids) || delivery_ids.length === 0) {
+        return res.status(400).json({ success: false, message: 'delivery_ids array required.' });
+      }
+      if (!('route_id' in req.body)) {
+        return res.status(400).json({ success: false, message: 'route_id is required (pass null to clear).' });
+      }
+      const { route_id } = req.body;
+      if (route_id != null && !Number.isInteger(route_id)) {
+        return res.status(400).json({ success: false, message: 'route_id must be an integer or null.' });
+      }
+
+      const db = getDb();
+      if (route_id != null) {
+        const route = db.prepare('SELECT id FROM delivery_routes WHERE id = ?').get(route_id);
+        if (!route) return res.status(404).json({ success: false, message: 'Route not found.' });
+      }
+
+      let assigned = 0;
+      let skipped = 0;
+
+      const assignStmt = db.prepare(`
+        UPDATE deliveries SET route_id = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ? AND status NOT IN ('delivered', 'cancelled')
+      `);
+
+      const assignAll = db.transaction(() => {
+        for (const id of delivery_ids) {
+          const result = assignStmt.run(route_id, Number(id));
+          if (result.changes > 0) assigned++;
+          else skipped++;
+        }
+      });
+
+      assignAll();
+
+      res.json({
+        success: true,
+        message: `Assigned route to ${assigned} deliver${assigned === 1 ? 'y' : 'ies'}.${skipped > 0 ? ` ${skipped} skipped (delivered/cancelled).` : ''}`,
+        data: { assigned, skipped },
+      });
+    } catch (err) { next(err); }
+  }
+);
+
 // ─── GET /api/deliveries/:id ─────────────────────────────────
 router.get('/:id(\\d+)', authenticate, async (req, res, next) => {
   try {
@@ -576,6 +634,50 @@ router.put(
         type: 'delivery',
         data: { deliveryId: delivery.id, screen: 'DeliveryDetail' },
       });
+    } catch (err) { next(err); }
+  }
+);
+
+// ─── PUT /api/deliveries/:id/route ───────────────────────────
+// Assign, reassign, or clear a delivery's route tag — a manual dispatch
+// grouping label (delivery_routes), not a routing/stop-sequencing feature.
+// Mirrors /:id/assign's exact validation shape. Unlike rider assignment,
+// route assignment is not status-sensitive except at the two terminal
+// states — a route tag stays meaningful through picked_up/in_transit.
+router.put(
+  '/:id(\\d+)/route',
+  authenticate,
+  authorize('owner', 'manager', 'counter_staff'),
+  (req, res, next) => {
+    try {
+      if (!('route_id' in req.body)) {
+        return res.status(400).json({ success: false, message: 'route_id is required (pass null to clear).' });
+      }
+      const { route_id } = req.body;
+      if (route_id != null && !Number.isInteger(route_id)) {
+        return res.status(400).json({ success: false, message: 'route_id must be an integer or null.' });
+      }
+
+      const db = getDb();
+      const delivery = db.prepare('SELECT * FROM deliveries WHERE id = ?').get(req.params.id);
+      if (!delivery) return res.status(404).json({ success: false, message: 'Delivery not found' });
+      if (['delivered', 'cancelled'].includes(delivery.status)) {
+        return res.status(400).json({ success: false, message: `Cannot assign a route to a delivery in ${delivery.status} status` });
+      }
+
+      if (route_id != null) {
+        const route = db.prepare('SELECT id FROM delivery_routes WHERE id = ?').get(route_id);
+        if (!route) return res.status(404).json({ success: false, message: 'Route not found' });
+      }
+
+      db.prepare('UPDATE deliveries SET route_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(route_id, delivery.id);
+
+      const updated = db.prepare(`
+        SELECT d.*, r.name as route_name FROM deliveries d
+        LEFT JOIN delivery_routes r ON r.id = d.route_id WHERE d.id = ?
+      `).get(delivery.id);
+
+      res.json({ success: true, data: updated });
     } catch (err) { next(err); }
   }
 );
