@@ -15,11 +15,21 @@
 // fallback is documented there).
 const crypto = require('crypto');
 
-const SECRET = process.env.TRACKING_LINK_SECRET || 'bloomcart-tracking-secret-2026';
-
 if (process.env.NODE_ENV === 'production' && !process.env.TRACKING_LINK_SECRET) {
   throw new Error('TRACKING_LINK_SECRET must be set in production — the public order-tracking endpoint is otherwise forgeable by anyone who has read this repo.');
 }
+// PR review finding (2026-09-09), second half: the fallback used to be a
+// fixed string literal committed to git history — meaning if NODE_ENV were
+// ever mis-set in a real deployment (forgotten in a staging env, a typo,
+// etc.), the throw above wouldn't fire and every token would silently sign
+// with a secret anyone who has read this repo already knows. The throw
+// above is still the REAL protection for actual production; this is
+// defense in depth for the "should have been production but wasn't
+// flagged as such" case. A per-process random secret costs nothing in
+// dev/test (nobody outside this process needs yesterday's dev tokens to
+// keep working — the actual tokens are unstored and regenerated on demand
+// anyway) and closes the "known fallback" risk entirely.
+const SECRET = process.env.TRACKING_LINK_SECRET || crypto.randomBytes(32).toString('hex');
 
 function sign(saleId) {
   return crypto.createHmac('sha256', SECRET).update(String(saleId)).digest('hex').slice(0, 32);
