@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, ScrollView, RefreshControl, ActivityIndicator } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, ScrollView, RefreshControl, ActivityIndicator, Linking } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '../context/AuthContext';
@@ -24,6 +24,7 @@ import CollectCodModal from '../components/orderBoard/CollectCodModal';
 import TaskCompletionModal from '../components/orderBoard/TaskCompletionModal';
 import { resolveDeadEnd } from '../components/orderBoard/OrderCard';
 import { PREP_ROLES, STAFF_ROLE_LABELS } from '../constants/orderDisplay';
+import { waLink, buildMessage, normalizePhone } from '../utils/contact';
 
 
 const STATUS_TABS = [
@@ -40,6 +41,26 @@ const STATUS_TABS = [
 // Statuses a delivery can still be (re)assigned from — matches the batch-
 // select long-press affordance and the per-card checkbox eligibility.
 const ASSIGNABLE_STATUSES = ['pending', 'assigned', 'failed'];
+
+// Restored 2026-09-11 (review finding A4): StageBadge alone collapses
+// pending+assigned into one "Ready"-style label and picked_up+in_transit
+// into one "Out for Delivery" label — fine for Orders Inbox/Dashboard,
+// where the reader just needs to know an order isn't done yet, but this
+// is the one screen whose whole purpose is dispatch: a rider tapping
+// "who has this at the shop vs. who's actually on the road" is exactly
+// the distinction display_stage throws away. This raw status badge is
+// deliberately a second, more granular source alongside StageBadge, not
+// a replacement — see the commit that removed it (2374ffb) and the
+// whole-branch review that flagged the loss.
+const STATUS_COLORS = {
+  pending: '#FF9800',
+  assigned: '#2196F3',
+  picked_up: '#9C27B0',
+  in_transit: '#00BCD4',
+  delivered: '#4CAF50',
+  failed: '#F44336',
+  cancelled: '#9E9E9E',
+};
 
 // GET /deliveries rows aren't sale-shaped — resolveDeadEnd/resolvePreparerStep/
 // resolveDeliverStep (OrderCard.js) were built against GET /sales rows. See
@@ -205,6 +226,30 @@ export default function DeliveriesScreen({ navigation }) {
     list.refresh();
     setResetToken((g) => g + 1);
   }, [list.refresh]));
+
+  // Reconcile batch selection against whatever the list actually holds now
+  // (fix-round finding A3, whole-branch review 2026-09-11). selectedIds used
+  // to survive untouched across a filter/status/search/sort change, so a
+  // delivery selected under one view could still be sitting in the Set —
+  // and get swept into a real Assign Rider/Assign Route call — after it had
+  // scrolled out of what's actually on screen. Runs on every list.items
+  // change (covers filter, status, search, sort, and page-load fetches in
+  // one place) and is a no-op — same Set reference, no re-render — when
+  // nothing needs dropping.
+  useEffect(() => {
+    if (selectedIds.size === 0) return;
+    const currentIds = new Set(list.items.map((d) => d.id));
+    setSelectedIds((prev) => {
+      let changed = false;
+      const next = new Set();
+      prev.forEach((id) => {
+        if (currentIds.has(id)) next.add(id);
+        else changed = true;
+      });
+      return changed ? next : prev;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [list.items]);
 
   // The FilterDrawer's Rider section (and ActiveFilterChips' rider label
   // lookup) needs `partners` populated as soon as the drawer can be opened —
@@ -450,6 +495,13 @@ export default function DeliveriesScreen({ navigation }) {
         showAlert('Success', res.message || `Assigned route to ${ids.size} deliveries`);
       } else {
         await api.assignDeliveryRoute(Array.from(ids)[0], { route_id: routeAssignRouteId });
+        // Fix-round finding A5 (whole-branch review 2026-09-11): the batch
+        // branch above always confirmed with an alert; a single-delivery
+        // assignment silently closed the modal with no feedback at all —
+        // the only visible sign anything happened was the route_name row
+        // this same fix round added to the card (and only outside Route
+        // view at that), easy to miss on a quiet screen.
+        showAlert('Success', 'Route assigned.');
       }
       closeRouteAssignModal();
       setBatchMode(false);
@@ -704,6 +756,20 @@ export default function DeliveriesScreen({ navigation }) {
   };
 
   const renderDelivery = ({ item }) => {
+    const statusColor = STATUS_COLORS[item.status] || '#999';
+    // Live feedback right after restoring this badge (2026-09-11): a
+    // 'delivered' delivery showed "Delivered" (StageBadge) directly above
+    // "DELIVERED" (this raw badge) — pure duplication, not the extra
+    // granularity A4 was actually about. The raw badge only earns its
+    // place when it says something StageBadge's own collapsed label
+    // doesn't — pending/assigned both read "Ready", picked_up/in_transit
+    // both read "Out for Delivery"; that's the real information loss this
+    // restores. delivered/failed/cancelled aren't collapsed the same way,
+    // so showing the raw status there just repeats the stage label. Compare
+    // against the label text itself rather than hardcoding a status list —
+    // stays correct if order-stage.js's labels or collapsing ever change.
+    const rawStatusLabel = item.status.replace(/_/g, ' ');
+    const showRawStatusBadge = rawStatusLabel.toLowerCase() !== (item.display_stage?.label || '').toLowerCase();
     const isAtRisk = atRiskIds.has(item.id);
     const timeInfo = getTimeInfo(item);
     const canSelect = batchMode && ASSIGNABLE_STATUSES.includes(item.status);
@@ -845,7 +911,16 @@ export default function DeliveriesScreen({ navigation }) {
             )}
           </View>
 
-          <StageBadge stage={item.display_stage} size="sm" />
+          <View style={styles.badgeStack}>
+            <StageBadge stage={item.display_stage} size="sm" />
+            {showRawStatusBadge && (
+              <View style={[styles.badge, { backgroundColor: statusColor + '20' }]}>
+                <Text style={[styles.badgeText, { color: statusColor }]}>
+                  {rawStatusLabel.toUpperCase()}
+                </Text>
+              </View>
+            )}
+          </View>
         </View>
 
         <View style={styles.cardBody}>
@@ -863,6 +938,18 @@ export default function DeliveriesScreen({ navigation }) {
             <View style={styles.row}>
               <Ionicons name="bicycle-outline" size={16} color={Colors.textLight} />
               <Text style={styles.cardText}>{item.partner_name}</Text>
+            </View>
+          )}
+          {/* Route name — only shown outside the Route view (fix-round
+              finding A5, whole-branch review 2026-09-11): Route view already
+              says this in its section header, so repeating it on every card
+              there would be pure noise, but Date/Rider view never showed it
+              anywhere, leaving "which route is this on?" invisible after an
+              Assign Route action for anyone not currently in Route view. */}
+          {item.route_name && effectiveViewMode !== 'route' && (
+            <View style={styles.row}>
+              <Ionicons name="map-outline" size={16} color={Colors.textLight} />
+              <Text style={styles.cardText}>{item.route_name}</Text>
             </View>
           )}
         </View>
@@ -971,6 +1058,23 @@ export default function DeliveriesScreen({ navigation }) {
               params: { sale_number: item.sale_number, location_name: item.location_name },
             }}
           />
+          {/* Share Tracking Link — same pattern OrdersInboxScreen.js already
+              ships (2026-09-11 request: "the sharable link button can be
+              added on other screens as well"), including that screen's own
+              normalizePhone guard fix (B4) from the same review pass, not
+              the earlier raw-truthiness version. */}
+          {item.tracking_url && normalizePhone(item.customer_phone) && (
+            <TouchableOpacity
+              style={styles.shareLinkBtn}
+              onPress={(e) => {
+                e.stopPropagation();
+                Linking.openURL(waLink(item.customer_phone, buildMessage('tracking_link', { sale_number: item.sale_number, tracking_url: item.tracking_url })));
+              }}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
+              <Ionicons name="link-outline" size={18} color={Colors.primary} />
+            </TouchableOpacity>
+          )}
         </View>
       </TouchableOpacity>
     );
@@ -1311,6 +1415,8 @@ const styles = StyleSheet.create({
   deadEndBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', minHeight: 44, minWidth: 44, paddingHorizontal: Spacing.md, borderRadius: BorderRadius.md, borderWidth: 1.5, borderColor: Colors.primary, backgroundColor: Colors.primary + '10' },
   deadEndBtnText: { fontSize: FontSize.sm, fontWeight: '700', color: Colors.primary },
   deadEndStatus: { flex: 1, fontSize: FontSize.sm, color: Colors.textSecondary, fontStyle: 'italic' },
+  // Matches OrdersInboxScreen.js's identical shareLinkBtn style exactly.
+  shareLinkBtn: { width: 44, height: 44, borderRadius: BorderRadius.full, alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.surfaceAlt },
   // AssignPickerModal's "Leave for now" escape hatch (matches
   // OrdersInboxScreen.js's identically-purposed style).
   pickerFallbackBtn: { minHeight: 48, alignItems: 'center', justifyContent: 'center', borderRadius: BorderRadius.md, borderWidth: 1, borderColor: Colors.border, backgroundColor: Colors.surfaceAlt, marginTop: 4 },
@@ -1343,12 +1449,17 @@ const styles = StyleSheet.create({
     flexShrink: 0
   },
   batchBarText: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.primary },
+  // minHeight 44 (fix-round finding A2, whole-branch review 2026-09-11):
+  // paddingVertical: Spacing.xs (4) alone left these ~26pt tall — below the
+  // 44x44pt minimum tap target every other action button on this screen
+  // already enforces (staff-ux-checklist #7, and the bulk-actions plan's own
+  // Global Constraint that this violated).
   batchAssignBtn: {
-    flexDirection: 'row', alignItems: 'center', gap: 4,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4,
     backgroundColor: Colors.primary, paddingHorizontal: Spacing.md, paddingVertical: Spacing.xs,
-    borderRadius: BorderRadius.md,
+    minHeight: 44, borderRadius: BorderRadius.md,
   },
   batchAssignText: { color: '#fff', fontSize: FontSize.sm, fontWeight: '600' },
-  batchCancelBtn: { paddingHorizontal: Spacing.md, paddingVertical: Spacing.xs },
+  batchCancelBtn: { paddingHorizontal: Spacing.md, paddingVertical: Spacing.xs, minHeight: 44, alignItems: 'center', justifyContent: 'center' },
   batchCancelText: { color: Colors.textSecondary, fontSize: FontSize.sm },
 });
