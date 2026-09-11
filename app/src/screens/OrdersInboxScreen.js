@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { View, Text, StyleSheet, SectionList, TouchableOpacity, RefreshControl, ActivityIndicator, ScrollView } from 'react-native';
+import { View, Text, StyleSheet, SectionList, TouchableOpacity, RefreshControl, ActivityIndicator, ScrollView, Linking } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import api from '../services/api';
@@ -9,6 +9,7 @@ import { formatCardDateTime, formatTime } from '../utils/datetime';
 import { showAlert } from '../utils/alert';
 import StageBadge from '../components/StageBadge';
 import ContactButtons from '../components/orders/ContactButtons';
+import { waLink, buildMessage } from '../utils/contact';
 import useOrderListData from '../hooks/useOrderListData';
 import OrderListToolbar from '../components/orders/OrderListToolbar';
 import FilterDrawer from '../components/orders/FilterDrawer';
@@ -477,6 +478,19 @@ export default function OrdersInboxScreen({ navigation, route }) {
               params: { sale_number: item.sale_number, location_name: item.location_name },
             }}
           />
+          {item.tracking_url && (item.customer_display_phone || item.customer_phone) && (
+            <TouchableOpacity
+              style={styles.shareLinkBtn}
+              onPress={(e) => {
+                e.stopPropagation();
+                const phone = item.customer_display_phone || item.customer_phone;
+                Linking.openURL(waLink(phone, buildMessage('tracking_link', { sale_number: item.sale_number, tracking_url: item.tracking_url })));
+              }}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
+              <Ionicons name="link-outline" size={18} color={Colors.primary} />
+            </TouchableOpacity>
+          )}
         </View>
       </TouchableOpacity>
     );
@@ -754,6 +768,7 @@ const styles = StyleSheet.create({
   deadEndBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', minHeight: 44, minWidth: 44, paddingHorizontal: Spacing.md, borderRadius: BorderRadius.md, borderWidth: 1.5, borderColor: Colors.primary, backgroundColor: Colors.primary + '10' },
   deadEndBtnText: { fontSize: FontSize.sm, fontWeight: '700', color: Colors.primary },
   deadEndStatus: { flex: 1, fontSize: FontSize.sm, color: Colors.textSecondary, fontStyle: 'italic' },
+  shareLinkBtn: { width: 44, height: 44, borderRadius: BorderRadius.full, alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.surfaceAlt },
   fab: { position: 'absolute', right: Spacing.lg, bottom: Spacing.lg, width: 56, height: 56, borderRadius: 28, backgroundColor: Colors.primary, justifyContent: 'center', alignItems: 'center', elevation: 4, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 4 },
   fabSecondary: { position: 'absolute', right: Spacing.lg, bottom: Spacing.lg + 68, width: 44, height: 44, borderRadius: 22, backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.border, justifyContent: 'center', alignItems: 'center', elevation: 3, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.15, shadowRadius: 3 },
 });
