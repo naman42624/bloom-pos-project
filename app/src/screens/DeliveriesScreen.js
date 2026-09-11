@@ -19,6 +19,7 @@ import ActiveFilterChips from '../components/orders/ActiveFilterChips';
 import CollapsibleSection from '../components/orders/CollapsibleSection';
 import ContactButtons from '../components/orders/ContactButtons';
 import AssignPickerModal from '../components/orderBoard/AssignPickerModal';
+import RouteAssignModal from '../components/orderBoard/RouteAssignModal';
 import CollectCodModal from '../components/orderBoard/CollectCodModal';
 import TaskCompletionModal from '../components/orderBoard/TaskCompletionModal';
 import { resolveDeadEnd } from '../components/orderBoard/OrderCard';
@@ -337,7 +338,7 @@ export default function DeliveriesScreen({ navigation }) {
   }, [preparerPicker, list.refresh]);
 
   // Consolidated rider picker — replaces the old openAssignModal/handleAssign/
-  // openBatchAssignModal-driven custom <Modal> with the same AssignPickerModal
+  // batch-assign-driven custom <Modal> with the same AssignPickerModal
   // component OrdersInboxScreen.js's preparerPicker above already uses.
   // { deliveryIds: Set, label, loading, showingEveryone, people } while open,
   // null when closed. A single deliveryIds Set carries both the single- and
@@ -414,6 +415,53 @@ export default function DeliveriesScreen({ navigation }) {
     }
   }, [riderPicker, list.refresh]);
 
+  // Assign Route — the Assign Rider counterpart. Fully controlled (see
+  // RouteAssignModal.js's own header comment for why): this screen owns
+  // routeId and computes the overwrite warning fresh from filteredDeliveries
+  // on every render, never stored (CLAUDE.md's "derived values computed
+  // fresh" rule).
+  const [routeAssignPicker, setRouteAssignPicker] = useState(null); // { deliveryIds: Set } | null
+  const [routeAssignRouteId, setRouteAssignRouteId] = useState(null);
+  const [routeAssignConfirming, setRouteAssignConfirming] = useState(false);
+
+  const openRouteAssignModal = (deliveryIds) => {
+    setRouteAssignRouteId(null);
+    setRouteAssignPicker({ deliveryIds });
+  };
+
+  const closeRouteAssignModal = () => {
+    setRouteAssignPicker(null);
+    setRouteAssignRouteId(null);
+  };
+
+  // routeAssignOverwriteCount/routeAssignWarning (derived from
+  // filteredDeliveries) are declared further down, right after
+  // filteredDeliveries itself — filteredDeliveries isn't defined yet at this
+  // point in the component body, and referencing it here would throw
+  // (temporal dead zone) the moment a route is actually picked.
+
+  const handleConfirmRouteAssign = async () => {
+    if (!routeAssignPicker || !routeAssignRouteId || routeAssignConfirming) return;
+    setRouteAssignConfirming(true);
+    try {
+      const ids = routeAssignPicker.deliveryIds;
+      if (ids.size > 1) {
+        const res = await api.batchAssignRoute({ delivery_ids: Array.from(ids), route_id: routeAssignRouteId });
+        showAlert('Success', res.message || `Assigned route to ${ids.size} deliveries`);
+      } else {
+        await api.assignDeliveryRoute(Array.from(ids)[0], { route_id: routeAssignRouteId });
+      }
+      closeRouteAssignModal();
+      setBatchMode(false);
+      setSelectedIds(new Set());
+      list.refresh();
+    } catch (err) {
+      showAlert('Error', err?.message || 'Failed to assign route');
+    } finally {
+      setRouteAssignConfirming(false);
+    }
+  };
+
   const toggleSelect = (id) => {
     setSelectedIds(prev => {
       const next = new Set(prev);
@@ -423,20 +471,20 @@ export default function DeliveriesScreen({ navigation }) {
     });
   };
 
-  // `idsOverride` lets a caller (e.g. "select all in this route") hand in
-  // the exact set to assign instead of relying on `selectedIds` state,
-  // which wouldn't be flushed yet if we just called setSelectedIds() and
-  // then immediately called this in the same synchronous handler.
-  const openBatchAssignModal = async (idsOverride) => {
+  // Enters batch mode with a specific id set — used by "select all in this
+  // route" and (indirectly) long-press. Deliberately does NOT open any
+  // picker itself: since this screen now has two bulk actions (Assign
+  // Rider / Assign Route), opening one automatically would silently pick
+  // for the user. The batch bar's own two buttons open the right picker
+  // once the user chooses.
+  const selectForBatch = (idsOverride) => {
     const ids = idsOverride && idsOverride.size > 0 ? idsOverride : selectedIds;
     if (ids.size === 0) {
-      const msg = 'Select at least one delivery';
-      showAlert('Info', msg);
+      showAlert('Info', 'Select at least one delivery');
       return;
     }
     setBatchMode(true);
     setSelectedIds(ids);
-    openRiderPickerFor(ids);
   };
 
   // A route tag carries no date, so a route group mixes today's stops with
@@ -469,7 +517,7 @@ export default function DeliveriesScreen({ navigation }) {
       showAlert('Info', msg);
       return;
     }
-    openBatchAssignModal(ids);
+    selectForBatch(ids);
   };
 
   // Text search now happens server-side (list.search, via OrderListToolbar) —
@@ -478,6 +526,20 @@ export default function DeliveriesScreen({ navigation }) {
   // text predicate is needed here anymore. Name kept as `filteredDeliveries`
   // since later code (and Task 5) references it directly.
   const filteredDeliveries = list.items;
+
+  // How many of the currently-targeted deliveries already carry a
+  // DIFFERENT route than the one about to be applied. Zero (no warning)
+  // until the user has actually picked a route to apply. Declared here
+  // (not up with routeAssignPicker/routeAssignRouteId above) because it
+  // reads filteredDeliveries, which isn't defined until this point in the
+  // component body.
+  const routeAssignOverwriteCount = (routeAssignPicker && routeAssignRouteId)
+    ? filteredDeliveries.filter((d) => routeAssignPicker.deliveryIds.has(d.id) && d.route_id != null && d.route_id !== routeAssignRouteId).length
+    : 0;
+
+  const routeAssignWarning = routeAssignOverwriteCount > 0
+    ? `${routeAssignOverwriteCount} of ${routeAssignPicker.deliveryIds.size} selected already ${routeAssignOverwriteCount === 1 ? 'has' : 'have'} a different route — applying this will replace it.`
+    : null;
 
   // Group by date for section headers
   const getDateLabel = (dateStr) => formatShopDateLabel(dateStr, timezone);
@@ -719,7 +781,8 @@ export default function DeliveriesScreen({ navigation }) {
     // the api.assignDelivery (not batch) branch. The label (sale number +
     // customer name, same format the deleted custom modal's subtitle used)
     // is only buildable here, where a single real order is in scope — the
-    // batch entry points (openBatchAssignModal) pass no label.
+    // batch bar's Assign Rider button (which calls openRiderPickerFor
+    // directly, not via selectForBatch) passes no label.
     const handleDeadEndPress = () => {
       // Same belt-and-suspenders as handlePress above.
       if (canSelect) return;
@@ -1030,10 +1093,26 @@ export default function DeliveriesScreen({ navigation }) {
       {canManageDeliveries && batchMode && (
         <View style={styles.batchBar}>
           <Text style={styles.batchBarText}>{selectedIds.size} selected</Text>
-          <View style={{ flexDirection: 'row', gap: Spacing.sm }}>
-            <TouchableOpacity style={styles.batchAssignBtn} onPress={openBatchAssignModal}>
+          <View style={{ flexDirection: 'row', gap: Spacing.sm, flexWrap: 'wrap' }}>
+            <TouchableOpacity
+              style={styles.batchAssignBtn}
+              onPress={() => {
+                if (selectedIds.size === 0) { showAlert('Info', 'Select at least one delivery'); return; }
+                openRiderPickerFor(selectedIds);
+              }}
+            >
               <Ionicons name="people" size={16} color="#fff" />
-              <Text style={styles.batchAssignText}>Assign All</Text>
+              <Text style={styles.batchAssignText}>Assign Rider</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.batchAssignBtn}
+              onPress={() => {
+                if (selectedIds.size === 0) { showAlert('Info', 'Select at least one delivery'); return; }
+                openRouteAssignModal(selectedIds);
+              }}
+            >
+              <Ionicons name="map" size={16} color="#fff" />
+              <Text style={styles.batchAssignText}>Assign Route</Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={styles.batchCancelBtn}
@@ -1127,6 +1206,21 @@ export default function DeliveriesScreen({ navigation }) {
         loading={!!riderPicker?.loading}
         onPick={handlePickRiderConsolidated}
         onClose={closeRiderPicker}
+      />
+
+      {/* Assign Route — the Assign Rider counterpart. See RouteAssignModal.js's
+          own header comment; this screen owns routeId/warning, the modal is
+          a thin controlled shell around RoutePicker. */}
+      <RouteAssignModal
+        visible={routeAssignPicker !== null}
+        deliveryCount={routeAssignPicker?.deliveryIds?.size || 0}
+        routeId={routeAssignRouteId}
+        onChangeRoute={setRouteAssignRouteId}
+        warning={routeAssignWarning}
+        locationId={selectedLocation}
+        confirming={routeAssignConfirming}
+        onConfirm={handleConfirmRouteAssign}
+        onClose={closeRouteAssignModal}
       />
 
       {/* "Who is making this?" — Start Preparing when a real preparer needs
