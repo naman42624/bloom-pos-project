@@ -44,7 +44,7 @@ function formatAmount(value) {
 }
 
 export default function OrdersInboxScreen({ navigation, route }) {
-  const { user } = useAuth();
+  const { user, activeLocation } = useAuth();
   // Owner/manager already have full Customers access via the More tab —
   // this shortcut is only for employee/counter_staff, who don't have a
   // 'Customers' route registered in their stack's owner/manager sibling
@@ -58,6 +58,8 @@ export default function OrdersInboxScreen({ navigation, route }) {
   // decision about the ACTION.
   const canManageDeliveries = ['owner', 'manager', 'counter_staff'].includes(user?.role);
   const canTakeMoney = ['owner', 'manager', 'employee', 'counter_staff'].includes(user?.role);
+  const isOwner = user?.role === 'owner';
+  const isManager = isOwner || user?.role === 'manager';
 
   const fetchFn = useCallback(
     (params) => api.getSales(params).then((res) => ({ items: res.data?.sales || [], total: Number(res.data?.total) || 0 })),
@@ -104,6 +106,30 @@ export default function OrdersInboxScreen({ navigation, route }) {
   // SaleDetail (2026-09-10, requested directly — matches the other dead-end
   // resolutions living in a modal rather than a screen change).
   const [taskCompletionOrder, setTaskCompletionOrder] = useState(null);
+  // Location filter — this screen had NO way to see/change which location's
+  // orders it was showing (live-reported, 2026-09-11): it relied entirely
+  // on getSingleLocationId(list.items) for SESSION-GROUPING purposes (a
+  // data-driven read of whatever happened to be loaded, never a real
+  // filter), and GET /sales with no location_id returns every location an
+  // owner/manager can see mixed together with no way to narrow it down.
+  // Same pattern Deliveries/Pickup Orders already use: the location list is
+  // fetched once, a non-owner manager is auto-scoped to their own location
+  // by default (matching how the backend already scopes their other
+  // requests), and only an owner ever sees "All Locations" as a real,
+  // deliberate choice rather than an accidental default.
+  const [locations, setLocations] = useState([]);
+  useEffect(() => {
+    if (!isManager) return;
+    api.getLocations().then((res) => {
+      const locs = (res.data?.locations || res.data || []).filter((l) => (l.type === 'shop' || l.type == null) && l.is_active);
+      setLocations(locs);
+      if (locs.length > 0 && !isOwner && list.filters.location_id === undefined) {
+        const defaultLoc = activeLocation && locs.some((l) => l.id === activeLocation.id) ? activeLocation.id : locs[0].id;
+        list.setFilter('location_id', defaultLoc);
+      }
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }).catch(() => {});
+  }, [isManager, isOwner]);
 
   const singleLocationId = useMemo(() => getSingleLocationId(list.items), [list.items]);
   const dayGroups = useMemo(() => groupOrdersByDay(list.items), [list.items]);
@@ -541,25 +567,51 @@ export default function OrdersInboxScreen({ navigation, route }) {
       </ScrollView>
 
       <ActiveFilterChips
-        filters={{ channel: list.filters.channel, priority: list.filters.priority, order_type: list.filters.order_type }}
+        filters={{
+          channel: list.filters.channel, priority: list.filters.priority, order_type: list.filters.order_type,
+          // Only owner ever gets a removable "Location: X" chip — a manager's
+          // location is auto-scoped, not a filter THEY chose to set, so
+          // showing it as a dismissable chip would invite tapping "x" into a
+          // state (no location_id at all) the backend would then just widen
+          // back out from under them with no visible cause.
+          ...(isOwner ? { location_id: list.filters.location_id } : {}),
+        }}
         labels={{
           channel: (v) => `Channel: ${v}`,
           priority: () => '🔥 Rush only',
           order_type: (v) => `Type: ${ORDER_TYPE_LABELS[v] || v}`,
+          location_id: (v) => `Location: ${locations.find((l) => l.id === v)?.name || v}`,
         }}
         onRemove={(key) => list.setFilter(key, undefined)}
         // Not list.clearFilters() — that clears status too, and Status has
         // its own always-visible chip row that "Clear all" deliberately
         // leaves alone (spec §3), so each filter is cleared individually
-        // here instead.
-        onClearAll={() => { list.setFilter('channel', undefined); list.setFilter('priority', undefined); list.setFilter('order_type', undefined); }}
+        // here instead. location_id is deliberately excluded for the same
+        // reason it's excluded from the chip set above — Clear All never
+        // resets a manager out of their own scoped location.
+        onClearAll={() => { list.setFilter('channel', undefined); list.setFilter('priority', undefined); list.setFilter('order_type', undefined); if (isOwner) list.setFilter('location_id', undefined); }}
       />
 
       <FilterDrawer
         visible={filtersOpen}
         onClose={() => setFiltersOpen(false)}
-        onClearAll={() => { list.setFilter('channel', undefined); list.setFilter('priority', undefined); list.setFilter('order_type', undefined); setFiltersOpen(false); }}
+        onClearAll={() => { list.setFilter('channel', undefined); list.setFilter('priority', undefined); list.setFilter('order_type', undefined); if (isOwner) list.setFilter('location_id', undefined); setFiltersOpen(false); }}
         sections={[
+          ...(isManager ? [{
+            key: 'location', label: 'Location', value: list.filters.location_id ?? null,
+            onChange: (v) => list.setFilter('location_id', v || undefined),
+            // Owner only ever sees "All Locations" as an option — a manager
+            // always has a real location_id set (the effect above enforces
+            // this on mount), so offering them a null/"all" choice here
+            // would let them pick a state the backend already refuses to
+            // give them (their own GET /sales scoping ignores location_id
+            // anyway once one of their own locations is picked, but showing
+            // the option is its own confusion this screen doesn't need).
+            options: [
+              ...(isOwner ? [{ value: null, label: 'All Locations' }] : []),
+              ...locations.map((l) => ({ value: l.id, label: l.name })),
+            ],
+          }] : []),
           {
             key: 'channel', label: 'Channel', value: list.filters.channel ?? null,
             onChange: (v) => list.setFilter('channel', v || undefined),
