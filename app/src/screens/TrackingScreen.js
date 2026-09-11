@@ -33,13 +33,28 @@ import { Colors, Spacing, FontSize, BorderRadius, Shadows } from '../constants/t
 const WASH = '#FBF3EC';
 
 export default function TrackingScreen({ token }) {
-  const [state, setState] = useState({ loading: true, data: null, notFound: false });
+  const [state, setState] = useState({ loading: true, data: null, errorKind: null });
 
   useEffect(() => {
     let cancelled = false;
     api.getTrackingInfo(token)
-      .then((res) => { if (!cancelled) setState({ loading: false, data: res.data, notFound: false }); })
-      .catch(() => { if (!cancelled) setState({ loading: false, data: null, notFound: true }); });
+      .then((res) => { if (!cancelled) setState({ loading: false, data: res.data, errorKind: null }); })
+      .catch((err) => {
+        if (cancelled) return;
+        // Fix-round finding B2 (whole-branch review, 2026-09-11): a bare
+        // .catch() collapsed every failure mode — bad token, a genuine
+        // server outage, no network — into the same "we couldn't find this
+        // order" message. That's correct ONLY for a 404 (backend
+        // deliberately collapses "malformed token" and "wrong signature"
+        // into one generic 404, per the design doc — this page must not
+        // try to distinguish those two). Anything else (5xx, or status 0
+        // for a dropped/network request per api.js's own request()) is a
+        // transient problem, not a bad link, and gets an honest message
+        // that doesn't send someone hunting for a new link that doesn't
+        // exist.
+        const kind = err?.status === 404 ? 'not_found' : 'server_error';
+        setState({ loading: false, data: null, errorKind: kind });
+      });
     return () => { cancelled = true; };
   }, [token]);
 
@@ -51,32 +66,30 @@ export default function TrackingScreen({ token }) {
     );
   }
 
-  if (state.notFound || !state.data) {
+  if (state.errorKind || !state.data) {
+    const isServerError = state.errorKind === 'server_error';
     return (
       <View style={styles.center}>
-        <MaterialCommunityIcons name="flower-outline" size={40} color={Colors.textLight} style={styles.notFoundIcon} />
-        <Text style={styles.notFoundTitle}>We couldn't find this order</Text>
-        <Text style={styles.notFoundText}>The link may be out of date — please contact the shop.</Text>
+        <MaterialCommunityIcons name={isServerError ? 'cloud-off-outline' : 'flower-outline'} size={40} color={Colors.textLight} style={styles.notFoundIcon} />
+        <Text style={styles.notFoundTitle}>{isServerError ? "We couldn't load this order" : "We couldn't find this order"}</Text>
+        <Text style={styles.notFoundText}>
+          {isServerError
+            ? 'Something went wrong on our end — please try reloading this page in a moment.'
+            : 'The link may be out of date — please contact the shop.'}
+        </Text>
       </View>
     );
   }
 
-  const { sale_number, order_type, stage_label, scheduled_date, scheduled_time, location_name } = state.data;
-  // The tracking API returns a LABEL (e.g. "Ready for Pickup"), but
-  // getTrackingSteps needs the underlying stage KEY. Labels aren't 1:1 with
-  // keys across order types (e.g. "Ready" is a real key for both delivery
-  // and the walk_in/pre_order default ladder), so build the reverse lookup
-  // from the same label text this screen actually received rather than
-  // re-deriving stage logic here — a tiny local map covers every label
-  // server/utils/order-stage.js can produce (see Task 1's own comment for
-  // the authoritative list).
-  const LABEL_TO_KEY = {
-    'New': 'new', 'Preparing': 'preparing', 'Ready for Pickup': 'ready_for_pickup',
-    'Picked Up': 'picked_up', 'Ready': 'ready', 'Out for Delivery': 'out_for_delivery',
-    'Delivered': 'delivered', 'Completed': 'completed', 'Cancelled': 'cancelled',
-  };
-  const stageKey = LABEL_TO_KEY[stage_label] || 'new';
-  const tracking = getTrackingSteps(order_type, stageKey);
+  const { sale_number, order_type, stage_key, scheduled_date, scheduled_time, location_name } = state.data;
+  // stage_key comes straight from computeOrderStage() (server/utils/
+  // order-stage.js) via GET /api/track/:token (server/routes/track.js) — no
+  // client-side label→key reverse mapping needed (fix-round finding B5,
+  // whole-branch review 2026-09-11; the earlier LABEL_TO_KEY table was
+  // fragile string-coupling across a process boundary that would silently
+  // fall back to 'new' the moment a label's wording changed without the
+  // map being updated in lockstep).
+  const tracking = getTrackingSteps(order_type, stage_key);
 
   return (
     <ScrollView contentContainerStyle={styles.container}>
