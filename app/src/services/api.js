@@ -1030,6 +1030,11 @@ class ApiService {
     return this.request('/sales/customer-order', { method: 'POST', body: JSON.stringify(data) });
   }
 
+  // ─── Public order tracking (no auth) ──────────────────────
+  getTrackingInfo(token) {
+    return this.request(`/track/${token}`);
+  }
+
   // ─── Attendance ───────────────────────────────────────────
   clockIn(data) {
     return this.request('/attendance/clock-in', { method: 'POST', body: JSON.stringify(data) });
