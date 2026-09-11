@@ -471,18 +471,12 @@ export default function DeliveriesScreen({ navigation }) {
     });
   };
 
-  // Enters batch mode with a specific id set — used by "select all in this
-  // route" and (indirectly) long-press. Deliberately does NOT open any
-  // picker itself: since this screen now has two bulk actions (Assign
-  // Rider / Assign Route), opening one automatically would silently pick
-  // for the user. The batch bar's own two buttons open the right picker
-  // once the user chooses.
-  const selectForBatch = (idsOverride) => {
-    const ids = idsOverride && idsOverride.size > 0 ? idsOverride : selectedIds;
-    if (ids.size === 0) {
-      showAlert('Info', 'Select at least one delivery');
-      return;
-    }
+  // Enters batch mode with a specific id set — called by selectAllInRoute.
+  // Deliberately does NOT open any picker itself: since this screen now has
+  // two bulk actions (Assign Rider / Assign Route), opening one automatically
+  // would silently pick for the user. The batch bar's own two buttons open
+  // the right picker once the user chooses.
+  const selectForBatch = (ids) => {
     setBatchMode(true);
     setSelectedIds(ids);
   };

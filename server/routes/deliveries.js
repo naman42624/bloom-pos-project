@@ -425,7 +425,11 @@ router.post(
 // the two terminal statuses (a route tag on a finished/cancelled delivery
 // is meaningless); every other status is eligible, wider than
 // /batch-assign's rider allow-list since a route tag stays meaningful
-// through picked_up/in_transit.
+// through picked_up/in_transit. This wider allow-list is currently
+// reachable only via direct API calls — DeliveriesScreen.js gates its
+// selection UI more narrowly via ASSIGNABLE_STATUSES (pending/assigned/failed),
+// so picked_up/in_transit deliveries never reach this endpoint from the UI.
+// Widening the UI's selection gate to match is a deliberate future follow-up.
 router.post(
   '/batch-assign-route',
   authenticate,
