@@ -420,3 +420,56 @@ pm2 restart bloomcart-api
 ## 16) Current Project-Specific Note
 
 Before deleting SQLite permanently, ensure runtime in `server/config/database.js` is fully switched to PostgreSQL and all routes are validated against PostgreSQL.
+
+---
+
+## 17) ⚠️ Customer Tracking Link — Web Hosting Not Yet Set Up (Action Required Before This Feature Works in Production)
+
+**Status as of 2026-09-11: not built, not deployed. Documented here so this isn't silently assumed to work.**
+
+This guide's whole scope (see §1/title) is the **backend API only** — a Node/Express process behind Nginx on `:3001`. The customer-facing order-tracking page (`app/src/screens/TrackingScreen.js`, reached at `<PUBLIC_APP_URL>/track/<token>` — the link sent via the Share Tracking Link button and the `tracking_link` WhatsApp message template) is a **web build of the Expo app**, and nothing in this repo or this guide builds or serves one. §6.3 documents setting `PUBLIC_APP_URL` so the *link itself* points at the right domain, but that domain currently has nothing at `/track/*` to serve.
+
+**What actually happens today if a customer taps a tracking link in production:** §9's Nginx config proxies `location / { proxy_pass http://127.0.0.1:3001; }` — literally every path, unconditionally — straight to the Express API process. Express has no route for `/track/<token>` (only `GET /api/track/<token>` exists, under `/api`). The request 404s at the Express layer. The customer never sees `TrackingScreen.js` at all; nothing in the current deployment path can reach it.
+
+**What's actually needed (not done here — this section is documentation, not a build step):**
+
+1. **Produce a static web build of the app.** No build script for this exists in `app/package.json` today (only `expo start --web`, a dev server). The likely command is:
+   ```bash
+   cd app
+   npx expo export -p web
+   ```
+   Confirm the actual output directory name for the Expo SDK version this project pins (`dist/` on recent SDKs, `web-build/` on older ones) — verify by running it once rather than assuming. This has never been run for this project; treat the first attempt as a spike, not a known-working step. Given this app uses React Navigation (not Expo Router), also confirm the export succeeds cleanly and `App.js`'s pathname-bypass check (see `App.js`, the `/^\/track\/([^/]+)$/` match before `AuthProvider` mounts) actually runs correctly from the exported static bundle before trusting this in production.
+
+2. **Serve that build from Nginx with SPA-style fallback routing**, as a *separate* server block from §9's API-only config — today's single `location / { proxy_pass ...}` block cannot do both jobs. Sketch (adapt paths/domain, verify before using):
+   ```nginx
+   server {
+       listen 80;
+       server_name your-shop-domain.com;   # same domain as PUBLIC_APP_URL
+
+       root /var/www/bloomcart/app/dist;   # verify actual export output dir, see step 1
+       index index.html;
+
+       # API calls from the exported web bundle itself still need to reach
+       # the backend — proxy /api/ through, same target §9 already uses.
+       location /api/ {
+           proxy_pass http://127.0.0.1:3001;
+           proxy_http_version 1.1;
+           proxy_set_header Host $host;
+           proxy_set_header X-Real-IP $remote_addr;
+           proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+           proxy_set_header X-Forwarded-Proto $scheme;
+       }
+
+       # Everything else (including /track/<token>) falls back to
+       # index.html so the app's own client-side path check can run —
+       # this is the actual fix for the 404 described above.
+       location / {
+           try_files $uri $uri/ /index.html;
+       }
+   }
+   ```
+   If `PUBLIC_APP_URL` and the API's own public domain (§9) are meant to be the same domain, these two server blocks need reconciling (e.g. one Nginx site handling both `/api/*` → backend and everything else → the static web build) rather than run as truly independent configs — work out the real domain/subdomain split for this shop's setup before wiring TLS (§10) for it.
+
+3. **Re-verify after wiring this up**, the same way the original tracking-page plan's own testing section (`docs/superpowers/specs/2026-09-11-customer-tracking-page-design.md` §7) verified it locally: open a real `tracking_url` in a private/incognito browser tab against the *production* domain, confirm it renders `TrackingScreen.js` and never touches the login screen, confirm an invalid token shows the friendly not-found state, confirm the Share Tracking Link button's WhatsApp message opens a link that actually resolves to the tracking page rather than a 404.
+
+**Until this is done, treat the tracking-link feature as backend-complete but not customer-reachable in production** — the Share Tracking Link buttons on Orders Inbox/Deliveries and the `tracking_link` WhatsApp message will all produce links that currently 404 for a real customer.
