@@ -37,6 +37,15 @@ router.get('/:token', async (req, res, next) => {
         sale_number: sale.sale_number,
         order_type: sale.order_type,
         stage_label: stage.label,
+        // Added 2026-09-11 (whole-branch review finding B5): the frontend
+        // originally had to reverse-map stage_label back to a stage key via
+        // its own hand-maintained LABEL_TO_KEY table — fragile
+        // string-coupling across a process boundary that would silently
+        // break (fall back to 'new') the moment a label's wording changed
+        // in order-stage.js without the frontend map being updated in
+        // lockstep. computeOrderStage() already computes the key; sending
+        // it directly removes the duplicate mapping entirely.
+        stage_key: stage.key,
         scheduled_date: sale.scheduled_date,
         scheduled_time: sale.scheduled_time,
         location_name: sale.location_name,

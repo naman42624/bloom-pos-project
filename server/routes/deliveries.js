@@ -165,8 +165,17 @@ router.get('/', authenticate, authorize('owner', 'manager', 'delivery_partner', 
     if (delivery_partner_id && req.user.role !== 'delivery_partner') {
       sql += ' AND d.delivery_partner_id = ?'; params.push(parseInt(delivery_partner_id));
     }
-    if (date_from) { sql += ' AND DATE(d.created_at) >= ?'; params.push(date_from); }
-    if (date_to) { sql += ' AND DATE(d.created_at) <= ?'; params.push(date_to); }
+    // Fixed 2026-09-11 (whole-branch review finding A1): this used to filter
+    // on d.created_at (when the delivery ROW was created) instead of
+    // d.scheduled_date (when the delivery is actually due) — reproduced live
+    // against delivery 96 (created 2026-09-01, scheduled 2026-09-03): a
+    // "Today" filter on 09-03 wrongly excluded it. 13 of 38 live scheduled
+    // deliveries had created_at != scheduled_date. A delivery with no
+    // scheduled_date is correctly excluded from a date-range filter (there's
+    // no date to match), matching how "Today"/"This Week" already read
+    // elsewhere in this file (e.g. the at-risk query above).
+    if (date_from) { sql += ' AND DATE(d.scheduled_date) >= ?'; params.push(date_from); }
+    if (date_to) { sql += ' AND DATE(d.scheduled_date) <= ?'; params.push(date_to); }
 
     if (search) {
       const s = `%${search}%`;
