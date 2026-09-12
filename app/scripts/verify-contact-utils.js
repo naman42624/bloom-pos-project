@@ -21,9 +21,26 @@ assert.strictEqual(
   buildMessage('order_ready_pickup', { sale_number: 'INV-123', location_name: 'Main Shop' }),
   'Hi, your order INV-123 is ready for pickup at Main Shop.'
 );
+// Rewritten 2026-09-13 (staff-ux request) to include the customer's name
+// and a scheduled-date label alongside the link, with graceful fallbacks
+// for either being absent — three cases, not just the happy path.
+assert.strictEqual(
+  buildMessage('tracking_link', {
+    sale_number: 'INV-123', tracking_url: 'https://example.com/track/abc',
+    customer_name: 'Priya', scheduled_label: 'Today, 6:00 PM',
+  }),
+  'Hi Priya, your order INV-123 is scheduled for Today, 6:00 PM.\nTrack it here: https://example.com/track/abc',
+  'Expected the full case (name + schedule) to greet by name and state the schedule'
+);
 assert.strictEqual(
   buildMessage('tracking_link', { sale_number: 'INV-123', tracking_url: 'https://example.com/track/abc' }),
-  'Hi, you can track your order INV-123 here: https://example.com/track/abc'
+  'Hi, here\'s your order INV-123.\nTrack it here: https://example.com/track/abc',
+  'Expected no customer_name/scheduled_label to fall back to a plain greeting and drop the schedule clause entirely, not print "undefined" or "scheduled for"'
+);
+assert.strictEqual(
+  buildMessage('tracking_link', { sale_number: 'INV-123', tracking_url: 'https://example.com/track/abc', customer_name: 'Priya' }),
+  'Hi Priya, here\'s your order INV-123.\nTrack it here: https://example.com/track/abc',
+  'Expected a name with no schedule to still greet by name, just skip the schedule clause'
 );
 assert.strictEqual(
   buildMessage('rider_handoff', { name: 'Vishal', total: 500, count: 3 }),
