@@ -5,7 +5,7 @@ import {
   KeyboardAvoidingView, Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useFocusEffect, useNavigation } from '@react-navigation/native';
+import { useFocusEffect, useNavigation, useRoute } from '@react-navigation/native';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 import { getShopTodayStr, formatTime } from '../utils/datetime';
@@ -32,6 +32,7 @@ const PAYMENT_METHODS = [
 
 export default function ExpensesScreen() {
   const navigation = useNavigation();
+  const route = useRoute();
   const { settings } = useAuth();
   const timezone = settings?.timezone?.value || 'Asia/Kolkata';
   const [expenses, setExpenses] = useState([]);
@@ -43,6 +44,17 @@ export default function ExpensesScreen() {
 
   // Add modal
   const [showAdd, setShowAdd] = useState(false);
+
+  // Dashboard's "Add Expense" quick action (2026-09-13, staff-ux fix — the
+  // path had crept to 3 taps: open Cash Register, tap Expenses, tap Add
+  // Expense) navigates straight here with openAdd:true so the form is ready
+  // to fill in immediately instead of landing on the list first. Runs once
+  // on mount, not via useFocusEffect — this screen unmounts on back
+  // navigation like any other stack screen, so a plain mount-time check
+  // can't re-fire from a stale param on refocus.
+  useEffect(() => {
+    if (route.params?.openAdd) setShowAdd(true);
+  }, []);
   const [amount, setAmount] = useState('');
   const [description, setDescription] = useState('');
   const [category, setCategory] = useState('petty_cash');
