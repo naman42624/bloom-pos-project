@@ -103,6 +103,7 @@ import LiveDeliveryMapScreen from '../screens/LiveDeliveryMapScreen';
 import NotificationCenterScreen from '../screens/NotificationCenterScreen';
 import NotificationBell from '../components/NotificationBell';
 import SwitchUserButton from '../components/SwitchUserButton';
+import HeaderActions from '../components/HeaderActions';
 import usePushNotifications from '../hooks/usePushNotifications';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -132,7 +133,7 @@ function DashboardStack() {
         component={DashComponent}
         options={({ navigation }) => ({
           title: useV2 ? 'Dashboard V2' : 'Dashboard',
-          headerRight: () => <NotificationBell navigation={navigation} />,
+          headerRight: () => <HeaderActions navigation={navigation} />,
         })}
       />
       <Stack.Screen name="Notifications" component={NotificationCenterScreen} options={{ title: 'Notifications' }} />
@@ -291,11 +292,19 @@ function ProfileStack() {
         component={ProfileScreen}
         options={({ navigation }) => ({
           title: 'Profile',
-          headerRight: () => <NotificationBell navigation={navigation} />,
+          headerRight: () => <HeaderActions navigation={navigation} />,
         })}
       />
       <Stack.Screen name="Settings" component={SettingsScreen} options={{ title: 'Settings' }} />
       <Stack.Screen name="Notifications" component={NotificationCenterScreen} options={{ title: 'Notifications' }} />
+      {/* employee/counter_staff's own path to Customers (2026-09-13, staff-
+          ux fix) — owner/manager already have it via the More tab; these
+          two roles previously only had a small floating button on Orders
+          Inbox, easy to forget was there. Registered locally here (not just
+          reachable via the Orders Inbox button's cross-tab jump) so it also
+          shows up as a real, browsable menu item on the tab these roles
+          already open for account-level things. */}
+      <Stack.Screen name="Customers" component={CustomersScreen} options={{ title: 'Customers' }} />
     </Stack.Navigator>
   );
 }
@@ -525,7 +534,7 @@ function DeliveryPartnerStack() {
         component={DeliveriesScreen}
         options={({ navigation }) => ({
           title: 'My Deliveries',
-          headerRight: () => <NotificationBell navigation={navigation} />,
+          headerRight: () => <HeaderActions navigation={navigation} />,
         })}
       />
       <Stack.Screen name="DeliveryDetail" component={DeliveryDetailScreen} options={{ title: 'Delivery' }} />
@@ -543,7 +552,7 @@ function CustomerOrdersStack() {
         component={CustomerOrdersScreen}
         options={({ navigation }) => ({
           title: 'My Orders',
-          headerRight: () => <NotificationBell navigation={navigation} />,
+          headerRight: () => <HeaderActions navigation={navigation} />,
         })}
       />
       <Stack.Screen name="Shop" component={CustomerShopScreen} options={{ title: 'Shop' }} />

@@ -5,7 +5,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
-import { formatCardDateTime, formatTime } from '../utils/datetime';
+import { formatCardDateTime, formatTime, getShopTodayStr, getShopTomorrowStr, formatScheduledLabel } from '../utils/datetime';
 import { showAlert } from '../utils/alert';
 import StageBadge from '../components/StageBadge';
 import ContactButtons from '../components/orders/ContactButtons';
@@ -44,7 +44,8 @@ function formatAmount(value) {
 }
 
 export default function OrdersInboxScreen({ navigation, route }) {
-  const { user, activeLocation } = useAuth();
+  const { user, activeLocation, settings } = useAuth();
+  const timezone = settings?.timezone?.value || 'Asia/Kolkata';
   // Owner/manager already have full Customers access via the More tab —
   // this shortcut is only for employee/counter_staff, who don't have a
   // 'Customers' route registered in their stack's owner/manager sibling
@@ -180,6 +181,14 @@ export default function OrdersInboxScreen({ navigation, route }) {
     if (route.params?.status !== undefined) list.setFilter('status', route.params.status || undefined);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [route.params?.status]);
+
+  // Same seeding pattern, for the Dashboard's "Tomorrow: N orders" shortcut
+  // (counter_staff/owner-manager branches) landing here with
+  // { filter_date: '<tomorrow's date>' } (2026-09-13, staff-ux fix).
+  useEffect(() => {
+    if (route.params?.filter_date !== undefined) list.setFilter('filter_date', route.params.filter_date || undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [route.params?.filter_date]);
 
   // list.refresh() depends on `filters` (and therefore, e.g., the status
   // filter above) — so unlike the ORIGINAL file's fetchOrders (which only
@@ -517,7 +526,12 @@ export default function OrdersInboxScreen({ navigation, route }) {
               onPress={(e) => {
                 e.stopPropagation();
                 const phone = item.customer_display_phone || item.customer_phone;
-                Linking.openURL(waLink(phone, buildMessage('tracking_link', { sale_number: item.sale_number, tracking_url: item.tracking_url })));
+                Linking.openURL(waLink(phone, buildMessage('tracking_link', {
+                  sale_number: item.sale_number,
+                  tracking_url: item.tracking_url,
+                  customer_name: item.customer_display_name || item.customer_name,
+                  scheduled_label: formatScheduledLabel(item.scheduled_date, item.scheduled_time, timezone),
+                })));
               }}
               hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
             >
@@ -576,6 +590,7 @@ export default function OrdersInboxScreen({ navigation, route }) {
       <ActiveFilterChips
         filters={{
           channel: list.filters.channel, priority: list.filters.priority, order_type: list.filters.order_type,
+          filter_date: list.filters.filter_date,
           // Only owner ever gets a removable "Location: X" chip — a manager's
           // location is auto-scoped, not a filter THEY chose to set, so
           // showing it as a dismissable chip would invite tapping "x" into a
@@ -587,6 +602,7 @@ export default function OrdersInboxScreen({ navigation, route }) {
           channel: (v) => `Channel: ${v}`,
           priority: () => '🔥 Rush only',
           order_type: (v) => `Type: ${ORDER_TYPE_LABELS[v] || v}`,
+          filter_date: (v) => `Scheduled: ${v === getShopTodayStr(timezone) ? 'Today' : v === getShopTomorrowStr(timezone) ? 'Tomorrow' : v}`,
           location_id: (v) => `Location: ${locations.find((l) => l.id === v)?.name || v}`,
         }}
         onRemove={(key) => list.setFilter(key, undefined)}
@@ -596,13 +612,13 @@ export default function OrdersInboxScreen({ navigation, route }) {
         // here instead. location_id is deliberately excluded for the same
         // reason it's excluded from the chip set above — Clear All never
         // resets a manager out of their own scoped location.
-        onClearAll={() => { list.setFilter('channel', undefined); list.setFilter('priority', undefined); list.setFilter('order_type', undefined); if (isOwner) list.setFilter('location_id', undefined); }}
+        onClearAll={() => { list.setFilter('channel', undefined); list.setFilter('priority', undefined); list.setFilter('order_type', undefined); list.setFilter('filter_date', undefined); if (isOwner) list.setFilter('location_id', undefined); }}
       />
 
       <FilterDrawer
         visible={filtersOpen}
         onClose={() => setFiltersOpen(false)}
-        onClearAll={() => { list.setFilter('channel', undefined); list.setFilter('priority', undefined); list.setFilter('order_type', undefined); if (isOwner) list.setFilter('location_id', undefined); setFiltersOpen(false); }}
+        onClearAll={() => { list.setFilter('channel', undefined); list.setFilter('priority', undefined); list.setFilter('order_type', undefined); list.setFilter('filter_date', undefined); if (isOwner) list.setFilter('location_id', undefined); setFiltersOpen(false); }}
         sections={[
           ...(isManager ? [{
             key: 'location', label: 'Location', value: list.filters.location_id ?? null,
@@ -633,6 +649,24 @@ export default function OrdersInboxScreen({ navigation, route }) {
             key: 'order_type', label: 'Order type', value: list.filters.order_type ?? null,
             onChange: (v) => list.setFilter('order_type', v || undefined),
             options: [null, 'walk_in', 'pickup', 'delivery', 'pre_order'].map((t) => ({ value: t, label: t ? (ORDER_TYPE_LABELS[t] || t) : 'All types' })),
+          },
+          {
+            // Added 2026-09-13 (staff-ux fix): evening prep planning needs
+            // "what's due tomorrow," and this screen had no date filter at
+            // all — unlike DeliveriesScreen's date_from/date_to, this uses
+            // the backend's existing `filter_date` param (GET /sales,
+            // server/routes/sales.js), a single-day EXACT match against
+            // s.scheduled_date — the correct column. date_from/date_to on
+            // this same route filters s.created_at instead (a separate,
+            // pre-existing, out-of-scope-here bug), so this deliberately
+            // does NOT reuse those two params.
+            key: 'scheduled', label: 'Scheduled', value: list.filters.filter_date ?? null,
+            onChange: (v) => list.setFilter('filter_date', v || undefined),
+            options: [
+              { value: null, label: 'Any date' },
+              { value: getShopTodayStr(timezone), label: 'Today' },
+              { value: getShopTomorrowStr(timezone), label: 'Tomorrow' },
+            ],
           },
         ]}
       />
@@ -753,8 +787,14 @@ export default function OrdersInboxScreen({ navigation, route }) {
           this screen is also reachable by their OrdersStack, which has no
           'Customers' route registered. */}
       {showCustomersShortcut && (
+        // Widened to a labeled pill (2026-09-13, staff-ux fix) — an
+        // icon-only circle floating in the corner was easy to forget was
+        // there at all, let alone what it did. Now also reachable from the
+        // Profile tab's own Customers menu item, so this is a secondary
+        // path, not the only one.
         <TouchableOpacity style={styles.fabSecondary} onPress={() => navigation.navigate('Customers')}>
-          <Ionicons name="people" size={22} color={Colors.primary} />
+          <Ionicons name="people" size={20} color={Colors.primary} />
+          <Text style={styles.fabSecondaryText}>Customers</Text>
         </TouchableOpacity>
       )}
 
@@ -829,5 +869,8 @@ const styles = StyleSheet.create({
   deadEndStatus: { flex: 1, fontSize: FontSize.sm, color: Colors.textSecondary, fontStyle: 'italic' },
   shareLinkBtn: { width: 44, height: 44, borderRadius: BorderRadius.full, alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.surfaceAlt },
   fab: { position: 'absolute', right: Spacing.lg, bottom: Spacing.lg, width: 56, height: 56, borderRadius: 28, backgroundColor: Colors.primary, justifyContent: 'center', alignItems: 'center', elevation: 4, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 4 },
-  fabSecondary: { position: 'absolute', right: Spacing.lg, bottom: Spacing.lg + 68, width: 44, height: 44, borderRadius: 22, backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.border, justifyContent: 'center', alignItems: 'center', elevation: 3, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.15, shadowRadius: 3 },
+  // Widened from a 44x44 circle to a labeled pill (2026-09-13, staff-ux
+  // fix) — height/minHeight kept at 44 so the tap target doesn't shrink.
+  fabSecondary: { position: 'absolute', right: Spacing.lg, bottom: Spacing.lg + 68, minHeight: 44, paddingHorizontal: 16, borderRadius: 22, backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.border, flexDirection: 'row', alignItems: 'center', gap: 6, justifyContent: 'center', elevation: 3, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.15, shadowRadius: 3 },
+  fabSecondaryText: { fontSize: FontSize.sm, fontWeight: '700', color: Colors.primary },
 });

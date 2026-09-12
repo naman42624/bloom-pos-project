@@ -7,7 +7,7 @@ import api from '../services/api';
 import { showAlert } from '../utils/alert';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import {
-  parseServerDate, formatDateTime, formatShopDateLabel,
+  parseServerDate, formatDateTime, formatShopDateLabel, formatScheduledLabel,
   getShopNow, getShopTodayStr, getShopTomorrowStr, DEFAULT_TZ
 } from '../utils/datetime';
 import StageBadge from '../components/StageBadge';
@@ -1068,7 +1068,12 @@ export default function DeliveriesScreen({ navigation }) {
               style={styles.shareLinkBtn}
               onPress={(e) => {
                 e.stopPropagation();
-                Linking.openURL(waLink(item.customer_phone, buildMessage('tracking_link', { sale_number: item.sale_number, tracking_url: item.tracking_url })));
+                Linking.openURL(waLink(item.customer_phone, buildMessage('tracking_link', {
+                  sale_number: item.sale_number,
+                  tracking_url: item.tracking_url,
+                  customer_name: item.customer_name,
+                  scheduled_label: formatScheduledLabel(item.scheduled_date, item.scheduled_time, timezone),
+                })));
               }}
               hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
             >

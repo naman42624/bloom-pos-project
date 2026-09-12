@@ -36,7 +36,31 @@ const TEMPLATES = {
   order_ready_pickup: (p) => `Hi, your order ${p.sale_number} is ready for pickup at ${p.location_name}.`,
   order_out_for_delivery: (p) => `Hi, your order ${p.sale_number} is out for delivery.`,
   rider_handoff: (p) => `Hi ${p.name}, please hand over ₹${p.total} from ${p.count} deliveries when you're at the shop.`,
-  tracking_link: (p) => `Hi, you can track your order ${p.sale_number} here: ${p.tracking_url}`,
+  // Rewritten 2026-09-13 (staff-ux request) to name the customer and the
+  // order's schedule, not just its number — p.customer_name and
+  // p.scheduled_label are both optional and gracefully omitted (a bare
+  // walk_in with no name on file, or no scheduled_date at all, still gets
+  // a sensible message instead of "Hi undefined" or "scheduled for").
+  // p.scheduled_label should already be a formatted string (see
+  // formatScheduledLabel in utils/datetime.js) — this template does no
+  // date parsing of its own.
+  //
+  // The URL sits on its own line, not inline in the sentence — the closest
+  // thing to "not showing the raw link" WhatsApp text messages actually
+  // allow. WhatsApp does NOT support markdown-style [text](url) hyperlinks
+  // in plain messages (that's only available via the WhatsApp Business
+  // API's interactive message templates, a deliberately-deferred feature —
+  // see CLAUDE.md's "WhatsApp needs no API integration" decision) — a
+  // wa.me deep link always shows the full URL as visible text, with no way
+  // to swap in friendlier display text. Don't re-attempt this without
+  // adopting that API first.
+  tracking_link: (p) => {
+    const greeting = p.customer_name ? `Hi ${p.customer_name},` : 'Hi,';
+    const body = p.scheduled_label
+      ? `your order ${p.sale_number} is scheduled for ${p.scheduled_label}.`
+      : `here's your order ${p.sale_number}.`;
+    return `${greeting} ${body}\nTrack it here: ${p.tracking_url}`;
+  },
   general_inquiry: (p) => `Hi, this is about your order ${p.sale_number}.`,
 };
 

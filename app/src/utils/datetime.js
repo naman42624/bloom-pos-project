@@ -262,6 +262,27 @@ export function formatShopDateLabel(value, timezone = DEFAULT_TZ) {
 }
 
 /**
+ * "Today, 6:00 PM" / "Tomorrow" / "9 Jun" — a friendly one-line schedule
+ * label for customer-facing text (added 2026-09-13, for the WhatsApp
+ * tracking-link message). Composes formatShopDateLabel + formatTimeString
+ * deliberately, not formatTime on a joined `${date}T${time}` string —
+ * scheduled_date/scheduled_time are shop-local wall-clock values, not UTC,
+ * and formatTime's underlying parseServerDate would treat an unmarked
+ * 'T'-containing string as UTC and double-convert it (the exact bug
+ * TrackingScreen.js's own identical comment already documents — same
+ * fix, reused here). Returns '' when there's no scheduled_date at all
+ * (a walk_in, or any order logged without one) — callers decide their own
+ * fallback copy for that case, this never invents a date.
+ */
+export function formatScheduledLabel(scheduledDate, scheduledTime, timezone = DEFAULT_TZ) {
+  if (!scheduledDate) return '';
+  const dateLabel = formatShopDateLabel(scheduledDate, timezone);
+  if (!dateLabel) return '';
+  const timeLabel = formatTimeString(scheduledTime);
+  return timeLabel ? `${dateLabel}, ${timeLabel}` : dateLabel;
+}
+
+/**
  * Shop-timezone YYYY-MM-DD key for grouping orders by calendar day,
  * regardless of device timezone. Returns null for an unparseable value —
  * callers (e.g. groupOrdersByDay) must handle that, not assume a string.

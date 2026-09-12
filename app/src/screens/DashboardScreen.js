@@ -19,7 +19,7 @@ import useBreakpoint from '../hooks/useBreakpoint';
 import api from '../services/api';
 import { showAlert } from '../utils/alert';
 import { Colors, FontSize, Spacing } from '../constants/theme';
-import { parseServerDate, getShopNow, getShopTodayStr, DEFAULT_TZ, formatTimeString, formatDateLabel } from '../utils/datetime';
+import { parseServerDate, getShopNow, getShopTodayStr, getShopTomorrowStr, DEFAULT_TZ, formatTimeString, formatDateLabel } from '../utils/datetime';
 import { isRegisterStale } from '../hooks/useRegisterStatus';
 import { OrderQuickModal } from '../components/QuickModals';
 import OrderKanbanBoard from '../components/orderBoard/OrderKanbanBoard';
@@ -1207,9 +1207,14 @@ export default function DashboardScreen({ navigation }) {
   // in with what actually needs attention right now (2026-08-31 fix).
   const counterOrdersSplit = useMemo(() => {
     const todayStr = getShopTodayStr(DEFAULT_TZ);
+    const tomorrowStr = getShopTomorrowStr(DEFAULT_TZ);
     return {
       dueToday: counterPendingOrders.filter((o) => !o.scheduled_date || o.scheduled_date <= todayStr),
       scheduledLater: counterPendingOrders.filter((o) => o.scheduled_date && o.scheduled_date > todayStr),
+      // Staff-ux fix, 2026-09-13 — see myTasksSplit.dueTomorrow's comment for
+      // the full reasoning; same fix, applied here for counter staff's own
+      // pending-orders list.
+      dueTomorrow: counterPendingOrders.filter((o) => o.scheduled_date === tomorrowStr),
     };
   }, [counterPendingOrders]);
 
@@ -1236,10 +1241,17 @@ export default function DashboardScreen({ navigation }) {
   // the active (not completed/cancelled) task list (2026-08-31 fix).
   const myTasksSplit = useMemo(() => {
     const todayStr = getShopTodayStr(DEFAULT_TZ);
+    const tomorrowStr = getShopTomorrowStr(DEFAULT_TZ);
     const active = myTasks.filter((t) => t.status !== 'completed' && t.status !== 'cancelled');
     return {
       dueToday: active.filter((t) => !t.scheduled_date || t.scheduled_date <= todayStr),
       scheduledLater: active.filter((t) => t.scheduled_date && t.scheduled_date > todayStr),
+      // Split out specifically (staff-ux fix, 2026-09-13): the evening-prep
+      // problem is "what's due tomorrow morning," not "what's scheduled at
+      // some unspecified later point" — scheduledLater already lumped
+      // tomorrow in with everything further out, and was only ever shown as
+      // a dead "+N more" count, never a real list to act on.
+      dueTomorrow: active.filter((t) => t.scheduled_date === tomorrowStr),
     };
   }, [myTasks]);
 
@@ -1274,20 +1286,33 @@ export default function DashboardScreen({ navigation }) {
           <View style={styles.scopeCard}>
             <View style={[styles.rowBetween, { marginBottom: 8 }]}>
               <Text style={styles.scopeLabel}>Dashboard Filter</Text>
-              <TouchableOpacity
-                style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: Colors.primary + '15', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12, gap: 4 }}
-                onPress={() => setShowDatePicker(true)}
-              >
-                <Ionicons name="calendar" size={14} color={Colors.primary} />
-                <Text style={{ fontSize: 13, fontWeight: '600', color: Colors.primary }}>
-                  {dateScope ? dateScope.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) : 'All Time'}
-                </Text>
-                {dateScope && (
-                  <TouchableOpacity onPress={() => setDateScope(null)} hitSlop={10} style={{ marginLeft: 4 }}>
-                    <Ionicons name="close-circle" size={16} color={Colors.primary} />
-                  </TouchableOpacity>
-                )}
-              </TouchableOpacity>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                {/* One-tap "Tomorrow" — added 2026-09-13 (staff-ux fix):
+                    reaching tomorrow's board previously meant opening this
+                    calendar and navigating to the date by hand every time.
+                    Sets dateScope directly; the board underneath already
+                    re-fetches on dateScope change via filter_date. */}
+                <TouchableOpacity
+                  style={{ paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12, borderWidth: 1, borderColor: Colors.primary + '40' }}
+                  onPress={() => setDateScope(new Date(Date.now() + 86400000))}
+                >
+                  <Text style={{ fontSize: 13, fontWeight: '600', color: Colors.primary }}>Tomorrow</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: Colors.primary + '15', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12, gap: 4 }}
+                  onPress={() => setShowDatePicker(true)}
+                >
+                  <Ionicons name="calendar" size={14} color={Colors.primary} />
+                  <Text style={{ fontSize: 13, fontWeight: '600', color: Colors.primary }}>
+                    {dateScope ? dateScope.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) : 'All Time'}
+                  </Text>
+                  {dateScope && (
+                    <TouchableOpacity onPress={() => setDateScope(null)} hitSlop={10} style={{ marginLeft: 4 }}>
+                      <Ionicons name="close-circle" size={16} color={Colors.primary} />
+                    </TouchableOpacity>
+                  )}
+                </TouchableOpacity>
+              </View>
             </View>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.scopeChipsRow}>
               {isOwner && (
@@ -1487,6 +1512,39 @@ export default function DashboardScreen({ navigation }) {
               </TouchableOpacity>
             </View>
 
+            {/* Added 2026-09-13 (staff-ux fix): counter staff's only path to
+                add an expense was Register card -> Expenses -> Add Expense,
+                3 taps. Straight to the add form in one, matching the same
+                fix given to the owner/manager FAB modal above. */}
+            <TouchableOpacity
+              style={styles.codBannerCompact}
+              onPress={() => navigation.navigate('POS', { screen: 'Expenses', params: { openAdd: true } })}
+            >
+              <Ionicons name="receipt-outline" size={20} color="#92400E" />
+              <Text style={styles.codBannerCompactText}>Add an expense</Text>
+              <Ionicons name="chevron-forward" size={16} color="#92400E" />
+            </TouchableOpacity>
+
+            {/* Added 2026-09-13 (staff-ux fix): evening prep planning needs
+                "what's due tomorrow morning," and this used to mean checking
+                several separate screens. One tap here lands on Orders Inbox
+                already filtered to tomorrow's scheduled orders (across every
+                order type — pickup, delivery, pre_order — not just
+                production tasks). Always shown when there's something to
+                see, not buried behind a tap first. */}
+            {counterOrdersSplit.dueTomorrow.length > 0 && (
+              <TouchableOpacity
+                style={styles.codBannerCompact}
+                onPress={() => navigation.navigate('EmployeeOrders', { screen: 'OrdersInbox', params: { filter_date: getShopTomorrowStr(DEFAULT_TZ) } })}
+              >
+                <Ionicons name="calendar-outline" size={20} color="#92400E" />
+                <Text style={styles.codBannerCompactText}>
+                  {counterOrdersSplit.dueTomorrow.length} order{counterOrdersSplit.dueTomorrow.length !== 1 ? 's' : ''} scheduled for tomorrow
+                </Text>
+                <Ionicons name="chevron-forward" size={16} color="#92400E" />
+              </TouchableOpacity>
+            )}
+
             {counterRegisterStale && (
               <TouchableOpacity style={styles.codBannerCompact} onPress={() => navigation.navigate('POS', { screen: 'CashRegister' })}>
                 <Ionicons name="time-outline" size={20} color="#92400E" />
@@ -1609,6 +1667,41 @@ export default function DashboardScreen({ navigation }) {
                 </TouchableOpacity>
               )}
             </View>
+
+            {/* employee only, not florist_staff — same reasoning as the
+                Register card above (florist_staff never takes payments or
+                logs expenses). Added 2026-09-13, same staff-ux fix as the
+                counter_staff and owner/manager branches. */}
+            {role === 'employee' && (
+              <TouchableOpacity
+                style={styles.codBannerCompact}
+                onPress={() => navigation.navigate('POS', { screen: 'Expenses', params: { openAdd: true } })}
+              >
+                <Ionicons name="receipt-outline" size={20} color="#92400E" />
+                <Text style={styles.codBannerCompactText}>Add an expense</Text>
+                <Ionicons name="chevron-forward" size={16} color="#92400E" />
+              </TouchableOpacity>
+            )}
+
+            {/* Both employee and florist_staff (not role-gated like Register/
+                Expense above — production tasks are a florist_staff thing
+                too, and this IS the florist's own screen). Added 2026-09-13,
+                staff-ux fix: evening prep planning for tomorrow morning
+                previously meant a trip to Production Queue and then manually
+                tapping its own Tomorrow chip — this lands there already
+                scoped. Always shown, not buried behind "+N more" text. */}
+            {myTasksSplit.dueTomorrow.length > 0 && (
+              <TouchableOpacity
+                style={styles.codBannerCompact}
+                onPress={() => navigation.navigate('ProductionQueue', { initialDate: getShopTomorrowStr(DEFAULT_TZ) })}
+              >
+                <Ionicons name="calendar-outline" size={20} color="#92400E" />
+                <Text style={styles.codBannerCompactText}>
+                  {myTasksSplit.dueTomorrow.length} task{myTasksSplit.dueTomorrow.length !== 1 ? 's' : ''} to prepare for tomorrow
+                </Text>
+                <Ionicons name="chevron-forward" size={16} color="#92400E" />
+              </TouchableOpacity>
+            )}
 
             {role === 'employee' && counterRegisterStale && (
               <TouchableOpacity style={styles.codBannerCompact} onPress={() => navigation.navigate('POS', { screen: 'CashRegister' })}>
@@ -2228,6 +2321,29 @@ export default function DashboardScreen({ navigation }) {
               <View style={{ flex: 1 }}>
                 <Text style={styles.quickActionName}>Cash Register</Text>
                 <Text style={styles.quickActionMeta}>Manage balance</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={16} color={Colors.textLight} />
+            </TouchableOpacity>
+
+            {/* Straight to the add-expense form, not the expenses list —
+                added 2026-09-13 (staff-ux fix): the only prior path here was
+                Cash Register -> Expenses -> Add Expense, 3 taps from the
+                Dashboard FAB for something staff do many times a day. This
+                brings it back to 2 (open FAB, tap this). */}
+            <TouchableOpacity
+              style={[styles.quickActionItem, { borderLeftColor: '#F59E0B', borderLeftWidth: 3, backgroundColor: '#FFFBEB' }]}
+              onPress={() => {
+                setFabVisible(false);
+                navigation.navigate('POS', { screen: 'Expenses', params: { openAdd: true } });
+              }}
+              activeOpacity={0.8}
+            >
+              <View style={[styles.quickActionIcon, { backgroundColor: '#F59E0B' }]}>
+                <Ionicons name="receipt" size={18} color="#fff" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.quickActionName}>Add Expense</Text>
+                <Text style={styles.quickActionMeta}>Log a cash/card/UPI expense</Text>
               </View>
               <Ionicons name="chevron-forward" size={16} color={Colors.textLight} />
             </TouchableOpacity>
