@@ -6,6 +6,7 @@ const { authenticate, authorize } = require('../middleware/auth');
 const { todayStr, nowLocal, parseServerDate, getTimezone } = require('../utils/time');
 const { normalizeSegments, matchSegmentForTime, lateMinutesFor, overtimeMinutesFor, timestampToMinutes, dayAdjustedMinutes, computeShiftWork } = require('../utils/shift-work');
 const { safeParseJSON } = require('../utils/json');
+const { hasOpenRegister, REGISTER_CLOSED_MESSAGE } = require('../utils/register-guard');
 
 // All attendance routes require auth
 router.use(authenticate);
@@ -763,15 +764,64 @@ router.put('/salary-advance/:id/:action', authorize('owner', 'manager'), (req, r
       return res.status(400).json({ success: false, message: `Cannot ${action} a ${advance.status} advance.` });
     }
 
-    const newStatus = action === 'approve' ? 'approved' : 'rejected';
-    db.prepare('UPDATE salary_advances SET status = ?, approved_by = ? WHERE id = ?')
-      .run(newStatus, req.user.id, id);
+    if (action === 'reject') {
+      db.prepare('UPDATE salary_advances SET status = ?, approved_by = ? WHERE id = ?')
+        .run('rejected', req.user.id, id);
+      const rejected = db.prepare(`
+        SELECT sa.*, u.name as user_name, a.name as approver_name
+        FROM salary_advances sa JOIN users u ON sa.user_id = u.id LEFT JOIN users a ON sa.approved_by = a.id
+        WHERE sa.id = ?
+      `).get(id);
+      return res.json({ success: true, data: rejected });
+    }
+
+    // action === 'approve' — cash physically leaves the drawer here, same
+    // as any other cash expense (see this task's header on why there's no
+    // payment-method branch: advances have no other path in this data
+    // model today).
+    const employeeLocation = db.prepare(
+      'SELECT location_id FROM user_locations WHERE user_id = ? ORDER BY is_primary DESC, id ASC LIMIT 1'
+    ).get(advance.user_id);
+    const locationId = employeeLocation ? employeeLocation.location_id : null;
+
+    if (!locationId) {
+      return res.status(400).json({ success: false, message: "This employee isn't assigned to a location yet — assign one before approving an advance." });
+    }
+    if (!hasOpenRegister(db, locationId)) {
+      return res.status(400).json({ success: false, message: `The cash drawer isn't open at this employee's location — open the register first to hand over an advance.` });
+    }
+
+    const approveTx = db.transaction(() => {
+      const openRegister = db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1').get(locationId);
+      const advanceUser = db.prepare('SELECT name FROM users WHERE id = ?').get(advance.user_id);
+
+      // Expense written first — see Task 9's header note on why write
+      // ordering, not db.transaction(), is what protects against a
+      // half-done write here.
+      const expenseResult = db.prepare(`
+        INSERT INTO expenses (location_id, category, amount, description, payment_method, expense_date, created_by, employee_id, register_id)
+        VALUES (?, 'salary', ?, ?, 'cash', ?, ?, ?, ?)
+      `).run(
+        locationId, advance.amount,
+        `Salary advance — ${advanceUser ? advanceUser.name : 'employee'}`,
+        todayStr(), req.user.id, advance.user_id,
+        openRegister ? openRegister.id : null
+      );
+
+      if (openRegister) {
+        db.prepare('UPDATE cash_registers SET expected_cash = expected_cash - ? WHERE id = ?').run(advance.amount, openRegister.id);
+      }
+
+      db.prepare('UPDATE salary_advances SET status = ?, approved_by = ? WHERE id = ?').run('approved', req.user.id, id);
+
+      return expenseResult.lastInsertRowid;
+    });
+
+    approveTx();
 
     const updated = db.prepare(`
       SELECT sa.*, u.name as user_name, a.name as approver_name
-      FROM salary_advances sa
-      JOIN users u ON sa.user_id = u.id
-      LEFT JOIN users a ON sa.approved_by = a.id
+      FROM salary_advances sa JOIN users u ON sa.user_id = u.id LEFT JOIN users a ON sa.approved_by = a.id
       WHERE sa.id = ?
     `).get(id);
 

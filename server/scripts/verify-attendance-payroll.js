@@ -335,6 +335,45 @@ check('POST /staff/payroll/disburse (bank transfer) does not require an open reg
   if (body.data.expense_id) createdExpenseIds.push(body.data.expense_id);
 });
 
+check('PUT /attendance/salary-advance/:id/approve requires an open register and writes a linked expense', async () => {
+  const owner = await loginOwner();
+  const florist = await createFloristStaffSession(owner.token);
+  const requestRes = await api('POST', '/attendance/salary-advance', florist.token, { amount: 2000, reason: 'Verify harness test' });
+  assert(requestRes.status === 201, `Could not request advance: ${requestRes.status}`);
+  createdAdvanceIds.push(requestRes.body.data.id);
+
+  const blocked = await api('PUT', `/attendance/salary-advance/${requestRes.body.data.id}/approve`, owner.token);
+  assert(blocked.status === 400, `Expected 400 with no open register, got ${blocked.status}`);
+
+  const initialStatus = await api('GET', `/sales/register/status?location_id=${TEST_LOCATION_ID}`, owner.token);
+  if (initialStatus.body?.isOpen) {
+    await api('PUT', '/sales/register/close', owner.token, { location_id: TEST_LOCATION_ID, actual_cash: Number(initialStatus.body.data.expected_cash) || 0 });
+  }
+  await api('POST', '/sales/register/open', owner.token, { location_id: TEST_LOCATION_ID, opening_balance: 5000 });
+  const before = await api('GET', `/sales/register/status?location_id=${TEST_LOCATION_ID}`, owner.token);
+  const expectedBefore = Number(before.body.data.expected_cash);
+
+  const { status, body } = await api('PUT', `/attendance/salary-advance/${requestRes.body.data.id}/approve`, owner.token);
+  assert(status === 200, `Expected 200, got ${status}: ${JSON.stringify(body)}`);
+  assert(body.data.status === 'approved', `Expected status 'approved', got '${body.data.status}'`);
+
+  const db = await getDb();
+  const expense = await db.prepare('SELECT * FROM expenses WHERE employee_id = ? AND category = ? ORDER BY id DESC LIMIT 1').get(florist.id, 'salary');
+  assert(expense, 'Expected a linked expense row to exist');
+  assert(Number(expense.amount) === 2000, `Expected expense amount 2000, got ${expense.amount}`);
+  createdExpenseIds.push(expense.id);
+
+  const after = await api('GET', `/sales/register/status?location_id=${TEST_LOCATION_ID}`, owner.token);
+  const expectedAfter = Number(after.body.data.expected_cash);
+  assert(Math.abs((expectedBefore - 2000) - expectedAfter) < 0.01, `Expected register to drop by 2000, went from ${expectedBefore} to ${expectedAfter}`);
+
+  // opening_balance (5000) comfortably covers the 2000 advance, so
+  // expectedAfter stays positive here — unlike Task 9's disburse check,
+  // no Math.max(0, ...) clamp is needed for this cleanup close. Kept
+  // anyway as cheap insurance against a future edit to the amounts above.
+  await api('PUT', '/sales/register/close', owner.token, { location_id: TEST_LOCATION_ID, actual_cash: Math.max(0, expectedAfter) });
+});
+
 async function cleanup() {
   const db = await getDb();
   for (const id of createdExpenseIds) {
