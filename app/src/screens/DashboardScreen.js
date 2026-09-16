@@ -278,6 +278,11 @@ export default function DashboardScreen({ navigation }) {
   // to already be in the open-orders array.
   const [doneTodayCount, setDoneTodayCount] = useState(0);
   const [staffPulse, setStaffPulse] = useState([]);
+  // Count for the owner/manager "N staff not clocked in" banner — set from
+  // the SAME staffRes.data.absent array used to build staffPulse below, not
+  // a second fetch (Task 20; see the setNotClockedInCount call near the
+  // `const absent = ...` line).
+  const [notClockedInCount, setNotClockedInCount] = useState(0);
   const [registers, setRegisters] = useState([]);
   const [reportKPIs, setReportKPIs] = useState(null);
 
@@ -518,6 +523,7 @@ export default function DashboardScreen({ navigation }) {
 
         const present = staffRes?.data?.present || [];
         const absent = staffRes?.data?.absent || [];
+        setNotClockedInCount(absent.length);
 
         const normalizedPresentRaw = present.map((s) => {
           let pulse = 'active';
@@ -1959,6 +1965,25 @@ export default function DashboardScreen({ navigation }) {
                   <Text style={styles.sectionSubtitle}>Tap an order to see details, or use its button to move it forward</Text>
                 </View>
               </View>
+
+              {/* "N staff not clocked in" banner (Task 20) — reuses the
+                  staffRes.data.absent array already fetched above for
+                  staffPulse, no second api.getStaffToday() call. Routes to
+                  Task 19's AttendanceHub (Today tab, the one consolidated
+                  roster) rather than the older standalone StaffAttendance
+                  screen, so there's only one "who hasn't clocked in" surface
+                  to check, not two competing ones. */}
+              {isOwnerOrManager && notClockedInCount > 0 && (
+                <TouchableOpacity
+                  style={styles.codBannerCompact}
+                  onPress={() => navigation.navigate('More', { screen: 'AttendanceHub' })}
+                >
+                  <Ionicons name="alert-circle-outline" size={16} color={Colors.warning} />
+                  <Text style={styles.codBannerCompactText}>
+                    {notClockedInCount} staff not clocked in
+                  </Text>
+                </TouchableOpacity>
+              )}
 
               <View style={{ gap: 12 }}>
                 <OrderKanbanBoard
