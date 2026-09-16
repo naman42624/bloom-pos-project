@@ -714,6 +714,24 @@ function ensureCompatibilityColumns() {
   ensureColumn('expenses', 'employee_id', 'INTEGER REFERENCES users(id) ON DELETE SET NULL');
   ensureColumn('locations', 'gst_number', 'VARCHAR(50)');
   ensureColumn('locations', 'geofence_radius', 'INTEGER DEFAULT 500');
+  // Geofencing has never actually fired in this shop (confirmed: zero rows
+  // in geofence_events, ever) — root cause is that NUMERIC(10,2) gives a
+  // ~1.1km grid at this latitude, wider than the 50m geofence radius it's
+  // meant to feed. Widening to NUMERIC(9,6) is lossless for anything
+  // already stored (every 2-decimal value fits exactly); it only allows
+  // more precise values going forward. Explicitly approved this session —
+  // a type change, not additive, per db-migration-safety. Existing values
+  // must still be RE-ENTERED with real precision afterward; this migration
+  // only changes what the column can hold, not the accuracy of what's in
+  // it today.
+  try { runPsql('ALTER TABLE locations ALTER COLUMN latitude TYPE NUMERIC(9,6)'); } catch (_) {}
+  try { runPsql('ALTER TABLE locations ALTER COLUMN longitude TYPE NUMERIC(9,6)'); } catch (_) {}
+  try { runPsql('ALTER TABLE attendance ALTER COLUMN clock_in_latitude TYPE NUMERIC(9,6)'); } catch (_) {}
+  try { runPsql('ALTER TABLE attendance ALTER COLUMN clock_in_longitude TYPE NUMERIC(9,6)'); } catch (_) {}
+  try { runPsql('ALTER TABLE attendance ALTER COLUMN clock_out_latitude TYPE NUMERIC(9,6)'); } catch (_) {}
+  try { runPsql('ALTER TABLE attendance ALTER COLUMN clock_out_longitude TYPE NUMERIC(9,6)'); } catch (_) {}
+  try { runPsql('ALTER TABLE geofence_events ALTER COLUMN latitude TYPE NUMERIC(9,6)'); } catch (_) {}
+  try { runPsql('ALTER TABLE geofence_events ALTER COLUMN longitude TYPE NUMERIC(9,6)'); } catch (_) {}
   ensureColumn('user_locations', 'is_primary', 'INTEGER DEFAULT 0');
   ensureColumn('production_tasks', 'picked_by', 'INTEGER REFERENCES users(id) ON DELETE SET NULL');
   ensureColumn('materials', 'min_stock_alert', 'INTEGER DEFAULT 10');
