@@ -708,6 +708,10 @@ function ensureCompatibilityColumns() {
 
   ensureColumn('settings', 'updated_by', 'INTEGER REFERENCES users(id) ON DELETE SET NULL');
   ensureColumn('expenses', 'is_return', 'INTEGER DEFAULT 0');
+  // Links a salary-category expense to the actual employee it was paid to —
+  // previously pure free text with no structured/queryable link at all.
+  // See docs/superpowers/specs/2026-09-16-attendance-shift-payroll-redesign-design.md §4/§9.
+  ensureColumn('expenses', 'employee_id', 'INTEGER REFERENCES users(id) ON DELETE SET NULL');
   ensureColumn('locations', 'gst_number', 'VARCHAR(50)');
   ensureColumn('locations', 'geofence_radius', 'INTEGER DEFAULT 500');
   ensureColumn('user_locations', 'is_primary', 'INTEGER DEFAULT 0');
@@ -837,6 +841,23 @@ function ensureCompatibilityColumns() {
 
   ensureColumn('salary_advances', 'repaid_amount', 'DECIMAL(10,2) DEFAULT 0');
   ensureColumn('salary_advances', 'date', 'DATE DEFAULT CURRENT_DATE');
+
+  // Traceability between a payroll disbursement (or advance approval,
+  // Task 10) and the expenses/register reconciliation row it now also
+  // writes.
+  ensureColumn('salary_payments', 'expense_id', 'INTEGER REFERENCES expenses(id) ON DELETE SET NULL');
+
+  // salary_advances.status CHECK constraint (from schema.sql) doesn't allow
+  // 'repaid', but staff-management.js's payroll auto-deduction and
+  // attendance.js's PUT /attendance/salary-advance/:id/repay both write
+  // exactly that value. Confirmed absent already on the local dev DB
+  // (hand-patched at some point, never codified here) — same
+  // "hand-patched dev, prod never got it" pattern as users_role_check
+  // elsewhere in this file. Widening only.
+  try { runPsql('ALTER TABLE salary_advances DROP CONSTRAINT IF EXISTS salary_advances_status_check'); } catch (_) {}
+  try {
+    runPsql("ALTER TABLE salary_advances ADD CONSTRAINT salary_advances_status_check CHECK(status IN ('pending', 'approved', 'paid', 'rejected', 'repaid'))");
+  } catch (_) {}
 
   ensureColumn('product_materials', 'notes', 'TEXT');
   ensureColumn('product_materials', 'created_at', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP');
