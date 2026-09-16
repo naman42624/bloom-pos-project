@@ -135,15 +135,17 @@ export default function AttendanceScreen({ navigation }) {
 
   const handleUndoAutoClockIn = async () => {
     if (!attendance?.id) return;
-    setActionLoading(true);
-    try {
-      await api.undoAutoClockIn(attendance.id);
-      await fetchData();
-    } catch (e) {
-      Alert.alert('Error', e.message || 'Failed to undo.');
-    } finally {
-      setActionLoading(false);
-    }
+    confirm('Undo Clock-In', "This will remove today's automatic clock-in. Continue?", async () => {
+      setActionLoading(true);
+      try {
+        await api.undoAutoClockIn(attendance.id);
+        await fetchData();
+      } catch (e) {
+        Alert.alert('Error', e.message || 'Failed to undo.');
+      } finally {
+        setActionLoading(false);
+      }
+    });
   };
 
   const handleMissedClockIn = async () => {
@@ -346,7 +348,7 @@ export default function AttendanceScreen({ navigation }) {
               Clocked in automatically at {attendance.location_name || 'this location'}, {formatTime(attendance.clock_in)}.
             </Text>
             <TouchableOpacity onPress={handleUndoAutoClockIn} disabled={actionLoading}>
-              <Text style={styles.undoLink}>Not working? Undo</Text>
+              <Text style={styles.undoLink}>Wasn't at work? Undo clock-in</Text>
             </TouchableOpacity>
           </View>
         )}
