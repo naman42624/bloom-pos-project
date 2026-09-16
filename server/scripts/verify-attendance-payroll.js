@@ -374,6 +374,45 @@ check('PUT /attendance/salary-advance/:id/approve requires an open register and 
   await api('PUT', '/sales/register/close', owner.token, { location_id: TEST_LOCATION_ID, actual_cash: Math.max(0, expectedAfter) });
 });
 
+// ═══════════════════════════════════════════════════════════════
+// Geofence auto-clock-in — server-side proximity check + attendance_id
+// ═══════════════════════════════════════════════════════════════
+
+check('POST /staff/geofence-event (enter) rejects an out-of-range claim rather than trusting it', async () => {
+  const owner = await loginOwner();
+  const florist = await createFloristStaffSession(owner.token);
+  const { status, body } = await api('POST', '/staff/geofence-event', florist.token, {
+    location_id: TEST_LOCATION_ID, event_type: 'enter', latitude: 12.9716, longitude: 77.5946, // Bangalore, nowhere near the shop
+  });
+  assert(status === 200, `Expected 200 (a rejected claim, not an error), got ${status}`);
+  assert(body.action !== 'auto_clock_in', `Expected the out-of-range claim to NOT trigger auto clock-in, got action='${body.action}'`);
+});
+
+check('POST /staff/geofence-event (enter, in range) auto clocks in, returns attendance_id explicitly, and creates a notification', async () => {
+  const owner = await loginOwner();
+  const florist = await createFloristStaffSession(owner.token);
+  const db = await getDb();
+  const location = await db.prepare('SELECT latitude, longitude FROM locations WHERE id = ?').get(TEST_LOCATION_ID);
+  if (!location?.latitude) {
+    console.log('   (skipped — Test Loc has no coordinates yet; this check needs Task 2\'s precision fix plus real coordinates entered)');
+    return;
+  }
+  const { status, body } = await api('POST', '/staff/geofence-event', florist.token, {
+    location_id: TEST_LOCATION_ID, event_type: 'enter', latitude: Number(location.latitude), longitude: Number(location.longitude),
+  });
+  assert(status === 200, `Expected 200, got ${status}`);
+  assert(body.action === 'auto_clock_in', `Expected action 'auto_clock_in', got '${body.action}'`);
+  assert(typeof body.attendance_id === 'number', 'Expected an explicit attendance_id, distinct from data.id (the geofence_events row)');
+  createdAttendanceIds.push(body.attendance_id);
+
+  const { body: today } = await api('GET', '/attendance/today', florist.token);
+  assert(today.data.attendance?.id === body.attendance_id, 'Expected the returned attendance_id to match the actual open session');
+
+  const { body: notifs } = await api('GET', '/notifications', florist.token);
+  const found = notifs.data.notifications.find((n) => n.type === 'attendance_auto_clockin');
+  assert(found, 'Expected a notification of type attendance_auto_clockin');
+});
+
 async function cleanup() {
   const db = await getDb();
   for (const id of createdExpenseIds) {

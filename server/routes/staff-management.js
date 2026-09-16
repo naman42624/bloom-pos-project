@@ -4,8 +4,9 @@ const { getDb } = require('../config/database');
 const { getDb: getAsyncDb } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
 const { nowLocal, todayStr } = require('../utils/time');
-const { computeShiftWork } = require('../utils/shift-work');
+const { computeShiftWork, normalizeSegments, matchSegmentForTime, lateMinutesFor, timestampToMinutes } = require('../utils/shift-work');
 const { hasOpenRegister, REGISTER_CLOSED_MESSAGE } = require('../utils/register-guard');
+const { createNotification } = require('./notifications');
 
 router.use(authenticate);
 
@@ -289,6 +290,18 @@ router.get('/salaries/:userId/history', authorize('owner'), async (req, res) => 
 // GEOFENCE EVENTS (from client-side geofence monitoring)
 // ═══════════════════════════════════════════════════════════════
 
+// Haversine distance in meters — a local copy rather than importing
+// delivery-tracking.js's own (kilometers, a different unit, and not
+// exported) — matches geofence_radius's stored unit (meters) directly.
+function haversineMeters(lat1, lon1, lat2, lon2) {
+  const R = 6371000;
+  const toRad = (deg) => (deg * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
 // Record geofence enter/exit event
 router.post('/geofence-event', authorize('manager', 'employee', 'counter_staff', 'florist_staff', 'delivery_partner'), (req, res) => {
   try {
@@ -306,43 +319,62 @@ router.post('/geofence-event', authorize('manager', 'employee', 'counter_staff',
 
     const event = db.prepare('SELECT * FROM geofence_events WHERE id = ?').get(result.lastInsertRowid);
 
-    // If enter event → auto clock-in
     if (event_type === 'enter') {
-      const n = new Date();
-      const today = `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}-${String(n.getDate()).padStart(2,'0')}`;
-      const existing = db.prepare('SELECT * FROM attendance WHERE user_id = ? AND date = ?').get(req.user.id, today);
+      // Proximity check — refuse to auto clock in if we can't verify this
+      // claim server-side, rather than trusting the client's coordinates.
+      const location = db.prepare('SELECT latitude, longitude, geofence_radius FROM locations WHERE id = ?').get(location_id);
+      if (!location || location.latitude == null || location.longitude == null || latitude == null || longitude == null) {
+        return res.json({ success: true, data: event, action: 'unverified', message: 'Could not verify your location — use Clock In instead.' });
+      }
+      const distance = haversineMeters(Number(location.latitude), Number(location.longitude), Number(latitude), Number(longitude));
+      if (distance > (location.geofence_radius || 500)) {
+        return res.json({ success: true, data: event, action: 'out_of_range', message: 'You do not appear to be at this location.' });
+      }
 
-      if (!existing || (existing.clock_out && !existing.clock_in)) {
-        // Auto clock-in
+      const today = todayStr();
+      const openSession = db.prepare('SELECT id FROM attendance WHERE user_id = ? AND date = ? AND clock_out IS NULL').get(req.user.id, today);
+
+      if (!openSession) {
         const now = nowLocal();
-        const shift = db.prepare('SELECT * FROM employee_shifts WHERE user_id = ? AND location_id = ? AND is_active = 1').get(req.user.id, location_id);
+        const shift = db.prepare('SELECT shift_start, shift_end, shift_segments FROM employee_shifts WHERE user_id = ? AND location_id = ? AND is_active = 1').get(req.user.id, location_id);
         let late = 0;
-        if (shift) {
-          const tz = require('../utils/time').getTimezone();
-          const clockTime = new Intl.DateTimeFormat('en-GB', { 
-            timeZone: tz, hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false 
-          }).format(new Date(now));
-          late = clockTime > shift.shift_start ? 1 : 0;
+        if (shift && (shift.shift_start || shift.shift_segments)) {
+          const segments = normalizeSegments(shift.shift_start, shift.shift_end, shift.shift_segments);
+          const clockInMinutes = timestampToMinutes(now);
+          const segment = matchSegmentForTime(clockInMinutes, segments);
+          late = lateMinutesFor(clockInMinutes, segment) > 0 ? 1 : 0;
         }
 
-        if (!existing) {
-          db.prepare(`
-            INSERT INTO attendance (user_id, location_id, date, clock_in, clock_in_method, clock_in_latitude, clock_in_longitude, late_arrival, status)
-            VALUES (?, ?, ?, ?, 'auto_geofence', ?, ?, ?, 'present')
-          `).run(req.user.id, location_id, today, now, latitude || null, longitude || null, late);
-        } else {
-          db.prepare(`
-            UPDATE attendance SET clock_in = ?, clock_in_method = 'auto_geofence', clock_in_latitude = ?, clock_in_longitude = ?,
-            clock_out = NULL, clock_out_method = NULL, late_arrival = ?, status = 'present', updated_at = CURRENT_TIMESTAMP WHERE id = ?
-          `).run(now, latitude || null, longitude || null, late, existing.id);
-        }
+        const insertResult = db.prepare(`
+          INSERT INTO attendance (user_id, location_id, date, clock_in, clock_in_method, clock_in_latitude, clock_in_longitude, late_arrival, status)
+          VALUES (?, ?, ?, ?, 'auto_geofence', ?, ?, ?, 'present')
+        `).run(req.user.id, location_id, today, now, latitude || null, longitude || null, late);
+        const attendanceId = insertResult.lastInsertRowid;
 
         db.prepare('UPDATE geofence_events SET processed = 1, auto_action = ? WHERE id = ?').run('clock_in', event.id);
-        return res.json({ success: true, data: event, action: 'auto_clock_in' });
+
+        const locationRow = db.prepare('SELECT name FROM locations WHERE id = ?').get(location_id);
+        const friendlyTime = new Intl.DateTimeFormat('en-IN', {
+          timeZone: require('../utils/time').getTimezone(), hour: 'numeric', minute: '2-digit', hour12: true,
+        }).format(new Date(now));
+        createNotification({
+          userIds: req.user.id,
+          title: 'Clocked in automatically',
+          body: `${locationRow ? locationRow.name : 'Shop'}, ${friendlyTime} — not working? Tap to undo.`,
+          type: 'attendance_auto_clockin',
+          data: { screen: 'Attendance', attendanceId, action: 'undo_auto_clockin' },
+        }).catch(() => {});
+
+        // attendance_id is returned EXPLICITLY — `data` above is the
+        // geofence_events row, not the attendance row, and their id ranges
+        // can collide (confirmed on the live dev DB: geofence_events was
+        // empty, so its sequence starts at 1, squarely inside real
+        // attendance's id range). Any caller needing the attendance row
+        // must use this field, never `data.id`.
+        return res.json({ success: true, data: event, attendance_id: attendanceId, action: 'auto_clock_in' });
       }
     }
 
-    // If exit event → mark for potential auto clock-out (handled by server cron)
     if (event_type === 'exit') {
       db.prepare('UPDATE geofence_events SET processed = 0 WHERE id = ?').run(event.id);
       return res.json({ success: true, data: event, action: 'exit_recorded' });
