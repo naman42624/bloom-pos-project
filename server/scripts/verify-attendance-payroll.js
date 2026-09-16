@@ -475,6 +475,27 @@ check('POST /attendance/:id/undo-auto-clockin refuses a manual clock-in', async 
   await api('POST', '/attendance/clock-out', florist.token, { method: 'manual' });
 });
 
+check('POST /attendance/missed-clock-in notifies owner/manager and deduplicates within the same day', async () => {
+  const owner = await loginOwner();
+  const florist = await createFloristStaffSession(owner.token);
+
+  const first = await api('POST', '/attendance/missed-clock-in', florist.token, { location_id: TEST_LOCATION_ID });
+  assert(first.status === 200, `Expected 200, got ${first.status}`);
+  assert(!first.body.already_sent, 'Expected the first call to actually send');
+
+  const { body: notifs } = await api('GET', '/notifications', owner.token);
+  const matching = notifs.data.notifications.filter((n) => n.type === 'attendance_missed_clockin' && n.body.includes('Verify Florist'));
+  assert(matching.length === 1, `Expected exactly 1 notification, got ${matching.length}`);
+
+  const second = await api('POST', '/attendance/missed-clock-in', florist.token, { location_id: TEST_LOCATION_ID });
+  assert(second.status === 200, `Expected 200, got ${second.status}`);
+  assert(second.body.already_sent === true, 'Expected the second same-day call to be deduplicated');
+
+  const { body: notifsAfter } = await api('GET', '/notifications', owner.token);
+  const matchingAfter = notifsAfter.data.notifications.filter((n) => n.type === 'attendance_missed_clockin' && n.body.includes('Verify Florist'));
+  assert(matchingAfter.length === 1, `Expected still exactly 1 notification after the deduplicated second call, got ${matchingAfter.length}`);
+});
+
 async function cleanup() {
   const db = await getDb();
   for (const id of createdExpenseIds) {

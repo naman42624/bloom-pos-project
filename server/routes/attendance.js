@@ -255,6 +255,46 @@ router.post('/:id/undo-auto-clockin', authorize('owner', 'manager', 'employee', 
 });
 
 // ═══════════════════════════════════════════════════════════════
+// REPORT A MISSED CLOCK-IN (employee self-service recovery)
+// ═══════════════════════════════════════════════════════════════
+// Doesn't create any attendance record itself — a manager still does that
+// (the one-tap roster action, Task 17) — this only closes the "how do they
+// even find out" gap. Deduplicated: at most one notification per person
+// per calendar day, so a confused employee can't spam every manager.
+router.post('/missed-clock-in', authorize('owner', 'manager', 'employee', 'counter_staff', 'florist_staff', 'delivery_partner'), async (req, res) => {
+  try {
+    const db = getDb();
+    const { location_id } = req.body;
+    if (!location_id) {
+      return res.status(400).json({ success: false, message: 'Location is required.' });
+    }
+
+    const today = todayStr();
+    const alreadySent = db.prepare(
+      "SELECT id FROM notifications WHERE type = 'attendance_missed_clockin' AND (data::jsonb->>'userId')::int = ? AND created_at::date = ?"
+    ).get(req.user.id, today);
+    if (alreadySent) {
+      return res.json({ success: true, message: 'Your manager has already been notified today.', already_sent: true });
+    }
+
+    const location = db.prepare('SELECT name FROM locations WHERE id = ?').get(location_id);
+    const { notifyByRole } = require('./notifications');
+    await notifyByRole({
+      roles: ['owner', 'manager'],
+      locationId: Number(location_id),
+      title: 'Missed clock-in',
+      body: `${req.user.name} forgot to clock in at ${location ? location.name : 'the shop'} — tap to clock them in.`,
+      type: 'attendance_missed_clockin',
+      data: { screen: 'StaffAttendance', userId: req.user.id, locationId: Number(location_id) },
+    });
+    res.json({ success: true, message: 'Your manager has been notified.' });
+  } catch (error) {
+    console.error('Missed clock-in report error:', error);
+    res.status(500).json({ success: false, message: 'Could not send that — try again.' });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════
 // GET TODAY'S ATTENDANCE STATUS (for the logged-in user)
 // ═══════════════════════════════════════════════════════════════
 router.get('/today', authorize('owner', 'manager', 'employee', 'counter_staff', 'florist_staff', 'delivery_partner'), async (req, res) => {
