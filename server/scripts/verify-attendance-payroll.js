@@ -315,7 +315,12 @@ check('POST /staff/payroll/disburse (cash) requires an open register, writes a l
   const expectedAfter = Number(after.body.data.expected_cash);
   assert(Math.abs((expectedBefore - 3000) - expectedAfter) < 0.01, `Expected register to drop by 3000, went from ${expectedBefore} to ${expectedAfter}`);
 
-  await api('PUT', '/sales/register/close', owner.token, { location_id: TEST_LOCATION_ID, actual_cash: expectedAfter });
+  // expectedAfter can legitimately be negative here (opening_balance 1000 <
+  // net_amount 3000 disbursed) — a real discrepancy to reconcile, not a bug.
+  // The close route's own validator rejects a negative actual_cash (can't
+  // have negative physical cash in a drawer), so clamp at 0 for this cleanup
+  // close — otherwise the call 400s silently and leaves the register open.
+  await api('PUT', '/sales/register/close', owner.token, { location_id: TEST_LOCATION_ID, actual_cash: Math.max(0, expectedAfter) });
 });
 
 check('POST /staff/payroll/disburse (bank transfer) does not require an open register', async () => {
