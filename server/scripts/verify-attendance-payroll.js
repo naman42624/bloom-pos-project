@@ -222,6 +222,15 @@ check('POST /staff/shifts rejects a midnight-crossing segment with a plain-langu
   assert(!/error|exception|undefined/i.test(body.message || ''), `Error message should be plain-language, got: ${body.message}`);
 });
 
+check('GET /attendance/today includes lateMinutesToday and overtimeMinutesToday', async () => {
+  const owner = await loginOwner();
+  const florist = await createFloristStaffSession(owner.token);
+  const { status, body } = await api('GET', '/attendance/today', florist.token);
+  assert(status === 200, `Expected 200, got ${status}`);
+  assert(typeof body.data.lateMinutesToday === 'number', 'Expected lateMinutesToday to be a number');
+  assert(typeof body.data.overtimeMinutesToday === 'number', 'Expected overtimeMinutesToday to be a number');
+});
+
 async function cleanup() {
   const db = await getDb();
   for (const id of createdExpenseIds) {

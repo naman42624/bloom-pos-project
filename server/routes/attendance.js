@@ -4,7 +4,7 @@ const { getDb } = require('../config/database');
 const { getDb: getAsyncDb } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
 const { todayStr, nowLocal, parseServerDate, getTimezone } = require('../utils/time');
-const { normalizeSegments, matchSegmentForTime, lateMinutesFor, overtimeMinutesFor, timestampToMinutes, dayAdjustedMinutes } = require('../utils/shift-work');
+const { normalizeSegments, matchSegmentForTime, lateMinutesFor, overtimeMinutesFor, timestampToMinutes, dayAdjustedMinutes, computeShiftWork } = require('../utils/shift-work');
 const { safeParseJSON } = require('../utils/json');
 
 // All attendance routes require auth
@@ -221,7 +221,6 @@ router.get('/today', authorize('owner', 'manager', 'employee', 'counter_staff', 
     const db = await getAsyncDb();
     const today = todayStr();
 
-    // Get ALL attendance records for today (supports split shifts)
     const records = await db.prepare(`
       SELECT a.*, l.name as location_name
       FROM attendance a
@@ -230,10 +229,8 @@ router.get('/today', authorize('owner', 'manager', 'employee', 'counter_staff', 
       ORDER BY a.id ASC
     `).all(req.user.id, today);
 
-    // The latest record is the "current" one for status display
     const current = records.length > 0 ? records[records.length - 1] : null;
 
-    // Also get active outdoor duty from the current unclosed record
     let activeOutdoor = null;
     if (current && !current.clock_out) {
       activeOutdoor = await db.prepare(`
@@ -243,12 +240,24 @@ router.get('/today', authorize('owner', 'manager', 'employee', 'counter_staff', 
       `).get(req.user.id, current.id);
     }
 
-    // Calculate total hours across all records today
     let totalHoursToday = 0;
     let totalOutdoorToday = 0;
     for (const r of records) {
       totalHoursToday += Number(r.total_hours) || 0;
       totalOutdoorToday += Number(r.outdoor_hours) || 0;
+    }
+
+    // Own late/overtime summary for today — track-only, plain-language
+    // display on AttendanceScreen. Uses the CURRENT/latest session's
+    // location for the shift lookup, a simplification that assumes
+    // single-location attendance per day, matching this project's current
+    // single-location-per-shop scope.
+    let shiftWork = { totalLateMinutes: 0, totalOvertimeMinutes: 0, sessions: [] };
+    if (current) {
+      const shift = await db.prepare(
+        'SELECT shift_start, shift_end, shift_segments FROM employee_shifts WHERE user_id = ? AND location_id = ? AND is_active = 1'
+      ).get(req.user.id, current.location_id);
+      shiftWork = computeShiftWork(records, shift || null);
     }
 
     res.json({
@@ -260,6 +269,8 @@ router.get('/today', authorize('owner', 'manager', 'employee', 'counter_staff', 
         totalOutdoorToday: Math.round(totalOutdoorToday * 100) / 100,
         totalEffectiveToday: Math.round((totalHoursToday + totalOutdoorToday) * 100) / 100,
         activeOutdoor,
+        lateMinutesToday: shiftWork.totalLateMinutes,
+        overtimeMinutesToday: shiftWork.totalOvertimeMinutes,
       },
     });
   } catch (error) {
