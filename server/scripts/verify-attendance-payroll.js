@@ -496,6 +496,34 @@ check('POST /attendance/missed-clock-in notifies owner/manager and deduplicates 
   assert(matchingAfter.length === 1, `Expected still exactly 1 notification after the deduplicated second call, got ${matchingAfter.length}`);
 });
 
+// ═══════════════════════════════════════════════════════════════
+// Clock-out recovery sweep — closes attendance sessions left open well
+// past their shift (or a flat fallback window with no shift configured),
+// with no geofence activity required at all.
+// ═══════════════════════════════════════════════════════════════
+
+check('Clock-out sweep closes a session open well past the fallback window (no shift configured)', async () => {
+  const owner = await loginOwner();
+  const florist = await createFloristStaffSession(owner.token);
+  const clockIn = await api('POST', '/attendance/clock-in', florist.token, { location_id: TEST_LOCATION_ID, method: 'manual' });
+  const attendanceId = clockIn.body.data.id;
+  createdAttendanceIds.push(attendanceId);
+
+  const db = await getDb();
+  // Backdate 18 hours — past the 16-hour no-shift fallback window.
+  await db.prepare("UPDATE attendance SET clock_in = clock_in - INTERVAL '18 hours' WHERE id = ?").run(attendanceId);
+
+  // The sweep runs on a 60s server-process interval — wait for one tick
+  // rather than trying to invoke it directly (it's not exported; this is
+  // an integration check of the real running process, matching how this
+  // codebase's other cron-dependent behavior gets verified live).
+  await new Promise((resolve) => setTimeout(resolve, 65000));
+
+  const updated = await db.prepare('SELECT * FROM attendance WHERE id = ?').get(attendanceId);
+  assert(updated.clock_out !== null, 'Expected the sweep to have closed this session');
+  assert(updated.clock_out_method === 'auto_shift_end', `Expected clock_out_method 'auto_shift_end', got '${updated.clock_out_method}'`);
+});
+
 async function cleanup() {
   const db = await getDb();
   for (const id of createdExpenseIds) {
