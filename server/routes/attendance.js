@@ -808,7 +808,7 @@ router.get('/staff-today', authorize('owner', 'manager'), async (req, res) => {
     // ─── OPTIMIZED: Fetch all active shifts in ONE query instead of subqueries ───
     const allShifts = new Map();
     const shiftsData = await db.prepare(`
-      SELECT DISTINCT ON (user_id, location_id) user_id, location_id, shift_start, shift_end, days_of_week
+      SELECT DISTINCT ON (user_id, location_id) user_id, location_id, shift_start, shift_end, shift_segments, days_of_week
       FROM employee_shifts
       WHERE is_active = 1
       ORDER BY user_id, location_id, updated_at DESC, id DESC
@@ -826,6 +826,7 @@ router.get('/staff-today', authorize('owner', 'manager'), async (req, res) => {
         l.name as location_name,
         es.shift_start,
         es.shift_end,
+        es.shift_segments,
         es.days_of_week
       FROM attendance a
       JOIN users u ON a.user_id = u.id
@@ -842,6 +843,7 @@ router.get('/staff-today', authorize('owner', 'manager'), async (req, res) => {
         if (defaultShift) {
           log.shift_start = defaultShift.shift_start;
           log.shift_end = defaultShift.shift_end;
+          log.shift_segments = defaultShift.shift_segments;
           log.days_of_week = defaultShift.days_of_week;
         }
       }
@@ -877,6 +879,7 @@ router.get('/staff-today', authorize('owner', 'manager'), async (req, res) => {
           active_session: !row.clock_out,
           shift_start: row.shift_start || null,
           shift_end: row.shift_end || null,
+          shift_segments: row.shift_segments || null,
           days_of_week: row.days_of_week || null,
           logs: [
             {
@@ -908,9 +911,10 @@ router.get('/staff-today', authorize('owner', 'manager'), async (req, res) => {
         existing.clock_out = row.clock_out;
         existing.location_id = row.location_id;
         existing.location_name = row.location_name;
-        if (row.shift_start || row.shift_end) {
+        if (row.shift_start || row.shift_end || row.shift_segments) {
           existing.shift_start = row.shift_start || null;
           existing.shift_end = row.shift_end || null;
+          existing.shift_segments = row.shift_segments || null;
           existing.days_of_week = row.days_of_week || null;
         }
       }
@@ -934,12 +938,17 @@ router.get('/staff-today', authorize('owner', 'manager'), async (req, res) => {
       });
     }
 
-    const staff = Array.from(byUser.values()).map((s) => ({
-      ...s,
-      total_hours: Math.round(s.total_hours * 100) / 100,
-      outdoor_hours: Math.round(s.outdoor_hours * 100) / 100,
-      effective_hours: Math.round(s.effective_hours * 100) / 100,
-    }));
+    const staff = Array.from(byUser.values()).map((s) => {
+      const shiftWork = computeShiftWork(s.logs, { shift_start: s.shift_start, shift_end: s.shift_end, shift_segments: s.shift_segments });
+      return {
+        ...s,
+        total_hours: Math.round(s.total_hours * 100) / 100,
+        outdoor_hours: Math.round(s.outdoor_hours * 100) / 100,
+        effective_hours: Math.round(s.effective_hours * 100) / 100,
+        late_minutes_today: shiftWork.totalLateMinutes,
+        overtime_minutes_today: shiftWork.totalOvertimeMinutes,
+      };
+    });
 
     // Also get staff who haven't clocked in
     let notClockedFilter = '';
@@ -957,7 +966,7 @@ router.get('/staff-today', authorize('owner', 'manager'), async (req, res) => {
     }
 
     const notClocked = await db.prepare(`
-      SELECT DISTINCT
+      SELECT DISTINCT ON (u.id)
         u.id,
         u.name,
         u.phone,
@@ -972,6 +981,10 @@ router.get('/staff-today', authorize('owner', 'manager'), async (req, res) => {
           (SELECT es2.shift_end FROM employee_shifts es2 WHERE es2.user_id = u.id AND es2.is_active = 1 ORDER BY es2.updated_at DESC, es2.id DESC LIMIT 1)
         ) as shift_end,
         COALESCE(
+          es.shift_segments,
+          (SELECT es2.shift_segments FROM employee_shifts es2 WHERE es2.user_id = u.id AND es2.is_active = 1 ORDER BY es2.updated_at DESC, es2.id DESC LIMIT 1)
+        ) as shift_segments,
+        COALESCE(
           es.days_of_week,
           (SELECT es2.days_of_week FROM employee_shifts es2 WHERE es2.user_id = u.id AND es2.is_active = 1 ORDER BY es2.updated_at DESC, es2.id DESC LIMIT 1)
         ) as days_of_week
@@ -981,6 +994,7 @@ router.get('/staff-today', authorize('owner', 'manager'), async (req, res) => {
       WHERE u.role IN ('employee', 'counter_staff', 'florist_staff', 'delivery_partner', 'manager') AND u.is_active = 1
       ${notClockedFilter}
       AND u.id NOT IN (SELECT user_id FROM attendance WHERE date = ?)
+      ORDER BY u.id, ul.is_primary DESC, ul.id ASC
     `).all(...notParams, today);
 
     const active = staff.filter((s) => s.active_session);

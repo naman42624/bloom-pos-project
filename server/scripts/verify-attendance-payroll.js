@@ -231,6 +231,32 @@ check('GET /attendance/today includes lateMinutesToday and overtimeMinutesToday'
   assert(typeof body.data.overtimeMinutesToday === 'number', 'Expected overtimeMinutesToday to be a number');
 });
 
+check('GET /attendance/staff-today includes overtime_minutes_today per staff member', async () => {
+  const owner = await loginOwner();
+  const { status, body } = await api('GET', `/attendance/staff-today?location_id=${TEST_LOCATION_ID}`, owner.token);
+  assert(status === 200, `Expected 200, got ${status}`);
+  assert(Array.isArray(body.data.present), 'Expected data.present to be an array');
+  for (const s of body.data.present) {
+    assert(typeof s.overtime_minutes_today === 'number', `Expected overtime_minutes_today on ${s.user_name}`);
+    assert(typeof s.late_minutes_today === 'number', `Expected late_minutes_today on ${s.user_name}`);
+  }
+});
+
+check('GET /attendance/staff-today does not list a multi-location staff member more than once in "absent"', async () => {
+  const owner = await loginOwner();
+  const florist = await createFloristStaffSession(owner.token);
+  // Assign a second location so this user has 2 assignments.
+  const db = await getDb();
+  const otherLocation = (await db.prepare('SELECT id FROM locations WHERE id != ? AND is_active = 1 LIMIT 1').get(TEST_LOCATION_ID));
+  if (otherLocation) {
+    await db.prepare('INSERT INTO user_locations (user_id, location_id, is_primary) VALUES (?, ?, 0) ON CONFLICT DO NOTHING').run(florist.id, otherLocation.id);
+  }
+  const { status, body } = await api('GET', '/attendance/staff-today', owner.token); // no location_id — "All Locations"
+  assert(status === 200, `Expected 200, got ${status}`);
+  const occurrences = body.data.absent.filter((a) => a.id === florist.id).length;
+  assert(occurrences <= 1, `Expected the multi-location florist to appear at most once in absent, got ${occurrences}`);
+});
+
 async function cleanup() {
   const db = await getDb();
   for (const id of createdExpenseIds) {
