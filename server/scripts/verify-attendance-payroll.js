@@ -276,6 +276,60 @@ check('POST /staff/payroll/calculate includes total_late_minutes and overtime_mi
   assert(body.data.calculation.net_amount === expectedNet, `Expected net_amount to equal base_pay - deductions (clamped at 0) = ${expectedNet}, got ${body.data.calculation.net_amount}`);
 });
 
+check('POST /staff/payroll/disburse (cash) requires an open register, writes a linked expense, adjusts expected_cash, and caps advances_deducted at net_amount', async () => {
+  const owner = await loginOwner();
+  const florist = await createFloristStaffSession(owner.token);
+  await api('POST', '/staff/salaries', owner.token, { user_id: florist.id, monthly_salary: 12000, salary_type: 'monthly' });
+
+  const blocked = await api('POST', '/staff/payroll/disburse', owner.token, {
+    user_id: florist.id, period_start: '2026-02-01', period_end: '2026-02-28', net_amount: 12000, payment_method: 'cash',
+  });
+  assert(blocked.status === 400, `Expected 400 with no open register, got ${blocked.status}`);
+
+  const initialStatus = await api('GET', `/sales/register/status?location_id=${TEST_LOCATION_ID}`, owner.token);
+  if (initialStatus.body?.isOpen) {
+    await api('PUT', '/sales/register/close', owner.token, { location_id: TEST_LOCATION_ID, actual_cash: Number(initialStatus.body.data.expected_cash) || 0 });
+  }
+  await api('POST', '/sales/register/open', owner.token, { location_id: TEST_LOCATION_ID, opening_balance: 1000 });
+  const before = await api('GET', `/sales/register/status?location_id=${TEST_LOCATION_ID}`, owner.token);
+  const expectedBefore = Number(before.body.data.expected_cash);
+
+  // advances_deducted (5000) exceeds net_amount (3000) — must be capped to
+  // 3000, not repay the full 5000 against real money that was never paid.
+  const { status, body } = await api('POST', '/staff/payroll/disburse', owner.token, {
+    user_id: florist.id, period_start: '2026-02-01', period_end: '2026-02-28',
+    net_amount: 3000, advances_deducted: 5000, payment_method: 'cash',
+  });
+  assert(status === 201, `Expected 201, got ${status}: ${JSON.stringify(body)}`);
+  assert(body.data.advances_deducted === 3000, `Expected advances_deducted capped to 3000, got ${body.data.advances_deducted}`);
+  assert(body.data.expense_id != null, 'Expected salary_payments.expense_id to be set');
+  createdSalaryIds.push(body.data.id);
+  createdExpenseIds.push(body.data.expense_id);
+
+  const db = await getDb();
+  const expense = await db.prepare('SELECT * FROM expenses WHERE id = ?').get(body.data.expense_id);
+  assert(expense.category === 'salary', `Expected category 'salary', got '${expense.category}'`);
+  assert(Number(expense.employee_id) === florist.id, `Expected employee_id ${florist.id}, got ${expense.employee_id}`);
+
+  const after = await api('GET', `/sales/register/status?location_id=${TEST_LOCATION_ID}`, owner.token);
+  const expectedAfter = Number(after.body.data.expected_cash);
+  assert(Math.abs((expectedBefore - 3000) - expectedAfter) < 0.01, `Expected register to drop by 3000, went from ${expectedBefore} to ${expectedAfter}`);
+
+  await api('PUT', '/sales/register/close', owner.token, { location_id: TEST_LOCATION_ID, actual_cash: expectedAfter });
+});
+
+check('POST /staff/payroll/disburse (bank transfer) does not require an open register', async () => {
+  const owner = await loginOwner();
+  const florist = await createFloristStaffSession(owner.token);
+  await api('POST', '/staff/salaries', owner.token, { user_id: florist.id, monthly_salary: 9000, salary_type: 'monthly' });
+  const { status, body } = await api('POST', '/staff/payroll/disburse', owner.token, {
+    user_id: florist.id, period_start: '2026-03-01', period_end: '2026-03-31', net_amount: 9000, payment_method: 'bank_transfer',
+  });
+  assert(status === 201, `Expected 201 (no register requirement for a transfer), got ${status}: ${JSON.stringify(body)}`);
+  createdSalaryIds.push(body.data.id);
+  if (body.data.expense_id) createdExpenseIds.push(body.data.expense_id);
+});
+
 async function cleanup() {
   const db = await getDb();
   for (const id of createdExpenseIds) {

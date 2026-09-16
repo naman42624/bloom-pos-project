@@ -116,7 +116,7 @@ router.post(
     body('category').isIn(['supplies', 'petty_cash', 'maintenance', 'transport', 'food', 'utilities', 'salary', 'other']),
     body('amount').isFloat({ min: 0.01 }),
     body('description').optional().trim(),
-    body('payment_method').isIn(['cash', 'card', 'upi']),
+    body('payment_method').isIn(['cash', 'card', 'upi', 'bank_transfer']),
     body('expense_date').notEmpty(),
     body('is_return').optional().isBoolean(),
   ],

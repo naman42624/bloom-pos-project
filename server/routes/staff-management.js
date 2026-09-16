@@ -3,8 +3,9 @@ const router = express.Router();
 const { getDb } = require('../config/database');
 const { getDb: getAsyncDb } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
-const { nowLocal } = require('../utils/time');
+const { nowLocal, todayStr } = require('../utils/time');
 const { computeShiftWork } = require('../utils/shift-work');
+const { hasOpenRegister, REGISTER_CLOSED_MESSAGE } = require('../utils/register-guard');
 
 router.use(authenticate);
 
@@ -470,42 +471,116 @@ router.post('/payroll/disburse', authorize('owner'), (req, res) => {
       user_id, period_start, period_end,
       base_salary, days_worked, days_in_period, hours_worked,
       late_days, absent_days, leaves_taken,
-      deductions, advances_deducted, bonus, net_amount,
+      deductions, bonus, net_amount,
       payment_method, payment_reference, notes,
     } = req.body;
+    // advances_deducted is read separately below, after being capped —
+    // never trust the client-computed value directly for a write that
+    // marks real money as repaid.
+    let advancesDeducted = Number(req.body.advances_deducted) || 0;
 
     if (!user_id || !period_start || !period_end || net_amount === undefined) {
       return res.status(400).json({ success: false, message: 'Missing required fields.' });
     }
 
-    // Check for duplicate payment for same period
     const existing = db.prepare(
       'SELECT id FROM salary_payments WHERE user_id = ? AND period_start = ? AND period_end = ? AND status != ?'
     ).get(user_id, period_start, period_end, 'cancelled');
     if (existing) {
-      return res.status(400).json({ success: false, message: 'Payment already exists for this period.' });
+      return res.status(400).json({ success: false, message: `Salary for this period was already recorded (payment #${existing.id}) — check Payroll History rather than disbursing again.` });
     }
 
+    // Cap the advance deduction at what this payment can actually absorb —
+    // SalaryManagementScreen already clamps net_amount to Math.max(0, ...)
+    // but was still sending the FULL advances_deducted regardless, which
+    // would mark an advance fully repaid even when only part of it was
+    // really covered by this payment.
+    advancesDeducted = Math.min(advancesDeducted, Number(net_amount) || 0);
+
+    const method = payment_method || 'cash';
+
+    // The disbursement also writes a linked expenses row (below) so it
+    // shows up in financial reports and register reconciliation. That
+    // write needs a real location only when cash is physically involved —
+    // payroll itself has no location dimension (employee_salaries is
+    // user-scoped), and requiring one for a bank/UPI transfer where no
+    // physical drawer is touched would block a disbursement for no reason
+    // tied to what's actually happening.
+    let locationId = null;
+    if (method === 'cash') {
+      const employeeLocation = db.prepare(
+        'SELECT location_id FROM user_locations WHERE user_id = ? ORDER BY is_primary DESC, id ASC LIMIT 1'
+      ).get(user_id);
+      locationId = employeeLocation ? employeeLocation.location_id : null;
+      if (!locationId) {
+        return res.status(400).json({ success: false, message: "This employee isn't assigned to a location yet — assign one before disbursing salary in cash." });
+      }
+      // Cash disbursements move real money out of the drawer, same as any
+      // other cash expense — hard-blocked with no open register instead of
+      // silently recording a payment no session's expected_cash accounts
+      // for. Worded for what's actually happening here (paying OUT), not
+      // the generic "taking a payment" wording other cash routes reuse.
+      if (!hasOpenRegister(db, locationId)) {
+        return res.status(400).json({ success: false, message: `The cash drawer isn't open at this employee's location — open the register first, or choose UPI/Bank if you're paying this by transfer.` });
+      }
+    } else {
+      // Still attribute the expense to SOME location for reporting, even
+      // without a register concern — best-effort, non-blocking.
+      const employeeLocation = db.prepare(
+        'SELECT location_id FROM user_locations WHERE user_id = ? ORDER BY is_primary DESC, id ASC LIMIT 1'
+      ).get(user_id);
+      locationId = employeeLocation ? employeeLocation.location_id : null;
+    }
+
+    const openRegister = (method === 'cash' && locationId)
+      ? db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1').get(locationId)
+      : null;
+
     const disburseTx = db.transaction(() => {
-      const result = db.prepare(`
+      let expenseId = null;
+      // Write the expense FIRST (see this task's header note on why —
+      // db.transaction() here does not provide real atomicity). Only when
+      // a location is actually known — a disbursement can still proceed
+      // with no expense-report linkage rather than blocking entirely on an
+      // employee with no location assignment at all when paying by
+      // transfer.
+      if (locationId) {
+        const payeeUser = db.prepare('SELECT name FROM users WHERE id = ?').get(user_id);
+        const expenseResult = db.prepare(`
+          INSERT INTO expenses (location_id, category, amount, description, payment_method, expense_date, created_by, employee_id, register_id)
+          VALUES (?, 'salary', ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          locationId, net_amount,
+          `Salary payment — ${payeeUser ? payeeUser.name : 'employee'} (${period_start} to ${period_end})`,
+          method, todayStr(), req.user.id, user_id,
+          openRegister ? openRegister.id : null
+        );
+        expenseId = expenseResult.lastInsertRowid;
+
+        if (method === 'cash' && openRegister && Number(net_amount) > 0) {
+          db.prepare('UPDATE cash_registers SET expected_cash = expected_cash - ? WHERE id = ?').run(net_amount, openRegister.id);
+        }
+      }
+
+      const paymentResult = db.prepare(`
         INSERT INTO salary_payments (
           user_id, period_start, period_end, base_salary, days_worked, days_in_period,
           hours_worked, late_days, absent_days, leaves_taken, deductions,
           advances_deducted, bonus, net_amount, payment_method, payment_reference,
-          status, paid_at, paid_by, notes
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'paid', CURRENT_TIMESTAMP, ?, ?)
+          status, paid_at, paid_by, notes, expense_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'paid', CURRENT_TIMESTAMP, ?, ?, ?)
       `).run(
         user_id, period_start, period_end,
         base_salary || 0, days_worked || 0, days_in_period || 0,
         hours_worked || 0, late_days || 0, absent_days || 0, leaves_taken || 0,
-        deductions || 0, advances_deducted || 0, bonus || 0, net_amount,
-        payment_method || 'cash', payment_reference || '',
-        req.user.id, notes || ''
+        deductions || 0, advancesDeducted, bonus || 0, net_amount,
+        method, payment_reference || '',
+        req.user.id, notes || '', expenseId
       );
+      const paymentId = paymentResult.lastInsertRowid;
 
-      // Deduct advances if specified
-      if (advances_deducted && advances_deducted > 0) {
-        let remaining = advances_deducted;
+      if (advancesDeducted > 0) {
+        let remaining = advancesDeducted;
         const advances = db.prepare(
           'SELECT * FROM salary_advances WHERE user_id = ? AND status = ? AND repaid_amount < amount ORDER BY date'
         ).all(user_id, 'approved');
@@ -519,7 +594,7 @@ router.post('/payroll/disburse', authorize('owner'), (req, res) => {
         }
       }
 
-      return result.lastInsertRowid;
+      return paymentId;
     });
 
     const paymentId = disburseTx();
