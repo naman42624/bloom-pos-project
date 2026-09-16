@@ -6,13 +6,12 @@
 // clock-in/out promoted directly onto each row (previously three taps deep
 // inside StaffAttendanceScreen: More → Attendance → Staff Today → row).
 // See spec §7.
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useRef } from 'react';
 import { View, Text, StyleSheet, SectionList, TouchableOpacity, ActivityIndicator, Alert, Platform, RefreshControl } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '../../context/AuthContext';
 import api from '../../services/api';
-import useSubmitGuard from '../../hooks/useSubmitGuard';
 import { Colors, FontSize, Spacing, BorderRadius } from '../../constants/theme';
 import { formatTime as formatServerTime } from '../../utils/datetime';
 
@@ -37,7 +36,21 @@ const confirmClockOut = (name, onOk) => {
 export default function AttendanceRoster() {
   const { user, activeLocation } = useAuth();
   const isOwner = user?.role === 'owner';
-  const guardSubmit = useSubmitGuard();
+  // Per-row (per-action-key) double-tap guard — NOT useSubmitGuard, whose
+  // single shared lock (fine for a single-button screen) would otherwise
+  // make clocking in/out one staff member silently block every other row's
+  // action for the duration of that request+refetch. Same synchronous
+  // checked-and-set-before-the-handler-runs principle, just keyed per row.
+  const inFlightRef = useRef({});
+  const guardRow = (key, fn) => async (...args) => {
+    if (inFlightRef.current[key]) return;
+    inFlightRef.current[key] = true;
+    try {
+      await fn(...args);
+    } finally {
+      inFlightRef.current[key] = false;
+    }
+  };
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -173,7 +186,7 @@ export default function AttendanceRoster() {
               {busy ? (
                 <ActivityIndicator size="small" color={Colors.primary} />
               ) : (
-                <TouchableOpacity style={styles.actionBtnIn} onPress={guardSubmit(() => doClockIn(item.id, item.location_id || selectedLoc))}>
+                <TouchableOpacity style={styles.actionBtnIn} onPress={guardRow(`in-${item.id}`, () => doClockIn(item.id, item.location_id || selectedLoc))}>
                   <Ionicons name="log-in-outline" size={16} color="#fff" />
                   <Text style={styles.actionBtnText}>Clock In</Text>
                 </TouchableOpacity>
@@ -213,7 +226,7 @@ export default function AttendanceRoster() {
               {busy ? (
                 <ActivityIndicator size="small" color={Colors.primary} />
               ) : isActive ? (
-                <TouchableOpacity style={styles.actionBtnOut} onPress={guardSubmit(() => doClockOut(item.user_id, item.user_name))}>
+                <TouchableOpacity style={styles.actionBtnOut} onPress={guardRow(`out-${item.user_id}`, () => doClockOut(item.user_id, item.user_name))}>
                   <Ionicons name="log-out-outline" size={16} color="#fff" />
                   <Text style={styles.actionBtnText}>Clock Out</Text>
                 </TouchableOpacity>
