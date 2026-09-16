@@ -30,6 +30,7 @@ const createdAttendanceIds = [];
 const createdSalaryIds = []; // real salary_payments.id values ONLY — see cleanup()
 const createdAdvanceIds = [];
 const createdExpenseIds = [];
+const createdOutdoorDutyIds = [];
 
 function check(name, fn) { checks.push({ name, fn }); }
 function assert(cond, msg) { if (!cond) throw new Error(msg); }
@@ -91,6 +92,7 @@ module.exports = {
   check, checks, api, assert, loginOwner, createFloristStaffSession,
   TEST_LOCATION_ID, getDb,
   createdUserIds, createdShiftIds, createdAttendanceIds, createdSalaryIds, createdAdvanceIds, createdExpenseIds,
+  createdOutdoorDutyIds,
 };
 
 // ═══════════════════════════════════════════════════════════════
@@ -502,7 +504,7 @@ check('POST /attendance/missed-clock-in notifies owner/manager and deduplicates 
 // with no geofence activity required at all.
 // ═══════════════════════════════════════════════════════════════
 
-check('Clock-out sweep closes a session open well past the fallback window (no shift configured)', async () => {
+check('Clock-out sweep closes a session open well past the fallback window (no shift configured), but skips one with an active approved outdoor-duty request', async () => {
   const owner = await loginOwner();
   const florist = await createFloristStaffSession(owner.token);
   const clockIn = await api('POST', '/attendance/clock-in', florist.token, { location_id: TEST_LOCATION_ID, method: 'manual' });
@@ -513,15 +515,37 @@ check('Clock-out sweep closes a session open well past the fallback window (no s
   // Backdate 18 hours — past the 16-hour no-shift fallback window.
   await db.prepare("UPDATE attendance SET clock_in = clock_in - INTERVAL '18 hours' WHERE id = ?").run(attendanceId);
 
+  // Second florist, also backdated the same way, but with an active
+  // APPROVED outdoor-duty request — the sweep must skip this one, the
+  // same way Part 1 already skips a geofence-exit timeout for it.
+  const florist2 = await createFloristStaffSession(owner.token);
+  const clockIn2 = await api('POST', '/attendance/clock-in', florist2.token, { location_id: TEST_LOCATION_ID, method: 'manual' });
+  const attendanceId2 = clockIn2.body.data.id;
+  createdAttendanceIds.push(attendanceId2);
+  await db.prepare("UPDATE attendance SET clock_in = clock_in - INTERVAL '18 hours' WHERE id = ?").run(attendanceId2);
+
+  const outdoorRequest = await api('POST', '/attendance/outdoor-duty', florist2.token, {
+    reason: 'Verify sweep outdoor-duty guard', location_id: TEST_LOCATION_ID,
+  });
+  assert(outdoorRequest.status === 201, `Could not create outdoor duty request: ${outdoorRequest.status} ${JSON.stringify(outdoorRequest.body)}`);
+  createdOutdoorDutyIds.push(outdoorRequest.body.data.id);
+  const approveRequest = await api('PUT', `/attendance/outdoor-duty/${outdoorRequest.body.data.id}/approve`, owner.token);
+  assert(approveRequest.status === 200, `Could not approve outdoor duty request: ${approveRequest.status} ${JSON.stringify(approveRequest.body)}`);
+
   // The sweep runs on a 60s server-process interval — wait for one tick
   // rather than trying to invoke it directly (it's not exported; this is
   // an integration check of the real running process, matching how this
-  // codebase's other cron-dependent behavior gets verified live).
+  // codebase's other cron-dependent behavior gets verified live). Both
+  // fixture sessions are set up before this single wait so one real tick
+  // proves both the fallback-close behavior AND the outdoor-duty skip.
   await new Promise((resolve) => setTimeout(resolve, 65000));
 
   const updated = await db.prepare('SELECT * FROM attendance WHERE id = ?').get(attendanceId);
   assert(updated.clock_out !== null, 'Expected the sweep to have closed this session');
   assert(updated.clock_out_method === 'auto_shift_end', `Expected clock_out_method 'auto_shift_end', got '${updated.clock_out_method}'`);
+
+  const untouched = await db.prepare('SELECT * FROM attendance WHERE id = ?').get(attendanceId2);
+  assert(untouched.clock_out === null, 'Expected the sweep to SKIP a session with an active approved outdoor-duty request, but it was closed');
 });
 
 async function cleanup() {
@@ -536,6 +560,11 @@ async function cleanup() {
   }
   for (const id of createdAdvanceIds) {
     try { await db.prepare('DELETE FROM salary_advances WHERE id = ?').run(id); } catch (err) { console.error(`   (cleanup warning: advance ${id}: ${err.message})`); }
+  }
+  // Delete outdoor_duty_requests before attendance — attendance_id may be a
+  // foreign key without cascade, so the referencing row must go first.
+  for (const id of createdOutdoorDutyIds) {
+    try { await db.prepare('DELETE FROM outdoor_duty_requests WHERE id = ?').run(id); } catch (err) { console.error(`   (cleanup warning: outdoor_duty_request ${id}: ${err.message})`); }
   }
   for (const id of createdAttendanceIds) {
     try { await db.prepare('DELETE FROM attendance WHERE id = ?').run(id); } catch (err) { console.error(`   (cleanup warning: attendance ${id}: ${err.message})`); }
@@ -553,7 +582,7 @@ async function cleanup() {
   }
   // Clean up owner's attendance_missed_clockin notifications created by the test check
   try { await db.prepare("DELETE FROM notifications WHERE type = 'attendance_missed_clockin' AND body LIKE '%Verify Florist%'").run(); } catch (_) {}
-  console.log(`Cleaned up ${createdUserIds.length} test user(s), ${createdShiftIds.length} shift(s), ${createdAttendanceIds.length} attendance row(s), ${createdSalaryIds.length} salary_payment(s), ${createdAdvanceIds.length} advance(s), ${createdExpenseIds.length} expense(s)`);
+  console.log(`Cleaned up ${createdUserIds.length} test user(s), ${createdShiftIds.length} shift(s), ${createdAttendanceIds.length} attendance row(s), ${createdSalaryIds.length} salary_payment(s), ${createdAdvanceIds.length} advance(s), ${createdExpenseIds.length} expense(s), ${createdOutdoorDutyIds.length} outdoor_duty_request(s)`);
 }
 
 async function main() {

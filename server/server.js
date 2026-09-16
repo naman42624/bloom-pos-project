@@ -274,6 +274,13 @@ const server = httpServer.listen(PORT, () => {
 
         if (Date.now() < closeAfterEpoch) continue; // not due yet
 
+        const activeOutdoor = db.prepare(`
+          SELECT id FROM outdoor_duty_requests
+          WHERE user_id = ? AND attendance_id = ? AND status IN ('approved', 'requested')
+        `).get(session.user_id, session.id);
+
+        if (activeOutdoor) continue;
+
         // Record the estimated shift-end time as the clock-out when one
         // was available — closer to reality than "whenever this cron tick
         // happened to run," which could be hours after the grace window
