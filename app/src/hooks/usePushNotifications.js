@@ -102,6 +102,15 @@ export default function usePushNotifications(isExpoGo = false, navigationRef) {
                 screen: 'CustomerOrderDetail',
                 params: { saleId: data.saleId },
               });
+            } else if (data.screen === 'Attendance') {
+              // Top-level tab for staff roles — the banner/undo affordance
+              // itself lives directly on AttendanceScreen (Step 3 above),
+              // so landing on the tab is enough; no params needed. Owner/
+              // manager don't have this tab (they reach AttendanceScreen
+              // via More → My Attendance, Task 19) and won't receive this
+              // notification type in the first place — auto-clock-in only
+              // applies to roles that actually clock in.
+              navigationRef.current.navigate('Attendance');
             }
           } catch (err) {
             console.log('Navigation error:', err.message);

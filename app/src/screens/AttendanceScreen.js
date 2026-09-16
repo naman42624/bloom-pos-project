@@ -47,6 +47,10 @@ export default function AttendanceScreen({ navigation }) {
   const [actionLoading, setActionLoading] = useState(false);
   const [history, setHistory] = useState([]);
   const [outdoorRequests, setOutdoorRequests] = useState([]);
+  const [lateMinutesToday, setLateMinutesToday] = useState(0);
+  const [overtimeMinutesToday, setOvertimeMinutesToday] = useState(0);
+  const [missedClockInSent, setMissedClockInSent] = useState(false);
+  const [myShiftStart, setMyShiftStart] = useState(null);
 
   const role = user?.role;
   const isOwner = role === 'owner';
@@ -69,6 +73,11 @@ export default function AttendanceScreen({ navigation }) {
       setTodayLogs(todayRes.data?.logs || []);
       setTotalHoursToday(todayRes.data?.totalEffectiveToday || 0);
       setActiveOutdoor(todayRes.data?.activeOutdoor || null);
+      setLateMinutesToday(todayRes.data?.lateMinutesToday || 0);
+      setOvertimeMinutesToday(todayRes.data?.overtimeMinutesToday || 0);
+      if (!isManagerOrOwner) {
+        api.getShifts().then((res) => setMyShiftStart((res.data || [])[0]?.shift_start || null)).catch(() => {});
+      }
       const allLocations = locsRes.data?.locations || locsRes.data || [];
       const allowedIds = new Set((assignedLocations || []).map((l) => l.id));
       const locs = allLocations
@@ -122,6 +131,46 @@ export default function AttendanceScreen({ navigation }) {
         setActionLoading(false);
       }
     });
+  };
+
+  const handleUndoAutoClockIn = async () => {
+    if (!attendance?.id) return;
+    setActionLoading(true);
+    try {
+      await api.undoAutoClockIn(attendance.id);
+      await fetchData();
+    } catch (e) {
+      Alert.alert('Error', e.message || 'Failed to undo.');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleMissedClockIn = async () => {
+    const locationId = selectedLocation?.id || activeLocation?.id || locations[0]?.id;
+    if (!locationId) return;
+    setActionLoading(true);
+    try {
+      const res = await api.reportMissedClockIn({ location_id: locationId });
+      setMissedClockInSent(true);
+      if (res.data?.already_sent) {
+        // Server-side dedup already covered this today — still show the
+        // "sent" state locally so the link disappears either way.
+      }
+    } catch (e) {
+      Alert.alert('Error', e.message || 'Could not send that — try again.');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  // Gates the missed-clock-in shortcut on actually being past this
+  // person's own shift start — defaults open (shows the shortcut) when no
+  // shift is configured, rather than silently hiding a real feature.
+  const isPastMyShiftStart = () => {
+    if (!myShiftStart) return true;
+    const nowStr = currentTime.toLocaleTimeString('en-GB', { timeZone: DEFAULT_TZ, hour: '2-digit', minute: '2-digit', hour12: false });
+    return nowStr >= myShiftStart.slice(0, 5);
   };
 
   const handleOutdoorRequest = async () => {
@@ -290,6 +339,29 @@ export default function AttendanceScreen({ navigation }) {
           </View>
         )}
 
+        {isClockedIn && attendance?.clock_in_method === 'auto_geofence' && (
+          <View style={styles.autoClockInBanner}>
+            <Ionicons name="information-circle-outline" size={18} color={Colors.primary} />
+            <Text style={styles.autoClockInText}>
+              Clocked in automatically at {attendance.location_name || 'this location'}, {formatTime(attendance.clock_in)}.
+            </Text>
+            <TouchableOpacity onPress={handleUndoAutoClockIn} disabled={actionLoading}>
+              <Text style={styles.undoLink}>Not working? Undo</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {(lateMinutesToday > 0 || overtimeMinutesToday > 0) && (
+          <View style={styles.ownStatusLine}>
+            {lateMinutesToday > 0 && (
+              <Text style={styles.ownStatusText}>You clocked in {lateMinutesToday} min after your shift started today</Text>
+            )}
+            {overtimeMinutesToday > 0 && (
+              <Text style={styles.ownStatusText}>You've worked {overtimeMinutesToday} min past your shift end today</Text>
+            )}
+          </View>
+        )}
+
         {/* Location Selector — shown when not actively clocked in */}
         {!isClockedIn && locations.length > 0 && (
           <View style={styles.locRow}>
@@ -369,6 +441,16 @@ export default function AttendanceScreen({ navigation }) {
             </TouchableOpacity>
           )}
         </View>
+
+        {!isClockedIn && !isClockedOut && !missedClockInSent && isPastMyShiftStart() && (
+          <TouchableOpacity style={styles.missedClockInLink} onPress={handleMissedClockIn} disabled={actionLoading}>
+            <Ionicons name="alert-circle-outline" size={14} color={Colors.textLight} />
+            <Text style={styles.missedClockInText}>Didn't get a chance to clock in? Let your manager know</Text>
+          </TouchableOpacity>
+        )}
+        {missedClockInSent && (
+          <Text style={styles.missedClockInSentText}>Your manager has been notified.</Text>
+        )}
 
         {activeOutdoor && (
           <View style={[styles.outdoorBanner, { backgroundColor: activeOutdoor.status === 'approved' ? '#E8F5E9' : '#FFF3E0' }]}>
@@ -620,6 +702,24 @@ const styles = StyleSheet.create({
   },
   outdoorBannerTitle: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.text },
   outdoorBannerReason: { fontSize: FontSize.xs, color: Colors.textLight },
+
+  autoClockInBanner: {
+    flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 6,
+    backgroundColor: '#E3F2FD', borderRadius: BorderRadius.md,
+    padding: Spacing.sm, marginBottom: Spacing.sm,
+  },
+  autoClockInText: { flex: 1, fontSize: FontSize.sm, color: Colors.text },
+  undoLink: { fontSize: FontSize.sm, color: Colors.primary, fontWeight: '700' },
+  ownStatusLine: { marginTop: Spacing.xs, marginBottom: Spacing.sm },
+  ownStatusText: { fontSize: FontSize.sm, color: Colors.text, fontWeight: '500' },
+  // De-emphasized on purpose — this is a secondary, occasional-use link
+  // sitting below the primary Clock In/Out action, not competing with it.
+  missedClockInLink: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    paddingVertical: Spacing.xs, justifyContent: 'center', marginTop: Spacing.xs,
+  },
+  missedClockInText: { fontSize: FontSize.xs, color: Colors.textLight, fontWeight: '500' },
+  missedClockInSentText: { fontSize: FontSize.sm, color: Colors.textLight, textAlign: 'center', paddingVertical: Spacing.sm },
 
   section: {
     backgroundColor: Colors.surface, borderRadius: BorderRadius.lg,
