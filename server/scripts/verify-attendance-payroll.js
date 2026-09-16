@@ -523,6 +523,8 @@ async function cleanup() {
     try { await db.prepare('DELETE FROM notifications WHERE user_id = ?').run(id); } catch (_) {}
     try { await db.prepare('DELETE FROM users WHERE id = ?').run(id); } catch (err) { console.error(`   (cleanup warning: user ${id}: ${err.message})`); }
   }
+  // Clean up owner's attendance_missed_clockin notifications created by the test check
+  try { await db.prepare("DELETE FROM notifications WHERE type = 'attendance_missed_clockin' AND body LIKE '%Verify Florist%'").run(); } catch (_) {}
   console.log(`Cleaned up ${createdUserIds.length} test user(s), ${createdShiftIds.length} shift(s), ${createdAttendanceIds.length} attendance row(s), ${createdSalaryIds.length} salary_payment(s), ${createdAdvanceIds.length} advance(s), ${createdExpenseIds.length} expense(s)`);
 }
 
