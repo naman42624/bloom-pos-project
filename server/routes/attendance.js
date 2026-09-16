@@ -4,6 +4,8 @@ const { getDb } = require('../config/database');
 const { getDb: getAsyncDb } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
 const { todayStr, nowLocal, parseServerDate, getTimezone } = require('../utils/time');
+const { normalizeSegments, matchSegmentForTime, lateMinutesFor, overtimeMinutesFor, timestampToMinutes, dayAdjustedMinutes } = require('../utils/shift-work');
+const { safeParseJSON } = require('../utils/json');
 
 // All attendance routes require auth
 router.use(authenticate);
@@ -17,27 +19,32 @@ function hoursBetween(start, end) {
   return Math.max(0, (dEnd - dStart) / (1000 * 60 * 60));
 }
 
-// ─── Helper: Check if time is late based on shift OR operating hours ──
+// ─── Helper: Check if time is late based on shift (segment-aware) OR operating hours ──
+// Segment-aware and timezone-correct as of this revision — see shift-work.js
+// for why both matter. Employees without a split shift see zero behavior
+// change (normalizeSegments falls back to a single window).
 function isLateArrival(clockIn, operatingHours, userId, locationId) {
   if (!clockIn) return false;
   try {
-    const tz = getTimezone();
-    const d = new Date(clockIn);
-    if (Number.isNaN(d.getTime())) return false;
-    
-    // Extract local time string HH:mm:ss for comparison
-    const clockTime = new Intl.DateTimeFormat('en-GB', { 
-      timeZone: tz, hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false 
-    }).format(d);
-
     const db = getDb();
-    const shift = db.prepare('SELECT shift_start FROM employee_shifts WHERE user_id = ? AND location_id = ? AND is_active = 1').get(userId, locationId);
-    if (shift && shift.shift_start) {
-      return clockTime > shift.shift_start;
+    const shift = db.prepare('SELECT shift_start, shift_end, shift_segments FROM employee_shifts WHERE user_id = ? AND location_id = ? AND is_active = 1').get(userId, locationId);
+    if (shift && (shift.shift_start || shift.shift_segments)) {
+      const segments = normalizeSegments(shift.shift_start, shift.shift_end, shift.shift_segments);
+      const clockInMinutes = timestampToMinutes(clockIn);
+      const segment = matchSegmentForTime(clockInMinutes, segments);
+      return lateMinutesFor(clockInMinutes, segment) > 0;
     }
 
-    // Fallback to location operating_hours
+    // Fallback to location operating_hours when no shift is configured —
+    // unchanged in intent, now parsed via parseServerDate like everything
+    // else in this file, not a bare `new Date()`.
     if (!operatingHours) return false;
+    const tz = getTimezone();
+    const d = parseServerDate(clockIn);
+    if (!d) return false;
+    const clockTime = new Intl.DateTimeFormat('en-GB', {
+      timeZone: tz, hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+    }).format(d);
     const hours = safeParseJSON(operatingHours, {});
     const dayOfWeek = d.toLocaleDateString('en-US', { timeZone: tz, weekday: 'long' }).toLowerCase();
     const dayHours = hours[dayOfWeek];
@@ -49,25 +56,33 @@ function isLateArrival(clockIn, operatingHours, userId, locationId) {
   }
 }
 
-// ─── Helper: Check early departure based on shift OR operating hours ──
-function isEarlyDeparture(clockOut, operatingHours, userId, locationId) {
+// ─── Helper: Check early departure based on shift (segment-aware) OR operating hours ──
+// clockIn (this session's OWN clock-in) determines which segment this
+// session belongs to — not clockOut, which could be far past every
+// segment's end (e.g. a forgotten-lunch-clockout session) and would match
+// the wrong one.
+function isEarlyDeparture(clockOut, clockIn, operatingHours, userId, locationId) {
   if (!clockOut) return false;
   try {
-    const tz = getTimezone();
-    const d = new Date(clockOut);
-    if (Number.isNaN(d.getTime())) return false;
-    
-    const clockTime = new Intl.DateTimeFormat('en-GB', { 
-      timeZone: tz, hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false 
-    }).format(d);
-
     const db = getDb();
-    const shift = db.prepare('SELECT shift_end FROM employee_shifts WHERE user_id = ? AND location_id = ? AND is_active = 1').get(userId, locationId);
-    if (shift && shift.shift_end) {
-      return clockTime < shift.shift_end;
+    const shift = db.prepare('SELECT shift_start, shift_end, shift_segments FROM employee_shifts WHERE user_id = ? AND location_id = ? AND is_active = 1').get(userId, locationId);
+    if (shift && (shift.shift_start || shift.shift_segments)) {
+      const segments = normalizeSegments(shift.shift_start, shift.shift_end, shift.shift_segments);
+      const clockInMinutes = timestampToMinutes(clockIn);
+      const rawClockOutMinutes = timestampToMinutes(clockOut);
+      const clockOutMinutes = dayAdjustedMinutes(clockIn, clockOut, rawClockOutMinutes);
+      const segment = matchSegmentForTime(clockInMinutes, segments);
+      if (!segment || clockOutMinutes == null) return false;
+      return clockOutMinutes < segment.end;
     }
 
     if (!operatingHours) return false;
+    const tz = getTimezone();
+    const d = parseServerDate(clockOut);
+    if (!d) return false;
+    const clockTime = new Intl.DateTimeFormat('en-GB', {
+      timeZone: tz, hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+    }).format(d);
     const hours = safeParseJSON(operatingHours, {});
     const dayOfWeek = d.toLocaleDateString('en-US', { timeZone: tz, weekday: 'long' }).toLowerCase();
     const dayHours = hours[dayOfWeek];
@@ -168,7 +183,7 @@ router.post('/clock-out', authorize('owner', 'manager', 'employee', 'counter_sta
     const now = nowLocal();
     const clockMethod = method || 'manual';
     const shiftHours = hoursBetween(record.clock_in, now);
-    const early = isEarlyDeparture(now, record.operating_hours, userId, record.location_id) ? 1 : 0;
+    const early = isEarlyDeparture(now, record.clock_in, record.operating_hours, userId, record.location_id) ? 1 : 0;
 
     // Calculate outdoor hours for this specific attendance record
     const outdoorHrs = db.prepare(`
@@ -984,3 +999,5 @@ router.get('/staff-today', authorize('owner', 'manager'), async (req, res) => {
 });
 
 module.exports = router;
+module.exports.isLateArrival = isLateArrival;
+module.exports.isEarlyDeparture = isEarlyDeparture;

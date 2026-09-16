@@ -9,6 +9,17 @@
 require('dotenv').config();
 const { getDb } = require('../config/database-async');
 
+// Pre-warm the SYNC db layer (server/config/database.js, used internally by
+// isLateArrival) before any check runs. Its getDb() spawns a `psql`
+// subprocess on first call and was observed to take ~6s to connect —
+// blocking this script's single event loop for that whole span. Hit mid-run
+// (as it would be the first time a later check calls isLateArrival), that
+// block outlasts Node's default 5s HTTP keep-alive timeout and gets an
+// in-flight fetch's pooled connection ECONNRESET by the dev server. Paying
+// this cost once, up front, before any fetch keep-alive socket even exists,
+// avoids the race entirely; every later call is ~15ms.
+require('../config/database').getDb();
+
 const API_BASE = process.env.API_BASE_URL || 'http://localhost:3001/api';
 const TEST_LOCATION_ID = 4; // "Test Loc"
 
@@ -149,6 +160,66 @@ check('GET /staff/salaries (owner view) includes a florist_staff in salaries or 
   const inSalaries = (body.data.salaries || []).some((s) => s.user_id === florist.id);
   const inUnset = (body.data.unset || []).some((u) => u.id === florist.id);
   assert(inSalaries || inUnset, 'Expected the new florist_staff to appear in either salaries or unset — they were previously invisible to this query entirely');
+});
+
+// ═══════════════════════════════════════════════════════════════
+// Split-shift late detection (bug #3) — via the corrected shift-work.js
+// ═══════════════════════════════════════════════════════════════
+
+check('isLateArrival correctly flags a split-shift employee\'s SECOND-segment clock-in against ITS OWN segment (bug #3)', async () => {
+  const owner = await loginOwner();
+  const florist = await createFloristStaffSession(owner.token);
+  const { isLateArrival } = require('../routes/attendance');
+  const db = await getDb();
+
+  const shiftResult = await db.prepare(`
+    INSERT INTO employee_shifts (user_id, location_id, shift_start, shift_end, shift_segments, is_active, created_by)
+    VALUES (?, ?, '09:00', '18:00', ?, 1, ?) RETURNING id
+  `).get(florist.id, TEST_LOCATION_ID, JSON.stringify([{ start: '07:00', end: '12:00' }, { start: '18:00', end: '22:00' }]), owner.id);
+  createdShiftIds.push(shiftResult.id);
+
+  const today = new Date().toISOString().slice(0, 10);
+  // On time for the second segment — must NOT be flagged late against the
+  // first segment's 07:00 start (the original bug).
+  const onTimeSecondSegment = isLateArrival(`${today}T18:00:00+05:30`, null, florist.id, TEST_LOCATION_ID);
+  assert(onTimeSecondSegment === false, `Expected NOT late (exactly on time for segment 2), got late=${onTimeSecondSegment}`);
+
+  // Genuinely 5 min late for the second segment — must correctly flag late
+  // against THAT segment (18:00), not read as early against the first.
+  const trulyLateSecondSegment = isLateArrival(`${today}T18:05:00+05:30`, null, florist.id, TEST_LOCATION_ID);
+  assert(trulyLateSecondSegment === true, `Expected late (5 min after 18:00 segment start), got late=${trulyLateSecondSegment}`);
+});
+
+check('isLateArrival does not silently cap lateness at half the gap between segments (the old nearest-start bug)', async () => {
+  const owner = await loginOwner();
+  const florist = await createFloristStaffSession(owner.token);
+  const { isLateArrival } = require('../routes/attendance');
+  const db = await getDb();
+
+  const shiftResult = await db.prepare(`
+    INSERT INTO employee_shifts (user_id, location_id, shift_start, shift_end, shift_segments, is_active, created_by)
+    VALUES (?, ?, '09:00', '18:00', ?, 1, ?) RETURNING id
+  `).get(florist.id, TEST_LOCATION_ID, JSON.stringify([{ start: '09:00', end: '10:00' }, { start: '11:00', end: '18:00' }, { start: '20:00', end: '22:30' }]), owner.id);
+  createdShiftIds.push(shiftResult.id);
+
+  const today = new Date().toISOString().slice(0, 10);
+  // 61 minutes late for the 09:00-10:00 segment — the old "nearest start"
+  // heuristic would match this to the 11:00 segment instead (only 59 min
+  // away vs 61) and read it as "early," hiding real lateness.
+  const late = isLateArrival(`${today}T10:01:00+05:30`, null, florist.id, TEST_LOCATION_ID);
+  assert(late === true, `Expected late (61 min past the 09:00 segment start), got late=${late}`);
+});
+
+check('POST /staff/shifts rejects a midnight-crossing segment with a plain-language message', async () => {
+  const owner = await loginOwner();
+  const florist = await createFloristStaffSession(owner.token);
+  const { status, body } = await api('POST', '/staff/shifts', owner.token, {
+    user_id: florist.id, location_id: TEST_LOCATION_ID,
+    shift_start: '09:00', shift_end: '18:00',
+    shift_segments: [{ start: '22:00', end: '02:00' }],
+  });
+  assert(status === 400, `Expected 400 for a midnight-crossing segment, got ${status}`);
+  assert(!/error|exception|undefined/i.test(body.message || ''), `Error message should be plain-language, got: ${body.message}`);
 });
 
 async function cleanup() {

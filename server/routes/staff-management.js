@@ -72,6 +72,14 @@ router.post('/shifts', authorize('owner', 'manager'), (req, res) => {
     const db = getDb();
     const { user_id, location_id, shift_start, shift_end, days_of_week, geofence_timeout_minutes, shift_segments } = req.body;
 
+    if (Array.isArray(shift_segments)) {
+      for (const seg of shift_segments) {
+        if (seg?.start && seg?.end && seg.end <= seg.start) {
+          return res.status(400).json({ success: false, message: `A shift segment can't end before it starts (${seg.start}–${seg.end}). Split an overnight shift into two segments on separate days instead.` });
+        }
+      }
+    }
+
     if (!user_id || !location_id) {
       return res.status(400).json({ success: false, message: 'user_id and location_id are required.' });
     }
