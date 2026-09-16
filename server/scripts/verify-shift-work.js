@@ -99,9 +99,41 @@ assert.strictEqual(result.totalLateMinutes, 5, `Expected 2 (session 1) + 3 (sess
 assert.strictEqual(result.totalOvertimeMinutes, 15, `Expected 15 OT minutes, got ${result.totalOvertimeMinutes}`);
 assert.strictEqual(result.sessions[1].lateMinutes, 3, 'Session 2 (6pm arrival) must be checked against the 18:00 segment (3 min late), not silently zeroed — the fix is matching the RIGHT segment, not hiding lateness');
 
-// An open session (no clock_out yet) contributes zero overtime.
+// An open session (no clock_out yet) contributes zero overtime BY DEFAULT.
 const openSession = [{ id: 3, clock_in: `${today}T18:00:00+05:30`, clock_out: null }];
 assert.strictEqual(computeShiftWork(openSession, splitShift).totalOvertimeMinutes, 0);
+
+// ── computeShiftWork: includeInProgress opt-in (Fix Round 1, Task 21) ──
+// A still-open session must report REAL, live overtime once a caller
+// explicitly opts in via includeInProgress — the whole point of a live OT
+// indicator (manager roster, employee's own screen) is seeing it WHILE
+// someone is still working late, not only after they clock out. clock_in
+// is set exactly 24 real hours before "now": in Asia/Kolkata (fixed
+// UTC+5:30, no DST), that always lands on exactly the PREVIOUS shop-tz
+// calendar date, so against a fixed 09:00-18:00 shift this session is
+// always well past shift-end+grace, regardless of what time of day this
+// suite actually runs.
+const liveShift = { shift_start: '09:00', shift_end: '18:00', shift_segments: null };
+const nowForLiveOt = new Date();
+const liveClockIn = new Date(nowForLiveOt.getTime() - 24 * 60 * 60 * 1000).toISOString();
+const liveOpenSession = [{ id: 6, clock_in: liveClockIn, clock_out: null }];
+
+// Expected value derived from this module's own exported pure primitives
+// (not a reimplementation of overtimeMinutesFor's logic) — deterministic
+// given "now", not a guess at the algorithm under test.
+const expectedNowMinutes = timestampToMinutes(nowForLiveOt.toISOString());
+const expectedOutMin = expectedNowMinutes + 1440; // clock_in was exactly 1 calendar day earlier
+const expectedLiveOt = overtimeMinutesFor(expectedOutMin, { start: 540, end: 1080 }); // 09:00-18:00 in minutes
+
+const liveOtResult = computeShiftWork(liveOpenSession, liveShift, { includeInProgress: true });
+assert.strictEqual(liveOtResult.totalOvertimeMinutes, expectedLiveOt, `Expected ${expectedLiveOt} min OT with includeInProgress:true on a session open 24h past a 09:00-18:00 shift, got ${liveOtResult.totalOvertimeMinutes}`);
+assert.ok(liveOtResult.totalOvertimeMinutes > 0, 'includeInProgress:true must report NON-ZERO overtime for a session well past shift-end+grace while still open');
+
+// The SAME fixture, WITHOUT opting in (default, and explicit false), must
+// still report zero — proves the default/payroll behavior is completely
+// unaffected by this fix.
+assert.strictEqual(computeShiftWork(liveOpenSession, liveShift).totalOvertimeMinutes, 0, 'Without includeInProgress, an open session must still report 0 OT (default/payroll behavior unchanged)');
+assert.strictEqual(computeShiftWork(liveOpenSession, liveShift, { includeInProgress: false }).totalOvertimeMinutes, 0, 'Explicit includeInProgress:false must also report 0 OT');
 
 // No shift configured — everything zero, not a crash.
 const noShiftResult = computeShiftWork(sessions, null);

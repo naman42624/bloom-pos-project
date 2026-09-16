@@ -8,7 +8,7 @@
 //
 // See docs/superpowers/specs/2026-09-16-attendance-shift-payroll-redesign-design.md §6.
 
-const { parseServerDate, getTimezone } = require('./time');
+const { parseServerDate, getTimezone, nowLocal } = require('./time');
 
 const OVERTIME_GRACE_MINUTES = 30;
 
@@ -129,7 +129,12 @@ function overtimeMinutesFor(minutes, segment) {
 // payroll period's. `shift` is { shift_start, shift_end, shift_segments } as
 // stored on employee_shifts, or null/undefined (every session then
 // contributes zero late/OT, matching "no shift configured" being a no-op).
-function computeShiftWork(sessions, shift) {
+// `options.includeInProgress` (default false) opts a still-open session
+// (clock_out IS NULL) into having its overtime measured against "now"
+// instead of unconditionally reporting zero — see the in-loop comment below
+// for which callers should and shouldn't pass this.
+function computeShiftWork(sessions, shift, options = {}) {
+  const { includeInProgress = false } = options;
   const segments = shift ? normalizeSegments(shift.shift_start, shift.shift_end, shift.shift_segments) : [];
 
   let totalLateMinutes = 0;
@@ -143,11 +148,21 @@ function computeShiftWork(sessions, shift) {
 
     let overtimeMinutes = 0;
     let endSegment = null;
-    if (session.clock_out) {
-      const rawClockOutMin = timestampToMinutes(session.clock_out);
-      const clockOutMin = dayAdjustedMinutes(session.clock_in, session.clock_out, rawClockOutMin);
-      endSegment = matchSegmentForTime(clockOutMin, segments);
-      overtimeMinutes = overtimeMinutesFor(clockOutMin, endSegment);
+    // A still-open session has no clock_out to measure against yet. Live
+    // display call sites (today's own screen, the manager roster) opt in
+    // via includeInProgress so the OT figure is visible WHILE someone is
+    // still working late, not only after they clock out. Money-computing
+    // call sites (payroll calculate) must NOT opt in — an in-progress
+    // figure changes on every recomputation, fine for a live display, wrong
+    // to bake into a disbursement amount. Defaults to false so every
+    // existing caller and every verify-shift-work.js fixture is unaffected
+    // unless it explicitly opts in.
+    const referenceOut = session.clock_out || (includeInProgress ? nowLocal() : null);
+    if (referenceOut) {
+      const rawOutMin = timestampToMinutes(referenceOut);
+      const outMin = dayAdjustedMinutes(session.clock_in, referenceOut, rawOutMin);
+      endSegment = matchSegmentForTime(outMin, segments);
+      overtimeMinutes = overtimeMinutesFor(outMin, endSegment);
     }
 
     totalLateMinutes += lateMinutes;

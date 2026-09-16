@@ -338,7 +338,7 @@ router.get('/today', authorize('owner', 'manager', 'employee', 'counter_staff', 
       const shift = await db.prepare(
         'SELECT shift_start, shift_end, shift_segments FROM employee_shifts WHERE user_id = ? AND location_id = ? AND is_active = 1'
       ).get(req.user.id, current.location_id);
-      shiftWork = computeShiftWork(records, shift || null);
+      shiftWork = computeShiftWork(records, shift || null, { includeInProgress: true });
     }
 
     res.json({
@@ -1072,7 +1072,7 @@ router.get('/staff-today', authorize('owner', 'manager'), async (req, res) => {
     }
 
     const staff = Array.from(byUser.values()).map((s) => {
-      const shiftWork = computeShiftWork(s.logs, { shift_start: s.shift_start, shift_end: s.shift_end, shift_segments: s.shift_segments });
+      const shiftWork = computeShiftWork(s.logs, { shift_start: s.shift_start, shift_end: s.shift_end, shift_segments: s.shift_segments }, { includeInProgress: true });
       return {
         ...s,
         total_hours: Math.round(s.total_hours * 100) / 100,

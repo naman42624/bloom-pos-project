@@ -244,6 +244,44 @@ check('GET /attendance/staff-today includes overtime_minutes_today per staff mem
   }
 });
 
+// Fix Round 1 (Task 21 live-trace finding): overtime must show up WHILE
+// someone is still clocked in, not only after they clock out — reproduces
+// the exact Scenario 1 failure. Uses a fixed 09:00-18:00 shift + clock_in
+// backdated exactly 24 hours (always exactly 1 Asia/Kolkata calendar date
+// earlier, no DST to worry about), same reasoning as the corresponding
+// verify-shift-work.js unit assertion, so this is robust regardless of
+// what time of day the suite actually runs.
+check('GET /attendance/today and GET /attendance/staff-today show LIVE overtime for a still-clocked-in session past shift-end+grace', async () => {
+  const owner = await loginOwner();
+  const florist = await createFloristStaffSession(owner.token);
+  const db = await getDb();
+
+  const shiftResult = await db.prepare(`
+    INSERT INTO employee_shifts (user_id, location_id, shift_start, shift_end, is_active, created_by)
+    VALUES (?, ?, '09:00', '18:00', 1, ?) RETURNING id
+  `).get(florist.id, TEST_LOCATION_ID, owner.id);
+  createdShiftIds.push(shiftResult.id);
+
+  const clockIn = await api('POST', '/attendance/clock-in', florist.token, { location_id: TEST_LOCATION_ID, method: 'manual' });
+  assert(clockIn.status === 201, `Could not clock in: ${clockIn.status} ${JSON.stringify(clockIn.body)}`);
+  const attendanceId = clockIn.body.data.id;
+  createdAttendanceIds.push(attendanceId);
+  await db.prepare("UPDATE attendance SET clock_in = clock_in - INTERVAL '24 hours' WHERE id = ?").run(attendanceId);
+
+  // Still clocked in (no clock-out anywhere in this check) — this is the
+  // live/in-progress case, not the after-the-fact one.
+  const today = await api('GET', '/attendance/today', florist.token);
+  assert(today.status === 200, `Expected 200, got ${today.status}`);
+  assert(today.body.data.overtimeMinutesToday > 0, `Expected overtimeMinutesToday > 0 for a session 24h past a 09:00-18:00 shift while still clocked in, got ${today.body.data.overtimeMinutesToday}`);
+
+  const staffToday = await api('GET', `/attendance/staff-today?location_id=${TEST_LOCATION_ID}`, owner.token);
+  assert(staffToday.status === 200, `Expected 200, got ${staffToday.status}`);
+  const row = staffToday.body.data.present.find((s) => s.user_id === florist.id);
+  assert(row, 'Expected the florist to appear in the present list');
+  assert(row.active_session === true, 'Expected active_session true — this check is specifically about a STILL-OPEN session');
+  assert(row.overtime_minutes_today > 0, `Expected overtime_minutes_today > 0 on the manager roster row, got ${row.overtime_minutes_today}`);
+});
+
 check('GET /attendance/staff-today does not list a multi-location staff member more than once in "absent"', async () => {
   const owner = await loginOwner();
   const florist = await createFloristStaffSession(owner.token);

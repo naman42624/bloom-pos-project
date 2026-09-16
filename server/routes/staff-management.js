@@ -435,7 +435,12 @@ router.post('/payroll/calculate', authorize('owner'), (req, res) => {
     const shift = db.prepare(
       'SELECT shift_start, shift_end, shift_segments FROM employee_shifts WHERE user_id = ? AND is_active = 1 ORDER BY updated_at DESC, id DESC LIMIT 1'
     ).get(user_id);
-    const shiftWork = computeShiftWork(attendance, shift || null);
+    // includeInProgress explicitly OMITTED (defaults to false) — this is a
+    // money-computation path. An in-progress OT figure changes on every
+    // recomputation, which is fine for a live display but wrong to bake
+    // into a disbursement amount; only a session's real, final clock_out
+    // should ever count toward payroll.
+    const shiftWork = computeShiftWork(attendance, shift || null, { includeInProgress: false });
     const leaveDays = uniqueAttendance.filter(a => a.status === 'on_leave').length;
     const absentDays = Math.max(0, daysInPeriod - daysWorked - leaveDays);
 
