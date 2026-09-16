@@ -1000,6 +1000,7 @@ router.get('/staff-today', authorize('owner', 'manager'), async (req, res) => {
           latest_clock_out: row.clock_out,
           clock_in: row.clock_in,
           clock_out: row.clock_out,
+          clock_out_method: row.clock_out_method || null,
           total_hours: Number(row.total_hours || 0),
           outdoor_hours: Number(row.outdoor_hours || 0),
           effective_hours: Number(row.effective_hours || 0),
@@ -1039,6 +1040,7 @@ router.get('/staff-today', authorize('owner', 'manager'), async (req, res) => {
         existing.latest_clock_out = row.clock_out;
         existing.clock_in = row.clock_in;
         existing.clock_out = row.clock_out;
+        existing.clock_out_method = row.clock_out_method || null;
         existing.location_id = row.location_id;
         existing.location_name = row.location_name;
         if (row.shift_start || row.shift_end || row.shift_segments) {
@@ -1052,6 +1054,7 @@ router.get('/staff-today', authorize('owner', 'manager'), async (req, res) => {
         existing.active_session = true;
         existing.clock_in = row.clock_in;
         existing.clock_out = null;
+        existing.clock_out_method = null;
         existing.location_id = row.location_id;
         existing.location_name = row.location_name;
       }
