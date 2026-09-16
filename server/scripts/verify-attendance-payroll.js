@@ -385,6 +385,17 @@ check('POST /staff/geofence-event (enter) rejects an out-of-range claim rather t
     location_id: TEST_LOCATION_ID, event_type: 'enter', latitude: 12.9716, longitude: 77.5946, // Bangalore, nowhere near the shop
   });
   assert(status === 200, `Expected 200 (a rejected claim, not an error), got ${status}`);
+  // Test Loc currently has NULL lat/long, so the route's coordinate-presence
+  // check short-circuits to 'unverified' before the distance comparison
+  // (haversineMeters) ever runs — that's a real, different branch from
+  // 'out_of_range', not the same outcome by a different name. Distinguish
+  // them explicitly rather than accepting either silently, so this check is
+  // honest about which branch it actually exercised.
+  if (body.action === 'unverified') {
+    console.log('   (partial coverage — Test Loc has no coordinates yet, so this only confirms the coordinate-presence guard rejects auto-clock-in; the distance-comparison branch itself remains unexercised until real coordinates are set)');
+  } else {
+    assert(body.action === 'out_of_range', `Expected action 'out_of_range' once real coordinates exist, got '${body.action}'`);
+  }
   assert(body.action !== 'auto_clock_in', `Expected the out-of-range claim to NOT trigger auto clock-in, got action='${body.action}'`);
 });
 
