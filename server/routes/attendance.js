@@ -269,10 +269,22 @@ router.post('/missed-clock-in', authorize('owner', 'manager', 'employee', 'count
       return res.status(400).json({ success: false, message: 'Location is required.' });
     }
 
+    // Dedup by SHOP-LOCAL calendar day, not a raw SQL date cast. created_at
+    // is a naive column storing UTC wall-clock time (this codebase's
+    // established convention — see shift-work.js's own comments on why
+    // parseServerDate exists at all), so a bare `created_at::date = ?`
+    // comparison against todayStr() (shop-local, Asia/Kolkata) silently
+    // mismatches for roughly IST 00:00-05:30 every day, when the UTC
+    // calendar date is still yesterday — a real gap for a shop with
+    // early-morning shifts. Filter narrowly in SQL (type + userId — at
+    // most a handful of rows per user ever) and compare the actual
+    // calendar day in JS, the same parseServerDate/todayStr pattern every
+    // other timezone-sensitive comparison in this plan already uses.
     const today = todayStr();
-    const alreadySent = db.prepare(
-      "SELECT id FROM notifications WHERE type = 'attendance_missed_clockin' AND (data::jsonb->>'userId')::int = ? AND created_at::date = ?"
-    ).get(req.user.id, today);
+    const candidates = db.prepare(
+      "SELECT id, created_at FROM notifications WHERE type = 'attendance_missed_clockin' AND (data::jsonb->>'userId')::int = ?"
+    ).all(req.user.id);
+    const alreadySent = candidates.find((row) => todayStr(parseServerDate(row.created_at)) === today);
     if (alreadySent) {
       return res.json({ success: true, message: 'Your manager has already been notified today.', already_sent: true });
     }

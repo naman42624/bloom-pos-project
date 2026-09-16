@@ -536,6 +536,40 @@ check('POST /attendance/missed-clock-in notifies owner/manager and deduplicates 
   assert(matchingAfter.length === 1, `Expected still exactly 1 notification after the deduplicated second call, got ${matchingAfter.length}`);
 });
 
+check('POST /attendance/missed-clock-in dedup compares the SHOP-LOCAL calendar day, not a raw UTC date cast (Fix Round 2)', async () => {
+  const owner = await loginOwner();
+  const florist = await createFloristStaffSession(owner.token);
+  const db = await getDb();
+  const { todayStr, parseServerDate } = require('../utils/time');
+
+  const first = await api('POST', '/attendance/missed-clock-in', florist.token, { location_id: TEST_LOCATION_ID });
+  assert(first.status === 200, `Expected 200, got ${first.status}`);
+  assert(!first.body.already_sent, 'Expected the first call to actually send');
+
+  const notifRow = await db.prepare(
+    "SELECT id FROM notifications WHERE type = 'attendance_missed_clockin' AND (data::jsonb->>'userId')::int = ? ORDER BY id DESC LIMIT 1"
+  ).get(florist.id);
+  assert(notifRow, 'Expected to find the notification the first call just created');
+
+  // Backdate created_at to a naive-UTC string whose LITERAL calendar date
+  // is YESTERDAY but whose real shop-local (Asia/Kolkata) calendar date is
+  // TODAY — the exact IST 00:00-05:30 window a raw `created_at::date = ?`
+  // SQL cast got wrong (this codebase stores created_at as naive UTC wall
+  // clock; see shift-work.js's own comments on why parseServerDate exists
+  // at all). Built relative to the real today (todayStr()), not a
+  // hardcoded date, so this holds regardless of which real day the suite
+  // runs on.
+  const today = todayStr();
+  const yesterday = new Date(new Date(`${today}T00:00:00Z`).getTime() - 86400000).toISOString().slice(0, 10);
+  const boundaryCreatedAt = `${yesterday}T20:00:00.000`; // 20:00 UTC = 01:30 IST the NEXT calendar day (= today)
+  assert(todayStr(parseServerDate(boundaryCreatedAt)) === today, 'Test setup sanity check: the constructed boundary timestamp must itself resolve to shop-local TODAY');
+  await db.prepare('UPDATE notifications SET created_at = ? WHERE id = ?').run(boundaryCreatedAt, notifRow.id);
+
+  const second = await api('POST', '/attendance/missed-clock-in', florist.token, { location_id: TEST_LOCATION_ID });
+  assert(second.status === 200, `Expected 200, got ${second.status}`);
+  assert(second.body.already_sent === true, `Expected a notification in the IST 00:00-05:30 boundary window to still be recognized as "already sent today" (shop-local), got already_sent=${second.body.already_sent}`);
+});
+
 // ═══════════════════════════════════════════════════════════════
 // Clock-out recovery sweep — closes attendance sessions left open well
 // past their shift (or a flat fallback window with no shift configured),
