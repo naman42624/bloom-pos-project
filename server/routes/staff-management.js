@@ -4,6 +4,7 @@ const { getDb } = require('../config/database');
 const { getDb: getAsyncDb } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
 const { nowLocal } = require('../utils/time');
+const { computeShiftWork } = require('../utils/shift-work');
 
 router.use(authenticate);
 
@@ -398,6 +399,10 @@ router.post('/payroll/calculate', authorize('owner'), (req, res) => {
     const halfDays = uniqueAttendance.filter(a => a.status === 'half_day').length;
     const lateDays = uniqueAttendance.filter(a => a.late_arrival === 1).length;
     const totalHours = attendance.reduce((sum, a) => sum + (a.effective_hours || 0), 0);
+    const shift = db.prepare(
+      'SELECT shift_start, shift_end, shift_segments FROM employee_shifts WHERE user_id = ? AND is_active = 1 ORDER BY updated_at DESC, id DESC LIMIT 1'
+    ).get(user_id);
+    const shiftWork = computeShiftWork(attendance, shift || null);
     const leaveDays = uniqueAttendance.filter(a => a.status === 'on_leave').length;
     const absentDays = Math.max(0, daysInPeriod - daysWorked - leaveDays);
 
@@ -440,6 +445,8 @@ router.post('/payroll/calculate', authorize('owner'), (req, res) => {
           late_days: lateDays,
           leave_days: leaveDays,
           total_hours: Math.round(totalHours * 100) / 100,
+          total_late_minutes: shiftWork.totalLateMinutes,
+          overtime_minutes: shiftWork.totalOvertimeMinutes,
         },
         calculation: {
           base_pay: Math.round(basePay * 100) / 100,
