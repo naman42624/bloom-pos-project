@@ -424,6 +424,57 @@ check('POST /staff/geofence-event (enter, in range) auto clocks in, returns atte
   assert(found, 'Expected a notification of type attendance_auto_clockin');
 });
 
+check('POST /attendance/:id/undo-auto-clockin deletes an open auto-geofence session within the window', async () => {
+  const owner = await loginOwner();
+  const florist = await createFloristStaffSession(owner.token);
+  const db = await getDb();
+  const location = await db.prepare('SELECT latitude, longitude FROM locations WHERE id = ?').get(TEST_LOCATION_ID);
+  if (!location?.latitude) { console.log('   (skipped — Test Loc has no coordinates)'); return; }
+  const geo = await api('POST', '/staff/geofence-event', florist.token, {
+    location_id: TEST_LOCATION_ID, event_type: 'enter', latitude: Number(location.latitude), longitude: Number(location.longitude),
+  });
+  assert(geo.body.action === 'auto_clock_in', `Setup failed — expected auto_clock_in, got '${geo.body.action}'`);
+
+  const { status, body } = await api('POST', `/attendance/${geo.body.attendance_id}/undo-auto-clockin`, florist.token);
+  assert(status === 200, `Expected 200, got ${status}: ${JSON.stringify(body)}`);
+
+  const { body: today } = await api('GET', '/attendance/today', florist.token);
+  assert(today.data.attendance === null, 'Expected no active attendance record after undo');
+});
+
+check('POST /attendance/:id/undo-auto-clockin refuses past the 15-minute window', async () => {
+  const owner = await loginOwner();
+  const florist = await createFloristStaffSession(owner.token);
+  const db = await getDb();
+  const location = await db.prepare('SELECT latitude, longitude FROM locations WHERE id = ?').get(TEST_LOCATION_ID);
+  if (!location?.latitude) { console.log('   (skipped — Test Loc has no coordinates)'); return; }
+  const geo = await api('POST', '/staff/geofence-event', florist.token, {
+    location_id: TEST_LOCATION_ID, event_type: 'enter', latitude: Number(location.latitude), longitude: Number(location.longitude),
+  });
+  createdAttendanceIds.push(geo.body.attendance_id);
+  // Backdate the clock-in 20 minutes, simulating time having passed —
+  // same technique verify-register-expenses.js's own backdateToYesterday
+  // uses.
+  await db.prepare("UPDATE attendance SET clock_in = clock_in - INTERVAL '20 minutes' WHERE id = ?").run(geo.body.attendance_id);
+
+  const { status } = await api('POST', `/attendance/${geo.body.attendance_id}/undo-auto-clockin`, florist.token);
+  assert(status === 400, `Expected 400 past the 15-minute window, got ${status}`);
+
+  await api('POST', '/attendance/clock-out', florist.token, { method: 'manual' });
+});
+
+check('POST /attendance/:id/undo-auto-clockin refuses a manual clock-in', async () => {
+  const owner = await loginOwner();
+  const florist = await createFloristStaffSession(owner.token);
+  const manual = await api('POST', '/attendance/clock-in', florist.token, { location_id: TEST_LOCATION_ID, method: 'manual' });
+  createdAttendanceIds.push(manual.body.data.id);
+
+  const { status } = await api('POST', `/attendance/${manual.body.data.id}/undo-auto-clockin`, florist.token);
+  assert(status === 400, `Expected 400 for a manual (non-auto) clock-in, got ${status}`);
+
+  await api('POST', '/attendance/clock-out', florist.token, { method: 'manual' });
+});
+
 async function cleanup() {
   const db = await getDb();
   for (const id of createdExpenseIds) {

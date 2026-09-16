@@ -214,6 +214,46 @@ router.post('/clock-out', authorize('owner', 'manager', 'employee', 'counter_sta
   }
 });
 
+const UNDO_AUTO_CLOCKIN_WINDOW_MINUTES = 15;
+
+// ═══════════════════════════════════════════════════════════════
+// UNDO AN AUTOMATIC (GEOFENCE) CLOCK-IN — bounded to 15 minutes
+// ═══════════════════════════════════════════════════════════════
+// Only undoes a record that was actually auto-created by geofence entry,
+// is still open (no clock_out — if they've since clocked out, whatever
+// they did while "in" is real work, not a mis-fire), AND is within 15
+// minutes of the clock-in itself. Past that window this deliberately
+// refuses rather than silently deleting a real day's attendance on one
+// tap with no confirmation — see this task's header.
+router.post('/:id/undo-auto-clockin', authorize('owner', 'manager', 'employee', 'counter_staff', 'florist_staff', 'delivery_partner'), (req, res) => {
+  try {
+    const db = getDb();
+    const record = db.prepare('SELECT * FROM attendance WHERE id = ?').get(req.params.id);
+    if (!record) {
+      return res.status(404).json({ success: false, message: 'Attendance record not found.' });
+    }
+    if (record.user_id !== req.user.id && !['owner', 'manager'].includes(req.user.role)) {
+      return res.status(403).json({ success: false, message: 'Not authorized.' });
+    }
+    if (record.clock_in_method !== 'auto_geofence') {
+      return res.status(400).json({ success: false, message: 'Only an automatic clock-in can be undone this way.' });
+    }
+    if (record.clock_out) {
+      return res.status(400).json({ success: false, message: 'This session has already been clocked out — ask a manager to fix it instead.' });
+    }
+    const clockInDate = parseServerDate(record.clock_in);
+    const minutesSinceClockIn = clockInDate ? (Date.now() - clockInDate.getTime()) / 60000 : Infinity;
+    if (minutesSinceClockIn > UNDO_AUTO_CLOCKIN_WINDOW_MINUTES) {
+      return res.status(400).json({ success: false, message: `This can only be undone within ${UNDO_AUTO_CLOCKIN_WINDOW_MINUTES} minutes of clocking in — ask a manager to fix it from here instead.` });
+    }
+    db.prepare('DELETE FROM attendance WHERE id = ?').run(record.id);
+    res.json({ success: true, message: 'Undone — you are no longer clocked in.' });
+  } catch (error) {
+    console.error('Undo auto clock-in error:', error);
+    res.status(500).json({ success: false, message: 'Failed to undo.' });
+  }
+});
+
 // ═══════════════════════════════════════════════════════════════
 // GET TODAY'S ATTENDANCE STATUS (for the logged-in user)
 // ═══════════════════════════════════════════════════════════════
