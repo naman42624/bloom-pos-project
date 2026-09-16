@@ -87,6 +87,7 @@ import CustomerShopScreen from '../screens/CustomerShopScreen';
 
 // Phase 8 — Attendance
 import AttendanceScreen from '../screens/AttendanceScreen';
+import AttendanceHubScreen from '../screens/AttendanceHubScreen';
 
 // Phase 9 — Reports
 import ReportsHubScreen from '../screens/ReportsHubScreen';
@@ -492,6 +493,7 @@ function MoreStack() {
       <Stack.Screen name="RecurringOrderDetail" component={AddRecurringOrderScreen} options={{ title: 'Edit Recurring Order' }} />
       {/* Attendance sub-screens */}
       <Stack.Screen name="Attendance" component={AttendanceScreen} options={{ title: 'Attendance' }} />
+      <Stack.Screen name="AttendanceHub" component={AttendanceHubScreen} options={{ title: 'Attendance & Payroll' }} />
       <Stack.Screen name="StaffAttendance" component={StaffAttendanceScreen} options={{ title: 'Staff Today' }} />
       <Stack.Screen name="AttendanceReport" component={AttendanceReportScreen} options={{ title: 'Attendance Report' }} />
       <Stack.Screen name="SalaryAdvances" component={SalaryAdvancesScreen} options={{ title: 'Salary Advances' }} />
