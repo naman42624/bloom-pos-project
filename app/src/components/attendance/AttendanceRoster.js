@@ -13,11 +13,20 @@ import { useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '../../context/AuthContext';
 import api from '../../services/api';
 import { Colors, FontSize, Spacing, BorderRadius } from '../../constants/theme';
-import { formatTime as formatServerTime } from '../../utils/datetime';
+import { formatTime as formatServerTime, formatDateLabel } from '../../utils/datetime';
 
 function formatTime(iso) {
   if (!iso) return '--:--';
   return formatServerTime(iso, 'en-IN', { hour: '2-digit', minute: '2-digit', hour12: true });
+}
+
+// "Yesterday, 10:30 PM" — auto-closed sessions are often from a previous
+// calendar day (an evening shift gets swept closed after midnight), so the
+// day has to be on screen, not just the time.
+function formatWhen(iso) {
+  if (!iso) return '';
+  const day = formatDateLabel(iso);
+  return day ? `${day}, ${formatTime(iso)}` : formatTime(iso);
 }
 
 function formatExtra(minutes) {
@@ -56,6 +65,7 @@ export default function AttendanceRoster() {
   const [refreshing, setRefreshing] = useState(false);
   const [present, setPresent] = useState([]);
   const [absent, setAbsent] = useState([]);
+  const [needsConfirmation, setNeedsConfirmation] = useState([]);
   const [summary, setSummary] = useState(null);
   const [locations, setLocations] = useState([]);
   // Owner defaults to "All Locations" (null); manager defaults to their
@@ -71,6 +81,7 @@ export default function AttendanceRoster() {
       const [staffRes, locsRes] = await Promise.all([api.getStaffToday(params), api.getLocations()]);
       setPresent(staffRes.data?.present || []);
       setAbsent(staffRes.data?.absent || []);
+      setNeedsConfirmation(staffRes.data?.needs_confirmation || []);
       setSummary(staffRes.data?.summary || null);
       setLocations((locsRes.data?.locations || locsRes.data || []).filter((l) => (l.type === 'shop' || l.type == null) && l.is_active !== 0));
     } catch (e) {
@@ -171,6 +182,39 @@ export default function AttendanceRoster() {
               <Text style={styles.summaryLabel}>Late</Text>
             </View>
           </View>
+
+          {/* Auto-closed sessions from roughly the last day. An evening
+              shift gets swept closed after midnight, so its row belongs to
+              YESTERDAY and never shows up on the list below — this is the
+              only place a manager would otherwise see it at all. Its
+              finishing time is the system's best guess, not something
+              anyone actually recorded, so it's worth a glance before
+              payroll. Deliberately NOT tappable: there's no confirm/edit
+              flow behind it yet, and an affordance that promises an action
+              it can't perform is worse than a plain notice. */}
+          {(summary?.needs_confirmation_count > 0) && (
+            <View style={styles.autoClosedBanner}>
+              <Ionicons name="time-outline" size={18} color={Colors.warning} />
+              <View style={styles.autoClosedTextWrap}>
+                <Text style={styles.autoClosedTitle}>
+                  {summary.needs_confirmation_count === 1
+                    ? '1 shift was closed automatically'
+                    : `${summary.needs_confirmation_count} shifts were closed automatically`}
+                </Text>
+                <Text style={styles.autoClosedBody}>
+                  Nobody clocked these out, so the app guessed the finishing time. Worth checking the hours before payroll.
+                </Text>
+                {needsConfirmation.slice(0, 3).map((row) => (
+                  <Text key={row.id} style={styles.autoClosedItem}>
+                    • {row.user_name} — finished {formatWhen(row.clock_out)}
+                  </Text>
+                ))}
+                {needsConfirmation.length > 3 && (
+                  <Text style={styles.autoClosedItem}>• and {needsConfirmation.length - 3} more</Text>
+                )}
+              </View>
+            </View>
+          )}
         </>
       }
       renderSectionHeader={({ section }) => <Text style={styles.sectionTitle}>{section.title}</Text>}
@@ -264,6 +308,17 @@ const styles = StyleSheet.create({
   summaryCard: { flex: 1, borderRadius: BorderRadius.md, padding: Spacing.sm, alignItems: 'center' },
   summaryCount: { fontSize: FontSize.lg, fontWeight: '800', color: Colors.text, marginTop: 2 },
   summaryLabel: { fontSize: 10, color: Colors.textLight, textAlign: 'center' },
+
+  autoClosedBanner: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.sm,
+    backgroundColor: '#FFF3E0', borderRadius: BorderRadius.md,
+    borderLeftWidth: 3, borderLeftColor: Colors.warning,
+    padding: Spacing.md, marginBottom: Spacing.md,
+  },
+  autoClosedTextWrap: { flex: 1 },
+  autoClosedTitle: { fontSize: FontSize.md, fontWeight: '700', color: Colors.text },
+  autoClosedBody: { fontSize: FontSize.sm, color: Colors.text, marginTop: 2 },
+  autoClosedItem: { fontSize: FontSize.sm, color: Colors.textLight, marginTop: 4 },
 
   sectionTitle: { fontSize: FontSize.sm, fontWeight: '700', color: Colors.textLight, marginTop: Spacing.md, marginBottom: Spacing.xs },
 

@@ -527,12 +527,30 @@ router.post('/payroll/disburse', authorize('owner'), (req, res) => {
       return res.status(400).json({ success: false, message: `Salary for this period was already recorded (payment #${existing.id}) — check Payroll History rather than disbursing again.` });
     }
 
-    // Cap the advance deduction at what this payment can actually absorb —
-    // SalaryManagementScreen already clamps net_amount to Math.max(0, ...)
-    // but was still sending the FULL advances_deducted regardless, which
-    // would mark an advance fully repaid even when only part of it was
-    // really covered by this payment.
-    advancesDeducted = Math.min(advancesDeducted, Number(net_amount) || 0);
+    // Cap the advance deduction at what this payment can actually absorb.
+    //
+    // The basis is deliberately NOT net_amount: the client sends net_amount
+    // with the advance ALREADY subtracted (SalaryManagementScreen:
+    // `finalNet = calculation.net_amount + bonus - advDeduct`), so capping
+    // against it caps against the residual cash left AFTER the deduction.
+    // Payable 10,000 with a 6,000 advance arrives as net_amount=4000 /
+    // advances_deducted=6000, and min(6000, 4000) would record only 4,000
+    // as repaid while 6,000 of real cash was withheld — the missing 2,000
+    // stays 'approved' and gets deducted a second time next period.
+    //
+    // The right basis is the gross this payment is worth before the advance
+    // comes off. Mirrors the client's own arithmetic exactly: the
+    // deductions clamp sits INSIDE (matching POST /payroll/calculate's
+    // `net_amount = max(0, base_pay - deductions)`), then bonus is added on
+    // top. base_salary/deductions/bonus are client-supplied — as they
+    // already were for the row this route writes — so a caller that omits
+    // base_salary gets payable 0 and records nothing as repaid, which is
+    // the safe direction (never credit a repayment that didn't happen).
+    const payable = Math.max(
+      0,
+      Math.max(0, (Number(base_salary) || 0) - (Number(deductions) || 0)) + (Number(bonus) || 0)
+    );
+    advancesDeducted = Math.min(advancesDeducted, payable);
 
     const method = payment_method || 'cash';
 

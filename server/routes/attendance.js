@@ -297,7 +297,12 @@ router.post('/missed-clock-in', authorize('owner', 'manager', 'employee', 'count
       title: 'Missed clock-in',
       body: `${req.user.name} forgot to clock in at ${location ? location.name : 'the shop'} — tap to clock them in.`,
       type: 'attendance_missed_clockin',
-      data: { screen: 'StaffAttendance', userId: req.user.id, locationId: Number(location_id) },
+      // AttendanceHub, not the old standalone StaffAttendance screen: Task
+      // 20's Dashboard banner already routes there deliberately so there's
+      // only ONE "who hasn't clocked in" surface to check. ('StaffAttendance'
+      // also had no branch at all in usePushNotifications' navigation chain,
+      // so the tap did nothing — the body promises "tap to clock them in.")
+      data: { screen: 'AttendanceHub', userId: req.user.id, locationId: Number(location_id) },
     });
     res.json({ success: true, message: 'Your manager has been notified.' });
   } catch (error) {
@@ -1144,7 +1149,50 @@ router.get('/staff-today', authorize('owner', 'manager'), async (req, res) => {
 
     const active = staff.filter((s) => s.active_session);
     const completed = staff.filter((s) => !s.active_session);
-    const late = staff.filter((s) => s.late_arrival === 1);
+    // Derive the summary tile from the SAME freshly-computed figure the
+    // per-row "Nm late" chips use, not the stored late_arrival boolean.
+    // late_arrival is written once at clock-in time, so every row written
+    // before the split-shift fix carries the old non-segment-aware verdict
+    // — and the roster renders both numbers on one screen, where a "Late: 3"
+    // tile above three rows with no late chip is just a reason to trust
+    // neither. "Computed fresh, never stored" has to hold for the total a
+    // manager actually reads, too.
+    const late = staff.filter((s) => s.late_minutes_today > 0);
+
+    // Auto-closed sessions the manager hasn't seen yet — deliberately a
+    // SEPARATE, additive query rather than a change to the roster above.
+    // The roster is hard-scoped to a.date = today (correct for what it is),
+    // but a shift ending at 22:30 gets swept closed around 02:30 the NEXT
+    // calendar day while the row's own date is still yesterday's — so an
+    // evening auto-close never appears on any roster anyone looks at. Spec
+    // §8's whole point is that an auto-close is a guess, not a fact, and
+    // needs a human eye; this is the visibility half of that (surfacing it
+    // at all). Rolling 24h window off clock_out, not date, for exactly the
+    // reason above.
+    let autoClosedFilter = '';
+    const autoClosedParams = [];
+    if (location_id) {
+      autoClosedFilter = 'AND a.location_id = ?';
+      autoClosedParams.push(Number(location_id));
+    } else if (req.user.role === 'manager') {
+      const locs = (await db.prepare('SELECT location_id FROM user_locations WHERE user_id = ?').all(req.user.id)).map(l => l.location_id);
+      if (locs.length > 0) {
+        autoClosedFilter = `AND a.location_id IN (${locs.map(() => '?').join(',')})`;
+        autoClosedParams.push(...locs);
+      }
+    }
+
+    const needsConfirmation = await db.prepare(`
+      SELECT a.id, a.user_id, u.name as user_name, a.date, a.clock_in, a.clock_out,
+             a.clock_out_method, a.location_id, l.name as location_name
+      FROM attendance a
+      JOIN users u ON a.user_id = u.id
+      JOIN locations l ON a.location_id = l.id
+      WHERE a.clock_out_method IN ('auto_shift_end', 'auto_timeout')
+        AND a.clock_out >= NOW() - INTERVAL '24 hours'
+        ${autoClosedFilter}
+      ORDER BY a.clock_out DESC
+    `).all(...autoClosedParams);
 
     res.json({
       success: true,
@@ -1153,12 +1201,14 @@ router.get('/staff-today', authorize('owner', 'manager'), async (req, res) => {
         active,
         completed,
         absent: notClocked,
+        needs_confirmation: needsConfirmation,
         summary: {
           present_count: staff.length,
           active_count: active.length,
           completed_count: completed.length,
           absent_count: notClocked.length,
           late_count: late.length,
+          needs_confirmation_count: needsConfirmation.length,
         },
       },
     });

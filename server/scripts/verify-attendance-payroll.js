@@ -74,22 +74,33 @@ async function loginOwner() {
 // user is nested under data.user, not data itself (verified against the
 // real route in server/routes/users.js, not assumed — an earlier draft of
 // this harness got this wrong and would have broken every check below it).
-async function createFloristStaffSession(ownerToken) {
+async function createStaffSession(ownerToken, role, name) {
   const phone = `9${Date.now().toString().slice(-9)}`;
   const { status, body } = await api('POST', '/users', ownerToken, {
-    name: 'Verify Florist', phone, password: 'verifypass123',
-    role: 'florist_staff', location_ids: [TEST_LOCATION_ID],
+    name, phone, password: 'verifypass123',
+    role, location_ids: [TEST_LOCATION_ID],
   });
-  assert(status === 201, `Could not create florist_staff test user: ${status} ${JSON.stringify(body)}`);
+  assert(status === 201, `Could not create ${role} test user: ${status} ${JSON.stringify(body)}`);
   const userId = body.data.user.id;
   createdUserIds.push(userId);
   const login = await api('POST', '/auth/login', null, { phone, password: 'verifypass123' });
-  assert(login.status === 200, `Florist test user login failed: ${login.status} ${JSON.stringify(login.body)}`);
+  assert(login.status === 200, `${role} test user login failed: ${login.status} ${JSON.stringify(login.body)}`);
   return { token: login.body.data.token, id: userId };
 }
 
+async function createFloristStaffSession(ownerToken) {
+  return createStaffSession(ownerToken, 'florist_staff', 'Verify Florist');
+}
+
+// Same shape, different role — the negative-authorization checks below need
+// a role that is NOT florist_staff to prove a gate scopes by role rather
+// than just "not the owner."
+async function createCounterStaffSession(ownerToken) {
+  return createStaffSession(ownerToken, 'counter_staff', 'Verify Counter');
+}
+
 module.exports = {
-  check, checks, api, assert, loginOwner, createFloristStaffSession,
+  check, checks, api, assert, loginOwner, createFloristStaffSession, createCounterStaffSession,
   TEST_LOCATION_ID, getDb,
   createdUserIds, createdShiftIds, createdAttendanceIds, createdSalaryIds, createdAdvanceIds, createdExpenseIds,
   createdOutdoorDutyIds,
@@ -316,7 +327,7 @@ check('POST /staff/payroll/calculate includes total_late_minutes and overtime_mi
   assert(body.data.calculation.net_amount === expectedNet, `Expected net_amount to equal base_pay - deductions (clamped at 0) = ${expectedNet}, got ${body.data.calculation.net_amount}`);
 });
 
-check('POST /staff/payroll/disburse (cash) requires an open register, writes a linked expense, adjusts expected_cash, and caps advances_deducted at net_amount', async () => {
+check('POST /staff/payroll/disburse (cash) requires an open register, writes a linked expense, adjusts expected_cash, and caps advances_deducted at what the payment can absorb', async () => {
   const owner = await loginOwner();
   const florist = await createFloristStaffSession(owner.token);
   await api('POST', '/staff/salaries', owner.token, { user_id: florist.id, monthly_salary: 12000, salary_type: 'monthly' });
@@ -334,10 +345,15 @@ check('POST /staff/payroll/disburse (cash) requires an open register, writes a l
   const before = await api('GET', `/sales/register/status?location_id=${TEST_LOCATION_ID}`, owner.token);
   const expectedBefore = Number(before.body.data.expected_cash);
 
-  // advances_deducted (5000) exceeds net_amount (3000) — must be capped to
-  // 3000, not repay the full 5000 against real money that was never paid.
+  // advances_deducted (5000) exceeds the whole payable amount (base_salary
+  // 3000, no deductions, no bonus) — must be capped to 3000, not repay the
+  // full 5000 against real money that was never paid. base_salary is sent
+  // explicitly because the cap's basis is the GROSS payable, not net_amount
+  // (which arrives with the advance already subtracted); see the route's
+  // own comment and the C1 check below.
   const { status, body } = await api('POST', '/staff/payroll/disburse', owner.token, {
     user_id: florist.id, period_start: '2026-02-01', period_end: '2026-02-28',
+    base_salary: 3000, deductions: 0, bonus: 0,
     net_amount: 3000, advances_deducted: 5000, payment_method: 'cash',
   });
   assert(status === 201, `Expected 201, got ${status}: ${JSON.stringify(body)}`);
@@ -361,6 +377,51 @@ check('POST /staff/payroll/disburse (cash) requires an open register, writes a l
   // have negative physical cash in a drawer), so clamp at 0 for this cleanup
   // close — otherwise the call 400s silently and leaves the register open.
   await api('PUT', '/sales/register/close', owner.token, { location_id: TEST_LOCATION_ID, actual_cash: Math.max(0, expectedAfter) });
+});
+
+// C1 (final whole-branch review): the NEIGHBOURING case to the check above.
+// There, advances_deducted (5000) exceeded the whole salary, so both the
+// wrong cap basis (net_amount) and the right one (gross payable) happen to
+// produce the same capped figure — it cannot tell them apart. Here the
+// advance sits strictly BETWEEN net_amount and base_salary
+// (4000 < 6000 < 10000), which is the ordinary case whenever an outstanding
+// advance exceeds half a salary: capping at net_amount would record only
+// 4000 as repaid while 6000 of real cash was withheld, leaving 2000 still
+// 'approved' to be deducted a SECOND time next period.
+check('POST /staff/payroll/disburse records the FULL advance repayment when net_amount < advances_deducted < base_salary (C1)', async () => {
+  const owner = await loginOwner();
+  const florist = await createFloristStaffSession(owner.token);
+  const db = await getDb();
+  await api('POST', '/staff/salaries', owner.token, { user_id: florist.id, monthly_salary: 10000, salary_type: 'monthly' });
+
+  // A real outstanding advance, so the repayment ALLOCATION is exercised
+  // too, not just the figure stored on salary_payments. Created through the
+  // real route, then moved to 'approved' directly — the approve route needs
+  // an open cash register, which is a different check's subject.
+  const advReq = await api('POST', '/attendance/salary-advance', florist.token, { amount: 6000, reason: 'C1 cap-basis fixture' });
+  assert(advReq.status === 201, `Could not request advance: ${advReq.status} ${JSON.stringify(advReq.body)}`);
+  const advanceId = advReq.body.data.id;
+  createdAdvanceIds.push(advanceId);
+  await db.prepare("UPDATE salary_advances SET status = 'approved', repaid_amount = 0 WHERE id = ?").run(advanceId);
+
+  // Payable 10000 (base 10000, no deductions, no bonus); 6000 withheld
+  // against the advance; 4000 actually handed over. Bank transfer so no
+  // register setup is involved — the cap arithmetic is the subject here.
+  const { status, body } = await api('POST', '/staff/payroll/disburse', owner.token, {
+    user_id: florist.id, period_start: '2026-04-01', period_end: '2026-04-30',
+    base_salary: 10000, deductions: 0, bonus: 0,
+    net_amount: 4000, advances_deducted: 6000, payment_method: 'bank_transfer',
+  });
+  assert(status === 201, `Expected 201, got ${status}: ${JSON.stringify(body)}`);
+  createdSalaryIds.push(body.data.id);
+  if (body.data.expense_id) createdExpenseIds.push(body.data.expense_id);
+
+  assert(Number(body.data.advances_deducted) === 6000,
+    `Expected the full 6000 withheld to be recorded as repaid, got ${body.data.advances_deducted} (4000 means the cap is still using net_amount, which already has the advance subtracted)`);
+
+  const advance = await db.prepare('SELECT * FROM salary_advances WHERE id = ?').get(advanceId);
+  assert(Number(advance.repaid_amount) === 6000, `Expected the advance to be credited the full 6000, got ${advance.repaid_amount}`);
+  assert(advance.status === 'repaid', `Expected the fully-repaid advance to move to 'repaid', got '${advance.status}'`);
 });
 
 check('POST /staff/payroll/disburse (bank transfer) does not require an open register', async () => {
@@ -576,6 +637,28 @@ check('POST /attendance/missed-clock-in dedup compares the SHOP-LOCAL calendar d
 // with no geofence activity required at all.
 // ═══════════════════════════════════════════════════════════════
 
+// Every sweep fixture is created inside the FIRST sweep check below, before
+// its single real 65-second cron tick, and the later sweep checks only read
+// the results. One tick, one wait, for all of them — the suite runs its
+// checks strictly in order, so a fixture created in an earlier check is
+// still there (cleanup only runs at the very end).
+const sweepFixtures = {};
+
+// Shop-local "yesterday at HH:MM", as the naive-UTC string this codebase
+// stores timestamps in. Absolute rather than relative (the existing
+// fixtures' `clock_in - INTERVAL 'N hours'` can't express "at a specific
+// time of day", which is exactly what the two shift-aware cases below turn
+// on), and derived from todayStr() so it holds whenever the suite runs.
+function yesterdayAtShopLocal(hhmm) {
+  const { todayStr } = require('../utils/time');
+  const today = todayStr();
+  const yesterday = new Date(new Date(`${today}T00:00:00Z`).getTime() - 86400000).toISOString().slice(0, 10);
+  return {
+    date: yesterday,
+    iso: new Date(`${yesterday}T${hhmm}:00+05:30`).toISOString(),
+  };
+}
+
 check('Clock-out sweep closes a session open well past the fallback window (no shift configured), but skips one with an active approved outdoor-duty request', async () => {
   const owner = await loginOwner();
   const florist = await createFloristStaffSession(owner.token);
@@ -604,12 +687,57 @@ check('Clock-out sweep closes a session open well past the fallback window (no s
   const approveRequest = await api('PUT', `/attendance/outdoor-duty/${outdoorRequest.body.data.id}/approve`, owner.token);
   assert(approveRequest.status === 200, `Could not approve outdoor duty request: ${approveRequest.status} ${JSON.stringify(approveRequest.body)}`);
 
+  // ── C3 fixture: a clock-in LATER in the day than its own shift ends ──
+  // A stale/wrong shift row (09:00-18:00 on someone now working evenings)
+  // is entirely plausible — nothing read shift rows at all before this
+  // redesign, so none were ever validated against reality. The estimated
+  // shift end is anchored to the clock-in's OWN day, so it lands BEFORE the
+  // clock-in, and the old code wrote that as the clock_out: a row ending
+  // before it started, with total_hours = 0 (real, for hourly staff paid,
+  // work silently voided). Asserted in its own check after the tick.
+  const florist3 = await createFloristStaffSession(owner.token);
+  const shift3 = await db.prepare(`
+    INSERT INTO employee_shifts (user_id, location_id, shift_start, shift_end, is_active, created_by)
+    VALUES (?, ?, '09:00', '18:00', 1, ?) RETURNING id
+  `).get(florist3.id, TEST_LOCATION_ID, owner.id);
+  createdShiftIds.push(shift3.id);
+  const clockIn3 = await api('POST', '/attendance/clock-in', florist3.token, { location_id: TEST_LOCATION_ID, method: 'manual' });
+  assert(clockIn3.status === 201, `Could not clock in C3 fixture: ${clockIn3.status} ${JSON.stringify(clockIn3.body)}`);
+  createdAttendanceIds.push(clockIn3.body.data.id);
+  // 19:00 shop-local yesterday: an hour past the shift's 18:00 end, and
+  // always at least 5 hours ago whatever time the suite runs, so the
+  // 4-hour grace measured from the CLOCK-IN has definitely elapsed.
+  const lateClockIn = yesterdayAtShopLocal('19:00');
+  await db.prepare('UPDATE attendance SET clock_in = ?, date = ? WHERE id = ?')
+    .run(lateClockIn.iso, lateClockIn.date, clockIn3.body.data.id);
+  sweepFixtures.clockInAfterShiftEndId = clockIn3.body.data.id;
+
+  // ── I1 fixture: a forgotten MID-shift clock-out on a split shift ──
+  // Clocks in at the start of the FIRST segment (07:00) and never clocks
+  // out. The sweep must estimate against THAT segment's end (12:00 → 5
+  // hours), not the day's final segment end (22:00 → 15 hours).
+  const florist4 = await createFloristStaffSession(owner.token);
+  const shift4 = await db.prepare(`
+    INSERT INTO employee_shifts (user_id, location_id, shift_start, shift_end, shift_segments, is_active, created_by)
+    VALUES (?, ?, '07:00', '22:00', ?, 1, ?) RETURNING id
+  `).get(florist4.id, TEST_LOCATION_ID, JSON.stringify([{ start: '07:00', end: '12:00' }, { start: '18:00', end: '22:00' }]), owner.id);
+  createdShiftIds.push(shift4.id);
+  const clockIn4 = await api('POST', '/attendance/clock-in', florist4.token, { location_id: TEST_LOCATION_ID, method: 'manual' });
+  assert(clockIn4.status === 201, `Could not clock in I1 fixture: ${clockIn4.status} ${JSON.stringify(clockIn4.body)}`);
+  createdAttendanceIds.push(clockIn4.body.data.id);
+  const splitClockIn = yesterdayAtShopLocal('07:00');
+  await db.prepare('UPDATE attendance SET clock_in = ?, date = ? WHERE id = ?')
+    .run(splitClockIn.iso, splitClockIn.date, clockIn4.body.data.id);
+  sweepFixtures.splitShiftId = clockIn4.body.data.id;
+  sweepFixtures.splitShiftClockInIso = splitClockIn.iso;
+
   // The sweep runs on a 60s server-process interval — wait for one tick
   // rather than trying to invoke it directly (it's not exported; this is
   // an integration check of the real running process, matching how this
-  // codebase's other cron-dependent behavior gets verified live). Both
-  // fixture sessions are set up before this single wait so one real tick
-  // proves both the fallback-close behavior AND the outdoor-duty skip.
+  // codebase's other cron-dependent behavior gets verified live). ALL FOUR
+  // fixture sessions — this check's two, plus the C3 and I1 ones above —
+  // are set up before this single wait, so one real tick proves every sweep
+  // behavior the two checks below also assert. Don't add a second wait.
   await new Promise((resolve) => setTimeout(resolve, 65000));
 
   const updated = await db.prepare('SELECT * FROM attendance WHERE id = ?').get(attendanceId);
@@ -618,6 +746,148 @@ check('Clock-out sweep closes a session open well past the fallback window (no s
 
   const untouched = await db.prepare('SELECT * FROM attendance WHERE id = ?').get(attendanceId2);
   assert(untouched.clock_out === null, 'Expected the sweep to SKIP a session with an active approved outdoor-duty request, but it was closed');
+});
+
+check('Clock-out sweep never writes a clock_out EARLIER than the clock_in when the shift row says the shift already ended (C3)', async () => {
+  assert(sweepFixtures.clockInAfterShiftEndId, 'Fixture missing — the sweep setup check above must run first');
+  const db = await getDb();
+  const row = await db.prepare('SELECT * FROM attendance WHERE id = ?').get(sweepFixtures.clockInAfterShiftEndId);
+  assert(row.clock_out !== null, 'Expected the sweep to have closed this session (due 4h after the clock-in itself)');
+  assert(row.clock_out_method === 'auto_shift_end', `Expected clock_out_method 'auto_shift_end', got '${row.clock_out_method}'`);
+
+  // parseServerDate, not `new Date(...)`: this layer hands timestamps back
+  // as Dates already (it passes them straight through), while the sync
+  // layer would hand back naive UTC strings — the helper covers both.
+  const { parseServerDate } = require('../utils/time');
+  const inMs = parseServerDate(row.clock_in).getTime();
+  const outMs = parseServerDate(row.clock_out).getTime();
+  assert(outMs > inMs,`clock_out (${row.clock_out}) must never precede clock_in (${row.clock_in}) — the estimated shift end was BEFORE the clock-in, so the sweep had to fall back to now`);
+  assert(Number(row.total_hours) > 0, `Expected total_hours > 0 for a genuinely worked session, got ${row.total_hours} (0 means a negative span was clamped, silently voiding real worked time)`);
+  const spanHours = (outMs - inMs) / 3600000;
+  assert(Math.abs(Number(row.total_hours) - spanHours) < 0.02, `Expected total_hours (${row.total_hours}) to match the recorded clock_in→clock_out span (${spanHours.toFixed(2)}h)`);
+});
+
+check('Clock-out sweep estimates against the MATCHED shift segment, not the day\'s last one, for a forgotten mid-shift clock-out (I1)', async () => {
+  assert(sweepFixtures.splitShiftId, 'Fixture missing — the sweep setup check above must run first');
+  const db = await getDb();
+  const row = await db.prepare('SELECT * FROM attendance WHERE id = ?').get(sweepFixtures.splitShiftId);
+  assert(row.clock_out !== null, 'Expected the sweep to have closed this session');
+  assert(row.clock_out_method === 'auto_shift_end', `Expected clock_out_method 'auto_shift_end', got '${row.clock_out_method}'`);
+
+  // Clocked in 07:00, matched segment 07:00-12:00 → 5 hours. Using the
+  // day's LAST segment end (22:00) instead would record 15 — a 3x
+  // inflation straight into total_hours/effective_hours, which feed hourly
+  // pay and every attendance report.
+  assert(Math.abs(Number(row.total_hours) - 5) < 0.05,
+    `Expected ~5 hours (07:00 clock-in → its OWN segment's 12:00 end), got ${row.total_hours} (≈15 means the sweep used the day's final 22:00 segment end)`);
+
+  const { parseServerDate } = require('../utils/time');
+  const expectedOutMs = new Date(sweepFixtures.splitShiftClockInIso).getTime() + 5 * 3600000;
+  const actualOutMs = parseServerDate(row.clock_out).getTime();
+  assert(Math.abs(actualOutMs - expectedOutMs) < 60000, `Expected clock_out at the matched segment's 12:00 end, got ${row.clock_out}`);
+});
+
+// ═══════════════════════════════════════════════════════════════
+// Negative authorization — a widened role gate has to stay a GATE (I5)
+// ═══════════════════════════════════════════════════════════════
+
+check('POST /staff/payroll/disburse rejects florist_staff (owner-only money route)', async () => {
+  const owner = await loginOwner();
+  const florist = await createFloristStaffSession(owner.token);
+  const { status } = await api('POST', '/staff/payroll/disburse', florist.token, {
+    user_id: florist.id, period_start: '2026-05-01', period_end: '2026-05-31',
+    base_salary: 1000, net_amount: 1000, payment_method: 'bank_transfer',
+  });
+  assert(status === 403, `Expected 403 for florist_staff, got ${status}`);
+});
+
+check('POST /attendance/:id/undo-auto-clockin rejects a staff member undoing SOMEONE ELSE\'s session', async () => {
+  const owner = await loginOwner();
+  const victim = await createFloristStaffSession(owner.token);
+  const intruder = await createFloristStaffSession(owner.token);
+
+  const clockIn = await api('POST', '/attendance/clock-in', victim.token, { location_id: TEST_LOCATION_ID, method: 'manual' });
+  assert(clockIn.status === 201, `Could not clock in the target user: ${clockIn.status} ${JSON.stringify(clockIn.body)}`);
+  createdAttendanceIds.push(clockIn.body.data.id);
+
+  // The route's ownership check runs before every other validation, so a
+  // 403 here is specifically the ownership gate — not the "manual
+  // clock-ins can't be undone" 400 that the owner would get.
+  const { status } = await api('POST', `/attendance/${clockIn.body.data.id}/undo-auto-clockin`, intruder.token);
+  assert(status === 403, `Expected 403 when undoing another user's attendance row, got ${status}`);
+
+  await api('POST', '/attendance/clock-out', victim.token, { method: 'manual' });
+});
+
+check('GET /staff/salaries scopes counter_staff to their OWN salary, never the whole payroll', async () => {
+  const owner = await loginOwner();
+  const counter = await createCounterStaffSession(owner.token);
+  const other = await createFloristStaffSession(owner.token);
+  await api('POST', '/staff/salaries', owner.token, { user_id: other.id, monthly_salary: 21000, salary_type: 'monthly' });
+  await api('POST', '/staff/salaries', owner.token, { user_id: counter.id, monthly_salary: 13000, salary_type: 'monthly' });
+
+  const { status, body } = await api('GET', '/staff/salaries', counter.token);
+  assert(status === 200, `Expected 200, got ${status}`);
+  assert(body.data.salaries === undefined, 'counter_staff must not receive the owner-shaped { salaries, unset } payroll list');
+  assert(body.data.unset === undefined, 'counter_staff must not receive the "users without a salary set" list');
+  assert(body.data.salary, 'Expected counter_staff to get their own salary record');
+  assert(Number(body.data.salary.user_id) === counter.id, `Expected only their own row (user_id ${counter.id}), got ${body.data.salary.user_id}`);
+  assert(Number(body.data.salary.monthly_salary) === 13000, `Expected their own 13000, got ${body.data.salary.monthly_salary}`);
+});
+
+check('PUT /attendance/salary-advance/:id/approve rejects a non-owner/non-manager role', async () => {
+  const owner = await loginOwner();
+  const florist = await createFloristStaffSession(owner.token);
+  const requestRes = await api('POST', '/attendance/salary-advance', florist.token, { amount: 500, reason: 'Negative-auth fixture' });
+  assert(requestRes.status === 201, `Could not request advance: ${requestRes.status}`);
+  createdAdvanceIds.push(requestRes.body.data.id);
+
+  const { status } = await api('PUT', `/attendance/salary-advance/${requestRes.body.data.id}/approve`, florist.token);
+  assert(status === 403, `Expected 403 — a staff member must not approve their own advance, got ${status}`);
+});
+
+// ═══════════════════════════════════════════════════════════════
+// Auto-closed sessions stay visible to the manager (I6)
+// ═══════════════════════════════════════════════════════════════
+
+check('GET /attendance/staff-today surfaces an auto-closed session from YESTERDAY in needs_confirmation', async () => {
+  const owner = await loginOwner();
+  const florist = await createFloristStaffSession(owner.token);
+  const db = await getDb();
+
+  const clockIn = await api('POST', '/attendance/clock-in', florist.token, { location_id: TEST_LOCATION_ID, method: 'manual' });
+  assert(clockIn.status === 201, `Could not clock in: ${clockIn.status} ${JSON.stringify(clockIn.body)}`);
+  const attendanceId = clockIn.body.data.id;
+  createdAttendanceIds.push(attendanceId);
+  await api('POST', '/attendance/clock-out', florist.token, { method: 'manual' });
+
+  // An evening shift swept closed after midnight: the close happened ~14
+  // hours ago, but the row's own `date` is YESTERDAY, so the roster query
+  // (hard-scoped to a.date = today, correctly, for what it is) can never
+  // show it.
+  const { date: yesterday } = yesterdayAtShopLocal('22:00');
+  await db.prepare(`
+    UPDATE attendance
+    SET date = ?, clock_in = NOW() - INTERVAL '20 hours', clock_out = NOW() - INTERVAL '14 hours',
+        clock_out_method = 'auto_shift_end'
+    WHERE id = ?
+  `).run(yesterday, attendanceId);
+
+  const { status, body } = await api('GET', `/attendance/staff-today?location_id=${TEST_LOCATION_ID}`, owner.token);
+  assert(status === 200, `Expected 200, got ${status}`);
+  assert(Array.isArray(body.data.needs_confirmation), 'Expected data.needs_confirmation to be an array');
+
+  const found = body.data.needs_confirmation.find((r) => r.id === attendanceId);
+  assert(found, `Expected the yesterday-dated auto-closed session (id ${attendanceId}) to appear in needs_confirmation`);
+  assert(found.clock_out_method === 'auto_shift_end', `Expected clock_out_method 'auto_shift_end', got '${found.clock_out_method}'`);
+  assert(found.user_name, 'Expected a staff name on the row — a bare id is not something a manager can act on');
+  assert(body.data.summary.needs_confirmation_count >= 1, `Expected summary.needs_confirmation_count >= 1, got ${body.data.summary.needs_confirmation_count}`);
+  assert(body.data.summary.needs_confirmation_count === body.data.needs_confirmation.length, 'Expected the summary count to match the list length');
+
+  // The discriminating half: it is genuinely NOT on today's roster, so the
+  // separate query is what surfaced it — not an incidental date overlap.
+  assert(!body.data.present.some((s) => s.user_id === florist.id),
+    'Fixture is not proving anything — the row still shows in today\'s roster, so its date was not moved to yesterday');
 });
 
 async function cleanup() {

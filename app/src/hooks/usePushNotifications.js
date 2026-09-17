@@ -111,6 +111,15 @@ export default function usePushNotifications(isExpoGo = false, navigationRef) {
               // notification type in the first place — auto-clock-in only
               // applies to roles that actually clock in.
               navigationRef.current.navigate('Attendance');
+            } else if (data.screen === 'AttendanceHub') {
+              // Missed-clock-in reports, which notifyByRole sends to
+              // owner/manager only. AttendanceHub lives inside MoreStack,
+              // so it's reached through the 'More' tab — the same nested
+              // navigate DashboardScreen's own "not clocked in" banner
+              // already uses, keeping one destination for this. Distinct
+              // from the 'Attendance' branch above, which is the staff
+              // member's OWN tab for the geofence auto-clock-in undo.
+              navigationRef.current.navigate('More', { screen: 'AttendanceHub' });
             }
           } catch (err) {
             console.log('Navigation error:', err.message);
