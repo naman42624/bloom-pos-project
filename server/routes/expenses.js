@@ -55,7 +55,7 @@ function generateExpenseNumber(db, locationId) {
 router.get('/', authenticate, authorize('owner', 'manager', 'employee', 'counter_staff'), async (req, res, next) => {
   try {
     const db = await getAsyncDb();
-    const { location_id, category, start_date, end_date } = req.query;
+    const { location_id, category, start_date, end_date, employee_id } = req.query;
 
     // register_opened_at/register_closed_at let the client show which
     // session an expense belongs to — added because multiple sessions in
@@ -82,6 +82,7 @@ router.get('/', authenticate, authorize('owner', 'manager', 'employee', 'counter
     if (category) { sql += ' AND e.category = ?'; params.push(category); }
     if (start_date) { sql += ' AND e.expense_date >= ?'; params.push(start_date); }
     if (end_date) { sql += ' AND e.expense_date <= ?'; params.push(end_date); }
+    if (employee_id) { sql += ' AND e.employee_id = ?'; params.push(employee_id); }
 
     sql += ' ORDER BY e.expense_date DESC, e.created_at DESC';
 
@@ -119,6 +120,7 @@ router.post(
     body('payment_method').isIn(['cash', 'card', 'upi', 'bank_transfer']),
     body('expense_date').notEmpty(),
     body('is_return').optional().isBoolean(),
+    body('employee_id').optional({ nullable: true }).isInt(),
   ],
   (req, res, next) => {
     try {
@@ -126,7 +128,38 @@ router.post(
       if (!errors.isEmpty()) return res.status(400).json({ success: false, message: 'Validation failed', errors: errors.array() });
 
       const db = getDb();
-      const { location_id, category, amount, description, payment_method, expense_date, is_return } = req.body;
+      const { location_id, category, amount, description, payment_method, expense_date, is_return, employee_id } = req.body;
+
+      // A "Salary" category expense logged through this general route has no
+      // structural connection to the payroll system otherwise — no employee,
+      // no overlap check against a real salary_payments disbursement. Both
+      // gaps are closed here, and both must run BEFORE any register-guard/
+      // write logic below (validate before you touch money — same ordering
+      // this handler already uses for its own validation errors above).
+      if (category === 'salary' && !employee_id) {
+        return res.status(400).json({ success: false, message: 'Select which employee this salary payment is for.' });
+      }
+
+      if (category === 'salary' && employee_id) {
+        // Same overlap-safety principle as POST /staff/payroll/disburse's
+        // duplicate-payment guard (server/routes/staff-management.js) —
+        // adapted to a single date instead of a period range, since a raw
+        // expense has no period concept of its own. A precise (not fuzzy)
+        // block: only refuses when this employee already has a real,
+        // non-cancelled structured payroll payment whose period covers this
+        // expense's date, so a genuinely separate salary-related expense
+        // (e.g. a bonus, an off-cycle advance) on an uncovered date is not
+        // blocked.
+        const coveringPayment = db.prepare(
+          'SELECT id, period_start, period_end FROM salary_payments WHERE user_id = ? AND status != ? AND period_start <= ? AND period_end >= ?'
+        ).get(employee_id, 'cancelled', expense_date, expense_date);
+        if (coveringPayment) {
+          return res.status(400).json({
+            success: false,
+            message: `This employee was already paid via Salaries & Payroll for ${coveringPayment.period_start} to ${coveringPayment.period_end} — that period covers this date. Check Payroll History, or use a different date if this is a separate payment.`,
+          });
+        }
+      }
 
       // Cash expenses/returns move real money in or out of the drawer, same
       // as a sale or refund — hard-block them with no open register instead
@@ -148,34 +181,38 @@ router.post(
 
       const expense_number = generateExpenseNumber(db, location_id);
 
+      // Only ever stored for the salary category (the category this whole
+      // feature is about) — null for everything else, unchanged from today.
+      const employeeIdValue = category === 'salary' ? employee_id : null;
+
       let result;
       const isReturnInt = is_return ? 1 : 0;
       try {
         if (expense_number) {
           result = db.prepare(
-            `INSERT INTO expenses (expense_number, location_id, category, amount, description, payment_method, expense_date, created_by, is_return, register_id)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-          ).run(expense_number, location_id, category, amount, description || '', payment_method, expense_date, req.user.id, isReturnInt, registerId);
+            `INSERT INTO expenses (expense_number, location_id, category, amount, description, payment_method, expense_date, created_by, is_return, register_id, employee_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          ).run(expense_number, location_id, category, amount, description || '', payment_method, expense_date, req.user.id, isReturnInt, registerId, employeeIdValue);
         } else {
           result = db.prepare(
-            `INSERT INTO expenses (location_id, category, amount, description, payment_method, expense_date, created_by, is_return, register_id)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-          ).run(location_id, category, amount, description || '', payment_method, expense_date, req.user.id, isReturnInt, registerId);
+            `INSERT INTO expenses (location_id, category, amount, description, payment_method, expense_date, created_by, is_return, register_id, employee_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          ).run(location_id, category, amount, description || '', payment_method, expense_date, req.user.id, isReturnInt, registerId, employeeIdValue);
         }
       } catch (err) {
         const msg = String(err?.message || '').toLowerCase();
         // Fallback if expense_number column doesn't exist (legacy schema)
         if (msg.includes('expense_number')) {
           result = db.prepare(
-            `INSERT INTO expenses (location_id, category, amount, description, payment_method, expense_date, created_by, is_return, register_id)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-          ).run(location_id, category, amount, description || '', payment_method, expense_date, req.user.id, isReturnInt, registerId);
+            `INSERT INTO expenses (location_id, category, amount, description, payment_method, expense_date, created_by, is_return, register_id, employee_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          ).run(location_id, category, amount, description || '', payment_method, expense_date, req.user.id, isReturnInt, registerId, employeeIdValue);
         // Fallback if register_id column doesn't exist yet (migration pending)
         } else if (msg.includes('register_id')) {
           result = db.prepare(
-            `INSERT INTO expenses (location_id, category, amount, description, payment_method, expense_date, created_by, is_return)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-          ).run(location_id, category, amount, description || '', payment_method, expense_date, req.user.id, isReturnInt);
+            `INSERT INTO expenses (location_id, category, amount, description, payment_method, expense_date, created_by, is_return, employee_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          ).run(location_id, category, amount, description || '', payment_method, expense_date, req.user.id, isReturnInt, employeeIdValue);
         } else {
           throw err;
         }

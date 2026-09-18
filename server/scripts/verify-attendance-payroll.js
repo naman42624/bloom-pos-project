@@ -1306,6 +1306,118 @@ check('POST /staff/payroll/disburse allows a DIFFERENT employee to be paid for t
   if (sameperiodOtherUser.body.data.expense_id) createdExpenseIds.push(sameperiodOtherUser.body.data.expense_id);
 });
 
+// ═══════════════════════════════════════════════════════════════
+// Task K: the general POST /expenses route (Log Expense, ALL categories)
+// had zero connection to the structured payroll system despite accepting
+// category='salary' — no employee link, no duplicate-payment protection.
+// Checks below cover: employee_id now required for category='salary';
+// employee_id genuinely persisted (not just validated and discarded); a
+// hard block on the precise duplicate case (this employee already has a
+// non-cancelled salary_payments row whose period covers this expense's
+// date — same overlap-safety idea as payroll/disburse's guard above,
+// adapted to a single date since a raw expense has no period of its own);
+// proof the block does not over-fire on a genuinely uncovered date; and
+// the new GET /expenses?employee_id= filter. All fixture expenses use
+// payment_method: 'bank_transfer' to stay out of cash-register/register
+// -guard territory entirely (that's verify-register-expenses.js's job,
+// and this file's own baseline for that suite must not move either —
+// see the report for the cross-suite check run to confirm zero overlap).
+// ═══════════════════════════════════════════════════════════════
+
+check('POST /expenses blocks category=salary with no employee_id, with the plain-language message (not a generic validation error)', async () => {
+  const owner = await loginOwner();
+  const { status, body } = await api('POST', '/expenses', owner.token, {
+    location_id: TEST_LOCATION_ID, category: 'salary', amount: 5000, payment_method: 'bank_transfer',
+    expense_date: '2026-07-01', description: 'Verify K1 missing employee_id',
+  });
+  assert(status === 400, `Expected 400 with no employee_id, got ${status}: ${JSON.stringify(body)}`);
+  assert(body.message === 'Select which employee this salary payment is for.', `Expected the plain-language message, got: ${JSON.stringify(body)}`);
+});
+
+check('POST /expenses accepts category=salary with a real employee_id and genuinely persists it (not silently dropped)', async () => {
+  const owner = await loginOwner();
+  const florist = await createFloristStaffSession(owner.token);
+  const { status, body } = await api('POST', '/expenses', owner.token, {
+    location_id: TEST_LOCATION_ID, category: 'salary', employee_id: florist.id, amount: 5000, payment_method: 'bank_transfer',
+    expense_date: '2026-07-01', description: 'Verify K2 employee-linked salary expense',
+  });
+  assert(status === 201, `Expected success, got ${status}: ${JSON.stringify(body)}`);
+  createdExpenseIds.push(body.data.id);
+  assert(Number(body.data.employee_id) === florist.id, `Expected the response row's employee_id to be ${florist.id}, got ${body.data.employee_id}`);
+
+  // Query the DB directly too, not just trust the API response echo.
+  const db = await getDb();
+  const row = await db.prepare('SELECT employee_id FROM expenses WHERE id = ?').get(body.data.id);
+  assert(Number(row.employee_id) === florist.id, `Expected the stored row's employee_id column to be ${florist.id}, got ${row.employee_id}`);
+});
+
+let k3Florist = null;
+
+check('POST /expenses hard-blocks a salary expense whose date falls inside an existing structured payroll payment\'s period, naming the actual covering period', async () => {
+  const owner = await loginOwner();
+  const florist = await createFloristStaffSession(owner.token);
+  k3Florist = florist;
+  await api('POST', '/staff/salaries', owner.token, { user_id: florist.id, monthly_salary: 9000, salary_type: 'monthly' });
+
+  // Real structured payroll payment via the actual disburse route (bank
+  // transfer — no register setup needed), covering Aug 1-15, 2026.
+  const disburse = await api('POST', '/staff/payroll/disburse', owner.token, {
+    user_id: florist.id, period_start: '2026-08-01', period_end: '2026-08-15',
+    base_salary: 4500, deductions: 0, bonus: 0, net_amount: 4500, payment_method: 'bank_transfer',
+  });
+  assert(disburse.status === 201, `Could not disburse fixture payroll payment: ${disburse.status} ${JSON.stringify(disburse.body)}`);
+  createdSalaryIds.push(disburse.body.data.id);
+  if (disburse.body.data.expense_id) createdExpenseIds.push(disburse.body.data.expense_id);
+
+  // Aug 10 falls inside the Aug 1-15 period just paid — must be blocked.
+  const { status, body } = await api('POST', '/expenses', owner.token, {
+    location_id: TEST_LOCATION_ID, category: 'salary', employee_id: florist.id, amount: 1000, payment_method: 'bank_transfer',
+    expense_date: '2026-08-10', description: 'Verify K3 duplicate inside period',
+  });
+  assert(status === 400, `Expected 400 for a date inside an existing payroll period, got ${status}: ${JSON.stringify(body)}`);
+  assert(body.message.includes('2026-08-01') && body.message.includes('2026-08-15'),
+    `Expected the error to name the actual covering period (2026-08-01 to 2026-08-15), got: ${body.message}`);
+});
+
+check('POST /expenses allows a salary expense whose date falls OUTSIDE any existing payroll payment\'s period (the block does not over-fire)', async () => {
+  const owner = await loginOwner();
+  assert(k3Florist, 'Expected the previous duplicate-block check to have run first and set up a florist + payroll payment');
+
+  // Sep 1 has zero overlap with the Aug 1-15 payment created above.
+  const { status, body } = await api('POST', '/expenses', owner.token, {
+    location_id: TEST_LOCATION_ID, category: 'salary', employee_id: k3Florist.id, amount: 1000, payment_method: 'bank_transfer',
+    expense_date: '2026-09-01', description: 'Verify K4 non-blocked date',
+  });
+  assert(status === 201, `Expected 201 for a date outside any existing payroll period, got ${status}: ${JSON.stringify(body)}`);
+  createdExpenseIds.push(body.data.id);
+});
+
+check('GET /expenses?employee_id=X filters to only that employee\'s expenses', async () => {
+  const owner = await loginOwner();
+  const floristA = await createFloristStaffSession(owner.token);
+  const floristB = await createFloristStaffSession(owner.token);
+
+  const expA = await api('POST', '/expenses', owner.token, {
+    location_id: TEST_LOCATION_ID, category: 'salary', employee_id: floristA.id, amount: 2000, payment_method: 'bank_transfer',
+    expense_date: '2026-07-15', description: 'Verify K5 employee A',
+  });
+  assert(expA.status === 201, `Could not create fixture expense for employee A: ${expA.status} ${JSON.stringify(expA.body)}`);
+  createdExpenseIds.push(expA.body.data.id);
+
+  const expB = await api('POST', '/expenses', owner.token, {
+    location_id: TEST_LOCATION_ID, category: 'salary', employee_id: floristB.id, amount: 3000, payment_method: 'bank_transfer',
+    expense_date: '2026-07-15', description: 'Verify K5 employee B',
+  });
+  assert(expB.status === 201, `Could not create fixture expense for employee B: ${expB.status} ${JSON.stringify(expB.body)}`);
+  createdExpenseIds.push(expB.body.data.id);
+
+  const filtered = await api('GET', `/expenses?location_id=${TEST_LOCATION_ID}&employee_id=${floristA.id}`, owner.token);
+  assert(filtered.status === 200, `Expected 200, got ${filtered.status}: ${JSON.stringify(filtered.body)}`);
+  const ids = (filtered.body.data || []).map((e) => e.id);
+  assert(ids.includes(expA.body.data.id), `Expected employee A's expense (${expA.body.data.id}) in the employee_id-filtered list`);
+  assert(!ids.includes(expB.body.data.id), `Expected employee B's expense (${expB.body.data.id}) to be excluded from employee A's filtered list, got ids: ${JSON.stringify(ids)}`);
+});
+
 async function cleanup() {
   const db = await getDb();
   for (const id of createdExpenseIds) {
