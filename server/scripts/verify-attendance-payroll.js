@@ -890,6 +890,124 @@ check('GET /attendance/staff-today surfaces an auto-closed session from YESTERDA
     'Fixture is not proving anything — the row still shows in today\'s roster, so its date was not moved to yesterday');
 });
 
+// ═══════════════════════════════════════════════════════════════
+// counter_staff gets the same attendance-roster capability manager
+// already has: staff-today read + mark-attendance-for-others on
+// clock-in/clock-out (deliberately NOT touched: outdoor-duty
+// approve/reject, shifts management, salaries/payroll).
+// ═══════════════════════════════════════════════════════════════
+
+check('GET /attendance/staff-today no longer 403s for counter_staff', async () => {
+  const owner = await loginOwner();
+  const counter = await createCounterStaffSession(owner.token);
+  const { status } = await api('GET', `/attendance/staff-today?location_id=${TEST_LOCATION_ID}`, counter.token);
+  assert(status === 200, `Expected 200, got ${status}`);
+});
+
+check('POST /attendance/clock-in with a user_id body param, called by counter_staff, clocks in the TARGET user (not the caller)', async () => {
+  const owner = await loginOwner();
+  const counter = await createCounterStaffSession(owner.token);
+  const target = await createFloristStaffSession(owner.token);
+
+  const { status, body } = await api('POST', '/attendance/clock-in', counter.token, {
+    location_id: TEST_LOCATION_ID, user_id: target.id, method: 'manual',
+  });
+  assert(status === 201, `Expected 201, got ${status} ${JSON.stringify(body)}`);
+  createdAttendanceIds.push(body.data.id);
+  assert(Number(body.data.user_id) === target.id, `Expected the created attendance row's user_id to be the TARGET (${target.id}), not the counter_staff caller (${counter.id}) — got ${body.data.user_id}`);
+
+  // Clean up the open session so it doesn't leak into a later check's roster.
+  await api('POST', '/attendance/clock-out', counter.token, { user_id: target.id, method: 'manual' });
+});
+
+check('POST /attendance/clock-out with a user_id body param, called by counter_staff, clocks out the TARGET user (not the caller)', async () => {
+  const owner = await loginOwner();
+  const counter = await createCounterStaffSession(owner.token);
+  const target = await createFloristStaffSession(owner.token);
+
+  const clockIn = await api('POST', '/attendance/clock-in', counter.token, {
+    location_id: TEST_LOCATION_ID, user_id: target.id, method: 'manual',
+  });
+  assert(clockIn.status === 201, `Could not clock in target via counter_staff: ${clockIn.status} ${JSON.stringify(clockIn.body)}`);
+  createdAttendanceIds.push(clockIn.body.data.id);
+
+  const { status, body } = await api('POST', '/attendance/clock-out', counter.token, {
+    user_id: target.id, method: 'manual',
+  });
+  assert(status === 200, `Expected 200, got ${status} ${JSON.stringify(body)}`);
+  assert(Number(body.data.user_id) === target.id, `Expected the clocked-out attendance row's user_id to be the TARGET (${target.id}), not the counter_staff caller (${counter.id}) — got ${body.data.user_id}`);
+  assert(body.data.clock_out !== null, 'Expected clock_out to be set on the target\'s record');
+});
+
+// ═══════════════════════════════════════════════════════════════
+// staff-today's logs[] now carries clock_out_method + PER-SESSION
+// late_minutes/overtime_minutes (previously computed by
+// computeShiftWork and then thrown away — only the aggregate survived).
+// ═══════════════════════════════════════════════════════════════
+
+check('GET /attendance/staff-today logs[] carries clock_out_method, late_minutes, and overtime_minutes PER SESSION, not the aggregate repeated', async () => {
+  const owner = await loginOwner();
+  const florist = await createFloristStaffSession(owner.token);
+  const db = await getDb();
+
+  // A split shift: 09:00-12:00 and 18:00-22:00.
+  const shiftResult = await db.prepare(`
+    INSERT INTO employee_shifts (user_id, location_id, shift_start, shift_end, shift_segments, is_active, created_by)
+    VALUES (?, ?, '09:00', '22:00', ?, 1, ?) RETURNING id
+  `).get(florist.id, TEST_LOCATION_ID, JSON.stringify([{ start: '09:00', end: '12:00' }, { start: '18:00', end: '22:00' }]), owner.id);
+  createdShiftIds.push(shiftResult.id);
+
+  // Session 1: will be backdated to exactly on-time for segment 1.
+  const clockIn1 = await api('POST', '/attendance/clock-in', florist.token, { location_id: TEST_LOCATION_ID, method: 'manual' });
+  assert(clockIn1.status === 201, `Could not clock in session 1: ${clockIn1.status} ${JSON.stringify(clockIn1.body)}`);
+  const id1 = clockIn1.body.data.id;
+  createdAttendanceIds.push(id1);
+  const clockOut1 = await api('POST', '/attendance/clock-out', florist.token, { method: 'manual' });
+  assert(clockOut1.status === 200, `Could not clock out session 1: ${clockOut1.status} ${JSON.stringify(clockOut1.body)}`);
+
+  // Session 2: will be backdated to genuinely late (5 min) for segment 2.
+  const clockIn2 = await api('POST', '/attendance/clock-in', florist.token, { location_id: TEST_LOCATION_ID, method: 'manual' });
+  assert(clockIn2.status === 201, `Could not clock in session 2: ${clockIn2.status} ${JSON.stringify(clockIn2.body)}`);
+  const id2 = clockIn2.body.data.id;
+  createdAttendanceIds.push(id2);
+  const clockOut2 = await api('POST', '/attendance/clock-out', florist.token, { method: 'manual' });
+  assert(clockOut2.status === 200, `Could not clock out session 2: ${clockOut2.status} ${JSON.stringify(clockOut2.body)}`);
+
+  // Backdate both sessions to specific shop-local clock times TODAY (so they
+  // still land in staff-today's `a.date = today` filter) — session 1 exactly
+  // on segment 1's start, session 2 five minutes into segment 2.
+  const { todayStr } = require('../utils/time');
+  const today = todayStr();
+  const toUtcIso = (hhmm) => new Date(`${today}T${hhmm}:00+05:30`).toISOString();
+  await db.prepare('UPDATE attendance SET clock_in = ?, clock_out = ? WHERE id = ?')
+    .run(toUtcIso('09:00'), toUtcIso('12:00'), id1);
+  await db.prepare('UPDATE attendance SET clock_in = ?, clock_out = ? WHERE id = ?')
+    .run(toUtcIso('18:05'), toUtcIso('22:00'), id2);
+
+  const { status, body } = await api('GET', `/attendance/staff-today?location_id=${TEST_LOCATION_ID}`, owner.token);
+  assert(status === 200, `Expected 200, got ${status}`);
+  const row = body.data.present.find((s) => s.user_id === florist.id);
+  assert(row, 'Expected the florist to appear in the present list');
+  assert(Array.isArray(row.logs), 'Expected a logs array');
+  assert(row.logs.length === 2, `Expected 2 sessions in logs, got ${row.logs.length}`);
+
+  for (const log of row.logs) {
+    assert('clock_out_method' in log, 'Expected clock_out_method on each log entry');
+    assert(typeof log.late_minutes === 'number', 'Expected late_minutes to be a number on each log entry');
+    assert(typeof log.overtime_minutes === 'number', 'Expected overtime_minutes to be a number on each log entry');
+  }
+
+  const log1 = row.logs.find((l) => l.id === id1);
+  const log2 = row.logs.find((l) => l.id === id2);
+  assert(log1, 'Expected session 1 in logs');
+  assert(log2, 'Expected session 2 in logs');
+  assert(log1.clock_out_method === 'manual', `Expected session 1's clock_out_method to be 'manual', got '${log1.clock_out_method}'`);
+  assert(log2.clock_out_method === 'manual', `Expected session 2's clock_out_method to be 'manual', got '${log2.clock_out_method}'`);
+  assert(log1.late_minutes === 0, `Expected session 1 (exactly on time) late_minutes to be 0, got ${log1.late_minutes}`);
+  assert(log2.late_minutes > 0, `Expected session 2 (5 min late) late_minutes > 0, got ${log2.late_minutes} — proves this is PER-SESSION, not the aggregate repeated on every row`);
+  assert(log2.late_minutes === 5, `Expected session 2 late_minutes to be exactly 5, got ${log2.late_minutes}`);
+});
+
 async function cleanup() {
   const db = await getDb();
   for (const id of createdExpenseIds) {

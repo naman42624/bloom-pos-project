@@ -102,7 +102,7 @@ router.post('/clock-in', authorize('owner', 'manager', 'employee', 'counter_staf
   try {
     const db = getDb();
     let userId = req.user.id;
-    if (req.body.user_id && ['owner', 'manager'].includes(req.user.role)) {
+    if (req.body.user_id && ['owner', 'manager', 'counter_staff'].includes(req.user.role)) {
       userId = req.body.user_id;
     } else if (req.user.role === 'owner') {
       return res.status(403).json({ success: false, message: 'Owners do not clock in.' });
@@ -161,7 +161,7 @@ router.post('/clock-out', authorize('owner', 'manager', 'employee', 'counter_sta
   try {
     const db = getDb();
     let userId = req.user.id;
-    if (req.body.user_id && ['owner', 'manager'].includes(req.user.role)) {
+    if (req.body.user_id && ['owner', 'manager', 'counter_staff'].includes(req.user.role)) {
       userId = req.body.user_id;
     } else if (req.user.role === 'owner') {
       return res.status(403).json({ success: false, message: 'Owners do not clock out.' });
@@ -932,7 +932,7 @@ router.put('/salary-advance/:id/:action', authorize('owner', 'manager'), (req, r
 // ═══════════════════════════════════════════════════════════════
 // STAFF DUTY SUMMARY (today's attendance for all staff)
 // ═══════════════════════════════════════════════════════════════
-router.get('/staff-today', authorize('owner', 'manager'), async (req, res) => {
+router.get('/staff-today', authorize('owner', 'manager', 'counter_staff'), async (req, res) => {
   try {
     const db = await getAsyncDb();
     const today = todayStr();
@@ -1036,6 +1036,7 @@ router.get('/staff-today', authorize('owner', 'manager'), async (req, res) => {
               location_name: row.location_name,
               clock_in: row.clock_in,
               clock_out: row.clock_out,
+              clock_out_method: row.clock_out_method || null,
               total_hours: Number(row.total_hours || 0),
               outdoor_hours: Number(row.outdoor_hours || 0),
               effective_hours: Number(row.effective_hours || 0),
@@ -1082,6 +1083,7 @@ router.get('/staff-today', authorize('owner', 'manager'), async (req, res) => {
         location_name: row.location_name,
         clock_in: row.clock_in,
         clock_out: row.clock_out,
+        clock_out_method: row.clock_out_method || null,
         total_hours: Number(row.total_hours || 0),
         outdoor_hours: Number(row.outdoor_hours || 0),
         effective_hours: Number(row.effective_hours || 0),
@@ -1090,6 +1092,14 @@ router.get('/staff-today', authorize('owner', 'manager'), async (req, res) => {
 
     const staff = Array.from(byUser.values()).map((s) => {
       const shiftWork = computeShiftWork(s.logs, { shift_start: s.shift_start, shift_end: s.shift_end, shift_segments: s.shift_segments }, { includeInProgress: true });
+      const logsWithStats = s.logs.map((log) => {
+        const sessionStats = shiftWork.sessions.find((ss) => ss.attendanceId === log.id);
+        return {
+          ...log,
+          late_minutes: sessionStats?.lateMinutes || 0,
+          overtime_minutes: sessionStats?.overtimeMinutes || 0,
+        };
+      });
       return {
         ...s,
         total_hours: Math.round(s.total_hours * 100) / 100,
@@ -1097,6 +1107,7 @@ router.get('/staff-today', authorize('owner', 'manager'), async (req, res) => {
         effective_hours: Math.round(s.effective_hours * 100) / 100,
         late_minutes_today: shiftWork.totalLateMinutes,
         overtime_minutes_today: shiftWork.totalOvertimeMinutes,
+        logs: logsWithStats,
       };
     });
 
