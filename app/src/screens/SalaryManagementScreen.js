@@ -9,6 +9,7 @@ import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import { formatDate } from '../utils/datetime';
+import DateTimePickerModal from '../components/DateTimePickerModal';
 
 const SALARY_TYPES = [
   { label: 'Monthly', value: 'monthly' },
@@ -20,6 +21,27 @@ function formatCurrency(val) {
   if (!val && val !== 0) return '—';
   return '₹' + Number(val).toLocaleString('en-IN');
 }
+
+// 'YYYY-MM-DD' -> Date (local midnight). Returns null for empty/invalid input
+// so the picker opens on "now" instead of a bogus date — no equivalent helper
+// existed elsewhere in app/src/utils to reuse (ShiftManagementScreen's
+// hhmmToDate/dateToHHMM are 'HH:MM'-only, not applicable here).
+const ymdToDate = (ymd) => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(ymd || '');
+  if (!m) return null;
+  const d = new Date(parseInt(m[1], 10), parseInt(m[2], 10) - 1, parseInt(m[3], 10));
+  return isNaN(d.getTime()) ? null : d;
+};
+
+// Date -> 'YYYY-MM-DD' (zero-padded). Matches the string shape periodStart/
+// periodEnd's state, handleCalculatePayroll, handleDisburse, and the backend
+// all expect unchanged.
+const dateToYMD = (date) => {
+  const yyyy = date.getFullYear();
+  const mm = String(date.getMonth() + 1).padStart(2, '0');
+  const dd = String(date.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+};
 
 export default function SalaryManagementScreen() {
   const { user } = useAuth();
@@ -47,6 +69,14 @@ export default function SalaryManagementScreen() {
   const [payrollUser, setPayrollUser] = useState(null);
   const [periodStart, setPeriodStart] = useState('');
   const [periodEnd, setPeriodEnd] = useState('');
+  // Which period field the shared DateTimePickerModal is currently editing, and the
+  // Date it should open showing. pickerValue is set ONCE (in openPeriodPicker) rather
+  // than recomputed inline on every render — see ShiftManagementScreen.js's identical
+  // pattern/comment: DateTimePickerModal resets its local spinner state whenever the
+  // `value` prop's object identity changes, so a fresh Date() on every render would
+  // silently discard an in-progress selection on an unrelated parent re-render.
+  const [periodPickerTarget, setPeriodPickerTarget] = useState(null); // null | 'periodStart' | 'periodEnd'
+  const [periodPickerValue, setPeriodPickerValue] = useState(new Date());
   const [paymentMethod, setPaymentMethod] = useState('cash');
   const [paymentRef, setPaymentRef] = useState('');
   const [bonusAmount, setBonusAmount] = useState('');
@@ -167,6 +197,22 @@ export default function SalaryManagementScreen() {
       : [...confirmedHalfDays, date];
     setConfirmedHalfDays(next);
     handleCalculatePayroll(next);
+  };
+
+  // Opens the shared picker for a given period field, computing its starting Date
+  // ONCE (from the field's current 'YYYY-MM-DD' string, or "now" if empty/unset) so
+  // it opens pre-set to the existing date — see the periodPickerValue state comment
+  // above for why this must be a one-time computation rather than recomputed on render.
+  const openPeriodPicker = (target, currentYMD) => {
+    setPeriodPickerValue(ymdToDate(currentYMD) || new Date());
+    setPeriodPickerTarget(target);
+  };
+
+  const handlePeriodPickerConfirm = (date) => {
+    const ymd = dateToYMD(date);
+    if (periodPickerTarget === 'periodStart') setPeriodStart(ymd);
+    else if (periodPickerTarget === 'periodEnd') setPeriodEnd(ymd);
+    setPeriodPickerTarget(null);
   };
 
   const handleDisburse = async () => {
@@ -358,6 +404,12 @@ export default function SalaryManagementScreen() {
                         {roleBadge(s.user_role)}
                         <Text style={styles.metaText}>{formatCurrency(s.monthly_salary)}/{s.salary_type === 'monthly' ? 'mo' : s.salary_type === 'daily' ? 'day' : 'hr'}</Text>
                       </View>
+                      {s.pending_advance_amount > 0 && (
+                        <View style={styles.advanceBadge}>
+                          <Ionicons name="alert-circle-outline" size={12} color={Colors.warning} />
+                          <Text style={styles.advanceBadgeText}>{formatCurrency(s.pending_advance_amount)} advance pending</Text>
+                        </View>
+                      )}
                     </View>
                     <View style={[styles.payBtn]}>
                       <Ionicons name="cash" size={20} color={Colors.success} />
@@ -520,11 +572,27 @@ export default function SalaryManagementScreen() {
             <View style={styles.timeInputRow}>
               <View style={{ flex: 1, marginRight: Spacing.sm }}>
                 <Text style={styles.label}>Period Start</Text>
-                <TextInput style={styles.input} value={periodStart} onChangeText={setPeriodStart} placeholder="YYYY-MM-DD" placeholderTextColor={Colors.textLight} />
+                <TouchableOpacity
+                  style={[styles.input, styles.datePickerBtn]}
+                  onPress={() => openPeriodPicker('periodStart', periodStart)}
+                >
+                  <Ionicons name="calendar-outline" size={18} color={periodStart ? Colors.primary : Colors.textLight} />
+                  <Text style={periodStart ? styles.inputValueText : styles.inputPlaceholderText}>
+                    {periodStart || 'YYYY-MM-DD'}
+                  </Text>
+                </TouchableOpacity>
               </View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.label}>Period End</Text>
-                <TextInput style={styles.input} value={periodEnd} onChangeText={setPeriodEnd} placeholder="YYYY-MM-DD" placeholderTextColor={Colors.textLight} />
+                <TouchableOpacity
+                  style={[styles.input, styles.datePickerBtn]}
+                  onPress={() => openPeriodPicker('periodEnd', periodEnd)}
+                >
+                  <Ionicons name="calendar-outline" size={18} color={periodEnd ? Colors.primary : Colors.textLight} />
+                  <Text style={periodEnd ? styles.inputValueText : styles.inputPlaceholderText}>
+                    {periodEnd || 'YYYY-MM-DD'}
+                  </Text>
+                </TouchableOpacity>
               </View>
             </View>
 
@@ -669,6 +737,14 @@ export default function SalaryManagementScreen() {
             <View style={{ height: 40 }} />
           </ScrollView>
         </KeyboardAvoidingView>
+
+        <DateTimePickerModal
+          visible={!!periodPickerTarget}
+          mode="date"
+          value={periodPickerValue}
+          onConfirm={handlePeriodPickerConfirm}
+          onCancel={() => setPeriodPickerTarget(null)}
+        />
       </Modal>
     </ScrollView>
   );
@@ -724,6 +800,12 @@ const styles = StyleSheet.create({
   linkBtnText: { fontSize: FontSize.sm, color: Colors.primary, marginLeft: 4 },
   setBtn: { alignItems: 'center' },
   setBtnText: { fontSize: FontSize.xs, color: Colors.primary, marginTop: 2 },
+  advanceBadge: {
+    flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-start',
+    backgroundColor: Colors.warningLight, borderRadius: BorderRadius.sm,
+    paddingHorizontal: 6, paddingVertical: 2, marginTop: 4, gap: 3,
+  },
+  advanceBadgeText: { fontSize: FontSize.xs, color: Colors.warning, fontWeight: '600' },
   // Modal
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
   modalContent: {
@@ -737,6 +819,12 @@ const styles = StyleSheet.create({
     padding: Spacing.sm, fontSize: FontSize.md, color: Colors.text,
     backgroundColor: Colors.background,
   },
+  inputValueText: { fontSize: FontSize.md, color: Colors.text },
+  inputPlaceholderText: { fontSize: FontSize.md, color: Colors.textLight },
+  // Row layout (icon + text) for the tap-to-pick period-date fields — layered on top
+  // of styles.input's unchanged box, matching ShiftManagementScreen.js's identical
+  // timePickerBtn pattern for its time fields.
+  datePickerBtn: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs },
   typeRow: { flexDirection: 'row' },
   typeChip: {
     paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm,

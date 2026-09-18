@@ -174,7 +174,11 @@ router.get('/salaries', authorize('owner', 'manager', 'employee', 'counter_staff
       // Owner sees all staff salaries
       const salaries = await db.prepare(`
         SELECT es.*, u.name as user_name, u.phone as user_phone, u.role as user_role,
-               up.name as updater_name
+               up.name as updater_name,
+               COALESCE((
+                 SELECT SUM(sa.amount - sa.repaid_amount) FROM salary_advances sa
+                 WHERE sa.user_id = es.user_id AND sa.status = 'approved' AND sa.repaid_amount < sa.amount
+               ), 0) as pending_advance_amount
         FROM employee_salaries es
         JOIN users u ON es.user_id = u.id
         LEFT JOIN users up ON es.updated_by = up.id
