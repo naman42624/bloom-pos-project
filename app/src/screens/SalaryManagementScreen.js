@@ -52,6 +52,7 @@ export default function SalaryManagementScreen() {
   const [bonusAmount, setBonusAmount] = useState('');
   const [payrollHistory, setPayrollHistory] = useState([]);
   const [payrollHistoryLoading, setPayrollHistoryLoading] = useState(false);
+  const [confirmedHalfDays, setConfirmedHalfDays] = useState([]); // array of 'YYYY-MM-DD' date strings
 
   const fetchData = useCallback(async () => {
     try {
@@ -129,20 +130,23 @@ export default function SalaryManagementScreen() {
     setPaymentMethod('cash');
     setPaymentRef('');
     setBonusAmount('');
+    setConfirmedHalfDays([]);
     setPayrollModal(true);
   };
 
-  const handleCalculatePayroll = async () => {
+  const handleCalculatePayroll = async (datesOverride) => {
     if (!periodStart || !periodEnd) {
       Alert.alert('Error', 'Please enter period dates.');
       return;
     }
+    const confirmedDates = datesOverride !== undefined ? datesOverride : confirmedHalfDays;
     setPayrollCalculating(true);
     try {
       const res = await api.calculatePayroll({
         user_id: payrollUser.user_id || payrollUser.id,
         period_start: periodStart,
         period_end: periodEnd,
+        confirmed_half_day_dates: confirmedDates,
       });
       setPayrollCalc(res.data);
     } catch (e) {
@@ -150,6 +154,19 @@ export default function SalaryManagementScreen() {
     } finally {
       setPayrollCalculating(false);
     }
+  };
+
+  // Toggle a partial-day date's confirmed-as-half-day state and immediately
+  // re-run the calculation with the new list (reads current state directly —
+  // this runs once per tap, so there's no staleness — rather than via the
+  // async setConfirmedHalfDays updater, which would require the recalculate
+  // call to live inside the updater function as a side effect).
+  const toggleHalfDay = (date) => {
+    const next = confirmedHalfDays.includes(date)
+      ? confirmedHalfDays.filter((d) => d !== date)
+      : [...confirmedHalfDays, date];
+    setConfirmedHalfDays(next);
+    handleCalculatePayroll(next);
   };
 
   const handleDisburse = async () => {
@@ -513,7 +530,7 @@ export default function SalaryManagementScreen() {
 
             <TouchableOpacity
               style={[styles.saveBtn, { marginTop: Spacing.md, alignSelf: 'stretch', alignItems: 'center' }]}
-              onPress={handleCalculatePayroll}
+              onPress={() => handleCalculatePayroll()}
               disabled={payrollCalculating}
             >
               <Text style={styles.saveBtnText}>{payrollCalculating ? 'Calculating...' : 'Calculate'}</Text>
@@ -549,6 +566,31 @@ export default function SalaryManagementScreen() {
                     <Text style={styles.summaryLabel}>Period Days</Text>
                   </View>
                 </View>
+
+                {payrollCalc.partial_days && payrollCalc.partial_days.length > 0 && (
+                  <View style={{ marginTop: Spacing.md }}>
+                    <Text style={styles.sectionTitle}>Partial Days Found</Text>
+                    <Text style={{ fontSize: FontSize.sm, color: Colors.textLight, marginBottom: Spacing.sm }}>
+                      This employee has a split shift. On these dates they attended only some of their scheduled shifts — check the box for any that should count as a half day.
+                    </Text>
+                    {payrollCalc.partial_days.map((pd) => {
+                      const isConfirmed = confirmedHalfDays.includes(pd.date);
+                      return (
+                        <TouchableOpacity
+                          key={pd.date}
+                          style={styles.partialDayRow}
+                          onPress={() => toggleHalfDay(pd.date)}
+                        >
+                          <Ionicons name={isConfirmed ? 'checkbox' : 'square-outline'} size={22} color={Colors.primary} />
+                          <View style={{ flex: 1, marginLeft: Spacing.sm }}>
+                            <Text style={styles.partialDayDate}>{pd.date}</Text>
+                            <Text style={styles.partialDaySub}>Attended {pd.attended_segments} of {pd.total_segments} shifts that day</Text>
+                          </View>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                )}
 
                 <Text style={[styles.sectionTitle, { marginTop: Spacing.md, marginBottom: Spacing.sm }]}>Salary Breakdown</Text>
                 <View style={styles.breakdownRow}>
@@ -726,4 +768,11 @@ const styles = StyleSheet.create({
   },
   breakdownLabel: { fontSize: FontSize.md, color: Colors.text },
   breakdownValue: { fontSize: FontSize.md, fontWeight: '600', color: Colors.text },
+  partialDayRow: {
+    flexDirection: 'row', alignItems: 'center',
+    paddingVertical: Spacing.sm, paddingHorizontal: Spacing.xs,
+    borderBottomWidth: 1, borderBottomColor: Colors.border,
+  },
+  partialDayDate: { fontSize: FontSize.md, fontWeight: '600', color: Colors.text },
+  partialDaySub: { fontSize: FontSize.xs, color: Colors.textLight, marginTop: 2 },
 });
