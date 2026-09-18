@@ -1590,18 +1590,29 @@ export default function DashboardScreen({ navigation }) {
               </TouchableOpacity>
             )}
 
-            {/* "N staff not clocked in" banner — counter_staff's own entry
+            {/* Team Attendance banner — counter_staff's own (and ONLY) entry
                 point into the same live roster owner/manager use, via their
                 own Attendance tab stack (no "More" tab to route through
-                here, unlike the owner/manager version above). */}
-            {isCounterStaff && notClockedInCount > 0 && (
+                here, unlike the owner/manager version above). Always shown,
+                not gated on notClockedInCount > 0: the roster's restored
+                Clock In button (1a) exists specifically to start someone's
+                SECOND shift segment, which isn't a "not clocked in" case at
+                all — on a day where everyone already clocked in once, a
+                urgency-gated banner would leave counter_staff with zero way
+                to reach the roster for that (fix-round-1 review finding).
+                Wording/icon still flag real urgency when there is any. */}
+            {isCounterStaff && (
               <TouchableOpacity
                 style={styles.codBannerCompact}
                 onPress={() => navigation.navigate('Attendance', { screen: 'TeamAttendance' })}
               >
-                <Ionicons name="alert-circle-outline" size={16} color={Colors.warning} />
+                <Ionicons
+                  name={notClockedInCount > 0 ? 'alert-circle-outline' : 'people-outline'}
+                  size={16}
+                  color={notClockedInCount > 0 ? Colors.warning : Colors.textLight}
+                />
                 <Text style={styles.codBannerCompactText}>
-                  {notClockedInCount} staff not clocked in
+                  {notClockedInCount > 0 ? `${notClockedInCount} staff not clocked in` : 'Team Attendance'}
                 </Text>
               </TouchableOpacity>
             )}
