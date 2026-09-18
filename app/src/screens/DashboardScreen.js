@@ -381,7 +381,7 @@ export default function DashboardScreen({ navigation }) {
       // ─── Counter Staff: sales-focused fetch (counts/status only —
       // no revenue totals or cash amounts, per role scope) ──────
       if (isCounterStaff) {
-        const [summaryRes, registerRes, pendingRes, confirmedRes, preparingRes, readyRes, tasksRes, doneTodayRes] = await Promise.all([
+        const [summaryRes, registerRes, pendingRes, confirmedRes, preparingRes, readyRes, tasksRes, doneTodayRes, staffTodayRes] = await Promise.all([
           api.getTodaySummary(activeLocation?.id).catch(() => ({ data: { total_sales: 0 } })),
           activeLocation?.id ? api.getRegisterStatus(activeLocation.id).catch(() => ({ data: null })) : Promise.resolve({ data: null }),
           // Fetched wider than the 5 we display so the today/future split
@@ -425,6 +425,11 @@ export default function DashboardScreen({ navigation }) {
           // accurate `total` regardless of `limit`.
           api.getSales({ status: 'completed', location_id: activeLocation?.id, filter_date: getShopTodayStr(DEFAULT_TZ), limit: 1 })
             .catch(() => ({ data: { total: 0 } })),
+          // "N staff not clocked in" dashboard banner (counter_staff just
+          // gained backend access to this endpoint in c268b6f — no prior
+          // fetch here to reuse). Same defensive catch shape as every other
+          // call in this array.
+          api.getStaffToday({ location_id: activeLocation?.id }).catch(() => ({ data: { absent: [] } })),
         ]);
         setCounterStats({
           salesCount: Number(summaryRes?.data?.total_sales || 0),
@@ -447,6 +452,7 @@ export default function DashboardScreen({ navigation }) {
         setCounterPendingOrders([...pendingList, ...confirmedList, ...preparingList, ...readyList]);
         setTaskRows(Array.isArray(tasksRes?.data) ? tasksRes.data : []);
         setDoneTodayCount(Number(doneTodayRes?.data?.total || 0));
+        setNotClockedInCount((staffTodayRes?.data?.absent || []).length);
         setLoading(false);
         setRefreshing(false);
         return;
@@ -1581,6 +1587,22 @@ export default function DashboardScreen({ navigation }) {
                   ₹{counterStats.pendingCodTotal.toLocaleString('en-IN', { maximumFractionDigits: 0 })} from {counterStats.pendingCodDeliveries} deliver{counterStats.pendingCodDeliveries !== 1 ? 'ies' : 'y'} not settled yet
                 </Text>
                 <Ionicons name="chevron-forward" size={16} color="#92400E" />
+              </TouchableOpacity>
+            )}
+
+            {/* "N staff not clocked in" banner — counter_staff's own entry
+                point into the same live roster owner/manager use, via their
+                own Attendance tab stack (no "More" tab to route through
+                here, unlike the owner/manager version above). */}
+            {isCounterStaff && notClockedInCount > 0 && (
+              <TouchableOpacity
+                style={styles.codBannerCompact}
+                onPress={() => navigation.navigate('Attendance', { screen: 'TeamAttendance' })}
+              >
+                <Ionicons name="alert-circle-outline" size={16} color={Colors.warning} />
+                <Text style={styles.codBannerCompactText}>
+                  {notClockedInCount} staff not clocked in
+                </Text>
               </TouchableOpacity>
             )}
 

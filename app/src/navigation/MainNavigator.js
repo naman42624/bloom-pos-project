@@ -88,6 +88,7 @@ import CustomerShopScreen from '../screens/CustomerShopScreen';
 // Phase 8 — Attendance
 import AttendanceScreen from '../screens/AttendanceScreen';
 import AttendanceHubScreen from '../screens/AttendanceHubScreen';
+import TeamAttendanceScreen from '../screens/TeamAttendanceScreen';
 
 // Phase 9 — Reports
 import ReportsHubScreen from '../screens/ReportsHubScreen';
@@ -517,6 +518,7 @@ function AttendanceStack() {
   return (
     <Stack.Navigator screenOptions={stackScreenOptions}>
       <Stack.Screen name="AttendanceHome" component={AttendanceScreen} options={{ title: 'Attendance' }} />
+      <Stack.Screen name="TeamAttendance" component={TeamAttendanceScreen} options={{ title: 'Team Attendance' }} />
       <Stack.Screen name="StaffAttendance" component={StaffAttendanceScreen} options={{ title: 'Staff Today' }} />
       <Stack.Screen name="AttendanceReport" component={AttendanceReportScreen} options={{ title: 'Attendance Report' }} />
       <Stack.Screen name="SalaryAdvances" component={SalaryAdvancesScreen} options={{ title: 'Salary Advances' }} />

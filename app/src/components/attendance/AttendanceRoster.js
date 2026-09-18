@@ -244,6 +244,7 @@ export default function AttendanceRoster() {
         // violation (offering it to someone already gone for the day).
         const isActive = !!item.active_session;
         const busy = actionLoadingKey === `out-${item.user_id}`;
+        const busyIn = actionLoadingKey === `in-${item.user_id}`;
         const otLabel = formatExtra(item.overtime_minutes_today);
         const canExpand = (item.sessions_count || 1) > 1;
         const isExpanded = !!expandedUsers[item.user_id];
@@ -263,25 +264,44 @@ export default function AttendanceRoster() {
                   </Text>
                   {otLabel && <Text style={styles.otChip}>{otLabel}</Text>}
                   {item.late_minutes_today > 0 && <Text style={styles.lateChip}>{item.late_minutes_today}m late</Text>}
-                  {item.clock_out_method === 'auto_shift_end' && <Text style={styles.autoClosedChip}>Auto-closed</Text>}
+                  {(item.clock_out_method === 'auto_shift_end' || item.clock_out_method === 'auto_timeout') && <Text style={styles.autoClosedChip}>Auto-closed</Text>}
                   {canExpand && <Ionicons name={isExpanded ? 'chevron-up' : 'chevron-down'} size={14} color={Colors.textLight} />}
                 </View>
               </View>
-              {busy ? (
+              {busy || busyIn ? (
                 <ActivityIndicator size="small" color={Colors.primary} />
               ) : isActive ? (
                 <TouchableOpacity style={styles.actionBtnOut} onPress={guardRow(`out-${item.user_id}`, () => doClockOut(item.user_id, item.user_name))}>
                   <Ionicons name="log-out-outline" size={16} color="#fff" />
                   <Text style={styles.actionBtnText}>Clock Out</Text>
                 </TouchableOpacity>
-              ) : null /* shift complete — no action, per staff-ux-checklist #6 */}
+              ) : (
+                // Shift complete — a second shift segment is a real, common
+                // case (split shifts), so re-offer Clock In rather than a
+                // dead end. No confirmation: clocking in isn't destructive,
+                // matches the absent-section's own unconfirmed button.
+                <TouchableOpacity style={styles.actionBtnIn} onPress={guardRow(`in-${item.user_id}`, () => doClockIn(item.user_id, item.location_id || selectedLoc))}>
+                  <Ionicons name="log-in-outline" size={16} color="#fff" />
+                  <Text style={styles.actionBtnText}>Clock In</Text>
+                </TouchableOpacity>
+              )}
             </TouchableOpacity>
-            {canExpand && isExpanded && (item.logs || []).map((log, idx) => (
-              <View key={log.id || idx} style={styles.sessionRow}>
-                <Text style={styles.sessionText}>{formatTime(log.clock_in)} → {log.clock_out ? formatTime(log.clock_out) : 'Active'}</Text>
-                {log.location_name && <Text style={styles.sessionLocation}>{log.location_name}</Text>}
-              </View>
-            ))}
+            {canExpand && isExpanded && (item.logs || []).map((log, idx) => {
+              const sessionOtLabel = formatExtra(log.overtime_minutes);
+              return (
+                <View key={log.id || idx} style={styles.sessionRow}>
+                  <Text style={styles.sessionText}>{formatTime(log.clock_in)} → {log.clock_out ? formatTime(log.clock_out) : 'Active'}</Text>
+                  <View style={styles.sessionMetaRow}>
+                    {log.location_name && <Text style={styles.sessionLocation}>{log.location_name}</Text>}
+                    {log.late_minutes > 0 && <Text style={styles.sessionLateChip}>{log.late_minutes}m late</Text>}
+                    {sessionOtLabel && <Text style={styles.sessionOtChip}>{sessionOtLabel}</Text>}
+                    {(log.clock_out_method === 'auto_shift_end' || log.clock_out_method === 'auto_timeout') && (
+                      <Text style={styles.sessionAutoChip}>Auto-closed</Text>
+                    )}
+                  </View>
+                </View>
+              );
+            })}
           </View>
         );
       }}
@@ -361,4 +381,17 @@ const styles = StyleSheet.create({
   sessionRow: { paddingLeft: Spacing.lg, paddingVertical: 4 },
   sessionText: { fontSize: FontSize.xs, color: Colors.text },
   sessionLocation: { fontSize: 10, color: Colors.textLight },
+  sessionMetaRow: { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 2, flexWrap: 'wrap' },
+  sessionLateChip: {
+    fontSize: 9, fontWeight: '700', color: '#fff', backgroundColor: Colors.danger,
+    paddingHorizontal: 5, paddingVertical: 1, borderRadius: 4, overflow: 'hidden',
+  },
+  sessionOtChip: {
+    fontSize: 9, fontWeight: '700', color: '#fff', backgroundColor: Colors.warning,
+    paddingHorizontal: 5, paddingVertical: 1, borderRadius: 4, overflow: 'hidden',
+  },
+  sessionAutoChip: {
+    fontSize: 9, fontWeight: '600', color: Colors.textLight, backgroundColor: Colors.background,
+    paddingHorizontal: 5, paddingVertical: 1, borderRadius: 4, borderWidth: 1, borderColor: Colors.border, overflow: 'hidden',
+  },
 });
