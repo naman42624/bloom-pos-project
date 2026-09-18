@@ -150,7 +150,13 @@ export default function ExpensesScreen() {
 
     const load = async () => {
       if (isOwnerOrManager) {
-        const res = await api.getUsers();
+        // limit:100 (the endpoint's max, server/routes/users.js) — without
+        // it this defaults to limit=20/page and silently truncates past 20
+        // total users, dropping real staff from the picker with no
+        // indication anything was cut off (found live in review, 2026-09-19:
+        // 5 real accounts incl. all 3 delivery_partner rows missing in the
+        // current dev DB).
+        const res = await api.getUsers({ limit: 100 });
         return (res.data?.users || []).filter((u) => PAYROLL_ROLES.includes(u.role) && u.is_active);
       }
       try {
