@@ -578,8 +578,9 @@ export default function SalaryManagementScreen() {
                       return (
                         <TouchableOpacity
                           key={pd.date}
-                          style={styles.partialDayRow}
+                          style={[styles.partialDayRow, payrollCalculating && { opacity: 0.5 }]}
                           onPress={() => toggleHalfDay(pd.date)}
+                          disabled={payrollCalculating}
                         >
                           <Ionicons name={isConfirmed ? 'checkbox' : 'square-outline'} size={22} color={Colors.primary} />
                           <View style={{ flex: 1, marginLeft: Spacing.sm }}>
@@ -593,6 +594,14 @@ export default function SalaryManagementScreen() {
                 )}
 
                 <Text style={[styles.sectionTitle, { marginTop: Spacing.md, marginBottom: Spacing.sm }]}>Salary Breakdown</Text>
+                {payrollCalculating && (
+                  <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: Spacing.sm }}>
+                    <ActivityIndicator size="small" color={Colors.primary} />
+                    <Text style={{ fontSize: FontSize.sm, color: Colors.textLight, marginLeft: Spacing.xs }}>
+                      Updating…
+                    </Text>
+                  </View>
+                )}
                 <View style={styles.breakdownRow}>
                   <Text style={styles.breakdownLabel}>Base Pay</Text>
                   <Text style={styles.breakdownValue}>{formatCurrency(payrollCalc.calculation.base_pay)}</Text>
@@ -649,9 +658,11 @@ export default function SalaryManagementScreen() {
                 <TouchableOpacity
                   style={[styles.saveBtn, { marginTop: Spacing.lg, alignSelf: 'stretch', alignItems: 'center', backgroundColor: Colors.success }]}
                   onPress={handleDisburse}
-                  disabled={saving}
+                  disabled={payrollCalculating || saving}
                 >
-                  <Text style={styles.saveBtnText}>{saving ? 'Processing...' : 'Disburse Salary'}</Text>
+                  <Text style={styles.saveBtnText}>
+                    {saving ? 'Processing...' : payrollCalculating ? 'Updating...' : 'Disburse Salary'}
+                  </Text>
                 </TouchableOpacity>
               </View>
             )}
