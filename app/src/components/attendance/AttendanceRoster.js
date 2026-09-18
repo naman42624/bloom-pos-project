@@ -36,6 +36,39 @@ function formatExtra(minutes) {
   return h > 0 ? `+${h}h ${m}m` : `+${m}m`;
 }
 
+// The employee's configured shift window(s), e.g. "09:00–17:00" or, for a
+// split shift, "09:00–13:00, 17:00–21:00". `shift_segments` is occasionally
+// JSON-encoded TWICE in this project's own live data (a string containing a
+// JSON string containing the array) — mirrors the backend's own
+// normalizeSegments (server/utils/shift-work.js) defensive parse-up-to-twice
+// pattern, kept lightweight here rather than importing that module.
+function formatShift(item) {
+  let segments = null;
+  if (item.shift_segments) {
+    let parsed = item.shift_segments;
+    for (let i = 0; i < 2 && typeof parsed === 'string'; i++) {
+      try { parsed = JSON.parse(parsed); } catch (_) { parsed = null; break; }
+    }
+    if (Array.isArray(parsed) && parsed.length > 0) segments = parsed;
+  }
+  const short = (t) => (t ? t.slice(0, 5) : ''); // 'HH:MM:SS' -> 'HH:MM'
+  if (segments) {
+    return segments.map((s) => `${short(s.start)}–${short(s.end)}`).join(', ');
+  }
+  if (item.shift_start && item.shift_end) {
+    return `${short(item.shift_start)}–${short(item.shift_end)}`;
+  }
+  return null; // no shift configured — render nothing, don't show a confusing blank/zero
+}
+
+// outdoor_hours is a decimal number of hours (e.g. 1.5) — reuse formatExtra's
+// exact "+1h 30m" style so this conceptually-similar figure (time away from
+// the shift, vs. time beyond it) doesn't invent its own format.
+function formatOutdoor(hours) {
+  if (!hours || hours <= 0) return null;
+  return formatExtra(Math.round(hours * 60));
+}
+
 const confirmClockOut = (name, onOk) => {
   const msg = `Clock out ${name}?`;
   if (Platform.OS === 'web') { if (window.confirm(msg)) onOk(); }
@@ -265,8 +298,12 @@ export default function AttendanceRoster() {
                   {otLabel && <Text style={styles.otChip}>{otLabel}</Text>}
                   {item.late_minutes_today > 0 && <Text style={styles.lateChip}>{item.late_minutes_today}m late</Text>}
                   {(item.clock_out_method === 'auto_shift_end' || item.clock_out_method === 'auto_timeout') && <Text style={styles.autoClosedChip}>Auto-closed</Text>}
+                  {item.outdoor_hours > 0 && <Text style={styles.outdoorChip}>{formatOutdoor(item.outdoor_hours)} outdoor</Text>}
                   {canExpand && <Ionicons name={isExpanded ? 'chevron-up' : 'chevron-down'} size={14} color={Colors.textLight} />}
                 </View>
+                {formatShift(item) && (
+                  <Text style={styles.shiftText}>Shift: {formatShift(item)}</Text>
+                )}
               </View>
               {busy || busyIn ? (
                 <ActivityIndicator size="small" color={Colors.primary} />
@@ -298,6 +335,7 @@ export default function AttendanceRoster() {
                     {(log.clock_out_method === 'auto_shift_end' || log.clock_out_method === 'auto_timeout') && (
                       <Text style={styles.sessionAutoChip}>Auto-closed</Text>
                     )}
+                    {log.outdoor_hours > 0 && <Text style={styles.sessionOutdoorChip}>{formatOutdoor(log.outdoor_hours)} outdoor</Text>}
                   </View>
                 </View>
               );
@@ -366,6 +404,11 @@ const styles = StyleSheet.create({
     fontSize: 10, fontWeight: '600', color: Colors.textLight, backgroundColor: Colors.background,
     paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, borderWidth: 1, borderColor: Colors.border, overflow: 'hidden',
   },
+  outdoorChip: {
+    fontSize: 10, fontWeight: '700', color: '#fff', backgroundColor: Colors.info,
+    paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, overflow: 'hidden',
+  },
+  shiftText: { fontSize: 11, color: Colors.textLight, marginTop: 2 },
   actionBtnIn: {
     flexDirection: 'row', alignItems: 'center', gap: 4,
     backgroundColor: Colors.secondary, paddingVertical: 8, paddingHorizontal: 12, borderRadius: BorderRadius.md,
@@ -393,5 +436,9 @@ const styles = StyleSheet.create({
   sessionAutoChip: {
     fontSize: 9, fontWeight: '600', color: Colors.textLight, backgroundColor: Colors.background,
     paddingHorizontal: 5, paddingVertical: 1, borderRadius: 4, borderWidth: 1, borderColor: Colors.border, overflow: 'hidden',
+  },
+  sessionOutdoorChip: {
+    fontSize: 9, fontWeight: '700', color: '#fff', backgroundColor: Colors.info,
+    paddingHorizontal: 5, paddingVertical: 1, borderRadius: 4, overflow: 'hidden',
   },
 });
