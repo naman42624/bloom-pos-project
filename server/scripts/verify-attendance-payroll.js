@@ -1079,20 +1079,24 @@ check('POST /staff/payroll/calculate detects a genuine 1-of-2-segments partial d
   halfDayFixture.unconfirmedDailyBasePay = body.data.calculation.base_pay;
 });
 
-check('POST /staff/payroll/calculate reduces base_pay by exactly half a day\'s rate once the partial day is confirmed (daily salary type) (E1 confirmation)', async () => {
+check('POST /staff/payroll/calculate reduces base_pay by exactly half a day\'s rate once the partial day is confirmed (daily salary type), and a DUPLICATED valid date is not double-counted (E1 confirmation + dedup)', async () => {
   assert(halfDayFixture.floristId, 'Fixture missing — the detection check above must run first');
   const owner = await loginOwner();
 
+  // The same valid date sent TWICE in the request — must be deduped before
+  // counting, not double-deducted. If dedup were missing, half_days would
+  // read 2 and base_pay would drop by a full day's rate (1000) instead of
+  // half (500).
   const { status, body } = await api('POST', '/staff/payroll/calculate', owner.token, {
     user_id: halfDayFixture.floristId, period_start: HALFDAY_PERIOD_START, period_end: HALFDAY_PERIOD_END,
-    confirmed_half_day_dates: [HALFDAY_TEST_DATE],
+    confirmed_half_day_dates: [HALFDAY_TEST_DATE, HALFDAY_TEST_DATE],
   });
   assert(status === 200, `Expected 200, got ${status}: ${JSON.stringify(body)}`);
-  assert(body.data.attendance_summary.half_days === 1, `Expected half_days 1 (confirmed), got ${body.data.attendance_summary.half_days}`);
+  assert(body.data.attendance_summary.half_days === 1, `Expected half_days 1 (deduped, not 2), got ${body.data.attendance_summary.half_days}`);
 
-  const expectedBasePay = halfDayFixture.unconfirmedDailyBasePay - 500; // half of the 1000 daily rate
+  const expectedBasePay = halfDayFixture.unconfirmedDailyBasePay - 500; // half of the 1000 daily rate, counted ONCE
   assert(body.data.calculation.base_pay === expectedBasePay,
-    `Expected base_pay reduced by exactly 500 (half the daily rate) from ${halfDayFixture.unconfirmedDailyBasePay} to ${expectedBasePay}, got ${body.data.calculation.base_pay}`);
+    `Expected base_pay reduced by exactly 500 (half the daily rate, deduped) from ${halfDayFixture.unconfirmedDailyBasePay} to ${expectedBasePay}, got ${body.data.calculation.base_pay}`);
 });
 
 check('POST /staff/payroll/calculate adds exactly (monthly_salary/30)*0.5 to deductions once the partial day is confirmed (monthly salary type) (E1 confirmation)', async () => {
@@ -1165,6 +1169,57 @@ check('POST /staff/payroll/calculate always returns partial_days: [] for a singl
   assert(status === 200, `Expected 200, got ${status}: ${JSON.stringify(body)}`);
   assert(Array.isArray(body.data.partial_days), 'Expected partial_days to be an array');
   assert(body.data.partial_days.length === 0, `Expected partial_days: [] for a single-segment shift, got ${JSON.stringify(body.data.partial_days)}`);
+});
+
+// The single most dangerous regression case for this feature: a genuinely
+// FULL split-shift day (both segments actually attended) must never be
+// misread as a partial day — that would silently dock real pay on a day
+// nothing was actually missed. Guards findPartialDays' "size < segments
+// .length" boundary against a future refactor getting it wrong.
+check('POST /staff/payroll/calculate never lists a genuinely FULL split-shift day (both segments attended) in partial_days (E1 full-day guard)', async () => {
+  const FULL_DAY_TEST_DATE = '2026-06-10'; // within the E1 test period, distinct from HALFDAY_TEST_DATE/HALFDAY_UNRELATED_DATE
+  const owner = await loginOwner();
+  const florist = await createFloristStaffSession(owner.token);
+  const db = await getDb();
+
+  const shiftResult = await db.prepare(`
+    INSERT INTO employee_shifts (user_id, location_id, shift_start, shift_end, shift_segments, is_active, created_by)
+    VALUES (?, ?, '07:00', '22:00', ?, 1, ?) RETURNING id
+  `).get(florist.id, TEST_LOCATION_ID, JSON.stringify([{ start: '07:00', end: '12:00' }, { start: '18:00', end: '22:00' }]), owner.id);
+  createdShiftIds.push(shiftResult.id);
+  await api('POST', '/staff/salaries', owner.token, { user_id: florist.id, monthly_salary: 1500, salary_type: 'daily' });
+
+  // Two REAL clock-in/clock-out pairs via the actual routes — one per
+  // segment — both later backdated onto the SAME calendar date.
+  const clockIn1 = await api('POST', '/attendance/clock-in', florist.token, { location_id: TEST_LOCATION_ID, method: 'manual' });
+  assert(clockIn1.status === 201, `Could not clock in (segment 1): ${clockIn1.status} ${JSON.stringify(clockIn1.body)}`);
+  const id1 = clockIn1.body.data.id;
+  createdAttendanceIds.push(id1);
+  const clockOut1 = await api('POST', '/attendance/clock-out', florist.token, { method: 'manual' });
+  assert(clockOut1.status === 200, `Could not clock out (segment 1): ${clockOut1.status} ${JSON.stringify(clockOut1.body)}`);
+
+  const clockIn2 = await api('POST', '/attendance/clock-in', florist.token, { location_id: TEST_LOCATION_ID, method: 'manual' });
+  assert(clockIn2.status === 201, `Could not clock in (segment 2): ${clockIn2.status} ${JSON.stringify(clockIn2.body)}`);
+  const id2 = clockIn2.body.data.id;
+  createdAttendanceIds.push(id2);
+  const clockOut2 = await api('POST', '/attendance/clock-out', florist.token, { method: 'manual' });
+  assert(clockOut2.status === 200, `Could not clock out (segment 2): ${clockOut2.status} ${JSON.stringify(clockOut2.body)}`);
+
+  await db.prepare('UPDATE attendance SET clock_in = ?, clock_out = ?, date = ? WHERE id = ?').run(
+    shopLocalToUtcIso(FULL_DAY_TEST_DATE, '07:00'), shopLocalToUtcIso(FULL_DAY_TEST_DATE, '12:00'), FULL_DAY_TEST_DATE, id1
+  );
+  await db.prepare('UPDATE attendance SET clock_in = ?, clock_out = ?, date = ? WHERE id = ?').run(
+    shopLocalToUtcIso(FULL_DAY_TEST_DATE, '18:00'), shopLocalToUtcIso(FULL_DAY_TEST_DATE, '22:00'), FULL_DAY_TEST_DATE, id2
+  );
+
+  const { status, body } = await api('POST', '/staff/payroll/calculate', owner.token, {
+    user_id: florist.id, period_start: HALFDAY_PERIOD_START, period_end: HALFDAY_PERIOD_END,
+  });
+  assert(status === 200, `Expected 200, got ${status}: ${JSON.stringify(body)}`);
+
+  const found = body.data.partial_days.find((p) => p.date === FULL_DAY_TEST_DATE);
+  assert(!found, `Expected ${FULL_DAY_TEST_DATE} (both segments attended) to NOT appear in partial_days, got ${JSON.stringify(found)}`);
+  assert(body.data.attendance_summary.half_days === 0, `Expected half_days 0 (nothing confirmed and nothing genuinely partial), got ${body.data.attendance_summary.half_days}`);
 });
 
 async function cleanup() {

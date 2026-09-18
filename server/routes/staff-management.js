@@ -458,10 +458,13 @@ router.post('/payroll/calculate', authorize('owner'), (req, res) => {
     // defaults to [] / 0 and every downstream formula behaves unchanged.
     // Only a date genuinely present in partialDays counts — a stale or
     // manipulated client-supplied date can never inflate the half-day count
-    // beyond what was actually detected.
-    const confirmedHalfDayDates = Array.isArray(req.body.confirmed_half_day_dates)
-      ? req.body.confirmed_half_day_dates.filter((d) => partialDays.some((p) => p.date === d))
-      : [];
+    // beyond what was actually detected. Deduped (Set) so the same valid
+    // date repeated in the request body can't double-count its deduction.
+    const confirmedHalfDayDates = [...new Set(
+      Array.isArray(req.body.confirmed_half_day_dates)
+        ? req.body.confirmed_half_day_dates.filter((d) => partialDays.some((p) => p.date === d))
+        : []
+    )];
     const confirmedHalfDaysCount = confirmedHalfDayDates.length;
     const leaveDays = uniqueAttendance.filter(a => a.status === 'on_leave').length;
     const absentDays = Math.max(0, daysInPeriod - daysWorked - leaveDays);
