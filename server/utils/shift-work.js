@@ -173,6 +173,47 @@ function computeShiftWork(sessions, shift, options = {}) {
   return { totalLateMinutes, totalOvertimeMinutes, sessions: perSession };
 }
 
+// Finds calendar dates where SOME but not ALL of a shift's configured
+// segments were attended — a genuine partial/half day, distinct from a
+// full absence (zero segments attended that day — already counted
+// elsewhere as an absent day) and a normal full day (every segment
+// attended). Computed fresh from raw attendance rows + the shift
+// definition, same "never stored" principle as computeShiftWork itself.
+// Only meaningful for a multi-segment (split) shift — a single-segment
+// shift has no partial state to detect (present or absent, already
+// correctly counted). `sessions` needs at minimum { date, clock_in } per
+// row (the real attendance.date column, not derived from clock_in — this
+// matches how every other date-scoped query in this codebase already
+// treats `date` as the source of truth for which calendar day a session
+// belongs to).
+function findPartialDays(sessions, shift) {
+  const segments = shift ? normalizeSegments(shift.shift_start, shift.shift_end, shift.shift_segments) : [];
+  if (segments.length < 2) return [];
+
+  const byDate = new Map(); // date string -> Set of matched segment indices
+  for (const session of sessions || []) {
+    if (!session.clock_in || !session.date) continue;
+    const clockInMin = timestampToMinutes(session.clock_in);
+    const seg = matchSegmentForTime(clockInMin, segments);
+    if (!seg) continue;
+    const segIdx = segments.indexOf(seg);
+    if (!byDate.has(session.date)) byDate.set(session.date, new Set());
+    byDate.get(session.date).add(segIdx);
+  }
+
+  const partialDays = [];
+  for (const [date, matchedIdxs] of byDate.entries()) {
+    if (matchedIdxs.size > 0 && matchedIdxs.size < segments.length) {
+      partialDays.push({
+        date,
+        attended_segments: matchedIdxs.size,
+        total_segments: segments.length,
+      });
+    }
+  }
+  return partialDays.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+}
+
 module.exports = {
   OVERTIME_GRACE_MINUTES,
   timeStrToMinutes,
@@ -183,4 +224,5 @@ module.exports = {
   lateMinutesFor,
   overtimeMinutesFor,
   computeShiftWork,
+  findPartialDays,
 };

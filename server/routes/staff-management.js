@@ -4,7 +4,7 @@ const { getDb } = require('../config/database');
 const { getDb: getAsyncDb } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
 const { nowLocal, todayStr } = require('../utils/time');
-const { computeShiftWork, normalizeSegments, matchSegmentForTime, lateMinutesFor, timestampToMinutes } = require('../utils/shift-work');
+const { computeShiftWork, findPartialDays, normalizeSegments, matchSegmentForTime, lateMinutesFor, timestampToMinutes } = require('../utils/shift-work');
 const { hasOpenRegister, REGISTER_CLOSED_MESSAGE } = require('../utils/register-guard');
 const { createNotification } = require('./notifications');
 
@@ -429,7 +429,14 @@ router.post('/payroll/calculate', authorize('owner'), (req, res) => {
     }
     const uniqueAttendance = Array.from(uniqueByDate.values());
     const daysWorked = uniqueAttendance.filter(a => a.status === 'present' || a.status === 'half_day').length;
-    const halfDays = uniqueAttendance.filter(a => a.status === 'half_day').length;
+    // NOTE: attendance.status is never actually written as 'half_day' by any
+    // clock-in path (every clock-in hardcodes status: 'present') — this
+    // filter has always silently evaluated to 0. Replaced below by
+    // confirmedHalfDaysCount, computed from real split-shift detection
+    // (findPartialDays) plus explicit caller confirmation, not this dead
+    // column read. Left here (unused) rather than deleted so the historical
+    // intent — and the fact this was always 0 — stays visible in a diff.
+    const halfDays = uniqueAttendance.filter(a => a.status === 'half_day').length; // eslint-disable-line no-unused-vars
     const lateDays = uniqueAttendance.filter(a => a.late_arrival === 1).length;
     const totalHours = attendance.reduce((sum, a) => sum + (a.effective_hours || 0), 0);
     const shift = db.prepare(
@@ -441,6 +448,21 @@ router.post('/payroll/calculate', authorize('owner'), (req, res) => {
     // into a disbursement amount; only a session's real, final clock_out
     // should ever count toward payroll.
     const shiftWork = computeShiftWork(attendance, shift || null, { includeInProgress: false });
+    // Detection only — every candidate partial day, regardless of whether
+    // the caller has confirmed any of them yet. Computed from the SAME
+    // `attendance` array already fetched above (has .date and .clock_in on
+    // every row).
+    const partialDays = findPartialDays(attendance, shift || null);
+    // A plain calculate call with no confirmed_half_day_dates must produce
+    // EXACTLY today's output — nothing has been confirmed yet, so this
+    // defaults to [] / 0 and every downstream formula behaves unchanged.
+    // Only a date genuinely present in partialDays counts — a stale or
+    // manipulated client-supplied date can never inflate the half-day count
+    // beyond what was actually detected.
+    const confirmedHalfDayDates = Array.isArray(req.body.confirmed_half_day_dates)
+      ? req.body.confirmed_half_day_dates.filter((d) => partialDays.some((p) => p.date === d))
+      : [];
+    const confirmedHalfDaysCount = confirmedHalfDayDates.length;
     const leaveDays = uniqueAttendance.filter(a => a.status === 'on_leave').length;
     const absentDays = Math.max(0, daysInPeriod - daysWorked - leaveDays);
 
@@ -449,16 +471,21 @@ router.post('/payroll/calculate', authorize('owner'), (req, res) => {
     if (salary.salary_type === 'monthly') {
       basePay = salary.monthly_salary;
     } else if (salary.salary_type === 'daily') {
-      basePay = salary.monthly_salary * (daysWorked - (halfDays * 0.5));
+      basePay = salary.monthly_salary * (daysWorked - (confirmedHalfDaysCount * 0.5));
     } else if (salary.salary_type === 'hourly') {
       basePay = salary.monthly_salary * totalHours;
     }
 
-    // Calculate deductions for absences (monthly salary)
+    // Calculate deductions for absences (monthly salary), plus a half-day
+    // deduction for any confirmed partial day — additive alongside the
+    // existing absence deduction, not a replacement for it.
     let deductions = 0;
-    if (salary.salary_type === 'monthly' && absentDays > leaveDays) {
+    if (salary.salary_type === 'monthly') {
       const perDayRate = salary.monthly_salary / 30;
-      deductions = perDayRate * (absentDays - leaveDays);
+      if (absentDays > leaveDays) {
+        deductions += perDayRate * (absentDays - leaveDays);
+      }
+      deductions += perDayRate * 0.5 * confirmedHalfDaysCount;
     }
 
     // Get pending advances to deduct
@@ -478,7 +505,7 @@ router.post('/payroll/calculate', authorize('owner'), (req, res) => {
         period: { start: period_start, end: period_end, days: daysInPeriod },
         attendance_summary: {
           days_worked: daysWorked,
-          half_days: halfDays,
+          half_days: confirmedHalfDaysCount,
           absent_days: absentDays,
           late_days: lateDays,
           leave_days: leaveDays,
@@ -486,6 +513,10 @@ router.post('/payroll/calculate', authorize('owner'), (req, res) => {
           total_late_minutes: shiftWork.totalLateMinutes,
           overtime_minutes: shiftWork.totalOvertimeMinutes,
         },
+        // Full list of detected partial-day candidates, regardless of
+        // confirmation state — what a future frontend renders as a
+        // checklist for the caller to confirm/reject before disbursing.
+        partial_days: partialDays,
         calculation: {
           base_pay: Math.round(basePay * 100) / 100,
           deductions: Math.round(deductions * 100) / 100,
