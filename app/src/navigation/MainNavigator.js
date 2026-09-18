@@ -588,11 +588,14 @@ export default function MainNavigator() {
   const isExpoGo = Constants.appOwnership === 'expo';
   const insets = useSafeAreaInsets();
 
-  // Auto geofence for staff (not owner/customer)
+  // Auto geofence for staff (not owner/customer). counter_staff excluded too:
+  // that role is a shared, stationary counter device, not a personal phone
+  // that travels with one person — geofencing it is meaningless and an
+  // "Always Allow" location prompt on a shared device is a trust/privacy risk.
   useGeofence({
     user,
     locations: locations || [],
-    enabled: !isExpoGo && !!user && user.role !== 'owner' && user.role !== 'customer',
+    enabled: !isExpoGo && !!user && user.role !== 'owner' && user.role !== 'customer' && user.role !== 'counter_staff',
   });
 
   // Auto delivery tracking for delivery partners
