@@ -1222,6 +1222,90 @@ check('POST /staff/payroll/calculate never lists a genuinely FULL split-shift da
   assert(body.data.attendance_summary.half_days === 0, `Expected half_days 0 (nothing confirmed and nothing genuinely partial), got ${body.data.attendance_summary.half_days}`);
 });
 
+// ═══════════════════════════════════════════════════════════════
+// Task F1: payroll/disburse duplicate-payment guard — overlap detection,
+// not exact match. Real bug found via live user testing: period_start/
+// period_end are free-text TextInputs on SalaryManagementScreen (no
+// pre-fill, no persistence between modal opens), so the old exact-string
+// -match guard let the same employee be paid twice for overlapping days
+// as long as the two period strings weren't byte-identical. Checks below
+// run sequentially (this file's runner awaits each in order) and checks
+// 2-4 deliberately reuse check 1's florist + payment via these two
+// module-scope variables, matching the brief's "using the SAME employee
+// /payment from check 1" instruction.
+// ═══════════════════════════════════════════════════════════════
+
+let f1Florist = null;
+let f1PaymentId = null;
+
+check('POST /staff/payroll/disburse blocks an EXACT-duplicate period for the same employee (pre-existing behavior, must still work)', async () => {
+  const owner = await loginOwner();
+  const florist = await createFloristStaffSession(owner.token);
+  await api('POST', '/staff/salaries', owner.token, { user_id: florist.id, monthly_salary: 8000, salary_type: 'monthly' });
+
+  const first = await api('POST', '/staff/payroll/disburse', owner.token, {
+    user_id: florist.id, period_start: '2026-02-01', period_end: '2026-02-15',
+    base_salary: 4000, deductions: 0, bonus: 0, net_amount: 4000, payment_method: 'bank_transfer',
+  });
+  assert(first.status === 201, `Expected 201 for the first disburse, got ${first.status}: ${JSON.stringify(first.body)}`);
+  createdSalaryIds.push(first.body.data.id);
+  if (first.body.data.expense_id) createdExpenseIds.push(first.body.data.expense_id);
+  f1Florist = florist;
+  f1PaymentId = first.body.data.id;
+
+  const dup = await api('POST', '/staff/payroll/disburse', owner.token, {
+    user_id: florist.id, period_start: '2026-02-01', period_end: '2026-02-15',
+    base_salary: 4000, deductions: 0, bonus: 0, net_amount: 4000, payment_method: 'bank_transfer',
+  });
+  assert(dup.status === 400, `Expected 400 for the exact-duplicate period, got ${dup.status}: ${JSON.stringify(dup.body)}`);
+  assert(dup.body.message.includes(String(first.body.data.id)), `Expected the error to mention the existing payment #${first.body.data.id}, got: ${dup.body.message}`);
+});
+
+check('POST /staff/payroll/disburse blocks an OVERLAPPING-but-different period for the same employee (the actual bug: exact-match alone would miss this)', async () => {
+  const owner = await loginOwner();
+  assert(f1Florist && f1PaymentId, 'Expected the exact-duplicate check above to have run first and set up a florist + payment');
+
+  // Feb 10-20 overlaps the last 6 days (10-15) of the existing Feb 1-15
+  // payment. Under the OLD exact-match guard this would have been silently
+  // allowed — a real double-payment. Under the new overlap guard it must
+  // be blocked.
+  const overlap = await api('POST', '/staff/payroll/disburse', owner.token, {
+    user_id: f1Florist.id, period_start: '2026-02-10', period_end: '2026-02-20',
+    base_salary: 4000, deductions: 0, bonus: 0, net_amount: 4000, payment_method: 'bank_transfer',
+  });
+  assert(overlap.status === 400, `Expected 400 for an overlapping (but not identical) period, got ${overlap.status}: ${JSON.stringify(overlap.body)}`);
+  assert(overlap.body.message.includes(String(f1PaymentId)), `Expected the error to mention the conflicting payment #${f1PaymentId}, got: ${overlap.body.message}`);
+});
+
+check('POST /staff/payroll/disburse allows a genuinely NON-overlapping period for the same employee (proves the fix does not over-block)', async () => {
+  const owner = await loginOwner();
+  assert(f1Florist, 'Expected the exact-duplicate check above to have run first and set up a florist');
+
+  // March 1-15 has zero overlap with the Feb 1-15 payment.
+  const nonOverlap = await api('POST', '/staff/payroll/disburse', owner.token, {
+    user_id: f1Florist.id, period_start: '2026-03-01', period_end: '2026-03-15',
+    base_salary: 4000, deductions: 0, bonus: 0, net_amount: 4000, payment_method: 'bank_transfer',
+  });
+  assert(nonOverlap.status === 201, `Expected 201 for a genuinely non-overlapping period, got ${nonOverlap.status}: ${JSON.stringify(nonOverlap.body)}`);
+  createdSalaryIds.push(nonOverlap.body.data.id);
+  if (nonOverlap.body.data.expense_id) createdExpenseIds.push(nonOverlap.body.data.expense_id);
+});
+
+check('POST /staff/payroll/disburse allows a DIFFERENT employee to be paid for the exact same period (proves the check is scoped per-user, not global)', async () => {
+  const owner = await loginOwner();
+  assert(f1Florist, 'Expected the exact-duplicate check above to have run first and set up a florist');
+  const otherFlorist = await createFloristStaffSession(owner.token);
+  await api('POST', '/staff/salaries', owner.token, { user_id: otherFlorist.id, monthly_salary: 8000, salary_type: 'monthly' });
+
+  const sameperiodOtherUser = await api('POST', '/staff/payroll/disburse', owner.token, {
+    user_id: otherFlorist.id, period_start: '2026-02-01', period_end: '2026-02-15',
+    base_salary: 4000, deductions: 0, bonus: 0, net_amount: 4000, payment_method: 'bank_transfer',
+  });
+  assert(sameperiodOtherUser.status === 201, `Expected 201 for a different employee paid the same period, got ${sameperiodOtherUser.status}: ${JSON.stringify(sameperiodOtherUser.body)}`);
+  createdSalaryIds.push(sameperiodOtherUser.body.data.id);
+  if (sameperiodOtherUser.body.data.expense_id) createdExpenseIds.push(sameperiodOtherUser.body.data.expense_id);
+});
+
 async function cleanup() {
   const db = await getDb();
   for (const id of createdExpenseIds) {

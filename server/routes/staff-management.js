@@ -554,11 +554,21 @@ router.post('/payroll/disburse', authorize('owner'), (req, res) => {
       return res.status(400).json({ success: false, message: 'Missing required fields.' });
     }
 
+    // Overlap detection, not exact match: period_start/period_end are
+    // free-text inputs on the frontend (SalaryManagementScreen — no
+    // pre-fill, no persistence between modal opens), so a caller can
+    // re-disburse the same employee's pay by entering a slightly
+    // different (or genuinely overlapping-but-not-identical) period.
+    // Standard range-overlap test: [A_start, A_end] and [B_start, B_end]
+    // overlap iff A_start <= B_end AND A_end >= B_start.
     const existing = db.prepare(
-      'SELECT id FROM salary_payments WHERE user_id = ? AND period_start = ? AND period_end = ? AND status != ?'
-    ).get(user_id, period_start, period_end, 'cancelled');
+      'SELECT id, period_start, period_end FROM salary_payments WHERE user_id = ? AND status != ? AND period_start <= ? AND period_end >= ?'
+    ).get(user_id, 'cancelled', period_end, period_start);
     if (existing) {
-      return res.status(400).json({ success: false, message: `Salary for this period was already recorded (payment #${existing.id}) — check Payroll History rather than disbursing again.` });
+      return res.status(400).json({
+        success: false,
+        message: `This period overlaps an already-recorded payment (#${existing.id}, ${existing.period_start} to ${existing.period_end}) — check Payroll History, or adjust the dates to avoid double-paying the same days.`,
+      });
     }
 
     // Cap the advance deduction at what this payment can actually absorb.
