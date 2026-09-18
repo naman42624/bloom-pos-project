@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useMemo } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
   RefreshControl, Alert, Modal, TextInput, ActivityIndicator, Platform, KeyboardAvoidingView,
@@ -83,6 +83,12 @@ export default function SalaryManagementScreen() {
   const [payrollHistory, setPayrollHistory] = useState([]);
   const [payrollHistoryLoading, setPayrollHistoryLoading] = useState(false);
   const [confirmedHalfDays, setConfirmedHalfDays] = useState([]); // array of 'YYYY-MM-DD' date strings
+  // This employee's own payment history (not the global payrollHistory list above),
+  // fetched fresh each time the payroll modal opens — used to warn/block on a
+  // period that overlaps a payment already made, mirroring the same overlap rule
+  // POST /staff/payroll/disburse enforces server-side, but surfaced BEFORE the
+  // manager taps Disburse rather than only as an error after (staff-ux-checklist #6).
+  const [employeePayments, setEmployeePayments] = useState([]);
 
   const fetchData = useCallback(async () => {
     try {
@@ -161,6 +167,12 @@ export default function SalaryManagementScreen() {
     setPaymentRef('');
     setBonusAmount('');
     setConfirmedHalfDays([]);
+    // Reset before the fetch resolves so a previously-opened employee's payments
+    // can't briefly leak into this modal's overlap check for the newly-selected one.
+    setEmployeePayments([]);
+    api.getPayrollHistory({ user_id: sal.user_id, limit: 100 })
+      .then((res) => setEmployeePayments(res.data?.payments || []))
+      .catch(() => setEmployeePayments([]));
     setPayrollModal(true);
   };
 
@@ -214,6 +226,26 @@ export default function SalaryManagementScreen() {
     else if (periodPickerTarget === 'periodEnd') setPeriodEnd(ymd);
     setPeriodPickerTarget(null);
   };
+
+  // Mirrors POST /staff/payroll/disburse's own overlap query exactly (server/routes/
+  // staff-management.js, 'SELECT id, period_start, period_end FROM salary_payments
+  // WHERE user_id = ? AND status != ? AND period_start <= ? AND period_end >= ?' with
+  // params (user_id, 'cancelled', period_end, period_start)): same exclusion
+  // (status !== 'cancelled'), same two comparisons, same direction. Recomputes
+  // whenever the selected period or the fetched history changes.
+  const overlappingPayment = useMemo(() => {
+    if (!periodStart || !periodEnd) return null;
+    return employeePayments.find((p) => p.status !== 'cancelled' && p.period_start <= periodEnd && p.period_end >= periodStart) || null;
+  }, [periodStart, periodEnd, employeePayments]);
+
+  // Quiet reference note (only shown when there's no overlap warning to show instead) —
+  // the most recent non-cancelled payment by period_end, so the manager has a natural
+  // anchor point before picking dates at all.
+  const mostRecentPayment = useMemo(() => {
+    return employeePayments
+      .filter((p) => p.status !== 'cancelled')
+      .reduce((latest, p) => (!latest || p.period_end > latest.period_end ? p : latest), null);
+  }, [employeePayments]);
 
   const handleDisburse = async () => {
     if (!payrollCalc) return;
@@ -596,6 +628,17 @@ export default function SalaryManagementScreen() {
               </View>
             </View>
 
+            {overlappingPayment ? (
+              <View style={styles.overlapWarning}>
+                <Ionicons name="warning-outline" size={18} color={Colors.error} />
+                <Text style={styles.overlapWarningText}>
+                  This period overlaps a payment already made: {formatCurrency(overlappingPayment.net_amount)} for {overlappingPayment.period_start} to {overlappingPayment.period_end}. Adjust the dates to avoid double-paying.
+                </Text>
+              </View>
+            ) : mostRecentPayment ? (
+              <Text style={styles.lastPaidNote}>Last paid through: {mostRecentPayment.period_end}</Text>
+            ) : null}
+
             <TouchableOpacity
               style={[styles.saveBtn, { marginTop: Spacing.md, alignSelf: 'stretch', alignItems: 'center' }]}
               onPress={() => handleCalculatePayroll()}
@@ -726,10 +769,10 @@ export default function SalaryManagementScreen() {
                 <TouchableOpacity
                   style={[styles.saveBtn, { marginTop: Spacing.lg, alignSelf: 'stretch', alignItems: 'center', backgroundColor: Colors.success }]}
                   onPress={handleDisburse}
-                  disabled={payrollCalculating || saving}
+                  disabled={payrollCalculating || saving || !!overlappingPayment}
                 >
                   <Text style={styles.saveBtnText}>
-                    {saving ? 'Processing...' : payrollCalculating ? 'Updating...' : 'Disburse Salary'}
+                    {saving ? 'Processing...' : payrollCalculating ? 'Updating...' : overlappingPayment ? 'Adjust dates to disburse' : 'Disburse Salary'}
                   </Text>
                 </TouchableOpacity>
               </View>
@@ -874,4 +917,18 @@ const styles = StyleSheet.create({
   },
   partialDayDate: { fontSize: FontSize.md, fontWeight: '600', color: Colors.text },
   partialDaySub: { fontSize: FontSize.xs, color: Colors.textLight, marginTop: 2 },
+  // Blocking warning shown when the selected period overlaps a payment already made —
+  // same visual weight as AttendanceRoster.js's autoClosedBanner (light tint,
+  // left accent border), but in error red rather than warning amber since this one
+  // actually blocks the primary action rather than just flagging something to review.
+  overlapWarning: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.sm,
+    backgroundColor: Colors.errorLight, borderRadius: BorderRadius.md,
+    borderLeftWidth: 3, borderLeftColor: Colors.error,
+    padding: Spacing.md, marginTop: Spacing.md,
+  },
+  overlapWarningText: { flex: 1, fontSize: FontSize.sm, color: Colors.text },
+  // Quiet, non-alarming reference note — only shown when overlapWarning isn't,
+  // so it never competes visually with the blocking warning above.
+  lastPaidNote: { fontSize: FontSize.xs, color: Colors.textLight, marginTop: Spacing.sm },
 });
