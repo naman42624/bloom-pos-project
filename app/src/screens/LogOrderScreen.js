@@ -40,7 +40,7 @@ function showAlert(title, message, onDismiss) {
   }
 }
 
-export default function LogOrderScreen({ navigation }) {
+export default function LogOrderScreen({ navigation, route }) {
   const { user, activeLocation, settings } = useAuth();
   const timezone = settings?.timezone?.value || 'Asia/Kolkata';
 
@@ -102,6 +102,68 @@ export default function LogOrderScreen({ navigation }) {
   const guardSubmit = useSubmitGuard();
 
   const [vendorName, setVendorName] = useState('');
+
+  const [sourceOrderRequestId, setSourceOrderRequestId] = useState(null);
+  const prefillAppliedTokenRef = useRef(null);
+
+  useEffect(() => {
+    const prefillToken = route.params?.prefillToken;
+    const req = route.params?.prefillRequest;
+    if (!prefillToken || !req || prefillAppliedTokenRef.current === prefillToken) return;
+    prefillAppliedTokenRef.current = prefillToken;
+
+    setSourceOrderRequestId(req.id);
+    setFulfilment(req.order_type === 'delivery' ? 'delivery' : 'pickup');
+    setReceiverName(req.recipient_name || '');
+    setReceiverPhone(req.recipient_phone || '');
+    setDeliveryAddress(req.delivery_address || '');
+    if (req.message) setNote(`Card message: ${req.message}`);
+    if (req.requested_date) setScheduledDate(req.requested_date);
+    if (req.requested_time) setScheduledTime(req.requested_time);
+    if (req.customer_id) {
+      setCustomerId(req.customer_id);
+      setCustomerName(req.customer_name || '');
+      setCustomerPhone(req.customer_phone || '');
+    }
+
+    (async () => {
+      const resolvedItems = [];
+      for (const item of (req.items_json || [])) {
+        if (item.custom) {
+          resolvedItems.push({
+            product_id: null,
+            product_name: item.description,
+            quantity: item.quantity || 1,
+            unit_price: 0,
+          });
+          continue;
+        }
+        try {
+          const res = await api.getProduct(item.product_id);
+          const product = res.data;
+          if (!product || product.is_active === false || product.is_active === 0) {
+            throw new Error('inactive');
+          }
+          resolvedItems.push({
+            product_id: product.id,
+            product_name: product.name,
+            quantity: item.quantity || 1,
+            unit_price: Number(product.selling_price) || 0,
+          });
+        } catch {
+          resolvedItems.push({
+            product_id: null,
+            product_name: `Item no longer available (was product #${item.product_id}) — confirm with customer`,
+            quantity: item.quantity || 1,
+            unit_price: 0,
+          });
+        }
+      }
+      setItems(resolvedItems);
+    })();
+
+    navigation.setParams({ prefillRequest: undefined, prefillToken: undefined });
+  }, [route.params?.prefillToken]);
 
   useEffect(() => {
     // Remember last-used channel per staff member, per staff-ux-checklist §4
@@ -362,6 +424,7 @@ export default function LogOrderScreen({ navigation }) {
         ...(paymentMode !== 'unpaid' ? { payments: [{ method: paymentMethod, amount: parseFloat(paymentAmount) || 0 }] } : {}),
         ...(skipAssignment ? { skip_assignment: true } : {}),
         ...(user?.role === 'owner' || user?.role === 'manager' ? { vendor_name: vendorName || null } : {}),
+        ...(sourceOrderRequestId ? { source_order_request_id: sourceOrderRequestId } : {}),
       };
       const res = await api.createSale(payload);
       saleId = res.data?.id;
