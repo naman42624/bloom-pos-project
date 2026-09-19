@@ -60,7 +60,11 @@ export default function useGeofence({ user, locations, enabled = true }) {
   }, []);
 
   const startGeofencing = useCallback(async () => {
-    if (!enabled || !user || user.role === 'owner' || user.role === 'customer') return;
+    // counter_staff runs on a shared, stationary counter device, not a
+    // personal phone that travels with one person — geofencing it is
+    // meaningless and an "Always Allow" location prompt on a shared device
+    // is a trust/privacy risk, so it's excluded here too.
+    if (!enabled || !user || user.role === 'owner' || user.role === 'customer' || user.role === 'counter_staff') return;
     if (!locations || locations.length === 0) return;
     if (isMonitoring.current) return;
     if (typeof navigator === 'undefined' || !navigator.geolocation?.watchPosition) return;

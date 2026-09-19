@@ -3,7 +3,10 @@ const router = express.Router();
 const { getDb } = require('../config/database');
 const { getDb: getAsyncDb } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
-const { nowLocal } = require('../utils/time');
+const { nowLocal, todayStr } = require('../utils/time');
+const { computeShiftWork, findPartialDays, normalizeSegments, matchSegmentForTime, lateMinutesFor, timestampToMinutes } = require('../utils/shift-work');
+const { hasOpenRegister, REGISTER_CLOSED_MESSAGE } = require('../utils/register-guard');
+const { createNotification } = require('./notifications');
 
 router.use(authenticate);
 
@@ -12,13 +15,13 @@ router.use(authenticate);
 // ═══════════════════════════════════════════════════════════════
 
 // Get shift for a specific user (or all shifts)
-router.get('/shifts', authorize('owner', 'manager', 'employee', 'counter_staff', 'delivery_partner'), async (req, res) => {
+router.get('/shifts', authorize('owner', 'manager', 'employee', 'counter_staff', 'florist_staff', 'delivery_partner'), async (req, res) => {
   try {
     const db = await getAsyncDb();
     const { user_id, location_id } = req.query;
 
     // Employees/DP can only see their own shift
-    if (['employee', 'counter_staff', 'delivery_partner'].includes(req.user.role)) {
+    if (['employee', 'counter_staff', 'florist_staff', 'delivery_partner'].includes(req.user.role)) {
       const shifts = await db.prepare(`
         SELECT es.*, u.name as user_name, u.phone as user_phone, u.role as user_role, l.name as location_name
         FROM employee_shifts es
@@ -71,6 +74,14 @@ router.post('/shifts', authorize('owner', 'manager'), (req, res) => {
   try {
     const db = getDb();
     const { user_id, location_id, shift_start, shift_end, days_of_week, geofence_timeout_minutes, shift_segments } = req.body;
+
+    if (Array.isArray(shift_segments)) {
+      for (const seg of shift_segments) {
+        if (seg?.start && seg?.end && seg.end <= seg.start) {
+          return res.status(400).json({ success: false, message: `A shift segment can't end before it starts (${seg.start}–${seg.end}). Split an overnight shift into two segments on separate days instead.` });
+        }
+      }
+    }
 
     if (!user_id || !location_id) {
       return res.status(400).json({ success: false, message: 'user_id and location_id are required.' });
@@ -155,7 +166,7 @@ router.delete('/shifts/:id', authorize('owner', 'manager'), (req, res) => {
 // ═══════════════════════════════════════════════════════════════
 
 // Get salaries — owner sees all, staff sees own
-router.get('/salaries', authorize('owner', 'manager', 'employee', 'counter_staff', 'delivery_partner'), async (req, res) => {
+router.get('/salaries', authorize('owner', 'manager', 'employee', 'counter_staff', 'florist_staff', 'delivery_partner'), async (req, res) => {
   try {
     const db = await getAsyncDb();
 
@@ -163,11 +174,15 @@ router.get('/salaries', authorize('owner', 'manager', 'employee', 'counter_staff
       // Owner sees all staff salaries
       const salaries = await db.prepare(`
         SELECT es.*, u.name as user_name, u.phone as user_phone, u.role as user_role,
-               up.name as updater_name
+               up.name as updater_name,
+               COALESCE((
+                 SELECT SUM(sa.amount - sa.repaid_amount) FROM salary_advances sa
+                 WHERE sa.user_id = es.user_id AND sa.status = 'approved' AND sa.repaid_amount < sa.amount
+               ), 0) as pending_advance_amount
         FROM employee_salaries es
         JOIN users u ON es.user_id = u.id
         LEFT JOIN users up ON es.updated_by = up.id
-        WHERE u.role IN ('manager', 'employee', 'counter_staff', 'delivery_partner') AND u.is_active = 1
+        WHERE u.role IN ('manager', 'employee', 'counter_staff', 'florist_staff', 'delivery_partner') AND u.is_active = 1
         ORDER BY u.name
       `).all();
 
@@ -175,7 +190,7 @@ router.get('/salaries', authorize('owner', 'manager', 'employee', 'counter_staff
       const usersWithout = await db.prepare(`
         SELECT u.id, u.name, u.phone, u.role
         FROM users u
-        WHERE u.role IN ('manager', 'employee', 'counter_staff', 'delivery_partner') AND u.is_active = 1
+        WHERE u.role IN ('manager', 'employee', 'counter_staff', 'florist_staff', 'delivery_partner') AND u.is_active = 1
         AND u.id NOT IN (SELECT user_id FROM employee_salaries)
         ORDER BY u.name
       `).all();
@@ -279,8 +294,20 @@ router.get('/salaries/:userId/history', authorize('owner'), async (req, res) => 
 // GEOFENCE EVENTS (from client-side geofence monitoring)
 // ═══════════════════════════════════════════════════════════════
 
+// Haversine distance in meters — a local copy rather than importing
+// delivery-tracking.js's own (kilometers, a different unit, and not
+// exported) — matches geofence_radius's stored unit (meters) directly.
+function haversineMeters(lat1, lon1, lat2, lon2) {
+  const R = 6371000;
+  const toRad = (deg) => (deg * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
 // Record geofence enter/exit event
-router.post('/geofence-event', authorize('manager', 'employee', 'counter_staff', 'delivery_partner'), (req, res) => {
+router.post('/geofence-event', authorize('manager', 'employee', 'counter_staff', 'florist_staff', 'delivery_partner'), (req, res) => {
   try {
     const db = getDb();
     const { location_id, event_type, latitude, longitude } = req.body;
@@ -296,43 +323,62 @@ router.post('/geofence-event', authorize('manager', 'employee', 'counter_staff',
 
     const event = db.prepare('SELECT * FROM geofence_events WHERE id = ?').get(result.lastInsertRowid);
 
-    // If enter event → auto clock-in
     if (event_type === 'enter') {
-      const n = new Date();
-      const today = `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}-${String(n.getDate()).padStart(2,'0')}`;
-      const existing = db.prepare('SELECT * FROM attendance WHERE user_id = ? AND date = ?').get(req.user.id, today);
+      // Proximity check — refuse to auto clock in if we can't verify this
+      // claim server-side, rather than trusting the client's coordinates.
+      const location = db.prepare('SELECT latitude, longitude, geofence_radius FROM locations WHERE id = ?').get(location_id);
+      if (!location || location.latitude == null || location.longitude == null || latitude == null || longitude == null) {
+        return res.json({ success: true, data: event, action: 'unverified', message: 'Could not verify your location — use Clock In instead.' });
+      }
+      const distance = haversineMeters(Number(location.latitude), Number(location.longitude), Number(latitude), Number(longitude));
+      if (distance > (location.geofence_radius || 500)) {
+        return res.json({ success: true, data: event, action: 'out_of_range', message: 'You do not appear to be at this location.' });
+      }
 
-      if (!existing || (existing.clock_out && !existing.clock_in)) {
-        // Auto clock-in
+      const today = todayStr();
+      const openSession = db.prepare('SELECT id FROM attendance WHERE user_id = ? AND date = ? AND clock_out IS NULL').get(req.user.id, today);
+
+      if (!openSession) {
         const now = nowLocal();
-        const shift = db.prepare('SELECT * FROM employee_shifts WHERE user_id = ? AND location_id = ? AND is_active = 1').get(req.user.id, location_id);
+        const shift = db.prepare('SELECT shift_start, shift_end, shift_segments FROM employee_shifts WHERE user_id = ? AND location_id = ? AND is_active = 1').get(req.user.id, location_id);
         let late = 0;
-        if (shift) {
-          const tz = require('../utils/time').getTimezone();
-          const clockTime = new Intl.DateTimeFormat('en-GB', { 
-            timeZone: tz, hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false 
-          }).format(new Date(now));
-          late = clockTime > shift.shift_start ? 1 : 0;
+        if (shift && (shift.shift_start || shift.shift_segments)) {
+          const segments = normalizeSegments(shift.shift_start, shift.shift_end, shift.shift_segments);
+          const clockInMinutes = timestampToMinutes(now);
+          const segment = matchSegmentForTime(clockInMinutes, segments);
+          late = lateMinutesFor(clockInMinutes, segment) > 0 ? 1 : 0;
         }
 
-        if (!existing) {
-          db.prepare(`
-            INSERT INTO attendance (user_id, location_id, date, clock_in, clock_in_method, clock_in_latitude, clock_in_longitude, late_arrival, status)
-            VALUES (?, ?, ?, ?, 'auto_geofence', ?, ?, ?, 'present')
-          `).run(req.user.id, location_id, today, now, latitude || null, longitude || null, late);
-        } else {
-          db.prepare(`
-            UPDATE attendance SET clock_in = ?, clock_in_method = 'auto_geofence', clock_in_latitude = ?, clock_in_longitude = ?,
-            clock_out = NULL, clock_out_method = NULL, late_arrival = ?, status = 'present', updated_at = CURRENT_TIMESTAMP WHERE id = ?
-          `).run(now, latitude || null, longitude || null, late, existing.id);
-        }
+        const insertResult = db.prepare(`
+          INSERT INTO attendance (user_id, location_id, date, clock_in, clock_in_method, clock_in_latitude, clock_in_longitude, late_arrival, status)
+          VALUES (?, ?, ?, ?, 'auto_geofence', ?, ?, ?, 'present')
+        `).run(req.user.id, location_id, today, now, latitude || null, longitude || null, late);
+        const attendanceId = insertResult.lastInsertRowid;
 
         db.prepare('UPDATE geofence_events SET processed = 1, auto_action = ? WHERE id = ?').run('clock_in', event.id);
-        return res.json({ success: true, data: event, action: 'auto_clock_in' });
+
+        const locationRow = db.prepare('SELECT name FROM locations WHERE id = ?').get(location_id);
+        const friendlyTime = new Intl.DateTimeFormat('en-IN', {
+          timeZone: require('../utils/time').getTimezone(), hour: 'numeric', minute: '2-digit', hour12: true,
+        }).format(new Date(now));
+        createNotification({
+          userIds: req.user.id,
+          title: 'Clocked in automatically',
+          body: `${locationRow ? locationRow.name : 'Shop'}, ${friendlyTime} — not working? Tap to undo.`,
+          type: 'attendance_auto_clockin',
+          data: { screen: 'Attendance', attendanceId, action: 'undo_auto_clockin' },
+        }).catch(() => {});
+
+        // attendance_id is returned EXPLICITLY — `data` above is the
+        // geofence_events row, not the attendance row, and their id ranges
+        // can collide (confirmed on the live dev DB: geofence_events was
+        // empty, so its sequence starts at 1, squarely inside real
+        // attendance's id range). Any caller needing the attendance row
+        // must use this field, never `data.id`.
+        return res.json({ success: true, data: event, attendance_id: attendanceId, action: 'auto_clock_in' });
       }
     }
 
-    // If exit event → mark for potential auto clock-out (handled by server cron)
     if (event_type === 'exit') {
       db.prepare('UPDATE geofence_events SET processed = 0 WHERE id = ?').run(event.id);
       return res.json({ success: true, data: event, action: 'exit_recorded' });
@@ -387,9 +433,43 @@ router.post('/payroll/calculate', authorize('owner'), (req, res) => {
     }
     const uniqueAttendance = Array.from(uniqueByDate.values());
     const daysWorked = uniqueAttendance.filter(a => a.status === 'present' || a.status === 'half_day').length;
-    const halfDays = uniqueAttendance.filter(a => a.status === 'half_day').length;
+    // NOTE: attendance.status is never actually written as 'half_day' by any
+    // clock-in path (every clock-in hardcodes status: 'present') — this
+    // filter has always silently evaluated to 0. Replaced below by
+    // confirmedHalfDaysCount, computed from real split-shift detection
+    // (findPartialDays) plus explicit caller confirmation, not this dead
+    // column read. Left here (unused) rather than deleted so the historical
+    // intent — and the fact this was always 0 — stays visible in a diff.
+    const halfDays = uniqueAttendance.filter(a => a.status === 'half_day').length; // eslint-disable-line no-unused-vars
     const lateDays = uniqueAttendance.filter(a => a.late_arrival === 1).length;
     const totalHours = attendance.reduce((sum, a) => sum + (a.effective_hours || 0), 0);
+    const shift = db.prepare(
+      'SELECT shift_start, shift_end, shift_segments FROM employee_shifts WHERE user_id = ? AND is_active = 1 ORDER BY updated_at DESC, id DESC LIMIT 1'
+    ).get(user_id);
+    // includeInProgress explicitly OMITTED (defaults to false) — this is a
+    // money-computation path. An in-progress OT figure changes on every
+    // recomputation, which is fine for a live display but wrong to bake
+    // into a disbursement amount; only a session's real, final clock_out
+    // should ever count toward payroll.
+    const shiftWork = computeShiftWork(attendance, shift || null, { includeInProgress: false });
+    // Detection only — every candidate partial day, regardless of whether
+    // the caller has confirmed any of them yet. Computed from the SAME
+    // `attendance` array already fetched above (has .date and .clock_in on
+    // every row).
+    const partialDays = findPartialDays(attendance, shift || null);
+    // A plain calculate call with no confirmed_half_day_dates must produce
+    // EXACTLY today's output — nothing has been confirmed yet, so this
+    // defaults to [] / 0 and every downstream formula behaves unchanged.
+    // Only a date genuinely present in partialDays counts — a stale or
+    // manipulated client-supplied date can never inflate the half-day count
+    // beyond what was actually detected. Deduped (Set) so the same valid
+    // date repeated in the request body can't double-count its deduction.
+    const confirmedHalfDayDates = [...new Set(
+      Array.isArray(req.body.confirmed_half_day_dates)
+        ? req.body.confirmed_half_day_dates.filter((d) => partialDays.some((p) => p.date === d))
+        : []
+    )];
+    const confirmedHalfDaysCount = confirmedHalfDayDates.length;
     const leaveDays = uniqueAttendance.filter(a => a.status === 'on_leave').length;
     const absentDays = Math.max(0, daysInPeriod - daysWorked - leaveDays);
 
@@ -398,16 +478,21 @@ router.post('/payroll/calculate', authorize('owner'), (req, res) => {
     if (salary.salary_type === 'monthly') {
       basePay = salary.monthly_salary;
     } else if (salary.salary_type === 'daily') {
-      basePay = salary.monthly_salary * (daysWorked - (halfDays * 0.5));
+      basePay = salary.monthly_salary * (daysWorked - (confirmedHalfDaysCount * 0.5));
     } else if (salary.salary_type === 'hourly') {
       basePay = salary.monthly_salary * totalHours;
     }
 
-    // Calculate deductions for absences (monthly salary)
+    // Calculate deductions for absences (monthly salary), plus a half-day
+    // deduction for any confirmed partial day — additive alongside the
+    // existing absence deduction, not a replacement for it.
     let deductions = 0;
-    if (salary.salary_type === 'monthly' && absentDays > leaveDays) {
+    if (salary.salary_type === 'monthly') {
       const perDayRate = salary.monthly_salary / 30;
-      deductions = perDayRate * (absentDays - leaveDays);
+      if (absentDays > leaveDays) {
+        deductions += perDayRate * (absentDays - leaveDays);
+      }
+      deductions += perDayRate * 0.5 * confirmedHalfDaysCount;
     }
 
     // Get pending advances to deduct
@@ -427,12 +512,18 @@ router.post('/payroll/calculate', authorize('owner'), (req, res) => {
         period: { start: period_start, end: period_end, days: daysInPeriod },
         attendance_summary: {
           days_worked: daysWorked,
-          half_days: halfDays,
+          half_days: confirmedHalfDaysCount,
           absent_days: absentDays,
           late_days: lateDays,
           leave_days: leaveDays,
           total_hours: Math.round(totalHours * 100) / 100,
+          total_late_minutes: shiftWork.totalLateMinutes,
+          overtime_minutes: shiftWork.totalOvertimeMinutes,
         },
+        // Full list of detected partial-day candidates, regardless of
+        // confirmation state — what a future frontend renders as a
+        // checklist for the caller to confirm/reject before disbursing.
+        partial_days: partialDays,
         calculation: {
           base_pay: Math.round(basePay * 100) / 100,
           deductions: Math.round(deductions * 100) / 100,
@@ -455,42 +546,144 @@ router.post('/payroll/disburse', authorize('owner'), (req, res) => {
       user_id, period_start, period_end,
       base_salary, days_worked, days_in_period, hours_worked,
       late_days, absent_days, leaves_taken,
-      deductions, advances_deducted, bonus, net_amount,
+      deductions, bonus, net_amount,
       payment_method, payment_reference, notes,
     } = req.body;
+    // advances_deducted is read separately below, after being capped —
+    // never trust the client-computed value directly for a write that
+    // marks real money as repaid.
+    let advancesDeducted = Number(req.body.advances_deducted) || 0;
 
     if (!user_id || !period_start || !period_end || net_amount === undefined) {
       return res.status(400).json({ success: false, message: 'Missing required fields.' });
     }
 
-    // Check for duplicate payment for same period
+    // Overlap detection, not exact match: period_start/period_end are
+    // free-text inputs on the frontend (SalaryManagementScreen — no
+    // pre-fill, no persistence between modal opens), so a caller can
+    // re-disburse the same employee's pay by entering a slightly
+    // different (or genuinely overlapping-but-not-identical) period.
+    // Standard range-overlap test: [A_start, A_end] and [B_start, B_end]
+    // overlap iff A_start <= B_end AND A_end >= B_start.
     const existing = db.prepare(
-      'SELECT id FROM salary_payments WHERE user_id = ? AND period_start = ? AND period_end = ? AND status != ?'
-    ).get(user_id, period_start, period_end, 'cancelled');
+      'SELECT id, period_start, period_end FROM salary_payments WHERE user_id = ? AND status != ? AND period_start <= ? AND period_end >= ?'
+    ).get(user_id, 'cancelled', period_end, period_start);
     if (existing) {
-      return res.status(400).json({ success: false, message: 'Payment already exists for this period.' });
+      return res.status(400).json({
+        success: false,
+        message: `This period overlaps an already-recorded payment (#${existing.id}, ${existing.period_start} to ${existing.period_end}) — check Payroll History, or adjust the dates to avoid double-paying the same days.`,
+      });
     }
 
+    // Cap the advance deduction at what this payment can actually absorb.
+    //
+    // The basis is deliberately NOT net_amount: the client sends net_amount
+    // with the advance ALREADY subtracted (SalaryManagementScreen:
+    // `finalNet = calculation.net_amount + bonus - advDeduct`), so capping
+    // against it caps against the residual cash left AFTER the deduction.
+    // Payable 10,000 with a 6,000 advance arrives as net_amount=4000 /
+    // advances_deducted=6000, and min(6000, 4000) would record only 4,000
+    // as repaid while 6,000 of real cash was withheld — the missing 2,000
+    // stays 'approved' and gets deducted a second time next period.
+    //
+    // The right basis is the gross this payment is worth before the advance
+    // comes off. Mirrors the client's own arithmetic exactly: the
+    // deductions clamp sits INSIDE (matching POST /payroll/calculate's
+    // `net_amount = max(0, base_pay - deductions)`), then bonus is added on
+    // top. base_salary/deductions/bonus are client-supplied — as they
+    // already were for the row this route writes — so a caller that omits
+    // base_salary gets payable 0 and records nothing as repaid, which is
+    // the safe direction (never credit a repayment that didn't happen).
+    const payable = Math.max(
+      0,
+      Math.max(0, (Number(base_salary) || 0) - (Number(deductions) || 0)) + (Number(bonus) || 0)
+    );
+    advancesDeducted = Math.min(advancesDeducted, payable);
+
+    const method = payment_method || 'cash';
+
+    // The disbursement also writes a linked expenses row (below) so it
+    // shows up in financial reports and register reconciliation. That
+    // write needs a real location only when cash is physically involved —
+    // payroll itself has no location dimension (employee_salaries is
+    // user-scoped), and requiring one for a bank/UPI transfer where no
+    // physical drawer is touched would block a disbursement for no reason
+    // tied to what's actually happening.
+    let locationId = null;
+    if (method === 'cash') {
+      const employeeLocation = db.prepare(
+        'SELECT location_id FROM user_locations WHERE user_id = ? ORDER BY is_primary DESC, id ASC LIMIT 1'
+      ).get(user_id);
+      locationId = employeeLocation ? employeeLocation.location_id : null;
+      if (!locationId) {
+        return res.status(400).json({ success: false, message: "This employee isn't assigned to a location yet — assign one before disbursing salary in cash." });
+      }
+      // Cash disbursements move real money out of the drawer, same as any
+      // other cash expense — hard-blocked with no open register instead of
+      // silently recording a payment no session's expected_cash accounts
+      // for. Worded for what's actually happening here (paying OUT), not
+      // the generic "taking a payment" wording other cash routes reuse.
+      if (!hasOpenRegister(db, locationId)) {
+        return res.status(400).json({ success: false, message: `The cash drawer isn't open at this employee's location — open the register first, or choose UPI/Bank if you're paying this by transfer.` });
+      }
+    } else {
+      // Still attribute the expense to SOME location for reporting, even
+      // without a register concern — best-effort, non-blocking.
+      const employeeLocation = db.prepare(
+        'SELECT location_id FROM user_locations WHERE user_id = ? ORDER BY is_primary DESC, id ASC LIMIT 1'
+      ).get(user_id);
+      locationId = employeeLocation ? employeeLocation.location_id : null;
+    }
+
+    const openRegister = (method === 'cash' && locationId)
+      ? db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1').get(locationId)
+      : null;
+
     const disburseTx = db.transaction(() => {
-      const result = db.prepare(`
+      let expenseId = null;
+      // Write the expense FIRST (see this task's header note on why —
+      // db.transaction() here does not provide real atomicity). Only when
+      // a location is actually known — a disbursement can still proceed
+      // with no expense-report linkage rather than blocking entirely on an
+      // employee with no location assignment at all when paying by
+      // transfer.
+      if (locationId) {
+        const payeeUser = db.prepare('SELECT name FROM users WHERE id = ?').get(user_id);
+        const expenseResult = db.prepare(`
+          INSERT INTO expenses (location_id, category, amount, description, payment_method, expense_date, created_by, employee_id, register_id)
+          VALUES (?, 'salary', ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          locationId, net_amount,
+          `Salary payment — ${payeeUser ? payeeUser.name : 'employee'} (${period_start} to ${period_end})`,
+          method, todayStr(), req.user.id, user_id,
+          openRegister ? openRegister.id : null
+        );
+        expenseId = expenseResult.lastInsertRowid;
+
+        if (method === 'cash' && openRegister && Number(net_amount) > 0) {
+          db.prepare('UPDATE cash_registers SET expected_cash = expected_cash - ? WHERE id = ?').run(net_amount, openRegister.id);
+        }
+      }
+
+      const paymentResult = db.prepare(`
         INSERT INTO salary_payments (
           user_id, period_start, period_end, base_salary, days_worked, days_in_period,
           hours_worked, late_days, absent_days, leaves_taken, deductions,
           advances_deducted, bonus, net_amount, payment_method, payment_reference,
-          status, paid_at, paid_by, notes
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'paid', CURRENT_TIMESTAMP, ?, ?)
+          status, paid_at, paid_by, notes, expense_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'paid', CURRENT_TIMESTAMP, ?, ?, ?)
       `).run(
         user_id, period_start, period_end,
         base_salary || 0, days_worked || 0, days_in_period || 0,
         hours_worked || 0, late_days || 0, absent_days || 0, leaves_taken || 0,
-        deductions || 0, advances_deducted || 0, bonus || 0, net_amount,
-        payment_method || 'cash', payment_reference || '',
-        req.user.id, notes || ''
+        deductions || 0, advancesDeducted, bonus || 0, net_amount,
+        method, payment_reference || '',
+        req.user.id, notes || '', expenseId
       );
+      const paymentId = paymentResult.lastInsertRowid;
 
-      // Deduct advances if specified
-      if (advances_deducted && advances_deducted > 0) {
-        let remaining = advances_deducted;
+      if (advancesDeducted > 0) {
+        let remaining = advancesDeducted;
         const advances = db.prepare(
           'SELECT * FROM salary_advances WHERE user_id = ? AND status = ? AND repaid_amount < amount ORDER BY date'
         ).all(user_id, 'approved');
@@ -504,7 +697,7 @@ router.post('/payroll/disburse', authorize('owner'), (req, res) => {
         }
       }
 
-      return result.lastInsertRowid;
+      return paymentId;
     });
 
     const paymentId = disburseTx();
@@ -524,7 +717,7 @@ router.post('/payroll/disburse', authorize('owner'), (req, res) => {
 });
 
 // Get payment history
-router.get('/payroll/history', authorize('owner', 'manager', 'employee', 'counter_staff', 'delivery_partner'), async (req, res) => {
+router.get('/payroll/history', authorize('owner', 'manager', 'employee', 'counter_staff', 'florist_staff', 'delivery_partner'), async (req, res) => {
   try {
     const db = await getAsyncDb();
     const { user_id, page = 1, limit = 20 } = req.query;

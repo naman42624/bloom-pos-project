@@ -1056,6 +1056,14 @@ class ApiService {
     return this.request('/attendance/today');
   }
 
+  undoAutoClockIn(attendanceId) {
+    return this.request(`/attendance/${attendanceId}/undo-auto-clockin`, { method: 'POST' });
+  }
+
+  reportMissedClockIn(data) {
+    return this.request('/attendance/missed-clock-in', { method: 'POST', body: JSON.stringify(data) });
+  }
+
   getAttendanceHistory(params = {}) {
     const q = new URLSearchParams(params).toString();
     return this.request(`/attendance${q ? `?${q}` : ''}`);

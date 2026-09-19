@@ -102,6 +102,24 @@ export default function usePushNotifications(isExpoGo = false, navigationRef) {
                 screen: 'CustomerOrderDetail',
                 params: { saleId: data.saleId },
               });
+            } else if (data.screen === 'Attendance') {
+              // Top-level tab for staff roles — the banner/undo affordance
+              // itself lives directly on AttendanceScreen (Step 3 above),
+              // so landing on the tab is enough; no params needed. Owner/
+              // manager don't have this tab (they reach AttendanceScreen
+              // via More → My Attendance, Task 19) and won't receive this
+              // notification type in the first place — auto-clock-in only
+              // applies to roles that actually clock in.
+              navigationRef.current.navigate('Attendance');
+            } else if (data.screen === 'AttendanceHub') {
+              // Missed-clock-in reports, which notifyByRole sends to
+              // owner/manager only. AttendanceHub lives inside MoreStack,
+              // so it's reached through the 'More' tab — the same nested
+              // navigate DashboardScreen's own "not clocked in" banner
+              // already uses, keeping one destination for this. Distinct
+              // from the 'Attendance' branch above, which is the staff
+              // member's OWN tab for the geofence auto-clock-in undo.
+              navigationRef.current.navigate('More', { screen: 'AttendanceHub' });
             }
           } catch (err) {
             console.log('Navigation error:', err.message);

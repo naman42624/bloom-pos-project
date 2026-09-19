@@ -111,7 +111,7 @@ In psql:
 
 ```sql
 CREATE DATABASE bloomcart;
-CREATE USER bloomcart WITH ENCRYPTED PASSWORD 'REPLACE_WITH_STRONG_PASSWORD';
+CREATE USER bloomcart WITH ENCRYPTED PASSWORD 'bloomcartFlowerPoint';
 GRANT ALL PRIVILEGES ON DATABASE bloomcart TO bloomcart;
 ALTER DATABASE bloomcart OWNER TO bloomcart;
 \c bloomcart

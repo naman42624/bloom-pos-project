@@ -278,6 +278,11 @@ export default function DashboardScreen({ navigation }) {
   // to already be in the open-orders array.
   const [doneTodayCount, setDoneTodayCount] = useState(0);
   const [staffPulse, setStaffPulse] = useState([]);
+  // Count for the owner/manager "N staff not clocked in" banner — set from
+  // the SAME staffRes.data.absent array used to build staffPulse below, not
+  // a second fetch (Task 20; see the setNotClockedInCount call near the
+  // `const absent = ...` line).
+  const [notClockedInCount, setNotClockedInCount] = useState(0);
   const [registers, setRegisters] = useState([]);
   const [reportKPIs, setReportKPIs] = useState(null);
 
@@ -376,7 +381,7 @@ export default function DashboardScreen({ navigation }) {
       // ─── Counter Staff: sales-focused fetch (counts/status only —
       // no revenue totals or cash amounts, per role scope) ──────
       if (isCounterStaff) {
-        const [summaryRes, registerRes, pendingRes, confirmedRes, preparingRes, readyRes, tasksRes, doneTodayRes] = await Promise.all([
+        const [summaryRes, registerRes, pendingRes, confirmedRes, preparingRes, readyRes, tasksRes, doneTodayRes, staffTodayRes] = await Promise.all([
           api.getTodaySummary(activeLocation?.id).catch(() => ({ data: { total_sales: 0 } })),
           activeLocation?.id ? api.getRegisterStatus(activeLocation.id).catch(() => ({ data: null })) : Promise.resolve({ data: null }),
           // Fetched wider than the 5 we display so the today/future split
@@ -420,6 +425,11 @@ export default function DashboardScreen({ navigation }) {
           // accurate `total` regardless of `limit`.
           api.getSales({ status: 'completed', location_id: activeLocation?.id, filter_date: getShopTodayStr(DEFAULT_TZ), limit: 1 })
             .catch(() => ({ data: { total: 0 } })),
+          // "N staff not clocked in" dashboard banner (counter_staff just
+          // gained backend access to this endpoint in c268b6f — no prior
+          // fetch here to reuse). Same defensive catch shape as every other
+          // call in this array.
+          api.getStaffToday({ location_id: activeLocation?.id }).catch(() => ({ data: { absent: [] } })),
         ]);
         setCounterStats({
           salesCount: Number(summaryRes?.data?.total_sales || 0),
@@ -442,6 +452,7 @@ export default function DashboardScreen({ navigation }) {
         setCounterPendingOrders([...pendingList, ...confirmedList, ...preparingList, ...readyList]);
         setTaskRows(Array.isArray(tasksRes?.data) ? tasksRes.data : []);
         setDoneTodayCount(Number(doneTodayRes?.data?.total || 0));
+        setNotClockedInCount((staffTodayRes?.data?.absent || []).length);
         setLoading(false);
         setRefreshing(false);
         return;
@@ -518,6 +529,7 @@ export default function DashboardScreen({ navigation }) {
 
         const present = staffRes?.data?.present || [];
         const absent = staffRes?.data?.absent || [];
+        setNotClockedInCount(absent.length);
 
         const normalizedPresentRaw = present.map((s) => {
           let pulse = 'active';
@@ -1578,6 +1590,33 @@ export default function DashboardScreen({ navigation }) {
               </TouchableOpacity>
             )}
 
+            {/* Team Attendance banner — counter_staff's own (and ONLY) entry
+                point into the same live roster owner/manager use, via their
+                own Attendance tab stack (no "More" tab to route through
+                here, unlike the owner/manager version above). Always shown,
+                not gated on notClockedInCount > 0: the roster's restored
+                Clock In button (1a) exists specifically to start someone's
+                SECOND shift segment, which isn't a "not clocked in" case at
+                all — on a day where everyone already clocked in once, a
+                urgency-gated banner would leave counter_staff with zero way
+                to reach the roster for that (fix-round-1 review finding).
+                Wording/icon still flag real urgency when there is any. */}
+            {isCounterStaff && (
+              <TouchableOpacity
+                style={styles.codBannerCompact}
+                onPress={() => navigation.navigate('Attendance', { screen: 'TeamAttendance' })}
+              >
+                <Ionicons
+                  name={notClockedInCount > 0 ? 'alert-circle-outline' : 'people-outline'}
+                  size={16}
+                  color={notClockedInCount > 0 ? Colors.warning : Colors.textLight}
+                />
+                <Text style={styles.codBannerCompactText}>
+                  {notClockedInCount > 0 ? `${notClockedInCount} staff not clocked in` : 'Team Attendance'}
+                </Text>
+              </TouchableOpacity>
+            )}
+
             <View style={styles.sectionHeader}>
               <Text style={styles.sectionTitle}>Orders Needing Attention</Text>
               <TouchableOpacity onPress={() => navigation.navigate('EmployeeOrders', { screen: 'OrdersInbox' })}>
@@ -1959,6 +1998,25 @@ export default function DashboardScreen({ navigation }) {
                   <Text style={styles.sectionSubtitle}>Tap an order to see details, or use its button to move it forward</Text>
                 </View>
               </View>
+
+              {/* "N staff not clocked in" banner (Task 20) — reuses the
+                  staffRes.data.absent array already fetched above for
+                  staffPulse, no second api.getStaffToday() call. Routes to
+                  Task 19's AttendanceHub (Today tab, the one consolidated
+                  roster) rather than the older standalone StaffAttendance
+                  screen, so there's only one "who hasn't clocked in" surface
+                  to check, not two competing ones. */}
+              {isOwnerOrManager && notClockedInCount > 0 && (
+                <TouchableOpacity
+                  style={styles.codBannerCompact}
+                  onPress={() => navigation.navigate('More', { screen: 'AttendanceHub' })}
+                >
+                  <Ionicons name="alert-circle-outline" size={16} color={Colors.warning} />
+                  <Text style={styles.codBannerCompactText}>
+                    {notClockedInCount} staff not clocked in
+                  </Text>
+                </TouchableOpacity>
+              )}
 
               <View style={{ gap: 12 }}>
                 <OrderKanbanBoard

@@ -76,6 +76,35 @@ function ensureColumn(tableName, columnName, definitionSql) {
   }
 }
 
+// Widen a column to NUMERIC(precision, scale) ONLY when it isn't already
+// that exact type. Guarded the same way the refunds.created_at type change
+// below is (an information_schema read first), rather than by a bare
+// try/catch: ensureCompatibilityColumns() runs on EVERY boot, and an
+// unconditional `ALTER TABLE ... TYPE` takes an ACCESS EXCLUSIVE lock and
+// re-does the work each restart even when the column already has the right
+// type. Every other schema change in this file is idempotent-by-check
+// (ensureColumn -> hasColumn); this keeps type changes consistent with that.
+// A missing column is skipped rather than ALTERed into an error, and the
+// whole thing stays non-fatal so a boot never dies on a migration.
+function ensureNumericPrecision(tableName, columnName, precision, scale) {
+  try {
+    const cols = runSelect(`
+      SELECT data_type, numeric_precision, numeric_scale
+      FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND table_name = '${tableName}'
+        AND column_name = '${columnName}'
+    `);
+    if (cols.length === 0) return; // column not present — nothing to widen
+    const col = cols[0];
+    const alreadyCorrect = col.data_type === 'numeric'
+      && Number(col.numeric_precision) === precision
+      && Number(col.numeric_scale) === scale;
+    if (alreadyCorrect) return;
+    runPsql(`ALTER TABLE ${tableName} ALTER COLUMN ${columnName} TYPE NUMERIC(${precision},${scale})`);
+  } catch (_) { /* non-fatal — never block a boot on a migration */ }
+}
+
 function renameColumn(tableName, oldName, newName) {
   if (hasColumn(tableName, oldName) && !hasColumn(tableName, newName)) {
     runPsql(`ALTER TABLE ${tableName} RENAME COLUMN ${oldName} TO ${newName}`);
@@ -708,8 +737,44 @@ function ensureCompatibilityColumns() {
 
   ensureColumn('settings', 'updated_by', 'INTEGER REFERENCES users(id) ON DELETE SET NULL');
   ensureColumn('expenses', 'is_return', 'INTEGER DEFAULT 0');
+  // Links a salary-category expense to the actual employee it was paid to —
+  // previously pure free text with no structured/queryable link at all.
+  // See docs/superpowers/specs/2026-09-16-attendance-shift-payroll-redesign-design.md §4/§9.
+  ensureColumn('expenses', 'employee_id', 'INTEGER REFERENCES users(id) ON DELETE SET NULL');
+  // Links a cash expense to the register session it was paid out of. This
+  // column has been read/written by server/routes/expenses.js for a long
+  // time (it even carries an explicit "migration pending" fallback for its
+  // absence) and is now named by the salary-disburse and advance-approve
+  // INSERTs too — but it was never actually codified here, so it only ever
+  // existed wherever someone had ALTERed it in by hand. Production's schema
+  // comes solely from this patch list on boot: exactly the dev/prod drift
+  // that made every refund 500 in production for six months (see CLAUDE.md,
+  // "Known structural debt"). Additive and idempotent, same as every other
+  // ensureColumn here.
+  ensureColumn('expenses', 'register_id', 'INTEGER REFERENCES cash_registers(id) ON DELETE SET NULL');
   ensureColumn('locations', 'gst_number', 'VARCHAR(50)');
   ensureColumn('locations', 'geofence_radius', 'INTEGER DEFAULT 500');
+  // Geofencing has never actually fired in this shop (confirmed: zero rows
+  // in geofence_events, ever) — root cause is that NUMERIC(10,2) gives a
+  // ~1.1km grid at this latitude, wider than the 50m geofence radius it's
+  // meant to feed. Widening to NUMERIC(9,6) is lossless for anything
+  // already stored (every 2-decimal value fits exactly); it only allows
+  // more precise values going forward. Explicitly approved this session —
+  // a type change, not additive, per db-migration-safety. Existing values
+  // must still be RE-ENTERED with real precision afterward; this migration
+  // only changes what the column can hold, not the accuracy of what's in
+  // it today.
+  // Guarded per-column (see ensureNumericPrecision) so these run once and
+  // are a no-op on every boot afterward, instead of taking eight ACCESS
+  // EXCLUSIVE locks per restart.
+  ensureNumericPrecision('locations', 'latitude', 9, 6);
+  ensureNumericPrecision('locations', 'longitude', 9, 6);
+  ensureNumericPrecision('attendance', 'clock_in_latitude', 9, 6);
+  ensureNumericPrecision('attendance', 'clock_in_longitude', 9, 6);
+  ensureNumericPrecision('attendance', 'clock_out_latitude', 9, 6);
+  ensureNumericPrecision('attendance', 'clock_out_longitude', 9, 6);
+  ensureNumericPrecision('geofence_events', 'latitude', 9, 6);
+  ensureNumericPrecision('geofence_events', 'longitude', 9, 6);
   ensureColumn('user_locations', 'is_primary', 'INTEGER DEFAULT 0');
   ensureColumn('production_tasks', 'picked_by', 'INTEGER REFERENCES users(id) ON DELETE SET NULL');
   ensureColumn('materials', 'min_stock_alert', 'INTEGER DEFAULT 10');
@@ -837,6 +902,23 @@ function ensureCompatibilityColumns() {
 
   ensureColumn('salary_advances', 'repaid_amount', 'DECIMAL(10,2) DEFAULT 0');
   ensureColumn('salary_advances', 'date', 'DATE DEFAULT CURRENT_DATE');
+
+  // Traceability between a payroll disbursement (or advance approval,
+  // Task 10) and the expenses/register reconciliation row it now also
+  // writes.
+  ensureColumn('salary_payments', 'expense_id', 'INTEGER REFERENCES expenses(id) ON DELETE SET NULL');
+
+  // salary_advances.status CHECK constraint (from schema.sql) doesn't allow
+  // 'repaid', but staff-management.js's payroll auto-deduction and
+  // attendance.js's PUT /attendance/salary-advance/:id/repay both write
+  // exactly that value. Confirmed absent already on the local dev DB
+  // (hand-patched at some point, never codified here) — same
+  // "hand-patched dev, prod never got it" pattern as users_role_check
+  // elsewhere in this file. Widening only.
+  try { runPsql('ALTER TABLE salary_advances DROP CONSTRAINT IF EXISTS salary_advances_status_check'); } catch (_) {}
+  try {
+    runPsql("ALTER TABLE salary_advances ADD CONSTRAINT salary_advances_status_check CHECK(status IN ('pending', 'approved', 'paid', 'rejected', 'repaid'))");
+  } catch (_) {}
 
   ensureColumn('product_materials', 'notes', 'TEXT');
   ensureColumn('product_materials', 'created_at', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP');

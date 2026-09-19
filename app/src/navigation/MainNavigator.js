@@ -87,6 +87,8 @@ import CustomerShopScreen from '../screens/CustomerShopScreen';
 
 // Phase 8 — Attendance
 import AttendanceScreen from '../screens/AttendanceScreen';
+import AttendanceHubScreen from '../screens/AttendanceHubScreen';
+import TeamAttendanceScreen from '../screens/TeamAttendanceScreen';
 
 // Phase 9 — Reports
 import ReportsHubScreen from '../screens/ReportsHubScreen';
@@ -492,6 +494,7 @@ function MoreStack() {
       <Stack.Screen name="RecurringOrderDetail" component={AddRecurringOrderScreen} options={{ title: 'Edit Recurring Order' }} />
       {/* Attendance sub-screens */}
       <Stack.Screen name="Attendance" component={AttendanceScreen} options={{ title: 'Attendance' }} />
+      <Stack.Screen name="AttendanceHub" component={AttendanceHubScreen} options={{ title: 'Attendance & Payroll' }} />
       <Stack.Screen name="StaffAttendance" component={StaffAttendanceScreen} options={{ title: 'Staff Today' }} />
       <Stack.Screen name="AttendanceReport" component={AttendanceReportScreen} options={{ title: 'Attendance Report' }} />
       <Stack.Screen name="SalaryAdvances" component={SalaryAdvancesScreen} options={{ title: 'Salary Advances' }} />
@@ -515,6 +518,7 @@ function AttendanceStack() {
   return (
     <Stack.Navigator screenOptions={stackScreenOptions}>
       <Stack.Screen name="AttendanceHome" component={AttendanceScreen} options={{ title: 'Attendance' }} />
+      <Stack.Screen name="TeamAttendance" component={TeamAttendanceScreen} options={{ title: 'Team Attendance' }} />
       <Stack.Screen name="StaffAttendance" component={StaffAttendanceScreen} options={{ title: 'Staff Today' }} />
       <Stack.Screen name="AttendanceReport" component={AttendanceReportScreen} options={{ title: 'Attendance Report' }} />
       <Stack.Screen name="SalaryAdvances" component={SalaryAdvancesScreen} options={{ title: 'Salary Advances' }} />
@@ -584,11 +588,14 @@ export default function MainNavigator() {
   const isExpoGo = Constants.appOwnership === 'expo';
   const insets = useSafeAreaInsets();
 
-  // Auto geofence for staff (not owner/customer)
+  // Auto geofence for staff (not owner/customer). counter_staff excluded too:
+  // that role is a shared, stationary counter device, not a personal phone
+  // that travels with one person — geofencing it is meaningless and an
+  // "Always Allow" location prompt on a shared device is a trust/privacy risk.
   useGeofence({
     user,
     locations: locations || [],
-    enabled: !isExpoGo && !!user && user.role !== 'owner' && user.role !== 'customer',
+    enabled: !isExpoGo && !!user && user.role !== 'owner' && user.role !== 'customer' && user.role !== 'counter_staff',
   });
 
   // Auto delivery tracking for delivery partners

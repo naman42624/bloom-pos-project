@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useMemo } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
   RefreshControl, Alert, Modal, TextInput, ActivityIndicator, Platform, KeyboardAvoidingView,
@@ -9,6 +9,7 @@ import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import { formatDate } from '../utils/datetime';
+import DateTimePickerModal from '../components/DateTimePickerModal';
 
 const SALARY_TYPES = [
   { label: 'Monthly', value: 'monthly' },
@@ -20,6 +21,27 @@ function formatCurrency(val) {
   if (!val && val !== 0) return '—';
   return '₹' + Number(val).toLocaleString('en-IN');
 }
+
+// 'YYYY-MM-DD' -> Date (local midnight). Returns null for empty/invalid input
+// so the picker opens on "now" instead of a bogus date — no equivalent helper
+// existed elsewhere in app/src/utils to reuse (ShiftManagementScreen's
+// hhmmToDate/dateToHHMM are 'HH:MM'-only, not applicable here).
+const ymdToDate = (ymd) => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(ymd || '');
+  if (!m) return null;
+  const d = new Date(parseInt(m[1], 10), parseInt(m[2], 10) - 1, parseInt(m[3], 10));
+  return isNaN(d.getTime()) ? null : d;
+};
+
+// Date -> 'YYYY-MM-DD' (zero-padded). Matches the string shape periodStart/
+// periodEnd's state, handleCalculatePayroll, handleDisburse, and the backend
+// all expect unchanged.
+const dateToYMD = (date) => {
+  const yyyy = date.getFullYear();
+  const mm = String(date.getMonth() + 1).padStart(2, '0');
+  const dd = String(date.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+};
 
 export default function SalaryManagementScreen() {
   const { user } = useAuth();
@@ -47,11 +69,26 @@ export default function SalaryManagementScreen() {
   const [payrollUser, setPayrollUser] = useState(null);
   const [periodStart, setPeriodStart] = useState('');
   const [periodEnd, setPeriodEnd] = useState('');
+  // Which period field the shared DateTimePickerModal is currently editing, and the
+  // Date it should open showing. pickerValue is set ONCE (in openPeriodPicker) rather
+  // than recomputed inline on every render — see ShiftManagementScreen.js's identical
+  // pattern/comment: DateTimePickerModal resets its local spinner state whenever the
+  // `value` prop's object identity changes, so a fresh Date() on every render would
+  // silently discard an in-progress selection on an unrelated parent re-render.
+  const [periodPickerTarget, setPeriodPickerTarget] = useState(null); // null | 'periodStart' | 'periodEnd'
+  const [periodPickerValue, setPeriodPickerValue] = useState(new Date());
   const [paymentMethod, setPaymentMethod] = useState('cash');
   const [paymentRef, setPaymentRef] = useState('');
   const [bonusAmount, setBonusAmount] = useState('');
   const [payrollHistory, setPayrollHistory] = useState([]);
   const [payrollHistoryLoading, setPayrollHistoryLoading] = useState(false);
+  const [confirmedHalfDays, setConfirmedHalfDays] = useState([]); // array of 'YYYY-MM-DD' date strings
+  // This employee's own payment history (not the global payrollHistory list above),
+  // fetched fresh each time the payroll modal opens — used to warn/block on a
+  // period that overlaps a payment already made, mirroring the same overlap rule
+  // POST /staff/payroll/disburse enforces server-side, but surfaced BEFORE the
+  // manager taps Disburse rather than only as an error after (staff-ux-checklist #6).
+  const [employeePayments, setEmployeePayments] = useState([]);
 
   const fetchData = useCallback(async () => {
     try {
@@ -129,20 +166,29 @@ export default function SalaryManagementScreen() {
     setPaymentMethod('cash');
     setPaymentRef('');
     setBonusAmount('');
+    setConfirmedHalfDays([]);
+    // Reset before the fetch resolves so a previously-opened employee's payments
+    // can't briefly leak into this modal's overlap check for the newly-selected one.
+    setEmployeePayments([]);
+    api.getPayrollHistory({ user_id: sal.user_id, limit: 100 })
+      .then((res) => setEmployeePayments(res.data?.payments || []))
+      .catch(() => setEmployeePayments([]));
     setPayrollModal(true);
   };
 
-  const handleCalculatePayroll = async () => {
+  const handleCalculatePayroll = async (datesOverride) => {
     if (!periodStart || !periodEnd) {
       Alert.alert('Error', 'Please enter period dates.');
       return;
     }
+    const confirmedDates = datesOverride !== undefined ? datesOverride : confirmedHalfDays;
     setPayrollCalculating(true);
     try {
       const res = await api.calculatePayroll({
         user_id: payrollUser.user_id || payrollUser.id,
         period_start: periodStart,
         period_end: periodEnd,
+        confirmed_half_day_dates: confirmedDates,
       });
       setPayrollCalc(res.data);
     } catch (e) {
@@ -151,6 +197,55 @@ export default function SalaryManagementScreen() {
       setPayrollCalculating(false);
     }
   };
+
+  // Toggle a partial-day date's confirmed-as-half-day state and immediately
+  // re-run the calculation with the new list (reads current state directly —
+  // this runs once per tap, so there's no staleness — rather than via the
+  // async setConfirmedHalfDays updater, which would require the recalculate
+  // call to live inside the updater function as a side effect).
+  const toggleHalfDay = (date) => {
+    const next = confirmedHalfDays.includes(date)
+      ? confirmedHalfDays.filter((d) => d !== date)
+      : [...confirmedHalfDays, date];
+    setConfirmedHalfDays(next);
+    handleCalculatePayroll(next);
+  };
+
+  // Opens the shared picker for a given period field, computing its starting Date
+  // ONCE (from the field's current 'YYYY-MM-DD' string, or "now" if empty/unset) so
+  // it opens pre-set to the existing date — see the periodPickerValue state comment
+  // above for why this must be a one-time computation rather than recomputed on render.
+  const openPeriodPicker = (target, currentYMD) => {
+    setPeriodPickerValue(ymdToDate(currentYMD) || new Date());
+    setPeriodPickerTarget(target);
+  };
+
+  const handlePeriodPickerConfirm = (date) => {
+    const ymd = dateToYMD(date);
+    if (periodPickerTarget === 'periodStart') setPeriodStart(ymd);
+    else if (periodPickerTarget === 'periodEnd') setPeriodEnd(ymd);
+    setPeriodPickerTarget(null);
+  };
+
+  // Mirrors POST /staff/payroll/disburse's own overlap query exactly (server/routes/
+  // staff-management.js, 'SELECT id, period_start, period_end FROM salary_payments
+  // WHERE user_id = ? AND status != ? AND period_start <= ? AND period_end >= ?' with
+  // params (user_id, 'cancelled', period_end, period_start)): same exclusion
+  // (status !== 'cancelled'), same two comparisons, same direction. Recomputes
+  // whenever the selected period or the fetched history changes.
+  const overlappingPayment = useMemo(() => {
+    if (!periodStart || !periodEnd) return null;
+    return employeePayments.find((p) => p.status !== 'cancelled' && p.period_start <= periodEnd && p.period_end >= periodStart) || null;
+  }, [periodStart, periodEnd, employeePayments]);
+
+  // Quiet reference note (only shown when there's no overlap warning to show instead) —
+  // the most recent non-cancelled payment by period_end, so the manager has a natural
+  // anchor point before picking dates at all.
+  const mostRecentPayment = useMemo(() => {
+    return employeePayments
+      .filter((p) => p.status !== 'cancelled')
+      .reduce((latest, p) => (!latest || p.period_end > latest.period_end ? p : latest), null);
+  }, [employeePayments]);
 
   const handleDisburse = async () => {
     if (!payrollCalc) return;
@@ -341,6 +436,12 @@ export default function SalaryManagementScreen() {
                         {roleBadge(s.user_role)}
                         <Text style={styles.metaText}>{formatCurrency(s.monthly_salary)}/{s.salary_type === 'monthly' ? 'mo' : s.salary_type === 'daily' ? 'day' : 'hr'}</Text>
                       </View>
+                      {s.pending_advance_amount > 0 && (
+                        <View style={styles.advanceBadge}>
+                          <Ionicons name="alert-circle-outline" size={12} color={Colors.warning} />
+                          <Text style={styles.advanceBadgeText}>{formatCurrency(s.pending_advance_amount)} advance pending</Text>
+                        </View>
+                      )}
                     </View>
                     <View style={[styles.payBtn]}>
                       <Ionicons name="cash" size={20} color={Colors.success} />
@@ -503,17 +604,44 @@ export default function SalaryManagementScreen() {
             <View style={styles.timeInputRow}>
               <View style={{ flex: 1, marginRight: Spacing.sm }}>
                 <Text style={styles.label}>Period Start</Text>
-                <TextInput style={styles.input} value={periodStart} onChangeText={setPeriodStart} placeholder="YYYY-MM-DD" placeholderTextColor={Colors.textLight} />
+                <TouchableOpacity
+                  style={[styles.input, styles.datePickerBtn]}
+                  onPress={() => openPeriodPicker('periodStart', periodStart)}
+                >
+                  <Ionicons name="calendar-outline" size={18} color={periodStart ? Colors.primary : Colors.textLight} />
+                  <Text style={periodStart ? styles.inputValueText : styles.inputPlaceholderText}>
+                    {periodStart || 'YYYY-MM-DD'}
+                  </Text>
+                </TouchableOpacity>
               </View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.label}>Period End</Text>
-                <TextInput style={styles.input} value={periodEnd} onChangeText={setPeriodEnd} placeholder="YYYY-MM-DD" placeholderTextColor={Colors.textLight} />
+                <TouchableOpacity
+                  style={[styles.input, styles.datePickerBtn]}
+                  onPress={() => openPeriodPicker('periodEnd', periodEnd)}
+                >
+                  <Ionicons name="calendar-outline" size={18} color={periodEnd ? Colors.primary : Colors.textLight} />
+                  <Text style={periodEnd ? styles.inputValueText : styles.inputPlaceholderText}>
+                    {periodEnd || 'YYYY-MM-DD'}
+                  </Text>
+                </TouchableOpacity>
               </View>
             </View>
 
+            {overlappingPayment ? (
+              <View style={styles.overlapWarning}>
+                <Ionicons name="warning-outline" size={18} color={Colors.error} />
+                <Text style={styles.overlapWarningText}>
+                  This period overlaps a payment already made: {formatCurrency(overlappingPayment.net_amount)} for {overlappingPayment.period_start} to {overlappingPayment.period_end}. Adjust the dates to avoid double-paying.
+                </Text>
+              </View>
+            ) : mostRecentPayment ? (
+              <Text style={styles.lastPaidNote}>Last paid through: {mostRecentPayment.period_end}</Text>
+            ) : null}
+
             <TouchableOpacity
               style={[styles.saveBtn, { marginTop: Spacing.md, alignSelf: 'stretch', alignItems: 'center' }]}
-              onPress={handleCalculatePayroll}
+              onPress={() => handleCalculatePayroll()}
               disabled={payrollCalculating}
             >
               <Text style={styles.saveBtnText}>{payrollCalculating ? 'Calculating...' : 'Calculate'}</Text>
@@ -550,7 +678,41 @@ export default function SalaryManagementScreen() {
                   </View>
                 </View>
 
+                {payrollCalc.partial_days && payrollCalc.partial_days.length > 0 && (
+                  <View style={{ marginTop: Spacing.md }}>
+                    <Text style={styles.sectionTitle}>Partial Days Found</Text>
+                    <Text style={{ fontSize: FontSize.sm, color: Colors.textLight, marginBottom: Spacing.sm }}>
+                      This employee has a split shift. On these dates they attended only some of their scheduled shifts — check the box for any that should count as a half day.
+                    </Text>
+                    {payrollCalc.partial_days.map((pd) => {
+                      const isConfirmed = confirmedHalfDays.includes(pd.date);
+                      return (
+                        <TouchableOpacity
+                          key={pd.date}
+                          style={[styles.partialDayRow, payrollCalculating && { opacity: 0.5 }]}
+                          onPress={() => toggleHalfDay(pd.date)}
+                          disabled={payrollCalculating}
+                        >
+                          <Ionicons name={isConfirmed ? 'checkbox' : 'square-outline'} size={22} color={Colors.primary} />
+                          <View style={{ flex: 1, marginLeft: Spacing.sm }}>
+                            <Text style={styles.partialDayDate}>{pd.date}</Text>
+                            <Text style={styles.partialDaySub}>Attended {pd.attended_segments} of {pd.total_segments} shifts that day</Text>
+                          </View>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                )}
+
                 <Text style={[styles.sectionTitle, { marginTop: Spacing.md, marginBottom: Spacing.sm }]}>Salary Breakdown</Text>
+                {payrollCalculating && (
+                  <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: Spacing.sm }}>
+                    <ActivityIndicator size="small" color={Colors.primary} />
+                    <Text style={{ fontSize: FontSize.sm, color: Colors.textLight, marginLeft: Spacing.xs }}>
+                      Updating…
+                    </Text>
+                  </View>
+                )}
                 <View style={styles.breakdownRow}>
                   <Text style={styles.breakdownLabel}>Base Pay</Text>
                   <Text style={styles.breakdownValue}>{formatCurrency(payrollCalc.calculation.base_pay)}</Text>
@@ -607,15 +769,25 @@ export default function SalaryManagementScreen() {
                 <TouchableOpacity
                   style={[styles.saveBtn, { marginTop: Spacing.lg, alignSelf: 'stretch', alignItems: 'center', backgroundColor: Colors.success }]}
                   onPress={handleDisburse}
-                  disabled={saving}
+                  disabled={payrollCalculating || saving || !!overlappingPayment}
                 >
-                  <Text style={styles.saveBtnText}>{saving ? 'Processing...' : 'Disburse Salary'}</Text>
+                  <Text style={styles.saveBtnText}>
+                    {saving ? 'Processing...' : payrollCalculating ? 'Updating...' : overlappingPayment ? 'Adjust dates to disburse' : 'Disburse Salary'}
+                  </Text>
                 </TouchableOpacity>
               </View>
             )}
             <View style={{ height: 40 }} />
           </ScrollView>
         </KeyboardAvoidingView>
+
+        <DateTimePickerModal
+          visible={!!periodPickerTarget}
+          mode="date"
+          value={periodPickerValue}
+          onConfirm={handlePeriodPickerConfirm}
+          onCancel={() => setPeriodPickerTarget(null)}
+        />
       </Modal>
     </ScrollView>
   );
@@ -671,6 +843,12 @@ const styles = StyleSheet.create({
   linkBtnText: { fontSize: FontSize.sm, color: Colors.primary, marginLeft: 4 },
   setBtn: { alignItems: 'center' },
   setBtnText: { fontSize: FontSize.xs, color: Colors.primary, marginTop: 2 },
+  advanceBadge: {
+    flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-start',
+    backgroundColor: Colors.warningLight, borderRadius: BorderRadius.sm,
+    paddingHorizontal: 6, paddingVertical: 2, marginTop: 4, gap: 3,
+  },
+  advanceBadgeText: { fontSize: FontSize.xs, color: Colors.warning, fontWeight: '600' },
   // Modal
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
   modalContent: {
@@ -684,6 +862,12 @@ const styles = StyleSheet.create({
     padding: Spacing.sm, fontSize: FontSize.md, color: Colors.text,
     backgroundColor: Colors.background,
   },
+  inputValueText: { fontSize: FontSize.md, color: Colors.text },
+  inputPlaceholderText: { fontSize: FontSize.md, color: Colors.textLight },
+  // Row layout (icon + text) for the tap-to-pick period-date fields — layered on top
+  // of styles.input's unchanged box, matching ShiftManagementScreen.js's identical
+  // timePickerBtn pattern for its time fields.
+  datePickerBtn: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs },
   typeRow: { flexDirection: 'row' },
   typeChip: {
     paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm,
@@ -726,4 +910,25 @@ const styles = StyleSheet.create({
   },
   breakdownLabel: { fontSize: FontSize.md, color: Colors.text },
   breakdownValue: { fontSize: FontSize.md, fontWeight: '600', color: Colors.text },
+  partialDayRow: {
+    flexDirection: 'row', alignItems: 'center',
+    paddingVertical: Spacing.sm, paddingHorizontal: Spacing.xs,
+    borderBottomWidth: 1, borderBottomColor: Colors.border,
+  },
+  partialDayDate: { fontSize: FontSize.md, fontWeight: '600', color: Colors.text },
+  partialDaySub: { fontSize: FontSize.xs, color: Colors.textLight, marginTop: 2 },
+  // Blocking warning shown when the selected period overlaps a payment already made —
+  // same visual weight as AttendanceRoster.js's autoClosedBanner (light tint,
+  // left accent border), but in error red rather than warning amber since this one
+  // actually blocks the primary action rather than just flagging something to review.
+  overlapWarning: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.sm,
+    backgroundColor: Colors.errorLight, borderRadius: BorderRadius.md,
+    borderLeftWidth: 3, borderLeftColor: Colors.error,
+    padding: Spacing.md, marginTop: Spacing.md,
+  },
+  overlapWarningText: { flex: 1, fontSize: FontSize.sm, color: Colors.text },
+  // Quiet, non-alarming reference note — only shown when overlapWarning isn't,
+  // so it never competes visually with the blocking warning above.
+  lastPaidNote: { fontSize: FontSize.xs, color: Colors.textLight, marginTop: Spacing.sm },
 });
