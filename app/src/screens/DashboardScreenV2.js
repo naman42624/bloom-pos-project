@@ -585,7 +585,7 @@ export default function DashboardScreenV2({ navigation }) {
     try {
       if (isDeliveryPartner) {
         const [delivRes,unsettledRes]=await Promise.all([api.getDeliveries({status:'active'}).catch(()=>({data:[]})),api.getUnsettledDeliveries({}).catch(()=>({data:{deliveries:[],total_unsettled:0}}))]);
-        setMyDeliveries(delivRes?.data||[]);const ud=unsettledRes?.data||{};setReportKPIs({unsettledTotal:Number(ud.total_unsettled||0),unsettledCount:(ud.deliveries||[]).length});setLoading(false);setRefreshing(false);return;
+        setMyDeliveries(delivRes?.data?.deliveries||[]);const ud=unsettledRes?.data||{};setReportKPIs({unsettledTotal:Number(ud.total_unsettled||0),unsettledCount:(ud.deliveries||[]).length});setLoading(false);setRefreshing(false);return;
       }
       if (isEmployee) {
         const [myTasksRes,allTasksRes]=await Promise.all([api.getMyTasks().catch(()=>({data:[]})),api.getProductionTasks({}).catch(()=>({data:[]}))]);

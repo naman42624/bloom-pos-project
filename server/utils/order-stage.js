@@ -233,7 +233,22 @@ function computeOrderStage(sale, viewerRole, flags = {}) {
         ),
       };
     }
-    if (sale.delivery_status === 'delivered' || sale.status === 'completed') {
+    // Fixed (root-caused live, 2026-09-12): sale.status === 'completed' alone
+    // used to be trusted as proof of "Delivered" — but it's a leftover signal
+    // that can survive a pickup->delivery conversion (PUT /sales/:id/
+    // convert-type) on an already-completed order, creating a fresh delivery
+    // row (status: 'pending', never dispatched) while sales.status stays
+    // 'completed' from the order's prior life as a pickup. That combination
+    // showed "Delivered" next to a raw 'pending' delivery status — a direct,
+    // visible contradiction found live. The convert-type route itself is now
+    // blocked from creating this state again (see that route's own guard),
+    // but this stays the authoritative check: delivery_status is real
+    // counter-evidence and must win over a stale sale.status whenever an
+    // actual delivery row exists. sale.status === 'completed' is trusted on
+    // its own ONLY when there's no delivery row at all to contradict it
+    // (delivery_status == null) — a data gap this doesn't try to diagnose
+    // further, just doesn't compound with a false "Delivered" claim.
+    if (sale.delivery_status === 'delivered' || (sale.status === 'completed' && sale.delivery_status == null)) {
       return { key: 'delivered', label: 'Delivered', color: STAGE_COLORS.delivered, nextAction: null };
     }
   }

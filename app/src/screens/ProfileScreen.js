@@ -9,6 +9,7 @@ import {
   Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useNavigation } from '@react-navigation/native';
 import { useAuth } from '../context/AuthContext';
 import Input from '../components/Input';
 import Button from '../components/Button';
@@ -17,6 +18,7 @@ import DismissKeyboard from '../components/DismissKeyboard';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 
 export default function ProfileScreen() {
+  const navigation = useNavigation();
   const { user, updateUser, logout } = useAuth();
 
   const [isEditing, setIsEditing] = useState(false);
@@ -205,6 +207,21 @@ export default function ProfileScreen() {
           </>
         )}
       </View>
+
+      {/* Customers — employee/counter_staff only (2026-09-13, staff-ux fix):
+          owner/manager already reach this via the More tab; these two
+          roles' only prior path was a small floating button on Orders
+          Inbox, easy to forget was there. Same role check
+          OrdersInboxScreen.js's own shortcut already uses. */}
+      {(user?.role === 'employee' || user?.role === 'counter_staff') && (
+        <Button
+          title="Customers"
+          variant="outline"
+          onPress={() => navigation.navigate('Customers')}
+          icon={<Ionicons name="people-outline" size={20} color={Colors.primary} />}
+          style={{ marginBottom: Spacing.md }}
+        />
+      )}
 
       {/* Logout */}
       <Button

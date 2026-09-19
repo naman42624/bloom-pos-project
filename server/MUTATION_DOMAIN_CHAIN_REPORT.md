@@ -1,7 +1,7 @@
 # Mutation Domain Suite Report — Procurement → Manufacturing
 
-- Start: 2026-03-12T23:03:24.979Z
-- End: 2026-03-12T23:03:27.458Z
+- Start: 2026-04-02T09:13:39.520Z
+- End: 2026-04-02T09:13:42.477Z
 - Base URL: http://localhost:3001
 - Steps: 24
 - Passed: 24
@@ -16,13 +16,13 @@
 - Sale status transition validation and post-completion checks
 
 ## Created IDs
-- supplier_id: 11
-- category_id: 21
-- material_id: 25
-- purchase_order_id: 10
-- product_id: 14
-- sale_id: 46
-- production_task_id: 45
+- supplier_id: 43
+- category_id: 74
+- material_id: 83
+- purchase_order_id: 38
+- product_id: 70
+- sale_id: 82
+- production_task_id: 79
 
 ## Strict Assertions
 - PO total (expected): 120

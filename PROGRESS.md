@@ -826,7 +826,7 @@ Identified and implemented 7 missing PRD features across the full stack.
 
 ## Technical Notes
 
-- **Server**: Express.js on port 3001, SQLite (better-sqlite3), JWT auth
+- **Server**: Express.js on port 3001, PostgreSQL (pg), JWT auth
 - **App**: React Native Expo ~54.0.0, React 19.1.0
 - **LAN IP**: 192.168.29.160
 - **App Name**: BloomCart POS (com.bloomcart.pos)

@@ -664,8 +664,15 @@ router.put(
       if (task.status !== 'assigned') {
         return res.status(400).json({ success: false, message: 'Only assigned tasks can be started' });
       }
-      // Only the assigned person or a manager can start
-      if (['employee', 'counter_staff', 'florist_staff'].includes(req.user.role) && task.assigned_to !== req.user.id) {
+      // Only the assigned person or a manager can start — UNLESS
+      // pref_flexible_task_assignment is on (default), which restores the
+      // any-staff-can-work-any-task behavior this project had before this
+      // gate shipped. Owner can turn it off for strict per-assignee
+      // enforcement. Missing row (never seeded yet) reads as ON, matching
+      // the seed default below and SaleDetailScreen.js's identical check.
+      const flexRow = db.prepare("SELECT value FROM settings WHERE key = 'pref_flexible_task_assignment'").get();
+      const flexibleAssignment = flexRow?.value !== '0';
+      if (!flexibleAssignment && ['employee', 'counter_staff', 'florist_staff'].includes(req.user.role) && task.assigned_to !== req.user.id) {
         return res.status(403).json({ success: false, message: 'Not your task' });
       }
 
@@ -754,7 +761,13 @@ router.put(
       if (task.status === 'completed' || task.status === 'cancelled') {
         return res.status(400).json({ success: false, message: 'Task already finished' });
       }
-      if (['employee', 'counter_staff', 'florist_staff'].includes(req.user.role) && task.assigned_to !== req.user.id) {
+      // Same pref_flexible_task_assignment gate as /tasks/:id/start above —
+      // see that comment for the reasoning. Kept as its own read rather than
+      // sharing one across routes, matching this file's existing per-route
+      // settings-lookup style (e.g. pref_walkin_auto_complete below).
+      const flexRow = db.prepare("SELECT value FROM settings WHERE key = 'pref_flexible_task_assignment'").get();
+      const flexibleAssignment = flexRow?.value !== '0';
+      if (!flexibleAssignment && ['employee', 'counter_staff', 'florist_staff'].includes(req.user.role) && task.assigned_to !== req.user.id) {
         return res.status(403).json({ success: false, message: 'Not your task' });
       }
 
@@ -764,6 +777,19 @@ router.put(
 
         // ⚡ OPTIMIZED: Use single JOIN query instead of COUNT subquery + multiple updates
         //    Determine sale status in one query: if any tasks remain (not completed/cancelled)
+        //
+        // pickup_status is updated alongside status for the same auto-ready
+        // transition — added 2026-09-11 after finding a live pickup order
+        // (sale 305) stuck showing under "Preparing" on PickupOrdersScreen
+        // with status already 'ready': this route only ever updated the
+        // generic `status` column, while PUT /deliveries/pickup/:saleId/ready
+        // (the screen's OWN separate "Mark Ready" endpoint) is the only path
+        // that also sets pickup_status — so a pickup order whose tasks all
+        // completed through the normal per-task flow (confirmed the common
+        // case against live data) never got its pickup_status advanced
+        // unless someone ALSO happened to tap that other button. Guarded on
+        // order_type = 'pickup' so this is a true no-op for every other
+        // order type.
         const sql = `
           UPDATE sales SET
             status = CASE
@@ -773,11 +799,18 @@ router.put(
               ) THEN 'ready'
               ELSE status
             END,
+            pickup_status = CASE
+              WHEN order_type = 'pickup' AND NOT EXISTS (
+                SELECT 1 FROM production_tasks
+                WHERE sale_id = ? AND status NOT IN ('completed', 'cancelled')
+              ) THEN 'ready_for_pickup'
+              ELSE pickup_status
+            END,
             stock_deducted = 1,
             updated_at = CURRENT_TIMESTAMP
           WHERE id = ?
         `;
-        db.prepare(sql).run(task.sale_id, task.sale_id);
+        db.prepare(sql).run(task.sale_id, task.sale_id, task.sale_id);
       });
 
       completeTx();

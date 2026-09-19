@@ -87,6 +87,8 @@ import CustomerShopScreen from '../screens/CustomerShopScreen';
 
 // Phase 8 — Attendance
 import AttendanceScreen from '../screens/AttendanceScreen';
+import AttendanceHubScreen from '../screens/AttendanceHubScreen';
+import TeamAttendanceScreen from '../screens/TeamAttendanceScreen';
 
 // Phase 9 — Reports
 import ReportsHubScreen from '../screens/ReportsHubScreen';
@@ -103,6 +105,7 @@ import LiveDeliveryMapScreen from '../screens/LiveDeliveryMapScreen';
 import NotificationCenterScreen from '../screens/NotificationCenterScreen';
 import NotificationBell from '../components/NotificationBell';
 import SwitchUserButton from '../components/SwitchUserButton';
+import HeaderActions from '../components/HeaderActions';
 import usePushNotifications from '../hooks/usePushNotifications';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -132,7 +135,7 @@ function DashboardStack() {
         component={DashComponent}
         options={({ navigation }) => ({
           title: useV2 ? 'Dashboard V2' : 'Dashboard',
-          headerRight: () => <NotificationBell navigation={navigation} />,
+          headerRight: () => <HeaderActions navigation={navigation} />,
         })}
       />
       <Stack.Screen name="Notifications" component={NotificationCenterScreen} options={{ title: 'Notifications' }} />
@@ -291,11 +294,19 @@ function ProfileStack() {
         component={ProfileScreen}
         options={({ navigation }) => ({
           title: 'Profile',
-          headerRight: () => <NotificationBell navigation={navigation} />,
+          headerRight: () => <HeaderActions navigation={navigation} />,
         })}
       />
       <Stack.Screen name="Settings" component={SettingsScreen} options={{ title: 'Settings' }} />
       <Stack.Screen name="Notifications" component={NotificationCenterScreen} options={{ title: 'Notifications' }} />
+      {/* employee/counter_staff's own path to Customers (2026-09-13, staff-
+          ux fix) — owner/manager already have it via the More tab; these
+          two roles previously only had a small floating button on Orders
+          Inbox, easy to forget was there. Registered locally here (not just
+          reachable via the Orders Inbox button's cross-tab jump) so it also
+          shows up as a real, browsable menu item on the tab these roles
+          already open for account-level things. */}
+      <Stack.Screen name="Customers" component={CustomersScreen} options={{ title: 'Customers' }} />
     </Stack.Navigator>
   );
 }
@@ -483,6 +494,7 @@ function MoreStack() {
       <Stack.Screen name="RecurringOrderDetail" component={AddRecurringOrderScreen} options={{ title: 'Edit Recurring Order' }} />
       {/* Attendance sub-screens */}
       <Stack.Screen name="Attendance" component={AttendanceScreen} options={{ title: 'Attendance' }} />
+      <Stack.Screen name="AttendanceHub" component={AttendanceHubScreen} options={{ title: 'Attendance & Payroll' }} />
       <Stack.Screen name="StaffAttendance" component={StaffAttendanceScreen} options={{ title: 'Staff Today' }} />
       <Stack.Screen name="AttendanceReport" component={AttendanceReportScreen} options={{ title: 'Attendance Report' }} />
       <Stack.Screen name="SalaryAdvances" component={SalaryAdvancesScreen} options={{ title: 'Salary Advances' }} />
@@ -506,6 +518,7 @@ function AttendanceStack() {
   return (
     <Stack.Navigator screenOptions={stackScreenOptions}>
       <Stack.Screen name="AttendanceHome" component={AttendanceScreen} options={{ title: 'Attendance' }} />
+      <Stack.Screen name="TeamAttendance" component={TeamAttendanceScreen} options={{ title: 'Team Attendance' }} />
       <Stack.Screen name="StaffAttendance" component={StaffAttendanceScreen} options={{ title: 'Staff Today' }} />
       <Stack.Screen name="AttendanceReport" component={AttendanceReportScreen} options={{ title: 'Attendance Report' }} />
       <Stack.Screen name="SalaryAdvances" component={SalaryAdvancesScreen} options={{ title: 'Salary Advances' }} />
@@ -525,7 +538,7 @@ function DeliveryPartnerStack() {
         component={DeliveriesScreen}
         options={({ navigation }) => ({
           title: 'My Deliveries',
-          headerRight: () => <NotificationBell navigation={navigation} />,
+          headerRight: () => <HeaderActions navigation={navigation} />,
         })}
       />
       <Stack.Screen name="DeliveryDetail" component={DeliveryDetailScreen} options={{ title: 'Delivery' }} />
@@ -543,7 +556,7 @@ function CustomerOrdersStack() {
         component={CustomerOrdersScreen}
         options={({ navigation }) => ({
           title: 'My Orders',
-          headerRight: () => <NotificationBell navigation={navigation} />,
+          headerRight: () => <HeaderActions navigation={navigation} />,
         })}
       />
       <Stack.Screen name="Shop" component={CustomerShopScreen} options={{ title: 'Shop' }} />
@@ -575,11 +588,14 @@ export default function MainNavigator() {
   const isExpoGo = Constants.appOwnership === 'expo';
   const insets = useSafeAreaInsets();
 
-  // Auto geofence for staff (not owner/customer)
+  // Auto geofence for staff (not owner/customer). counter_staff excluded too:
+  // that role is a shared, stationary counter device, not a personal phone
+  // that travels with one person — geofencing it is meaningless and an
+  // "Always Allow" location prompt on a shared device is a trust/privacy risk.
   useGeofence({
     user,
     locations: locations || [],
-    enabled: !isExpoGo && !!user && user.role !== 'owner' && user.role !== 'customer',
+    enabled: !isExpoGo && !!user && user.role !== 'owner' && user.role !== 'customer' && user.role !== 'counter_staff',
   });
 
   // Auto delivery tracking for delivery partners

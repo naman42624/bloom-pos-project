@@ -8,12 +8,32 @@ import { useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
+import DateTimePickerModal from '../components/DateTimePickerModal';
 
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
 const confirm = (title, msg, onOk) => {
   if (Platform.OS === 'web') { if (window.confirm(`${title}\n${msg}`)) onOk(); }
   else Alert.alert(title, msg, [{ text: 'Cancel', style: 'cancel' }, { text: 'OK', onPress: onOk }]);
+};
+
+// 'HH:MM' -> Date (today's date, with that hour/minute set). Returns null for
+// empty/invalid input so the picker opens on "now" instead of a bogus time —
+// no equivalent helper existed elsewhere in app/src/utils to reuse.
+const hhmmToDate = (hhmm) => {
+  const m = /^(\d{1,2}):(\d{2})/.exec(hhmm || '');
+  if (!m) return null;
+  const d = new Date();
+  d.setHours(parseInt(m[1], 10), parseInt(m[2], 10), 0, 0);
+  return d;
+};
+
+// Date -> 'HH:MM' (zero-padded). Matches the string shape this screen's state,
+// the backend, and shift-work.js's timeStrToMinutes all expect unchanged.
+const dateToHHMM = (date) => {
+  const hh = String(date.getHours()).padStart(2, '0');
+  const mm = String(date.getMinutes()).padStart(2, '0');
+  return `${hh}:${mm}`;
 };
 
 export default function ShiftManagementScreen() {
@@ -35,6 +55,14 @@ export default function ShiftManagementScreen() {
   const [geofenceTimeout, setGeofenceTimeout] = useState('15');
   const [shiftSegments, setShiftSegments] = useState([]); // [{start:'07:00',end:'12:00'}, ...]
   const [isSplitShift, setIsSplitShift] = useState(false);
+  // Which time field the shared DateTimePickerModal is currently editing, and the
+  // Date it should open showing. pickerValue is set ONCE (in openTimePicker) rather
+  // than recomputed inline on every render — DateTimePickerModal resets its local
+  // spinner state whenever the `value` prop's object identity changes, so a fresh
+  // Date() on every render would silently discard an in-progress selection the
+  // instant an unrelated parent re-render (e.g. fetchData resolving) happened.
+  const [timePickerTarget, setTimePickerTarget] = useState(null); // null | 'shiftStart' | 'shiftEnd' | { segmentIdx, field: 'start'|'end' }
+  const [pickerValue, setPickerValue] = useState(new Date());
 
   const fetchData = useCallback(async () => {
     try {
@@ -99,6 +127,25 @@ export default function ShiftManagementScreen() {
 
   const updateSegment = (idx, field, value) => {
     setShiftSegments(prev => prev.map((seg, i) => i === idx ? { ...seg, [field]: value } : seg));
+  };
+
+  // Opens the shared picker for a given target, computing its starting Date ONCE
+  // (from the field's current 'HH:MM' string, or "now" if empty/unset) so it opens
+  // pre-set to the existing time — see the pickerValue state comment above for why
+  // this must be a one-time computation rather than a value recomputed on render.
+  const openTimePicker = (target, currentHHMM) => {
+    setPickerValue(hhmmToDate(currentHHMM) || new Date());
+    setTimePickerTarget(target);
+  };
+
+  const handleTimePickerConfirm = (date) => {
+    const hhmm = dateToHHMM(date);
+    if (timePickerTarget === 'shiftStart') setShiftStart(hhmm);
+    else if (timePickerTarget === 'shiftEnd') setShiftEnd(hhmm);
+    else if (timePickerTarget && typeof timePickerTarget === 'object') {
+      updateSegment(timePickerTarget.segmentIdx, timePickerTarget.field, hhmm);
+    }
+    setTimePickerTarget(null);
   };
 
   const handleSave = async () => {
@@ -282,23 +329,27 @@ export default function ShiftManagementScreen() {
             <View style={styles.timeInputRow}>
               <View style={{ flex: 1, marginRight: Spacing.sm }}>
                 <Text style={styles.label}>Shift Start</Text>
-                <TextInput
-                  style={styles.input}
-                  value={shiftStart}
-                  onChangeText={setShiftStart}
-                  placeholder="09:00"
-                  placeholderTextColor={Colors.textLight}
-                />
+                <TouchableOpacity
+                  style={[styles.input, styles.timePickerBtn]}
+                  onPress={() => openTimePicker('shiftStart', shiftStart)}
+                >
+                  <Ionicons name="time-outline" size={18} color={shiftStart ? Colors.primary : Colors.textLight} />
+                  <Text style={shiftStart ? styles.inputValueText : styles.inputPlaceholderText}>
+                    {shiftStart || '09:00'}
+                  </Text>
+                </TouchableOpacity>
               </View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.label}>Shift End</Text>
-                <TextInput
-                  style={styles.input}
-                  value={shiftEnd}
-                  onChangeText={setShiftEnd}
-                  placeholder="18:00"
-                  placeholderTextColor={Colors.textLight}
-                />
+                <TouchableOpacity
+                  style={[styles.input, styles.timePickerBtn]}
+                  onPress={() => openTimePicker('shiftEnd', shiftEnd)}
+                >
+                  <Ionicons name="time-outline" size={18} color={shiftEnd ? Colors.primary : Colors.textLight} />
+                  <Text style={shiftEnd ? styles.inputValueText : styles.inputPlaceholderText}>
+                    {shiftEnd || '18:00'}
+                  </Text>
+                </TouchableOpacity>
               </View>
             </View>
 
@@ -339,21 +390,25 @@ export default function ShiftManagementScreen() {
                 {shiftSegments.map((seg, idx) => (
                   <View key={idx} style={styles.segmentInputRow}>
                     <Text style={styles.segLabel}>Seg {idx + 1}</Text>
-                    <TextInput
-                      style={[styles.input, { flex: 1, marginHorizontal: Spacing.xs }]}
-                      value={seg.start}
-                      onChangeText={v => updateSegment(idx, 'start', v)}
-                      placeholder="09:00"
-                      placeholderTextColor={Colors.textLight}
-                    />
+                    <TouchableOpacity
+                      style={[styles.input, styles.timePickerBtn, { flex: 1, marginHorizontal: Spacing.xs }]}
+                      onPress={() => openTimePicker({ segmentIdx: idx, field: 'start' }, seg.start)}
+                    >
+                      <Ionicons name="time-outline" size={16} color={seg.start ? Colors.primary : Colors.textLight} />
+                      <Text style={seg.start ? styles.inputValueText : styles.inputPlaceholderText}>
+                        {seg.start || '09:00'}
+                      </Text>
+                    </TouchableOpacity>
                     <Text style={styles.segDash}>—</Text>
-                    <TextInput
-                      style={[styles.input, { flex: 1, marginHorizontal: Spacing.xs }]}
-                      value={seg.end}
-                      onChangeText={v => updateSegment(idx, 'end', v)}
-                      placeholder="13:00"
-                      placeholderTextColor={Colors.textLight}
-                    />
+                    <TouchableOpacity
+                      style={[styles.input, styles.timePickerBtn, { flex: 1, marginHorizontal: Spacing.xs }]}
+                      onPress={() => openTimePicker({ segmentIdx: idx, field: 'end' }, seg.end)}
+                    >
+                      <Ionicons name="time-outline" size={16} color={seg.end ? Colors.primary : Colors.textLight} />
+                      <Text style={seg.end ? styles.inputValueText : styles.inputPlaceholderText}>
+                        {seg.end || '13:00'}
+                      </Text>
+                    </TouchableOpacity>
                     {shiftSegments.length > 2 && (
                       <TouchableOpacity onPress={() => removeSegment(idx)} style={{ padding: Spacing.xs }}>
                         <Ionicons name="close-circle" size={22} color={Colors.error} />
@@ -388,6 +443,14 @@ export default function ShiftManagementScreen() {
             </View>
           </ScrollView>
         </KeyboardAvoidingView>
+
+        <DateTimePickerModal
+          visible={!!timePickerTarget}
+          mode="time"
+          value={pickerValue}
+          onConfirm={handleTimePickerConfirm}
+          onCancel={() => setTimePickerTarget(null)}
+        />
       </Modal>
     </ScrollView>
   );
@@ -468,8 +531,14 @@ const styles = StyleSheet.create({
   input: {
     borderWidth: 1, borderColor: Colors.border, borderRadius: BorderRadius.md,
     padding: Spacing.md, fontSize: FontSize.md, color: Colors.text,
-    backgroundColor: Colors.background, minHeight: 48,
+    backgroundColor: Colors.background, minHeight: 48, justifyContent: 'center',
   },
+  inputValueText: { fontSize: FontSize.md, color: Colors.text },
+  inputPlaceholderText: { fontSize: FontSize.md, color: Colors.textLight },
+  // Row layout (icon + text) for the tap-to-pick time fields — layered on top of
+  // styles.input's unchanged box (border/padding/background) so the box itself still
+  // matches the brief's "reuse styles.input" ask; this just arranges its contents.
+  timePickerBtn: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs },
   modalActions: { flexDirection: 'row', justifyContent: 'flex-end', marginTop: Spacing.lg },
   cancelBtn: {
     paddingHorizontal: Spacing.lg, paddingVertical: Spacing.sm,

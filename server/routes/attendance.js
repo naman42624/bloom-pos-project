@@ -4,6 +4,9 @@ const { getDb } = require('../config/database');
 const { getDb: getAsyncDb } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
 const { todayStr, nowLocal, parseServerDate, getTimezone } = require('../utils/time');
+const { normalizeSegments, matchSegmentForTime, lateMinutesFor, overtimeMinutesFor, timestampToMinutes, dayAdjustedMinutes, computeShiftWork } = require('../utils/shift-work');
+const { safeParseJSON } = require('../utils/json');
+const { hasOpenRegister, REGISTER_CLOSED_MESSAGE } = require('../utils/register-guard');
 
 // All attendance routes require auth
 router.use(authenticate);
@@ -17,27 +20,32 @@ function hoursBetween(start, end) {
   return Math.max(0, (dEnd - dStart) / (1000 * 60 * 60));
 }
 
-// ─── Helper: Check if time is late based on shift OR operating hours ──
+// ─── Helper: Check if time is late based on shift (segment-aware) OR operating hours ──
+// Segment-aware and timezone-correct as of this revision — see shift-work.js
+// for why both matter. Employees without a split shift see zero behavior
+// change (normalizeSegments falls back to a single window).
 function isLateArrival(clockIn, operatingHours, userId, locationId) {
   if (!clockIn) return false;
   try {
-    const tz = getTimezone();
-    const d = new Date(clockIn);
-    if (Number.isNaN(d.getTime())) return false;
-    
-    // Extract local time string HH:mm:ss for comparison
-    const clockTime = new Intl.DateTimeFormat('en-GB', { 
-      timeZone: tz, hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false 
-    }).format(d);
-
     const db = getDb();
-    const shift = db.prepare('SELECT shift_start FROM employee_shifts WHERE user_id = ? AND location_id = ? AND is_active = 1').get(userId, locationId);
-    if (shift && shift.shift_start) {
-      return clockTime > shift.shift_start;
+    const shift = db.prepare('SELECT shift_start, shift_end, shift_segments FROM employee_shifts WHERE user_id = ? AND location_id = ? AND is_active = 1').get(userId, locationId);
+    if (shift && (shift.shift_start || shift.shift_segments)) {
+      const segments = normalizeSegments(shift.shift_start, shift.shift_end, shift.shift_segments);
+      const clockInMinutes = timestampToMinutes(clockIn);
+      const segment = matchSegmentForTime(clockInMinutes, segments);
+      return lateMinutesFor(clockInMinutes, segment) > 0;
     }
 
-    // Fallback to location operating_hours
+    // Fallback to location operating_hours when no shift is configured —
+    // unchanged in intent, now parsed via parseServerDate like everything
+    // else in this file, not a bare `new Date()`.
     if (!operatingHours) return false;
+    const tz = getTimezone();
+    const d = parseServerDate(clockIn);
+    if (!d) return false;
+    const clockTime = new Intl.DateTimeFormat('en-GB', {
+      timeZone: tz, hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+    }).format(d);
     const hours = safeParseJSON(operatingHours, {});
     const dayOfWeek = d.toLocaleDateString('en-US', { timeZone: tz, weekday: 'long' }).toLowerCase();
     const dayHours = hours[dayOfWeek];
@@ -49,25 +57,33 @@ function isLateArrival(clockIn, operatingHours, userId, locationId) {
   }
 }
 
-// ─── Helper: Check early departure based on shift OR operating hours ──
-function isEarlyDeparture(clockOut, operatingHours, userId, locationId) {
+// ─── Helper: Check early departure based on shift (segment-aware) OR operating hours ──
+// clockIn (this session's OWN clock-in) determines which segment this
+// session belongs to — not clockOut, which could be far past every
+// segment's end (e.g. a forgotten-lunch-clockout session) and would match
+// the wrong one.
+function isEarlyDeparture(clockOut, clockIn, operatingHours, userId, locationId) {
   if (!clockOut) return false;
   try {
-    const tz = getTimezone();
-    const d = new Date(clockOut);
-    if (Number.isNaN(d.getTime())) return false;
-    
-    const clockTime = new Intl.DateTimeFormat('en-GB', { 
-      timeZone: tz, hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false 
-    }).format(d);
-
     const db = getDb();
-    const shift = db.prepare('SELECT shift_end FROM employee_shifts WHERE user_id = ? AND location_id = ? AND is_active = 1').get(userId, locationId);
-    if (shift && shift.shift_end) {
-      return clockTime < shift.shift_end;
+    const shift = db.prepare('SELECT shift_start, shift_end, shift_segments FROM employee_shifts WHERE user_id = ? AND location_id = ? AND is_active = 1').get(userId, locationId);
+    if (shift && (shift.shift_start || shift.shift_segments)) {
+      const segments = normalizeSegments(shift.shift_start, shift.shift_end, shift.shift_segments);
+      const clockInMinutes = timestampToMinutes(clockIn);
+      const rawClockOutMinutes = timestampToMinutes(clockOut);
+      const clockOutMinutes = dayAdjustedMinutes(clockIn, clockOut, rawClockOutMinutes);
+      const segment = matchSegmentForTime(clockInMinutes, segments);
+      if (!segment || clockOutMinutes == null) return false;
+      return clockOutMinutes < segment.end;
     }
 
     if (!operatingHours) return false;
+    const tz = getTimezone();
+    const d = parseServerDate(clockOut);
+    if (!d) return false;
+    const clockTime = new Intl.DateTimeFormat('en-GB', {
+      timeZone: tz, hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+    }).format(d);
     const hours = safeParseJSON(operatingHours, {});
     const dayOfWeek = d.toLocaleDateString('en-US', { timeZone: tz, weekday: 'long' }).toLowerCase();
     const dayHours = hours[dayOfWeek];
@@ -86,7 +102,7 @@ router.post('/clock-in', authorize('owner', 'manager', 'employee', 'counter_staf
   try {
     const db = getDb();
     let userId = req.user.id;
-    if (req.body.user_id && ['owner', 'manager'].includes(req.user.role)) {
+    if (req.body.user_id && ['owner', 'manager', 'counter_staff'].includes(req.user.role)) {
       userId = req.body.user_id;
     } else if (req.user.role === 'owner') {
       return res.status(403).json({ success: false, message: 'Owners do not clock in.' });
@@ -145,7 +161,7 @@ router.post('/clock-out', authorize('owner', 'manager', 'employee', 'counter_sta
   try {
     const db = getDb();
     let userId = req.user.id;
-    if (req.body.user_id && ['owner', 'manager'].includes(req.user.role)) {
+    if (req.body.user_id && ['owner', 'manager', 'counter_staff'].includes(req.user.role)) {
       userId = req.body.user_id;
     } else if (req.user.role === 'owner') {
       return res.status(403).json({ success: false, message: 'Owners do not clock out.' });
@@ -168,7 +184,7 @@ router.post('/clock-out', authorize('owner', 'manager', 'employee', 'counter_sta
     const now = nowLocal();
     const clockMethod = method || 'manual';
     const shiftHours = hoursBetween(record.clock_in, now);
-    const early = isEarlyDeparture(now, record.operating_hours, userId, record.location_id) ? 1 : 0;
+    const early = isEarlyDeparture(now, record.clock_in, record.operating_hours, userId, record.location_id) ? 1 : 0;
 
     // Calculate outdoor hours for this specific attendance record
     const outdoorHrs = db.prepare(`
@@ -198,15 +214,111 @@ router.post('/clock-out', authorize('owner', 'manager', 'employee', 'counter_sta
   }
 });
 
+const UNDO_AUTO_CLOCKIN_WINDOW_MINUTES = 15;
+
+// ═══════════════════════════════════════════════════════════════
+// UNDO AN AUTOMATIC (GEOFENCE) CLOCK-IN — bounded to 15 minutes
+// ═══════════════════════════════════════════════════════════════
+// Only undoes a record that was actually auto-created by geofence entry,
+// is still open (no clock_out — if they've since clocked out, whatever
+// they did while "in" is real work, not a mis-fire), AND is within 15
+// minutes of the clock-in itself. Past that window this deliberately
+// refuses rather than silently deleting a real day's attendance on one
+// tap with no confirmation — see this task's header.
+router.post('/:id/undo-auto-clockin', authorize('owner', 'manager', 'employee', 'counter_staff', 'florist_staff', 'delivery_partner'), (req, res) => {
+  try {
+    const db = getDb();
+    const record = db.prepare('SELECT * FROM attendance WHERE id = ?').get(req.params.id);
+    if (!record) {
+      return res.status(404).json({ success: false, message: 'Attendance record not found.' });
+    }
+    if (record.user_id !== req.user.id && !['owner', 'manager'].includes(req.user.role)) {
+      return res.status(403).json({ success: false, message: 'Not authorized.' });
+    }
+    if (record.clock_in_method !== 'auto_geofence') {
+      return res.status(400).json({ success: false, message: 'Only an automatic clock-in can be undone this way.' });
+    }
+    if (record.clock_out) {
+      return res.status(400).json({ success: false, message: 'This session has already been clocked out — ask a manager to fix it instead.' });
+    }
+    const clockInDate = parseServerDate(record.clock_in);
+    const minutesSinceClockIn = clockInDate ? (Date.now() - clockInDate.getTime()) / 60000 : Infinity;
+    if (minutesSinceClockIn > UNDO_AUTO_CLOCKIN_WINDOW_MINUTES) {
+      return res.status(400).json({ success: false, message: `This can only be undone within ${UNDO_AUTO_CLOCKIN_WINDOW_MINUTES} minutes of clocking in — ask a manager to fix it from here instead.` });
+    }
+    db.prepare('DELETE FROM attendance WHERE id = ?').run(record.id);
+    res.json({ success: true, message: 'Undone — you are no longer clocked in.' });
+  } catch (error) {
+    console.error('Undo auto clock-in error:', error);
+    res.status(500).json({ success: false, message: 'Failed to undo.' });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════
+// REPORT A MISSED CLOCK-IN (employee self-service recovery)
+// ═══════════════════════════════════════════════════════════════
+// Doesn't create any attendance record itself — a manager still does that
+// (the one-tap roster action, Task 17) — this only closes the "how do they
+// even find out" gap. Deduplicated: at most one notification per person
+// per calendar day, so a confused employee can't spam every manager.
+router.post('/missed-clock-in', authorize('owner', 'manager', 'employee', 'counter_staff', 'florist_staff', 'delivery_partner'), async (req, res) => {
+  try {
+    const db = getDb();
+    const { location_id } = req.body;
+    if (!location_id) {
+      return res.status(400).json({ success: false, message: 'Location is required.' });
+    }
+
+    // Dedup by SHOP-LOCAL calendar day, not a raw SQL date cast. created_at
+    // is a naive column storing UTC wall-clock time (this codebase's
+    // established convention — see shift-work.js's own comments on why
+    // parseServerDate exists at all), so a bare `created_at::date = ?`
+    // comparison against todayStr() (shop-local, Asia/Kolkata) silently
+    // mismatches for roughly IST 00:00-05:30 every day, when the UTC
+    // calendar date is still yesterday — a real gap for a shop with
+    // early-morning shifts. Filter narrowly in SQL (type + userId — at
+    // most a handful of rows per user ever) and compare the actual
+    // calendar day in JS, the same parseServerDate/todayStr pattern every
+    // other timezone-sensitive comparison in this plan already uses.
+    const today = todayStr();
+    const candidates = db.prepare(
+      "SELECT id, created_at FROM notifications WHERE type = 'attendance_missed_clockin' AND (data::jsonb->>'userId')::int = ?"
+    ).all(req.user.id);
+    const alreadySent = candidates.find((row) => todayStr(parseServerDate(row.created_at)) === today);
+    if (alreadySent) {
+      return res.json({ success: true, message: 'Your manager has already been notified today.', already_sent: true });
+    }
+
+    const location = db.prepare('SELECT name FROM locations WHERE id = ?').get(location_id);
+    const { notifyByRole } = require('./notifications');
+    await notifyByRole({
+      roles: ['owner', 'manager'],
+      locationId: Number(location_id),
+      title: 'Missed clock-in',
+      body: `${req.user.name} forgot to clock in at ${location ? location.name : 'the shop'} — tap to clock them in.`,
+      type: 'attendance_missed_clockin',
+      // AttendanceHub, not the old standalone StaffAttendance screen: Task
+      // 20's Dashboard banner already routes there deliberately so there's
+      // only ONE "who hasn't clocked in" surface to check. ('StaffAttendance'
+      // also had no branch at all in usePushNotifications' navigation chain,
+      // so the tap did nothing — the body promises "tap to clock them in.")
+      data: { screen: 'AttendanceHub', userId: req.user.id, locationId: Number(location_id) },
+    });
+    res.json({ success: true, message: 'Your manager has been notified.' });
+  } catch (error) {
+    console.error('Missed clock-in report error:', error);
+    res.status(500).json({ success: false, message: 'Could not send that — try again.' });
+  }
+});
+
 // ═══════════════════════════════════════════════════════════════
 // GET TODAY'S ATTENDANCE STATUS (for the logged-in user)
 // ═══════════════════════════════════════════════════════════════
-router.get('/today', authorize('owner', 'manager', 'employee', 'counter_staff', 'delivery_partner'), async (req, res) => {
+router.get('/today', authorize('owner', 'manager', 'employee', 'counter_staff', 'florist_staff', 'delivery_partner'), async (req, res) => {
   try {
     const db = await getAsyncDb();
     const today = todayStr();
 
-    // Get ALL attendance records for today (supports split shifts)
     const records = await db.prepare(`
       SELECT a.*, l.name as location_name
       FROM attendance a
@@ -215,10 +327,8 @@ router.get('/today', authorize('owner', 'manager', 'employee', 'counter_staff', 
       ORDER BY a.id ASC
     `).all(req.user.id, today);
 
-    // The latest record is the "current" one for status display
     const current = records.length > 0 ? records[records.length - 1] : null;
 
-    // Also get active outdoor duty from the current unclosed record
     let activeOutdoor = null;
     if (current && !current.clock_out) {
       activeOutdoor = await db.prepare(`
@@ -228,12 +338,24 @@ router.get('/today', authorize('owner', 'manager', 'employee', 'counter_staff', 
       `).get(req.user.id, current.id);
     }
 
-    // Calculate total hours across all records today
     let totalHoursToday = 0;
     let totalOutdoorToday = 0;
     for (const r of records) {
       totalHoursToday += Number(r.total_hours) || 0;
       totalOutdoorToday += Number(r.outdoor_hours) || 0;
+    }
+
+    // Own late/overtime summary for today — track-only, plain-language
+    // display on AttendanceScreen. Uses the CURRENT/latest session's
+    // location for the shift lookup, a simplification that assumes
+    // single-location attendance per day, matching this project's current
+    // single-location-per-shop scope.
+    let shiftWork = { totalLateMinutes: 0, totalOvertimeMinutes: 0, sessions: [] };
+    if (current) {
+      const shift = await db.prepare(
+        'SELECT shift_start, shift_end, shift_segments FROM employee_shifts WHERE user_id = ? AND location_id = ? AND is_active = 1'
+      ).get(req.user.id, current.location_id);
+      shiftWork = computeShiftWork(records, shift || null, { includeInProgress: true });
     }
 
     res.json({
@@ -245,6 +367,8 @@ router.get('/today', authorize('owner', 'manager', 'employee', 'counter_staff', 
         totalOutdoorToday: Math.round(totalOutdoorToday * 100) / 100,
         totalEffectiveToday: Math.round((totalHoursToday + totalOutdoorToday) * 100) / 100,
         activeOutdoor,
+        lateMinutesToday: shiftWork.totalLateMinutes,
+        overtimeMinutesToday: shiftWork.totalOvertimeMinutes,
       },
     });
   } catch (error) {
@@ -404,7 +528,7 @@ router.get('/report', authorize('owner', 'manager'), async (req, res) => {
 // ═══════════════════════════════════════════════════════════════
 // OUTDOOR DUTY REQUEST
 // ═══════════════════════════════════════════════════════════════
-router.post('/outdoor-duty', authorize('owner', 'manager', 'employee', 'counter_staff', 'delivery_partner'), (req, res) => {
+router.post('/outdoor-duty', authorize('owner', 'manager', 'employee', 'counter_staff', 'florist_staff', 'delivery_partner'), (req, res) => {
   try {
     const db = getDb();
     const userId = req.user.id;
@@ -510,7 +634,7 @@ router.put('/outdoor-duty/:id/reject', authorize('owner', 'manager'), (req, res)
 // ═══════════════════════════════════════════════════════════════
 // COMPLETE OUTDOOR DUTY (employee returns)
 // ═══════════════════════════════════════════════════════════════
-router.put('/outdoor-duty/:id/complete', authorize('owner', 'manager', 'employee', 'counter_staff', 'delivery_partner'), (req, res) => {
+router.put('/outdoor-duty/:id/complete', authorize('owner', 'manager', 'employee', 'counter_staff', 'florist_staff', 'delivery_partner'), (req, res) => {
   try {
     const db = getDb();
     const request = db.prepare('SELECT * FROM outdoor_duty_requests WHERE id = ?').get(req.params.id);
@@ -565,7 +689,7 @@ router.put('/outdoor-duty/:id/complete', authorize('owner', 'manager', 'employee
 // ═══════════════════════════════════════════════════════════════
 // LIST OUTDOOR DUTY REQUESTS (for managers)
 // ═══════════════════════════════════════════════════════════════
-router.get('/outdoor-duty', authorize('owner', 'manager', 'employee', 'counter_staff', 'delivery_partner'), async (req, res) => {
+router.get('/outdoor-duty', authorize('owner', 'manager', 'employee', 'counter_staff', 'florist_staff', 'delivery_partner'), async (req, res) => {
   try {
     const db = await getAsyncDb();
     const { status, location_id, date } = req.query;
@@ -574,7 +698,7 @@ router.get('/outdoor-duty', authorize('owner', 'manager', 'employee', 'counter_s
     const params = [];
 
     // Role-based scoping
-    if (['employee', 'counter_staff', 'delivery_partner'].includes(req.user.role)) {
+    if (['employee', 'counter_staff', 'florist_staff', 'delivery_partner'].includes(req.user.role)) {
       where.push('odr.user_id = ?');
       params.push(req.user.id);
     } else if (req.user.role === 'manager') {
@@ -621,7 +745,7 @@ router.get('/outdoor-duty', authorize('owner', 'manager', 'employee', 'counter_s
 // ═══════════════════════════════════════════════════════════════
 
 // Request advance
-router.post('/salary-advance', authorize('owner', 'manager', 'employee', 'counter_staff', 'delivery_partner'), (req, res) => {
+router.post('/salary-advance', authorize('owner', 'manager', 'employee', 'counter_staff', 'florist_staff', 'delivery_partner'), (req, res) => {
   try {
     const db = getDb();
     const { amount, reason } = req.body;
@@ -650,7 +774,7 @@ router.post('/salary-advance', authorize('owner', 'manager', 'employee', 'counte
 });
 
 // List advances
-router.get('/salary-advances', authorize('owner', 'manager', 'employee', 'counter_staff', 'delivery_partner'), async (req, res) => {
+router.get('/salary-advances', authorize('owner', 'manager', 'employee', 'counter_staff', 'florist_staff', 'delivery_partner'), async (req, res) => {
   try {
     const db = await getAsyncDb();
     const { user_id, status } = req.query;
@@ -658,7 +782,7 @@ router.get('/salary-advances', authorize('owner', 'manager', 'employee', 'counte
     let where = ['1=1'];
     const params = [];
 
-    if (['employee', 'counter_staff', 'delivery_partner'].includes(req.user.role)) {
+    if (['employee', 'counter_staff', 'florist_staff', 'delivery_partner'].includes(req.user.role)) {
       where.push('sa.user_id = ?');
       params.push(req.user.id);
     } else if (user_id) {
@@ -737,15 +861,64 @@ router.put('/salary-advance/:id/:action', authorize('owner', 'manager'), (req, r
       return res.status(400).json({ success: false, message: `Cannot ${action} a ${advance.status} advance.` });
     }
 
-    const newStatus = action === 'approve' ? 'approved' : 'rejected';
-    db.prepare('UPDATE salary_advances SET status = ?, approved_by = ? WHERE id = ?')
-      .run(newStatus, req.user.id, id);
+    if (action === 'reject') {
+      db.prepare('UPDATE salary_advances SET status = ?, approved_by = ? WHERE id = ?')
+        .run('rejected', req.user.id, id);
+      const rejected = db.prepare(`
+        SELECT sa.*, u.name as user_name, a.name as approver_name
+        FROM salary_advances sa JOIN users u ON sa.user_id = u.id LEFT JOIN users a ON sa.approved_by = a.id
+        WHERE sa.id = ?
+      `).get(id);
+      return res.json({ success: true, data: rejected });
+    }
+
+    // action === 'approve' — cash physically leaves the drawer here, same
+    // as any other cash expense (see this task's header on why there's no
+    // payment-method branch: advances have no other path in this data
+    // model today).
+    const employeeLocation = db.prepare(
+      'SELECT location_id FROM user_locations WHERE user_id = ? ORDER BY is_primary DESC, id ASC LIMIT 1'
+    ).get(advance.user_id);
+    const locationId = employeeLocation ? employeeLocation.location_id : null;
+
+    if (!locationId) {
+      return res.status(400).json({ success: false, message: "This employee isn't assigned to a location yet — assign one before approving an advance." });
+    }
+    if (!hasOpenRegister(db, locationId)) {
+      return res.status(400).json({ success: false, message: `The cash drawer isn't open at this employee's location — open the register first to hand over an advance.` });
+    }
+
+    const approveTx = db.transaction(() => {
+      const openRegister = db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1').get(locationId);
+      const advanceUser = db.prepare('SELECT name FROM users WHERE id = ?').get(advance.user_id);
+
+      // Expense written first — see Task 9's header note on why write
+      // ordering, not db.transaction(), is what protects against a
+      // half-done write here.
+      const expenseResult = db.prepare(`
+        INSERT INTO expenses (location_id, category, amount, description, payment_method, expense_date, created_by, employee_id, register_id)
+        VALUES (?, 'salary', ?, ?, 'cash', ?, ?, ?, ?)
+      `).run(
+        locationId, advance.amount,
+        `Salary advance — ${advanceUser ? advanceUser.name : 'employee'}`,
+        todayStr(), req.user.id, advance.user_id,
+        openRegister ? openRegister.id : null
+      );
+
+      if (openRegister) {
+        db.prepare('UPDATE cash_registers SET expected_cash = expected_cash - ? WHERE id = ?').run(advance.amount, openRegister.id);
+      }
+
+      db.prepare('UPDATE salary_advances SET status = ?, approved_by = ? WHERE id = ?').run('approved', req.user.id, id);
+
+      return expenseResult.lastInsertRowid;
+    });
+
+    approveTx();
 
     const updated = db.prepare(`
       SELECT sa.*, u.name as user_name, a.name as approver_name
-      FROM salary_advances sa
-      JOIN users u ON sa.user_id = u.id
-      LEFT JOIN users a ON sa.approved_by = a.id
+      FROM salary_advances sa JOIN users u ON sa.user_id = u.id LEFT JOIN users a ON sa.approved_by = a.id
       WHERE sa.id = ?
     `).get(id);
 
@@ -759,7 +932,7 @@ router.put('/salary-advance/:id/:action', authorize('owner', 'manager'), (req, r
 // ═══════════════════════════════════════════════════════════════
 // STAFF DUTY SUMMARY (today's attendance for all staff)
 // ═══════════════════════════════════════════════════════════════
-router.get('/staff-today', authorize('owner', 'manager'), async (req, res) => {
+router.get('/staff-today', authorize('owner', 'manager', 'counter_staff'), async (req, res) => {
   try {
     const db = await getAsyncDb();
     const today = todayStr();
@@ -782,7 +955,7 @@ router.get('/staff-today', authorize('owner', 'manager'), async (req, res) => {
     // ─── OPTIMIZED: Fetch all active shifts in ONE query instead of subqueries ───
     const allShifts = new Map();
     const shiftsData = await db.prepare(`
-      SELECT DISTINCT ON (user_id, location_id) user_id, location_id, shift_start, shift_end, days_of_week
+      SELECT DISTINCT ON (user_id, location_id) user_id, location_id, shift_start, shift_end, shift_segments, days_of_week
       FROM employee_shifts
       WHERE is_active = 1
       ORDER BY user_id, location_id, updated_at DESC, id DESC
@@ -800,6 +973,7 @@ router.get('/staff-today', authorize('owner', 'manager'), async (req, res) => {
         l.name as location_name,
         es.shift_start,
         es.shift_end,
+        es.shift_segments,
         es.days_of_week
       FROM attendance a
       JOIN users u ON a.user_id = u.id
@@ -816,6 +990,7 @@ router.get('/staff-today', authorize('owner', 'manager'), async (req, res) => {
         if (defaultShift) {
           log.shift_start = defaultShift.shift_start;
           log.shift_end = defaultShift.shift_end;
+          log.shift_segments = defaultShift.shift_segments;
           log.days_of_week = defaultShift.days_of_week;
         }
       }
@@ -842,6 +1017,7 @@ router.get('/staff-today', authorize('owner', 'manager'), async (req, res) => {
           latest_clock_out: row.clock_out,
           clock_in: row.clock_in,
           clock_out: row.clock_out,
+          clock_out_method: row.clock_out_method || null,
           total_hours: Number(row.total_hours || 0),
           outdoor_hours: Number(row.outdoor_hours || 0),
           effective_hours: Number(row.effective_hours || 0),
@@ -851,6 +1027,7 @@ router.get('/staff-today', authorize('owner', 'manager'), async (req, res) => {
           active_session: !row.clock_out,
           shift_start: row.shift_start || null,
           shift_end: row.shift_end || null,
+          shift_segments: row.shift_segments || null,
           days_of_week: row.days_of_week || null,
           logs: [
             {
@@ -859,6 +1036,7 @@ router.get('/staff-today', authorize('owner', 'manager'), async (req, res) => {
               location_name: row.location_name,
               clock_in: row.clock_in,
               clock_out: row.clock_out,
+              clock_out_method: row.clock_out_method || null,
               total_hours: Number(row.total_hours || 0),
               outdoor_hours: Number(row.outdoor_hours || 0),
               effective_hours: Number(row.effective_hours || 0),
@@ -880,11 +1058,13 @@ router.get('/staff-today', authorize('owner', 'manager'), async (req, res) => {
         existing.latest_clock_out = row.clock_out;
         existing.clock_in = row.clock_in;
         existing.clock_out = row.clock_out;
+        existing.clock_out_method = row.clock_out_method || null;
         existing.location_id = row.location_id;
         existing.location_name = row.location_name;
-        if (row.shift_start || row.shift_end) {
+        if (row.shift_start || row.shift_end || row.shift_segments) {
           existing.shift_start = row.shift_start || null;
           existing.shift_end = row.shift_end || null;
+          existing.shift_segments = row.shift_segments || null;
           existing.days_of_week = row.days_of_week || null;
         }
       }
@@ -892,6 +1072,7 @@ router.get('/staff-today', authorize('owner', 'manager'), async (req, res) => {
         existing.active_session = true;
         existing.clock_in = row.clock_in;
         existing.clock_out = null;
+        existing.clock_out_method = null;
         existing.location_id = row.location_id;
         existing.location_name = row.location_name;
       }
@@ -902,18 +1083,33 @@ router.get('/staff-today', authorize('owner', 'manager'), async (req, res) => {
         location_name: row.location_name,
         clock_in: row.clock_in,
         clock_out: row.clock_out,
+        clock_out_method: row.clock_out_method || null,
         total_hours: Number(row.total_hours || 0),
         outdoor_hours: Number(row.outdoor_hours || 0),
         effective_hours: Number(row.effective_hours || 0),
       });
     }
 
-    const staff = Array.from(byUser.values()).map((s) => ({
-      ...s,
-      total_hours: Math.round(s.total_hours * 100) / 100,
-      outdoor_hours: Math.round(s.outdoor_hours * 100) / 100,
-      effective_hours: Math.round(s.effective_hours * 100) / 100,
-    }));
+    const staff = Array.from(byUser.values()).map((s) => {
+      const shiftWork = computeShiftWork(s.logs, { shift_start: s.shift_start, shift_end: s.shift_end, shift_segments: s.shift_segments }, { includeInProgress: true });
+      const logsWithStats = s.logs.map((log) => {
+        const sessionStats = shiftWork.sessions.find((ss) => ss.attendanceId === log.id);
+        return {
+          ...log,
+          late_minutes: sessionStats?.lateMinutes || 0,
+          overtime_minutes: sessionStats?.overtimeMinutes || 0,
+        };
+      });
+      return {
+        ...s,
+        total_hours: Math.round(s.total_hours * 100) / 100,
+        outdoor_hours: Math.round(s.outdoor_hours * 100) / 100,
+        effective_hours: Math.round(s.effective_hours * 100) / 100,
+        late_minutes_today: shiftWork.totalLateMinutes,
+        overtime_minutes_today: shiftWork.totalOvertimeMinutes,
+        logs: logsWithStats,
+      };
+    });
 
     // Also get staff who haven't clocked in
     let notClockedFilter = '';
@@ -931,7 +1127,7 @@ router.get('/staff-today', authorize('owner', 'manager'), async (req, res) => {
     }
 
     const notClocked = await db.prepare(`
-      SELECT DISTINCT
+      SELECT DISTINCT ON (u.id)
         u.id,
         u.name,
         u.phone,
@@ -946,20 +1142,68 @@ router.get('/staff-today', authorize('owner', 'manager'), async (req, res) => {
           (SELECT es2.shift_end FROM employee_shifts es2 WHERE es2.user_id = u.id AND es2.is_active = 1 ORDER BY es2.updated_at DESC, es2.id DESC LIMIT 1)
         ) as shift_end,
         COALESCE(
+          es.shift_segments,
+          (SELECT es2.shift_segments FROM employee_shifts es2 WHERE es2.user_id = u.id AND es2.is_active = 1 ORDER BY es2.updated_at DESC, es2.id DESC LIMIT 1)
+        ) as shift_segments,
+        COALESCE(
           es.days_of_week,
           (SELECT es2.days_of_week FROM employee_shifts es2 WHERE es2.user_id = u.id AND es2.is_active = 1 ORDER BY es2.updated_at DESC, es2.id DESC LIMIT 1)
         ) as days_of_week
       FROM users u
       JOIN user_locations ul ON u.id = ul.user_id
       LEFT JOIN employee_shifts es ON es.user_id = u.id AND es.location_id = ul.location_id AND es.is_active = 1
-      WHERE u.role IN ('employee', 'counter_staff', 'delivery_partner', 'manager') AND u.is_active = 1
+      WHERE u.role IN ('employee', 'counter_staff', 'florist_staff', 'delivery_partner', 'manager') AND u.is_active = 1
       ${notClockedFilter}
       AND u.id NOT IN (SELECT user_id FROM attendance WHERE date = ?)
+      ORDER BY u.id, ul.is_primary DESC, ul.id ASC
     `).all(...notParams, today);
 
     const active = staff.filter((s) => s.active_session);
     const completed = staff.filter((s) => !s.active_session);
-    const late = staff.filter((s) => s.late_arrival === 1);
+    // Derive the summary tile from the SAME freshly-computed figure the
+    // per-row "Nm late" chips use, not the stored late_arrival boolean.
+    // late_arrival is written once at clock-in time, so every row written
+    // before the split-shift fix carries the old non-segment-aware verdict
+    // — and the roster renders both numbers on one screen, where a "Late: 3"
+    // tile above three rows with no late chip is just a reason to trust
+    // neither. "Computed fresh, never stored" has to hold for the total a
+    // manager actually reads, too.
+    const late = staff.filter((s) => s.late_minutes_today > 0);
+
+    // Auto-closed sessions the manager hasn't seen yet — deliberately a
+    // SEPARATE, additive query rather than a change to the roster above.
+    // The roster is hard-scoped to a.date = today (correct for what it is),
+    // but a shift ending at 22:30 gets swept closed around 02:30 the NEXT
+    // calendar day while the row's own date is still yesterday's — so an
+    // evening auto-close never appears on any roster anyone looks at. Spec
+    // §8's whole point is that an auto-close is a guess, not a fact, and
+    // needs a human eye; this is the visibility half of that (surfacing it
+    // at all). Rolling 24h window off clock_out, not date, for exactly the
+    // reason above.
+    let autoClosedFilter = '';
+    const autoClosedParams = [];
+    if (location_id) {
+      autoClosedFilter = 'AND a.location_id = ?';
+      autoClosedParams.push(Number(location_id));
+    } else if (req.user.role === 'manager') {
+      const locs = (await db.prepare('SELECT location_id FROM user_locations WHERE user_id = ?').all(req.user.id)).map(l => l.location_id);
+      if (locs.length > 0) {
+        autoClosedFilter = `AND a.location_id IN (${locs.map(() => '?').join(',')})`;
+        autoClosedParams.push(...locs);
+      }
+    }
+
+    const needsConfirmation = await db.prepare(`
+      SELECT a.id, a.user_id, u.name as user_name, a.date, a.clock_in, a.clock_out,
+             a.clock_out_method, a.location_id, l.name as location_name
+      FROM attendance a
+      JOIN users u ON a.user_id = u.id
+      JOIN locations l ON a.location_id = l.id
+      WHERE a.clock_out_method IN ('auto_shift_end', 'auto_timeout')
+        AND a.clock_out >= NOW() - INTERVAL '24 hours'
+        ${autoClosedFilter}
+      ORDER BY a.clock_out DESC
+    `).all(...autoClosedParams);
 
     res.json({
       success: true,
@@ -968,12 +1212,14 @@ router.get('/staff-today', authorize('owner', 'manager'), async (req, res) => {
         active,
         completed,
         absent: notClocked,
+        needs_confirmation: needsConfirmation,
         summary: {
           present_count: staff.length,
           active_count: active.length,
           completed_count: completed.length,
           absent_count: notClocked.length,
           late_count: late.length,
+          needs_confirmation_count: needsConfirmation.length,
         },
       },
     });
@@ -984,3 +1230,5 @@ router.get('/staff-today', authorize('owner', 'manager'), async (req, res) => {
 });
 
 module.exports = router;
+module.exports.isLateArrival = isLateArrival;
+module.exports.isEarlyDeparture = isEarlyDeparture;

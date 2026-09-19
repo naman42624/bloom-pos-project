@@ -135,7 +135,11 @@ export default function ProductionQueueScreen({ navigation, route }) {
 
   // Date filter for production tasks
   const todayStr = useMemo(() => getShopTodayStr(timezone), [timezone]);
-  const [selectedDate, setSelectedDate] = useState(todayStr); // defaults to today
+  // Defaults to today, unless the Dashboard's "Tomorrow: N to prepare"
+  // shortcut (2026-09-13, staff-ux fix) navigated here with an explicit
+  // date to open on — evening prep planning needs this screen to land
+  // already scoped to tomorrow, not require an extra tap once arrived.
+  const [selectedDate, setSelectedDate] = useState(route.params?.initialDate || todayStr);
   const [showDatePicker, setShowDatePicker] = useState(false);
 
   useEffect(() => {

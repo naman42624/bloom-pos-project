@@ -21,12 +21,12 @@ export default function OrdersHubScreen({ navigation }) {
     try {
       const [salesRes, deliveriesRes, pickupsRes] = await Promise.all([
         api.getSales({ limit: 1 }).catch(() => ({ data: {} })),
-        api.getDeliveries({ status: 'pending' }).catch(() => ({ data: { deliveries: [] } })),
+        api.getDeliveries({ status: 'pending', limit: 1 }).catch(() => ({ data: { deliveries: [] } })),
         api.getSales({ order_type: 'pickup', pickup_status: 'waiting', limit: 1 }).catch(() => ({ data: {} })),
       ]);
       setCounts({
         salesCount: salesRes.data?.pagination?.total || 0,
-        deliveriesCount: deliveriesRes.data?.deliveries?.length || 0,
+        deliveriesCount: deliveriesRes.data?.total || 0,
         pickupsCount: pickupsRes.data?.pagination?.total || 0,
       });
     } catch {

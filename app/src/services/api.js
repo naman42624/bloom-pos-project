@@ -667,6 +667,11 @@ class ApiService {
     return this.request(`/sales/register/history${query ? `?${query}` : ''}`);
   }
 
+  getRegisterSessions(params = {}) {
+    const q = new URLSearchParams(params).toString();
+    return this.request(`/sales/register/sessions${q ? `?${q}` : ''}`);
+  }
+
   // ─── Expenses ───────────────────────────────────────────
   getExpenses(params = {}) {
     const query = new URLSearchParams(params).toString();
@@ -903,6 +908,14 @@ class ApiService {
     return this.request('/deliveries/batch-assign', { method: 'POST', body: JSON.stringify(data) });
   }
 
+  assignDeliveryRoute(deliveryId, data) {
+    return this.request(`/deliveries/${deliveryId}/route`, { method: 'PUT', body: JSON.stringify(data) });
+  }
+
+  batchAssignRoute(data) {
+    return this.request('/deliveries/batch-assign-route', { method: 'POST', body: JSON.stringify(data) });
+  }
+
   pickupDelivery(deliveryId) {
     return this.request(`/deliveries/${deliveryId}/pickup`, { method: 'PUT' });
   }
@@ -1025,6 +1038,11 @@ class ApiService {
     return this.request('/sales/customer-order', { method: 'POST', body: JSON.stringify(data) });
   }
 
+  // ─── Public order tracking (no auth) ──────────────────────
+  getTrackingInfo(token) {
+    return this.request(`/track/${token}`);
+  }
+
   // ─── Attendance ───────────────────────────────────────────
   clockIn(data) {
     return this.request('/attendance/clock-in', { method: 'POST', body: JSON.stringify(data) });
@@ -1036,6 +1054,14 @@ class ApiService {
 
   getTodayAttendance() {
     return this.request('/attendance/today');
+  }
+
+  undoAutoClockIn(attendanceId) {
+    return this.request(`/attendance/${attendanceId}/undo-auto-clockin`, { method: 'POST' });
+  }
+
+  reportMissedClockIn(data) {
+    return this.request('/attendance/missed-clock-in', { method: 'POST', body: JSON.stringify(data) });
   }
 
   getAttendanceHistory(params = {}) {

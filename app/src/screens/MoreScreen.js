@@ -5,7 +5,7 @@ import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 
 const MENU_ITEMS = [
-  { key: 'Attendance', icon: 'time', label: 'Attendance', roles: ['owner', 'manager'] },
+  { key: 'AttendanceHub', icon: 'time', label: 'Attendance', roles: ['owner', 'manager'] },
   { key: 'Reports', icon: 'bar-chart', label: 'Reports', roles: ['owner', 'manager'] },
   { key: 'Customers', icon: 'people', label: 'Customers', roles: ['owner', 'manager'] },
   { key: 'RecurringOrders', icon: 'repeat', label: 'Recurring Orders', roles: ['owner', 'manager'] },

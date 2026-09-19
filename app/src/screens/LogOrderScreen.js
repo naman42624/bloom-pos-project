@@ -10,6 +10,7 @@ import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import { useAuth } from '../context/AuthContext';
 import { getShopNow } from '../utils/datetime';
 import { bumpActivity } from '../hooks/useIdleLock';
+import useSubmitGuard from '../hooks/useSubmitGuard';
 
 const CHANNELS = [
   { key: 'whatsapp', label: 'WhatsApp', icon: 'logo-whatsapp' },
@@ -98,6 +99,7 @@ export default function LogOrderScreen({ navigation }) {
   // ones above (e.g. "this specific rose needs to be this exact shade").
   const [itemVoiceModalIdx, setItemVoiceModalIdx] = useState(null);
   const [saving, setSaving] = useState(false);
+  const guardSubmit = useSubmitGuard();
 
   const [vendorName, setVendorName] = useState('');
 
@@ -677,7 +679,7 @@ export default function LogOrderScreen({ navigation }) {
 
         <TouchableOpacity
           style={[styles.saveButton, !canSave && styles.saveButtonDisabled]}
-          onPress={handleSave}
+          onPress={guardSubmit(handleSave)}
           disabled={!canSave}
         >
           {saving ? <ActivityIndicator color={Colors.white} /> : <Text style={styles.saveButtonText}>Save Order</Text>}

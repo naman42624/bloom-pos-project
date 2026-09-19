@@ -12,3 +12,7 @@ server/uploads/
 
 # Local git worktrees for isolated feature-branch work (superpowers:using-git-worktrees)
 .worktrees/
+
+# Local dev server config (DB connection string, JWT secret) — never commit
+.env
+.env.local

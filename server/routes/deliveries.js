@@ -14,6 +14,7 @@ const { normalizeDateFields } = require('../utils/normalizeDates');
 const { hasOpenRegister, REGISTER_CLOSED_MESSAGE } = require('../utils/register-guard');
 const { computeOrderStage, getStageFlags } = require('../utils/order-stage');
 const { sumCollectionsByMethod } = require('../utils/settlement-math');
+const { buildTrackingUrl } = require('../utils/tracking-token');
 
 // Use todayStr() from time.js for timezone-aware date strings
 
@@ -103,7 +104,7 @@ router.get('/partners', authenticate, authorize('owner', 'manager', 'counter_sta
 router.get('/', authenticate, authorize('owner', 'manager', 'delivery_partner', 'employee', 'counter_staff'), async (req, res, next) => {
   try {
     const db = await getAsyncDb();
-    const { location_id, status, delivery_partner_id, date_from, date_to, limit: lim, offset: off } = req.query;
+    const { location_id, status, delivery_partner_id, date_from, date_to, search, sort, limit: lim, offset: off } = req.query;
 
     // `open_task_count` is a verbatim copy of the production-task guard in
     // PUT /sales/:id/status ("Enforce production task completion before marking
@@ -113,6 +114,8 @@ router.get('/', authenticate, authorize('owner', 'manager', 'delivery_partner', 
     // THIRD caller and was the one missed when the field was added, so a
     // 'preparing' delivery with open tasks kept being handed a Mark Ready the
     // endpoint is guaranteed to reject. All three copies MUST stay identical.
+    // `has_unassigned_open_task` is a fourth copy of the same kind of guard field,
+    // added 2026-09-10 (Deliveries redesign). Must stay identical to sales.js.
     // Deliberately NOT a comment inside the SQL string below: bindParams() in
     // database-async.js cannot tell an apostrophe in a SQL comment from a
     // string boundary and would desync every ? placeholder after it
@@ -122,6 +125,11 @@ router.get('/', authenticate, authorize('owner', 'manager', 'delivery_partner', 
              s.status as order_status, s.pickup_status, s.special_instructions, s.is_credit_sale,
              COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.sale_id = d.sale_id), 0) as total_paid,
              (SELECT COUNT(*) FROM production_tasks pt WHERE pt.sale_id = s.id AND pt.status NOT IN ('completed', 'cancelled')) as open_task_count,
+             EXISTS(
+               SELECT 1 FROM production_tasks ptu
+               WHERE ptu.sale_id = s.id AND ptu.assigned_to IS NULL
+                 AND ptu.status IN ('pending', 'in_progress')
+             ) as has_unassigned_open_task,
              -- Load-verify indicator — same fields/reasoning as sales.js's
              -- GET / and GET /:id (see either for the full comment).
              (SELECT COUNT(*) FROM sale_items si WHERE si.sale_id = s.id) as load_total_count,
@@ -157,8 +165,29 @@ router.get('/', authenticate, authorize('owner', 'manager', 'delivery_partner', 
     if (delivery_partner_id && req.user.role !== 'delivery_partner') {
       sql += ' AND d.delivery_partner_id = ?'; params.push(parseInt(delivery_partner_id));
     }
-    if (date_from) { sql += ' AND DATE(d.created_at) >= ?'; params.push(date_from); }
-    if (date_to) { sql += ' AND DATE(d.created_at) <= ?'; params.push(date_to); }
+    // Fixed 2026-09-11 (whole-branch review finding A1): this used to filter
+    // on d.created_at (when the delivery ROW was created) instead of
+    // d.scheduled_date (when the delivery is actually due) — reproduced live
+    // against delivery 96 (created 2026-09-01, scheduled 2026-09-03): a
+    // "Today" filter on 09-03 wrongly excluded it. 13 of 38 live scheduled
+    // deliveries had created_at != scheduled_date. A delivery with no
+    // scheduled_date is correctly excluded from a date-range filter (there's
+    // no date to match), matching how "Today"/"This Week" already read
+    // elsewhere in this file (e.g. the at-risk query above).
+    if (date_from) { sql += ' AND DATE(d.scheduled_date) >= ?'; params.push(date_from); }
+    if (date_to) { sql += ' AND DATE(d.scheduled_date) <= ?'; params.push(date_to); }
+
+    if (search) {
+      const s = `%${search}%`;
+      sql += ` AND (
+        s.sale_number ILIKE ?
+        OR d.customer_name ILIKE ?
+        OR d.customer_phone ILIKE ?
+        OR d.delivery_address ILIKE ?
+        OR u.name ILIKE ?
+      )`;
+      params.push(s, s, s, s, s);
+    }
 
     // Scope managers to their locations
     if (req.user.role === 'manager' && !location_id) {
@@ -169,7 +198,29 @@ router.get('/', authenticate, authorize('owner', 'manager', 'delivery_partner', 
       }
     }
 
-    sql += ' ORDER BY CASE d.status WHEN \'pending\' THEN 1 WHEN \'assigned\' THEN 2 WHEN \'picked_up\' THEN 3 WHEN \'in_transit\' THEN 4 WHEN \'delivered\' THEN 5 WHEN \'failed\' THEN 6 WHEN \'cancelled\' THEN 7 END, d.scheduled_date ASC NULLS LAST, d.created_at DESC';
+    // Snapshot sql/params right before ORDER BY/LIMIT/OFFSET are appended, and
+    // wrap that snapshot as a subquery to count matching rows — this
+    // guarantees the count always uses the exact same filters as the list,
+    // with zero duplicated WHERE-condition logic to drift out of sync later.
+    const countRow = await db.prepare(`SELECT COUNT(*) as total FROM (${sql}) as filtered`).get(...params);
+    const total = Number(countRow?.total || 0);
+
+    // sort==='urgency' (added for the "Urgent first" toolbar option —
+    // previously silently ignored here, see CLAUDE.md-linked spec accuracy
+    // note): mirrors GET /sales's own urgency ORDER BY (server/routes/
+    // sales.js, search `sort === 'urgency'`), adapted to this route's
+    // deliveries/sales join — priority lives on `s` (sales), scheduled
+    // date/time and created_at live on `d` (deliveries), not `s`.
+    if (sort === 'urgency') {
+      sql += ` ORDER BY
+        (s.priority = 'rush') DESC,
+        (d.scheduled_date IS NOT NULL) DESC,
+        d.scheduled_date ASC NULLS LAST,
+        d.scheduled_time ASC NULLS LAST,
+        d.created_at ASC`;
+    } else {
+      sql += ' ORDER BY CASE d.status WHEN \'pending\' THEN 1 WHEN \'assigned\' THEN 2 WHEN \'picked_up\' THEN 3 WHEN \'in_transit\' THEN 4 WHEN \'delivered\' THEN 5 WHEN \'failed\' THEN 6 WHEN \'cancelled\' THEN 7 END, d.scheduled_date ASC NULLS LAST, d.created_at DESC';
+    }
 
     const limit = parseInt(lim) || 200;
     const offset = parseInt(off) || 0;
@@ -250,7 +301,8 @@ router.get('/', authenticate, authorize('owner', 'manager', 'delivery_partner', 
         }, req.user.role, stageFlags),
       };
     });
-    res.json({ success: true, data: withStage });
+    withStage.forEach((d) => { d.tracking_url = buildTrackingUrl(d.sale_id); });
+    res.json({ success: true, data: { deliveries: withStage, total } });
   } catch (err) { next(err); }
 });
 
@@ -371,6 +423,68 @@ router.post(
         success: true,
         message: `Assigned ${assigned} deliveries to ${partner.name}. ${skipped > 0 ? `${skipped} skipped (invalid status).` : ''}`,
         data: { batch_id: batchId, assigned, skipped, partner_name: partner.name },
+      });
+    } catch (err) { next(err); }
+  }
+);
+
+// ─── POST /api/deliveries/batch-assign-route ─────────────────
+// Bulk route assignment — mirrors /batch-assign's exact per-id
+// WHERE-filtered UPDATE + affected-row counting pattern. Excludes only
+// the two terminal statuses (a route tag on a finished/cancelled delivery
+// is meaningless); every other status is eligible, wider than
+// /batch-assign's rider allow-list since a route tag stays meaningful
+// through picked_up/in_transit. This wider allow-list is currently
+// reachable only via direct API calls — DeliveriesScreen.js gates its
+// selection UI more narrowly via ASSIGNABLE_STATUSES (pending/assigned/failed),
+// so picked_up/in_transit deliveries never reach this endpoint from the UI.
+// Widening the UI's selection gate to match is a deliberate future follow-up.
+router.post(
+  '/batch-assign-route',
+  authenticate,
+  authorize('owner', 'manager', 'counter_staff'),
+  (req, res, next) => {
+    try {
+      const { delivery_ids } = req.body;
+      if (!Array.isArray(delivery_ids) || delivery_ids.length === 0) {
+        return res.status(400).json({ success: false, message: 'delivery_ids array required.' });
+      }
+      if (!('route_id' in req.body)) {
+        return res.status(400).json({ success: false, message: 'route_id is required (pass null to clear).' });
+      }
+      const { route_id } = req.body;
+      if (route_id != null && !Number.isInteger(route_id)) {
+        return res.status(400).json({ success: false, message: 'route_id must be an integer or null.' });
+      }
+
+      const db = getDb();
+      if (route_id != null) {
+        const route = db.prepare('SELECT id FROM delivery_routes WHERE id = ?').get(route_id);
+        if (!route) return res.status(404).json({ success: false, message: 'Route not found.' });
+      }
+
+      let assigned = 0;
+      let skipped = 0;
+
+      const assignStmt = db.prepare(`
+        UPDATE deliveries SET route_id = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ? AND status NOT IN ('delivered', 'cancelled')
+      `);
+
+      const assignAll = db.transaction(() => {
+        for (const id of delivery_ids) {
+          const result = assignStmt.run(route_id, Number(id));
+          if (result.changes > 0) assigned++;
+          else skipped++;
+        }
+      });
+
+      assignAll();
+
+      res.json({
+        success: true,
+        message: `Assigned route to ${assigned} deliver${assigned === 1 ? 'y' : 'ies'}.${skipped > 0 ? ` ${skipped} skipped (delivered/cancelled).` : ''}`,
+        data: { assigned, skipped },
       });
     } catch (err) { next(err); }
   }
@@ -533,6 +647,50 @@ router.put(
         type: 'delivery',
         data: { deliveryId: delivery.id, screen: 'DeliveryDetail' },
       });
+    } catch (err) { next(err); }
+  }
+);
+
+// ─── PUT /api/deliveries/:id/route ───────────────────────────
+// Assign, reassign, or clear a delivery's route tag — a manual dispatch
+// grouping label (delivery_routes), not a routing/stop-sequencing feature.
+// Mirrors /:id/assign's exact validation shape. Unlike rider assignment,
+// route assignment is not status-sensitive except at the two terminal
+// states — a route tag stays meaningful through picked_up/in_transit.
+router.put(
+  '/:id(\\d+)/route',
+  authenticate,
+  authorize('owner', 'manager', 'counter_staff'),
+  (req, res, next) => {
+    try {
+      if (!('route_id' in req.body)) {
+        return res.status(400).json({ success: false, message: 'route_id is required (pass null to clear).' });
+      }
+      const { route_id } = req.body;
+      if (route_id != null && !Number.isInteger(route_id)) {
+        return res.status(400).json({ success: false, message: 'route_id must be an integer or null.' });
+      }
+
+      const db = getDb();
+      const delivery = db.prepare('SELECT * FROM deliveries WHERE id = ?').get(req.params.id);
+      if (!delivery) return res.status(404).json({ success: false, message: 'Delivery not found' });
+      if (['delivered', 'cancelled'].includes(delivery.status)) {
+        return res.status(400).json({ success: false, message: `Cannot assign a route to a delivery in ${delivery.status} status` });
+      }
+
+      if (route_id != null) {
+        const route = db.prepare('SELECT id FROM delivery_routes WHERE id = ?').get(route_id);
+        if (!route) return res.status(404).json({ success: false, message: 'Route not found' });
+      }
+
+      db.prepare('UPDATE deliveries SET route_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(route_id, delivery.id);
+
+      const updated = db.prepare(`
+        SELECT d.*, r.name as route_name FROM deliveries d
+        LEFT JOIN delivery_routes r ON r.id = d.route_id WHERE d.id = ?
+      `).get(delivery.id);
+
+      res.json({ success: true, data: updated });
     } catch (err) { next(err); }
   }
 );

@@ -19,7 +19,7 @@ import useBreakpoint from '../hooks/useBreakpoint';
 import api from '../services/api';
 import { showAlert } from '../utils/alert';
 import { Colors, FontSize, Spacing } from '../constants/theme';
-import { parseServerDate, getShopNow, getShopTodayStr, DEFAULT_TZ, formatTimeString, formatDateLabel } from '../utils/datetime';
+import { parseServerDate, getShopNow, getShopTodayStr, getShopTomorrowStr, DEFAULT_TZ, formatTimeString, formatDateLabel } from '../utils/datetime';
 import { isRegisterStale } from '../hooks/useRegisterStatus';
 import { OrderQuickModal } from '../components/QuickModals';
 import OrderKanbanBoard from '../components/orderBoard/OrderKanbanBoard';
@@ -29,6 +29,8 @@ import DeliveryChecklist from '../components/DeliveryChecklist';
 // rule lives. Imported rather than restated so this screen, the order card and
 // the order modal cannot drift apart on it (Task 15 review).
 import { resolvePreparerStep } from '../components/orderBoard/OrderCard';
+import CollectCodModal from '../components/orderBoard/CollectCodModal';
+import TaskCompletionModal from '../components/orderBoard/TaskCompletionModal';
 import DateTimePickerModal from '../components/DateTimePickerModal';
 import AttachmentVoiceRow from '../components/AttachmentVoiceRow';
 import ImageModal from '../components/ImageModal';
@@ -248,12 +250,15 @@ export default function DashboardScreen({ navigation }) {
   // A. In 'start' mode that flips a live sale to preparing.
   const preparerReqRef = useRef(0);
 
-  // { order, amount, method, reference, loading } while the Mark Delivered
-  // COD-entry prompt is open, null when closed — see resolveDeliverStep
-  // (OrderCard.js) and handleResolveAction's 'collect_cod' branch. Same
-  // shape/purpose as preparerPicker above, one level simpler: no staff list
-  // to fetch, just a form, so it opens filled-in rather than loading.
+  // The order the Mark Delivered COD-entry prompt is open for, null when
+  // closed — see resolveDeliverStep (OrderCard.js) and handleResolveAction's
+  // 'collect_cod' branch. Amount/method/loading now live inside
+  // CollectCodModal itself (extracted 2026-09-10 so Orders Inbox's inline
+  // resolution can use the identical flow) — this only tracks WHICH order.
   const [codCollectPicker, setCodCollectPicker] = useState(null);
+  // The order the "Finish Tasks" modal is open for, null when closed — see
+  // TaskCompletionModal.js and handleResolveAction's 'finish_tasks' branch.
+  const [taskCompletionOrder, setTaskCompletionOrder] = useState(null);
   // The order whose load checklist is open in a modal, null when closed —
   // OrderCard's load pill (onVerifyLoad). Holds the whole order (not just a
   // delivery id) so the modal's title can name the order.
@@ -273,6 +278,11 @@ export default function DashboardScreen({ navigation }) {
   // to already be in the open-orders array.
   const [doneTodayCount, setDoneTodayCount] = useState(0);
   const [staffPulse, setStaffPulse] = useState([]);
+  // Count for the owner/manager "N staff not clocked in" banner — set from
+  // the SAME staffRes.data.absent array used to build staffPulse below, not
+  // a second fetch (Task 20; see the setNotClockedInCount call near the
+  // `const absent = ...` line).
+  const [notClockedInCount, setNotClockedInCount] = useState(0);
   const [registers, setRegisters] = useState([]);
   const [reportKPIs, setReportKPIs] = useState(null);
 
@@ -330,7 +340,7 @@ export default function DashboardScreen({ navigation }) {
           api.getDeliveries({ status: 'active' }).catch(() => ({ data: [] })),
           api.getUnsettledDeliveries({}).catch(() => ({ data: { deliveries: [], total_unsettled: 0 } })),
         ]);
-        setMyDeliveries(delivRes?.data || []);
+        setMyDeliveries(delivRes?.data?.deliveries || []);
         const unsettledData = unsettledRes?.data || {};
         setReportKPIs({ unsettledTotal: Number(unsettledData.total_unsettled || 0), unsettledCount: (unsettledData.deliveries || []).length });
         setLoading(false);
@@ -371,7 +381,7 @@ export default function DashboardScreen({ navigation }) {
       // ─── Counter Staff: sales-focused fetch (counts/status only —
       // no revenue totals or cash amounts, per role scope) ──────
       if (isCounterStaff) {
-        const [summaryRes, registerRes, pendingRes, confirmedRes, preparingRes, readyRes, tasksRes, doneTodayRes] = await Promise.all([
+        const [summaryRes, registerRes, pendingRes, confirmedRes, preparingRes, readyRes, tasksRes, doneTodayRes, staffTodayRes] = await Promise.all([
           api.getTodaySummary(activeLocation?.id).catch(() => ({ data: { total_sales: 0 } })),
           activeLocation?.id ? api.getRegisterStatus(activeLocation.id).catch(() => ({ data: null })) : Promise.resolve({ data: null }),
           // Fetched wider than the 5 we display so the today/future split
@@ -415,6 +425,11 @@ export default function DashboardScreen({ navigation }) {
           // accurate `total` regardless of `limit`.
           api.getSales({ status: 'completed', location_id: activeLocation?.id, filter_date: getShopTodayStr(DEFAULT_TZ), limit: 1 })
             .catch(() => ({ data: { total: 0 } })),
+          // "N staff not clocked in" dashboard banner (counter_staff just
+          // gained backend access to this endpoint in c268b6f — no prior
+          // fetch here to reuse). Same defensive catch shape as every other
+          // call in this array.
+          api.getStaffToday({ location_id: activeLocation?.id }).catch(() => ({ data: { absent: [] } })),
         ]);
         setCounterStats({
           salesCount: Number(summaryRes?.data?.total_sales || 0),
@@ -437,6 +452,7 @@ export default function DashboardScreen({ navigation }) {
         setCounterPendingOrders([...pendingList, ...confirmedList, ...preparingList, ...readyList]);
         setTaskRows(Array.isArray(tasksRes?.data) ? tasksRes.data : []);
         setDoneTodayCount(Number(doneTodayRes?.data?.total || 0));
+        setNotClockedInCount((staffTodayRes?.data?.absent || []).length);
         setLoading(false);
         setRefreshing(false);
         return;
@@ -513,6 +529,7 @@ export default function DashboardScreen({ navigation }) {
 
         const present = staffRes?.data?.present || [];
         const absent = staffRes?.data?.absent || [];
+        setNotClockedInCount(absent.length);
 
         const normalizedPresentRaw = present.map((s) => {
           let pulse = 'active';
@@ -701,8 +718,17 @@ export default function DashboardScreen({ navigation }) {
   // layout. Spec §7.
   const handleResolveAction = useCallback(async (order, kind) => {
     if (kind === 'collect_payment') {
+      // AddPayment, not navigate('POS', {screen: 'AddPayment', ...}) —
+      // MainNavigator.js registers AddPayment locally inside DashboardStack
+      // (not only inside POSStack) specifically so it stays on this stack;
+      // going via 'POS' force-jumps to a different tab whose own stack has
+      // no memory of where the user actually was, so AddPaymentScreen's
+      // navigation.goBack() on submit lands on the POS tab's own root
+      // instead of back here (live-reported from Orders Inbox, 2026-09-10,
+      // where the same bug was far more visible — from Dashboard it
+      // happened to land back on a screen that looked plausible).
       const due = Number(order.grand_total || 0) - Number(order.total_paid || 0);
-      navigation.navigate('POS', { screen: 'AddPayment', params: { saleId: order.id, due } });
+      navigation.navigate('AddPayment', { saleId: order.id, due });
       return;
     }
     // Picking a rider is one of the most repeated actions in the shop, so it
@@ -951,15 +977,15 @@ export default function DashboardScreen({ navigation }) {
       }
       return;
     }
-    // Nothing to pick and nobody to choose: the open production tasks ARE the
-    // blocker, and they live on the order. Deliberately the same destination
-    // the card body already leads to — the button exists so the reason is
-    // stated in words instead of relying on someone guessing that the whole
-    // card is tappable (staff-ux-checklist #1: no hidden gestures). No role
-    // check for the same reason: every viewer who can see this card can
-    // already open the order by tapping it.
+    // The open production tasks ARE the blocker, and used to send the
+    // viewer to SaleDetail to finish them — replaced with TaskCompletionModal
+    // (2026-09-10, requested directly: a modal here like every other
+    // dead-end/resolution action, not a screen change). No role check, same
+    // reason as before: every viewer who can see this card can already open
+    // the order by tapping it, so this offers nothing a tap couldn't already
+    // reach — it just saves the round trip.
     if (kind === 'finish_tasks') {
-      navigation.navigate('SaleDetail', { saleId: order.id });
+      setTaskCompletionOrder(order);
       return;
     }
     if (kind === 'record_cod') {
@@ -973,14 +999,7 @@ export default function DashboardScreen({ navigation }) {
     // outstanding amount; cash/upi mirrors PUT /deliveries/:id/deliver's own
     // validation (body('cod_method').isIn(['cash','upi'])).
     if (kind === 'collect_cod') {
-      const outstanding = Number(order.cod_amount || 0) - Number(order.cod_collected || 0);
-      setCodCollectPicker({
-        order,
-        amount: outstanding > 0 ? outstanding.toFixed(2) : '',
-        method: 'cash',
-        reference: '',
-        loading: false,
-      });
+      setCodCollectPicker(order);
     }
   }, [navigation, activeLocation?.id, tasksBySaleId, user?.role, user?.id, fetchDashboard]);
 
@@ -1151,44 +1170,8 @@ export default function DashboardScreen({ navigation }) {
     fetchDashboard();
   }, [fetchDashboard]);
 
-  // Submits Mark Delivered with the entered COD amount/method in one request —
-  // same endpoint resolveDeliverStep found outstanding money on
-  // (PUT /deliveries/:id/deliver), just no longer fired blind. Amount is
-  // capped to what's actually outstanding so a typo can't overshoot into the
-  // server's own "COD collection exceeds remaining amount" 400.
-  const handleSubmitCodCollect = useCallback(async () => {
-    const picker = codCollectPicker;
-    if (!picker?.order || picker.loading) return;
-    const nextAction = picker.order.display_stage?.nextAction;
-    if (!nextAction) {
-      setCodCollectPicker(null);
-      showAlert('Mark Delivered', 'This order has already moved on. Pull down to refresh.');
-      return;
-    }
-    const entered = parseFloat(picker.amount) || 0;
-    const outstanding = Number(picker.order.cod_amount || 0) - Number(picker.order.cod_collected || 0);
-    if (entered <= 0) {
-      showAlert('Mark Delivered', 'Enter the amount collected, or the exact outstanding amount if paid in full.');
-      return;
-    }
-    if (entered > outstanding + 0.01) {
-      showAlert('Mark Delivered', `Only ₹${outstanding.toFixed(2)} is outstanding on this order.`);
-      return;
-    }
-    setCodCollectPicker((prev) => (prev ? { ...prev, loading: true } : prev));
-    try {
-      await api.advanceOrder(nextAction, {
-        cod_collected: entered,
-        cod_method: picker.method,
-        cod_reference: picker.reference?.trim() || undefined,
-      });
-      setCodCollectPicker(null);
-      await fetchDashboard();
-    } catch (err) {
-      setCodCollectPicker((prev) => (prev ? { ...prev, loading: false } : prev));
-      showAlert('Mark Delivered', err?.message || 'Could not record this. Please try again.');
-    }
-  }, [codCollectPicker, fetchDashboard]);
+  // Submit/validation logic now lives inside CollectCodModal itself
+  // (extracted 2026-09-10) — see that component.
 
   // Same destination screen, two different tabs: owner/manager reach Orders
   // Inbox via the `Orders` tab, counter staff via `EmployeeOrders`
@@ -1236,9 +1219,14 @@ export default function DashboardScreen({ navigation }) {
   // in with what actually needs attention right now (2026-08-31 fix).
   const counterOrdersSplit = useMemo(() => {
     const todayStr = getShopTodayStr(DEFAULT_TZ);
+    const tomorrowStr = getShopTomorrowStr(DEFAULT_TZ);
     return {
       dueToday: counterPendingOrders.filter((o) => !o.scheduled_date || o.scheduled_date <= todayStr),
       scheduledLater: counterPendingOrders.filter((o) => o.scheduled_date && o.scheduled_date > todayStr),
+      // Staff-ux fix, 2026-09-13 — see myTasksSplit.dueTomorrow's comment for
+      // the full reasoning; same fix, applied here for counter staff's own
+      // pending-orders list.
+      dueTomorrow: counterPendingOrders.filter((o) => o.scheduled_date === tomorrowStr),
     };
   }, [counterPendingOrders]);
 
@@ -1265,10 +1253,17 @@ export default function DashboardScreen({ navigation }) {
   // the active (not completed/cancelled) task list (2026-08-31 fix).
   const myTasksSplit = useMemo(() => {
     const todayStr = getShopTodayStr(DEFAULT_TZ);
+    const tomorrowStr = getShopTomorrowStr(DEFAULT_TZ);
     const active = myTasks.filter((t) => t.status !== 'completed' && t.status !== 'cancelled');
     return {
       dueToday: active.filter((t) => !t.scheduled_date || t.scheduled_date <= todayStr),
       scheduledLater: active.filter((t) => t.scheduled_date && t.scheduled_date > todayStr),
+      // Split out specifically (staff-ux fix, 2026-09-13): the evening-prep
+      // problem is "what's due tomorrow morning," not "what's scheduled at
+      // some unspecified later point" — scheduledLater already lumped
+      // tomorrow in with everything further out, and was only ever shown as
+      // a dead "+N more" count, never a real list to act on.
+      dueTomorrow: active.filter((t) => t.scheduled_date === tomorrowStr),
     };
   }, [myTasks]);
 
@@ -1286,7 +1281,7 @@ export default function DashboardScreen({ navigation }) {
               <Text style={styles.heroTitle}>Welcome, {(user?.name || 'Team').split(' ')[0]}</Text>
             </View>
             <View style={styles.heroIcon}>
-              <Ionicons name="pulse" size={24} color="#fff" />
+              <Ionicons name="pulse" size={18} color="#fff" />
             </View>
           </View>
           <Text style={styles.heroSub}>
@@ -1303,20 +1298,33 @@ export default function DashboardScreen({ navigation }) {
           <View style={styles.scopeCard}>
             <View style={[styles.rowBetween, { marginBottom: 8 }]}>
               <Text style={styles.scopeLabel}>Dashboard Filter</Text>
-              <TouchableOpacity
-                style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: Colors.primary + '15', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12, gap: 4 }}
-                onPress={() => setShowDatePicker(true)}
-              >
-                <Ionicons name="calendar" size={14} color={Colors.primary} />
-                <Text style={{ fontSize: 13, fontWeight: '600', color: Colors.primary }}>
-                  {dateScope ? dateScope.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) : 'All Time'}
-                </Text>
-                {dateScope && (
-                  <TouchableOpacity onPress={() => setDateScope(null)} hitSlop={10} style={{ marginLeft: 4 }}>
-                    <Ionicons name="close-circle" size={16} color={Colors.primary} />
-                  </TouchableOpacity>
-                )}
-              </TouchableOpacity>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                {/* One-tap "Tomorrow" — added 2026-09-13 (staff-ux fix):
+                    reaching tomorrow's board previously meant opening this
+                    calendar and navigating to the date by hand every time.
+                    Sets dateScope directly; the board underneath already
+                    re-fetches on dateScope change via filter_date. */}
+                <TouchableOpacity
+                  style={{ paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12, borderWidth: 1, borderColor: Colors.primary + '40' }}
+                  onPress={() => setDateScope(new Date(Date.now() + 86400000))}
+                >
+                  <Text style={{ fontSize: 13, fontWeight: '600', color: Colors.primary }}>Tomorrow</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: Colors.primary + '15', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12, gap: 4 }}
+                  onPress={() => setShowDatePicker(true)}
+                >
+                  <Ionicons name="calendar" size={14} color={Colors.primary} />
+                  <Text style={{ fontSize: 13, fontWeight: '600', color: Colors.primary }}>
+                    {dateScope ? dateScope.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) : 'All Time'}
+                  </Text>
+                  {dateScope && (
+                    <TouchableOpacity onPress={() => setDateScope(null)} hitSlop={10} style={{ marginLeft: 4 }}>
+                      <Ionicons name="close-circle" size={16} color={Colors.primary} />
+                    </TouchableOpacity>
+                  )}
+                </TouchableOpacity>
+              </View>
             </View>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.scopeChipsRow}>
               {isOwner && (
@@ -1516,6 +1524,39 @@ export default function DashboardScreen({ navigation }) {
               </TouchableOpacity>
             </View>
 
+            {/* Added 2026-09-13 (staff-ux fix): counter staff's only path to
+                add an expense was Register card -> Expenses -> Add Expense,
+                3 taps. Straight to the add form in one, matching the same
+                fix given to the owner/manager FAB modal above. */}
+            <TouchableOpacity
+              style={styles.codBannerCompact}
+              onPress={() => navigation.navigate('POS', { screen: 'Expenses', params: { openAdd: true } })}
+            >
+              <Ionicons name="receipt-outline" size={20} color="#92400E" />
+              <Text style={styles.codBannerCompactText}>Add an expense</Text>
+              <Ionicons name="chevron-forward" size={16} color="#92400E" />
+            </TouchableOpacity>
+
+            {/* Added 2026-09-13 (staff-ux fix): evening prep planning needs
+                "what's due tomorrow morning," and this used to mean checking
+                several separate screens. One tap here lands on Orders Inbox
+                already filtered to tomorrow's scheduled orders (across every
+                order type — pickup, delivery, pre_order — not just
+                production tasks). Always shown when there's something to
+                see, not buried behind a tap first. */}
+            {counterOrdersSplit.dueTomorrow.length > 0 && (
+              <TouchableOpacity
+                style={styles.codBannerCompact}
+                onPress={() => navigation.navigate('EmployeeOrders', { screen: 'OrdersInbox', params: { filter_date: getShopTomorrowStr(DEFAULT_TZ) } })}
+              >
+                <Ionicons name="calendar-outline" size={20} color="#92400E" />
+                <Text style={styles.codBannerCompactText}>
+                  {counterOrdersSplit.dueTomorrow.length} order{counterOrdersSplit.dueTomorrow.length !== 1 ? 's' : ''} scheduled for tomorrow
+                </Text>
+                <Ionicons name="chevron-forward" size={16} color="#92400E" />
+              </TouchableOpacity>
+            )}
+
             {counterRegisterStale && (
               <TouchableOpacity style={styles.codBannerCompact} onPress={() => navigation.navigate('POS', { screen: 'CashRegister' })}>
                 <Ionicons name="time-outline" size={20} color="#92400E" />
@@ -1546,6 +1587,33 @@ export default function DashboardScreen({ navigation }) {
                   ₹{counterStats.pendingCodTotal.toLocaleString('en-IN', { maximumFractionDigits: 0 })} from {counterStats.pendingCodDeliveries} deliver{counterStats.pendingCodDeliveries !== 1 ? 'ies' : 'y'} not settled yet
                 </Text>
                 <Ionicons name="chevron-forward" size={16} color="#92400E" />
+              </TouchableOpacity>
+            )}
+
+            {/* Team Attendance banner — counter_staff's own (and ONLY) entry
+                point into the same live roster owner/manager use, via their
+                own Attendance tab stack (no "More" tab to route through
+                here, unlike the owner/manager version above). Always shown,
+                not gated on notClockedInCount > 0: the roster's restored
+                Clock In button (1a) exists specifically to start someone's
+                SECOND shift segment, which isn't a "not clocked in" case at
+                all — on a day where everyone already clocked in once, a
+                urgency-gated banner would leave counter_staff with zero way
+                to reach the roster for that (fix-round-1 review finding).
+                Wording/icon still flag real urgency when there is any. */}
+            {isCounterStaff && (
+              <TouchableOpacity
+                style={styles.codBannerCompact}
+                onPress={() => navigation.navigate('Attendance', { screen: 'TeamAttendance' })}
+              >
+                <Ionicons
+                  name={notClockedInCount > 0 ? 'alert-circle-outline' : 'people-outline'}
+                  size={16}
+                  color={notClockedInCount > 0 ? Colors.warning : Colors.textLight}
+                />
+                <Text style={styles.codBannerCompactText}>
+                  {notClockedInCount > 0 ? `${notClockedInCount} staff not clocked in` : 'Team Attendance'}
+                </Text>
               </TouchableOpacity>
             )}
 
@@ -1638,6 +1706,41 @@ export default function DashboardScreen({ navigation }) {
                 </TouchableOpacity>
               )}
             </View>
+
+            {/* employee only, not florist_staff — same reasoning as the
+                Register card above (florist_staff never takes payments or
+                logs expenses). Added 2026-09-13, same staff-ux fix as the
+                counter_staff and owner/manager branches. */}
+            {role === 'employee' && (
+              <TouchableOpacity
+                style={styles.codBannerCompact}
+                onPress={() => navigation.navigate('POS', { screen: 'Expenses', params: { openAdd: true } })}
+              >
+                <Ionicons name="receipt-outline" size={20} color="#92400E" />
+                <Text style={styles.codBannerCompactText}>Add an expense</Text>
+                <Ionicons name="chevron-forward" size={16} color="#92400E" />
+              </TouchableOpacity>
+            )}
+
+            {/* Both employee and florist_staff (not role-gated like Register/
+                Expense above — production tasks are a florist_staff thing
+                too, and this IS the florist's own screen). Added 2026-09-13,
+                staff-ux fix: evening prep planning for tomorrow morning
+                previously meant a trip to Production Queue and then manually
+                tapping its own Tomorrow chip — this lands there already
+                scoped. Always shown, not buried behind "+N more" text. */}
+            {myTasksSplit.dueTomorrow.length > 0 && (
+              <TouchableOpacity
+                style={styles.codBannerCompact}
+                onPress={() => navigation.navigate('ProductionQueue', { initialDate: getShopTomorrowStr(DEFAULT_TZ) })}
+              >
+                <Ionicons name="calendar-outline" size={20} color="#92400E" />
+                <Text style={styles.codBannerCompactText}>
+                  {myTasksSplit.dueTomorrow.length} task{myTasksSplit.dueTomorrow.length !== 1 ? 's' : ''} to prepare for tomorrow
+                </Text>
+                <Ionicons name="chevron-forward" size={16} color="#92400E" />
+              </TouchableOpacity>
+            )}
 
             {role === 'employee' && counterRegisterStale && (
               <TouchableOpacity style={styles.codBannerCompact} onPress={() => navigation.navigate('POS', { screen: 'CashRegister' })}>
@@ -1895,6 +1998,25 @@ export default function DashboardScreen({ navigation }) {
                   <Text style={styles.sectionSubtitle}>Tap an order to see details, or use its button to move it forward</Text>
                 </View>
               </View>
+
+              {/* "N staff not clocked in" banner (Task 20) — reuses the
+                  staffRes.data.absent array already fetched above for
+                  staffPulse, no second api.getStaffToday() call. Routes to
+                  Task 19's AttendanceHub (Today tab, the one consolidated
+                  roster) rather than the older standalone StaffAttendance
+                  screen, so there's only one "who hasn't clocked in" surface
+                  to check, not two competing ones. */}
+              {isOwnerOrManager && notClockedInCount > 0 && (
+                <TouchableOpacity
+                  style={styles.codBannerCompact}
+                  onPress={() => navigation.navigate('More', { screen: 'AttendanceHub' })}
+                >
+                  <Ionicons name="alert-circle-outline" size={16} color={Colors.warning} />
+                  <Text style={styles.codBannerCompactText}>
+                    {notClockedInCount} staff not clocked in
+                  </Text>
+                </TouchableOpacity>
+              )}
 
               <View style={{ gap: 12 }}>
                 <OrderKanbanBoard
@@ -2161,57 +2283,23 @@ export default function DashboardScreen({ navigation }) {
       />
 
       {/* Mark Delivered with COD outstanding (resolveDeliverStep, OrderCard.js).
-          One request: PUT /deliveries/:id/deliver already accepts
-          cod_collected/cod_method/cod_reference and marks the order delivered
-          in the same call — no separate "record it, then deliver" trip. */}
-      <Modal visible={codCollectPicker !== null} transparent animationType="fade" onRequestClose={closeCodCollectPicker}>
-        <TouchableOpacity style={styles.modalBackdrop} activeOpacity={1} onPress={closeCodCollectPicker}>
-          <TouchableOpacity activeOpacity={1} style={styles.taskModalCard} onPress={(e) => e.stopPropagation()}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Collect COD & Mark Delivered</Text>
-              <TouchableOpacity onPress={closeCodCollectPicker} hitSlop={5}>
-                <Ionicons name="close" size={20} color="#6B7280" />
-              </TouchableOpacity>
-            </View>
-            <View style={styles.modalContent}>
-              <Text style={styles.detailLabel}>Amount Collected</Text>
-              <TextInput
-                style={styles.codAmountInput}
-                value={codCollectPicker?.amount || ''}
-                onChangeText={(v) => setCodCollectPicker((prev) => (prev ? { ...prev, amount: v } : prev))}
-                keyboardType="numeric"
-                placeholder="0"
-                placeholderTextColor="#9CA3AF"
-                editable={!codCollectPicker?.loading}
-              />
-              <Text style={styles.detailLabel}>Method</Text>
-              <View style={{ flexDirection: 'row', gap: 8 }}>
-                {['cash', 'upi'].map((m) => (
-                  <TouchableOpacity
-                    key={m}
-                    style={[styles.codMethodChip, codCollectPicker?.method === m && styles.codMethodChipActive]}
-                    onPress={() => setCodCollectPicker((prev) => (prev ? { ...prev, method: m } : prev))}
-                    disabled={codCollectPicker?.loading}
-                  >
-                    <Text style={[styles.codMethodChipText, codCollectPicker?.method === m && styles.codMethodChipTextActive]}>
-                      {m.toUpperCase()}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            </View>
-            <TouchableOpacity
-              style={[styles.actionBtnPrimary, codCollectPicker?.loading && { opacity: 0.6 }]}
-              onPress={handleSubmitCodCollect}
-              disabled={!!codCollectPicker?.loading}
-            >
-              {codCollectPicker?.loading
-                ? <ActivityIndicator color="#fff" />
-                : <Text style={styles.actionBtnPrimaryText}>Confirm & Mark Delivered</Text>}
-            </TouchableOpacity>
-          </TouchableOpacity>
-        </TouchableOpacity>
-      </Modal>
+          Extracted into CollectCodModal (2026-09-10) so Orders Inbox's
+          inline resolution uses the identical, already-tested flow. */}
+      <CollectCodModal
+        visible={codCollectPicker !== null}
+        order={codCollectPicker}
+        onClose={closeCodCollectPicker}
+        onDone={() => { setCodCollectPicker(null); fetchDashboard(); }}
+      />
+
+      {/* Finish Tasks (resolveDeadEnd's 'finish_tasks' case) — a preparing
+          order whose tasks aren't all done. */}
+      <TaskCompletionModal
+        visible={taskCompletionOrder !== null}
+        order={taskCompletionOrder}
+        onClose={() => setTaskCompletionOrder(null)}
+        onDone={fetchDashboard}
+      />
 
       {/* Load-verify quick flow (OrderCard's load pill) — the same
           DeliveryChecklist component DeliveryDetailScreen uses, opened right
@@ -2294,6 +2382,29 @@ export default function DashboardScreen({ navigation }) {
               </View>
               <Ionicons name="chevron-forward" size={16} color={Colors.textLight} />
             </TouchableOpacity>
+
+            {/* Straight to the add-expense form, not the expenses list —
+                added 2026-09-13 (staff-ux fix): the only prior path here was
+                Cash Register -> Expenses -> Add Expense, 3 taps from the
+                Dashboard FAB for something staff do many times a day. This
+                brings it back to 2 (open FAB, tap this). */}
+            <TouchableOpacity
+              style={[styles.quickActionItem, { borderLeftColor: '#F59E0B', borderLeftWidth: 3, backgroundColor: '#FFFBEB' }]}
+              onPress={() => {
+                setFabVisible(false);
+                navigation.navigate('POS', { screen: 'Expenses', params: { openAdd: true } });
+              }}
+              activeOpacity={0.8}
+            >
+              <View style={[styles.quickActionIcon, { backgroundColor: '#F59E0B' }]}>
+                <Ionicons name="receipt" size={18} color="#fff" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.quickActionName}>Add Expense</Text>
+                <Text style={styles.quickActionMeta}>Log a cash/card/UPI expense</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={16} color={Colors.textLight} />
+            </TouchableOpacity>
           </View>
         </TouchableOpacity>
       </Modal>
@@ -2318,19 +2429,25 @@ const styles = StyleSheet.create({
     fontFamily: FONT_FAMILY,
   },
 
+  // Sizing tightened 2026-09-10 (live-reported: this banner ate a lot of
+  // above-the-fold space every time the dashboard opened, for content —
+  // eyebrow + name + a generic one-line subtitle — that's low-value on
+  // every visit after the first). Nothing was removed, only made smaller,
+  // per CLAUDE.md's "never cut functionality" — this is a visual-density
+  // change, not a content change.
   heroCard: {
     backgroundColor: Colors.primary,
-    borderRadius: 16,
-    paddingHorizontal: 18,
-    paddingVertical: 18,
-    marginBottom: 20,
+    borderRadius: 14,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    marginBottom: 14,
     borderWidth: 1,
     borderColor: Colors.primaryDark,
     shadowColor: Colors.primary,
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.22,
-    shadowRadius: 16,
-    elevation: 8,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.18,
+    shadowRadius: 10,
+    elevation: 5,
   },
   rowBetween: {
     flexDirection: 'row',
@@ -2339,32 +2456,32 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   heroIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 10,
+    width: 32,
+    height: 32,
+    borderRadius: 9,
     backgroundColor: Colors.primaryDark,
     justifyContent: 'center',
     alignItems: 'center',
   },
   heroEyebrow: {
-    fontSize: 12,
+    fontSize: 11,
     color: Colors.primaryLight,
     fontWeight: '600',
     fontFamily: FONT_FAMILY,
     letterSpacing: 0.5,
   },
   heroTitle: {
-    fontSize: 24,
+    fontSize: 19,
     color: '#fff',
     fontWeight: '800',
-    marginTop: 4,
+    marginTop: 2,
     fontFamily: FONT_FAMILY,
   },
   heroSub: {
-    fontSize: 13,
+    fontSize: 12,
     color: Colors.primaryGlow,
-    marginTop: 8,
-    lineHeight: 18,
+    marginTop: 3,
+    lineHeight: 16,
     fontFamily: FONT_FAMILY,
   },
 
@@ -2618,54 +2735,8 @@ const styles = StyleSheet.create({
     color: Colors.primary,
     fontFamily: FONT_FAMILY,
   },
-  // Collect COD & Mark Delivered modal (resolveDeliverStep, OrderCard.js).
-  codAmountInput: {
-    borderWidth: 1,
-    borderColor: Colors.border,
-    borderRadius: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#111827',
-    fontFamily: FONT_FAMILY,
-  },
-  codMethodChip: {
-    flex: 1,
-    minHeight: 44,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    backgroundColor: Colors.surfaceAlt,
-  },
-  codMethodChipActive: {
-    borderColor: Colors.primary,
-    backgroundColor: Colors.primary + '18',
-  },
-  codMethodChipText: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#6B7280',
-    fontFamily: FONT_FAMILY,
-  },
-  codMethodChipTextActive: {
-    color: Colors.primary,
-  },
-  actionBtnPrimary: {
-    minHeight: 48,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: 10,
-    backgroundColor: Colors.primary,
-  },
-  actionBtnPrimaryText: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#fff',
-    fontFamily: FONT_FAMILY,
-  },
+  // Collect COD & Mark Delivered modal's own styles moved into
+  // CollectCodModal.js with the rest of that component (2026-09-10).
   quickActionsCard: {
     backgroundColor: '#fff',
     borderTopLeftRadius: 16,

@@ -41,6 +41,8 @@ PORT=3001
 NODE_ENV=production
 JWT_SECRET=your-strong-random-secret-here-min-32-chars
 JWT_EXPIRES_IN=7d
+TRACKING_LINK_SECRET=a-different-strong-random-secret-here
+PUBLIC_APP_URL=https://your-shop-domain.com
 ```
 
 **Important:** Generate a strong JWT secret:
@@ -254,6 +256,8 @@ eas update --branch production --message "Bug fix v1.0.1"
 | `NODE_ENV` | Yes | `development` | Set to `production` for deployment |
 | `JWT_SECRET` | **Yes** | None (will crash) | Secret key for JWT signing |
 | `JWT_EXPIRES_IN` | No | `7d` | Token expiration time |
+| `TRACKING_LINK_SECRET` | **Yes (production)** | a long random string — do not use the source code's development fallback | HMAC secret signing public order-tracking links (`GET /api/track/:token`) |
+| `PUBLIC_APP_URL` | **Yes (production)** | `http://localhost:19006` (dev fallback) | Public base URL customers' tracking links resolve against, e.g. `https://your-shop-domain.com` — without it in production, tracking links point at `localhost` |
 
 ### App Configuration
 
@@ -268,28 +272,27 @@ eas update --branch production --message "Bug fix v1.0.1"
 
 ## Database Considerations
 
-### Current Setup: SQLite
-- File-based database at `server/database.sqlite`
-- Uses WAL (Write-Ahead Logging) mode for better concurrent reads
-- **Limitation:** Not suitable for horizontal scaling (multiple server instances)
+### Current Setup: PostgreSQL
+- External PostgreSQL database configured via `DATABASE_URL`
+- Supports concurrent connections and multi-instance deployments
+- Recommended for production workloads
 
 ### Production Recommendations
 
-1. **Single Instance:** SQLite is fine for small-medium businesses with one server instance
-2. **Scale-up:** Migrate to PostgreSQL or MySQL when:
-   - You need multiple server instances
-   - Database exceeds ~10GB
-   - You need more complex querying
-   - You need point-in-time recovery
+1. **Single Instance:** PostgreSQL is production-ready out of the box
+2. **Scale-up:** Add connection pooling/replicas when:
+  - You need higher read throughput
+  - You need failover and high availability
+  - You need larger analytical workloads
 
 ### Backup Strategy
 
 ```bash
-# Daily backup via cron
-0 2 * * * cp /opt/bloomcart/server/database.sqlite /opt/bloomcart/backups/db-$(date +\%Y\%m\%d).sqlite
+# Daily PostgreSQL backup via cron
+0 2 * * * PGPASSWORD='your_password' pg_dump -h localhost -U bloomcart -d bloomcart -Fc -f /opt/bloomcart/backups/db-$(date +\%Y\%m\%d).dump
 
-# Or use SQLite backup API
-sqlite3 database.sqlite ".backup '/opt/bloomcart/backups/db-$(date +%Y%m%d).sqlite'"
+# Restore example
+PGPASSWORD='your_password' pg_restore -h localhost -U bloomcart -d bloomcart --clean --if-exists /opt/bloomcart/backups/db-YYYYMMDD.dump
 ```
 
 ---

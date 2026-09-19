@@ -5,7 +5,7 @@ import {
   KeyboardAvoidingView, Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useFocusEffect, useNavigation } from '@react-navigation/native';
+import { useFocusEffect, useNavigation, useRoute } from '@react-navigation/native';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 import { getShopTodayStr, formatTime } from '../utils/datetime';
@@ -30,9 +30,16 @@ const PAYMENT_METHODS = [
   { key: 'upi', label: 'UPI', icon: 'phone-portrait' },
 ];
 
+// Who a "Salary" category expense can be logged against — matches
+// ShiftManagementScreen.js's own staff-picker filter exactly (owner
+// excluded on purpose, same as there: owner isn't paid a wage through
+// either screen).
+const PAYROLL_ROLES = ['manager', 'employee', 'counter_staff', 'florist_staff', 'delivery_partner'];
+
 export default function ExpensesScreen() {
   const navigation = useNavigation();
-  const { settings } = useAuth();
+  const route = useRoute();
+  const { settings, user } = useAuth();
   const timezone = settings?.timezone?.value || 'Asia/Kolkata';
   const [expenses, setExpenses] = useState([]);
 
@@ -43,12 +50,35 @@ export default function ExpensesScreen() {
 
   // Add modal
   const [showAdd, setShowAdd] = useState(false);
+
+  // Dashboard's "Add Expense" quick action (2026-09-13, staff-ux fix — the
+  // path had crept to 3 taps: open Cash Register, tap Expenses, tap Add
+  // Expense) navigates straight here with openAdd:true so the form is ready
+  // to fill in immediately instead of landing on the list first. Runs once
+  // on mount, not via useFocusEffect — this screen unmounts on back
+  // navigation like any other stack screen, so a plain mount-time check
+  // can't re-fire from a stale param on refocus.
+  useEffect(() => {
+    if (route.params?.openAdd) setShowAdd(true);
+  }, []);
   const [amount, setAmount] = useState('');
   const [description, setDescription] = useState('');
   const [category, setCategory] = useState('petty_cash');
   const [paymentMethod, setPaymentMethod] = useState('cash');
   const [isReturn, setIsReturn] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+
+  // Salary-category money-safety fix (2026-09-19): POST /expenses now
+  // requires employee_id whenever category === 'salary' (server/routes/
+  // expenses.js) — this screen had no picker at all, so selecting Salary
+  // was a guaranteed 400 with no way to supply the now-required field.
+  const [staffList, setStaffList] = useState([]);
+  const [staffListLoaded, setStaffListLoaded] = useState(false);
+  const [salaryEmployee, setSalaryEmployee] = useState(null);
+  // Soft, informational-only context (not a blocking check — the backend's
+  // precise period-overlap block already handles the hard case server-side).
+  const [recentPayrollPayment, setRecentPayrollPayment] = useState(null);
+  const [recentSalaryExpense, setRecentSalaryExpense] = useState(null);
 
   // Was the one confirmed gap in the register-awareness pattern: this
   // screen let someone fill in a whole cash expense and only found out at
@@ -90,6 +120,104 @@ export default function ExpensesScreen() {
     }, [selectedLocation])
   );
 
+  // Lazily fetch the staff picker's options the first time "Salary" is
+  // selected — not on every mount, since most expenses aren't salary.
+  //
+  // Role-aware on purpose, not a single mirrored call: GET /users
+  // (api.getUsers) is owner/manager-only (server/routes/users.js,
+  // authorize('owner','manager')). This screen is also reachable by
+  // employee/counter_staff (POS tab), for whom that call 403s —
+  // ShiftManagementScreen.js's identical unfiltered api.getUsers() call is
+  // the brief's suggested reference, but that screen is ALSO reachable by
+  // those same two roles via the Attendance tab and silently ends up with
+  // three empty lists for them today (Promise.all rejects, caught, nothing
+  // set) — a real, pre-existing, unfixed gap elsewhere in this codebase,
+  // not something to newly replicate on a money-adjacent flow here.
+  //
+  // owner/manager: api.getUsers() (matches ShiftManagementScreen.js exactly).
+  // employee/counter_staff: GET /production/assignable-staff — the same
+  // endpoint SaleDetailScreen's assign-task picker uses for this exact
+  // "non-owner/manager needs a staff list" need, and unlike GET
+  // /auth/staff-roster it has no employee_code filter (staff-roster would
+  // silently drop this shop's employee-role accounts — confirmed bug,
+  // see SaleDetailScreen.js's Task 17 comment). assignable-staff is itself
+  // owner/manager/counter_staff-only, so 'employee' still 403s on it —
+  // falls back to staff-roster rather than leaving the picker empty (a
+  // dead end with no explanation, which staff-ux-checklist #6 rules out).
+  useEffect(() => {
+    if (category !== 'salary' || staffList.length > 0) return;
+    const isOwnerOrManager = user?.role === 'owner' || user?.role === 'manager';
+
+    const load = async () => {
+      if (isOwnerOrManager) {
+        // limit:100 (the endpoint's max, server/routes/users.js) — without
+        // it this defaults to limit=20/page and silently truncates past 20
+        // total users, dropping real staff from the picker with no
+        // indication anything was cut off (found live in review, 2026-09-19:
+        // 5 real accounts incl. all 3 delivery_partner rows missing in the
+        // current dev DB).
+        const res = await api.getUsers({ limit: 100 });
+        return (res.data?.users || []).filter((u) => PAYROLL_ROLES.includes(u.role) && u.is_active);
+      }
+      try {
+        const res = await api.getAssignableStaff(selectedLocation);
+        return (res.staff || []).filter((u) => PAYROLL_ROLES.includes(u.role));
+      } catch {
+        const res = await api.getStaffRoster(selectedLocation);
+        return res.data?.staff || [];
+      }
+    };
+
+    load()
+      .then(setStaffList)
+      .catch(() => setStaffList([]))
+      .finally(() => setStaffListLoaded(true));
+  }, [category]);
+
+  // Soft, informational context once an employee is picked — NOT a
+  // blocking check (the backend's precise period-overlap rule already
+  // hard-blocks the exact case server-side; a raw expense has no period
+  // concept to check precisely, so this is awareness, not a rule).
+  useEffect(() => {
+    if (!salaryEmployee) {
+      setRecentPayrollPayment(null);
+      setRecentSalaryExpense(null);
+      return;
+    }
+    let cancelled = false;
+    // GET /staff/payroll/history ignores a passed user_id for anyone but
+    // 'owner' — it force-filters to the CALLER's own records instead
+    // (server/routes/staff-management.js, 'Get payment history': `if
+    // (req.user.role !== 'owner') { where.push('sp.user_id = ?');
+    // params.push(req.user.id); }`). Calling it as manager/employee/
+    // counter_staff to look up a DIFFERENT person would silently show the
+    // CALLER's own payroll history mislabeled as salaryEmployee's — worse
+    // than showing nothing. Only trust it when the caller is owner (real
+    // org-wide read) or is looking up themselves (the forced self-filter
+    // happens to already be correct in that case).
+    const canReadTheirPayroll = user?.role === 'owner' || salaryEmployee.id === user?.id;
+    Promise.all([
+      canReadTheirPayroll
+        ? api.getPayrollHistory({ user_id: salaryEmployee.id, limit: 3 }).catch(() => ({ data: { payments: [] } }))
+        : Promise.resolve({ data: { payments: [] } }),
+      api.getExpenses({ category: 'salary', employee_id: salaryEmployee.id }).catch(() => ({ data: [] })),
+    ]).then(([payrollRes, expensesRes]) => {
+      if (cancelled) return;
+      const payments = (payrollRes.data?.payments || []).filter((p) => p.status !== 'cancelled');
+      payments.sort((a, b) => String(b.period_end || '').localeCompare(String(a.period_end || '')));
+      setRecentPayrollPayment(payments[0] || null);
+
+      // GET /expenses (res.data is the array directly, not res.data.expenses
+      // — confirmed against server/routes/expenses.js and this screen's own
+      // fetchExpenses above) already scopes to this employee_id server-side.
+      const salaryExpenses = (expensesRes.data || [])
+        .slice()
+        .sort((a, b) => String(b.expense_date || '').localeCompare(String(a.expense_date || '')));
+      setRecentSalaryExpense(salaryExpenses[0] || null);
+    });
+    return () => { cancelled = true; };
+  }, [salaryEmployee]);
+
   const fetchLocations = async () => {
     try {
       const res = await api.getLocations();
@@ -119,6 +247,10 @@ export default function ExpensesScreen() {
     const amt = parseFloat(amount) || 0;
     if (amt <= 0) { Alert.alert('Invalid', 'Enter a valid amount'); return; }
     if (!description.trim()) { Alert.alert('Required', 'Enter a description'); return; }
+    if (category === 'salary' && !salaryEmployee) {
+      Alert.alert('Required', 'Select which employee this salary payment is for.');
+      return;
+    }
 
     setSubmitting(true);
     try {
@@ -132,9 +264,11 @@ export default function ExpensesScreen() {
         payment_method: paymentMethod,
         expense_date: today,
         is_return: isReturn,
+        employee_id: category === 'salary' ? salaryEmployee.id : undefined,
       });
       setShowAdd(false);
       setAmount(''); setDescription(''); setCategory('petty_cash'); setPaymentMethod('cash'); setIsReturn(false);
+      setSalaryEmployee(null);
       fetchExpenses();
     } catch (err) {
       Alert.alert('Error', err.message || 'Failed to add expense');
@@ -335,6 +469,35 @@ export default function ExpensesScreen() {
                   ))}
                 </ScrollView>
 
+                {category === 'salary' && (
+                  <View style={{ marginTop: Spacing.sm }}>
+                    <Text style={styles.fieldLabel}>Which employee is this for?</Text>
+                    <View style={styles.chipRow}>
+                      {staffList.map((u) => (
+                        <TouchableOpacity
+                          key={u.id}
+                          style={[styles.chip, salaryEmployee?.id === u.id && styles.chipActive]}
+                          onPress={() => setSalaryEmployee(u)}
+                        >
+                          <Text style={[styles.chipText, salaryEmployee?.id === u.id && styles.chipTextActive]}>{u.name}</Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                    {staffListLoaded && staffList.length === 0 && (
+                      <Text style={styles.fieldHint}>No staff found here — log this from Salary Management instead, or check Staff under More.</Text>
+                    )}
+                    {(recentPayrollPayment || recentSalaryExpense) && (
+                      <View style={styles.salaryContextNote}>
+                        <Ionicons name="information-circle-outline" size={16} color={Colors.textLight} />
+                        <Text style={styles.salaryContextNoteText}>
+                          {recentPayrollPayment && `Last paid via Payroll: ${recentPayrollPayment.period_start} to ${recentPayrollPayment.period_end}. `}
+                          {recentSalaryExpense && `Last salary expense logged: ₹${Number(recentSalaryExpense.amount || 0).toFixed(0)} on ${recentSalaryExpense.expense_date}.`}
+                        </Text>
+                      </View>
+                    )}
+                  </View>
+                )}
+
                 <Text style={styles.fieldLabel}>Payment Method</Text>
                 <View style={styles.chipRow}>
                   {PAYMENT_METHODS.map((m) => {
@@ -484,6 +647,18 @@ const styles = StyleSheet.create({
   chipText: { fontSize: FontSize.xs, color: Colors.textSecondary },
   chipTextActive: { color: Colors.white, fontWeight: '600' },
   fieldHint: { fontSize: FontSize.xs, color: Colors.textLight, marginTop: Spacing.xs, fontStyle: 'italic' },
+
+  // Quiet, informational-only note (NOT a blocking warning like
+  // SalaryManagementScreen.js's red overlapWarning) — muted colors, no
+  // accent border, since this case is surfaced for awareness only and
+  // never disables Save.
+  salaryContextNote: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.xs,
+    backgroundColor: Colors.background, borderRadius: BorderRadius.md,
+    borderWidth: 1, borderColor: Colors.border,
+    padding: Spacing.sm, marginTop: Spacing.sm,
+  },
+  salaryContextNoteText: { flex: 1, fontSize: FontSize.xs, color: Colors.textLight },
 
   submitBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,

@@ -16,6 +16,7 @@ import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import { getShopNow } from '../utils/datetime';
 import { bumpActivity } from '../hooks/useIdleLock';
+import useSubmitGuard from '../hooks/useSubmitGuard';
 
 
 const ORDER_TYPES = [
@@ -106,6 +107,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
 
   // Submitting
   const [submitting, setSubmitting] = useState(false);
+  const guardSubmit = useSubmitGuard();
   const [skipAssignment, setSkipAssignment] = useState(true);
   const [submitErrors, setSubmitErrors] = useState([]);
   const [savingDraft, setSavingDraft] = useState(false);
@@ -2253,7 +2255,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
 
           <TouchableOpacity
             style={[styles.placeOrderBtn, submitting && { opacity: 0.6 }]}
-            onPress={handlePlaceOrder}
+            onPress={guardSubmit(handlePlaceOrder)}
             disabled={submitting}
           >
             {submitting ? (

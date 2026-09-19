@@ -144,7 +144,7 @@ async function runFix() {
       // We'll store it in credit_payments so it's not lost.
       if (remainingAmount > 0.01) {
          await db.prepare(`
-           INSERT INTO credit_payments (customer_id, amount, method, recorded_by, created_at, notes)
+           INSERT INTO credit_payments (customer_id, amount, payment_method, recorded_by, created_at, notes)
            VALUES (?, ?, ?, ?, ?, ?)
          `).run(customerId, remainingAmount, pmt.method, pmt.received_by, pmt.created_at, 'Overpayment from cancelled order');
       }
