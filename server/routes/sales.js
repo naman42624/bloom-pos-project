@@ -2097,13 +2097,15 @@ router.post(
           WHERE s.id = ?
         `).get(saleId);
 
-        // Approve wiring (design doc §5): if this sale is fulfilling a
-        // customer order request, mark it approved atomically with the
-        // sale itself — same transaction, so either both happen or
-        // neither does. The `status = 'pending'` guard means calling this
-        // twice with the same source_order_request_id (e.g. a retried
-        // request) only links the FIRST successful sale, never overwrites
-        // an existing link.
+        // Approve wiring (design doc §5): this UPDATE runs last, after
+        // every other sale write in this handler has succeeded, so a
+        // failure earlier means the request is never marked approved —
+        // ordering-based safety, not a DB transaction rollback (this
+        // route's db.transaction() is a plain pass-through with no
+        // BEGIN/COMMIT — see CLAUDE.md's "two DB access layers" note).
+        // The `status = 'pending'` guard makes a duplicate/retried
+        // approve call a safe no-op that never overwrites an existing
+        // created_sale_id.
         if (source_order_request_id) {
           db.prepare(`
             UPDATE order_requests
