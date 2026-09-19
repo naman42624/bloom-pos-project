@@ -564,6 +564,10 @@ export default function OrdersInboxScreen({ navigation, route }) {
             <Ionicons name="bicycle-outline" size={16} color={Colors.primary} />
             <Text style={styles.pickupLinkText}>Deliveries →</Text>
           </TouchableOpacity>
+          <TouchableOpacity style={styles.pickupLink} onPress={() => navigation.navigate('OrderRequests')}>
+            <Ionicons name="chatbubbles-outline" size={16} color={Colors.primary} />
+            <Text style={styles.pickupLinkText}>Order Requests →</Text>
+          </TouchableOpacity>
         </View>
       )}
       <OrderListToolbar

@@ -11,6 +11,7 @@ const SECTIONS = [
   { key: 'DeliveriesList', icon: 'bicycle', label: 'Deliveries', color: '#FF9800', countKey: 'deliveriesCount' },
   { key: 'PickupOrders', icon: 'bag-handle', label: 'Pickups', color: '#4CAF50', countKey: 'pickupsCount' },
   { key: 'ProductionQueue', icon: 'construct', label: 'Production', color: '#9C27B0', countKey: 'productionCount' },
+  { key: 'OrderRequests', icon: 'chatbubbles', label: 'Order Requests', color: '#E91E63', countKey: 'orderRequestsCount' },
 ];
 
 export default function OrdersHubScreen({ navigation }) {
@@ -19,15 +20,17 @@ export default function OrdersHubScreen({ navigation }) {
 
   const fetchCounts = useCallback(async () => {
     try {
-      const [salesRes, deliveriesRes, pickupsRes] = await Promise.all([
+      const [salesRes, deliveriesRes, pickupsRes, orderRequestsRes] = await Promise.all([
         api.getSales({ limit: 1 }).catch(() => ({ data: {} })),
         api.getDeliveries({ status: 'pending', limit: 1 }).catch(() => ({ data: { deliveries: [] } })),
         api.getSales({ order_type: 'pickup', pickup_status: 'waiting', limit: 1 }).catch(() => ({ data: {} })),
+        api.getOrderRequests({ status: 'pending', limit: 1 }).catch(() => ({ data: { total: 0 } })),
       ]);
       setCounts({
         salesCount: salesRes.data?.pagination?.total || 0,
         deliveriesCount: deliveriesRes.data?.total || 0,
         pickupsCount: pickupsRes.data?.pagination?.total || 0,
+        orderRequestsCount: orderRequestsRes.data?.total || 0,
       });
     } catch {
       // silent

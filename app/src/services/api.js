@@ -745,6 +745,15 @@ class ApiService {
     return this.request(`/customers/${customerId}/order-request-link`, { method: 'POST' });
   }
 
+  getOrderRequests(params = {}) {
+    const query = new URLSearchParams(params).toString();
+    return this.request(`/order-requests${query ? `?${query}` : ''}`);
+  }
+
+  declineOrderRequest(id, reason) {
+    return this.request(`/order-requests/${id}/decline`, { method: 'PUT', body: JSON.stringify({ reason }) });
+  }
+
   // Addresses
   addCustomerAddress(customerId, data) {
     return this.request(`/customers/${customerId}/addresses`, { method: 'POST', body: JSON.stringify(data) });
