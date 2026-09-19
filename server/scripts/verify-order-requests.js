@@ -268,6 +268,68 @@ check('the customer\'s own status view reflects the decline and reason', async (
   assert(declined.decline_reason === 'Out of stock for this date', 'Expected the decline reason visible to the customer');
 });
 
+// ─── Task 5: approve wiring in POST /sales ──────────────────────────────
+check('approving a request via POST /sales links back correctly', async () => {
+  const owner = await loginOwner();
+  const product = await getTestProduct();
+
+  const submitRes = await api('POST', `/order-request/${sharedCustomerToken}`, null, {
+    recipient_name: 'Approve Test', recipient_phone: '9876543212',
+    order_type: 'pickup', requested_date: '2026-12-25',
+    items: [{ product_id: product.id, quantity: 1 }],
+  });
+  const requestId = submitRes.body.data.id;
+  createdOrderRequestIds.push(requestId);
+
+  const saleRes = await api('POST', '/sales', owner.token, {
+    location_id: TEST_LOCATION_ID, order_type: 'pickup',
+    items: [{ product_id: product.id, quantity: 1, unit_price: product.selling_price }],
+    source_order_request_id: requestId,
+  });
+  assert(saleRes.status === 201, `Expected 201 creating the sale, got ${saleRes.status}: ${JSON.stringify(saleRes.body)}`);
+  const saleId = saleRes.body.data.id;
+  createdSaleIds.push(saleId);
+
+  const db = await getDb();
+  const row = await db.prepare('SELECT status, created_sale_id, reviewed_by, reviewed_at FROM order_requests WHERE id = ?').get(requestId);
+  assert(row.status === 'approved', `Expected status approved, got ${row.status}`);
+  assert(row.created_sale_id === saleId, `Expected created_sale_id ${saleId}, got ${row.created_sale_id}`);
+  assert(row.reviewed_by === owner.id, 'Expected reviewed_by to be the owner\'s id');
+  assert(row.reviewed_at !== null, 'Expected reviewed_at to be set');
+});
+
+check('calling POST /sales again with an already-approved source_order_request_id does not re-link', async () => {
+  const owner = await loginOwner();
+  const product = await getTestProduct();
+
+  const submitRes = await api('POST', `/order-request/${sharedCustomerToken}`, null, {
+    recipient_name: 'Double Approve Test', recipient_phone: '9876543213',
+    order_type: 'pickup', requested_date: '2026-12-25',
+    items: [{ product_id: product.id, quantity: 1 }],
+  });
+  const requestId = submitRes.body.data.id;
+  createdOrderRequestIds.push(requestId);
+
+  const firstSale = await api('POST', '/sales', owner.token, {
+    location_id: TEST_LOCATION_ID, order_type: 'pickup',
+    items: [{ product_id: product.id, quantity: 1, unit_price: product.selling_price }],
+    source_order_request_id: requestId,
+  });
+  createdSaleIds.push(firstSale.body.data.id);
+
+  const secondSale = await api('POST', '/sales', owner.token, {
+    location_id: TEST_LOCATION_ID, order_type: 'pickup',
+    items: [{ product_id: product.id, quantity: 1, unit_price: product.selling_price }],
+    source_order_request_id: requestId,
+  });
+  assert(secondSale.status === 201, 'Expected the second sale to still be created successfully');
+  createdSaleIds.push(secondSale.body.data.id);
+
+  const db = await getDb();
+  const row = await db.prepare('SELECT created_sale_id FROM order_requests WHERE id = ?').get(requestId);
+  assert(row.created_sale_id === firstSale.body.data.id, `Expected created_sale_id to stay linked to the FIRST sale (${firstSale.body.data.id}), got ${row.created_sale_id}`);
+});
+
 // Placed last, deliberately (moved here from right after Task 3's other
 // checks when Task 4 added its own /order-request POST calls above: this
 // fires 31 rapid requests against the SAME ip and exhausts that public
