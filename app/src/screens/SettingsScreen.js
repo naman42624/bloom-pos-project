@@ -8,9 +8,12 @@ import {
   Alert,
   RefreshControl,
   Switch,
+  Image,
+  Platform,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
+import * as ImagePicker from 'expo-image-picker';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import Button from '../components/Button';
@@ -36,6 +39,7 @@ const SETTING_LABELS = {
   bundle_size_large: 'Large Bundle Size',
   bundle_size_bulk: 'Bulk Bundle Size',
   supplier_manager_fields: 'Supplier Fields Visible to Managers',
+  upi_qr_image_url: 'UPI QR Code',
 };
 
 const SUPPLIER_FIELD_OPTIONS = [
@@ -161,6 +165,39 @@ export default function SettingsScreen() {
     }
   };
 
+  const [uploadingQr, setUploadingQr] = useState(false);
+
+  const handlePickQrImage = async () => {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('Permission Required', 'Please allow photo library access to upload the QR code.');
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.8 });
+    if (result.canceled || !result.assets?.[0]?.uri) return;
+
+    setUploadingQr(true);
+    try {
+      const uri = result.assets[0].uri;
+      const formData = new FormData();
+      if (Platform.OS === 'web') {
+        const response = await fetch(uri);
+        const blob = await response.blob();
+        formData.append('image', blob, 'qr-code.jpg');
+      } else {
+        const filename = uri.split('/').pop();
+        const ext = /\.(\w+)$/.exec(filename)?.[1] || 'jpg';
+        formData.append('image', { uri, name: filename, type: `image/${ext}` });
+      }
+      const uploadRes = await api.uploadGenericImage(formData);
+      handleChange('upi_qr_image_url', uploadRes.url);
+    } catch (err) {
+      Alert.alert('Error', err.message || 'Could not upload the image');
+    } finally {
+      setUploadingQr(false);
+    }
+  };
+
   return (
     <DismissKeyboard>
     <ScrollView
@@ -240,6 +277,28 @@ export default function SettingsScreen() {
                       />
                     </View>
                   ))}
+                </View>
+              );
+            }
+
+            if (key === 'upi_qr_image_url') {
+              return (
+                <View key={key} style={styles.settingRow}>
+                  <Text style={styles.settingLabel}>{SETTING_LABELS[key]}</Text>
+                  <Text style={styles.settingDesc}>Shown to customers on the order-request page so they can pay by UPI.</Text>
+                  {!!currentValue && (
+                    <Image source={{ uri: api.getMediaUrl(currentValue) }} style={{ width: 120, height: 120, borderRadius: BorderRadius.sm, marginTop: Spacing.sm }} resizeMode="contain" />
+                  )}
+                  {isOwner && (
+                    <Button
+                      title={currentValue ? 'Replace QR Code' : 'Upload QR Code'}
+                      onPress={handlePickQrImage}
+                      loading={uploadingQr}
+                      variant="outline"
+                      size="sm"
+                      style={{ marginTop: Spacing.sm, alignSelf: 'flex-start' }}
+                    />
+                  )}
                 </View>
               );
             }

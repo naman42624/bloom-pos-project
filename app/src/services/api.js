@@ -489,6 +489,17 @@ class ApiService {
     return data;
   }
 
+  async uploadGenericImage(formData) {
+    const response = await fetch(`${API_BASE_URL}/upload`, {
+      method: 'POST',
+      headers: this.token ? { Authorization: `Bearer ${this.token}` } : {},
+      body: formData,
+    });
+    const data = await response.json();
+    if (!response.ok) throw { status: response.status, message: data.message || 'Upload failed' };
+    return data;
+  }
+
   deleteProductImage(productId, imageId) {
     return this.request(`/products/${productId}/images/${imageId}`, { method: 'DELETE' });
   }
