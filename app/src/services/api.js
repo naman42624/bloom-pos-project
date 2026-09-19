@@ -741,6 +741,10 @@ class ApiService {
     return this.request(`/customers/${id}/orders${query ? `?${query}` : ''}`);
   }
 
+  getOrderRequestLink(customerId) {
+    return this.request(`/customers/${customerId}/order-request-link`, { method: 'POST' });
+  }
+
   // Addresses
   addCustomerAddress(customerId, data) {
     return this.request(`/customers/${customerId}/addresses`, { method: 'POST', body: JSON.stringify(data) });
