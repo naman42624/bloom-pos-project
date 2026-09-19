@@ -20,6 +20,7 @@ const productsRoutes = require('./routes/products');
 const salesRoutes = require('./routes/sales');
 const expensesRoutes = require('./routes/expenses');
 const customersRoutes = require('./routes/customers');
+const orderRequestsRoutes = require('./routes/order-requests');
 const productionRoutes = require('./routes/production');
 const deliveriesRoutes = require('./routes/deliveries');
 const trackRoutes = require('./routes/track');
@@ -82,6 +83,7 @@ app.use('/api/sales', salesRoutes);
 app.use('/api/sales', saleAttachmentsRoutes);
 app.use('/api/expenses', expensesRoutes);
 app.use('/api/customers', customersRoutes);
+app.use('/api/order-requests', orderRequestsRoutes);
 app.use('/api/production', productionRoutes);
 app.use('/api/deliveries', deliveriesRoutes);
 // No `authenticate` middleware — this is the app's first public route.

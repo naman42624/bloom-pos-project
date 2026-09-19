@@ -215,10 +215,66 @@ check('POST with delivery order_type but no address is rejected', async () => {
   assert(status === 400, `Expected 400 for delivery with no address, got ${status}`);
 });
 
-// Placed last, deliberately: fires 31 rapid requests against the SAME ip,
-// which will push every other check above past this rate limiter's window
-// if run again within 60s of this one. Nothing later in this file depends
-// on hitting /order-request again, so this being last is safe.
+// ─── Task 4: staff list + decline ───────────────────────────────────────
+check('staff can list pending order requests and sees the submitted one', async () => {
+  const owner = await loginOwner();
+  const { status, body } = await api('GET', '/order-requests?status=pending', owner.token);
+  assert(status === 200, `Expected 200, got ${status}: ${JSON.stringify(body)}`);
+  assert(body.data.requests.some((r) => r.id === submittedRequestId), 'Expected the submitted request to appear in the pending list');
+  assert(typeof body.data.total === 'number', 'Expected a numeric total');
+});
+
+check('florist_staff cannot list order requests (403)', async () => {
+  const owner = await loginOwner();
+  const florist = await createStaff('florist_staff', owner.token);
+  const { status } = await api('GET', '/order-requests?status=pending', florist.token);
+  assert(status === 403, `Expected 403 for florist_staff, got ${status}`);
+});
+
+let declineTargetId;
+check('staff can decline a pending request with a reason', async () => {
+  const owner = await loginOwner();
+  const product = await getTestProduct();
+  const submitRes = await api('POST', `/order-request/${sharedCustomerToken}`, null, {
+    recipient_name: 'Decline Test', recipient_phone: '9876543211',
+    order_type: 'pickup', requested_date: '2026-12-25',
+    items: [{ product_id: product.id, quantity: 1 }],
+  });
+  declineTargetId = submitRes.body.data.id;
+  createdOrderRequestIds.push(declineTargetId);
+
+  const { status, body } = await api('PUT', `/order-requests/${declineTargetId}/decline`, owner.token, { reason: 'Out of stock for this date' });
+  assert(status === 200, `Expected 200, got ${status}: ${JSON.stringify(body)}`);
+
+  const db = await getDb();
+  const row = await db.prepare('SELECT status, decline_reason, reviewed_by, reviewed_at FROM order_requests WHERE id = ?').get(declineTargetId);
+  assert(row.status === 'declined', `Expected status declined, got ${row.status}`);
+  assert(row.decline_reason === 'Out of stock for this date', `Expected the decline reason to be saved, got "${row.decline_reason}"`);
+  assert(row.reviewed_by === owner.id, `Expected reviewed_by to be the owner's id`);
+  assert(row.reviewed_at !== null, 'Expected reviewed_at to be set');
+});
+
+check('declining an already-reviewed request is rejected', async () => {
+  const owner = await loginOwner();
+  const { status, body } = await api('PUT', `/order-requests/${declineTargetId}/decline`, owner.token, { reason: 'Second attempt' });
+  assert(status === 400, `Expected 400 for re-declining, got ${status}: ${JSON.stringify(body)}`);
+});
+
+check('the customer\'s own status view reflects the decline and reason', async () => {
+  const { body } = await api('GET', `/order-request/${sharedCustomerToken}`, null);
+  const declined = body.data.requests.find((r) => r.id === declineTargetId);
+  assert(declined, 'Expected the declined request to appear in the customer\'s own status view');
+  assert(declined.status === 'declined', `Expected status declined, got ${declined.status}`);
+  assert(declined.decline_reason === 'Out of stock for this date', 'Expected the decline reason visible to the customer');
+});
+
+// Placed last, deliberately (moved here from right after Task 3's other
+// checks when Task 4 added its own /order-request POST calls above: this
+// fires 31 rapid requests against the SAME ip and exhausts that public
+// route's per-minute bucket, so anything hitting /order-request again
+// within 60s of this one gets 429'd instead of the response it expects.
+// Nothing later in this file depends on hitting /order-request again, so
+// this being last is safe — keep it last as more checks are appended.
 check('rate limiter returns 429 after exceeding the per-minute threshold', async () => {
   let last;
   for (let i = 0; i < 31; i += 1) {
