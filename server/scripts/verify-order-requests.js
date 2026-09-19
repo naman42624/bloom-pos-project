@@ -146,6 +146,87 @@ check('counter_staff CAN generate an order-request link', async () => {
   assert(status === 200, `Expected 200 for counter_staff, got ${status}`);
 });
 
+// ─── Task 3: public GET/POST /api/order-request/:token ─────────────────
+check('GET with an invalid token returns a generic 404', async () => {
+  const { status, body } = await api('GET', '/order-request/not-a-real-token', null);
+  assert(status === 404, `Expected 404, got ${status}`);
+  assert(body.message === 'Not found', `Expected generic "Not found" message, got "${body.message}"`);
+});
+
+check('GET with a valid token returns the customer name and product catalog', async () => {
+  const { status, body } = await api('GET', `/order-request/${sharedCustomerToken}`, null);
+  assert(status === 200, `Expected 200, got ${status}: ${JSON.stringify(body)}`);
+  assert(body.data.customer_name === sharedCustomer.name, `Expected customer_name "${sharedCustomer.name}", got "${body.data.customer_name}"`);
+  assert(Array.isArray(body.data.products), 'Expected products to be an array');
+  assert(Array.isArray(body.data.requests), 'Expected requests to be an array');
+});
+
+let submittedRequestId;
+check('POST with a catalog item creates a pending request', async () => {
+  const product = await getTestProduct();
+  const { status, body } = await api('POST', `/order-request/${sharedCustomerToken}`, null, {
+    recipient_name: 'Test Recipient', recipient_phone: '9876543210',
+    order_type: 'pickup', requested_date: '2026-12-25',
+    items: [{ product_id: product.id, quantity: 2 }],
+  });
+  assert(status === 201, `Expected 201, got ${status}: ${JSON.stringify(body)}`);
+  assert(body.data.status === 'pending', `Expected status pending, got ${body.data.status}`);
+  submittedRequestId = body.data.id;
+  createdOrderRequestIds.push(submittedRequestId);
+});
+
+check('POST with a custom item creates a pending request', async () => {
+  const { status, body } = await api('POST', `/order-request/${sharedCustomerToken}`, null, {
+    recipient_name: 'Test Recipient', recipient_phone: '9876543210',
+    order_type: 'delivery', delivery_address: '123 Test St', requested_date: '2026-12-25',
+    items: [{ custom: true, description: 'A dozen red roses, extra tall', quantity: 1 }],
+  });
+  assert(status === 201, `Expected 201, got ${status}: ${JSON.stringify(body)}`);
+  createdOrderRequestIds.push(body.data.id);
+});
+
+check('POST with both a catalog item and a custom item works', async () => {
+  const product = await getTestProduct();
+  const { status, body } = await api('POST', `/order-request/${sharedCustomerToken}`, null, {
+    recipient_name: 'Test Recipient', recipient_phone: '9876543210',
+    order_type: 'pickup', requested_date: '2026-12-25',
+    items: [{ product_id: product.id, quantity: 1 }, { custom: true, description: 'A ribbon in gold', quantity: 1 }],
+  });
+  assert(status === 201, `Expected 201, got ${status}: ${JSON.stringify(body)}`);
+  createdOrderRequestIds.push(body.data.id);
+});
+
+check('POST with an empty items array is rejected', async () => {
+  const { status } = await api('POST', `/order-request/${sharedCustomerToken}`, null, {
+    recipient_name: 'Test Recipient', recipient_phone: '9876543210',
+    order_type: 'pickup', requested_date: '2026-12-25',
+    items: [],
+  });
+  assert(status === 400, `Expected 400 for an empty cart, got ${status}`);
+});
+
+check('POST with delivery order_type but no address is rejected', async () => {
+  const product = await getTestProduct();
+  const { status } = await api('POST', `/order-request/${sharedCustomerToken}`, null, {
+    recipient_name: 'Test Recipient', recipient_phone: '9876543210',
+    order_type: 'delivery', requested_date: '2026-12-25',
+    items: [{ product_id: product.id, quantity: 1 }],
+  });
+  assert(status === 400, `Expected 400 for delivery with no address, got ${status}`);
+});
+
+// Placed last, deliberately: fires 31 rapid requests against the SAME ip,
+// which will push every other check above past this rate limiter's window
+// if run again within 60s of this one. Nothing later in this file depends
+// on hitting /order-request again, so this being last is safe.
+check('rate limiter returns 429 after exceeding the per-minute threshold', async () => {
+  let last;
+  for (let i = 0; i < 31; i += 1) {
+    last = await api('GET', `/order-request/${sharedCustomerToken}`, null);
+  }
+  assert(last.status === 429, `Expected the 31st rapid request to be rate-limited (429), got ${last.status}`);
+});
+
 async function cleanup() {
   if (createdUserIds.length === 0 && createdOrderRequestIds.length === 0 && createdSaleIds.length === 0) return;
   const db = await getDb();
