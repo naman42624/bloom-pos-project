@@ -61,6 +61,10 @@ const TEMPLATES = {
       : `here's your order ${p.sale_number}.`;
     return `${greeting} ${body}\nTrack it here: ${p.tracking_url}`;
   },
+  order_request_link: (p) => {
+    const greeting = p.customer_name ? `Hi ${p.customer_name},` : 'Hi,';
+    return `${greeting} you can place your order request here:\n${p.order_request_url}`;
+  },
   general_inquiry: (p) => `Hi, this is about your order ${p.sale_number}.`,
 };
 

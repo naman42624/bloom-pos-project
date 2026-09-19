@@ -1570,6 +1570,7 @@ router.post(
     body('skip_assignment').optional().isBoolean().toBoolean(),
     body('vendor_name').optional({ nullable: true }).trim(),
     body('route_id').optional({ nullable: true }).isInt(),
+    body('source_order_request_id').optional({ nullable: true }).isInt(),
   ],
   (req, res, next) => {
     try {
@@ -1589,7 +1590,7 @@ router.post(
         scheduled_date, scheduled_time, advance_amount,
         sender_name, sender_phone, sender_message,
         is_credit_sale, skip_assignment,
-        vendor_name, route_id,
+        vendor_name, route_id, source_order_request_id,
       } = req.body;
       // Mutable alias — may be set by auto-create logic below
       let customer_id = customer_id_from_body || null;
@@ -2095,7 +2096,24 @@ router.post(
           LEFT JOIN users u ON s.created_by = u.id
           WHERE s.id = ?
         `).get(saleId);
-        
+
+        // Approve wiring (design doc §5): this UPDATE runs last, after
+        // every other sale write in this handler has succeeded, so a
+        // failure earlier means the request is never marked approved —
+        // ordering-based safety, not a DB transaction rollback (this
+        // route's db.transaction() is a plain pass-through with no
+        // BEGIN/COMMIT — see CLAUDE.md's "two DB access layers" note).
+        // The `status = 'pending'` guard makes a duplicate/retried
+        // approve call a safe no-op that never overwrites an existing
+        // created_sale_id.
+        if (source_order_request_id) {
+          db.prepare(`
+            UPDATE order_requests
+            SET status = 'approved', created_sale_id = ?, reviewed_by = ?, reviewed_at = CURRENT_TIMESTAMP
+            WHERE id = ? AND status = 'pending'
+          `).run(saleId, req.user.id, source_order_request_id);
+        }
+
         return { sale: newSale, assignedTaskIds };
       });
 

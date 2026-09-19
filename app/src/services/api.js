@@ -489,6 +489,17 @@ class ApiService {
     return data;
   }
 
+  async uploadGenericImage(formData) {
+    const response = await fetch(`${API_BASE_URL}/upload`, {
+      method: 'POST',
+      headers: this.token ? { Authorization: `Bearer ${this.token}` } : {},
+      body: formData,
+    });
+    const data = await response.json();
+    if (!response.ok) throw { status: response.status, message: data.message || 'Upload failed' };
+    return data;
+  }
+
   deleteProductImage(productId, imageId) {
     return this.request(`/products/${productId}/images/${imageId}`, { method: 'DELETE' });
   }
@@ -728,6 +739,19 @@ class ApiService {
   getCustomerOrders(id, params = {}) {
     const query = new URLSearchParams(params).toString();
     return this.request(`/customers/${id}/orders${query ? `?${query}` : ''}`);
+  }
+
+  getOrderRequestLink(customerId) {
+    return this.request(`/customers/${customerId}/order-request-link`, { method: 'POST' });
+  }
+
+  getOrderRequests(params = {}) {
+    const query = new URLSearchParams(params).toString();
+    return this.request(`/order-requests${query ? `?${query}` : ''}`);
+  }
+
+  declineOrderRequest(id, reason) {
+    return this.request(`/order-requests/${id}/decline`, { method: 'PUT', body: JSON.stringify({ reason }) });
   }
 
   // Addresses
@@ -1041,6 +1065,15 @@ class ApiService {
   // ─── Public order tracking (no auth) ──────────────────────
   getTrackingInfo(token) {
     return this.request(`/track/${token}`);
+  }
+
+  // ─── Public order request (no auth) ────────────────────────
+  getOrderRequestPage(token) {
+    return this.request(`/order-request/${token}`);
+  }
+
+  submitOrderRequest(token, payload) {
+    return this.request(`/order-request/${token}`, { method: 'POST', body: JSON.stringify(payload) });
   }
 
   // ─── Attendance ───────────────────────────────────────────

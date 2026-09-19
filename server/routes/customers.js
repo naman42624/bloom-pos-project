@@ -10,6 +10,7 @@ const { getDb: getAsyncDb } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
 const { safeParseJSON } = require('../utils/json');
 const { hasOpenRegister, REGISTER_CLOSED_MESSAGE } = require('../utils/register-guard');
+const { generateOrderRequestToken, buildOrderRequestUrl } = require('../utils/order-request-token');
 
 // ─── GET /api/customers ─────────────────────────────────────
 // List all customers (users with role='customer') + any unique phones from sales
@@ -346,6 +347,33 @@ router.get('/:id', authenticate, async (req, res, next) => {
     });
   } catch (err) { next(err); }
 });
+
+// ─── POST /api/customers/:id/order-request-link ──────────────────────
+// Lazily generates (or returns the existing) shareable order-request link
+// for a registered customer. See server/routes/order-request-public.js for
+// the public page this URL points to.
+router.post(
+  '/:id/order-request-link',
+  authenticate,
+  authorize('owner', 'manager', 'employee', 'counter_staff'),
+  async (req, res, next) => {
+    try {
+      const db = await getAsyncDb();
+      const customer = await db.prepare(
+        "SELECT id, order_request_token FROM users WHERE id = ? AND role = 'customer'"
+      ).get(req.params.id);
+      if (!customer) return res.status(404).json({ success: false, message: 'Customer not found' });
+
+      let token = customer.order_request_token;
+      if (!token) {
+        token = generateOrderRequestToken();
+        await db.prepare('UPDATE users SET order_request_token = ? WHERE id = ?').run(token, customer.id);
+      }
+
+      res.json({ success: true, data: { token, url: buildOrderRequestUrl(token) } });
+    } catch (err) { next(err); }
+  }
+);
 
 // ─── POST /api/customers ────────────────────────────────────
 // Create a customer (from POS/manager side, not self-registration)

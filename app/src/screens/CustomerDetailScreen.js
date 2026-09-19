@@ -1,11 +1,13 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
-  RefreshControl, Alert, Modal, TextInput, Platform, KeyboardAvoidingView,
+  RefreshControl, Alert, Modal, TextInput, Platform, KeyboardAvoidingView, Linking,
 } from 'react-native';
+import * as Clipboard from 'expo-clipboard';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import api from '../services/api';
+import { waLink, buildMessage } from '../utils/contact';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import { formatDate as formatTimestampDate } from '../utils/datetime';
@@ -36,6 +38,36 @@ export default function CustomerDetailScreen({ route, navigation }) {
   };
   const removePaymentLine = (index) => {
     setPayments(payments.filter((_, i) => i !== index));
+  };
+
+  const [linkLoading, setLinkLoading] = useState(false);
+
+  const handleCopyOrderLink = async () => {
+    setLinkLoading(true);
+    try {
+      const res = await api.getOrderRequestLink(customer.id);
+      await Clipboard.setStringAsync(res.data.url);
+      Alert.alert('Copied', 'Order link copied — paste it into a WhatsApp chat or message.');
+    } catch (err) {
+      Alert.alert('Error', err.message || 'Could not get the order link');
+    } finally {
+      setLinkLoading(false);
+    }
+  };
+
+  const handleShareOrderLinkViaWhatsapp = async () => {
+    setLinkLoading(true);
+    try {
+      const res = await api.getOrderRequestLink(customer.id);
+      Linking.openURL(waLink(customer.phone, buildMessage('order_request_link', {
+        customer_name: customer.name,
+        order_request_url: res.data.url,
+      })));
+    } catch (err) {
+      Alert.alert('Error', err.message || 'Could not get the order link');
+    } finally {
+      setLinkLoading(false);
+    }
   };
 
   // Add previous due modal
@@ -270,6 +302,16 @@ export default function CustomerDetailScreen({ route, navigation }) {
               <Text style={styles.editText}>Edit</Text>
             </TouchableOpacity>
           )}
+          <View style={styles.linkRow}>
+            <TouchableOpacity style={styles.editBtn} onPress={handleCopyOrderLink} disabled={linkLoading}>
+              <Ionicons name="link-outline" size={14} color={Colors.primary} />
+              <Text style={styles.editText}>Copy Order Link</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.editBtn} onPress={handleShareOrderLinkViaWhatsapp} disabled={linkLoading}>
+              <Ionicons name="logo-whatsapp" size={14} color={Colors.primary} />
+              <Text style={styles.editText}>Share via WhatsApp</Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
         {/* Stats */}
@@ -761,6 +803,7 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: Colors.primary,
   },
   editText: { fontSize: FontSize.sm, color: Colors.primary, fontWeight: '600' },
+  linkRow: { flexDirection: 'row', gap: Spacing.sm, marginTop: Spacing.sm },
   statsGrid: {
     flexDirection: 'row', padding: Spacing.md, gap: Spacing.sm,
   },

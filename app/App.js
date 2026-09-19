@@ -5,6 +5,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { AuthProvider } from './src/context/AuthContext';
 import RootNavigator from './src/navigation/RootNavigator';
 import TrackingScreen from './src/screens/TrackingScreen';
+import OrderRequestScreen from './src/screens/OrderRequestScreen';
 
 // Web-only: a customer opens this link from a WhatsApp message in their
 // phone's browser, never inside the staff app itself (which has no
@@ -20,10 +21,24 @@ function getTrackingToken() {
   return match ? match[1] : null;
 }
 
+// Web-only, same reasoning as getTrackingToken above: a customer opens this
+// link from a WhatsApp message shared by staff (see CustomerDetailScreen's
+// "Copy Order Link"/WhatsApp buttons), never inside the staff app itself.
+function getOrderRequestToken() {
+  if (Platform.OS !== 'web' || typeof window === 'undefined') return null;
+  const match = /^\/order-request\/([^/]+)$/.exec(window.location.pathname);
+  return match ? match[1] : null;
+}
+
 export default function App() {
   const trackingToken = getTrackingToken();
   if (trackingToken) {
     return <TrackingScreen token={trackingToken} />;
+  }
+
+  const orderRequestToken = getOrderRequestToken();
+  if (orderRequestToken) {
+    return <OrderRequestScreen token={orderRequestToken} />;
   }
 
   return (

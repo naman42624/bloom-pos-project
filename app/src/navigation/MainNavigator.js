@@ -79,6 +79,7 @@ import MoreScreen from '../screens/MoreScreen';
 import OrdersHubScreen from '../screens/OrdersHubScreen';
 import OrdersInboxScreen from '../screens/OrdersInboxScreen';
 import LogOrderScreen from '../screens/LogOrderScreen';
+import OrderRequestsScreen from '../screens/OrderRequestsScreen';
 
 // Recurring Orders
 import RecurringOrdersScreen from '../screens/RecurringOrdersScreen';
@@ -361,6 +362,7 @@ function OrdersStack() {
       <Stack.Screen name="OrdersHub" component={OrdersHubScreen} options={{ title: 'Orders' }} />
       <Stack.Screen name="OrdersInbox" component={OrdersInboxScreen} options={{ title: 'Orders Inbox' }} />
       <Stack.Screen name="LogOrder" component={LogOrderScreen} options={{ title: 'Log Order' }} />
+      <Stack.Screen name="OrderRequests" component={OrderRequestsScreen} options={{ title: 'Order Requests' }} />
       <Stack.Screen name="SalesList" component={SalesScreen} options={{ title: 'Sales' }} />
       <Stack.Screen name="DeliveriesList" component={DeliveriesScreen} options={{ title: 'Deliveries' }} />
       <Stack.Screen name="DeliveryDetail" component={DeliveryDetailScreen} options={{ title: 'Delivery' }} />
@@ -388,6 +390,7 @@ function EmployeeOrdersStack() {
     <Stack.Navigator screenOptions={stackScreenOptions}>
       <Stack.Screen name="OrdersInbox" component={OrdersInboxScreen} options={{ title: 'Orders Inbox' }} />
       <Stack.Screen name="LogOrder" component={LogOrderScreen} options={{ title: 'Log Order' }} />
+      <Stack.Screen name="OrderRequests" component={OrderRequestsScreen} options={{ title: 'Order Requests' }} />
       <Stack.Screen name="SaleDetail" component={SaleDetailScreen} options={{ title: 'Sale Details' }} />
       {/* Counter staff gained the Cancel/Refund buttons on SaleDetail
           2026-08-31 (canCancelOrRefund) but this stack never got the
