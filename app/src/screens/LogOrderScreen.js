@@ -119,7 +119,23 @@ export default function LogOrderScreen({ navigation, route }) {
     setDeliveryAddress(req.delivery_address || '');
     if (req.message) setNote(`Card message: ${req.message}`);
     if (req.requested_date) setScheduledDate(req.requested_date);
-    if (req.requested_time) setScheduledTime(req.requested_time);
+    if (req.requested_time) {
+      // requested_time is deliberately free text on the customer-facing
+      // page ("morning", "6 PM" — see spec §3, "this is a request, not a
+      // committed slot"), but scheduledTime here is normally only ever a
+      // strict HH:MM value from the time picker (line ~350) that flows
+      // into sales.scheduled_time — a TIME column in production's
+      // schema-of-record (server/config/schema.sql), even though this
+      // dev DB has silently drifted to text with no codified migration.
+      // A non-time string here would fail the cast in production. Only
+      // accept it as scheduledTime if it actually looks like a time;
+      // otherwise fold it into the note like the card message above.
+      if (/^\d{1,2}:\d{2}/.test(req.requested_time.trim())) {
+        setScheduledTime(req.requested_time.trim());
+      } else {
+        setNote((prev) => (prev ? `${prev}\nRequested time: ${req.requested_time}` : `Requested time: ${req.requested_time}`));
+      }
+    }
     if (req.customer_id) {
       setCustomerId(req.customer_id);
       setCustomerName(req.customer_name || '');

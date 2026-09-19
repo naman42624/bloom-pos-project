@@ -68,6 +68,11 @@ export default function OrdersInboxScreen({ navigation, route }) {
   );
   const list = useOrderListData(fetchFn, { pageSize: 50 });
   const [filtersOpen, setFiltersOpen] = useState(false);
+  // Pending Order Requests count for the "Order Requests →" quick link below
+  // — this app has no push/SMS notifications, so this badge is the only
+  // signal an employee/counter_staff has that something is waiting for them
+  // (OrdersHubScreen.js already shows the same count for owner/manager).
+  const [orderRequestsPendingCount, setOrderRequestsPendingCount] = useState(0);
   // Bumped on every focus-regain (see useFocusEffect below) and handed to
   // useSessionsForDates as a cache-reset signal — this screen never
   // actually unmounts on a focus loss/regain (tab/stack navigators keep it
@@ -199,10 +204,21 @@ export default function OrdersInboxScreen({ navigation, route }) {
   // dependency array to [], would replay a STALE list.refresh closure after
   // any filter change, which is worse (silently ignores the new filter on
   // next focus). Do not "fix" this by reverting to [].
+  const fetchOrderRequestsCount = useCallback(async () => {
+    try {
+      const res = await api.getOrderRequests({ status: 'pending', limit: 1 });
+      setOrderRequestsPendingCount(res.data?.total || 0);
+    } catch {
+      // silent — this is a badge, not critical path; matches OrdersHubScreen's
+      // own fetchCounts pattern of swallowing individual failures
+    }
+  }, []);
+
   useFocusEffect(useCallback(() => {
     list.refresh();
     setSessionsResetToken((g) => g + 1);
-  }, [list.refresh]));
+    fetchOrderRequestsCount();
+  }, [list.refresh, fetchOrderRequestsCount]));
 
   // Opens the "who is making this?" picker for a Start Preparing order with
   // a genuinely unassigned task — the 'start'-mode half of DashboardScreen.js's
@@ -567,6 +583,11 @@ export default function OrdersInboxScreen({ navigation, route }) {
           <TouchableOpacity style={styles.pickupLink} onPress={() => navigation.navigate('OrderRequests')}>
             <Ionicons name="chatbubbles-outline" size={16} color={Colors.primary} />
             <Text style={styles.pickupLinkText}>Order Requests →</Text>
+            {orderRequestsPendingCount > 0 && (
+              <View style={styles.quickLinkBadge}>
+                <Text style={styles.quickLinkBadgeText}>{orderRequestsPendingCount}</Text>
+              </View>
+            )}
           </TouchableOpacity>
         </View>
       )}
@@ -819,6 +840,13 @@ const styles = StyleSheet.create({
     flexDirection: 'row', alignItems: 'center', gap: 4,
   },
   pickupLinkText: { color: Colors.primary, fontWeight: '600', fontSize: FontSize.sm },
+  quickLinkBadge: {
+    minWidth: 18, height: 18, borderRadius: 9,
+    backgroundColor: Colors.primary,
+    justifyContent: 'center', alignItems: 'center',
+    paddingHorizontal: 5,
+  },
+  quickLinkBadgeText: { fontSize: FontSize.xs, fontWeight: '700', color: Colors.white },
   // flexGrow/flexShrink: 0 on the ScrollView's own style (not
   // contentContainerStyle) — without it, react-native-web lets a
   // horizontal ScrollView stretch to fill all remaining vertical space in

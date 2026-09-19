@@ -109,7 +109,7 @@ export default function OrderRequestScreen({ token }) {
         requested_time: requestedTime.trim() || undefined,
         items: items.map((it) => (it.custom
           ? { custom: true, description: it.description, quantity: it.quantity }
-          : { product_id: it.product_id, quantity: it.quantity })),
+          : { product_id: it.product_id, name: it.name, quantity: it.quantity })),
         payment_claimed: paymentClaimed,
         payment_reference: paymentClaimed ? (paymentReference.trim() || undefined) : undefined,
       });
@@ -164,7 +164,7 @@ export default function OrderRequestScreen({ token }) {
   const { customer_name, products, upi_qr_image_url, requests } = state.data;
   const filteredProducts = productQuery.trim()
     ? products.filter((p) => p.name.toLowerCase().includes(productQuery.trim().toLowerCase())).slice(0, 8)
-    : [];
+    : products.slice(0, 8);
 
   if (submitted) {
     return (

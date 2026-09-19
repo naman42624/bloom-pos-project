@@ -85,6 +85,9 @@ export default function OrderRequestsScreen({ navigation }) {
         )}
         <Text style={styles.submittedAt}>Submitted {new Date(item.created_at).toLocaleDateString()}</Text>
       </View>
+      {item.payment_claimed && item.payment_reference && (
+        <Text style={styles.paymentRefText}>Ref: {item.payment_reference}</Text>
+      )}
       {item.status === 'declined' && item.decline_reason && (
         <Text style={styles.declineReasonText}>Declined: {item.decline_reason}</Text>
       )}
@@ -163,6 +166,7 @@ const styles = StyleSheet.create({
   metaRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: Spacing.sm },
   paidChip: { backgroundColor: Colors.success + '18', paddingHorizontal: Spacing.sm, paddingVertical: 2, borderRadius: BorderRadius.full },
   paidChipText: { color: Colors.success, fontSize: FontSize.xs, fontWeight: '700' },
+  paymentRefText: { fontSize: FontSize.xs, color: Colors.textSecondary, marginTop: 2 },
   submittedAt: { fontSize: FontSize.xs, color: Colors.textLight },
   declineReasonText: { fontSize: FontSize.sm, color: Colors.error, marginTop: Spacing.xs, fontStyle: 'italic' },
   actionsRow: { flexDirection: 'row', gap: Spacing.sm, marginTop: Spacing.md },
