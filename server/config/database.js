@@ -662,6 +662,31 @@ function ensureCoreTables() {
   runPsql('CREATE INDEX IF NOT EXISTS idx_audit_logs_entity ON audit_logs(entity_type, entity_id)');
   runPsql('CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at DESC)');
 
+  runPsql(`
+    CREATE TABLE IF NOT EXISTS order_requests (
+      id SERIAL PRIMARY KEY,
+      customer_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      recipient_name VARCHAR(255),
+      recipient_phone VARCHAR(20),
+      order_type VARCHAR(20) NOT NULL CHECK (order_type IN ('delivery', 'pickup')),
+      delivery_address TEXT,
+      message TEXT,
+      requested_date DATE,
+      requested_time VARCHAR(50),
+      items_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+      payment_claimed BOOLEAN DEFAULT false,
+      payment_reference VARCHAR(100),
+      status VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'declined')),
+      decline_reason TEXT,
+      created_sale_id INTEGER REFERENCES sales(id) ON DELETE SET NULL,
+      reviewed_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      reviewed_at TIMESTAMP,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  runPsql('CREATE INDEX IF NOT EXISTS idx_order_requests_customer ON order_requests(customer_id)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_order_requests_status ON order_requests(status)');
+
   // ⚡ Note: All other indexes for base tables (products, sales, deliveries, production_tasks, etc.)
   //    are already defined in schema.sql and auto-created via psql migrations.
   //    Only indexes for NEW tables created in ensureCoreTables() are needed here.
@@ -693,6 +718,7 @@ function ensureCompatibilityColumns() {
   ensureColumn('users', 'pin_failed_attempts', 'INTEGER DEFAULT 0');
   ensureColumn('users', 'pin_locked_until', 'TIMESTAMP');
   ensureColumn('users', 'job_title', 'TEXT');
+  ensureColumn('users', 'order_request_token', 'VARCHAR(64) UNIQUE');
 
   // users_role_check (from schema.sql's original 5-role enum) was only ever
   // dropped by hand on the local dev DB when counter_staff/florist_staff
@@ -1245,6 +1271,7 @@ function getDb() {
     runPsql(`INSERT INTO settings (key, value, description) VALUES ('pref_flexible_task_assignment', '1', 'Let any staff member start/complete a production task even if it is assigned to someone else') ON CONFLICT (key) DO NOTHING`);
     runPsql(`INSERT INTO settings (key, value, description) VALUES ('pref_counter_marks_pickup', '0', 'Let counter staff mark a delivery picked up from the shop on behalf of the delivery partner') ON CONFLICT (key) DO NOTHING`);
     runPsql(`INSERT INTO settings (key, value, description) VALUES ('pref_counter_marks_delivered', '0', 'Let counter staff mark a delivery as delivered (and record COD collected) on behalf of the delivery partner') ON CONFLICT (key) DO NOTHING`);
+    runPsql(`INSERT INTO settings (key, value, description) VALUES ('upi_qr_image_url', '', 'UPI QR code image shown to customers on the order-request page for self-service payment') ON CONFLICT (key) DO NOTHING`);
 
     initialized = true;
     console.log('✅ Connected to PostgreSQL');
