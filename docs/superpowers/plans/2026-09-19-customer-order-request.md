@@ -926,7 +926,7 @@ Find the line `return { sale: newSale, assignedTaskIds };` (currently line 2099)
 
 - [ ] **Step 4: Add this task's checks to the verify script**
 
-Insert before `async function cleanup() {`, after Task 4's checks:
+**Insertion point correction (found during Task 4's implementation):** Task 4's implementer discovered that Task 3's "rate limiter returns 429" check exhausts the public `/order-request/:token` route's per-IP bucket, and moved that check to be the literal last check in the file (immediately before `cleanup()`) so nothing appended after it would run into a stale 429. Both of this task's checks below call the public `POST /order-request/:token` route as setup (to create a fresh request to approve) — **insert this task's checks immediately BEFORE the `check('rate limiter returns 429 after exceeding the per-minute threshold', ...)` block**, not after it and not simply "before cleanup()". Verify the current file's check order first (`grep -n "^check(" server/scripts/verify-order-requests.js`) — the rate-limiter check must remain the last check in the file after your insertion.
 
 ```js
 // ─── Task 5: approve wiring in POST /sales ──────────────────────────────
