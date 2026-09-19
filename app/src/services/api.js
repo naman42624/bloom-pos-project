@@ -1067,6 +1067,15 @@ class ApiService {
     return this.request(`/track/${token}`);
   }
 
+  // ─── Public order request (no auth) ────────────────────────
+  getOrderRequestPage(token) {
+    return this.request(`/order-request/${token}`);
+  }
+
+  submitOrderRequest(token, payload) {
+    return this.request(`/order-request/${token}`, { method: 'POST', body: JSON.stringify(payload) });
+  }
+
   // ─── Attendance ───────────────────────────────────────────
   clockIn(data) {
     return this.request('/attendance/clock-in', { method: 'POST', body: JSON.stringify(data) });
