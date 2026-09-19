@@ -520,7 +520,7 @@ router.post(
     body('recipient_name').trim().notEmpty().withMessage('Recipient name is required'),
     body('recipient_phone').trim().notEmpty().withMessage('Recipient phone is required'),
     body('order_type').isIn(['delivery', 'pickup']),
-    body('delivery_address').if(body('order_type').equals('delivery')).trim().notEmpty().withMessage('Delivery address is required'),
+    body('delivery_address').optional({ nullable: true }).trim(),
     body('message').optional({ nullable: true }).trim(),
     body('requested_date').notEmpty().withMessage('Requested date is required'),
     body('requested_time').optional({ nullable: true }).trim(),
@@ -547,6 +547,10 @@ router.post(
         recipient_name, recipient_phone, order_type, delivery_address, message,
         requested_date, requested_time, items, payment_claimed, payment_reference,
       } = req.body;
+
+      if (order_type === 'delivery' && !(delivery_address || '').trim()) {
+        return res.status(400).json({ success: false, message: 'Delivery address is required' });
+      }
 
       // Every item needs either a real catalog product reference or a
       // non-empty custom description — a bare {quantity: 2} with neither is
