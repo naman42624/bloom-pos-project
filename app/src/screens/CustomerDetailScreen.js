@@ -56,14 +56,31 @@ export default function CustomerDetailScreen({ route, navigation }) {
   };
 
   const handleShareOrderLinkViaWhatsapp = async () => {
+    // On web, Linking.openURL is just window.open() under the hood (see
+    // react-native-web's Linking implementation). Mobile Safari/Chrome only
+    // allow window.open() as a direct, synchronous continuation of the tap
+    // — the await below (a real network round trip to lazily generate the
+    // link) breaks that chain, so the popup gets silently blocked with no
+    // error on mobile specifically (desktop browsers are far more lenient
+    // about the delay). Fix: open the blank tab synchronously, right here,
+    // before any await, then navigate that already-open tab once the link
+    // is ready — the same "open first, fill in after" pattern this app
+    // already uses for the same reason in QRLabelScreen.js's Print button.
+    const popup = Platform.OS === 'web' ? window.open('', '_blank') : null;
     setLinkLoading(true);
     try {
       const res = await api.getOrderRequestLink(customer.id);
-      Linking.openURL(waLink(customer.phone, buildMessage('order_request_link', {
+      const url = waLink(customer.phone, buildMessage('order_request_link', {
         customer_name: customer.name,
         order_request_url: res.data.url,
-      })));
+      }));
+      if (popup) {
+        popup.location.href = url;
+      } else {
+        Linking.openURL(url);
+      }
     } catch (err) {
+      if (popup) popup.close();
       Alert.alert('Error', err.message || 'Could not get the order link');
     } finally {
       setLinkLoading(false);
