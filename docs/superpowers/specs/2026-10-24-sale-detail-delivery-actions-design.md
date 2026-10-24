@@ -85,6 +85,8 @@ Each action is shown only when the delivery's status allows it **and** the serve
 | `verify_load` | not final | owner, manager, employee, counter_staff, own rider | — |
 | `live_location` | `in_transit` with a rider | same as today: anyone viewing the delivery | only where the host navigator has a `LiveDeliveryMap` route (checked at build time; hidden otherwise rather than a dead tap) |
 
+For counter_staff, `pickup` and `deliver` additionally require the matching shop setting, exposed on `GET /deliveries/:id` as `counter_can_mark_picked_up` / `counter_can_mark_delivered` (from `pref_counter_marks_pickup` / `pref_counter_marks_delivered`).
+
 **Two visible changes, both "the button now matches what the server already permits":**
 1. Counter staff get **Pick Up Order** and **Mark Delivered** (with COD) on Delivery Details. Today they can already mark delivered via Sale Details' one-tap and the dashboard card, and they physically take the cash handoff (CLAUDE.md sub-project 4).
 2. `employee` gets **Verify Load**; the server already allows them.

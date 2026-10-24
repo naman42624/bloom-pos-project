@@ -1609,4 +1609,20 @@ async function main() {
   process.exit(fail > 0 ? 1 : 0);
 }
 
+check('GET /deliveries/:id exposes counter-staff permission flags', async () => {
+  const owner = await loginOwner();
+  const db = await getDb();
+  const row = await db.prepare('SELECT id FROM deliveries ORDER BY id DESC LIMIT 1').get();
+  assert(row, 'No delivery exists to read');
+  const settings = await db.prepare("SELECT key, value FROM settings WHERE key IN ('pref_counter_marks_pickup', 'pref_counter_marks_delivered')").all();
+  const map = Object.fromEntries((settings || []).map((r) => [r.key, r.value]));
+  const res = await api('GET', `/deliveries/${row.id}`, owner.token);
+  assert(res.status === 200, `Expected 200, got ${res.status}: ${JSON.stringify(res.body)}`);
+  const data = res.body.data;
+  assert(typeof data.counter_can_mark_picked_up === 'boolean', `counter_can_mark_picked_up not boolean: ${data.counter_can_mark_picked_up}`);
+  assert(data.counter_can_mark_picked_up === (map.pref_counter_marks_pickup === '1'), 'counter_can_mark_picked_up does not match pref_counter_marks_pickup');
+  assert(typeof data.counter_can_mark_delivered === 'boolean', `counter_can_mark_delivered not boolean: ${data.counter_can_mark_delivered}`);
+  assert(data.counter_can_mark_delivered === (map.pref_counter_marks_delivered === '1'), 'counter_can_mark_delivered does not match pref_counter_marks_delivered');
+});
+
 main();

@@ -539,6 +539,12 @@ router.get('/:id(\\d+)', authenticate, async (req, res, next) => {
       WHERE dc.delivery_id = ?
     `).all(delivery.id);
 
+    // Mirrors pref_counter_marks_pickup / pref_counter_marks_delivered, which
+    // /pickup and /deliver already check for counter_staff.
+    const flags = await getStageFlags(db);
+    delivery.counter_can_mark_picked_up = flags.counterCanMarkPickedUp.length > 0;
+    delivery.counter_can_mark_delivered = flags.counterCanMarkDelivered.length > 0;
+
     res.json({ success: true, data: delivery });
   } catch (err) { next(err); }
 });
