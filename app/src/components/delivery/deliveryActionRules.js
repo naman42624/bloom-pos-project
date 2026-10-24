@@ -54,3 +54,16 @@ export function formatCodPrefill(codAmount, codCollected) {
   const remaining = Math.max(Number(codAmount || 0) - Number(codCollected || 0), 0);
   return String(Number(remaining.toFixed(2)));
 }
+
+// Whether Mark Delivered must open the Confirm Delivery form (COD amount,
+// proof photo) or can be submitted in one tap. One tap only when nothing is
+// left to collect AND the viewer is not the rider: riders always get the form
+// (proof photo is their step), and anyone collecting COD must confirm the
+// amount. "Nothing left" is compared in whole paise, as the server does
+// (codExceedsRemaining) — never a raw float subtraction.
+export function deliverNeedsForm({ delivery, role }) {
+  if (role === 'delivery_partner') return true;
+  const owedPaise = Math.round(Number(delivery?.cod_amount || 0) * 100);
+  const collectedPaise = Math.round(Number(delivery?.cod_collected || 0) * 100);
+  return owedPaise - collectedPaise > 0;
+}

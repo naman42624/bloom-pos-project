@@ -10,7 +10,7 @@ import useSubmitGuard from '../../hooks/useSubmitGuard';
 import { bumpActivity } from '../../hooks/useIdleLock';
 import { printOrderSlip } from '../../utils/printHelpers';
 import { showAlert, showConfirm } from '../../utils/alert';
-import { getDeliveryActions, PRIMARY_ACTIONS, formatCodPrefill } from './deliveryActionRules';
+import { getDeliveryActions, PRIMARY_ACTIONS, formatCodPrefill, deliverNeedsForm } from './deliveryActionRules';
 import { Colors, FontSize, Spacing, BorderRadius } from '../../constants/theme';
 
 // Every delivery-lifecycle action in one place, so Delivery Details and Sale
@@ -305,7 +305,12 @@ function DeliveryActionsPanel({ deliveryId, navigation, onChanged, compact = fal
       case 'assign': return guard(openAssignModal)();
       case 'pickup': return guard(() => doAction('pickup'))();
       case 'start': return guard(() => doAction('in_transit'))();
-      case 'deliver': return openDeliverForm();
+      // Prepaid (or COD already fully in) and not the rider: one tap, the same
+      // request the form sends with no COD, no photo, no notes. Otherwise the
+      // form, exactly as before.
+      case 'deliver':
+        if (deliverNeedsForm({ delivery, role: user?.role })) return openDeliverForm();
+        return guard(() => doAction('deliver', {}))();
       case 'reattempt':
         return showConfirm(
           'Send it out again?',

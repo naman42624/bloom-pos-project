@@ -1,5 +1,5 @@
 const assert = require('assert');
-const { getDeliveryActions, ACTION_ORDER, isFinalDelivery, formatCodPrefill } = require('../src/components/delivery/deliveryActionRules');
+const { getDeliveryActions, ACTION_ORDER, isFinalDelivery, formatCodPrefill, deliverNeedsForm } = require('../src/components/delivery/deliveryActionRules');
 
 const d = (status, extra = {}) => ({
   status,
@@ -43,5 +43,17 @@ for (const [amt, got, want] of [[500, 0, '500'], [499.5, 0, '499.5'], [700, 200.
   assert.strictEqual(out, want, `formatCodPrefill(${amt}, ${got})`);
   // Compared in whole paise, exactly as the server does (codExceedsRemaining).
   assert.ok(Math.round(Number(out) * 100) <= Math.round(amt * 100) - Math.round(got * 100), `prefill exceeds remaining for (${amt}, ${got})`);
+}
+const prepaid = { cod_amount: 0, cod_collected: 0 };
+for (const [role, delivery, want, label] of [
+  ['owner', prepaid, false, 'owner, prepaid'],
+  ['counter_staff', prepaid, false, 'counter_staff, prepaid'],
+  ['delivery_partner', prepaid, true, 'delivery_partner, prepaid'],
+  ['owner', { cod_amount: 200, cod_collected: 0 }, true, 'owner, 200 remaining'],
+  ['owner', { cod_amount: 1.14, cod_collected: 0.1 }, true, 'owner, 1.14 owed / 0.10 collected'],
+  ['owner', { cod_amount: 500, cod_collected: 500 }, false, 'owner, 500 owed / 500 collected'],
+  ['manager', { cod_amount: null, cod_collected: null }, false, 'manager, null COD fields'],
+]) {
+  assert.strictEqual(deliverNeedsForm({ delivery, role }), want, `deliverNeedsForm: ${label}`);
 }
 console.log('OK   delivery action rules');
