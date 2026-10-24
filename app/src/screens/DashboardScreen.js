@@ -211,6 +211,13 @@ function TaskDetailModal({ visible, task, onClose, onAdvance, loading }) {
   );
 }
 
+// YYYY-MM-DD in the device's own calendar — the same day dateScope (a plain
+// device-local Date from the picker / "Tomorrow" chip) represents.
+const localDateStr = (d) => {
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+};
+
 export default function DashboardScreen({ navigation }) {
   // Page-layout threshold (1100), deliberately NOT the board's 900 — see the
   // doc comment in hooks/useBreakpoint.js for why these are two numbers.
@@ -483,10 +490,17 @@ export default function DashboardScreen({ navigation }) {
       // created — the counter_staff dashboard already fetches this way.
       const filters = locationId ? { location_id: locationId } : {};
       if (dateScope) {
-        const pad = n => String(n).padStart(2, '0');
-        filters.filter_date = `${dateScope.getFullYear()}-${pad(dateScope.getMonth() + 1)}-${pad(dateScope.getDate())}`;
+        filters.filter_date = localDateStr(dateScope);
       }
       const boardFilters = locationId ? { location_id: locationId } : {};
+      // A day OTHER than today ("Tomorrow" chip / calendar pick) scopes the
+      // board to that day's orders. Today (and "All Time") keeps the
+      // date-free open-work fetch above — that's what fixed the 0-cards bug,
+      // and it must stay. Before 2026-10-24 the board ignored the picked day
+      // entirely, so tomorrow's orders could never appear on it.
+      if (filters.filter_date && filters.filter_date !== localDateStr(new Date())) {
+        boardFilters.filter_date = filters.filter_date;
+      }
 
       const reqs = [
         api.getSales({ ...boardFilters, limit: 500 }),
@@ -1241,13 +1255,20 @@ export default function DashboardScreen({ navigation }) {
   // date filter — it's the order's own scheduled_date, checked client-side
   // after the fetch — so restoring it here does not bring back the 0-cards
   // bug (2026-09-04).
+  // A picked non-today day: `sales` is already that day's orders (server
+  // filter_date, see fetchDashboard), so the whole list is the board —
+  // splitting it against today would push every one of tomorrow's orders
+  // into "scheduled for later", which is exactly the bug this replaced.
+  const scopedDateStr = dateScope ? localDateStr(dateScope) : null;
+  const isOtherDayScope = !!scopedDateStr && scopedDateStr !== localDateStr(new Date());
   const ordersSplit = useMemo(() => {
+    if (isOtherDayScope) return { dueToday: sales, scheduledLater: [] };
     const todayStr = getShopTodayStr(DEFAULT_TZ);
     return {
       dueToday: sales.filter((o) => !o.scheduled_date || o.scheduled_date <= todayStr),
       scheduledLater: sales.filter((o) => o.scheduled_date && o.scheduled_date > todayStr),
     };
-  }, [sales]);
+  }, [sales, isOtherDayScope]);
 
   // Florist/employee task dashboard: same today/future split, applied to
   // the active (not completed/cancelled) task list (2026-08-31 fix).
@@ -1999,6 +2020,26 @@ export default function DashboardScreen({ navigation }) {
                 </View>
               </View>
 
+              {/* Says which day the board is showing whenever it isn't
+                  today, with a one-tap way back — otherwise a board quietly
+                  scoped to tomorrow reads as "today's orders are missing". */}
+              {isOtherDayScope && (
+                <View style={styles.dayScopeBanner}>
+                  <Ionicons name="calendar" size={16} color={Colors.primary} />
+                  <Text style={styles.dayScopeBannerText}>
+                    {ordersSplit.dueToday.length === 0 ? 'No orders for ' : 'Showing orders for '}
+                    {dateScope.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })}
+                  </Text>
+                  <TouchableOpacity
+                    style={styles.dayScopeBannerBtn}
+                    onPress={() => setDateScope(new Date())}
+                    hitSlop={8}
+                  >
+                    <Text style={styles.dayScopeBannerBtnText}>Back to today</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+
               {/* "N staff not clocked in" banner (Task 20) — reuses the
                   staffRes.data.absent array already fetched above for
                   staffPulse, no second api.getStaffToday() call. Routes to
@@ -2551,6 +2592,35 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: Colors.textLight,
     marginTop: 3,
+    fontFamily: FONT_FAMILY,
+  },
+  dayScopeBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: Colors.primary + '12',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginBottom: 12,
+  },
+  dayScopeBannerText: {
+    flex: 1,
+    fontSize: 15,
+    fontWeight: '700',
+    color: Colors.text,
+    fontFamily: FONT_FAMILY,
+  },
+  dayScopeBannerBtn: {
+    backgroundColor: Colors.primary,
+    borderRadius: 16,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+  },
+  dayScopeBannerBtnText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '700',
     fontFamily: FONT_FAMILY,
   },
 
