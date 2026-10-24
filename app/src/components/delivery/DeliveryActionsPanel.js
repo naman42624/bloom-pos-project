@@ -393,6 +393,7 @@ function DeliveryActionsPanel({ deliveryId, navigation, onChanged, compact = fal
   if (!navigation?.getState?.()?.routeNames?.includes('LiveDeliveryMap')) {
     actions = actions.filter((k) => k !== 'live_location');
   }
+  const showPickupWaiting = pickupWaitingForReady({ delivery, role: user?.role, userId: user?.id });
   if (actions.length === 0 && !showPickupWaiting) return null;
 
   const primaries = actions.filter((k) => PRIMARY_ACTIONS.has(k));
@@ -400,7 +401,6 @@ function DeliveryActionsPanel({ deliveryId, navigation, onChanged, compact = fal
   // Same exact-paise figure the amount field is pre-filled with, so the label
   // and the field can never disagree (e.g. "499.5", not "500").
   const codRemainingText = formatCodPrefill(delivery.cod_amount, delivery.cod_collected);
-  const showPickupWaiting = pickupWaitingForReady({ delivery, role: user?.role, userId: user?.id });
   const paidPaise = netPaidPaise(delivery);
   const wholeOrderCancellable = canCancelWholeOrder(delivery);
 
