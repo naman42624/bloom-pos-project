@@ -13,7 +13,7 @@ const router = express.Router();
 const { normalizeDateFields } = require('../utils/normalizeDates');
 const { hasOpenRegister, REGISTER_CLOSED_MESSAGE } = require('../utils/register-guard');
 const { computeOrderStage, getStageFlags } = require('../utils/order-stage');
-const { sumCollectionsByMethod } = require('../utils/settlement-math');
+const { sumCollectionsByMethod, codExceedsRemaining } = require('../utils/settlement-math');
 const { buildTrackingUrl } = require('../utils/tracking-token');
 
 // Use todayStr() from time.js for timezone-aware date strings
@@ -817,7 +817,7 @@ router.put(
         // Record COD collection if any
         let totalCodCollected = delivery.cod_collected;
         if (cod_collected && cod_collected > 0) {
-          if (cod_collected > delivery.cod_amount - delivery.cod_collected) {
+          if (codExceedsRemaining(cod_collected, delivery.cod_amount, delivery.cod_collected)) {
             throw new Error('COD collection exceeds remaining amount');
           }
           db.prepare(

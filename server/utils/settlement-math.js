@@ -53,4 +53,13 @@ function sumCollectionsByMethod(db, deliveryIds, expectedTotal) {
   return totals;
 }
 
-module.exports = { sumCollectionsByMethod };
+// Is the COD amount being collected more than what is still owed? Compared in
+// whole paise: DECIMAL(10,2) values become JS doubles, and raw subtraction
+// lands a hair low (1.14 - 0.10 = 1.0399999999999998), which rejected a rider
+// collecting exactly the ₹1.04 still owed. Accepts numbers or numeric strings.
+function codExceedsRemaining(collecting, codAmount, alreadyCollected) {
+  return Math.round(Number(collecting) * 100)
+    > Math.round(Number(codAmount) * 100) - Math.round(Number(alreadyCollected) * 100);
+}
+
+module.exports = { sumCollectionsByMethod, codExceedsRemaining };

@@ -38,9 +38,10 @@ for (const r of roles) for (const s of statuses) {
   assert.ok(idx.every((i) => i >= 0), `unknown key for ${r}/${s}`);
   assert.deepStrictEqual(idx, [...idx].sort((a, b) => a - b), `order broken for ${r}/${s}`);
 }
-for (const [amt, got, want] of [[500, 0, '500'], [499.5, 0, '499.5'], [700, 200.25, '499.75'], [500, 500, '0']]) {
+for (const [amt, got, want] of [[500, 0, '500'], [499.5, 0, '499.5'], [700, 200.25, '499.75'], [500, 500, '0'], [1.14, 0.1, '1.04']]) {
   const out = formatCodPrefill(amt, got);
   assert.strictEqual(out, want, `formatCodPrefill(${amt}, ${got})`);
-  assert.ok(Number(out) <= amt - got, `prefill exceeds remaining for (${amt}, ${got})`);
+  // Compared in whole paise, exactly as the server does (codExceedsRemaining).
+  assert.ok(Math.round(Number(out) * 100) <= Math.round(amt * 100) - Math.round(got * 100), `prefill exceeds remaining for (${amt}, ${got})`);
 }
 console.log('OK   delivery action rules');
