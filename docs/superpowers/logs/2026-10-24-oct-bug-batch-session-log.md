@@ -18,7 +18,7 @@ Branch: `fix/oct-bug-batch` (off `main` @ `78913b3`). Read this before resuming.
 | 1 | Two missing tests in `verify-order-requests.js` | ✅ `0ad7a7e`: items_json round-trip + cross-customer isolation (mutation-tested). 21/21 |
 | 4 | Tomorrow / picked-date orders missing from the owner/manager dashboard | ✅ `c09d5f9`. Root cause: board fetch ignored dateScope since 2026-09-05, board split against real today, Tomorrow chip (2026-09-13) assumed a re-fetch that didn't exist. Verified with a throwaway order via API; banner not yet seen on screen |
 | 2 | Print challan from dashboard cards + Orders Inbox; one shared printer; redesign | ✅ `1ac829e`. See §3 |
-| 3 | Delivery actions on Sale Details + challan; fix Convert to Pickup on web | 🔄 spec approved (`docs/superpowers/specs/2026-10-24-sale-detail-delivery-actions-design.md`, `50c737d`); plan + subagent execution next |
+| 3 | Delivery actions on Sale Details + challan; fix Convert to Pickup on web | ✅ `d575a69..991328f`. Spec `docs/superpowers/specs/2026-10-24-sale-detail-delivery-actions-design.md`, plan `docs/superpowers/plans/2026-10-24-sale-detail-delivery-actions.md`, built with subagent-driven development + per-task and whole-branch reviews. See §6 |
 
 **Deferred by the user until these are done:** Pickup Orders screen redesign (spec exists, no plan), order-list deferred findings A9/A12/A13/A14, CLAUDE.md known gaps (customer-order 500, trust proxy, requested_time regex, prod `scheduled_time` type, useSubmitGuard audit), roadmap 7–10.
 
@@ -38,3 +38,40 @@ Branch: `fix/oct-bug-batch` (off `main` @ `78913b3`). Read this before resuming.
 ## 5. Testing notes
 - Rendering slips without the app: `/private/tmp/.../scratchpad/render-slips.js` transpiled `printHelpers.js` with the app's babel and stubbed RN/expo/api, then headless Chrome screenshots. The scratchpad is session-only; recreate it if needed.
 - A one-off JWT for any user: in `server/`, `node -e "require('dotenv').config(); console.log(require('jsonwebtoken').sign({id:ID}, process.env.JWT_SECRET, {expiresIn:'5m'}))"`.
+
+## 6. Item 3: what was built and decided
+**Built.** One shared `app/src/components/delivery/DeliveryActionsPanel.js` is mounted on both Delivery Details and Sale Details (no copied logic). Which buttons show comes from the pure `deliveryActionRules.js`, which mirrors each server route's `authorize()`, the delivery-ownership check, the `pref_counter_marks_*` flags, and the sale-must-be-ready check for pickup. Its tests are in `app/scripts/verify-delivery-action-rules.js`.
+
+**Server changes (additive only).** `GET /deliveries/:id` now also returns:
+- `counter_can_mark_picked_up` and `counter_can_mark_delivered`
+- `sale_status`
+- `refunded_total`
+
+**Bugs fixed along the way.**
+- **COD amount check.** `PUT /deliveries/:id/deliver` compared COD in float, so after a partial collection it rejected even the exact amount owed (owed 1.14, already collected 0.10, then 1.04 was refused). It now compares in whole paise via `codExceedsRemaining` (`server/utils/settlement-math.js`, tested by `server/scripts/verify-settlement-math.js`).
+- **Dead on web.** Reattempt, Cancel Delivery and Convert to Pickup did nothing on web. They now work and were checked on screen as the owner.
+- **Converted pickups.** A delivery converted to pickup now shows Confirm Pickup on Sale Details and prints a Pickup Slip.
+- **Paid orders.** "Cancel delivery and order" is not offered when the order has money paid. Staff are told to refund it first.
+- **Order not ready.** Pick Up is replaced by "Pick-up unlocks once the order is marked ready" until the order is ready.
+
+**Tap counts.**
+- Assign a rider from an order: was 3 + Back, now 2.
+- Print the challan: was 2 + Back, now 1.
+- Mark a prepaid order delivered (counter or owner): still 1 tap, no form. Riders keep the form with the optional proof photo.
+- Reattempt, cancel or convert on web: was impossible, now 2 taps.
+
+**Verification.**
+- `verify-order-flows` 60/60, `verify-register-expenses` 13/13, `verify-order-requests` 21/21, plus both pure-math scripts.
+- An API lifecycle trace covering part-paid COD, the paise case, fail/reattempt/cancel, and another rider getting 403.
+- On screen as the owner on web.
+- **Not checked on screen:** counter_staff and employee views. Shared-device staff start PIN-locked and no PIN is set at Test Loc.
+
+**Decisions for the user (not changed).**
+- `/reattempt` resets the sale to `confirmed`, so the order has to be marked ready again before pickup. This is existing server behaviour.
+- Riders can now print the shop copy, which includes the total, paid amount and payment methods.
+- **Deploy the server before the app.** A newer app talking to an older server gets no `sale_status`, which hides Pick Up.
+
+**Deferred minors.** The full list is in the SDD ledger. The highest-value ones:
+- "View full delivery →" goes nowhere in stacks without a Delivery Details route (customer and florist).
+- There is no way to cancel an `assigned` delivery in the app.
+- Non-rider staff lose the optional proof photo on prepaid deliveries.
