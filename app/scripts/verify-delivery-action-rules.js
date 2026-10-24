@@ -1,11 +1,15 @@
 const assert = require('assert');
-const { getDeliveryActions, ACTION_ORDER, isFinalDelivery, formatCodPrefill, deliverNeedsForm } = require('../src/components/delivery/deliveryActionRules');
+const {
+  getDeliveryActions, ACTION_ORDER, isFinalDelivery, formatCodPrefill, deliverNeedsForm,
+  pickupWaitingForReady, netPaidPaise, canCancelWholeOrder, formatRupeesFromPaise,
+} = require('../src/components/delivery/deliveryActionRules');
 
 const d = (status, extra = {}) => ({
   status,
   delivery_partner_id: 8,
   counter_can_mark_picked_up: true,
   counter_can_mark_delivered: true,
+  sale_status: 'ready',
   ...extra,
 });
 const run = (role, delivery, userId = 1) => getDeliveryActions({ delivery, role, userId });
@@ -55,5 +59,40 @@ for (const [role, delivery, want, label] of [
   ['manager', { cod_amount: null, cod_collected: null }, false, 'manager, null COD fields'],
 ]) {
   assert.strictEqual(deliverNeedsForm({ delivery, role }), want, `deliverNeedsForm: ${label}`);
+}
+
+// I3: Pick Up Order only once the sale is ready (server /pickup refuses otherwise).
+for (const [sale_status, want] of [['confirmed', false], ['preparing', false], ['ready', true], ['completed', true], [undefined, false]]) {
+  for (const [role, userId] of [['owner', 1], ['manager', 1], ['counter_staff', 1], ['delivery_partner', 8]]) {
+    const out = run(role, d('assigned', { sale_status }), userId);
+    assert.strictEqual(out.includes('pickup'), want, `pickup for ${role}, assigned, sale ${sale_status}`);
+    assert.strictEqual(pickupWaitingForReady({ delivery: d('assigned', { sale_status }), role, userId }), !want,
+      `pickupWaitingForReady for ${role}, sale ${sale_status}`);
+  }
+}
+eq(run('owner', d('assigned', { sale_status: 'confirmed' })), ['verify_load', 'convert_payment', 'print']);
+eq(run('owner', d('assigned', { sale_status: 'ready' })), ['pickup', 'verify_load', 'convert_payment', 'print']);
+// Not ready AND not allowed anyway: no "unlocks" line (it would never unlock for them).
+assert.strictEqual(pickupWaitingForReady({ delivery: d('assigned', { sale_status: 'confirmed', counter_can_mark_picked_up: false }), role: 'counter_staff', userId: 1 }), false);
+assert.strictEqual(pickupWaitingForReady({ delivery: d('assigned', { sale_status: 'confirmed' }), role: 'delivery_partner', userId: 9 }), false);
+assert.strictEqual(pickupWaitingForReady({ delivery: d('pending', { sale_status: 'confirmed' }), role: 'owner', userId: 1 }), false);
+assert.strictEqual(pickupWaitingForReady({ delivery: null, role: 'owner', userId: 1 }), false);
+
+// I2: net paid (payments minus refunds) in whole paise; whole-order cancel only when nothing is held.
+for (const [delivery, wantPaise, wantCancel, label] of [
+  [{ payments: [] }, 0, true, 'no payments'],
+  [{}, 0, true, 'payments missing'],
+  [{ payments: [{ amount: '500.00' }] }, 50000, false, '500 paid'],
+  [{ payments: [{ amount: 1.14 }, { amount: '0.10' }] }, 124, false, '1.14 + 0.10 paid'],
+  [{ payments: [{ amount: '500.00' }], refunded_total: '500.00' }, 0, true, 'fully refunded'],
+  [{ payments: [{ amount: 700 }], refunded_total: 200.25 }, 49975, false, 'part refunded'],
+  [{ payments: [{ amount: 0.01 }] }, 1, true, '1 paisa (server allows <= 0.01)'],
+  [{ payments: [{ amount: 0.02 }] }, 2, false, '2 paise'],
+]) {
+  assert.strictEqual(netPaidPaise(delivery), wantPaise, `netPaidPaise: ${label}`);
+  assert.strictEqual(canCancelWholeOrder(delivery), wantCancel, `canCancelWholeOrder: ${label}`);
+}
+for (const [paise, want] of [[50000, '₹500'], [49950, '₹499.5'], [124, '₹1.24'], [120000, '₹1,200'], [0, '₹0']]) {
+  assert.strictEqual(formatRupeesFromPaise(paise), want, `formatRupeesFromPaise(${paise})`);
 }
 console.log('OK   delivery action rules');

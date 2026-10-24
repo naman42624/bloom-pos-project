@@ -1,7 +1,8 @@
 // Which delivery actions a viewer may take. Mirrors server permissions (verified 2026-10-24).
 // key             | status                    | allowed
 // assign          | pending                   | owner, manager, counter_staff
-// pickup          | assigned                  | owner, manager; counter_staff if counter_can_mark_picked_up; delivery_partner if own
+// pickup          | assigned + sale ready     | owner, manager; counter_staff if counter_can_mark_picked_up; delivery_partner if own
+//                 |   (sale_status ready or completed: /pickup refuses "Order is not ready for pickup yet" otherwise)
 // start           | picked_up                 | owner, manager; delivery_partner if own
 // deliver         | picked_up / in_transit    | owner, manager; counter_staff if counter_can_mark_delivered; delivery_partner if own
 // fail            | picked_up / in_transit    | owner, manager; delivery_partner if own
@@ -14,6 +15,10 @@
 
 export const ACTION_ORDER = ['assign', 'pickup', 'start', 'deliver', 'reattempt', 'fail', 'cancel', 'verify_load', 'live_location', 'convert_payment', 'print'];
 export const PRIMARY_ACTIONS = new Set(['assign', 'pickup', 'start', 'deliver', 'reattempt']);
+
+// PUT /deliveries/:id/pickup only accepts a sale in one of these statuses.
+// GET /deliveries/:id sends the sale's status as `sale_status`.
+export const SALE_READY_FOR_PICKUP = ['ready', 'completed'];
 
 export function isFinalDelivery(status) {
   return status === 'delivered' || status === 'failed' || status === 'cancelled';
@@ -32,7 +37,8 @@ export function getDeliveryActions({ delivery, role, userId }) {
 
   const allowed = {
     assign: s === 'pending' && (isOwnerMgr || isCounter),
-    pickup: s === 'assigned' && (isOwnerMgr || (isCounter && !!delivery.counter_can_mark_picked_up) || isOwn),
+    pickup: s === 'assigned' && SALE_READY_FOR_PICKUP.includes(delivery.sale_status) &&
+      (isOwnerMgr || (isCounter && !!delivery.counter_can_mark_picked_up) || isOwn),
     start: s === 'picked_up' && (isOwnerMgr || isOwn),
     deliver: inFlight && (isOwnerMgr || (isCounter && !!delivery.counter_can_mark_delivered) || isOwn),
     fail: inFlight && (isOwnerMgr || isOwn),
@@ -66,4 +72,35 @@ export function deliverNeedsForm({ delivery, role }) {
   const owedPaise = Math.round(Number(delivery?.cod_amount || 0) * 100);
   const collectedPaise = Math.round(Number(delivery?.cod_collected || 0) * 100);
   return owedPaise - collectedPaise > 0;
+}
+
+// True when this viewer WOULD get "Pick Up Order" but the order is not marked
+// ready yet (e.g. right after Reattempt, which sends the sale back to
+// confirmed). The panel then says so in one line instead of a dead button.
+export function pickupWaitingForReady({ delivery, role, userId }) {
+  if (!delivery || SALE_READY_FOR_PICKUP.includes(delivery.sale_status)) return false;
+  return getDeliveryActions({ delivery: { ...delivery, sale_status: 'ready' }, role, userId }).includes('pickup');
+}
+
+const toPaise = (n) => Math.round(Number(n || 0) * 100);
+
+// Money still held on this sale: payments minus refunds, in whole paise (the
+// same sums PUT /sales/:id/cancel compares). `payments` and `refunded_total`
+// both come from GET /deliveries/:id.
+export function netPaidPaise(delivery) {
+  const paid = (Array.isArray(delivery?.payments) ? delivery.payments : [])
+    .reduce((sum, p) => sum + toPaise(p.amount), 0);
+  return paid - toPaise(delivery?.refunded_total);
+}
+
+// Whether "Cancel delivery and order" can work: PUT /sales/:id/cancel refuses
+// a sale whose unrefunded balance is over 0.01 rupees (i.e. over 1 paisa).
+export function canCancelWholeOrder(delivery) {
+  return netPaidPaise(delivery) <= 1;
+}
+
+// "₹499.5", "₹1,200" — from whole paise, no float noise.
+export function formatRupeesFromPaise(paise) {
+  const rupees = Math.round(Number(paise || 0)) / 100;
+  return `₹${rupees.toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
 }

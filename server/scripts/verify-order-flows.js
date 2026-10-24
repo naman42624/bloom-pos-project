@@ -1625,4 +1625,17 @@ check('GET /deliveries/:id exposes counter-staff permission flags', async () => 
   assert(data.counter_can_mark_delivered === (map.pref_counter_marks_delivered === '1'), 'counter_can_mark_delivered does not match pref_counter_marks_delivered');
 });
 
+check('GET /deliveries/:id exposes the sale status (sale_status) and refunded_total', async () => {
+  const owner = await loginOwner();
+  const { saleId, deliveryId } = await createReadyDelivery(owner.token, {});
+  const sale = await api('GET', `/sales/${saleId}`, owner.token);
+  const res = await api('GET', `/deliveries/${deliveryId}`, owner.token);
+  assert(res.status === 200, `Expected 200, got ${res.status}: ${JSON.stringify(res.body)}`);
+  const data = res.body.data;
+  assert(data.sale_status === sale.body.data.status, `sale_status ${data.sale_status} does not match sale status ${sale.body.data.status}`);
+  assert(data.sale_status === 'ready', `Expected sale_status 'ready', got '${data.sale_status}'`);
+  assert(data.status === 'pending', `Delivery status must stay its own field, got '${data.status}'`);
+  assert(data.refunded_total === 0, `Expected refunded_total 0, got ${JSON.stringify(data.refunded_total)}`);
+});
+
 main();

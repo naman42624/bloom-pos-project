@@ -498,6 +498,7 @@ router.get('/:id(\\d+)', authenticate, async (req, res, next) => {
       SELECT d.*, s.sale_number, s.grand_total, s.payment_status, s.subtotal, s.tax_total,
              s.discount_amount, s.delivery_charges, s.order_type, s.special_instructions,
              s.customer_notes, s.sender_name, s.sender_phone, s.sender_message, s.is_credit_sale,
+             s.status as sale_status,
              u.name as partner_name, u.phone as partner_phone,
              l.name as location_name, l.address as location_address, l.phone as location_phone,
              ab.name as assigned_by_name
@@ -524,6 +525,14 @@ router.get('/:id(\\d+)', authenticate, async (req, res, next) => {
       FROM payments p LEFT JOIN users u ON p.received_by = u.id
       WHERE p.sale_id = ?
     `).all(delivery.sale_id);
+
+    // Refunded so far: with payments above, the panel works out whether the
+    // order still holds money (PUT /sales/:id/cancel refuses if it does).
+    // Same sum that route compares against.
+    const refundRow = await db.prepare(
+      'SELECT COALESCE(SUM(amount), 0) as total FROM refunds WHERE sale_id = ?'
+    ).get(delivery.sale_id);
+    delivery.refunded_total = Number(refundRow?.total || 0);
 
     // Delivery proof
     delivery.proofs = await db.prepare(`
