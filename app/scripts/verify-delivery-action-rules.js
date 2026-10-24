@@ -1,5 +1,5 @@
 const assert = require('assert');
-const { getDeliveryActions, ACTION_ORDER, isFinalDelivery } = require('../src/components/delivery/deliveryActionRules');
+const { getDeliveryActions, ACTION_ORDER, isFinalDelivery, formatCodPrefill } = require('../src/components/delivery/deliveryActionRules');
 
 const d = (status, extra = {}) => ({
   status,
@@ -37,5 +37,10 @@ for (const r of roles) for (const s of statuses) {
   const idx = out.map((k) => ACTION_ORDER.indexOf(k));
   assert.ok(idx.every((i) => i >= 0), `unknown key for ${r}/${s}`);
   assert.deepStrictEqual(idx, [...idx].sort((a, b) => a - b), `order broken for ${r}/${s}`);
+}
+for (const [amt, got, want] of [[500, 0, '500'], [499.5, 0, '499.5'], [700, 200.25, '499.75'], [500, 500, '0']]) {
+  const out = formatCodPrefill(amt, got);
+  assert.strictEqual(out, want, `formatCodPrefill(${amt}, ${got})`);
+  assert.ok(Number(out) <= amt - got, `prefill exceeds remaining for (${amt}, ${got})`);
 }
 console.log('OK   delivery action rules');

@@ -45,3 +45,12 @@ export function getDeliveryActions({ delivery, role, userId }) {
   };
   return ACTION_ORDER.filter((k) => allowed[k]);
 }
+
+// Pre-fill for the Mark Delivered COD amount: the EXACT remaining amount,
+// rounded to paise, no trailing zeros ("500", "499.5"). Never rounded up to
+// whole rupees: the server rejects collecting more than what is remaining.
+// "0" (not empty) when nothing remains, so Confirm works without typing.
+export function formatCodPrefill(codAmount, codCollected) {
+  const remaining = Math.max(Number(codAmount || 0) - Number(codCollected || 0), 0);
+  return String(Number(remaining.toFixed(2)));
+}

@@ -10,7 +10,7 @@ import useSubmitGuard from '../../hooks/useSubmitGuard';
 import { bumpActivity } from '../../hooks/useIdleLock';
 import { printOrderSlip } from '../../utils/printHelpers';
 import { showAlert, showConfirm } from '../../utils/alert';
-import { getDeliveryActions, PRIMARY_ACTIONS } from './deliveryActionRules';
+import { getDeliveryActions, PRIMARY_ACTIONS, formatCodPrefill } from './deliveryActionRules';
 import { Colors, FontSize, Spacing, BorderRadius } from '../../constants/theme';
 
 // Every delivery-lifecycle action in one place, so Delivery Details and Sale
@@ -294,8 +294,7 @@ function DeliveryActionsPanel({ deliveryId, navigation, onChanged, compact = fal
   };
 
   const openDeliverForm = () => {
-    const remaining = Math.max(Number(delivery.cod_amount || 0) - Number(delivery.cod_collected || 0), 0);
-    if (remaining > 0) setCodAmount(remaining.toFixed(0));
+    if (delivery.cod_amount > 0) setCodAmount(formatCodPrefill(delivery.cod_amount, delivery.cod_collected));
     setShowFailForm(false);
     setShowCancelBox(false);
     setShowCodForm(true);
