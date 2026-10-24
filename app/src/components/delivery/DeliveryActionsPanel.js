@@ -10,7 +10,10 @@ import useSubmitGuard from '../../hooks/useSubmitGuard';
 import { bumpActivity } from '../../hooks/useIdleLock';
 import { printOrderSlip } from '../../utils/printHelpers';
 import { showAlert, showConfirm } from '../../utils/alert';
-import { getDeliveryActions, PRIMARY_ACTIONS, formatCodPrefill, deliverNeedsForm } from './deliveryActionRules';
+import {
+  getDeliveryActions, PRIMARY_ACTIONS, formatCodPrefill, deliverNeedsForm,
+  pickupWaitingForReady, netPaidPaise, canCancelWholeOrder, formatRupeesFromPaise,
+} from './deliveryActionRules';
 import { Colors, FontSize, Spacing, BorderRadius } from '../../constants/theme';
 
 // Every delivery-lifecycle action in one place, so Delivery Details and Sale
@@ -61,6 +64,7 @@ function DeliveryActionsPanel({ deliveryId, navigation, onChanged, compact = fal
   const [assignModalVisible, setAssignModalVisible] = useState(false);
   const [partners, setPartners] = useState([]);
   const [partnersLoading, setPartnersLoading] = useState(false);
+  const [partnersShowingEveryone, setPartnersShowingEveryone] = useState(false);
   const [assignLoading, setAssignLoading] = useState(false);
   const [checklistVisible, setChecklistVisible] = useState(false);
 
@@ -151,14 +155,27 @@ function DeliveryActionsPanel({ deliveryId, navigation, onChanged, compact = fal
 
   const openAssignModal = async () => {
     setPartners([]);
+    setPartnersShowingEveryone(false);
     setPartnersLoading(true);
     setAssignModalVisible(true);
     try {
       // GET /deliveries/partners, not GET /users (owner/manager-only) —
       // counter_staff can assign too (2026-09-01, sub-project 5).
-      const res = await api.getDeliveryPartners(delivery?.location_id);
-      const users = res.data?.users || res.data || [];
-      setPartners(Array.isArray(users) ? users : []);
+      // Same fallback as OrdersInboxScreen / DeliveriesScreen: no riders set
+      // up at this location -> show every rider, and say so.
+      const locId = delivery?.location_id;
+      const res = await api.getDeliveryPartners(locId);
+      let users = res.data?.users || res.data || [];
+      if (!Array.isArray(users)) users = [];
+      if (users.length === 0 && locId) {
+        const all = await api.getDeliveryPartners();
+        const allList = all?.data?.users || all?.data || [];
+        if (Array.isArray(allList) && allList.length > 0) {
+          users = allList;
+          setPartnersShowingEveryone(true);
+        }
+      }
+      setPartners(users);
     } catch {
       setPartners([]);
     } finally {
@@ -279,15 +296,29 @@ function DeliveryActionsPanel({ deliveryId, navigation, onChanged, compact = fal
     }
   };
 
+  // Only offered when the order holds no money (canCancelWholeOrder): the
+  // server refuses to cancel a sale with an unrefunded balance. If the order
+  // still gets refused (someone took a payment meanwhile), the delivery IS
+  // already cancelled, so the host reloads and the message says exactly what
+  // happened rather than "Could not update delivery".
   const cancelDeliveryAndOrder = async () => {
     try {
       setActionLoading(true);
-      await api.cancelDelivery(deliveryId, { reason: 'Cancelled after failed delivery' });
-      await api.cancelSale(delivery.sale_id);
+      try {
+        await api.cancelDelivery(deliveryId, { reason: 'Cancelled after failed delivery' });
+      } catch (err) {
+        await afterFailure(err);
+        return;
+      }
+      try {
+        await api.cancelSale(delivery.sale_id);
+      } catch (err) {
+        await afterSuccess();
+        showAlert('Delivery cancelled', 'The order itself was not cancelled: ' + ((err && err.message) || 'Please try again.'));
+        return;
+      }
       await afterSuccess();
       showAlert('Cancelled', 'Delivery and order cancelled.');
-    } catch (err) {
-      await afterFailure(err);
     } finally {
       setActionLoading(false);
     }
@@ -314,7 +345,7 @@ function DeliveryActionsPanel({ deliveryId, navigation, onChanged, compact = fal
       case 'reattempt':
         return showConfirm(
           'Send it out again?',
-          'The order goes back to "assigned" so a rider can take it again.',
+          'The same rider can take it out again.',
           guard(runReattempt),
           { confirmLabel: 'Send again' },
         );
@@ -362,11 +393,16 @@ function DeliveryActionsPanel({ deliveryId, navigation, onChanged, compact = fal
   if (!navigation?.getState?.()?.routeNames?.includes('LiveDeliveryMap')) {
     actions = actions.filter((k) => k !== 'live_location');
   }
-  if (actions.length === 0) return null;
+  if (actions.length === 0 && !showPickupWaiting) return null;
 
   const primaries = actions.filter((k) => PRIMARY_ACTIONS.has(k));
   const secondaries = actions.filter((k) => !PRIMARY_ACTIONS.has(k));
-  const codRemaining = Number(delivery.cod_amount - (delivery.cod_collected || 0));
+  // Same exact-paise figure the amount field is pre-filled with, so the label
+  // and the field can never disagree (e.g. "499.5", not "500").
+  const codRemainingText = formatCodPrefill(delivery.cod_amount, delivery.cod_collected);
+  const showPickupWaiting = pickupWaitingForReady({ delivery, role: user?.role, userId: user?.id });
+  const paidPaise = netPaidPaise(delivery);
+  const wholeOrderCancellable = canCancelWholeOrder(delivery);
 
   const renderPrimary = (key, isFirst) => {
     const meta = PRIMARY_META[key];
@@ -392,7 +428,7 @@ function DeliveryActionsPanel({ deliveryId, navigation, onChanged, compact = fal
       <Text style={styles.formTitle}>Confirm Delivery</Text>
       {delivery.cod_amount > 0 && (
         <>
-          <Text style={styles.label}>COD Amount to Collect (₹{codRemaining.toFixed(0)} remaining)</Text>
+          <Text style={styles.label}>COD Amount to Collect (₹{codRemainingText} remaining)</Text>
           <TextInput
             style={styles.input}
             value={codAmount}
@@ -460,6 +496,15 @@ function DeliveryActionsPanel({ deliveryId, navigation, onChanged, compact = fal
 
       {primaries.map((key, i) => renderPrimary(key, i === 0))}
 
+      {/* In place of Pick Up Order while the sale is not ready yet (the
+          server refuses pickup until then, e.g. right after Send again). */}
+      {showPickupWaiting && (
+        <View style={[styles.waitingNote, primaries.length > 0 && styles.primaryBtnFollow]}>
+          <Ionicons name="time-outline" size={18} color={Colors.textSecondary} />
+          <Text style={styles.waitingNoteText}>Pick-up unlocks once the order is marked ready.</Text>
+        </View>
+      )}
+
       {secondaries.length > 0 && (
         <View style={[styles.secondaryRow, primaries.length > 0 && styles.secondaryRowSpaced]}>
           {secondaries.map((key) => {
@@ -513,7 +558,13 @@ function DeliveryActionsPanel({ deliveryId, navigation, onChanged, compact = fal
       {showCancelBox && actions.includes('cancel') && (
         <View style={styles.formBox}>
           <Text style={styles.formTitle}>Cancel this delivery?</Text>
-          <Text style={styles.label}>Cancel only the delivery, or the whole order too.</Text>
+          {wholeOrderCancellable ? (
+            <Text style={styles.label}>Cancel only the delivery, or the whole order too.</Text>
+          ) : (
+            <Text style={styles.label}>
+              This order has {formatRupeesFromPaise(paidPaise)} paid. To cancel the whole order, refund it first from the order screen.
+            </Text>
+          )}
           <TouchableOpacity
             style={[styles.formBtn, styles.outlineBtn, actionLoading && styles.disabled]}
             onPress={guard(cancelDeliveryOnly)}
@@ -522,14 +573,16 @@ function DeliveryActionsPanel({ deliveryId, navigation, onChanged, compact = fal
           >
             <Text style={styles.outlineBtnText}>Cancel delivery only</Text>
           </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.formBtn, styles.dangerBtn, styles.stackedBtn, actionLoading && styles.disabled]}
-            onPress={guard(cancelDeliveryAndOrder)}
-            disabled={actionLoading}
-            accessibilityRole="button"
-          >
-            {actionLoading ? <ActivityIndicator color={Colors.white} /> : <Text style={styles.formBtnText}>Cancel delivery and order</Text>}
-          </TouchableOpacity>
+          {wholeOrderCancellable && (
+            <TouchableOpacity
+              style={[styles.formBtn, styles.dangerBtn, styles.stackedBtn, actionLoading && styles.disabled]}
+              onPress={guard(cancelDeliveryAndOrder)}
+              disabled={actionLoading}
+              accessibilityRole="button"
+            >
+              {actionLoading ? <ActivityIndicator color={Colors.white} /> : <Text style={styles.formBtnText}>Cancel delivery and order</Text>}
+            </TouchableOpacity>
+          )}
           <TouchableOpacity style={[styles.formBtn, styles.backBtn, styles.stackedBtn]} onPress={() => setShowCancelBox(false)} accessibilityRole="button">
             <Text style={styles.backBtnText}>Back</Text>
           </TouchableOpacity>
@@ -539,8 +592,20 @@ function DeliveryActionsPanel({ deliveryId, navigation, onChanged, compact = fal
       <AssignPickerModal
         visible={assignModalVisible}
         title="Who is delivering this?"
-        notice={!partnersLoading && partners.length === 0 ? 'No riders at this location. Ask the owner to add one.' : null}
-        people={partners.map((p) => ({ id: p.id, name: p.name, meta: `${p.active_delivery_count || 0} stop(s) today` }))}
+        notice={
+          partnersLoading ? null
+            : partnersShowingEveryone
+              ? 'No riders set up at this location — showing everyone.'
+              : partners.length === 0
+                ? 'No delivery partners yet. Ask the owner to add someone as a Delivery Rider.'
+                : null
+        }
+        // Same phrasing as OrdersInboxScreen / DeliveriesScreen / Dashboard:
+        // active_delivery_count has no date filter, so never "today".
+        people={partners.map((p) => {
+          const busy = Number(p.active_delivery_count || 0);
+          return { id: p.id, name: p.name, meta: busy === 0 ? 'Free right now' : busy === 1 ? '1 on the road' : `${busy} on the road` };
+        })}
         loading={partnersLoading || assignLoading}
         onPick={(person) => guard(() => handleAssign(person.id))()}
         onClose={() => setAssignModalVisible(false)}
@@ -588,6 +653,8 @@ const styles = StyleSheet.create({
   secondaryBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, minHeight: 44, paddingHorizontal: Spacing.md, borderRadius: BorderRadius.md, borderWidth: 1, backgroundColor: Colors.surface },
   secondaryBtnText: { fontSize: FontSize.sm, fontWeight: '700' },
   disabled: { opacity: 0.5 },
+  waitingNote: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, minHeight: 44, paddingHorizontal: Spacing.md, borderRadius: BorderRadius.md, backgroundColor: Colors.surfaceAlt, borderWidth: 1, borderColor: Colors.border },
+  waitingNoteText: { flex: 1, fontSize: FontSize.md, color: Colors.textSecondary, fontWeight: '600' },
   formBox: { backgroundColor: Colors.background, borderRadius: BorderRadius.md, padding: Spacing.md, marginTop: Spacing.sm },
   formTitle: { fontSize: FontSize.md, fontWeight: '600', color: Colors.text, marginBottom: Spacing.sm },
   label: { fontSize: FontSize.sm, color: Colors.textSecondary, marginBottom: Spacing.xs },
