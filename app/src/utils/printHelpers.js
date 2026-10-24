@@ -22,7 +22,7 @@ export const printHtmlOnWeb = (markup, title) => {
   }
 
   frameDoc.open();
-  frameDoc.write(`<html><head><title>${title}</title></head><body>${markup}</body></html>`);
+  frameDoc.write(`<html><head><title>${esc(title)}</title></head><body>${markup}</body></html>`);
   frameDoc.close();
 
   setTimeout(() => {
@@ -198,10 +198,17 @@ const buildCopyHtml = ({ sale, shopName, isDelivery, money, isShopCopy }) => {
     </div>`;
 };
 
+// Delivery challan or pickup slip? A pre_order fulfilled by delivery has a
+// delivery row but order_type 'pre_order', so a live delivery row counts. A
+// CANCELLED one does not: converting a delivery to pickup (PUT
+// /sales/:id/convert-type) leaves the old row behind as 'cancelled', and that
+// order is collected at the counter, not delivered.
+export const isDeliverySlip = (sale) => !!sale && (
+  sale.order_type === 'delivery' || (!!sale.delivery && sale.delivery.status !== 'cancelled')
+);
+
 export const buildOrderSlipHtml = (sale, shopName = FALLBACK_SHOP_NAME) => {
-  // A pre_order fulfilled by delivery has a delivery row but order_type
-  // 'pre_order' — the delivery row is the reliable signal.
-  const isDelivery = !!sale.delivery || sale.order_type === 'delivery';
+  const isDelivery = isDeliverySlip(sale);
   const money = computeSlipMoney(sale);
   const copy = (isShopCopy) => buildCopyHtml({ sale, shopName, isDelivery, money, isShopCopy });
   return `
@@ -236,7 +243,7 @@ export const printOrderSlip = async (saleId) => {
     showAlert('Could not print', "Couldn't load this order. Check the internet connection and try again.");
     return;
   }
-  const isDelivery = !!sale.delivery || sale.order_type === 'delivery';
+  const isDelivery = isDeliverySlip(sale);
   await printHtml(buildOrderSlipHtml(sale, shopName), `${isDelivery ? 'Delivery Challan' : 'Pickup Slip'} ${sale.sale_number || ''}`.trim());
 };
 

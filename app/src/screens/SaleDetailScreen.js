@@ -470,10 +470,15 @@ export default function SaleDetailScreen({ route, navigation }) {
     // cancelling underneath it left a rider "out" with an order the shop
     // now considers cancelled, with no signal to them at all (found live
     // during the 2026-09-04 order-flow audit).
+    // Worded per viewer: only owner/manager can mark a picked-up/in-transit
+    // delivery failed (getDeliveryActions 'fail'); nobody can from 'assigned'.
     if (sale.delivery && ['assigned', 'picked_up', 'in_transit'].includes(sale.delivery.status)) {
+      const canMarkFailed = canManage && ['picked_up', 'in_transit'].includes(sale.delivery.status);
       showAlert(
         'Cancel the delivery first',
-        'A rider is already out with this order. Mark the delivery as failed first (in the Delivery section above), then cancel the order.',
+        canMarkFailed
+          ? 'The rider has it. Mark the delivery as failed above, then cancel the order.'
+          : 'The rider has this order. Ask the owner or manager to cancel the delivery first.',
       );
       return;
     }
@@ -1050,7 +1055,19 @@ export default function SaleDetailScreen({ route, navigation }) {
   // (to exactly the roles the server lets do it), and two different Mark
   // Delivered buttons on one order is the confusion this screen avoids.
   // Confirm Pickup orders have no delivery row, so they are unaffected.
-  const showOneTapAction = hasNoInputNextAction && !sale.delivery;
+  //
+  // Keyed on a LIVE delivery row, not just any row: converting a delivery to
+  // pickup (PUT /sales/:id/convert-type) leaves the old row as 'cancelled'.
+  // That order is a pickup now, the panel is not shown for it, and Confirm
+  // Pickup here is its only way to finish (Complete Order is hidden whenever
+  // hasNoInputNextAction is true).
+  const hasLiveDeliveryRow = !!sale.delivery && sale.delivery.status !== 'cancelled';
+  const showOneTapAction = hasNoInputNextAction && !hasLiveDeliveryRow;
+  // A delivery converted to pickup: its cancelled delivery row is history,
+  // not something to act on or print a challan from, so the Delivery section
+  // is not rendered at all.
+  const showDeliverySection = !!sale.delivery &&
+    !(sale.order_type === 'pickup' && sale.delivery.status === 'cancelled');
   // A blocker the panel above already offers the fix for, to this viewer:
   // a failed delivery (Reattempt / Cancel Delivery) or one with no rider yet
   // (Assign Partner). Nothing extra to render below for those.
@@ -1186,7 +1203,7 @@ export default function SaleDetailScreen({ route, navigation }) {
           assign a rider, mark it delivered or print the challan. The full
           record (timeline, proof photos) is one tap away via the link. Live
           location is offered by the panel itself, so it isn't repeated here. */}
-      {sale.delivery && (
+      {showDeliverySection && (
         <View style={[styles.section, { borderLeftWidth: 3, borderLeftColor: '#00BCD4' }]}>
           <Text style={styles.sectionTitle}>Delivery</Text>
           <View style={[styles.statusBadge, { backgroundColor: sale.delivery.status === 'delivered' ? Colors.successLight : Colors.infoLight, alignSelf: 'flex-start' }]}>

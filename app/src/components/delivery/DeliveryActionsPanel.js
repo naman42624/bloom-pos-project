@@ -8,7 +8,7 @@ import DeliveryChecklist from '../DeliveryChecklist';
 import AssignPickerModal from '../orderBoard/AssignPickerModal';
 import useSubmitGuard from '../../hooks/useSubmitGuard';
 import { bumpActivity } from '../../hooks/useIdleLock';
-import { printOrderSlip } from '../../utils/printHelpers';
+import { printOrderSlip, isDeliverySlip } from '../../utils/printHelpers';
 import { showAlert, showConfirm } from '../../utils/alert';
 import {
   getDeliveryActions, PRIMARY_ACTIONS, formatCodPrefill, deliverNeedsForm,
@@ -509,7 +509,10 @@ function DeliveryActionsPanel({ deliveryId, navigation, onChanged, compact = fal
         <View style={[styles.secondaryRow, primaries.length > 0 && styles.secondaryRowSpaced]}>
           {secondaries.map((key) => {
             const meta = SECONDARY_META[key];
-            const label = key === 'convert_payment' && delivery.is_credit_sale === 1 ? 'Convert to COD' : meta.label;
+            // A delivery converted to pickup prints a pickup slip (printHelpers).
+            const label = key === 'convert_payment' && delivery.is_credit_sale === 1 ? 'Convert to COD'
+              : key === 'print' && !isDeliverySlip({ order_type: delivery.order_type, delivery }) ? 'Print Pickup Slip'
+                : meta.label;
             const tint = meta.danger ? Colors.error : Colors.primary;
             return (
               <TouchableOpacity
