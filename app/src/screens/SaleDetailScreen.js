@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useLayoutEffect, useCallback } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useCallback, useRef } from 'react';
 
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, Platform, ActivityIndicator, Modal, TextInput, KeyboardAvoidingView,
@@ -18,6 +18,7 @@ import ImageModal from '../components/ImageModal';
 import VoiceNoteRecorder from '../components/VoiceNoteRecorder';
 import AttachmentVoiceRow from '../components/AttachmentVoiceRow';
 import StageBadge from '../components/StageBadge';
+import DeliveryActionsPanel from '../components/delivery/DeliveryActionsPanel';
 import { formatMoney, STAFF_ROLE_LABELS, ASSIGNABLE_STAFF_ROLES } from '../constants/orderDisplay';
 
 // Duplicated locally (rather than imported from OrdersInboxScreen) to avoid
@@ -181,17 +182,16 @@ export default function SaleDetailScreen({ route, navigation }) {
   // into a dead-end request. Delivery partners can't reach this screen at
   // all (no SaleDetail route in their stack), so no check needed for them.
   const canRecordPayment = !['florist_staff', 'customer'].includes(user?.role);
-  // Assigning a rider and re-sending a failed delivery are both done on
-  // DeliveryDetailScreen, whose own gate (its canManageDeliveries, :65)
-  // mirrors PUT /deliveries/:id/assign and PUT /deliveries/:id/reattempt —
-  // both authorize('owner', 'manager', 'counter_staff'). Without this check an
-  // `employee` or `florist_staff` tapped a real-looking "Assign Rider" /
-  // "Delivery Failed — Send Again", landed on a screen showing none of those
-  // controls, and had nowhere to go: a dead end moved one level deeper rather
-  // than removed (review finding, 2026-09-02). Live-relevant, not theoretical
-  // — CLAUDE.md records four `employee` accounts that stay on that role
-  // indefinitely. Same role list as OrderCard's, kept in step on purpose
-  // (app/src/components/orderBoard/OrderCard.js).
+  // Delivery actions (assign, send again, mark delivered, print challan, …)
+  // live in the shared DeliveryActionsPanel rendered in the Delivery section;
+  // it decides per role what to show. The ref lets a sale refetch reload it too.
+  const deliveryPanelRef = useRef(null);
+  // Roles the panel offers Assign Partner / Reattempt to — same list as
+  // PUT /deliveries/:id/assign and /reattempt (deliveryActionRules.js). For
+  // them the blocked-order block below stays silent, because the button is
+  // right there in the panel; everyone else still gets a plain sentence
+  // saying who will act (an `employee` or `florist_staff` would otherwise see
+  // nothing at all — CLAUDE.md records four live `employee` accounts).
   const canManageDeliveries = ['owner', 'manager', 'counter_staff'].includes(user?.role);
 
   // Convert order type state
@@ -312,6 +312,9 @@ export default function SaleDetailScreen({ route, navigation }) {
         setAuditLogs(auditRes.data || []);
       }
     } catch { } finally { setLoading(false); }
+    // Keep the delivery panel in step with the sale. The panel's refresh never
+    // calls onChanged, so onChanged={fetchSale} -> this -> refresh cannot loop.
+    deliveryPanelRef.current?.refresh();
   };
 
   const refreshAttachments = async () => {
@@ -468,11 +471,9 @@ export default function SaleDetailScreen({ route, navigation }) {
     // now considers cancelled, with no signal to them at all (found live
     // during the 2026-09-04 order-flow audit).
     if (sale.delivery && ['assigned', 'picked_up', 'in_transit'].includes(sale.delivery.status)) {
-      showConfirm(
+      showAlert(
         'Cancel the delivery first',
-        'A rider is already out with this order. Cancel the delivery on the Delivery screen first, then come back and cancel the order.',
-        () => navigation.navigate('DeliveryDetail', { deliveryId: sale.delivery.id }),
-        { confirmLabel: 'Open delivery', cancelLabel: 'Not now' },
+        'A rider is already out with this order. Mark the delivery as failed first (in the Delivery section above), then cancel the order.',
       );
       return;
     }
@@ -497,15 +498,6 @@ export default function SaleDetailScreen({ route, navigation }) {
     goToRefund();
   };
 
-  const handleViewLivePartner = () => {
-    const partnerId = sale?.delivery?.delivery_partner_id || sale?.delivery?.partner_id;
-    if (!partnerId) return;
-    navigation.navigate('LiveDeliveryMap', {
-      selectedPartnerId: partnerId,
-      deliveryId: sale.delivery.id,
-    });
-  };
-
   const handleStatusTransition = (nextStatus, label) => {
     // Guard: an order with an OPEN delivery cannot be completed. Keyed on the
     // delivery row rather than order_type (was `order_type === 'delivery'`) to
@@ -521,7 +513,7 @@ export default function SaleDetailScreen({ route, navigation }) {
       // action the API refuses. Same split the backend message makes.
       const msg = sale.delivery?.status === 'failed'
         ? "This order's delivery did not go through. Send it out again, or cancel the delivery, then finish the order."
-        : 'This order cannot be finished until the delivery is done. Tap Delivery Status above, then mark it delivered.';
+        : 'This order cannot be finished until the delivery is done. Mark it delivered in the Delivery section above.';
       showAlert('Cannot Complete', msg);
       return;
     }
@@ -1053,6 +1045,17 @@ export default function SaleDetailScreen({ route, navigation }) {
   // Delivery first when both apply: for a pre_order going out by delivery the
   // money is collected at the door, so the rider is genuinely the next step.
   const showCollectAction = sale.status === 'ready' && balanceBlocksCompletion && !hasOpenDelivery && canRecordPayment;
+  // The one-tap Confirm Pickup / Mark Delivered button. Never for an order with
+  // a delivery row: the Delivery section's panel already offers Mark Delivered
+  // (to exactly the roles the server lets do it), and two different Mark
+  // Delivered buttons on one order is the confusion this screen avoids.
+  // Confirm Pickup orders have no delivery row, so they are unaffected.
+  const showOneTapAction = hasNoInputNextAction && !sale.delivery;
+  // A blocker the panel above already offers the fix for, to this viewer:
+  // a failed delivery (Reattempt / Cancel Delivery) or one with no rider yet
+  // (Assign Partner). Nothing extra to render below for those.
+  const deliveryActionInPanel = hasOpenDelivery && canManageDeliveries &&
+    (sale.delivery.status === 'failed' || !sale.delivery.partner_name);
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
@@ -1178,16 +1181,14 @@ export default function SaleDetailScreen({ route, navigation }) {
         </View>
       )}
 
-      {/* Delivery tracking info */}
+      {/* Delivery: status summary + every action this viewer may take, in
+          place (DeliveryActionsPanel), so staff no longer leave the order to
+          assign a rider, mark it delivered or print the challan. The full
+          record (timeline, proof photos) is one tap away via the link. Live
+          location is offered by the panel itself, so it isn't repeated here. */}
       {sale.delivery && (
-        <TouchableOpacity
-          style={[styles.section, { borderLeftWidth: 3, borderLeftColor: '#00BCD4' }]}
-          onPress={() => navigation.navigate('DeliveryDetail', { deliveryId: sale.delivery.id })}
-        >
-          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-            <Text style={styles.sectionTitle}>Delivery Status</Text>
-            <Ionicons name="chevron-forward" size={18} color={Colors.textLight} />
-          </View>
+        <View style={[styles.section, { borderLeftWidth: 3, borderLeftColor: '#00BCD4' }]}>
+          <Text style={styles.sectionTitle}>Delivery</Text>
           <View style={[styles.statusBadge, { backgroundColor: sale.delivery.status === 'delivered' ? Colors.successLight : Colors.infoLight, alignSelf: 'flex-start' }]}>
             <Text style={{ fontSize: FontSize.xs, fontWeight: '700', color: sale.delivery.status === 'delivered' ? Colors.success : Colors.info }}>
               {(sale.delivery.status || '').replace(/_/g, ' ').toUpperCase()}
@@ -1199,13 +1200,22 @@ export default function SaleDetailScreen({ route, navigation }) {
           {sale.delivery.cod_amount > 0 && (
             <Text style={[styles.infoSubtext, { marginTop: 2 }]}>COD: ₹{sale.delivery.cod_amount} ({sale.delivery.cod_status || 'pending'})</Text>
           )}
-          {sale.delivery.status === 'in_transit' && (sale.delivery.delivery_partner_id || sale.delivery.partner_id) && (
-            <TouchableOpacity style={styles.liveLocationBtn} onPress={handleViewLivePartner}>
-              <Ionicons name="locate-outline" size={16} color={Colors.primary} />
-              <Text style={styles.liveLocationText}>View Live Location</Text>
-            </TouchableOpacity>
-          )}
-        </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.viewDeliveryLink}
+            onPress={() => navigation.navigate('DeliveryDetail', { deliveryId: sale.delivery.id })}
+            accessibilityRole="link"
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          >
+            <Text style={styles.viewDeliveryLinkText}>View full delivery →</Text>
+          </TouchableOpacity>
+          <DeliveryActionsPanel
+            ref={deliveryPanelRef}
+            deliveryId={sale.delivery.id}
+            navigation={navigation}
+            onChanged={fetchSale}
+            compact
+          />
+        </View>
       )}
 
       {/* Pickup status */}
@@ -1668,56 +1678,37 @@ export default function SaleDetailScreen({ route, navigation }) {
           two different ways. When the blocker is not this person's job to clear,
           it says so in a sentence rather than offering a button that 403s.
 
-          !hasNoInputNextAction (added 2026-09-02, review finding): a 'ready'
-          sale whose delivery is assigned/picked_up/in_transit with no COD
-          outstanding satisfies BOTH this gate and the one-tap gate below, so
-          the screen rendered "…tap Delivery Status above to follow it" with a
-          Mark Delivered button directly underneath contradicting it (live row
-          INV-MAIN-20260606-002 is exactly this shape). This note is for the
-          case where there is genuinely nothing to tap; whenever the server
-          does offer a one-tap action, that action is the whole answer. */}
-      {sale.status === 'ready' && completionBlocked && !hasNoInputNextAction && (
+          !showOneTapAction: whenever the one-tap Confirm Pickup button below
+          shows, that action is the whole answer (2026-09-02 review finding).
+          !deliveryActionInPanel (2026-10-24): an unassigned or failed delivery
+          is fixed by Assign Partner / Reattempt in the Delivery section's
+          panel above, for the roles allowed to; nothing is repeated here.
+          Roles that can't act still get the plain sentence saying who will. */}
+      {sale.status === 'ready' && completionBlocked && !showOneTapAction && !deliveryActionInPanel && (
         <View style={styles.actions}>
           {hasOpenDelivery ? (
             /* A FAILED delivery cannot be "marked delivered" — PUT
                /deliveries/:id/deliver only accepts picked_up/in_transit. Its
-               real recoveries are Reattempt or Cancel, both on DeliveryDetail,
-               so it gets its own button rather than the rider sentence below.
+               real recoveries are Reattempt or Cancel (in the panel above, for
+               the roles allowed), so it gets its own note rather than the rider
+               sentence below.
                Checked first: a failed delivery normally still has a partner
                name attached, so it would otherwise fall into that sentence and
                tell staff to wait for something that can never happen. */
             sale.delivery.status === 'failed' ? (
-              canManageDeliveries ? (
-                <TouchableOpacity
-                  style={[styles.actionBtn, { backgroundColor: Colors.warning, flex: 1 }]}
-                  onPress={() => navigation.navigate('DeliveryDetail', { deliveryId: sale.delivery.id })}
-                >
-                  <Ionicons name="refresh-outline" size={18} color={Colors.white} />
-                  <Text style={styles.actionBtnText}>Delivery Failed — Send Again</Text>
-                </TouchableOpacity>
-              ) : (
-                <View style={styles.blockedNote}>
-                  <Ionicons name="alert-circle-outline" size={18} color={Colors.warning} />
-                  <Text style={styles.blockedNoteText}>
-                    This delivery came back undelivered. Counter staff will send it out again.
-                  </Text>
-                </View>
-              )
+              <View style={styles.blockedNote}>
+                <Ionicons name="alert-circle-outline" size={18} color={Colors.warning} />
+                <Text style={styles.blockedNoteText}>
+                  This delivery came back undelivered. Counter staff will send it out again.
+                </Text>
+              </View>
             ) : sale.delivery.partner_name ? (
               <View style={styles.blockedNote}>
                 <Ionicons name="bicycle-outline" size={18} color={Colors.info} />
                 <Text style={styles.blockedNoteText}>
-                  {sale.delivery.partner_name} has this order. It finishes on its own once the delivery is marked delivered — tap Delivery Status above to follow it.
+                  {sale.delivery.partner_name} has this order. It finishes on its own once the delivery is marked delivered.
                 </Text>
               </View>
-            ) : canManageDeliveries ? (
-              <TouchableOpacity
-                style={[styles.actionBtn, { backgroundColor: Colors.info, flex: 1 }]}
-                onPress={() => navigation.navigate('DeliveryDetail', { deliveryId: sale.delivery.id })}
-              >
-                <Ionicons name="bicycle-outline" size={18} color={Colors.white} />
-                <Text style={styles.actionBtnText}>Assign Rider</Text>
-              </TouchableOpacity>
             ) : (
               <View style={styles.blockedNote}>
                 <Ionicons name="bicycle-outline" size={18} color={Colors.info} />
@@ -1750,11 +1741,12 @@ export default function SaleDetailScreen({ route, navigation }) {
           display_stage.nextAction ever sends for the pickup/delivery
           "nothing left to collect" case (server/utils/order-stage.js). When
           a balance/COD is still outstanding, nextAction is null and this
-          button doesn't render — the Delivery Status section above (taps
-          through to DeliveryDetail) or the Complete Order button's own
+          button doesn't render — the Delivery section's panel above or the
+          Complete Order button's own
           pay-balance modal (for pickup) remain the way to finish the order,
-          same as before this task. */}
-      {hasNoInputNextAction && (
+          same as before this task. Never shown for an order with a delivery
+          row (2026-10-24): the panel above owns Mark Delivered there. */}
+      {showOneTapAction && (
         <TouchableOpacity
           style={[
             styles.actionBtn,
@@ -2344,8 +2336,8 @@ const styles = StyleSheet.create({
   stockBadgeText: { fontSize: FontSize.xs, fontWeight: '600', color: Colors.success },
   fulfillBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 4, backgroundColor: Colors.primary + '15', paddingHorizontal: 8, paddingVertical: 4, borderRadius: BorderRadius.sm, alignSelf: 'flex-start' },
   fulfillBtnText: { fontSize: FontSize.xs, fontWeight: '700', color: Colors.primary },
-  liveLocationBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 10, alignSelf: 'flex-start', borderWidth: 1, borderColor: Colors.secondary + '40', backgroundColor: Colors.secondary + '10', paddingHorizontal: 12, paddingVertical: 8, borderRadius: BorderRadius.md },
-  liveLocationText: { fontSize: FontSize.sm, color: Colors.secondary, fontWeight: '700' },
+  viewDeliveryLink: { alignSelf: 'flex-start', minHeight: 44, justifyContent: 'center', marginTop: Spacing.xs },
+  viewDeliveryLinkText: { fontSize: FontSize.sm, color: Colors.primary, fontWeight: '700' },
 
   // Production task styles
   taskRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 6, marginTop: 6 },
