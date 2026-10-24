@@ -71,7 +71,7 @@ Branch: `fix/oct-bug-batch` (off `main` @ `78913b3`). Read this before resuming.
 - Riders can now print the shop copy, which includes the total, paid amount and payment methods.
 - **Deploy the server before the app.** A newer app talking to an older server gets no `sale_status`, which hides Pick Up.
 
-**Deferred minors.** The full list is in the SDD ledger. The highest-value ones:
+**Deferred minors.** The full list is in `docs/superpowers/logs/2026-10-24-sale-detail-delivery-actions-ledger.md`. The highest-value ones:
 - "View full delivery →" goes nowhere in stacks without a Delivery Details route (customer and florist).
 - There is no way to cancel an `assigned` delivery in the app.
 - Non-rider staff lose the optional proof photo on prepaid deliveries.
