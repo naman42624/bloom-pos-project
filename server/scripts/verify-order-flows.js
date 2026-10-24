@@ -1609,4 +1609,33 @@ async function main() {
   process.exit(fail > 0 ? 1 : 0);
 }
 
+check('GET /deliveries/:id exposes counter-staff permission flags', async () => {
+  const owner = await loginOwner();
+  const db = await getDb();
+  const row = await db.prepare('SELECT id FROM deliveries ORDER BY id DESC LIMIT 1').get();
+  assert(row, 'No delivery exists to read');
+  const settings = await db.prepare("SELECT key, value FROM settings WHERE key IN ('pref_counter_marks_pickup', 'pref_counter_marks_delivered')").all();
+  const map = Object.fromEntries((settings || []).map((r) => [r.key, r.value]));
+  const res = await api('GET', `/deliveries/${row.id}`, owner.token);
+  assert(res.status === 200, `Expected 200, got ${res.status}: ${JSON.stringify(res.body)}`);
+  const data = res.body.data;
+  assert(typeof data.counter_can_mark_picked_up === 'boolean', `counter_can_mark_picked_up not boolean: ${data.counter_can_mark_picked_up}`);
+  assert(data.counter_can_mark_picked_up === (map.pref_counter_marks_pickup === '1'), 'counter_can_mark_picked_up does not match pref_counter_marks_pickup');
+  assert(typeof data.counter_can_mark_delivered === 'boolean', `counter_can_mark_delivered not boolean: ${data.counter_can_mark_delivered}`);
+  assert(data.counter_can_mark_delivered === (map.pref_counter_marks_delivered === '1'), 'counter_can_mark_delivered does not match pref_counter_marks_delivered');
+});
+
+check('GET /deliveries/:id exposes the sale status (sale_status) and refunded_total', async () => {
+  const owner = await loginOwner();
+  const { saleId, deliveryId } = await createReadyDelivery(owner.token, {});
+  const sale = await api('GET', `/sales/${saleId}`, owner.token);
+  const res = await api('GET', `/deliveries/${deliveryId}`, owner.token);
+  assert(res.status === 200, `Expected 200, got ${res.status}: ${JSON.stringify(res.body)}`);
+  const data = res.body.data;
+  assert(data.sale_status === sale.body.data.status, `sale_status ${data.sale_status} does not match sale status ${sale.body.data.status}`);
+  assert(data.sale_status === 'ready', `Expected sale_status 'ready', got '${data.sale_status}'`);
+  assert(data.status === 'pending', `Delivery status must stay its own field, got '${data.status}'`);
+  assert(data.refunded_total === 0, `Expected refunded_total 0, got ${JSON.stringify(data.refunded_total)}`);
+});
+
 main();

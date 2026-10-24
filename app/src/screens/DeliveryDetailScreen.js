@@ -1,13 +1,12 @@
 import React, { useState, useCallback, useRef } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Alert, Platform, TextInput, ActivityIndicator, Image, Modal, FlatList } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, Image } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
-import * as Print from 'expo-print';
-import * as Sharing from 'expo-sharing';
-import * as ImagePicker from 'expo-image-picker';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
-import DeliveryChecklist from '../components/DeliveryChecklist';
+import DeliveryActionsPanel from '../components/delivery/DeliveryActionsPanel';
+import useSubmitGuard from '../hooks/useSubmitGuard';
+import { showAlert, showConfirm } from '../utils/alert';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import { parseServerDate, formatDate, formatDateTime } from '../utils/datetime';
 
@@ -40,81 +39,28 @@ export default function DeliveryDetailScreen({ route, navigation }) {
   const { user } = useAuth();
   const [delivery, setDelivery] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [actionLoading, setActionLoading] = useState(false);
-  const [codAmount, setCodAmount] = useState('');
-  const [codMethod, setCodMethod] = useState('cash');
-  const [codRef, setCodRef] = useState('');
-  const [failReason, setFailReason] = useState('');
-  const [showCodForm, setShowCodForm] = useState(false);
-  const [showFailForm, setShowFailForm] = useState(false);
-  const [proofPhoto, setProofPhoto] = useState(null);
-  const [assignModalVisible, setAssignModalVisible] = useState(false);
-  const [partners, setPartners] = useState([]);
-  const [assignLoading, setAssignLoading] = useState(false);
-  const [checklistVisible, setChecklistVisible] = useState(false);
+  const [converting, setConverting] = useState(false);
+  // Every delivery-lifecycle action lives in DeliveryActionsPanel (shared
+  // with Sale Details). The ref lets this screen reload the panel too.
+  const panelRef = useRef(null);
+  // Full-screen spinner only on the very first load: a refetch after an
+  // action must not unmount the panel (it would reload a second time).
+  const hasLoaded = useRef(false);
+  const guard = useSubmitGuard();
 
   const isPartner = user?.role === 'delivery_partner';
   const isManager = user?.role === 'owner' || user?.role === 'manager';
-  // Fulfill-from-stock, assign-partner, and reattempt/cancel-failed-
-  // delivery all already allow counter_staff server-side (fulfill-from-
-  // stock always did; assign/reattempt/cancel widened 2026-09-01,
-  // sub-project 5, user confirmed) — this screen's isManager gates on
-  // those three actions were missed. Convert-to-COD/Credit and Convert-
-  // to-Pickup stay isManager-only below, unchanged — those backend routes
-  // are still owner/manager-only, out of scope for this pass.
+  // Fulfill-from-stock allows counter_staff server-side (always did).
+  // Convert-to-Pickup stays isManager-only below — that backend route is
+  // still owner/manager-only.
   const canManageDeliveries = isManager || user?.role === 'counter_staff';
-  // Task 17: rider-side "Verify Load" access. Backend (`GET`/`PUT
-  // /deliveries/:id/checklist`) already 403s a delivery_partner touching a
-  // delivery that isn't theirs (`delivery.delivery_partner_id !==
-  // req.user.id`) — mirror that same ownership check here so the UI never
-  // offers a button that would just fail. Number() guards against a
-  // string/number id mismatch between `user.id` (auth context) and
-  // `delivery.delivery_partner_id` (raw DB value).
-  const isOwnDelivery = isPartner && delivery && Number(delivery.delivery_partner_id) === Number(user?.id);
-
-  const takeProofPhoto = async () => {
-    try {
-      const { status } = await ImagePicker.requestCameraPermissionsAsync();
-      if (status !== 'granted') {
-        Alert.alert('Permission Required', 'Camera permission is needed for proof of delivery.');
-        return;
-      }
-      const result = await ImagePicker.launchCameraAsync({
-        mediaTypes: ['images'],
-        quality: 0.6,
-        allowsEditing: false,
-      });
-      if (!result.canceled && result.assets?.[0]) {
-        setProofPhoto(result.assets[0]);
-      }
-    } catch (err) {
-      console.error('Camera error:', err);
-    }
-  };
-
-  const pickProofPhoto = async () => {
-    try {
-      const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ['images'],
-        quality: 0.6,
-      });
-      if (!result.canceled && result.assets?.[0]) {
-        setProofPhoto(result.assets[0]);
-      }
-    } catch (err) {
-      console.error('Image picker error:', err);
-    }
-  };
 
   const fetchDelivery = useCallback(async () => {
     try {
-      setLoading(true);
+      if (!hasLoaded.current) setLoading(true);
       const res = await api.getDelivery(deliveryId);
       setDelivery(res.data);
-      if (res.data?.cod_amount) {
-        const remaining = Number(res.data.cod_amount - (res.data.cod_collected || 0)).toFixed(2);
-        setCodAmount(remaining);
-      }
+      hasLoaded.current = true;
     } catch (err) {
       console.error('Fetch delivery error:', err);
     } finally {
@@ -122,155 +68,26 @@ export default function DeliveryDetailScreen({ route, navigation }) {
     }
   }, [deliveryId]);
 
-  useFocusEffect(useCallback(() => { fetchDelivery(); }, [fetchDelivery]));
-
-  const doAction = async (action, data = {}) => {
-    try {
-      setActionLoading(true);
-      if (action === 'pickup') await api.pickupDelivery(deliveryId);
-      else if (action === 'in_transit') await api.markInTransit(deliveryId);
-      else if (action === 'deliver') await api.deliverOrder(deliveryId, data);
-      else if (action === 'fail') await api.failDelivery(deliveryId, data);
-      fetchDelivery();
-      setShowCodForm(false);
-      setShowFailForm(false);
-    } catch (err) {
-      const msg = err.message || 'Action failed';
-      Platform.OS === 'web' ? window.alert(msg) : Alert.alert('Error', msg);
-    } finally {
-      setActionLoading(false);
-    }
-  };
-
-  const openAssignModal = async () => {
-    try {
-      // GET /deliveries/partners, not GET /users (owner/manager-only) —
-      // same fix as DeliveriesScreen.js, needed here now that counter_staff
-      // can reach "Assign Partner" too (2026-09-01, sub-project 5).
-      const res = await api.getDeliveryPartners(delivery?.location_id);
-      const users = res.data?.users || res.data || [];
-      setPartners(Array.isArray(users) ? users : []);
-    } catch {
-      setPartners([]);
-    }
-    setAssignModalVisible(true);
-  };
-
-  const handleAssign = async (partnerId) => {
-    try {
-      setAssignLoading(true);
-      await api.assignDelivery(deliveryId, { delivery_partner_id: partnerId });
-      setAssignModalVisible(false);
-      fetchDelivery();
-    } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to assign partner');
-    } finally {
-      setAssignLoading(false);
-    }
-  };
-
-  const handleViewLivePartner = () => {
-    const partnerId = delivery?.delivery_partner_id || delivery?.partner_id;
-    if (!partnerId) return;
-    navigation.navigate('LiveDeliveryMap', {
-      selectedPartnerId: partnerId,
-      deliveryId,
-    });
-  };
-
-  const handleConvertPayment = async (action) => {
-    if (!delivery) return;
-    const msg = action === 'to_cod' 
-      ? 'Convert this credit order to Cash on Delivery?'
-      : 'Convert this COD order to a Credit Sale? (Requires customer details)';
-      
-    const confirmConversion = async () => {
-      setActionLoading(true);
-      try {
-        await api.convertDeliveryPayment(delivery.id, { action });
-        await fetchDelivery();
-      } catch (err) {
-        const errorMsg = err.response?.data?.message || err.message || 'Failed to convert payment';
-        Platform.OS === 'web' ? window.alert(errorMsg) : Alert.alert('Error', errorMsg);
-      } finally {
-        setActionLoading(false);
-      }
-    };
-
-    if (Platform.OS === 'web') {
-      if (window.confirm(msg)) confirmConversion();
-    } else {
-      Alert.alert('Confirm Conversion', msg, [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Convert', style: 'default', onPress: confirmConversion }
-      ]);
-    }
-  };
-
-  const handleDeliver = async () => {
-    const data = {};
-    if (delivery.cod_amount > 0) {
-      const amt = parseFloat(codAmount);
-      if (isNaN(amt) || amt < 0) {
-        const msg = 'Enter valid COD amount';
-        Platform.OS === 'web' ? window.alert(msg) : Alert.alert('Error', msg);
-        return;
-      }
-      data.cod_collected = amt;
-      data.cod_method = codMethod;
-      if (codMethod === 'upi' && codRef) data.cod_reference = codRef;
-    }
-
-    // Upload proof photo if taken
-    if (proofPhoto) {
-      try {
-        const formData = new FormData();
-        if (Platform.OS === 'web') {
-          const resp = await fetch(proofPhoto.uri);
-          const blob = await resp.blob();
-          formData.append('photo', blob, `proof_${deliveryId}_${Date.now()}.jpg`);
-        } else {
-          formData.append('photo', {
-            uri: proofPhoto.uri,
-            type: 'image/jpeg',
-            name: `proof_${deliveryId}_${Date.now()}.jpg`,
-          });
-        }
-        await api.uploadDeliveryProof(deliveryId, formData);
-      } catch (err) {
-        console.warn('Proof upload error (continuing):', err);
-      }
-    }
-
-    doAction('deliver', data);
-  };
-
-  const handleFail = () => {
-    if (!failReason.trim()) {
-      const msg = 'Please provide a reason for failure';
-      Platform.OS === 'web' ? window.alert(msg) : Alert.alert('Error', msg);
-      return;
-    }
-    doAction('fail', { failure_reason: failReason.trim() });
-  };
+  useFocusEffect(useCallback(() => {
+    fetchDelivery();
+    panelRef.current?.refresh();
+  }, [fetchDelivery]));
 
   const handleConvertToPickup = () => {
     const doConvert = async () => {
       try {
-        setActionLoading(true);
+        setConverting(true);
         await api.convertOrderType(delivery.sale_id, { new_order_type: 'pickup', delivery_charges: 0 });
-        Alert.alert('Done', 'Order converted to pickup');
+        showAlert('Done', 'Order converted to pickup');
         fetchDelivery();
+        panelRef.current?.refresh();
       } catch (err) {
-        Alert.alert('Error', err.message || 'Failed to convert');
+        showAlert('Error', err.message || 'Failed to convert');
       } finally {
-        setActionLoading(false);
+        setConverting(false);
       }
     };
-    Alert.alert('Convert to Pickup', 'Convert this delivery order to a pickup order? The delivery will be cancelled.', [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Convert', onPress: doConvert },
-    ]);
+    showConfirm('Convert to Pickup', 'Convert this delivery order to a pickup order? The delivery will be cancelled.', guard(doConvert), { confirmLabel: 'Convert' });
   };
 
   const handleFulfillFromStock = (saleItemId, productName) => {
@@ -279,170 +96,13 @@ export default function DeliveryDetailScreen({ route, navigation }) {
       try {
         await api.fulfillFromStock(delivery.sale_id, saleItemId);
         fetchDelivery();
-        if (Platform.OS === 'web') {
-          window.alert(`"${productName}" fulfilled from stock`);
-        } else {
-          Alert.alert('Done', `"${productName}" fulfilled from stock`);
-        }
+        showAlert('Done', `"${productName}" fulfilled from stock`);
       } catch (err) {
-        if (Platform.OS === 'web') {
-          window.alert('Error: ' + (err.message || 'Failed to fulfill from stock'));
-        } else {
-          Alert.alert('Error', err.message || 'Failed to fulfill from stock');
-        }
+        showAlert('Error', err.message || 'Failed to fulfill from stock');
       }
     };
 
-    if (Platform.OS === 'web') {
-      setTimeout(() => {
-        if (window.confirm(msg)) onConfirm();
-      }, 50);
-    } else {
-      Alert.alert('Fulfill from Stock', msg, [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Fulfill', onPress: onConfirm },
-      ]);
-    }
-  };
-
-  const generateChallan = async () => {
-    // Fetch shop settings for shop name / contact
-    let shopName = 'Flower point', shopContact = '';
-    try {
-      const settingsRes = await api.getSettings();
-      if (settingsRes.data) {
-        const map = {};
-        settingsRes.data.forEach(s => { map[s.key] = s.value; });
-        shopName = map.shop_name || shopName;
-      }
-    } catch {}
-
-    const locationName = delivery.location_name || '';
-    const locationAddress = delivery.location_address || '';
-    const locationPhone = delivery.location_phone || '';
-    const orderNo = delivery.sale_number || '';
-    const date = formatDate(delivery.created_at);
-    const customerName = delivery.customer_name || '';
-    const customerPhone = delivery.customer_phone || '';
-    const address = delivery.delivery_address || '';
-    const senderName = delivery.sender_name || '';
-    const senderPhone = delivery.sender_phone || '';
-    const senderMessage = delivery.sender_message || '';
-    const orderInstructions = delivery.delivery_notes || delivery.special_instructions || delivery.notes || '';
-    const scheduledDate = delivery.scheduled_date || '';
-    const scheduledTime = delivery.scheduled_time || '';
-
-    const itemsHtml = (showInstructions) => (delivery.items || []).map((item) => {
-      const itemInstruction = item.special_instructions || item.customization || item.note || '';
-      return `
-      <tr>
-        <td style="padding:4px 6px;border-bottom:1px solid #ddd;">
-          <div style="font-weight:600;">${item.product_name || ''}</div>
-          ${showInstructions && itemInstruction ? `<div style="font-size:9px;color:#666;margin-top:2px;">${itemInstruction}</div>` : ''}
-        </td>
-        <td style="padding:4px 6px;border-bottom:1px solid #ddd;text-align:center;vertical-align:top;">${item.quantity}</td>
-      </tr>
-    `;
-    }).join('');
-
-    const codToCollect = Math.max((delivery.cod_amount || 0) - (delivery.cod_collected || 0), 0);
-    const codAmt = Number(codToCollect).toFixed(0);
-
-    const buildCopyHtml = (copyTitle, showInstructions) => `
-      <div style="border:2px solid #333;border-radius:6px;padding:10px 14px;box-sizing:border-box;position:relative;overflow:hidden;page-break-inside:avoid;break-inside:avoid;flex:1;min-height:0;">
-        <div style="position:absolute;top:6px;right:10px;font-size:10px;color:#999;font-weight:600;text-transform:uppercase;letter-spacing:1px;">${copyTitle}</div>
-        <div style="text-align:center;margin-bottom:4px;">
-          <div style="font-size:16px;font-weight:bold;color:#E91E63;line-height:1.1;">${shopName}</div>
-          ${locationName ? `<div style="font-size:10px;color:#555;line-height:1.1;">${locationName}</div>` : ''}
-          ${locationAddress ? `<div style="font-size:9px;color:#888;line-height:1.1;">${locationAddress}</div>` : ''}
-          ${locationPhone ? `<div style="font-size:9px;color:#888;line-height:1.1;">Ph: ${locationPhone}</div>` : ''}
-        </div>
-        <div style="border-top:1px dashed #999;margin:5px 0;"></div>
-        <div style="display:flex;justify-content:space-between;font-size:10px;margin-bottom:3px;">
-          <span><strong>Order:</strong> ${orderNo}</span>
-          <span><strong>Date:</strong> ${date}</span>
-        </div>
-        ${scheduledDate ? `<div style="font-size:10px;margin-bottom:3px;"><strong>Scheduled:</strong> ${formatScheduled(scheduledDate, scheduledTime)}</div>` : ''}
-        <div style="display:flex;gap:12px;font-size:10px;margin-bottom:2px;">
-          <div style="flex:1;"><strong>Customer:</strong> ${customerName}${customerPhone ? ' • ' + customerPhone : ''}</div>
-        </div>
-        <div style="font-size:10px;margin-bottom:3px;"><strong>Address:</strong> ${address}</div>
-        ${senderName || senderPhone ? `<div style="font-size:10px;margin-bottom:2px;"><strong>Sender:</strong> ${senderName}${senderPhone ? ' • ' + senderPhone : ''}</div>` : ''}
-        ${senderMessage ? `<div style="background:#FFF3E0;border-radius:4px;padding:3px 6px;margin:3px 0;font-size:10px;"><strong>Message:</strong> ${senderMessage}</div>` : ''}
-        <table style="width:100%;border-collapse:collapse;font-size:10px;margin-top:4px;">
-          <thead>
-            <tr style="background:#f5f5f5;">
-              <th style="padding:3px 4px;text-align:left;border-bottom:2px solid #ddd;">Item</th>
-              <th style="padding:3px 4px;text-align:center;border-bottom:2px solid #ddd;">Qty</th>
-            </tr>
-          </thead>
-          <tbody>${itemsHtml(showInstructions)}</tbody>
-        </table>
-        ${showInstructions && orderInstructions ? `<div style="background:#F5F5F5;border-radius:4px;padding:3px 6px;margin:3px 0;font-size:10px;"><strong>Order Instructions:</strong> ${orderInstructions}</div>` : ''}
-        <div style="border-top:1px dashed #999;margin:5px 0;"></div>
-        <div style="display:flex;justify-content:space-between;font-size:11px;font-weight:bold;align-items:flex-end;">
-          <div>${parseFloat(codAmt) > 0 ? `<span style="color:#E91E63;">COD: ₹${codAmt}</span>` : '<span style="color:#4CAF50;">PREPAID</span>'}</div>
-        </div>
-        ${showInstructions ? `<div style="margin-top:8px;border-top:1px solid #333;padding-top:6px;font-size:10px;display:flex;justify-content:space-between;align-items:flex-end;min-height:44px;"><span>Receiver's Signature</span><span style="border-bottom:1px solid #333;display:inline-block;width:180px;height:18px;"></span></div>` : ''}
-      </div>
-    `;
-
-    const html = `
-      <html><head><meta charset="utf-8">
-      <style>
-        @page { size: A4 portrait; margin: 8mm; }
-        html, body { margin: 0; padding: 0; }
-        body { font-family: Arial, Helvetica, sans-serif; display: flex; flex-direction: column; gap: 8px; min-height: 100vh; }
-      </style></head>
-      <body>
-        ${buildCopyHtml('Shop Copy', true)}
-        ${buildCopyHtml('Customer Copy', false)}
-      </body></html>
-    `;
-
-    const printHtmlOnWeb = (markup, title) => {
-      const frame = document.createElement('iframe');
-      frame.style.position = 'fixed';
-      frame.style.right = '0';
-      frame.style.bottom = '0';
-      frame.style.width = '0';
-      frame.style.height = '0';
-      frame.style.border = '0';
-      frame.setAttribute('aria-hidden', 'true');
-      document.body.appendChild(frame);
-
-      const frameDoc = frame.contentWindow?.document;
-      if (!frameDoc) {
-        document.body.removeChild(frame);
-        throw new Error('Unable to open print frame');
-      }
-
-      frameDoc.open();
-      frameDoc.write(`<html><head><title>${title}</title></head><body>${markup}</body></html>`);
-      frameDoc.close();
-
-      setTimeout(() => {
-        try {
-          frame.contentWindow?.focus();
-          frame.contentWindow?.print();
-        } finally {
-          setTimeout(() => {
-            if (frame.parentNode) frame.parentNode.removeChild(frame);
-          }, 500);
-        }
-      }, 250);
-    };
-
-    try {
-      if (Platform.OS === 'web') {
-        printHtmlOnWeb(html, 'Delivery Challan');
-      } else {
-        const { uri } = await Print.printToFileAsync({ html });
-        await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: `Challan ${orderNo}` });
-      }
-    } catch {
-      Alert.alert('Error', 'Could not generate delivery challan');
-    }
+    showConfirm('Fulfill from Stock', msg, onConfirm, { confirmLabel: 'Fulfill' });
   };
 
   if (loading) return <View style={styles.center}><ActivityIndicator size="large" color={Colors.primary} /></View>;
@@ -452,7 +112,6 @@ export default function DeliveryDetailScreen({ route, navigation }) {
   const isFinal = ['delivered', 'failed', 'cancelled'].includes(delivery.status);
 
   return (
-    <>
     <ScrollView style={styles.container} contentContainerStyle={{ paddingBottom: 100 }}>
       {/* Status Progress */}
       <View style={styles.section}>
@@ -488,12 +147,6 @@ export default function DeliveryDetailScreen({ route, navigation }) {
         {delivery.customer_name && <InfoRow icon="person-outline" label="Customer" value={`${delivery.customer_name} ${delivery.customer_phone ? '• ' + delivery.customer_phone : ''}`} />}
         {delivery.partner_name && <InfoRow icon="bicycle-outline" label="Partner" value={`${delivery.partner_name} ${delivery.partner_phone ? '• ' + delivery.partner_phone : ''}`} />}
         {delivery.scheduled_date && <InfoRow icon="calendar-outline" label="Scheduled" value={formatScheduled(delivery.scheduled_date, delivery.scheduled_time)} />}
-        {delivery.status === 'in_transit' && (delivery.delivery_partner_id || delivery.partner_id) && (
-          <TouchableOpacity style={styles.liveLocationBtn} onPress={handleViewLivePartner}>
-            <Ionicons name="locate-outline" size={16} color={Colors.primary} />
-            <Text style={styles.liveLocationText}>View Live Location</Text>
-          </TouchableOpacity>
-        )}
 
         {/* Delivery Timeline */}
         {(delivery.assigned_at || delivery.pickup_time || delivery.delivered_time) && (
@@ -551,12 +204,8 @@ export default function DeliveryDetailScreen({ route, navigation }) {
               <Ionicons name="document-text-outline" size={16} color={Colors.primary} />
               <Text style={styles.saleDetailBtnText}>Sale Details</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.saleDetailBtn} onPress={generateChallan}>
-              <Ionicons name="print-outline" size={16} color={Colors.primary} />
-              <Text style={styles.saleDetailBtnText}>Delivery Challan</Text>
-            </TouchableOpacity>
             {!isFinal && (
-              <TouchableOpacity style={styles.convertPickupBtn} onPress={handleConvertToPickup} disabled={actionLoading}>
+              <TouchableOpacity style={styles.convertPickupBtn} onPress={handleConvertToPickup} disabled={converting}>
                 <Ionicons name="swap-horizontal" size={14} color={Colors.primary} />
                 <Text style={styles.saleDetailBtnText}>Convert to Pickup</Text>
               </TouchableOpacity>
@@ -570,12 +219,6 @@ export default function DeliveryDetailScreen({ route, navigation }) {
         <View style={styles.section}>
           <View style={styles.itemsSectionHeader}>
             <Text style={styles.sectionTitle}>Items ({delivery.items.length})</Text>
-            {(canManageDeliveries || isOwnDelivery) && !isFinal && (
-              <TouchableOpacity style={styles.verifyLoadBtn} onPress={() => setChecklistVisible(true)}>
-                <Ionicons name="checkbox-outline" size={16} color={Colors.primary} />
-                <Text style={styles.verifyLoadBtnText}>Verify Load</Text>
-              </TouchableOpacity>
-            )}
           </View>
           {delivery.items.map((item, i) => {
             const canFulfill = !isFinal && item.product_id && !item.from_product_stock && canManageDeliveries;
@@ -673,269 +316,11 @@ export default function DeliveryDetailScreen({ route, navigation }) {
         </View>
       )}
 
-      {/* Actions */}
-      {!isFinal && (
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Actions</Text>
-
-          {isManager && (
-            <View style={{ flexDirection: 'row', gap: 8, marginBottom: 12 }}>
-              {delivery.is_credit_sale === 1 ? (
-                <TouchableOpacity 
-                  style={[styles.actionBtn, { flex: 1, backgroundColor: '#E5E7EB' }]} 
-                  onPress={() => handleConvertPayment('to_cod')}
-                  disabled={actionLoading}
-                >
-                  <Ionicons name="cash-outline" size={20} color="#374151" />
-                  <Text style={[styles.actionBtnText, { color: '#374151' }]}>Convert to COD</Text>
-                </TouchableOpacity>
-              ) : (
-                <TouchableOpacity 
-                  style={[styles.actionBtn, { flex: 1, backgroundColor: '#E5E7EB' }]} 
-                  onPress={() => handleConvertPayment('to_credit')}
-                  disabled={actionLoading}
-                >
-                  <Ionicons name="document-text-outline" size={20} color="#374151" />
-                  <Text style={[styles.actionBtnText, { color: '#374151' }]}>Convert to Credit</Text>
-                </TouchableOpacity>
-              )}
-            </View>
-          )}
-
-          {/* Print challan — available to all roles */}
-          <TouchableOpacity style={[styles.actionBtn, { backgroundColor: Colors.primary, marginBottom: 8 }]} onPress={generateChallan}>
-            <Ionicons name="print" size={20} color="#fff" />
-            <Text style={styles.actionBtnText}>Print Delivery Challan</Text>
-          </TouchableOpacity>
-
-          {canManageDeliveries && delivery.status === 'pending' && (
-            <TouchableOpacity style={[styles.actionBtn, { backgroundColor: '#2196F3' }]} onPress={openAssignModal} disabled={actionLoading}>
-              <Ionicons name="person-add" size={20} color="#fff" />
-              <Text style={styles.actionBtnText}>Assign Partner</Text>
-            </TouchableOpacity>
-          )}
-
-          {(isPartner || isManager) && delivery.status === 'assigned' && (
-            <TouchableOpacity style={[styles.actionBtn, { backgroundColor: '#9C27B0' }]} onPress={() => doAction('pickup')} disabled={actionLoading}>
-              <Ionicons name="cube" size={20} color="#fff" />
-              <Text style={styles.actionBtnText}>Pick Up Order</Text>
-            </TouchableOpacity>
-          )}
-
-          {(isPartner || isManager) && delivery.status === 'picked_up' && (
-            <TouchableOpacity style={[styles.actionBtn, { backgroundColor: '#00BCD4' }]} onPress={() => doAction('in_transit')} disabled={actionLoading}>
-              <Ionicons name="bicycle" size={20} color="#fff" />
-              <Text style={styles.actionBtnText}>Start Delivery</Text>
-            </TouchableOpacity>
-          )}
-
-          {(isPartner || isManager) && delivery.status === 'in_transit' && (
-            <>
-              {!showCodForm ? (
-                <TouchableOpacity style={[styles.actionBtn, { backgroundColor: '#4CAF50' }]} onPress={() => setShowCodForm(true)} disabled={actionLoading}>
-                  <Ionicons name="checkmark-circle" size={20} color="#fff" />
-                  <Text style={styles.actionBtnText}>Mark Delivered</Text>
-                </TouchableOpacity>
-              ) : (
-                <View style={styles.formBox}>
-                  <Text style={styles.formTitle}>Confirm Delivery</Text>
-                  {delivery.cod_amount > 0 && (
-                    <>
-                      <Text style={styles.label}>COD Amount to Collect (₹{Number(delivery.cod_amount - (delivery.cod_collected || 0)).toFixed(0)} remaining)</Text>
-                      <TextInput
-                        style={styles.input}
-                        value={codAmount}
-                        onChangeText={setCodAmount}
-                        keyboardType="decimal-pad"
-                        placeholder="Amount collected"
-                      />
-                      <View style={styles.methodRow}>
-                        {['cash', 'upi'].map(m => (
-                          <TouchableOpacity key={m} style={[styles.methodBtn, codMethod === m && styles.methodBtnActive]} onPress={() => setCodMethod(m)}>
-                            <Text style={[styles.methodText, codMethod === m && styles.methodTextActive]}>{m.toUpperCase()}</Text>
-                          </TouchableOpacity>
-                        ))}
-                      </View>
-                      {codMethod === 'upi' && (
-                        <TextInput style={styles.input} value={codRef} onChangeText={setCodRef} placeholder="UPI Reference" />
-                      )}
-                    </>
-                  )}
-                  {/* Proof of Delivery Photo */}
-                  <Text style={styles.formTitle}>Proof of Delivery (Photo)</Text>
-                  {proofPhoto ? (
-                    <View style={{ alignItems: 'center', marginBottom: 8 }}>
-                      <Image source={{ uri: proofPhoto.uri }} style={{ width: 200, height: 150, borderRadius: 8 }} />
-                      <TouchableOpacity onPress={() => setProofPhoto(null)} style={{ marginTop: 4 }}>
-                        <Text style={{ color: Colors.error, fontSize: FontSize.sm }}>Remove</Text>
-                      </TouchableOpacity>
-                    </View>
-                  ) : (
-                    <View style={{ flexDirection: 'row', gap: 8, marginBottom: 8 }}>
-                      <TouchableOpacity style={[styles.actionBtn, { backgroundColor: '#9C27B0', flex: 1 }]} onPress={takeProofPhoto}>
-                        <Ionicons name="camera" size={18} color="#fff" />
-                        <Text style={styles.actionBtnText}>Take Photo</Text>
-                      </TouchableOpacity>
-                      <TouchableOpacity style={[styles.actionBtn, { backgroundColor: Colors.textSecondary, flex: 1 }]} onPress={pickProofPhoto}>
-                        <Ionicons name="images" size={18} color="#fff" />
-                        <Text style={styles.actionBtnText}>Gallery</Text>
-                      </TouchableOpacity>
-                    </View>
-                  )}
-                  <View style={styles.actionRow}>
-                    <TouchableOpacity style={[styles.actionBtn, { backgroundColor: '#ccc', flex: 1 }]} onPress={() => setShowCodForm(false)}>
-                      <Text style={[styles.actionBtnText, { color: '#333' }]}>Cancel</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity style={[styles.actionBtn, { backgroundColor: '#4CAF50', flex: 1 }]} onPress={handleDeliver} disabled={actionLoading}>
-                      {actionLoading ? <ActivityIndicator color="#fff" /> : <Text style={styles.actionBtnText}>Confirm</Text>}
-                    </TouchableOpacity>
-                  </View>
-                </View>
-              )}
-
-              {!showFailForm ? (
-                <TouchableOpacity style={[styles.actionBtn, { backgroundColor: '#F44336', marginTop: 8 }]} onPress={() => setShowFailForm(true)} disabled={actionLoading}>
-                  <Ionicons name="close-circle" size={20} color="#fff" />
-                  <Text style={styles.actionBtnText}>Mark Failed</Text>
-                </TouchableOpacity>
-              ) : (
-                <View style={[styles.formBox, { marginTop: 8 }]}>
-                  <Text style={styles.formTitle}>Failure Reason</Text>
-                  <TextInput
-                    style={[styles.input, { height: 80, textAlignVertical: 'top' }]}
-                    value={failReason}
-                    onChangeText={setFailReason}
-                    placeholder="Enter reason for failure..."
-                    multiline
-                  />
-                  <View style={styles.actionRow}>
-                    <TouchableOpacity style={[styles.actionBtn, { backgroundColor: '#ccc', flex: 1 }]} onPress={() => setShowFailForm(false)}>
-                      <Text style={[styles.actionBtnText, { color: '#333' }]}>Cancel</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity style={[styles.actionBtn, { backgroundColor: '#F44336', flex: 1 }]} onPress={handleFail} disabled={actionLoading}>
-                      {actionLoading ? <ActivityIndicator color="#fff" /> : <Text style={styles.actionBtnText}>Confirm Fail</Text>}
-                    </TouchableOpacity>
-                  </View>
-                </View>
-              )}
-            </>
-          )}
-        </View>
-      )}
-
-      {/* Failed delivery — Reattempt or Cancel */}
-      {delivery.status === 'failed' && canManageDeliveries && (
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Failed Delivery Actions</Text>
-          <Text style={{ fontSize: FontSize.sm, color: Colors.textSecondary, marginBottom: 12 }}>
-            Reattempt to reassign to a partner, or cancel the delivery.
-          </Text>
-          <TouchableOpacity
-            style={[styles.actionBtn, { backgroundColor: '#2196F3', marginBottom: 10 }]}
-            disabled={actionLoading}
-            onPress={() => {
-              Alert.alert('Reattempt Delivery', 'Reset to "assigned" for another attempt?', [
-                { text: 'Back', style: 'cancel' },
-                { text: 'Reattempt', onPress: async () => {
-                  try { setActionLoading(true); await api.reattemptDelivery(deliveryId); fetchDelivery(); }
-                  catch (err) { Alert.alert('Error', err.message || 'Failed'); }
-                  finally { setActionLoading(false); }
-                }},
-              ]);
-            }}
-          >
-            <Ionicons name="refresh-circle" size={20} color="#fff" />
-            <Text style={styles.actionBtnText}>Reattempt Delivery</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[styles.actionBtn, { backgroundColor: '#F44336' }]}
-            disabled={actionLoading}
-            onPress={() => {
-              Alert.alert('Cancel Delivery', 'Cancel this failed delivery?', [
-                { text: 'Back', style: 'cancel' },
-                { text: 'Cancel Delivery Only', onPress: async () => {
-                  try { setActionLoading(true); await api.cancelDelivery(deliveryId, { reason: 'Cancelled after failed delivery' }); fetchDelivery(); }
-                  catch (err) { Alert.alert('Error', err.message || 'Failed'); }
-                  finally { setActionLoading(false); }
-                }},
-                { text: 'Cancel Order Too', style: 'destructive', onPress: async () => {
-                  try {
-                    setActionLoading(true);
-                    await api.cancelDelivery(deliveryId, { reason: 'Cancelled after failed delivery' });
-                    await api.cancelSale(delivery.sale_id);
-                    fetchDelivery();
-                    Alert.alert('Cancelled', 'Delivery and order cancelled.');
-                  } catch (err) { Alert.alert('Error', err.message || 'Failed'); }
-                  finally { setActionLoading(false); }
-                }},
-              ]);
-            }}
-          >
-            {actionLoading ? <ActivityIndicator color="#fff" /> : <Ionicons name="close-circle" size={20} color="#fff" />}
-            <Text style={styles.actionBtnText}>Cancel Delivery</Text>
-          </TouchableOpacity>
-        </View>
-      )}
+      {/* Delivery actions — one shared panel (also on Sale Details). */}
+      <View style={styles.section}>
+        <DeliveryActionsPanel ref={panelRef} deliveryId={deliveryId} navigation={navigation} onChanged={fetchDelivery} />
+      </View>
     </ScrollView>
-
-    {/* Assign Partner Modal */}
-    <Modal visible={assignModalVisible} animationType="slide" transparent onRequestClose={() => setAssignModalVisible(false)}>
-      <View style={styles.modalOverlay}>
-        <View style={styles.assignModal}>
-          <View style={styles.assignModalHeader}>
-            <Text style={styles.assignModalTitle}>Assign Delivery Partner</Text>
-            <TouchableOpacity onPress={() => setAssignModalVisible(false)}>
-              <Ionicons name="close" size={24} color={Colors.text} />
-            </TouchableOpacity>
-          </View>
-          {partners.length === 0 ? (
-            <Text style={{ textAlign: 'center', color: Colors.textSecondary, padding: 20 }}>No delivery partners found</Text>
-          ) : (
-            <FlatList
-              data={partners}
-              keyExtractor={item => String(item.id)}
-              renderItem={({ item: p }) => (
-                <TouchableOpacity
-                  style={styles.partnerItem}
-                  onPress={() => handleAssign(p.id)}
-                  disabled={assignLoading}
-                >
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.partnerName}>{p.name}</Text>
-                    <Text style={styles.partnerPhone}>{p.phone}</Text>
-                    <Text style={styles.partnerLoad}>{p.active_delivery_count || 0} stop{Number(p.active_delivery_count) !== 1 ? 's' : ''} today</Text>
-                  </View>
-                  <Ionicons name="chevron-forward" size={20} color={Colors.textLight} />
-                </TouchableOpacity>
-              )}
-            />
-          )}
-          {assignLoading && <ActivityIndicator style={{ padding: 10 }} color={Colors.primary} />}
-        </View>
-      </View>
-    </Modal>
-
-    {/* Verify Load Checklist Modal */}
-    <Modal visible={checklistVisible} animationType="slide" transparent onRequestClose={() => setChecklistVisible(false)}>
-      <View style={styles.modalOverlay}>
-        <View style={styles.checklistModal}>
-          <View style={styles.assignModalHeader}>
-            <View>
-              <Text style={styles.assignModalTitle}>Verify Load</Text>
-              <Text style={styles.checklistSubtitle}>{delivery.sale_number} — check off each item as it goes in</Text>
-            </View>
-            <TouchableOpacity onPress={() => setChecklistVisible(false)}>
-              <Ionicons name="close" size={24} color={Colors.text} />
-            </TouchableOpacity>
-          </View>
-          <View style={{ padding: Spacing.md, flex: 1 }}>
-            {checklistVisible && <DeliveryChecklist deliveryId={deliveryId} />}
-          </View>
-        </View>
-      </View>
-    </Modal>
-    </>
   );
 }
 
@@ -969,13 +354,9 @@ const styles = StyleSheet.create({
   infoValue: { fontSize: FontSize.sm, color: Colors.text, flex: 1, fontWeight: '500' },
   itemRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: Spacing.md, gap: 8, borderBottomWidth: 1, borderBottomColor: Colors.border },
   itemsSectionHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 },
-  verifyLoadBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 8, borderRadius: BorderRadius.md, borderWidth: 1, borderColor: Colors.primary + '40', backgroundColor: Colors.primary + '08' },
-  verifyLoadBtnText: { fontSize: FontSize.sm, color: Colors.primary, fontWeight: '700' },
   saleDetailBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 8, borderRadius: BorderRadius.md, borderWidth: 1, borderColor: Colors.primary + '40', backgroundColor: Colors.primary + '08' },
   convertPickupBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 8, borderRadius: BorderRadius.md, borderWidth: 1, borderColor: Colors.primary + '40', backgroundColor: Colors.primary + '08' },
   saleDetailBtnText: { fontSize: FontSize.sm, color: Colors.primary, fontWeight: '600' },
-  liveLocationBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 10, alignSelf: 'flex-start', borderWidth: 1, borderColor: Colors.secondary + '40', backgroundColor: Colors.secondary + '10', paddingHorizontal: 12, paddingVertical: 8, borderRadius: BorderRadius.md },
-  liveLocationText: { fontSize: FontSize.sm, color: Colors.secondary, fontWeight: '700' },
   stockBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 4 },
   stockBadgeText: { fontSize: FontSize.xs, color: Colors.success, fontWeight: '600' },
   fulfillBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 4, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, backgroundColor: Colors.primary + '10', alignSelf: 'flex-start' },
@@ -989,26 +370,4 @@ const styles = StyleSheet.create({
   paymentRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 4, borderBottomWidth: 1, borderBottomColor: Colors.border },
   cardText: { fontSize: FontSize.sm, color: Colors.textLight },
   proofImage: { width: 120, height: 120, borderRadius: 8, marginRight: 8 },
-  actionBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', padding: 14, borderRadius: BorderRadius.md, gap: 8 },
-  actionBtnText: { color: '#fff', fontWeight: '700', fontSize: FontSize.md },
-  actionRow: { flexDirection: 'row', gap: 10, marginTop: 8 },
-  formBox: { backgroundColor: Colors.background, borderRadius: BorderRadius.md, padding: Spacing.md, marginTop: 8 },
-  formTitle: { fontSize: FontSize.md, fontWeight: '600', color: Colors.text, marginBottom: 8 },
-  label: { fontSize: FontSize.sm, color: Colors.textLight, marginBottom: 4 },
-  input: { backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.border, borderRadius: BorderRadius.md, padding: 10, fontSize: FontSize.md, color: Colors.text, marginBottom: 8 },
-  methodRow: { flexDirection: 'row', gap: 8, marginBottom: 8 },
-  methodBtn: { flex: 1, paddingVertical: 10, borderRadius: BorderRadius.md, borderWidth: 1, borderColor: Colors.border, alignItems: 'center' },
-  methodBtnActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
-  methodText: { fontSize: FontSize.sm, color: Colors.textLight, fontWeight: '600' },
-  methodTextActive: { color: '#fff' },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
-  assignModal: { backgroundColor: Colors.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, maxHeight: '60%', paddingBottom: 30 },
-  assignModalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: Spacing.md, borderBottomWidth: 1, borderBottomColor: Colors.border },
-  assignModalTitle: { fontSize: FontSize.lg, fontWeight: '700', color: Colors.text },
-  checklistModal: { backgroundColor: Colors.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, height: '80%' },
-  checklistSubtitle: { fontSize: FontSize.sm, color: Colors.textLight, marginTop: 2 },
-  partnerItem: { flexDirection: 'row', alignItems: 'center', padding: Spacing.md, borderBottomWidth: 1, borderBottomColor: Colors.border },
-  partnerName: { fontSize: FontSize.md, fontWeight: '600', color: Colors.text },
-  partnerPhone: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: 2 },
-  partnerLoad: { fontSize: FontSize.sm, color: Colors.primary, marginTop: 2 },
 });

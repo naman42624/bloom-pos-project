@@ -108,6 +108,21 @@ router.get('/tax-rates', authorize('owner', 'manager', 'employee', 'counter_staf
   }
 });
 
+// GET /api/settings/shop-info
+// The one setting every staff role needs to read: the shop name printed on
+// delivery challans / pickup slips. GET / stays owner/manager-only (it holds
+// prefs and flags staff shouldn't see), so this exposes shop_name alone —
+// same narrow-endpoint pattern as /tax-rates above and /auth/staff-roster.
+router.get('/shop-info', authorize('owner', 'manager', 'employee', 'counter_staff', 'florist_staff', 'delivery_partner'), async (req, res, next) => {
+  try {
+    const db = await getAsyncDb();
+    const row = await db.prepare("SELECT value FROM settings WHERE key = 'shop_name'").get();
+    res.json({ success: true, data: { shop_name: row?.value || null } });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // POST /api/settings/tax-rates
 router.post(
   '/tax-rates',

@@ -9,6 +9,8 @@ import { formatCardDateTime, formatTime, getShopTodayStr, getShopTomorrowStr, fo
 import { showAlert } from '../utils/alert';
 import StageBadge from '../components/StageBadge';
 import ContactButtons from '../components/orders/ContactButtons';
+import { printOrderSlip, canPrintOrderSlip } from '../utils/printHelpers';
+import useSubmitGuard from '../hooks/useSubmitGuard';
 import { waLink, buildMessage, normalizePhone } from '../utils/contact';
 import useOrderListData from '../hooks/useOrderListData';
 import OrderListToolbar from '../components/orders/OrderListToolbar';
@@ -45,6 +47,8 @@ function formatAmount(value) {
 
 export default function OrdersInboxScreen({ navigation, route }) {
   const { user, activeLocation, settings } = useAuth();
+  // One print at a time: a double tap must not open two print dialogs.
+  const printGuard = useSubmitGuard();
   const timezone = settings?.timezone?.value || 'Asia/Kolkata';
   // Owner/manager already have full Customers access via the More tab —
   // this shortcut is only for employee/counter_staff, who don't have a
@@ -552,6 +556,18 @@ export default function OrdersInboxScreen({ navigation, route }) {
               hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
             >
               <Ionicons name="link-outline" size={18} color={Colors.primary} />
+            </TouchableOpacity>
+          )}
+          {/* Delivery challan / pickup slip — the shared printer every other
+              print button uses (utils/printHelpers.js). */}
+          {canPrintOrderSlip(item) && (
+            <TouchableOpacity
+              style={styles.shareLinkBtn}
+              onPress={(e) => { e.stopPropagation(); printGuard(() => printOrderSlip(item.id))(); }}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              accessibilityLabel={item.order_type === 'pickup' ? 'Print pickup slip' : 'Print delivery challan'}
+            >
+              <Ionicons name="print-outline" size={18} color={Colors.primary} />
             </TouchableOpacity>
           )}
         </View>

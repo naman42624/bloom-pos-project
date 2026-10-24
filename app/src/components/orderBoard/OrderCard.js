@@ -7,6 +7,8 @@ import { TYPE_ICONS } from '../../constants/orderStages';
 import { formatCardDateTime, minutesSinceServerDate, minutesUntilShopDateTime } from '../../utils/datetime';
 import { waLink, buildMessage } from '../../utils/contact';
 import StageBadge from '../StageBadge';
+import { printOrderSlip, canPrintOrderSlip } from '../../utils/printHelpers';
+import useSubmitGuard from '../../hooks/useSubmitGuard';
 
 /**
  * What to offer when the server says there is no safe one-tap action.
@@ -365,6 +367,8 @@ export default function OrderCard({
   onResolve,
   onVerifyLoad,
 }) {
+  // One print at a time: a double tap must not open two print dialogs.
+  const printGuard = useSubmitGuard();
   const sla = getOrderSla(order, timezone);
   const payment = getPaymentWarning(order);
   const taskProgress = getTaskProgress(tasks);
@@ -478,6 +482,24 @@ export default function OrderCard({
               <Ionicons name="logo-whatsapp" size={13} color={Colors.success} />
             </TouchableOpacity>
           </>
+        )}
+        {/* Delivery challan / pickup slip — same shared printer as Delivery
+            Details and Sale Details, so every copy prints identically. */}
+        {canPrintOrderSlip(order) && (
+          /* The 44x44 touchable is the tap target; the 26px circle inside is
+             the same look as Call/WhatsApp. hitSlop alone does nothing on
+             react-native-web (where the counter runs this), so the size is
+             real; negative margins keep the row's layout unchanged. */
+          <TouchableOpacity
+            style={styles.printHit}
+            onPress={(e) => { e.stopPropagation(); printGuard(() => printOrderSlip(order.id))(); }}
+            accessibilityRole="button"
+            accessibilityLabel={order.order_type === 'pickup' ? 'Print pickup slip' : 'Print delivery challan'}
+          >
+            <View style={[styles.contactBtn, { backgroundColor: Colors.primary + '15' }]}>
+              <Ionicons name="print-outline" size={13} color={Colors.primary} />
+            </View>
+          </TouchableOpacity>
         )}
       </View>
 
@@ -635,6 +657,9 @@ const styles = StyleSheet.create({
   customerRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   customer: { fontSize: 14, color: Colors.textSecondary, flexShrink: 1, fontFamily: FONT_FAMILY },
   contactBtn: { width: 26, height: 26, borderRadius: 13, alignItems: 'center', justifyContent: 'center' },
+  // Last item in customerRow: -9 right/vertical, -3 left so the hit area
+  // stops short of the WhatsApp button across the 6px gap.
+  printHit: { width: 44, height: 44, marginVertical: -9, marginLeft: -3, marginRight: -9, alignItems: 'center', justifyContent: 'center' },
   amount: { fontSize: 17, fontWeight: '800', color: Colors.text, fontFamily: FONT_FAMILY },
   warningRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
   warnPill: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6 },

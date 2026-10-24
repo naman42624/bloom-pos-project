@@ -233,6 +233,10 @@ class ApiService {
     return this.request('/settings/tax-rates');
   }
 
+  getShopInfo() {
+    return this.request('/settings/shop-info');
+  }
+
   createTaxRate(data) {
     return this.request('/settings/tax-rates', {
       method: 'POST',

@@ -13,7 +13,7 @@ const router = express.Router();
 const { normalizeDateFields } = require('../utils/normalizeDates');
 const { hasOpenRegister, REGISTER_CLOSED_MESSAGE } = require('../utils/register-guard');
 const { computeOrderStage, getStageFlags } = require('../utils/order-stage');
-const { sumCollectionsByMethod } = require('../utils/settlement-math');
+const { sumCollectionsByMethod, codExceedsRemaining } = require('../utils/settlement-math');
 const { buildTrackingUrl } = require('../utils/tracking-token');
 
 // Use todayStr() from time.js for timezone-aware date strings
@@ -498,6 +498,7 @@ router.get('/:id(\\d+)', authenticate, async (req, res, next) => {
       SELECT d.*, s.sale_number, s.grand_total, s.payment_status, s.subtotal, s.tax_total,
              s.discount_amount, s.delivery_charges, s.order_type, s.special_instructions,
              s.customer_notes, s.sender_name, s.sender_phone, s.sender_message, s.is_credit_sale,
+             s.status as sale_status,
              u.name as partner_name, u.phone as partner_phone,
              l.name as location_name, l.address as location_address, l.phone as location_phone,
              ab.name as assigned_by_name
@@ -525,6 +526,14 @@ router.get('/:id(\\d+)', authenticate, async (req, res, next) => {
       WHERE p.sale_id = ?
     `).all(delivery.sale_id);
 
+    // Refunded so far: with payments above, the panel works out whether the
+    // order still holds money (PUT /sales/:id/cancel refuses if it does).
+    // Same sum that route compares against.
+    const refundRow = await db.prepare(
+      'SELECT COALESCE(SUM(amount), 0) as total FROM refunds WHERE sale_id = ?'
+    ).get(delivery.sale_id);
+    delivery.refunded_total = Number(refundRow?.total || 0);
+
     // Delivery proof
     delivery.proofs = await db.prepare(`
       SELECT dp.*, u.name as created_by_name
@@ -538,6 +547,12 @@ router.get('/:id(\\d+)', authenticate, async (req, res, next) => {
       FROM delivery_collections dc LEFT JOIN users u ON dc.collected_by = u.id
       WHERE dc.delivery_id = ?
     `).all(delivery.id);
+
+    // Mirrors pref_counter_marks_pickup / pref_counter_marks_delivered, which
+    // /pickup and /deliver already check for counter_staff.
+    const flags = await getStageFlags(db);
+    delivery.counter_can_mark_picked_up = flags.counterCanMarkPickedUp.length > 0;
+    delivery.counter_can_mark_delivered = flags.counterCanMarkDelivered.length > 0;
 
     res.json({ success: true, data: delivery });
   } catch (err) { next(err); }
@@ -811,7 +826,7 @@ router.put(
         // Record COD collection if any
         let totalCodCollected = delivery.cod_collected;
         if (cod_collected && cod_collected > 0) {
-          if (cod_collected > delivery.cod_amount - delivery.cod_collected) {
+          if (codExceedsRemaining(cod_collected, delivery.cod_amount, delivery.cod_collected)) {
             throw new Error('COD collection exceeds remaining amount');
           }
           db.prepare(

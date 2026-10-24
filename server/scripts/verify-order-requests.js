@@ -330,6 +330,86 @@ check('calling POST /sales again with an already-approved source_order_request_i
   assert(row.created_sale_id === firstSale.body.data.id, `Expected created_sale_id to stay linked to the FIRST sale (${firstSale.body.data.id}), got ${row.created_sale_id}`);
 });
 
+// ─── items_json round-trip + cross-customer isolation ───────────────────
+check('items_json round-trips the submitted item shape to the staff list', async () => {
+  const owner = await loginOwner();
+  const product = await getTestProduct();
+  const submitRes = await api('POST', `/order-request/${sharedCustomerToken}`, null, {
+    recipient_name: 'Round Trip Test', recipient_phone: '9876543214',
+    order_type: 'pickup', requested_date: '2026-12-25',
+    items: [
+      { product_id: product.id, name: product.name, quantity: 3 },
+      { custom: true, description: 'Two white lilies, no wrap', quantity: 2 },
+    ],
+  });
+  assert(submitRes.status === 201, `Expected 201, got ${submitRes.status}: ${JSON.stringify(submitRes.body)}`);
+  const requestId = submitRes.body.data.id;
+  createdOrderRequestIds.push(requestId);
+
+  // Read it back the way staff screens do (OrderRequestsScreen, then
+  // LogOrderScreen's approve pre-fill), not straight from the DB.
+  const { status, body } = await api('GET', '/order-requests?status=pending', owner.token);
+  assert(status === 200, `Expected 200, got ${status}: ${JSON.stringify(body)}`);
+  const row = body.data.requests.find((r) => r.id === requestId);
+  assert(row, 'Expected the submitted request in the pending list');
+  const items = row.items_json;
+  assert(Array.isArray(items), `Expected items_json to be an array, got ${typeof items}: ${JSON.stringify(items)}`);
+  assert(items.length === 2, `Expected 2 items, got ${items.length}`);
+
+  const catalog = items.find((i) => !i.custom);
+  assert(catalog, 'Expected a catalog item');
+  assert(catalog.product_id === product.id, `Expected product_id ${product.id} (an integer), got ${JSON.stringify(catalog.product_id)}`);
+  assert(catalog.quantity === 3, `Expected catalog quantity 3, got ${JSON.stringify(catalog.quantity)}`);
+  assert(catalog.name === product.name, `Expected catalog name "${product.name}" kept, got ${JSON.stringify(catalog.name)}`);
+
+  const custom = items.find((i) => i.custom);
+  assert(custom, 'Expected a custom item');
+  assert(custom.custom === true, `Expected custom === true, got ${JSON.stringify(custom.custom)}`);
+  assert(custom.description === 'Two white lilies, no wrap', `Expected the custom description kept, got ${JSON.stringify(custom.description)}`);
+  assert(custom.quantity === 2, `Expected custom quantity 2, got ${JSON.stringify(custom.quantity)}`);
+});
+
+check('one customer\'s link never shows or writes another customer\'s requests', async () => {
+  const owner = await loginOwner();
+  const product = await getTestProduct();
+  const otherCustomer = await createCustomer(owner.token);
+  const linkRes = await api('POST', `/customers/${otherCustomer.id}/order-request-link`, owner.token);
+  assert(linkRes.status === 200, `Expected 200 generating the second link, got ${linkRes.status}`);
+  const otherToken = linkRes.body.data.token;
+  assert(otherToken !== sharedCustomerToken, 'Expected two customers to get two different tokens');
+
+  const otherSubmit = await api('POST', `/order-request/${otherToken}`, null, {
+    recipient_name: 'Isolation Test', recipient_phone: '9876543215',
+    order_type: 'pickup', requested_date: '2026-12-25',
+    items: [{ product_id: product.id, quantity: 1 }],
+  });
+  assert(otherSubmit.status === 201, `Expected 201, got ${otherSubmit.status}`);
+  const otherRequestId = otherSubmit.body.data.id;
+  createdOrderRequestIds.push(otherRequestId);
+
+  // The write landed on the right customer, not whoever's link came first.
+  const db = await getDb();
+  const owners = await db.prepare(
+    'SELECT customer_id, COUNT(*) AS n FROM order_requests WHERE customer_id IN (?, ?) GROUP BY customer_id'
+  ).all(sharedCustomer.id, otherCustomer.id);
+  const countFor = (id) => Number(owners.find((r) => r.customer_id === id)?.n || 0);
+  assert(countFor(otherCustomer.id) === 1, `Expected exactly 1 request stored for the second customer, got ${countFor(otherCustomer.id)}`);
+
+  // Customer A's link: sees A's own requests, never B's.
+  const viewA = await api('GET', `/order-request/${sharedCustomerToken}`, null);
+  assert(viewA.status === 200, `Expected 200, got ${viewA.status}`);
+  assert(viewA.body.data.customer_name === sharedCustomer.name, 'Expected customer A\'s own name on A\'s link');
+  assert(viewA.body.data.requests.length > 0, 'Expected A to see A\'s own requests (otherwise the next assertion proves nothing)');
+  assert(!viewA.body.data.requests.some((r) => r.id === otherRequestId), 'Customer A\'s link exposed customer B\'s request');
+
+  // Customer B's link: sees only B's one request, nothing of A's.
+  const viewB = await api('GET', `/order-request/${otherToken}`, null);
+  assert(viewB.status === 200, `Expected 200, got ${viewB.status}`);
+  assert(viewB.body.data.customer_name === otherCustomer.name, 'Expected customer B\'s own name on B\'s link');
+  const idsB = viewB.body.data.requests.map((r) => r.id);
+  assert(idsB.length === 1 && idsB[0] === otherRequestId, `Expected B to see only its own request ${otherRequestId}, got ${JSON.stringify(idsB)}`);
+});
+
 // Placed last, deliberately (moved here from right after Task 3's other
 // checks when Task 4 added its own /order-request POST calls above: this
 // fires 31 rapid requests against the SAME ip and exhausts that public
