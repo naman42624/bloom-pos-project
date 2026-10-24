@@ -9,6 +9,7 @@ import { formatCardDateTime, formatTime, getShopTodayStr, getShopTomorrowStr, fo
 import { showAlert } from '../utils/alert';
 import StageBadge from '../components/StageBadge';
 import ContactButtons from '../components/orders/ContactButtons';
+import { printOrderSlip, canPrintOrderSlip } from '../utils/printHelpers';
 import { waLink, buildMessage, normalizePhone } from '../utils/contact';
 import useOrderListData from '../hooks/useOrderListData';
 import OrderListToolbar from '../components/orders/OrderListToolbar';
@@ -552,6 +553,18 @@ export default function OrdersInboxScreen({ navigation, route }) {
               hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
             >
               <Ionicons name="link-outline" size={18} color={Colors.primary} />
+            </TouchableOpacity>
+          )}
+          {/* Delivery challan / pickup slip — the shared printer every other
+              print button uses (utils/printHelpers.js). */}
+          {canPrintOrderSlip(item) && (
+            <TouchableOpacity
+              style={styles.shareLinkBtn}
+              onPress={(e) => { e.stopPropagation(); printOrderSlip(item.id); }}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              accessibilityLabel={item.order_type === 'pickup' ? 'Print pickup slip' : 'Print delivery challan'}
+            >
+              <Ionicons name="print-outline" size={18} color={Colors.primary} />
             </TouchableOpacity>
           )}
         </View>

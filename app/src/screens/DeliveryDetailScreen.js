@@ -2,12 +2,11 @@ import React, { useState, useCallback, useRef } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Alert, Platform, TextInput, ActivityIndicator, Image, Modal, FlatList } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
-import * as Print from 'expo-print';
-import * as Sharing from 'expo-sharing';
 import * as ImagePicker from 'expo-image-picker';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 import DeliveryChecklist from '../components/DeliveryChecklist';
+import { printOrderSlip } from '../utils/printHelpers';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import { parseServerDate, formatDate, formatDateTime } from '../utils/datetime';
 
@@ -305,145 +304,8 @@ export default function DeliveryDetailScreen({ route, navigation }) {
     }
   };
 
-  const generateChallan = async () => {
-    // Fetch shop settings for shop name / contact
-    let shopName = 'Flower point', shopContact = '';
-    try {
-      const settingsRes = await api.getSettings();
-      if (settingsRes.data) {
-        const map = {};
-        settingsRes.data.forEach(s => { map[s.key] = s.value; });
-        shopName = map.shop_name || shopName;
-      }
-    } catch {}
-
-    const locationName = delivery.location_name || '';
-    const locationAddress = delivery.location_address || '';
-    const locationPhone = delivery.location_phone || '';
-    const orderNo = delivery.sale_number || '';
-    const date = formatDate(delivery.created_at);
-    const customerName = delivery.customer_name || '';
-    const customerPhone = delivery.customer_phone || '';
-    const address = delivery.delivery_address || '';
-    const senderName = delivery.sender_name || '';
-    const senderPhone = delivery.sender_phone || '';
-    const senderMessage = delivery.sender_message || '';
-    const orderInstructions = delivery.delivery_notes || delivery.special_instructions || delivery.notes || '';
-    const scheduledDate = delivery.scheduled_date || '';
-    const scheduledTime = delivery.scheduled_time || '';
-
-    const itemsHtml = (showInstructions) => (delivery.items || []).map((item) => {
-      const itemInstruction = item.special_instructions || item.customization || item.note || '';
-      return `
-      <tr>
-        <td style="padding:4px 6px;border-bottom:1px solid #ddd;">
-          <div style="font-weight:600;">${item.product_name || ''}</div>
-          ${showInstructions && itemInstruction ? `<div style="font-size:9px;color:#666;margin-top:2px;">${itemInstruction}</div>` : ''}
-        </td>
-        <td style="padding:4px 6px;border-bottom:1px solid #ddd;text-align:center;vertical-align:top;">${item.quantity}</td>
-      </tr>
-    `;
-    }).join('');
-
-    const codToCollect = Math.max((delivery.cod_amount || 0) - (delivery.cod_collected || 0), 0);
-    const codAmt = Number(codToCollect).toFixed(0);
-
-    const buildCopyHtml = (copyTitle, showInstructions) => `
-      <div style="border:2px solid #333;border-radius:6px;padding:10px 14px;box-sizing:border-box;position:relative;overflow:hidden;page-break-inside:avoid;break-inside:avoid;flex:1;min-height:0;">
-        <div style="position:absolute;top:6px;right:10px;font-size:10px;color:#999;font-weight:600;text-transform:uppercase;letter-spacing:1px;">${copyTitle}</div>
-        <div style="text-align:center;margin-bottom:4px;">
-          <div style="font-size:16px;font-weight:bold;color:#E91E63;line-height:1.1;">${shopName}</div>
-          ${locationName ? `<div style="font-size:10px;color:#555;line-height:1.1;">${locationName}</div>` : ''}
-          ${locationAddress ? `<div style="font-size:9px;color:#888;line-height:1.1;">${locationAddress}</div>` : ''}
-          ${locationPhone ? `<div style="font-size:9px;color:#888;line-height:1.1;">Ph: ${locationPhone}</div>` : ''}
-        </div>
-        <div style="border-top:1px dashed #999;margin:5px 0;"></div>
-        <div style="display:flex;justify-content:space-between;font-size:10px;margin-bottom:3px;">
-          <span><strong>Order:</strong> ${orderNo}</span>
-          <span><strong>Date:</strong> ${date}</span>
-        </div>
-        ${scheduledDate ? `<div style="font-size:10px;margin-bottom:3px;"><strong>Scheduled:</strong> ${formatScheduled(scheduledDate, scheduledTime)}</div>` : ''}
-        <div style="display:flex;gap:12px;font-size:10px;margin-bottom:2px;">
-          <div style="flex:1;"><strong>Customer:</strong> ${customerName}${customerPhone ? ' • ' + customerPhone : ''}</div>
-        </div>
-        <div style="font-size:10px;margin-bottom:3px;"><strong>Address:</strong> ${address}</div>
-        ${senderName || senderPhone ? `<div style="font-size:10px;margin-bottom:2px;"><strong>Sender:</strong> ${senderName}${senderPhone ? ' • ' + senderPhone : ''}</div>` : ''}
-        ${senderMessage ? `<div style="background:#FFF3E0;border-radius:4px;padding:3px 6px;margin:3px 0;font-size:10px;"><strong>Message:</strong> ${senderMessage}</div>` : ''}
-        <table style="width:100%;border-collapse:collapse;font-size:10px;margin-top:4px;">
-          <thead>
-            <tr style="background:#f5f5f5;">
-              <th style="padding:3px 4px;text-align:left;border-bottom:2px solid #ddd;">Item</th>
-              <th style="padding:3px 4px;text-align:center;border-bottom:2px solid #ddd;">Qty</th>
-            </tr>
-          </thead>
-          <tbody>${itemsHtml(showInstructions)}</tbody>
-        </table>
-        ${showInstructions && orderInstructions ? `<div style="background:#F5F5F5;border-radius:4px;padding:3px 6px;margin:3px 0;font-size:10px;"><strong>Order Instructions:</strong> ${orderInstructions}</div>` : ''}
-        <div style="border-top:1px dashed #999;margin:5px 0;"></div>
-        <div style="display:flex;justify-content:space-between;font-size:11px;font-weight:bold;align-items:flex-end;">
-          <div>${parseFloat(codAmt) > 0 ? `<span style="color:#E91E63;">COD: ₹${codAmt}</span>` : '<span style="color:#4CAF50;">PREPAID</span>'}</div>
-        </div>
-        ${showInstructions ? `<div style="margin-top:8px;border-top:1px solid #333;padding-top:6px;font-size:10px;display:flex;justify-content:space-between;align-items:flex-end;min-height:44px;"><span>Receiver's Signature</span><span style="border-bottom:1px solid #333;display:inline-block;width:180px;height:18px;"></span></div>` : ''}
-      </div>
-    `;
-
-    const html = `
-      <html><head><meta charset="utf-8">
-      <style>
-        @page { size: A4 portrait; margin: 8mm; }
-        html, body { margin: 0; padding: 0; }
-        body { font-family: Arial, Helvetica, sans-serif; display: flex; flex-direction: column; gap: 8px; min-height: 100vh; }
-      </style></head>
-      <body>
-        ${buildCopyHtml('Shop Copy', true)}
-        ${buildCopyHtml('Customer Copy', false)}
-      </body></html>
-    `;
-
-    const printHtmlOnWeb = (markup, title) => {
-      const frame = document.createElement('iframe');
-      frame.style.position = 'fixed';
-      frame.style.right = '0';
-      frame.style.bottom = '0';
-      frame.style.width = '0';
-      frame.style.height = '0';
-      frame.style.border = '0';
-      frame.setAttribute('aria-hidden', 'true');
-      document.body.appendChild(frame);
-
-      const frameDoc = frame.contentWindow?.document;
-      if (!frameDoc) {
-        document.body.removeChild(frame);
-        throw new Error('Unable to open print frame');
-      }
-
-      frameDoc.open();
-      frameDoc.write(`<html><head><title>${title}</title></head><body>${markup}</body></html>`);
-      frameDoc.close();
-
-      setTimeout(() => {
-        try {
-          frame.contentWindow?.focus();
-          frame.contentWindow?.print();
-        } finally {
-          setTimeout(() => {
-            if (frame.parentNode) frame.parentNode.removeChild(frame);
-          }, 500);
-        }
-      }, 250);
-    };
-
-    try {
-      if (Platform.OS === 'web') {
-        printHtmlOnWeb(html, 'Delivery Challan');
-      } else {
-        const { uri } = await Print.printToFileAsync({ html });
-        await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: `Challan ${orderNo}` });
-      }
-    } catch {
-      Alert.alert('Error', 'Could not generate delivery challan');
-    }
-  };
+  // Shared with every other print button in the app (utils/printHelpers.js).
+  const generateChallan = () => printOrderSlip(delivery.sale_id);
 
   if (loading) return <View style={styles.center}><ActivityIndicator size="large" color={Colors.primary} /></View>;
   if (!delivery) return <View style={styles.center}><Text>Delivery not found</Text></View>;

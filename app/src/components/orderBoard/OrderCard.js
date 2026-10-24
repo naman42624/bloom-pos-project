@@ -7,6 +7,7 @@ import { TYPE_ICONS } from '../../constants/orderStages';
 import { formatCardDateTime, minutesSinceServerDate, minutesUntilShopDateTime } from '../../utils/datetime';
 import { waLink, buildMessage } from '../../utils/contact';
 import StageBadge from '../StageBadge';
+import { printOrderSlip, canPrintOrderSlip } from '../../utils/printHelpers';
 
 /**
  * What to offer when the server says there is no safe one-tap action.
@@ -478,6 +479,18 @@ export default function OrderCard({
               <Ionicons name="logo-whatsapp" size={13} color={Colors.success} />
             </TouchableOpacity>
           </>
+        )}
+        {/* Delivery challan / pickup slip — same shared printer as Delivery
+            Details and Sale Details, so every copy prints identically. */}
+        {canPrintOrderSlip(order) && (
+          <TouchableOpacity
+            style={[styles.contactBtn, { backgroundColor: Colors.primary + '15' }]}
+            onPress={(e) => { e.stopPropagation(); printOrderSlip(order.id); }}
+            hitSlop={12}
+            accessibilityLabel={order.order_type === 'pickup' ? 'Print pickup slip' : 'Print delivery challan'}
+          >
+            <Ionicons name="print-outline" size={13} color={Colors.primary} />
+          </TouchableOpacity>
         )}
       </View>
 

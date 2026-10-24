@@ -11,7 +11,7 @@ import api from '../services/api';
 import { Colors, FontSize, Spacing, BorderRadius, Shadows } from '../constants/theme';
 import { getShopNow, DEFAULT_TZ, minutesSinceServerDate, minutesUntilShopDateTime, formatTimeString } from '../utils/datetime';
 import DateTimePickerModal from '../components/DateTimePickerModal';
-import { generateDeliverySlip, generatePickupSlip } from '../utils/printHelpers';
+import { printOrderSlip } from '../utils/printHelpers';
 import AttachmentVoiceRow from '../components/AttachmentVoiceRow';
 
 /* ─── PALETTE (derives from existing app theme) ───────────── */
@@ -503,8 +503,8 @@ function DetailPanel({ order, tasks, onClose, onRefresh, navigation, canManage, 
         {!isFinal&&acts.length>0&&canManage&&<View style={dp.block}><Text style={[dp.blockTitle,{marginBottom:6}]}>Actions</Text>{acts.map(a=><View key={a.next} style={{marginBottom:5}}><Btn label={confirmStatus===a.next?'Tap to confirm':a.label} color={a.color} icon={a.icon} onPress={()=>confirmAction(a.next)} loading={actionLoading}/></View>)}</View>}
       </ScrollView>
       <View style={dp.footer}>
-        {ot==='delivery'&&<TouchableOpacity style={dp.footerBtn} onPress={()=>generateDeliverySlip(order,localTasks)}><Ionicons name="print-outline" size={14} color={P.blue}/><Text style={[dp.footerBtnTxt,{color:P.blue}]}>Delivery Slip</Text></TouchableOpacity>}
-        {ot==='pickup'&&<TouchableOpacity style={dp.footerBtn} onPress={()=>generatePickupSlip(order,localTasks)}><Ionicons name="print-outline" size={14} color={P.green}/><Text style={[dp.footerBtnTxt,{color:P.green}]}>Pickup Slip</Text></TouchableOpacity>}
+        {ot==='delivery'&&<TouchableOpacity style={dp.footerBtn} onPress={()=>printOrderSlip(order.id)}><Ionicons name="print-outline" size={14} color={P.blue}/><Text style={[dp.footerBtnTxt,{color:P.blue}]}>Delivery Challan</Text></TouchableOpacity>}
+        {ot==='pickup'&&<TouchableOpacity style={dp.footerBtn} onPress={()=>printOrderSlip(order.id)}><Ionicons name="print-outline" size={14} color={P.green}/><Text style={[dp.footerBtnTxt,{color:P.green}]}>Pickup Slip</Text></TouchableOpacity>}
         <TouchableOpacity style={[dp.footerBtn,{backgroundColor:P.pinkGlow}]} onPress={()=>{onClose();setTimeout(()=>navigation.navigate('SaleDetail',{saleId:order.id}),200);}}><Ionicons name="document-text-outline" size={14} color={P.pink}/><Text style={[dp.footerBtnTxt,{color:P.pink}]}>Full Details</Text><Ionicons name="chevron-forward" size={12} color={P.pink}/></TouchableOpacity>
       </View>
     </View>

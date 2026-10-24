@@ -30,7 +30,7 @@ import { Ionicons } from '@expo/vector-icons';
 import api from '../services/api';
 import { showAlert, showConfirm } from '../utils/alert';
 import { Colors } from '../constants/theme';
-import { generateDeliverySlip, generatePickupSlip } from '../utils/printHelpers';
+import { printOrderSlip } from '../utils/printHelpers';
 import StageBadge from './StageBadge';
 import { resolveDeliverStep } from './orderBoard/OrderCard';
 
@@ -656,16 +656,16 @@ export function OrderQuickModal({
         {orderType === 'delivery' && (
           <TouchableOpacity
             style={[styles.fullDetailsBtn, { marginBottom: 8, backgroundColor: '#EFF6FF', borderColor: '#BFDBFE' }]}
-            onPress={() => generateDeliverySlip(order, localTasks)}
+            onPress={() => printOrderSlip(order.id)}
           >
             <Ionicons name="print-outline" size={17} color="#2563EB" />
-            <Text style={[styles.fullDetailsBtnText, { color: '#2563EB' }]}>Print Delivery Slip</Text>
+            <Text style={[styles.fullDetailsBtnText, { color: '#2563EB' }]}>Print Delivery Challan</Text>
           </TouchableOpacity>
         )}
         {orderType === 'pickup' && (
           <TouchableOpacity
             style={[styles.fullDetailsBtn, { marginBottom: 8, backgroundColor: '#F0FDF4', borderColor: '#BBF7D0' }]}
-            onPress={() => generatePickupSlip(order, localTasks)}
+            onPress={() => printOrderSlip(order.id)}
           >
             <Ionicons name="print-outline" size={17} color="#047857" />
             <Text style={[styles.fullDetailsBtnText, { color: '#047857' }]}>Print Pickup Slip</Text>
