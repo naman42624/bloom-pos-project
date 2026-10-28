@@ -70,6 +70,15 @@ async function cleanup() {
   for (const saleId of createdSaleIds) {
     try {
       await db.prepare('DELETE FROM pickup_load_checks WHERE sale_id = ?').run(saleId);
+      await db.prepare('DELETE FROM delivery_load_checks WHERE delivery_id IN (SELECT id FROM deliveries WHERE sale_id = ?)').run(saleId);
+      await db.prepare('DELETE FROM delivery_collections WHERE delivery_id IN (SELECT id FROM deliveries WHERE sale_id = ?)').run(saleId);
+      await db.prepare('DELETE FROM deliveries WHERE sale_id = ?').run(saleId);
+      await db.prepare('DELETE FROM production_tasks WHERE sale_id = ?').run(saleId);
+      await db.prepare('DELETE FROM sale_attachments WHERE sale_id = ?').run(saleId);
+      await db.prepare('DELETE FROM payments WHERE sale_id = ?').run(saleId);
+      await db.prepare('DELETE FROM refunds WHERE sale_id = ?').run(saleId);
+      await db.prepare('DELETE FROM sale_items WHERE sale_id = ?').run(saleId);
+      await db.prepare('DELETE FROM pre_orders WHERE sale_id = ?').run(saleId);
       await db.prepare('DELETE FROM sales WHERE id = ?').run(saleId);
     } catch (err) {
       console.log(`   cleanup of sale ${saleId} failed: ${err.message}`);
@@ -111,6 +120,221 @@ check('pickup_load_checks table, checked_via and status_token columns exist', as
   for (const c of ['requester_name', 'requester_phone', 'source']) {
     assert(await columnOrTableExists('order_requests', c), `order_requests.${c} missing`);
   }
+});
+
+// ─── Task 2: public slip API, shared load checklist, slip fields ───
+
+function mintToken(userId) {
+  const jwt = require('jsonwebtoken');
+  return jwt.sign({ id: userId }, process.env.JWT_SECRET, { expiresIn: '1h' });
+}
+
+async function createSlipSale(ownerToken, orderType, extra = {}) {
+  const body = {
+    location_id: TEST_LOCATION_ID, order_type: orderType, channel: 'phone',
+    items: [
+      { quantity: 2, unit_price: 350, product_name: 'Slip Test Roses' },
+      { quantity: 1, unit_price: 120, product_name: 'Slip Test Card' },
+    ],
+    ...extra,
+  };
+  if (orderType === 'delivery') {
+    Object.assign(body, { delivery_address: '42 Secret Lane', receiver_name: 'Slip Receiver', receiver_phone: '9998887777' }, extra);
+  }
+  const res = await api('POST', '/sales', ownerToken, body);
+  if (res.status !== 201 && res.status !== 200) throw new Error(`Could not create ${orderType} sale: ${res.status} ${JSON.stringify(res.body)}`);
+  const saleId = res.body.data.id;
+  createdSaleIds.push(saleId);
+  const db = await getDb();
+  const items = await db.prepare('SELECT id FROM sale_items WHERE sale_id = ? ORDER BY id').all(saleId);
+  const delivery = await db.prepare('SELECT id FROM deliveries WHERE sale_id = ?').get(saleId);
+  return { saleId, itemIds: items.map((i) => i.id), deliveryId: delivery ? delivery.id : null, token: generateSlipToken(saleId) };
+}
+
+const slipCtx = {};
+async function slipOwner() {
+  if (!slipCtx.owner) slipCtx.owner = await loginOwner();
+  return slipCtx.owner;
+}
+async function slipDeliverySale() {
+  if (!slipCtx.delivery) slipCtx.delivery = await createSlipSale((await slipOwner()).token, 'delivery');
+  return slipCtx.delivery;
+}
+
+const DENIED_KEYS = ['price', 'unit_price', 'total', 'grand_total', 'amount', 'phone', 'address', 'customer_name', 'receiver_name', 'partner_name', 'created_by_name'];
+function findDeniedKeys(value, path = '$', found = []) {
+  if (Array.isArray(value)) value.forEach((v, i) => findDeniedKeys(v, `${path}[${i}]`, found));
+  else if (value && typeof value === 'object') {
+    for (const k of Object.keys(value)) {
+      if (DENIED_KEYS.includes(k)) found.push(`${path}.${k}`);
+      findDeniedKeys(value[k], `${path}.${k}`, found);
+    }
+  }
+  return found;
+}
+
+check('public slip GET on a delivery sale returns its items with a delivery checklist', async () => {
+  const s = await slipDeliverySale();
+  const res = await api('GET', `/slip/${s.token}`, null);
+  assert(res.status === 200, `Expected 200, got ${res.status}: ${JSON.stringify(res.body)}`);
+  const d = res.body.data;
+  assert(d.checklist && d.checklist.kind === 'delivery' && d.checklist.enabled === true, `Expected enabled delivery checklist, got ${JSON.stringify(d.checklist)}`);
+  assert(d.display_type === 'Delivery', `Expected display_type Delivery, got ${d.display_type}`);
+  assert(Array.isArray(d.items) && d.items.length === 2, `Expected 2 items, got ${JSON.stringify(d.items)}`);
+  assert(d.items[0].name === 'Slip Test Roses' && Number(d.items[0].quantity) === 2, `Unexpected first item ${JSON.stringify(d.items[0])}`);
+  assert(Array.isArray(d.items[0].voice_notes) && Array.isArray(d.order_voice_notes), 'voice_notes arrays missing');
+  assert(d.checklist.items.length === 2 && d.checklist.items.every((i) => i.checked === false), `Expected 2 unchecked rows, got ${JSON.stringify(d.checklist.items)}`);
+});
+
+check('public slip GET leaks no prices, phones, addresses or names (recursive key walk)', async () => {
+  const s = await slipDeliverySale();
+  const res = await api('GET', `/slip/${s.token}`, null);
+  assert(res.status === 200, `Expected 200, got ${res.status}`);
+  const found = findDeniedKeys(res.body);
+  assert(found.length === 0, `Denied keys present: ${found.join(', ')}`);
+  const raw = JSON.stringify(res.body);
+  assert(!raw.includes('9998887777'), 'Receiver phone appears in the public body');
+  assert(!raw.includes('Secret Lane') && !raw.includes('Slip Receiver'), 'Address or receiver name appears in the public body');
+});
+
+check('public slip tick shows in the app delivery checklist, and an app tick shows on the slip', async () => {
+  const owner = await slipOwner();
+  const s = await slipDeliverySale();
+  const put = await api('PUT', `/slip/${s.token}/check/${s.itemIds[0]}`, null, { checked: true });
+  assert(put.status === 200, `Public PUT expected 200, got ${put.status}: ${JSON.stringify(put.body)}`);
+  assert(put.body.data.items.find((i) => i.sale_item_id === s.itemIds[0]).checked === true, 'PUT response does not show the tick');
+  const app = await api('GET', `/deliveries/${s.deliveryId}/checklist`, owner.token);
+  assert(app.status === 200, `App checklist GET ${app.status}`);
+  const row = app.body.data.find((r) => r.sale_item_id === s.itemIds[0]);
+  assert(row && row.checked === true, `App does not see the public tick: ${JSON.stringify(app.body.data)}`);
+  const db = await getDb();
+  const via = await db.prepare('SELECT checked_via, checked_by FROM delivery_load_checks WHERE delivery_id = ? AND sale_item_id = ?').get(s.deliveryId, s.itemIds[0]);
+  assert(via.checked_via === 'slip_qr' && via.checked_by === null, `Expected slip_qr/null, got ${JSON.stringify(via)}`);
+
+  const appPut = await api('PUT', `/deliveries/${s.deliveryId}/checklist/${s.itemIds[1]}`, owner.token, { checked: true });
+  assert(appPut.status === 200, `App PUT ${appPut.status}: ${JSON.stringify(appPut.body)}`);
+  const via2 = await db.prepare('SELECT checked_via, checked_by FROM delivery_load_checks WHERE delivery_id = ? AND sale_item_id = ?').get(s.deliveryId, s.itemIds[1]);
+  assert(via2.checked_via === 'app' && via2.checked_by === owner.id, `Expected app/owner, got ${JSON.stringify(via2)}`);
+  const pub = await api('GET', `/slip/${s.token}`, null);
+  const pubRow = pub.body.data.checklist.items.find((i) => i.sale_item_id === s.itemIds[1]);
+  assert(pubRow && pubRow.checked === true && pubRow.checked_at, `Slip does not see the app tick: ${JSON.stringify(pub.body.data.checklist)}`);
+});
+
+check('pickup sale: public tick and /sales/:id/pickup-checks round-trip both ways', async () => {
+  const owner = await slipOwner();
+  const s = await createSlipSale(owner.token, 'pickup');
+  slipCtx.pickup = s;
+  const pub = await api('GET', `/slip/${s.token}`, null);
+  assert(pub.status === 200 && pub.body.data.checklist.kind === 'pickup', `Expected pickup checklist, got ${pub.status} ${JSON.stringify(pub.body)}`);
+  assert(pub.body.data.display_type === 'Pickup', `Expected Pickup, got ${pub.body.data.display_type}`);
+  const put = await api('PUT', `/slip/${s.token}/check/${s.itemIds[0]}`, null, { checked: true });
+  assert(put.status === 200, `Public PUT ${put.status}: ${JSON.stringify(put.body)}`);
+  const app = await api('GET', `/sales/${s.saleId}/pickup-checks`, owner.token);
+  assert(app.status === 200, `App pickup GET ${app.status}: ${JSON.stringify(app.body)}`);
+  assert(app.body.data.kind === 'pickup', `App kind ${app.body.data.kind}`);
+  assert(app.body.data.items.find((i) => i.sale_item_id === s.itemIds[0]).checked === true, 'App does not see public pickup tick');
+  const appPut = await api('PUT', `/sales/${s.saleId}/pickup-checks/${s.itemIds[1]}`, owner.token, { checked: true });
+  assert(appPut.status === 200, `App pickup PUT ${appPut.status}: ${JSON.stringify(appPut.body)}`);
+  const db = await getDb();
+  const via = await db.prepare('SELECT checked_via, checked_by FROM pickup_load_checks WHERE sale_id = ? AND sale_item_id = ?').get(s.saleId, s.itemIds[1]);
+  assert(via.checked_via === 'app' && via.checked_by === owner.id, `Expected app/owner, got ${JSON.stringify(via)}`);
+  const pub2 = await api('GET', `/slip/${s.token}`, null);
+  assert(pub2.body.data.checklist.items.every((i) => i.checked === true), `Slip does not see app pickup tick: ${JSON.stringify(pub2.body.data.checklist)}`);
+  // Untick also round-trips.
+  const untick = await api('PUT', `/slip/${s.token}/check/${s.itemIds[0]}`, null, { checked: false });
+  assert(untick.status === 200 && untick.body.data.items.find((i) => i.sale_item_id === s.itemIds[0]).checked === false, 'Untick did not apply');
+});
+
+check('pickup-checks routes reject a customer and a rider (403)', async () => {
+  const s = slipCtx.pickup || await createSlipSale((await slipOwner()).token, 'pickup');
+  const cust = await api('GET', `/sales/${s.saleId}/pickup-checks`, mintToken(11));
+  const rider = await api('PUT', `/sales/${s.saleId}/pickup-checks/${s.itemIds[0]}`, mintToken(8), { checked: true });
+  assert(cust.status === 403 && rider.status === 403, `Expected 403/403, got ${cust.status}/${rider.status}`);
+});
+
+check('a delivery converted to pickup gives a pickup checklist on the slip', async () => {
+  const owner = await slipOwner();
+  const s = await createSlipSale(owner.token, 'delivery');
+  const conv = await api('PUT', `/sales/${s.saleId}/convert-type`, owner.token, { new_order_type: 'pickup' });
+  assert(conv.status === 200, `Convert ${conv.status}: ${JSON.stringify(conv.body)}`);
+  const pub = await api('GET', `/slip/${s.token}`, null);
+  assert(pub.status === 200 && pub.body.data.checklist.kind === 'pickup', `Expected 200/pickup, got ${pub.status} ${JSON.stringify(pub.body?.data?.checklist)}`);
+  const put = await api('PUT', `/slip/${s.token}/check/${s.itemIds[0]}`, null, { checked: true });
+  assert(put.status === 200 && put.body.data.kind === 'pickup', `Expected PUT 200/pickup after convert, got ${put.status} ${JSON.stringify(put.body)}`);
+});
+
+check('a pre_order without a delivery uses the pickup checklist; a walk_in is disabled', async () => {
+  const owner = await slipOwner();
+  const pre = await createSlipSale(owner.token, 'pre_order', { scheduled_date: '2026-12-01' });
+  const preRes = await api('GET', `/slip/${pre.token}`, null);
+  assert(preRes.status === 200 && preRes.body.data.checklist.kind === 'pickup' && preRes.body.data.checklist.enabled, `pre_order: ${preRes.status} ${JSON.stringify(preRes.body?.data?.checklist)}`);
+  const walk = await createSlipSale(owner.token, 'walk_in');
+  const walkRes = await api('GET', `/slip/${walk.token}`, null);
+  assert(walkRes.status === 200 && walkRes.body.data.checklist.enabled === false && walkRes.body.data.checklist.items.length === 0, `walk_in: ${walkRes.status} ${JSON.stringify(walkRes.body?.data?.checklist)}`);
+  const put = await api('PUT', `/slip/${walk.token}/check/${walk.itemIds[0]}`, null, { checked: true });
+  assert(put.status === 409, `walk_in PUT expected 409, got ${put.status}`);
+});
+
+check('a saleItemId from another sale gives 404; a delivered sale gives 409', async () => {
+  const s = await slipDeliverySale();
+  const other = slipCtx.pickup || await createSlipSale((await slipOwner()).token, 'pickup');
+  const wrong = await api('PUT', `/slip/${s.token}/check/${other.itemIds[0]}`, null, { checked: true });
+  assert(wrong.status === 404, `Expected 404, got ${wrong.status}: ${JSON.stringify(wrong.body)}`);
+  const owner = await slipOwner();
+  const d = await createSlipSale(owner.token, 'delivery');
+  const db = await getDb();
+  await db.prepare("UPDATE deliveries SET status = 'delivered' WHERE id = ?").run(d.deliveryId);
+  const fin = await api('PUT', `/slip/${d.token}/check/${d.itemIds[0]}`, null, { checked: true });
+  assert(fin.status === 409 && /delivered/i.test(fin.body?.message || ''), `Expected 409 "delivered", got ${fin.status}: ${JSON.stringify(fin.body)}`);
+  const appFin = await api('PUT', `/deliveries/${d.deliveryId}/checklist/${d.itemIds[0]}`, owner.token, { checked: true });
+  assert(appFin.status === 409, `App toggle on a delivered delivery expected 409, got ${appFin.status}`);
+});
+
+check('bad token, tracking token, and missing sale give 404', async () => {
+  const s = await slipDeliverySale();
+  const a = await api('GET', `/slip/${generateTrackingToken(s.saleId)}`, null);
+  const b = await api('GET', `/slip/garbage`, null);
+  const c = await api('GET', `/slip/${generateSlipToken(999999999)}`, null);
+  assert(a.status === 404 && b.status === 404 && c.status === 404, `Expected 404s, got ${a.status}/${b.status}/${c.status}`);
+});
+
+check('slip expires 7 days after completion: 8 days gives 404, 6 days gives 200', async () => {
+  const owner = await slipOwner();
+  const s = await createSlipSale(owner.token, 'pickup');
+  const db = await getDb();
+  await db.prepare("UPDATE sales SET status = 'completed', updated_at = NOW() - INTERVAL '8 days' WHERE id = ?").run(s.saleId);
+  const old = await api('GET', `/slip/${s.token}`, null);
+  const oldPut = await api('PUT', `/slip/${s.token}/check/${s.itemIds[0]}`, null, { checked: true });
+  await db.prepare("UPDATE sales SET status = 'completed', updated_at = NOW() - INTERVAL '6 days' WHERE id = ?").run(s.saleId);
+  const recent = await api('GET', `/slip/${s.token}`, null);
+  assert(old.status === 404 && oldPut.status === 404, `Expected 404/404 at 8 days, got ${old.status}/${oldPut.status}`);
+  assert(recent.status === 200, `Expected 200 at 6 days, got ${recent.status}`);
+  // An open order never expires, however old.
+  await db.prepare("UPDATE sales SET status = 'preparing', updated_at = NOW() - INTERVAL '30 days' WHERE id = ?").run(s.saleId);
+  const open = await api('GET', `/slip/${s.token}`, null);
+  assert(open.status === 200, `Expected 200 for an old open order, got ${open.status}`);
+});
+
+check('GET /sales/:id gives owner and rider slip_url + slip_qr_svg, customer neither', async () => {
+  const owner = await slipOwner();
+  const s = await slipDeliverySale();
+  const res = await api('GET', `/sales/${s.saleId}`, owner.token);
+  assert(res.status === 200, `GET ${res.status}`);
+  assert(typeof res.body.data.slip_url === 'string' && res.body.data.slip_url.endsWith(s.token), `slip_url ${res.body.data.slip_url}`);
+  assert(typeof res.body.data.slip_qr_svg === 'string' && res.body.data.slip_qr_svg.trim().startsWith('<svg'), `slip_qr_svg starts ${String(res.body.data.slip_qr_svg).slice(0, 30)}`);
+  const rider = await api('GET', `/sales/${s.saleId}`, mintToken(8));
+  assert(rider.status === 200 && rider.body.data.slip_url && rider.body.data.slip_qr_svg, `Rider should get slip fields (${rider.status})`);
+  const cust = await api('GET', `/sales/${s.saleId}`, mintToken(11));
+  assert(cust.status === 200, `Customer GET expected 200 (route is authenticate-only), got ${cust.status}`);
+  assert(!('slip_url' in cust.body.data) && !('slip_qr_svg' in cust.body.data), 'Customer must not get slip fields');
+});
+
+// Must stay last: it exhausts this process's public slip budget.
+check('61 rapid public slip GETs hit the 60/min limiter (429)', async () => {
+  const owner = await slipOwner();
+  const s = await createSlipSale(owner.token, 'pickup');
+  const statuses = await Promise.all(Array.from({ length: 61 }, () => api('GET', `/slip/${s.token}`, null).then((r) => r.status)));
+  assert(statuses.includes(429), `No 429 in 61 requests: ${[...new Set(statuses)].join(',')}`);
 });
 
 async function main() {
