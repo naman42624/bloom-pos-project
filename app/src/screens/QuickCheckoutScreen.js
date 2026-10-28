@@ -11,7 +11,7 @@ import { useFocusEffect, CommonActions } from '@react-navigation/native';
 import DateTimePickerModal from '../components/DateTimePickerModal';
 import VoiceNoteRecorder from '../components/VoiceNoteRecorder';
 import RoutePicker from '../components/RoutePicker';
-import SavedAddressChips, { saveAddressBack } from '../components/SavedAddressChips';
+import SavedAddressChips from '../components/SavedAddressChips';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
@@ -1180,10 +1180,6 @@ export default function QuickCheckoutScreen({ navigation, route }) {
       const res = await api.createSale(saleData);
       if (res.success) {
         setSubmitErrors([]);
-        if (needsDelivery) {
-          // Fire-and-forget: remembers a new delivery address on the profile; never blocks the order.
-          saveAddressBack(effectiveReceiverId || customerId, customerAddress);
-        }
         if (activeDraftId) {
           try {
             await api.deleteSaleDraft(activeDraftId);

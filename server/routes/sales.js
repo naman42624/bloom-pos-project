@@ -121,12 +121,12 @@ function saveCustomerAddress(db, { customerId, address, label, customerName, fal
   let existingAddr = null;
   try {
     existingAddr = db.prepare(
-      'SELECT id FROM customer_addresses WHERE customer_id = ? AND address_line_1 = ?'
+      'SELECT id FROM customer_addresses WHERE customer_id = ? AND LOWER(BTRIM(address_line_1)) = LOWER(BTRIM(?))'
     ).get(customerId, addrClean);
   } catch (_) {
     try {
       existingAddr = db.prepare(
-        'SELECT id FROM customer_addresses WHERE customer_id = ? AND address = ?'
+        'SELECT id FROM customer_addresses WHERE customer_id = ? AND LOWER(BTRIM(address)) = LOWER(BTRIM(?))'
       ).get(customerId, addrClean);
     } catch (__) { }
   }

@@ -24,20 +24,6 @@ async function fetchRows(id) {
   }
 }
 
-// After an order is created: remember the delivery address on the profile if
-// it is new. Never throws, never blocks the order.
-export async function saveAddressBack(targetId, text) {
-  try {
-    const clean = (text || '').trim();
-    if (!targetId || !clean) return;
-    const rows = await fetchRows(targetId);
-    if (rows.some((r) => sameAddress(addressText(r), clean))) return;
-    await api.addCustomerAddress(targetId, { label: 'Saved from order', address: clean, address_line_1: clean });
-  } catch (err) {
-    console.warn('Could not save address back to customer:', err?.message || err);
-  }
-}
-
 export default function SavedAddressChips({ customerId, receiverId, onPick }) {
   const [chips, setChips] = useState([]);
 

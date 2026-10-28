@@ -5,7 +5,7 @@ import * as ImagePicker from 'expo-image-picker';
 import api from '../services/api';
 import VoiceNoteRecorder from '../components/VoiceNoteRecorder';
 import RoutePicker from '../components/RoutePicker';
-import SavedAddressChips, { saveAddressBack } from '../components/SavedAddressChips';
+import SavedAddressChips from '../components/SavedAddressChips';
 import DateTimePickerModal from '../components/DateTimePickerModal';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import { useAuth } from '../context/AuthContext';
@@ -446,10 +446,6 @@ export default function LogOrderScreen({ navigation, route }) {
       const res = await api.createSale(payload);
       saleId = res.data?.id;
       savedItems = res.data?.items || [];
-      if (fulfilment === 'delivery') {
-        // Fire-and-forget: remembers a new delivery address on the profile; never blocks the order.
-        saveAddressBack(customerId, deliveryAddress);
-      }
     } catch (err) {
       setSaving(false);
       showAlert('Could not save order', err.message || 'Please try again.');
