@@ -525,6 +525,50 @@ async function cleanupOpenRequests() {
   }
 }
 
+// ─── Task 7: draft voice notes ────────────────────────────────
+const draftFiles = [];
+async function draftUpload(token) {
+  const fd = new FormData();
+  fd.append('file', new Blob([Buffer.from('RIFFtestaudio')], { type: 'audio/webm' }), 'draft-test.webm');
+  fd.append('type', 'voice_note');
+  fd.append('duration_seconds', '4');
+  const res = await fetch(`${API_BASE}/sales/attachments/draft-upload`, { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: fd });
+  let body = null; try { body = await res.json(); } catch { /* */ }
+  return { status: res.status, body };
+}
+const fs = require('fs');
+const pathMod = require('path');
+check('draft-upload stores a voice note and returns url + duration', async () => {
+  const owner = await slipOwner();
+  const r = await draftUpload(owner.token);
+  assert(r.status === 200 && /^\/uploads\/sale-attachments\/[A-Za-z0-9._-]+$/.test(r.body?.data?.url || ''), `Upload ${r.status} ${JSON.stringify(r.body)}`);
+  assert(r.body.data.duration_seconds === 4, `duration ${JSON.stringify(r.body)}`);
+  draftFiles.push(r.body.data.url);
+  const noAuth = await draftUpload('bad');
+  assert(noAuth.status === 401, `Unauth upload ${noAuth.status}`);
+});
+check('from-url rejects traversal and unknown files, accepts an uploaded file', async () => {
+  const owner = await slipOwner();
+  const s = await createSlipSale(owner.token, 'pickup');
+  const post = (file_url) => api('POST', `/sales/${s.saleId}/attachments/from-url`, owner.token, { type: 'voice_note', file_url, duration_seconds: 4 });
+  for (const bad of ['/uploads/sale-attachments/../../.env', '/uploads/other/x.webm', '/uploads/sale-attachments/missing-file-zzz.webm', 'http://evil/x.webm']) {
+    const r = await post(bad);
+    assert(r.status === 400, `Expected 400 for ${bad}, got ${r.status}`);
+  }
+  const up = await draftUpload(owner.token);
+  draftFiles.push(up.body.data.url);
+  const ok = await post(up.body.data.url);
+  assert(ok.status === 201 && ok.body.data.file_url === up.body.data.url && ok.body.data.type === 'voice_note', `Attach ${ok.status} ${JSON.stringify(ok.body)}`);
+  const db = await getDb();
+  const row = await db.prepare('SELECT * FROM sale_attachments WHERE sale_id = ?').get(s.saleId);
+  assert(row && row.duration_seconds === 4, 'attachment row missing');
+});
+async function cleanupDraftFiles() {
+  for (const u of draftFiles) {
+    try { fs.unlinkSync(pathMod.join(__dirname, '..', u.replace(/^\//, ''))); } catch { /* */ }
+  }
+}
+
 // Must stay last: it exhausts this process's public slip budget.
 check('61 rapid public slip GETs hit the 60/min limiter (429)', async () => {
   const owner = await slipOwner();
@@ -549,6 +593,7 @@ async function main() {
   }
   await cleanup();
   await cleanupOpenRequests();
+  await cleanupDraftFiles();
   console.log(`\n${pass}/${pass + fail} checks passed`);
   process.exit(fail > 0 ? 1 : 0);
 }

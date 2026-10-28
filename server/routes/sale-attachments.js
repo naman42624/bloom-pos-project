@@ -59,6 +59,83 @@ async function cleanupUploadedFile(req) {
   }
 }
 
+// ─── POST /api/sales/attachments/draft-upload ─────────────────
+// Stores a voice note for a checkout draft (no sale exists yet). The file is
+// attached to the real order later through the from-url route below.
+router.post('/attachments/draft-upload', authenticate, authorize('owner', 'manager', 'employee', 'counter_staff'), (req, res, next) => {
+  upload.single('file')(req, res, (err) => {
+    if (err) return handleMulterError(err, req, res, next);
+    next();
+  });
+}, async (req, res, next) => {
+  try {
+    if (!req.file) return res.status(400).json({ success: false, message: 'No file uploaded' });
+    let durationSeconds = null;
+    if (req.body.duration_seconds !== undefined && req.body.duration_seconds !== null && req.body.duration_seconds !== '') {
+      const parsed = parseInt(req.body.duration_seconds, 10);
+      if (!Number.isFinite(parsed) || parsed < 0) {
+        await cleanupUploadedFile(req);
+        return res.status(400).json({ success: false, message: 'duration_seconds must be a non-negative number' });
+      }
+      durationSeconds = parsed;
+    }
+    res.json({ success: true, data: { url: `/uploads/sale-attachments/${req.file.filename}`, duration_seconds: durationSeconds } });
+  } catch (err) {
+    await cleanupUploadedFile(req);
+    next(err);
+  }
+});
+
+// ─── POST /api/sales/:saleId/attachments/from-url ─────────────
+// Attaches a file already stored by draft-upload to a real sale.
+const DRAFT_FILE_URL_RE = /^\/uploads\/sale-attachments\/[A-Za-z0-9._-]+$/;
+router.post('/:saleId(\\d+)/attachments/from-url', authenticate, authorize('owner', 'manager', 'employee', 'counter_staff'), async (req, res, next) => {
+  try {
+    const db = await getDb();
+    const sale = await db.prepare('SELECT id FROM sales WHERE id = ?').get(req.params.saleId);
+    if (!sale) return res.status(404).json({ success: false, message: 'Sale not found' });
+
+    if (req.body.type !== 'voice_note') {
+      return res.status(400).json({ success: false, message: "type must be 'voice_note'" });
+    }
+    const fileUrl = req.body.file_url;
+    if (typeof fileUrl !== 'string' || !DRAFT_FILE_URL_RE.test(fileUrl) || fileUrl.includes('..')) {
+      return res.status(400).json({ success: false, message: 'Invalid file_url' });
+    }
+    const baseName = path.basename(fileUrl);
+    const diskPath = path.join(__dirname, '..', 'uploads', 'sale-attachments', baseName);
+    if (!fs.existsSync(diskPath)) {
+      return res.status(400).json({ success: false, message: 'That voice note file is missing' });
+    }
+
+    let durationSeconds = null;
+    if (req.body.duration_seconds !== undefined && req.body.duration_seconds !== null && req.body.duration_seconds !== '') {
+      const parsed = parseInt(req.body.duration_seconds, 10);
+      if (!Number.isFinite(parsed) || parsed < 0) {
+        return res.status(400).json({ success: false, message: 'duration_seconds must be a non-negative number' });
+      }
+      durationSeconds = parsed;
+    }
+
+    let saleItemId = null;
+    if (req.body.sale_item_id !== undefined && req.body.sale_item_id !== null && req.body.sale_item_id !== '') {
+      const parsed = parseInt(req.body.sale_item_id, 10);
+      if (!Number.isFinite(parsed)) {
+        return res.status(400).json({ success: false, message: 'sale_item_id must be a number' });
+      }
+      const item = await db.prepare('SELECT id FROM sale_items WHERE id = ? AND sale_id = ?').get(parsed, req.params.saleId);
+      if (!item) return res.status(400).json({ success: false, message: 'sale_item_id does not belong to this sale' });
+      saleItemId = parsed;
+    }
+
+    const result = await db.prepare(
+      'INSERT INTO sale_attachments (sale_id, sale_item_id, type, file_url, duration_seconds, uploaded_by, created_at) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) RETURNING *'
+    ).get(req.params.saleId, saleItemId, 'voice_note', fileUrl, durationSeconds, req.user.id);
+
+    res.status(201).json({ success: true, data: result });
+  } catch (err) { next(err); }
+});
+
 // ─── POST /api/sales/:saleId/attachments ──────────────────────
 router.post('/:saleId(\\d+)/attachments', authenticate, authorize('owner', 'manager', 'employee', 'counter_staff'), (req, res, next) => {
   upload.single('file')(req, res, (err) => {

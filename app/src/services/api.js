@@ -564,6 +564,31 @@ class ApiService {
     return data;
   }
 
+  // Checkout drafts: store a voice note before any sale exists. Returns { data: { url, duration_seconds } }.
+  async uploadDraftVoiceNote(fileUri, durationSeconds) {
+    const formData = new FormData();
+    if (Platform.OS === 'web') {
+      const response = await fetch(fileUri);
+      const blob = await response.blob();
+      formData.append('file', blob, fileUri.split('/').pop() || 'attachment.webm');
+    } else {
+      const filename = fileUri.split('/').pop();
+      const match = /\.(\w+)$/.exec(filename);
+      const ext = match ? match[1] : 'm4a';
+      formData.append('file', { uri: fileUri, name: filename, type: `audio/${ext}` });
+    }
+    formData.append('type', 'voice_note');
+    if (durationSeconds !== undefined && durationSeconds !== null) formData.append('duration_seconds', String(durationSeconds));
+    return this.request('/sales/attachments/draft-upload', { method: 'POST', body: formData });
+  }
+
+  // Attach a voice note already stored by uploadDraftVoiceNote to a real sale.
+  attachFromUrl(saleId, fileUrl, durationSeconds, saleItemId) {
+    const body = { type: 'voice_note', file_url: fileUrl, duration_seconds: durationSeconds };
+    if (saleItemId) body.sale_item_id = saleItemId;
+    return this.request(`/sales/${saleId}/attachments/from-url`, { method: 'POST', body: JSON.stringify(body) });
+  }
+
   getSaleAttachments(saleId) {
     return this.request(`/sales/${saleId}/attachments`);
   }
