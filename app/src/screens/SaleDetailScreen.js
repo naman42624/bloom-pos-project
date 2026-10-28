@@ -19,6 +19,7 @@ import ImageModal from '../components/ImageModal';
 import VoiceNoteRecorder from '../components/VoiceNoteRecorder';
 import AttachmentVoiceRow from '../components/AttachmentVoiceRow';
 import StageBadge from '../components/StageBadge';
+import DeliveryChecklist from '../components/DeliveryChecklist';
 import DeliveryActionsPanel from '../components/delivery/DeliveryActionsPanel';
 import { formatMoney, STAFF_ROLE_LABELS, ASSIGNABLE_STAFF_ROLES } from '../constants/orderDisplay';
 
@@ -1054,6 +1055,14 @@ export default function SaleDetailScreen({ route, navigation }) {
   // A delivery converted to pickup: its cancelled delivery row is history,
   // not something to act on or print a challan from, so the Delivery section
   // is not rendered at all.
+  // Pickup load checklist (spec 2026-10-28 §3.3): pickup orders, and pre-orders
+  // fulfilled by pickup (no live delivery row), not yet handed over.
+  const canTickPickupLoad = ['owner', 'manager', 'employee', 'counter_staff'].includes(user?.role)
+    && (sale.order_type === 'pickup' || sale.order_type === 'pre_order')
+    && !hasLiveDeliveryRow
+    && sale.pickup_status !== 'picked_up'
+    && !['cancelled', 'completed'].includes(sale.status)
+    && (sale.items || []).length > 0;
   const showDeliverySection = !!sale.delivery &&
     !(sale.order_type === 'pickup' && sale.delivery.status === 'cancelled');
   // A blocker the panel above already offers the fix for, to this viewer:
@@ -1237,6 +1246,14 @@ export default function SaleDetailScreen({ route, navigation }) {
               {(sale.pickup_status || '').replace(/_/g, ' ').toUpperCase()}
             </Text>
           </View>
+        </View>
+      )}
+
+      {/* Pickup load checklist: same ticks the slip QR page writes */}
+      {canTickPickupLoad && (
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Tick each item as you pack it</Text>
+          <DeliveryChecklist saleId={sale.id} kind="pickup" saleItems={sale.items || []} />
         </View>
       )}
 

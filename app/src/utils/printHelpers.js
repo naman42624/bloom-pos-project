@@ -194,6 +194,7 @@ const buildCopyHtml = ({ sale, shopName, isDelivery, money, isShopCopy }) => {
       </table>
       ${isShopCopy && orderInstructions ? `<div style="background:#F5F5F5;border-radius:4px;padding:3px 6px;margin:3px 0;font-size:10px;"><strong>Order Instructions:</strong> ${esc(orderInstructions)}</div>` : ''}
       ${!isShopCopy && customerMoneyLine(money) ? `<div style="border-top:1px dashed #999;margin:5px 0;"></div>${customerMoneyLine(money)}` : ''}
+      ${isShopCopy && sale.slip_qr_svg ? `<div style="display:flex;align-items:center;gap:8px;margin-top:6px;"><div style="width:76px;height:76px;flex:none;">${sale.slip_qr_svg.replace(/<svg /, '<svg width="76" height="76" ')}</div><div style="font-size:10px;font-weight:600;color:#333;">Scan to see items, photos &amp; voice notes and tick the load</div></div>` : ''}
       ${isShopCopy ? `<div style="margin-top:8px;border-top:1px solid #333;padding-top:6px;font-size:10px;display:flex;justify-content:space-between;align-items:flex-end;min-height:44px;"><span>${isDelivery ? "Receiver's Signature" : "Customer's Signature"}</span><span style="border-bottom:1px solid #333;display:inline-block;width:180px;height:18px;"></span></div>` : ''}
     </div>`;
 };

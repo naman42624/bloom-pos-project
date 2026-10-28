@@ -11,6 +11,7 @@ import { useFocusEffect, CommonActions } from '@react-navigation/native';
 import DateTimePickerModal from '../components/DateTimePickerModal';
 import VoiceNoteRecorder from '../components/VoiceNoteRecorder';
 import RoutePicker from '../components/RoutePicker';
+import SavedAddressChips from '../components/SavedAddressChips';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
@@ -1648,6 +1649,11 @@ export default function QuickCheckoutScreen({ navigation, route }) {
               )}
 
               <Text style={styles.label}>Delivery Address *</Text>
+              <SavedAddressChips
+                customerId={customerId}
+                receiverId={senderSameAsReceiver ? null : receiverId}
+                onPick={setCustomerAddress}
+              />
               <TextInput
                 style={[styles.input, { minHeight: 60, textAlignVertical: 'top' }]}
                 value={customerAddress}

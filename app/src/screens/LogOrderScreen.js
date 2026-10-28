@@ -5,6 +5,7 @@ import * as ImagePicker from 'expo-image-picker';
 import api from '../services/api';
 import VoiceNoteRecorder from '../components/VoiceNoteRecorder';
 import RoutePicker from '../components/RoutePicker';
+import SavedAddressChips from '../components/SavedAddressChips';
 import DateTimePickerModal from '../components/DateTimePickerModal';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import { useAuth } from '../context/AuthContext';
@@ -692,6 +693,7 @@ export default function LogOrderScreen({ navigation, route }) {
             <Text style={styles.sectionLabel}>Recipient (if different from customer)</Text>
             <TextInput style={styles.input} placeholder="Recipient name" value={receiverName} onChangeText={setReceiverName} />
             <TextInput style={styles.input} placeholder="Recipient phone" keyboardType="phone-pad" value={receiverPhone} onChangeText={setReceiverPhone} />
+            <SavedAddressChips customerId={customerId} receiverId={null} onPick={setDeliveryAddress} />
             <TextInput style={styles.input} placeholder="Delivery address" value={deliveryAddress} onChangeText={setDeliveryAddress} multiline />
             <Text style={styles.sectionHint}>Delivery route (optional)</Text>
             <RoutePicker value={routeId} onChange={setRouteId} locationId={activeLocation?.id} />

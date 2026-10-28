@@ -11,6 +11,9 @@ const { completeProductionTaskCore } = require('./production');
 const { computeOrderStage, getStageFlags } = require('../utils/order-stage');
 const { sumCollectionsByMethod } = require('../utils/settlement-math');
 const { buildTrackingUrl } = require('../utils/tracking-token');
+const { slipUrl } = require('../utils/slip-token');
+const QRCode = require('qrcode');
+const { getChecklistForSale, setCheck, loadSaleForChecks } = require('../utils/load-checks');
 
 const router = express.Router();
 
@@ -118,12 +121,12 @@ function saveCustomerAddress(db, { customerId, address, label, customerName, fal
   let existingAddr = null;
   try {
     existingAddr = db.prepare(
-      'SELECT id FROM customer_addresses WHERE customer_id = ? AND address_line_1 = ?'
+      'SELECT id FROM customer_addresses WHERE customer_id = ? AND LOWER(BTRIM(address_line_1)) = LOWER(BTRIM(?))'
     ).get(customerId, addrClean);
   } catch (_) {
     try {
       existingAddr = db.prepare(
-        'SELECT id FROM customer_addresses WHERE customer_id = ? AND address = ?'
+        'SELECT id FROM customer_addresses WHERE customer_id = ? AND LOWER(BTRIM(address)) = LOWER(BTRIM(?))'
       ).get(customerId, addrClean);
     } catch (__) { }
   }
@@ -1518,8 +1521,47 @@ router.get('/:id', authenticate, async (req, res, next) => {
 
     sale.tracking_url = buildTrackingUrl(sale.id);
 
+    // Slip QR (spec 2026-10-28 §3.4): every role that can print the shop copy
+    // gets it, riders included. Customers get neither field.
+    if (req.user.role !== 'customer') {
+      sale.slip_url = slipUrl(sale.id);
+      sale.slip_qr_svg = await QRCode.toString(sale.slip_url, { type: 'svg', margin: 1 });
+    }
+
     res.json({ success: true, data: sale });
   } catch (err) { next(err); }
+});
+
+// ─── Pickup load checklist (spec 2026-10-28 §3.3) ───────────
+// Same rows the public slip page ticks (utils/load-checks.js). GET returns
+// whatever checklist the order's current type gives (kind says which), PUT
+// only writes when the order is a pickup.
+const PICKUP_CHECK_ROLES = ['owner', 'manager', 'employee', 'counter_staff'];
+
+router.get('/:id(\\d+)/pickup-checks', authenticate, authorize(...PICKUP_CHECK_ROLES), async (req, res, next) => {
+  try {
+    const db = await getAsyncDb();
+    const sale = await loadSaleForChecks(db, req.params.id);
+    if (!sale) return res.status(404).json({ success: false, message: 'Sale not found' });
+    res.json({ success: true, data: await getChecklistForSale(db, sale) });
+  } catch (err) { next(err); }
+});
+
+router.put('/:id(\\d+)/pickup-checks/:saleItemId(\\d+)', authenticate, authorize(...PICKUP_CHECK_ROLES), async (req, res, next) => {
+  try {
+    const db = await getAsyncDb();
+    const sale = await loadSaleForChecks(db, req.params.id);
+    if (!sale) return res.status(404).json({ success: false, message: 'Sale not found' });
+    const checklist = await setCheck(db, sale, Number(req.params.saleItemId), !!req.body.checked, {
+      userId: req.user.id, via: 'app', expectKind: 'pickup',
+    });
+    res.json({ success: true, data: checklist });
+  } catch (err) {
+    if (err.status === 404 || err.status === 409) {
+      return res.status(err.status).json({ success: false, message: err.message });
+    }
+    next(err);
+  }
 });
 
 // ─── POST /api/sales ─────────────────────────────────────────

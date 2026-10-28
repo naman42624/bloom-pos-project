@@ -323,9 +323,54 @@ async function getDb() {
   };
 }
 
+// Real transaction on one pooled connection. Unlike db.transaction() above
+// (whose queries go through prepare() on separate pool connections, so they
+// are NOT inside its BEGIN/COMMIT), every query made through the `tx`
+// passed to fn runs on the same client. tx.prepare(sql) has the same
+// get/all/run interface as db.prepare(sql).
+async function withTransaction(fn) {
+  const client = await pool.connect();
+  const tx = {
+    prepare(sql) {
+      const normalized = normalizeSql(sql);
+      return {
+        async get(...params) {
+          const result = await client.query(bindParams(normalized, params));
+          return result.rows[0] || undefined;
+        },
+        async all(...params) {
+          const result = await client.query(bindParams(normalized, params));
+          return result.rows;
+        },
+        async run(...params) {
+          const upper = normalized.toUpperCase();
+          let statement = normalized;
+          if (upper.startsWith('INSERT') && !/\bRETURNING\b/i.test(statement)) statement += ' RETURNING id';
+          const result = await client.query(bindParams(statement, params));
+          return {
+            changes: result.rowCount || 0,
+            lastInsertRowid: upper.startsWith('INSERT') ? (result.rows[0]?.id ?? null) : null,
+          };
+        },
+      };
+    },
+  };
+  try {
+    await client.query('BEGIN');
+    const out = await fn(tx);
+    await client.query('COMMIT');
+    return out;
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch { /* connection already broken */ }
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 async function closeDb() {
   initialized = false;
   await pool.end();
 }
 
-module.exports = { getDb, closeDb };
+module.exports = { getDb, closeDb, withTransaction };

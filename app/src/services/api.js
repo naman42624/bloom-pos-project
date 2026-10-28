@@ -754,6 +754,14 @@ class ApiService {
     return this.request(`/order-requests${query ? `?${query}` : ''}`);
   }
 
+  getOpenOrderLink() {
+    return this.request('/order-requests/open-link');
+  }
+
+  resolveOrderRequestCustomer(id) {
+    return this.request(`/order-requests/${id}/resolve-customer`, { method: 'POST' });
+  }
+
   declineOrderRequest(id, reason) {
     return this.request(`/order-requests/${id}/decline`, { method: 'PUT', body: JSON.stringify({ reason }) });
   }
@@ -991,6 +999,29 @@ class ApiService {
     });
   }
 
+  getPickupChecks(saleId) {
+    return this.request(`/sales/${saleId}/pickup-checks`);
+  }
+
+  togglePickupCheck(saleId, saleItemId, checked) {
+    return this.request(`/sales/${saleId}/pickup-checks/${saleItemId}`, {
+      method: 'PUT',
+      body: JSON.stringify({ checked }),
+    });
+  }
+
+  // ─── Public slip page (no auth) ────────────────────────────
+  getSlipPage(token) {
+    return this.request(`/slip/${token}`);
+  }
+
+  toggleSlipCheck(token, saleItemId, checked) {
+    return this.request(`/slip/${token}/check/${saleItemId}`, {
+      method: 'PUT',
+      body: JSON.stringify({ checked }),
+    });
+  }
+
   // Generic Media Upload
   async uploadGenericMedia(imageUri) {
     const formData = new FormData();
@@ -1074,6 +1105,18 @@ class ApiService {
   // ─── Public order request (no auth) ────────────────────────
   getOrderRequestPage(token) {
     return this.request(`/order-request/${token}`);
+  }
+
+  getOpenOrderRequestPage() {
+    return this.request('/order-request/open');
+  }
+
+  submitOpenOrderRequest(payload) {
+    return this.request('/order-request/open', { method: 'POST', body: JSON.stringify(payload) });
+  }
+
+  getOrderRequestStatus(statusToken) {
+    return this.request(`/order-request/status/${statusToken}`);
   }
 
   submitOrderRequest(token, payload) {
