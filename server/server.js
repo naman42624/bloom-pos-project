@@ -47,6 +47,10 @@ const { Server: SocketServer } = require('socket.io');
 const jwt = require('jsonwebtoken');
 
 const app = express();
+// One Nginx hop in production (VPS_DEPLOYMENT_GUIDE.md §9). If a CDN such as
+// Cloudflare is put in front, raise this or every visitor counts as one for
+// the public rate limiters.
+app.set('trust proxy', 1);
 const PORT = process.env.PORT || 3001;
 
 // ─── Middleware ───────────────────────────────────────────────

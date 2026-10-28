@@ -598,6 +598,25 @@ function ensureCoreTables() {
     )
   `);
 
+  // Records which surface ticked a load-check row (for example the public slip
+  // scan page versus the staff app). Additive, nullable.
+  ensureColumn('delivery_load_checks', 'checked_via', 'TEXT');
+
+  // pickup_load_checks — same idea as delivery_load_checks but keyed by sale,
+  // for pickup and walk-in orders that have no deliveries row.
+  runPsql(`
+    CREATE TABLE IF NOT EXISTS pickup_load_checks (
+      id SERIAL PRIMARY KEY,
+      sale_id INTEGER NOT NULL REFERENCES sales(id) ON DELETE CASCADE,
+      sale_item_id INTEGER NOT NULL REFERENCES sale_items(id) ON DELETE CASCADE,
+      checked BOOLEAN DEFAULT false,
+      checked_by INTEGER,
+      checked_via TEXT,
+      checked_at TIMESTAMP,
+      UNIQUE(sale_id, sale_item_id)
+    )
+  `);
+
   // Ensure partner_id column exists on delivery_settlements
   if (!hasColumn('delivery_settlements', 'partner_id')) {
     runPsql('ALTER TABLE delivery_settlements ADD COLUMN partner_id INTEGER REFERENCES users(id) ON DELETE SET NULL');
@@ -715,6 +734,11 @@ function ensureCoreTables() {
   `);
   runPsql('CREATE INDEX IF NOT EXISTS idx_order_requests_customer ON order_requests(customer_id)');
   runPsql('CREATE INDEX IF NOT EXISTS idx_order_requests_status ON order_requests(status)');
+  ensureColumn('order_requests', 'requester_name', 'VARCHAR(80)');
+  ensureColumn('order_requests', 'requester_phone', 'VARCHAR(20)');
+  ensureColumn('order_requests', 'status_token', 'TEXT');
+  ensureColumn('order_requests', 'source', 'TEXT');
+  runPsql('CREATE UNIQUE INDEX IF NOT EXISTS idx_order_requests_status_token ON order_requests(status_token)');
 
   // ⚡ Note: All other indexes for base tables (products, sales, deliveries, production_tasks, etc.)
   //    are already defined in schema.sql and auto-created via psql migrations.
