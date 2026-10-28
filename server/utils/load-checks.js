@@ -97,9 +97,10 @@ async function readItems(db, sale, target) {
 // -> { enabled, kind, items: [{ sale_item_id, checked, checked_at }] }
 async function getChecklistForSale(db, sale, opts = {}) {
   const target = await resolveTarget(db, sale, opts);
-  if (!target.enabled) return { enabled: false, kind: target.kind, items: [] };
+  const fin = { final: !!target.final, finalMessage: target.finalMessage || null };
+  if (!target.enabled) return { enabled: false, kind: target.kind, items: [], ...fin };
   await ensureRows(db, sale, target);
-  return { enabled: true, kind: target.kind, items: await readItems(db, sale, target) };
+  return { enabled: true, kind: target.kind, items: await readItems(db, sale, target), ...fin };
 }
 
 // Ticks or unticks one item. Throws an Error with .status 404 when the item
@@ -132,7 +133,7 @@ async function setCheck(db, sale, saleItemId, checked, opts = {}) {
        WHERE sale_id = ? AND sale_item_id = ?`
     ).run(isChecked, userId, via, isChecked, sale.id, item.id);
   }
-  return { enabled: true, kind: target.kind, items: await readItems(db, sale, target) };
+  return { enabled: true, kind: target.kind, items: await readItems(db, sale, target), final: false, finalMessage: null };
 }
 
 // Loads just the sale fields the helpers above need.

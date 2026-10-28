@@ -329,6 +329,26 @@ check('GET /sales/:id gives owner and rider slip_url + slip_qr_svg, customer nei
   assert(!('slip_url' in cust.body.data) && !('slip_qr_svg' in cust.body.data), 'Customer must not get slip fields');
 });
 
+check('public slip GET reports final/final_message: open false/null, delivered and picked-up true + message', async () => {
+  const owner = await slipOwner();
+  const open = await createSlipSale(owner.token, 'pickup');
+  const o = await api('GET', `/slip/${open.token}`, null);
+  assert(o.body.data.checklist.final === false && o.body.data.checklist.final_message === null, `Open: ${JSON.stringify(o.body.data.checklist)}`);
+  assert(findDeniedKeys(o.body.data).length === 0, 'deny-list tripped on open slip');
+  const put = await api('PUT', `/slip/${open.token}/check/${open.itemIds[0]}`, null, { checked: true });
+  assert(put.body.data.final === false && put.body.data.final_message === null, `PUT open: ${JSON.stringify(put.body.data)}`);
+  const db = await getDb();
+  const d = await createSlipSale(owner.token, 'delivery');
+  await db.prepare("UPDATE deliveries SET status = 'delivered' WHERE id = ?").run(d.deliveryId);
+  const dg = await api('GET', `/slip/${d.token}`, null);
+  assert(dg.body.data.checklist.final === true && /delivered/i.test(dg.body.data.checklist.final_message || ''), `Delivered: ${JSON.stringify(dg.body.data.checklist)}`);
+  assert(findDeniedKeys(dg.body.data).length === 0, 'deny-list tripped on final slip');
+  const p = await createSlipSale(owner.token, 'pickup');
+  await db.prepare("UPDATE sales SET pickup_status = 'picked_up' WHERE id = ?").run(p.saleId);
+  const pg = await api('GET', `/slip/${p.token}`, null);
+  assert(pg.body.data.checklist.final === true && /picked up/i.test(pg.body.data.checklist.final_message || ''), `Picked up: ${JSON.stringify(pg.body.data.checklist)}`);
+});
+
 // Must stay last: it exhausts this process's public slip budget.
 check('61 rapid public slip GETs hit the 60/min limiter (429)', async () => {
   const owner = await slipOwner();

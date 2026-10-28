@@ -37,6 +37,7 @@ export default function SlipScreen({ token }) {
     const m = {};
     ((cl && cl.items) || []).forEach((i) => { m[i.sale_item_id] = !!i.checked; });
     setChecked(m);
+    setReadOnlyMsg(cl && cl.final ? (cl.final_message || 'This list can no longer be changed') : '');
   }, []);
 
   const load = useCallback(async (first) => {
@@ -119,7 +120,9 @@ export default function SlipScreen({ token }) {
         {when ? <Text style={styles.when}>{when}</Text> : null}
         {enabled ? (
           <Text style={styles.progress}>{done} of {total} packed</Text>
-        ) : null}
+        ) : (
+          <Text style={styles.when}>{(d.checklist && d.checklist.final_message) || 'This order has no packing checklist.'}</Text>
+        )}
       </View>
 
       {readOnlyMsg ? (

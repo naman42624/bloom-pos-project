@@ -59,6 +59,17 @@ function voiceNote(row) {
   return { url: row.file_url, duration_seconds: row.duration_seconds == null ? null : Number(row.duration_seconds) };
 }
 
+// The one place the public checklist shape is whitelisted (GET and PUT).
+function publicChecklist(cl) {
+  return {
+    enabled: cl.enabled,
+    kind: cl.kind,
+    final: !!cl.final,
+    final_message: cl.finalMessage || null,
+    items: cl.items.map((i) => ({ sale_item_id: i.sale_item_id, checked: i.checked, checked_at: i.checked_at })),
+  };
+}
+
 router.use((req, res, next) => {
   if (isRateLimited(req.ip)) {
     return res.status(429).json({ success: false, message: 'Too many requests. Please try again in a minute.' });
@@ -124,11 +135,7 @@ router.get('/:token', async (req, res, next) => {
           voice_notes: notesByItem.get(r.id) || [],
         })),
         order_voice_notes: orderVoiceNotes,
-        checklist: {
-          enabled: checklist.enabled,
-          kind: checklist.kind,
-          items: checklist.items.map((i) => ({ sale_item_id: i.sale_item_id, checked: i.checked, checked_at: i.checked_at })),
-        },
+        checklist: publicChecklist(checklist),
       },
     });
   } catch (err) { next(err); }
@@ -145,11 +152,7 @@ router.put('/:token/check/:saleItemId(\\d+)', async (req, res, next) => {
     const checklist = await setCheck(db, sale, Number(req.params.saleItemId), req.body.checked, { userId: null, via: 'slip_qr' });
     res.json({
       success: true,
-      data: {
-        enabled: checklist.enabled,
-        kind: checklist.kind,
-        items: checklist.items.map((i) => ({ sale_item_id: i.sale_item_id, checked: i.checked, checked_at: i.checked_at })),
-      },
+      data: publicChecklist(checklist),
     });
   } catch (err) {
     if (err.status === 404 || err.status === 409) {
