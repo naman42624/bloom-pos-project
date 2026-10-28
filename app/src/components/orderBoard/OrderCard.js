@@ -185,6 +185,15 @@ export function resolveDeadEnd(order, canManageDeliveries, canTakeMoney) {
   return null;
 }
 
+// "45 min", "3 hr", "2 days": a long wait read in minutes ("76624 min") means nothing.
+export function formatWaitDuration(mins) {
+  const m = Math.max(0, Math.round(mins));
+  if (m < 60) return `${m} min`;
+  if (m < 24 * 60) return `${Math.floor(m / 60)} hr`;
+  const days = Math.floor(m / (24 * 60));
+  return days === 1 ? '1 day' : `${days} days`;
+}
+
 /**
  * Reuses the SLA thresholds the previous board already used (walk-in: 20 min
  * overdue / 10 min due-soon from creation; everything else: against the
@@ -196,14 +205,14 @@ function getOrderSla(order, timezone) {
   if (order.order_type === 'walk_in') {
     const mins = minutesSinceServerDate(order.created_at, timezone);
     if (mins == null) return null;
-    if (mins > 20) return { level: 'late', text: `${mins} min waiting` };
-    if (mins > 10) return { level: 'soon', text: `${mins} min waiting` };
+    if (mins > 20) return { level: 'late', text: `${formatWaitDuration(mins)} waiting` };
+    if (mins > 10) return { level: 'soon', text: `${formatWaitDuration(mins)} waiting` };
     return null;
   }
   if (!order.scheduled_date || !order.scheduled_time) return null;
   const remaining = minutesUntilShopDateTime(order.scheduled_date, order.scheduled_time, timezone);
   if (remaining == null) return null;
-  if (remaining < 0) return { level: 'late', text: `${Math.abs(remaining)} min late` };
+  if (remaining < 0) return { level: 'late', text: `${formatWaitDuration(Math.abs(remaining))} late` };
   if (remaining <= 60) return { level: 'soon', text: `Due in ${remaining} min` };
   return null;
 }

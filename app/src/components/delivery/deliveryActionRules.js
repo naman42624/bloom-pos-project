@@ -7,7 +7,8 @@
 // deliver         | picked_up / in_transit    | owner, manager; counter_staff if counter_can_mark_delivered; delivery_partner if own
 // fail            | picked_up / in_transit    | owner, manager; delivery_partner if own
 // reattempt       | failed                    | owner, manager, counter_staff
-// cancel          | failed                    | owner, manager, counter_staff
+// cancel          | assigned / failed         | owner, manager, counter_staff
+//                 |   (server accepts any non-final status; the app offers it before pickup and after a failure)
 // verify_load     | not final                 | owner, manager, employee, counter_staff; delivery_partner if own
 // live_location   | in_transit + partner set  | every role except customer
 // convert_payment | not final                 | owner, manager
@@ -43,7 +44,7 @@ export function getDeliveryActions({ delivery, role, userId }) {
     deliver: inFlight && (isOwnerMgr || (isCounter && !!delivery.counter_can_mark_delivered) || isOwn),
     fail: inFlight && (isOwnerMgr || isOwn),
     reattempt: s === 'failed' && (isOwnerMgr || isCounter),
-    cancel: s === 'failed' && (isOwnerMgr || isCounter),
+    cancel: (s === 'assigned' || s === 'failed') && (isOwnerMgr || isCounter),
     verify_load: !final && (isOwnerMgr || role === 'employee' || isCounter || isOwn),
     live_location: s === 'in_transit' && hasPartner,
     convert_payment: !final && isOwnerMgr,

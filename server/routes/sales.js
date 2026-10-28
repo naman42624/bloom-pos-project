@@ -163,7 +163,7 @@ function mapSaleDraftRow(draft) {
 router.get('/', authenticate, async (req, res, next) => {
   try {
     const db = await getAsyncDb();
-    const { location_id, order_type, payment_status, status, pickup_status, channel, priority, date_from, date_to, filter_date, search, sort, limit: lim, offset: off } = req.query;
+    const { location_id, order_type, payment_status, status, pickup_status, channel, priority, date_from, date_to, filter_date, search, sort, include_cancelled, limit: lim, offset: off } = req.query;
 
     // `open_task_count` is a verbatim copy of the production-task guard in
     // PUT /:id/status ("Enforce production task completion before marking
@@ -228,7 +228,8 @@ router.get('/', authenticate, async (req, res, next) => {
     if (payment_status) { sql += ' AND s.payment_status = ?'; params.push(payment_status); }
     if (pickup_status) { sql += ' AND s.pickup_status = ?'; params.push(pickup_status); }
     if (status) { sql += ' AND s.status = ?'; params.push(status); }
-    else { sql += " AND s.status != 'cancelled'"; }
+    // Cancelled orders are hidden by default; include_cancelled=1 (Orders Inbox search) shows them too.
+    else if (include_cancelled !== '1') { sql += " AND s.status != 'cancelled'"; }
     if (channel) { sql += ' AND s.channel = ?'; params.push(channel); }
     if (priority) { sql += ' AND s.priority = ?'; params.push(priority); }
     if (date_from) { sql += ' AND s.created_at >= (?::date)'; params.push(date_from); }

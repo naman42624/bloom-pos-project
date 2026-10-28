@@ -29,7 +29,7 @@ const STATUS_LABELS = { pending: 'Received', confirmed: 'Confirmed', preparing: 
 const ORDER_TYPE_LABELS = { pickup: 'Pickup', delivery: 'Delivery', walk_in: 'Walk-in', pre_order: 'Advance order' };
 const PAYMENT_STATUS_COLORS = { paid: Colors.success, partial: Colors.warning, pending: Colors.error, refunded: Colors.textLight };
 const CHANNEL_ICONS = { whatsapp: 'logo-whatsapp', email: 'mail', website: 'globe', walk_in: 'walk', phone: 'call' };
-const STATUS_FILTERS = [null, 'pending', 'confirmed', 'preparing', 'ready', 'completed'];
+const STATUS_FILTERS = [null, 'pending', 'confirmed', 'preparing', 'ready', 'completed', 'cancelled'];
 const CHANNEL_FILTERS = [null, 'whatsapp', 'email', 'website', 'walk_in', 'phone'];
 
 function formatItemsSummary(items) {
@@ -67,7 +67,11 @@ export default function OrdersInboxScreen({ navigation, route }) {
   const isManager = isOwner || user?.role === 'manager';
 
   const fetchFn = useCallback(
-    (params) => api.getSales(params).then((res) => ({ items: res.data?.sales || [], total: Number(res.data?.total) || 0 })),
+    // While searching, cancelled orders show too, so an order looked up by
+    // number or name never seems to have vanished. The "All" list without a
+    // search still hides them (the "Cancelled" chip lists them on purpose).
+    (params) => api.getSales(params.search && !params.status ? { ...params, include_cancelled: 1 } : params)
+      .then((res) => ({ items: res.data?.sales || [], total: Number(res.data?.total) || 0 })),
     []
   );
   const list = useOrderListData(fetchFn, { pageSize: 50 });
