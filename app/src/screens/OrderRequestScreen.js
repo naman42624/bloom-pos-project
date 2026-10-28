@@ -235,7 +235,8 @@ export default function OrderRequestScreen({ token, mode, statusToken }) {
     );
   }
 
-  const { customer_name, products, upi_qr_image_url } = state.data;
+  const { customer_name, upi_qr_image_url } = state.data;
+  const products = state.data.products || [];
   const requests = state.data.requests || [];
   const filteredProducts = productQuery.trim()
     ? products.filter((p) => p.name.toLowerCase().includes(productQuery.trim().toLowerCase())).slice(0, 8)
