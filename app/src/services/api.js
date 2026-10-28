@@ -754,6 +754,14 @@ class ApiService {
     return this.request(`/order-requests${query ? `?${query}` : ''}`);
   }
 
+  getOpenOrderLink() {
+    return this.request('/order-requests/open-link');
+  }
+
+  resolveOrderRequestCustomer(id) {
+    return this.request(`/order-requests/${id}/resolve-customer`, { method: 'POST' });
+  }
+
   declineOrderRequest(id, reason) {
     return this.request(`/order-requests/${id}/decline`, { method: 'PUT', body: JSON.stringify({ reason }) });
   }
@@ -1097,6 +1105,18 @@ class ApiService {
   // ─── Public order request (no auth) ────────────────────────
   getOrderRequestPage(token) {
     return this.request(`/order-request/${token}`);
+  }
+
+  getOpenOrderRequestPage() {
+    return this.request('/order-request/open');
+  }
+
+  submitOpenOrderRequest(payload) {
+    return this.request('/order-request/open', { method: 'POST', body: JSON.stringify(payload) });
+  }
+
+  getOrderRequestStatus(statusToken) {
+    return this.request(`/order-request/status/${statusToken}`);
   }
 
   submitOrderRequest(token, payload) {

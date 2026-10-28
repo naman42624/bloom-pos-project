@@ -19,7 +19,29 @@ import { Colors, Spacing, FontSize, BorderRadius, Shadows } from '../constants/t
 
 const WASH = '#FBF3EC';
 
-export default function OrderRequestScreen({ token }) {
+const STATUS_LABEL = { pending: 'Waiting for confirmation', approved: 'Confirmed', declined: 'Declined' };
+
+// One status line, shared by the per-customer "recent requests" list and the
+// single-request status page so both always say the same words.
+function StatusBlock({ status, declineReason }) {
+  return (
+    <>
+      <Text style={[styles.statusBadge, status === 'approved' && styles.statusApproved, status === 'declined' && styles.statusDeclined]}>
+        {STATUS_LABEL[status] || 'Waiting for confirmation'}
+      </Text>
+      {status === 'declined' && !!declineReason && (
+        <Text style={styles.declineReason}>{declineReason}</Text>
+      )}
+    </>
+  );
+}
+
+// Props: { token } per-customer page, { mode: 'open' } the general link
+// (anyone, asks for name + phone), { statusToken } status of one open-link
+// request.
+export default function OrderRequestScreen({ token, mode, statusToken }) {
+  const isOpen = mode === 'open';
+  const isStatus = !!statusToken;
   const guardSubmit = useSubmitGuard();
   const [state, setState] = useState({ loading: true, data: null, errorKind: null });
   const [submitted, setSubmitted] = useState(false);
@@ -38,9 +60,19 @@ export default function OrderRequestScreen({ token }) {
   const [paymentReference, setPaymentReference] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState('');
+  const [requesterName, setRequesterName] = useState('');
+  const [requesterPhone, setRequesterPhone] = useState('');
+  const [fieldErrors, setFieldErrors] = useState({});
+  const [statusUrl, setStatusUrl] = useState('');
+
+  const fetchPage = () => {
+    if (isStatus) return api.getOrderRequestStatus(statusToken);
+    if (isOpen) return api.getOpenOrderRequestPage();
+    return api.getOrderRequestPage(token);
+  };
 
   const loadPage = () => {
-    api.getOrderRequestPage(token)
+    fetchPage()
       .then((res) => setState({ loading: false, data: res.data, errorKind: null }))
       .catch((err) => {
         const kind = err?.status === 404 ? 'not_found' : 'server_error';
@@ -50,7 +82,7 @@ export default function OrderRequestScreen({ token }) {
 
   useEffect(() => {
     let cancelled = false;
-    api.getOrderRequestPage(token)
+    fetchPage()
       .then((res) => { if (!cancelled) setState({ loading: false, data: res.data, errorKind: null }); })
       .catch((err) => {
         if (cancelled) return;
@@ -58,7 +90,7 @@ export default function OrderRequestScreen({ token }) {
         setState({ loading: false, data: null, errorKind: kind });
       });
     return () => { cancelled = true; };
-  }, [token]);
+  }, [token, mode, statusToken]);
 
   const addProduct = (product) => {
     setItems((prev) => [...prev, { key: `p-${product.id}-${prev.length}`, product_id: product.id, name: product.name, quantity: 1 }]);
@@ -81,6 +113,15 @@ export default function OrderRequestScreen({ token }) {
 
   const handleSubmit = async () => {
     setFormError('');
+    if (isOpen) {
+      const errs = {};
+      if (requesterName.trim().length < 2) errs.name = 'Please enter your name.';
+      if (requesterPhone.replace(/\D/g, '').replace(/^91(?=\d{10}$)/, '').replace(/^0(?=\d{10}$)/, '').length !== 10) {
+        errs.phone = 'Please enter your 10-digit phone number.';
+      }
+      setFieldErrors(errs);
+      if (errs.name || errs.phone) return;
+    }
     if (!recipientName.trim() || !recipientPhone.trim()) {
       setFormError('Please enter who the order is for, and their phone number.');
       return;
@@ -99,7 +140,7 @@ export default function OrderRequestScreen({ token }) {
     }
     setSubmitting(true);
     try {
-      await api.submitOrderRequest(token, {
+      const payload = {
         recipient_name: recipientName.trim(),
         recipient_phone: recipientPhone.trim(),
         order_type: orderType,
@@ -112,7 +153,16 @@ export default function OrderRequestScreen({ token }) {
           : { product_id: it.product_id, name: it.name, quantity: it.quantity })),
         payment_claimed: paymentClaimed,
         payment_reference: paymentClaimed ? (paymentReference.trim() || undefined) : undefined,
-      });
+      };
+      if (isOpen) {
+        payload.requester_name = requesterName.trim();
+        payload.requester_phone = requesterPhone.trim();
+        const res = await api.submitOpenOrderRequest(payload);
+        const path = res?.data?.status_url || '';
+        setStatusUrl(path ? `${window.location.origin}${path}` : '');
+      } else {
+        await api.submitOrderRequest(token, payload);
+      }
       setSubmitted(true);
     } catch (err) {
       setFormError(err.message || 'Something went wrong — please try again in a moment.');
@@ -134,6 +184,8 @@ export default function OrderRequestScreen({ token }) {
     setPaymentClaimed(false);
     setPaymentReference('');
     setFormError('');
+    setFieldErrors({});
+    setStatusUrl('');
     setState((s) => ({ ...s, loading: true }));
     loadPage();
   };
@@ -161,7 +213,30 @@ export default function OrderRequestScreen({ token }) {
     );
   }
 
-  const { customer_name, products, upi_qr_image_url, requests } = state.data;
+  if (isStatus) {
+    const d = state.data;
+    return (
+      <ScrollView contentContainerStyle={styles.container}>
+        <View style={styles.card}>
+          <View style={styles.ribbon} />
+          <View style={styles.cardBody}>
+            <Text style={styles.eyebrow}>ORDER REQUEST</Text>
+            <Text style={styles.saleNumber}>Your request</Text>
+            <View style={styles.statusSection}>
+              <StatusBlock status={d.status} declineReason={d.decline_reason} />
+              {(d.items_summary || []).map((it, i) => (
+                <Text key={i} style={styles.statusRowText}>{it.quantity} x {it.name}</Text>
+              ))}
+            </View>
+            <Text style={styles.notFoundText}>Keep this page to check on your order any time.</Text>
+          </View>
+        </View>
+      </ScrollView>
+    );
+  }
+
+  const { customer_name, products, upi_qr_image_url } = state.data;
+  const requests = state.data.requests || [];
   const filteredProducts = productQuery.trim()
     ? products.filter((p) => p.name.toLowerCase().includes(productQuery.trim().toLowerCase())).slice(0, 8)
     : products.slice(0, 8);
@@ -175,6 +250,13 @@ export default function OrderRequestScreen({ token }) {
             <Ionicons name="checkmark-circle" size={40} color={Colors.success} style={{ alignSelf: 'center', marginBottom: Spacing.sm }} />
             <Text style={styles.saleNumber}>Your request has been sent</Text>
             <Text style={styles.notFoundText}>We'll confirm with you shortly.</Text>
+            {isOpen && !!statusUrl && (
+              <View style={styles.statusSection}>
+                <Text style={styles.sectionTitle}>Save this link to check your order</Text>
+                <Text selectable style={styles.linkText}>{statusUrl}</Text>
+                <Button title="Open my order status" variant="outline" onPress={() => { window.location.href = statusUrl; }} style={{ marginTop: Spacing.sm }} />
+              </View>
+            )}
             <Button title="Submit another request" onPress={resetForm} style={{ marginTop: Spacing.lg }} />
           </View>
         </View>
@@ -188,7 +270,17 @@ export default function OrderRequestScreen({ token }) {
         <View style={styles.ribbon} />
         <View style={styles.cardBody}>
           <Text style={styles.eyebrow}>ORDER REQUEST</Text>
-          <Text style={styles.saleNumber}>Hi, {customer_name}</Text>
+          <Text style={styles.saleNumber}>{isOpen ? 'Place an order request' : `Hi, ${customer_name}`}</Text>
+
+          {isOpen && (
+            <>
+              <Text style={styles.label}>Your details</Text>
+              <TextInput style={styles.input} placeholder="Your name" value={requesterName} onChangeText={setRequesterName} placeholderTextColor={Colors.textLight} />
+              {!!fieldErrors.name && <Text style={styles.fieldError}>{fieldErrors.name}</Text>}
+              <TextInput style={styles.input} placeholder="Your phone number" value={requesterPhone} onChangeText={setRequesterPhone} keyboardType="phone-pad" placeholderTextColor={Colors.textLight} />
+              {!!fieldErrors.phone && <Text style={styles.fieldError}>{fieldErrors.phone}</Text>}
+            </>
+          )}
 
           {requests.length > 0 && (
             <View style={styles.statusSection}>
@@ -196,12 +288,7 @@ export default function OrderRequestScreen({ token }) {
               {requests.map((r) => (
                 <View key={r.id} style={styles.statusRow}>
                   <Text style={styles.statusRowText}>{r.requested_date} — {r.order_type === 'delivery' ? 'Delivery' : 'Pickup'}</Text>
-                  <Text style={[styles.statusBadge, r.status === 'approved' && styles.statusApproved, r.status === 'declined' && styles.statusDeclined]}>
-                    {r.status === 'pending' ? 'Waiting for confirmation' : r.status === 'approved' ? 'Confirmed' : 'Declined'}
-                  </Text>
-                  {r.status === 'declined' && r.decline_reason && (
-                    <Text style={styles.declineReason}>{r.decline_reason}</Text>
-                  )}
+                  <StatusBlock status={r.status} declineReason={r.decline_reason} />
                 </View>
               ))}
             </View>
@@ -322,5 +409,7 @@ const styles = StyleSheet.create({
   qrImage: { width: 180, height: 180, alignSelf: 'center', marginBottom: Spacing.md, borderRadius: BorderRadius.sm },
   paidRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: Spacing.sm },
   paidLabel: { fontSize: FontSize.sm, color: Colors.text },
+  fieldError: { color: Colors.error, fontSize: FontSize.sm, marginTop: -Spacing.xs, marginBottom: Spacing.sm },
+  linkText: { fontSize: FontSize.sm, color: Colors.text },
   errorText: { color: Colors.error, fontSize: FontSize.sm, marginTop: Spacing.sm, textAlign: 'center' },
 });

@@ -1,13 +1,16 @@
 import React, { useCallback, useState } from 'react';
 import {
   View, Text, StyleSheet, FlatList, TouchableOpacity, Modal, TextInput,
-  Alert, ActivityIndicator, RefreshControl,
+  Alert, ActivityIndicator, RefreshControl, Platform, Linking,
 } from 'react-native';
+import * as Clipboard from 'expo-clipboard';
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import api from '../services/api';
 import Button from '../components/Button';
 import useSubmitGuard from '../hooks/useSubmitGuard';
+import { showAlert } from '../utils/alert';
+import { buildMessage } from '../utils/contact';
 import { Colors, Spacing, FontSize, BorderRadius } from '../constants/theme';
 
 const STATUS_FILTERS = [
@@ -52,8 +55,51 @@ export default function OrderRequestsScreen({ navigation }) {
     }, [status, fetchRequests])
   );
 
-  const handleApprove = (request) => {
-    navigation.navigate('LogOrder', { prefillRequest: request, prefillToken: Date.now() });
+  // Open-link requests have no customer yet. Register or match one first,
+  // then carry on into the order form exactly like a per-customer request.
+  const handleApprove = async (request) => {
+    let prefill = request;
+    if (!request.customer_id) {
+      try {
+        const res = await api.resolveOrderRequestCustomer(request.id);
+        prefill = {
+          ...request,
+          customer_id: res.data.customer_id,
+          customer_name: request.matched_customer?.name || request.requester_name,
+          customer_phone: request.requester_phone,
+        };
+      } catch (err) {
+        // 409 (phone belongs to a staff account) carries its own plain message.
+        showAlert("Couldn't set up this customer — try again", err?.status === 409 ? err.message : undefined);
+        return;
+      }
+    }
+    navigation.navigate('LogOrder', { prefillRequest: prefill, prefillToken: Date.now() });
+  };
+
+  const getOpenLink = async () => (await api.getOpenOrderLink()).data.url;
+
+  const handleCopyOpenLink = async () => {
+    try {
+      await Clipboard.setStringAsync(await getOpenLink());
+      showAlert('Copied', 'Order link copied — paste it into a WhatsApp chat or message.');
+    } catch (err) {
+      showAlert('Could not get the order link', 'Please try again.');
+    }
+  };
+
+  const handleWhatsappOpenLink = async () => {
+    // Open the tab before the await so mobile browsers do not block it
+    // (same reason as CustomerDetailScreen's WhatsApp button).
+    const popup = Platform.OS === 'web' ? window.open('', '_blank') : null;
+    try {
+      const link = await getOpenLink();
+      const url = `https://wa.me/?text=${encodeURIComponent(buildMessage('order_request_link', { order_request_url: link }))}`;
+      if (popup) popup.location.href = url; else Linking.openURL(url);
+    } catch (err) {
+      if (popup) popup.close();
+      showAlert('Could not get the order link', 'Please try again.');
+    }
   };
 
   const submitDecline = async () => {
@@ -73,9 +119,18 @@ export default function OrderRequestsScreen({ navigation }) {
   const renderItem = ({ item }) => (
     <View style={styles.card}>
       <View style={styles.cardTop}>
-        <Text style={styles.customerName}>{item.customer_name || 'Unknown customer'}</Text>
+        <Text style={styles.customerName}>{item.customer_name || item.requester_name || 'Unknown customer'}</Text>
         <Text style={styles.orderTypeBadge}>{item.order_type === 'delivery' ? 'Delivery' : 'Pickup'}</Text>
       </View>
+      {!item.customer_id && !!item.requester_name && (
+        <Text style={styles.requesterText}>
+          {item.requester_name}{item.requester_phone ? ` · ${item.requester_phone}` : ''}
+          {' · '}
+          <Text style={item.matched_customer ? styles.matchText : styles.newText}>
+            {item.matched_customer ? `Matches: ${item.matched_customer.name}` : 'New customer'}
+          </Text>
+        </Text>
+      )}
       <Text style={styles.recipientText}>For: {item.recipient_name} · {item.recipient_phone}</Text>
       <Text style={styles.dateText}>Requested for {item.requested_date}{item.requested_time ? `, ${item.requested_time}` : ''}</Text>
       <Text style={styles.itemsText} numberOfLines={2}>{itemsSummary(item.items_json)}</Text>
@@ -102,6 +157,11 @@ export default function OrderRequestsScreen({ navigation }) {
 
   return (
     <View style={styles.container}>
+      <View style={styles.shareRow}>
+        <Text style={styles.shareLabel}>Share order link</Text>
+        <Button title="Copy" variant="outline" size="sm" onPress={handleCopyOpenLink} />
+        <Button title="WhatsApp" size="sm" onPress={handleWhatsappOpenLink} />
+      </View>
       <View style={styles.filterRow}>
         {STATUS_FILTERS.map((f) => (
           <TouchableOpacity key={f.key} style={[styles.filterChip, status === f.key && styles.filterChipActive]} onPress={() => setStatus(f.key)}>
@@ -149,6 +209,11 @@ export default function OrderRequestsScreen({ navigation }) {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
+  shareRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, paddingHorizontal: Spacing.md, paddingTop: Spacing.md },
+  shareLabel: { flex: 1, fontSize: FontSize.md, fontWeight: '700', color: Colors.text },
+  requesterText: { fontSize: FontSize.sm, color: Colors.text, marginTop: 4 },
+  matchText: { color: Colors.success, fontWeight: '700' },
+  newText: { color: Colors.primary, fontWeight: '700' },
   filterRow: { flexDirection: 'row', gap: Spacing.sm, padding: Spacing.md },
   filterChip: { paddingVertical: Spacing.xs, paddingHorizontal: Spacing.md, borderRadius: BorderRadius.full, borderWidth: 1, borderColor: Colors.border },
   filterChipActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },

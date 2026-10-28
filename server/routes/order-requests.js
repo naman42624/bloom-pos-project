@@ -12,11 +12,18 @@ const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const { getDb: getAsyncDb, withTransaction } = require('../config/database-async');
 const { normalizeIndianPhone, normalizedPhoneSql } = require('../utils/phone');
+const { buildOrderRequestUrl } = require('../utils/order-request-token');
 
 const REVIEW_ROLES = ['owner', 'manager', 'employee', 'counter_staff'];
 const NORM_USER_PHONE = normalizedPhoneSql('u.phone');
 
 // ─── GET /api/order-requests ────────────────────────────────────────────
+// Public address of the general (open) link, so the app shows the same web
+// origin the per-customer links use, on web and native alike.
+router.get('/open-link', authenticate, authorize(...REVIEW_ROLES), (req, res) => {
+  res.json({ success: true, data: { url: buildOrderRequestUrl('open') } });
+});
+
 router.get('/', authenticate, authorize(...REVIEW_ROLES), async (req, res, next) => {
   try {
     const db = await getAsyncDb();

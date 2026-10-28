@@ -25,6 +25,14 @@ function getTrackingToken() {
 // Web-only, same reasoning as getTrackingToken above: a customer opens this
 // link from a WhatsApp message shared by staff (see CustomerDetailScreen's
 // "Copy Order Link"/WhatsApp buttons), never inside the staff app itself.
+function getOrderRequestRoute() {
+  if (Platform.OS !== 'web' || typeof window === 'undefined') return null;
+  const path = window.location.pathname;
+  if (/^\/order-request\/open\/?$/.test(path)) return { mode: 'open' };
+  const status = /^\/order-request\/status\/([0-9a-f]{48})\/?$/.exec(path);
+  return status ? { statusToken: status[1] } : null;
+}
+
 function getOrderRequestToken() {
   if (Platform.OS !== 'web' || typeof window === 'undefined') return null;
   const match = /^\/order-request\/([^/]+)$/.exec(window.location.pathname);
@@ -48,6 +56,13 @@ export default function App() {
   const trackingToken = getTrackingToken();
   if (trackingToken) {
     return <TrackingScreen token={trackingToken} />;
+  }
+
+  // Open link and status page BEFORE the per-customer regex, or "open" and
+  // "status" would be read as a customer token.
+  const orderRequestRoute = getOrderRequestRoute();
+  if (orderRequestRoute) {
+    return <OrderRequestScreen {...orderRequestRoute} />;
   }
 
   const orderRequestToken = getOrderRequestToken();
