@@ -17,7 +17,11 @@ const eq = (actual, expected, msg) => assert.deepStrictEqual(actual, expected, m
 
 eq(run('counter_staff', d('in_transit')), ['deliver', 'verify_load', 'live_location', 'print']);
 eq(run('counter_staff', d('in_transit', { counter_can_mark_delivered: false })), ['verify_load', 'live_location', 'print']);
-eq(run('counter_staff', d('assigned', { counter_can_mark_picked_up: false })), ['verify_load', 'print']);
+eq(run('counter_staff', d('assigned', { counter_can_mark_picked_up: false })), ['cancel', 'verify_load', 'print']);
+// Cancel before pickup: owner/manager/counter only; never the rider or other staff.
+eq(run('delivery_partner', d('assigned'), 8), ['pickup', 'verify_load', 'print']);
+eq(run('employee', d('assigned')), ['verify_load', 'print']);
+eq(run('manager', d('picked_up')), ['start', 'deliver', 'fail', 'verify_load', 'convert_payment', 'print']);
 eq(run('owner', d('pending')), ['assign', 'verify_load', 'convert_payment', 'print']);
 eq(run('owner', d('in_transit')), ['deliver', 'fail', 'verify_load', 'live_location', 'convert_payment', 'print']);
 eq(run('delivery_partner', d('picked_up'), 8), ['start', 'deliver', 'fail', 'verify_load', 'print']);
@@ -70,8 +74,8 @@ for (const [sale_status, want] of [['confirmed', false], ['preparing', false], [
       `pickupWaitingForReady for ${role}, sale ${sale_status}`);
   }
 }
-eq(run('owner', d('assigned', { sale_status: 'confirmed' })), ['verify_load', 'convert_payment', 'print']);
-eq(run('owner', d('assigned', { sale_status: 'ready' })), ['pickup', 'verify_load', 'convert_payment', 'print']);
+eq(run('owner', d('assigned', { sale_status: 'confirmed' })), ['cancel', 'verify_load', 'convert_payment', 'print']);
+eq(run('owner', d('assigned', { sale_status: 'ready' })), ['pickup', 'cancel', 'verify_load', 'convert_payment', 'print']);
 // Not ready AND not allowed anyway: no "unlocks" line (it would never unlock for them).
 assert.strictEqual(pickupWaitingForReady({ delivery: d('assigned', { sale_status: 'confirmed', counter_can_mark_picked_up: false }), role: 'counter_staff', userId: 1 }), false);
 assert.strictEqual(pickupWaitingForReady({ delivery: d('assigned', { sale_status: 'confirmed' }), role: 'delivery_partner', userId: 9 }), false);

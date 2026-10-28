@@ -1638,4 +1638,25 @@ check('GET /deliveries/:id exposes the sale status (sale_status) and refunded_to
   assert(data.refunded_total === 0, `Expected refunded_total 0, got ${JSON.stringify(data.refunded_total)}`);
 });
 
+check('GET /sales hides cancelled orders by default; include_cancelled=1 shows them (Orders Inbox search)', async () => {
+  const owner = await loginOwner();
+  const name = `CancelledSearchCheck${Date.now()}`;
+  const { status, body } = await api('POST', '/sales', owner.token, {
+    location_id: TEST_LOCATION_ID, order_type: 'pickup', channel: 'phone', customer_name: name,
+    items: [{ quantity: 1, unit_price: 100, product_name: 'Test Cancelled Search Item' }],
+  });
+  assert(status === 201, `Expected 201, got ${status}: ${JSON.stringify(body)}`);
+  const saleId = body.data.id;
+  createdSaleIds.push(saleId);
+  const cancelRes = await api('PUT', `/sales/${saleId}/cancel`, owner.token);
+  assert(cancelRes.status === 200, `Expected cancel to succeed, got ${cancelRes.status}: ${JSON.stringify(cancelRes.body)}`);
+  const q = `/sales?location_id=${TEST_LOCATION_ID}&search=${encodeURIComponent(name)}`;
+  const hidden = await api('GET', q, owner.token);
+  assert(!hidden.body.data.sales.some((x) => x.id === saleId), 'Cancelled order should be hidden without include_cancelled');
+  const shown = await api('GET', `${q}&include_cancelled=1`, owner.token);
+  const row = shown.body.data.sales.find((x) => x.id === saleId);
+  assert(row && row.status === 'cancelled', `Expected the cancelled order with include_cancelled=1, got ${JSON.stringify(shown.body.data.sales.map((x) => x.id))}`);
+  assert(Number(shown.body.data.total) >= 1, `Expected total to count it, got ${shown.body.data.total}`);
+});
+
 main();

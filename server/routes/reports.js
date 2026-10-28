@@ -83,7 +83,9 @@ router.get('/sales-summary', authenticate, authorize('owner', 'manager'), async 
       SELECT
         si.product_name,
         SUM(si.quantity) as total_qty,
-        SUM(si.line_total) as total_revenue
+        -- line_total is 0 on older databases that never computed it, so fall back to quantity x price + tax
+        SUM(CASE WHEN COALESCE(si.line_total, 0) > 0 THEN si.line_total
+                 ELSE si.quantity * si.unit_price + COALESCE(si.tax_amount, 0) END) as total_revenue
       FROM sale_items si
       JOIN sales s ON si.sale_id = s.id
       ${where}

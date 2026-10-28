@@ -10,6 +10,7 @@ import * as Sharing from 'expo-sharing';
 import * as ImagePicker from 'expo-image-picker';
 import api from '../services/api';
 import { showAlert, showConfirm } from '../utils/alert';
+import { resolveItemLineTotal } from '../utils/lineTotal';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import { formatDateTime, formatCardDateTime, isToday } from '../utils/datetime';
@@ -193,6 +194,7 @@ export default function SaleDetailScreen({ route, navigation }) {
   // saying who will act (an `employee` or `florist_staff` would otherwise see
   // nothing at all — CLAUDE.md records four live `employee` accounts).
   const canManageDeliveries = ['owner', 'manager', 'counter_staff'].includes(user?.role);
+  const canOpenDeliveryDetail = !!navigation?.getState?.()?.routeNames?.includes('DeliveryDetail');
 
   // Convert order type state
   const [convertModalVisible, setConvertModalVisible] = useState(false);
@@ -470,16 +472,16 @@ export default function SaleDetailScreen({ route, navigation }) {
     // cancelling underneath it left a rider "out" with an order the shop
     // now considers cancelled, with no signal to them at all (found live
     // during the 2026-09-04 order-flow audit).
-    // Worded per viewer: only owner/manager can mark a picked-up/in-transit
-    // delivery failed (getDeliveryActions 'fail'); nobody can from 'assigned'.
+    // Worded per viewer, matching getDeliveryActions: before pickup
+    // (assigned) owner/manager/counter staff get "Cancel Delivery" in the
+    // Delivery section; once it is out, only owner/manager can mark it failed.
     if (sale.delivery && ['assigned', 'picked_up', 'in_transit'].includes(sale.delivery.status)) {
-      const canMarkFailed = canManage && ['picked_up', 'in_transit'].includes(sale.delivery.status);
-      showAlert(
-        'Cancel the delivery first',
-        canMarkFailed
-          ? 'The rider has it. Mark the delivery as failed above, then cancel the order.'
-          : 'The rider has this order. Ask the owner or manager to cancel the delivery first.',
-      );
+      const isAssigned = sale.delivery.status === 'assigned';
+      const canMarkFailed = canManage && !isAssigned;
+      let message = 'The rider has this order. Ask the owner or manager to cancel the delivery first.';
+      if (isAssigned && canManageDeliveries) message = 'Tap "Cancel Delivery" in the Delivery section above first.';
+      else if (canMarkFailed) message = 'The rider has it. Mark the delivery as failed above, then cancel the order.';
+      showAlert('Cancel the delivery first', message);
       return;
     }
 
@@ -853,20 +855,6 @@ export default function SaleDetailScreen({ route, navigation }) {
     }
   };
 
-  const resolveItemLineTotal = useCallback((item) => {
-    const qty = Number(item?.quantity) || 0;
-    const unitPrice = Number(item?.unit_price) || 0;
-    const base = qty * unitPrice;
-    const taxFromField = Number(item?.tax_amount) || 0;
-    const taxRate = Number(item?.tax_rate) || 0;
-    const computedTax = taxFromField > 0 ? taxFromField : (base * taxRate / 100);
-    const computed = base + computedTax;
-    const stored = Number(item?.line_total);
-
-    // Legacy rows may carry line_total=0; use computed amount in that case.
-    if (!Number.isFinite(stored) || (stored <= 0 && computed > 0)) return computed;
-    return stored;
-  }, []);
 
   const generateReceipt = async () => {
     const paidAmt = (sale.payments || []).reduce((s, p) => s + Number(p.amount || 0), 0);
@@ -1214,17 +1202,22 @@ export default function SaleDetailScreen({ route, navigation }) {
           {sale.delivery.partner_name && (
             <Text style={[styles.infoSubtext, { marginTop: 4 }]}>Partner: {sale.delivery.partner_name} {sale.delivery.partner_phone ? '• ' + sale.delivery.partner_phone : ''}</Text>
           )}
-          {sale.delivery.cod_amount > 0 && (
+          {/* A cancelled delivery collects nothing, so no COD line. */}
+          {sale.delivery.cod_amount > 0 && sale.delivery.status !== 'cancelled' && (
             <Text style={[styles.infoSubtext, { marginTop: 2 }]}>COD: ₹{sale.delivery.cod_amount} ({sale.delivery.cod_status || 'pending'})</Text>
           )}
-          <TouchableOpacity
-            style={styles.viewDeliveryLink}
-            onPress={() => navigation.navigate('DeliveryDetail', { deliveryId: sale.delivery.id })}
-            accessibilityRole="link"
-            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-          >
-            <Text style={styles.viewDeliveryLinkText}>View full delivery →</Text>
-          </TouchableOpacity>
+          {/* Only where this stack has a Delivery Details screen (not the
+              florist or customer stacks), so the link never goes nowhere. */}
+          {canOpenDeliveryDetail && (
+            <TouchableOpacity
+              style={styles.viewDeliveryLink}
+              onPress={() => navigation.navigate('DeliveryDetail', { deliveryId: sale.delivery.id })}
+              accessibilityRole="link"
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
+              <Text style={styles.viewDeliveryLinkText}>View full delivery →</Text>
+            </TouchableOpacity>
+          )}
           <DeliveryActionsPanel
             ref={deliveryPanelRef}
             deliveryId={sale.delivery.id}

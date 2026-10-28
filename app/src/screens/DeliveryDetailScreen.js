@@ -7,6 +7,7 @@ import api from '../services/api';
 import DeliveryActionsPanel from '../components/delivery/DeliveryActionsPanel';
 import useSubmitGuard from '../hooks/useSubmitGuard';
 import { showAlert, showConfirm } from '../utils/alert';
+import { resolveItemLineTotal } from '../utils/lineTotal';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import { parseServerDate, formatDate, formatDateTime } from '../utils/datetime';
 
@@ -78,9 +79,19 @@ export default function DeliveryDetailScreen({ route, navigation }) {
       try {
         setConverting(true);
         await api.convertOrderType(delivery.sale_id, { new_order_type: 'pickup', delivery_charges: 0 });
-        showAlert('Done', 'Order converted to pickup');
-        fetchDelivery();
-        panelRef.current?.refresh();
+        showAlert('Done', 'This order is now a pickup.');
+        // The delivery no longer exists for this order, so leave this screen:
+        // back to the order if that is where we came from, otherwise open it.
+        const state = navigation.getState?.();
+        const prev = state?.routes?.[state.index - 1];
+        if (prev?.name === 'SaleDetail' && Number(prev.params?.saleId) === Number(delivery.sale_id)) {
+          navigation.goBack();
+        } else if (state?.routeNames?.includes('SaleDetail')) {
+          navigation.replace('SaleDetail', { saleId: delivery.sale_id });
+        } else {
+          fetchDelivery();
+          panelRef.current?.refresh();
+        }
       } catch (err) {
         showAlert('Error', err.message || 'Failed to convert');
       } finally {
@@ -243,7 +254,7 @@ export default function DeliveryDetailScreen({ route, navigation }) {
                   ) : null}
                 </View>
                 <Text style={styles.itemQty}>x{item.quantity}</Text>
-                {!isPartner && <Text style={styles.itemPrice}>₹{Number(item.line_total || item.total || 0).toFixed(0)}</Text>}
+                {!isPartner && <Text style={styles.itemPrice}>₹{resolveItemLineTotal(item).toFixed(0)}</Text>}
               </View>
             );
           })}

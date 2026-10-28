@@ -284,10 +284,13 @@ function DeliveryActionsPanel({ deliveryId, navigation, onChanged, compact = fal
     }
   };
 
+  // Cancel is offered before pickup (assigned) and after a failure.
+  const cancelReason = delivery?.status === 'assigned' ? 'Cancelled before pickup' : 'Cancelled after failed delivery';
+
   const cancelDeliveryOnly = async () => {
     try {
       setActionLoading(true);
-      await api.cancelDelivery(deliveryId, { reason: 'Cancelled after failed delivery' });
+      await api.cancelDelivery(deliveryId, { reason: cancelReason });
       await afterSuccess();
     } catch (err) {
       await afterFailure(err);
@@ -305,7 +308,7 @@ function DeliveryActionsPanel({ deliveryId, navigation, onChanged, compact = fal
     try {
       setActionLoading(true);
       try {
-        await api.cancelDelivery(deliveryId, { reason: 'Cancelled after failed delivery' });
+        await api.cancelDelivery(deliveryId, { reason: cancelReason });
       } catch (err) {
         await afterFailure(err);
         return;
@@ -561,6 +564,9 @@ function DeliveryActionsPanel({ deliveryId, navigation, onChanged, compact = fal
       {showCancelBox && actions.includes('cancel') && (
         <View style={styles.formBox}>
           <Text style={styles.formTitle}>Cancel this delivery?</Text>
+          {delivery.status === 'assigned' && (
+            <Text style={styles.label}>The rider has not picked it up yet. Let them know it is off.</Text>
+          )}
           {wholeOrderCancellable ? (
             <Text style={styles.label}>Cancel only the delivery, or the whole order too.</Text>
           ) : (
