@@ -991,6 +991,29 @@ class ApiService {
     });
   }
 
+  getPickupChecks(saleId) {
+    return this.request(`/sales/${saleId}/pickup-checks`);
+  }
+
+  togglePickupCheck(saleId, saleItemId, checked) {
+    return this.request(`/sales/${saleId}/pickup-checks/${saleItemId}`, {
+      method: 'PUT',
+      body: JSON.stringify({ checked }),
+    });
+  }
+
+  // ─── Public slip page (no auth) ────────────────────────────
+  getSlipPage(token) {
+    return this.request(`/slip/${token}`);
+  }
+
+  toggleSlipCheck(token, saleItemId, checked) {
+    return this.request(`/slip/${token}/check/${saleItemId}`, {
+      method: 'PUT',
+      body: JSON.stringify({ checked }),
+    });
+  }
+
   // Generic Media Upload
   async uploadGenericMedia(imageUri) {
     const formData = new FormData();
