@@ -349,6 +349,182 @@ check('public slip GET reports final/final_message: open false/null, delivered a
   assert(pg.body.data.checklist.final === true && /picked up/i.test(pg.body.data.checklist.final_message || ''), `Picked up: ${JSON.stringify(pg.body.data.checklist)}`);
 });
 
+// ─── Task 4: general (open) order-request link, register-on-approve ───
+
+const openCtx = { requestIds: [], phones: [] };
+
+async function freeTestPhone(prefix) {
+  const db = await getDb();
+  for (let i = 0; i < 50; i++) {
+    const p = prefix + String(Math.floor(Math.random() * 100000)).padStart(5, '0');
+    const hit = await db.prepare("SELECT 1 AS ok FROM users WHERE regexp_replace(phone, '[^0-9]', '', 'g') LIKE ?").get(`%${p}`);
+    if (!hit) { openCtx.phones.push(p); return p; }
+  }
+  throw new Error('No free test phone found');
+}
+
+async function usersCount() {
+  const db = await getDb();
+  return Number((await db.prepare('SELECT COUNT(*) AS c FROM users').get()).c);
+}
+
+function openBody(extra = {}) {
+  return {
+    requester_name: 'Open Link Tester', requester_phone: openCtx.phone,
+    recipient_name: 'Open Recipient', recipient_phone: '9000000001',
+    order_type: 'pickup', requested_date: '2026-12-20', requested_time: '10:00',
+    items: [{ custom: true, description: 'Open test bouquet', quantity: 2 }],
+    ...extra,
+  };
+}
+
+async function submitOpen(extra) {
+  const res = await api('POST', '/order-request/open', null, openBody(extra));
+  if (res.status === 201) {
+    const token = String(res.body?.data?.status_url || '').split('/').pop();
+    const db = await getDb();
+    const row = await db.prepare('SELECT id FROM order_requests WHERE status_token = ?').get(token);
+    if (row) openCtx.requestIds.push(row.id);
+    return { res, token, id: row ? row.id : null };
+  }
+  return { res };
+}
+
+check('GET /order-request/open returns the catalog and no customer data', async () => {
+  const res = await api('GET', '/order-request/open', null);
+  assert(res.status === 200, `Expected 200, got ${res.status}: ${JSON.stringify(res.body)}`);
+  assert(Array.isArray(res.body.data.products), 'products missing');
+  assert(!('customer_name' in res.body.data) && !('requests' in res.body.data), `Customer data present: ${Object.keys(res.body.data)}`);
+});
+
+check('open submit: one row, customer_id NULL, source general_link, users unchanged, status pending', async () => {
+  openCtx.phone = await freeTestPhone('98765');
+  const before = await usersCount();
+  const { res, token, id } = await submitOpen();
+  assert(res.status === 201, `Expected 201, got ${res.status}: ${JSON.stringify(res.body)}`);
+  assert(/^\/order-request\/status\/[0-9a-f]{48}$/.test(res.body.data.status_url), `status_url ${res.body.data.status_url}`);
+  const db = await getDb();
+  const rows = await db.prepare('SELECT * FROM order_requests WHERE status_token = ?').all(token);
+  assert(rows.length === 1, `Expected 1 row, got ${rows.length}`);
+  const r = rows[0];
+  assert(r.customer_id === null && r.source === 'general_link', `Got customer_id=${r.customer_id} source=${r.source}`);
+  assert(r.requester_name === 'Open Link Tester' && r.requester_phone === openCtx.phone, `Requester ${r.requester_name}/${r.requester_phone}`);
+  assert((await usersCount()) === before, 'users count changed on public submit');
+  openCtx.first = { token, id };
+  const st = await api('GET', `/order-request/status/${token}`, null);
+  assert(st.status === 200 && st.body.data.status === 'pending', `Status ${st.status} ${JSON.stringify(st.body)}`);
+  assert(Array.isArray(st.body.data.items_summary) && st.body.data.items_summary[0].quantity === 2, `items_summary ${JSON.stringify(st.body.data.items_summary)}`);
+  const raw = JSON.stringify(st.body);
+  assert(!raw.includes(openCtx.phone) && !raw.includes('9000000001'), 'Status page leaks a phone');
+});
+
+check('random status token gives generic 404', async () => {
+  const res = await api('GET', `/order-request/status/${'ab'.repeat(24)}`, null);
+  assert(res.status === 404 && res.body.success === false && res.body.message === 'Not found', `Got ${res.status} ${JSON.stringify(res.body)}`);
+});
+
+check('missing name or a 9-digit phone gives 400 with a plain message', async () => {
+  const a = await api('POST', '/order-request/open', null, openBody({ requester_name: '' }));
+  const b = await api('POST', '/order-request/open', null, openBody({ requester_phone: '987654321' }));
+  assert(a.status === 400 && /name/i.test(a.body.message), `Missing name: ${a.status} ${JSON.stringify(a.body)}`);
+  assert(b.status === 400 && /phone/i.test(b.body.message), `9-digit phone: ${b.status} ${JSON.stringify(b.body)}`);
+});
+
+check('resolve-customer: new phone creates one customer, second call returns the same id', async () => {
+  const owner = await slipOwner();
+  const before = await usersCount();
+  const list = await api('GET', '/order-requests?status=pending&limit=100', owner.token);
+  const row = list.body.data.requests.find((r) => r.id === openCtx.first.id);
+  assert(row && row.matched_customer === null && row.source === 'general_link' && row.requester_name === 'Open Link Tester', `List row ${JSON.stringify(row)}`);
+  const r1 = await api('POST', `/order-requests/${openCtx.first.id}/resolve-customer`, owner.token);
+  assert(r1.status === 200 && r1.body.data.created === true && r1.body.data.customer_id, `First resolve ${r1.status} ${JSON.stringify(r1.body)}`);
+  const r2 = await api('POST', `/order-requests/${openCtx.first.id}/resolve-customer`, owner.token);
+  assert(r2.status === 200 && r2.body.data.created === false && r2.body.data.customer_id === r1.body.data.customer_id, `Second resolve ${JSON.stringify(r2.body)}`);
+  assert((await usersCount()) === before + 1, 'Expected exactly one new user');
+  const db = await getDb();
+  const u = await db.prepare('SELECT role, phone, name FROM users WHERE id = ?').get(r1.body.data.customer_id);
+  assert(u.role === 'customer' && u.phone === openCtx.phone && u.name === 'Open Link Tester', `User ${JSON.stringify(u)}`);
+  const req = await db.prepare('SELECT customer_id FROM order_requests WHERE id = ?').get(openCtx.first.id);
+  assert(req.customer_id === r1.body.data.customer_id, 'customer_id not set on request');
+  openCtx.customerId = r1.body.data.customer_id;
+});
+
+check('a second open request in +91 format resolves to the same customer; tokens do not cross', async () => {
+  const owner = await slipOwner();
+  const p = openCtx.phone;
+  const { res, token, id } = await submitOpen({ requester_phone: `+91 ${p.slice(0, 5)} ${p.slice(5)}`, requester_name: 'Open Tester Again' });
+  assert(res.status === 201, `Submit ${res.status} ${JSON.stringify(res.body)}`);
+  assert(id && id !== openCtx.first.id && token !== openCtx.first.token, 'Second submit reused the first request or token');
+  const list = await api('GET', '/order-requests?status=pending&limit=100', owner.token);
+  const row = list.body.data.requests.find((r) => r.id === id);
+  assert(row && row.matched_customer && row.matched_customer.id === openCtx.customerId, `matched_customer ${JSON.stringify(row && row.matched_customer)}`);
+  const r = await api('POST', `/order-requests/${id}/resolve-customer`, owner.token);
+  assert(r.status === 200 && r.body.data.customer_id === openCtx.customerId && r.body.data.created === false, `Resolve ${JSON.stringify(r.body)}`);
+});
+
+check('an existing customer stored as "+91 xxxxx xxxxx" is matched by a 0-prefixed phone', async () => {
+  const owner = await slipOwner();
+  const p = await freeTestPhone('98764');
+  const db = await getDb();
+  const ins = await db.prepare("INSERT INTO users (name, phone, password, role) VALUES ('Open Legacy Format', ?, 'x', 'customer')").run(`+91 ${p.slice(0, 5)} ${p.slice(5)}`);
+  const { res, id } = await submitOpen({ requester_phone: `0${p.slice(0, 5)} ${p.slice(5)}` });
+  assert(res.status === 201, `Submit ${res.status} ${JSON.stringify(res.body)}`);
+  const before = await usersCount();
+  const r = await api('POST', `/order-requests/${id}/resolve-customer`, owner.token);
+  assert(r.status === 200 && r.body.data.customer_id === ins.lastInsertRowid && r.body.data.created === false, `Resolve ${JSON.stringify(r.body)}`);
+  assert((await usersCount()) === before, 'users count changed');
+});
+
+check('declining an unresolved open request leaves users unchanged', async () => {
+  const owner = await slipOwner();
+  openCtx.phone = await freeTestPhone('98763');
+  const { res, token, id } = await submitOpen();
+  assert(res.status === 201, `Submit ${res.status}`);
+  const before = await usersCount();
+  const d = await api('PUT', `/order-requests/${id}/decline`, owner.token, { reason: 'Out of stock' });
+  assert(d.status === 200, `Decline ${d.status} ${JSON.stringify(d.body)}`);
+  assert((await usersCount()) === before, 'users count changed on decline');
+  const db = await getDb();
+  const row = await db.prepare('SELECT customer_id FROM order_requests WHERE id = ?').get(id);
+  assert(row.customer_id === null, 'customer_id set on decline');
+  const st = await api('GET', `/order-request/status/${token}`, null);
+  assert(st.body.data.status === 'declined' && st.body.data.decline_reason === 'Out of stock', `Status ${JSON.stringify(st.body)}`);
+  // Another request's token never returns this one: the first request is still pending.
+  const other = await api('GET', `/order-request/status/${openCtx.first.token}`, null);
+  assert(other.status === 200 && other.body.data.status === 'pending' && other.body.data.decline_reason === null, `Other token ${JSON.stringify(other.body)}`);
+});
+
+check('resolve-customer rejects a rider (403)', async () => {
+  const rider = await api('POST', `/order-requests/${openCtx.first.id}/resolve-customer`, mintToken(8));
+  assert(rider.status === 403, `Rider expected 403, got ${rider.status}`);
+});
+
+check('resolve-customer on a staff phone gives a plain 409 and creates nobody', async () => {
+  const owner = await slipOwner();
+  const db = await getDb();
+  const ownerPhone = (await db.prepare('SELECT phone FROM users WHERE id = ?').get(owner.id)).phone;
+  const { res, id } = await submitOpen({ requester_phone: ownerPhone });
+  assert(res.status === 201, `Submit ${res.status}`);
+  const before = await usersCount();
+  const r = await api('POST', `/order-requests/${id}/resolve-customer`, owner.token);
+  assert(r.status === 409 && /staff/i.test(r.body.message), `Expected 409 staff message, got ${r.status} ${JSON.stringify(r.body)}`);
+  assert((await usersCount()) === before, 'users count changed');
+  const row = await db.prepare('SELECT customer_id FROM order_requests WHERE id = ?').get(id);
+  assert(row.customer_id === null, 'customer_id set despite 409');
+});
+
+async function cleanupOpenRequests() {
+  const db = await getDb();
+  for (const id of openCtx.requestIds) {
+    try { await db.prepare('DELETE FROM order_requests WHERE id = ?').run(id); } catch (e) { console.log(`   cleanup request ${id}: ${e.message}`); }
+  }
+  for (const p of openCtx.phones) {
+    try {
+      await db.prepare("DELETE FROM users WHERE role = 'customer' AND regexp_replace(phone, '[^0-9]', '', 'g') LIKE ? AND name IN ('Open Link Tester', 'Open Tester Again', 'Open Legacy Format')").run(`%${p}`);
+    } catch (e) { console.log(`   cleanup phone ${p}: ${e.message}`); }
+  }
+}
+
 // Must stay last: it exhausts this process's public slip budget.
 check('61 rapid public slip GETs hit the 60/min limiter (429)', async () => {
   const owner = await slipOwner();
@@ -372,6 +548,7 @@ async function main() {
     }
   }
   await cleanup();
+  await cleanupOpenRequests();
   console.log(`\n${pass}/${pass + fail} checks passed`);
   process.exit(fail > 0 ? 1 : 0);
 }
