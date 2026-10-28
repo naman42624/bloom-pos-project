@@ -24,6 +24,7 @@ const orderRequestsRoutes = require('./routes/order-requests');
 const productionRoutes = require('./routes/production');
 const deliveriesRoutes = require('./routes/deliveries');
 const trackRoutes = require('./routes/track');
+const slipPublicRoutes = require('./routes/slip-public');
 const orderRequestPublicRoutes = require('./routes/order-request-public');
 const deliveryRoutesRoutes = require('./routes/delivery-routes');
 const recurringOrdersRoutes = require('./routes/recurring-orders');
@@ -47,6 +48,10 @@ const { Server: SocketServer } = require('socket.io');
 const jwt = require('jsonwebtoken');
 
 const app = express();
+// One Nginx hop in production (VPS_DEPLOYMENT_GUIDE.md §9). If a CDN such as
+// Cloudflare is put in front, raise this or every visitor counts as one for
+// the public rate limiters.
+app.set('trust proxy', 1);
 const PORT = process.env.PORT || 3001;
 
 // ─── Middleware ───────────────────────────────────────────────
@@ -91,6 +96,9 @@ app.use('/api/deliveries', deliveriesRoutes);
 // No `authenticate` middleware — this is the app's first public route.
 // See server/routes/track.js and server/utils/tracking-token.js.
 app.use('/api/track', trackRoutes);
+// No `authenticate` middleware: public slip QR scan page. Own 60/min
+// limiter (see server/routes/slip-public.js), not shared with track's.
+app.use('/api/slip', slipPublicRoutes);
 // No `authenticate` middleware — public, like /api/track. Own rate
 // limiter (see server/routes/order-request-public.js), not shared with
 // track's.

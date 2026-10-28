@@ -12,7 +12,12 @@ import { formatTime } from '../utils/datetime';
 // rider's load" entry point (this task) and the rider's own "confirm what
 // I'm carrying" entry point (a later task), reusing the exact same rows
 // via GET/PUT /deliveries/:id/checklist.
-export default function DeliveryChecklist({ deliveryId }) {
+// Pass { deliveryId } for a delivery, or { saleId, kind: 'pickup', saleItems }
+// for a pickup (saleItems = the sale's own items, since the pickup endpoint
+// returns only ids and tick state, not names).
+export default function DeliveryChecklist({ deliveryId, saleId, kind, saleItems }) {
+  const isPickup = kind === 'pickup';
+  const targetId = isPickup ? saleId : deliveryId;
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [togglingId, setTogglingId] = useState(null);
@@ -21,18 +26,31 @@ export default function DeliveryChecklist({ deliveryId }) {
   const fetchChecklist = useCallback(async () => {
     try {
       setError('');
-      const res = await api.getDeliveryChecklist(deliveryId);
-      setItems(res.data || []);
+      if (isPickup) {
+        const res = await api.getPickupChecks(saleId);
+        const ticks = new Map(((res.data && res.data.items) || []).map(t => [t.sale_item_id, t]));
+        const rows = (saleItems || []).filter(si => ticks.has(si.id)).map(si => ({
+          sale_item_id: si.id,
+          product_name: si.product_name || si.display_name || 'Item',
+          quantity: si.quantity,
+          checked: ticks.get(si.id).checked,
+          checked_at: ticks.get(si.id).checked_at,
+        }));
+        setItems(rows);
+      } else {
+        const res = await api.getDeliveryChecklist(deliveryId);
+        setItems(res.data || []);
+      }
     } catch (err) {
       setError(err.message || 'Could not load the checklist. Pull down or reopen to try again.');
     } finally {
       setLoading(false);
     }
-  }, [deliveryId]);
+  }, [deliveryId, saleId, isPickup, saleItems]);
 
   useEffect(() => {
-    if (deliveryId) fetchChecklist();
-  }, [deliveryId, fetchChecklist]);
+    if (targetId) fetchChecklist();
+  }, [targetId, fetchChecklist]);
 
   const toggleItem = async (item) => {
     if (togglingId) return; // avoid double-taps firing overlapping requests
@@ -42,7 +60,8 @@ export default function DeliveryChecklist({ deliveryId }) {
     // server's checked_by/checked_at right after.
     setItems(prev => prev.map(it => (it.sale_item_id === item.sale_item_id ? { ...it, checked: nextChecked } : it)));
     try {
-      await api.toggleDeliveryChecklistItem(deliveryId, item.sale_item_id, nextChecked);
+      if (isPickup) await api.togglePickupCheck(saleId, item.sale_item_id, nextChecked);
+      else await api.toggleDeliveryChecklistItem(deliveryId, item.sale_item_id, nextChecked);
       await fetchChecklist();
     } catch (err) {
       // Revert the optimistic flip on failure.
@@ -62,7 +81,7 @@ export default function DeliveryChecklist({ deliveryId }) {
   }
 
   return (
-    <View style={styles.container}>
+    <View style={isPickup ? null : styles.container}>
       {error ? (
         <View style={styles.errorBanner}>
           <Ionicons name="alert-circle" size={16} color="#C62828" />
@@ -71,6 +90,7 @@ export default function DeliveryChecklist({ deliveryId }) {
       ) : null}
       <FlatList
         data={items}
+        scrollEnabled={!isPickup}
         keyExtractor={(it) => String(it.sale_item_id)}
         renderItem={({ item }) => {
           const isToggling = togglingId === item.sale_item_id;

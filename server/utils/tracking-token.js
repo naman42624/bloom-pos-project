@@ -72,4 +72,6 @@ function buildTrackingUrl(saleId) {
   return `${PUBLIC_APP_URL}/track/${generateTrackingToken(saleId)}`;
 }
 
-module.exports = { generateTrackingToken, verifyTrackingToken, buildTrackingUrl };
+// TRACKING_SECRET is exported additively so slip-token.js signs with the very
+// same secret (and so inherits the same production guard and dev fallback).
+module.exports = { generateTrackingToken, verifyTrackingToken, buildTrackingUrl, TRACKING_SECRET: SECRET };

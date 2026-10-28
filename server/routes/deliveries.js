@@ -15,6 +15,7 @@ const { hasOpenRegister, REGISTER_CLOSED_MESSAGE } = require('../utils/register-
 const { computeOrderStage, getStageFlags } = require('../utils/order-stage');
 const { sumCollectionsByMethod, codExceedsRemaining } = require('../utils/settlement-math');
 const { buildTrackingUrl } = require('../utils/tracking-token');
+const { setCheck, loadSaleForChecks } = require('../utils/load-checks');
 
 // Use todayStr() from time.js for timezone-aware date strings
 
@@ -594,18 +595,25 @@ router.get('/:id(\\d+)/checklist', authenticate, authorize('owner', 'manager', '
 router.put('/:id(\\d+)/checklist/:saleItemId(\\d+)', authenticate, authorize('owner', 'manager', 'employee', 'counter_staff', 'delivery_partner'), async (req, res, next) => {
   try {
     const db = await getAsyncDb();
-    const delivery = await db.prepare('SELECT id, delivery_partner_id FROM deliveries WHERE id = ?').get(req.params.id);
+    const delivery = await db.prepare('SELECT id, sale_id, delivery_partner_id FROM deliveries WHERE id = ?').get(req.params.id);
     if (!delivery) return res.status(404).json({ success: false, message: 'Delivery not found' });
     if (req.user.role === 'delivery_partner' && delivery.delivery_partner_id !== req.user.id) {
       return res.status(403).json({ success: false, message: 'Not your delivery' });
     }
-    const { checked } = req.body;
-    await db.prepare(
-      `UPDATE delivery_load_checks SET checked = ?, checked_by = ?, checked_at = CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE NULL END
-       WHERE delivery_id = ? AND sale_item_id = ?`
-    ).run(!!checked, req.user.id, !!checked, req.params.id, req.params.saleItemId);
-    res.json({ success: true });
-  } catch (err) { next(err); }
+    // Same implementation as the public slip page's tick (utils/load-checks.js),
+    // so both paths write the same rows; this one records checked_via='app'.
+    const sale = await loadSaleForChecks(db, delivery.sale_id);
+    if (!sale) return res.status(404).json({ success: false, message: 'Order not found' });
+    const checklist = await setCheck(db, sale, Number(req.params.saleItemId), !!req.body.checked, {
+      userId: req.user.id, via: 'app', deliveryId: delivery.id,
+    });
+    res.json({ success: true, data: checklist });
+  } catch (err) {
+    if (err.status === 404 || err.status === 409) {
+      return res.status(err.status).json({ success: false, message: err.message });
+    }
+    next(err);
+  }
 });
 
 // ─── PUT /api/deliveries/:id/assign ──────────────────────────
