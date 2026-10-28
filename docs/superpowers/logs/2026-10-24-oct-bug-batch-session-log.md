@@ -75,3 +75,23 @@ Branch: `fix/oct-bug-batch` (off `main` @ `78913b3`). Read this before resuming.
 - "View full delivery →" goes nowhere in stacks without a Delivery Details route (customer and florist).
 - There is no way to cancel an `assigned` delivery in the app.
 - Non-rider staff lose the optional proof photo on prepaid deliveries.
+
+## 7. Follow-up batch (2026-10-28, branch `fix/oct-bug-batch-2`, commit `c1c036d`)
+PRs #13 and #14 are merged. This batch fixes what the browser sessions showed, using the user's answers to the open questions.
+
+**Fixed.**
+- **Item prices showed ₹0.** On older databases `sale_items.line_total` is stored as 0 (production computes it). Delivery Details now uses the same fallback as Sale Details (`app/src/utils/lineTotal.js`, quantity × price + tax), and the top-products report falls back the same way in SQL.
+- **Cancel before pickup.** Owner, manager and counter staff can cancel an `assigned` delivery (the server always allowed it). The cancel box tells them to let the rider know. The Sale Details "Cancel the delivery first" message points them to the button.
+- **Cancelled delivery** no longer shows "COD: ₹X (pending)" on Sale Details.
+- **"View full delivery →"** is hidden in stacks without a Delivery Details screen (florist, customer).
+- **Convert to Pickup** on Delivery Details goes back to the order.
+- **Wait times** on order cards read "3 hr" / "4 days late" instead of thousands of minutes.
+- **Orders Inbox** search includes cancelled orders, and there is a "Cancelled" chip. `GET /sales` takes an additive `include_cancelled=1`; the default still hides cancelled orders.
+
+**Verification.** `verify-order-flows` 61/61 (new check for `include_cancelled`), `verify-register-expenses` 13/13, `verify-order-requests` 21/21, both pure-math scripts, babel-check on every touched file. On screen as **counter staff** at Test Loc (finally possible): Cancelled chip and search, Cancel Delivery on an assigned delivery, the COD line gone after cancelling, Delivery Details item price, "4 days late" on the board. Convert to Pickup's return was checked in code only (it is owner/manager-only).
+
+**Test account.** "Spotcheck Counter Staff" (id 148, employee code 1001) has a PIN, saved as `VERIFY_COUNTER_PIN` in `server/.env` (git-ignored).
+
+**Test Loc cleanup: not done.** The permission check blocked the bulk delete. A backup is at `server/backups/bloomcart_before_testloc_cleanup_20261028.dump`, and the SQL is ready for the user to run.
+
+**Production `line_total` check (user's Q10).** Run one line in psql: `\d sale_items`, or `SELECT attname, attgenerated FROM pg_attribute WHERE attrelid = 'sale_items'::regclass AND attname = 'line_total';` (`s` means generated).
