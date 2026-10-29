@@ -474,6 +474,16 @@ This guide's whole scope (see §1/title) is the **backend API only** — a Node/
    ```
    If `PUBLIC_APP_URL` and the API's own public domain (§9) are meant to be the same domain, these two server blocks need reconciling (e.g. one Nginx site handling both `/api/*` → backend and everything else → the static web build) rather than run as truly independent configs — work out the real domain/subdomain split for this shop's setup before wiring TLS (§10) for it.
 
+2a. **Same fallback covers the slip page and open order link (added 2026-10-29).** The printed slip QR opens `<PUBLIC_APP_URL>/slip/<token>`, and customers open `<PUBLIC_APP_URL>/order-request/<token>`, `/order-request/open` and `/order-request/status/<token>`. All are pages of the same web build, so the `location / { try_files $uri $uri/ /index.html; }` block above already serves them, provided no other block proxies those paths to Express. If you add explicit blocks, use:
+   ```nginx
+   location /slip/          { try_files $uri /index.html; }
+   location /order-request/ { try_files $uri /index.html; }   # includes open and status/
+   ```
+   Do not proxy these prefixes to port 3001: Express only has `/api/slip/*` and `/api/order-request/*`. Also:
+   - `PUBLIC_APP_URL` must be the public **web** origin (the one serving this build), not the API host, or every QR code and link points at a dead address.
+   - The public rate limiters need the real client IP: keep the `X-Forwarded-For` header lines in the `/api/` block (the server sets `trust proxy` to 1).
+   - **Deploy order: server first, then the app.** A newer app against an older server has no `slip_url` and no `/api/slip` routes.
+
 3. **Re-verify after wiring this up**, the same way the original tracking-page plan's own testing section (`docs/superpowers/specs/2026-09-11-customer-tracking-page-design.md` §7) verified it locally: open a real `tracking_url` in a private/incognito browser tab against the *production* domain, confirm it renders `TrackingScreen.js` and never touches the login screen, confirm an invalid token shows the friendly not-found state, confirm the Share Tracking Link button's WhatsApp message opens a link that actually resolves to the tracking page rather than a 404.
 
 **Until this is done, treat the tracking-link feature as backend-complete but not customer-reachable in production** — the Share Tracking Link buttons on Orders Inbox/Deliveries and the `tracking_link` WhatsApp message will all produce links that currently 404 for a real customer.

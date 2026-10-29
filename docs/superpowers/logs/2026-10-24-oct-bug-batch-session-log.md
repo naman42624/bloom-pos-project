@@ -95,3 +95,31 @@ PRs #13 and #14 are merged. This batch fixes what the browser sessions showed, u
 **Test Loc cleanup: not done.** The permission check blocked the bulk delete. A backup is at `server/backups/bloomcart_before_testloc_cleanup_20261028.dump`, and the SQL is ready for the user to run.
 
 **Production `line_total` check (user's Q10).** Run one line in psql: `\d sale_items`, or `SELECT attname, attgenerated FROM pg_attribute WHERE attrelid = 'sale_items'::regclass AND attname = 'line_total';` (`s` means generated).
+
+## 8. Slip QR, open order link, checkout fixes (2026-10-28/29, branch `feature/slip-qr-open-orders-checkout`)
+Spec: `docs/superpowers/specs/2026-10-28-slip-qr-open-orders-checkout-design.md`. Tasks 1-6 are PR #17 (merged to `main` 2026-10-28; #16 had merged into `fix/oct-bug-batch-2` by mistake). Tasks 7-9 are on the branch, not yet in a PR.
+
+**Built.**
+- **Slip QR and page (Tasks 1-3).** A signed QR on the printed slip opens `/slip/:token`, a public page with the load checklist, shared live with the app and read-only once the order is finished. Pickup orders get their own checklist (`pickup_load_checks`).
+- **Open order link (Tasks 4-5).** `/order-request/open` lets anyone send a request; they get a status link (`/order-request/status/:token`). Staff Approve links to the matching customer or creates one.
+- **Saved addresses (Task 6).** Address chips at checkout. No client-side save-back: the server's existing `saveCustomerAddress` already saves every delivery address, and its de-dup is now case- and space-insensitive.
+- **Drafts (Task 7).** A saved draft keeps route, order and item voice notes (uploaded on save, attached on place), customer and receiver history, and local item photo paths. Deleting a draft leaves its voice files on disk, by design.
+- **Dues (Task 8).** "Collect ₹X now too" on Quick Checkout and Log Order, "Old dues" and "Take from customer now" lines, "New Order" on the customer profile, Register Closed leads to an Open Register confirm, and web-safe dialogs on the two customer screens.
+
+**Tap counts (first-time user, common case; spec §8).**
+
+| Flow | Before | After |
+|---|---|---|
+| Collect previous dues while placing an order | about 6, plus finding your place again | 1 (switch) |
+| New order for the customer you are looking at | 4, plus re-searching | 1 |
+| Fill a known delivery address | typing the whole address | 1 (chip) |
+| Load check from the slip, no app | not possible | scan + 1 tick per item |
+| Register closed at checkout on web | dead end | 1 (Open Register) |
+
+**Also changed.** `trust proxy` is set (`app.set('trust proxy', 1)`), so the public rate limiters see the real client IP.
+
+**Deploy.** Server first, then the app. `PUBLIC_APP_URL` must be the public web origin. Nginx needs the SPA fallback for `/slip/` and `/order-request/` (`VPS_DEPLOYMENT_GUIDE.md` §17). All new tables and columns are additive.
+
+**Deferred minors.** Listed in `.superpowers/sdd/2026-10-28-slip-qr-open-orders-checkout/progress.md`. Worth doing first: `from-url` accepts a directory path (add an `isFile` check), the order-level pending voice note has no remove control, and the Approve card can name a different customer than the one Approve links when two share normalized digits.
+
+**Verification (final regression).** `verify-order-flows` 61/61, `verify-register-expenses` 13/13, `verify-order-requests` 21/21, `verify-slip-and-open-requests` 29/29, `verify-settlement-math` OK, `verify-delivery-action-rules` OK, `verify-address-match` all passed.
