@@ -809,6 +809,21 @@ export default function LogOrderScreen({ navigation, route }) {
           </Text>
         ))}
 
+        {duesCollect.enabled && customerId && customerDues > 0 && !duesAmountError(customerDues, duesCollect) && (() => {
+          const dues = Math.round((parseFloat(duesCollect.amount) || 0) * 100) / 100;
+          const nowPaid = paymentMode !== 'unpaid' ? Math.round((parseFloat(paymentAmount) || 0) * 100) / 100 : 0;
+          const method = paymentMode !== 'unpaid' ? paymentMethod : 'cash';
+          const total = Math.round((nowPaid + dues) * 100) / 100;
+          return (
+            <View style={{ marginTop: Spacing.sm }}>
+              <Text style={{ fontSize: FontSize.md, color: Colors.textSecondary }}>Old dues: ₹{dues.toFixed(2)}</Text>
+              <Text style={{ fontSize: FontSize.lg, fontWeight: '800', color: Colors.text }}>
+                Take from customer now: ₹{total.toFixed(2)}{method !== 'cash' ? ` (${method.toUpperCase()})` : ''}
+              </Text>
+            </View>
+          );
+        })()}
+
         <TouchableOpacity
           style={[styles.saveButton, !canSave && styles.saveButtonDisabled]}
           onPress={guardSubmit(handleSave)}

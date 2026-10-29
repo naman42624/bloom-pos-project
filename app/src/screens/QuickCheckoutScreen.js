@@ -2354,6 +2354,30 @@ export default function QuickCheckoutScreen({ navigation, route }) {
             </View>
           </View>
 
+          {duesCollect.enabled && customerId && customerHistory?.credit_balance > 0 && !duesAmountError(customerHistory.credit_balance, duesCollect) && (() => {
+            const dues = Math.round((parseFloat(duesCollect.amount) || 0) * 100) / 100;
+            let nowPaid = 0;
+            if (paymentMode === 'pay_now') {
+              nowPaid = enableSplitPayment
+                ? payments.reduce((sum, p) => sum + (parseFloat(p.amount) || 0), 0)
+                : Math.round(Number(totals.finalTotal || 0) * 100) / 100;
+            } else if (paymentMode === 'partial') {
+              nowPaid = Math.round((parseFloat(advanceAmount) || 0) * 100) / 100;
+            }
+            const method = (paymentMode === 'pay_now' || paymentMode === 'partial')
+              ? (enableSplitPayment ? ((payments.find((p) => (parseFloat(p.amount) || 0) > 0) || payments[0])?.method || 'cash') : paymentMethod)
+              : 'cash';
+            const total = Math.round((nowPaid + dues) * 100) / 100;
+            return (
+              <View style={{ marginTop: Spacing.sm }}>
+                <Text style={{ fontSize: FontSize.md, color: Colors.textSecondary }}>Old dues: ₹{dues.toFixed(2)}</Text>
+                <Text style={{ fontSize: FontSize.lg, fontWeight: '800', color: Colors.text }}>
+                  Take from customer now: ₹{total.toFixed(2)}{method !== 'cash' ? ` (${method.toUpperCase()})` : ''}
+                </Text>
+              </View>
+            );
+          })()}
+
           <TouchableOpacity
             style={[styles.checkRow, { marginTop: Spacing.md }]}
             onPress={() => setSkipAssignment(!skipAssignment)}
