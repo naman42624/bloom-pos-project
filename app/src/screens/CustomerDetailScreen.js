@@ -11,6 +11,7 @@ import { waLink, buildMessage } from '../utils/contact';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import { formatDate as formatTimestampDate } from '../utils/datetime';
+import { showConfirm } from '../utils/alert';
 import DateTimePickerModal from '../components/DateTimePickerModal';
 
 export default function CustomerDetailScreen({ route, navigation }) {
@@ -228,14 +229,7 @@ export default function CustomerDetailScreen({ route, navigation }) {
         fetchData();
       } catch (err) { Alert.alert('Error', err.message); }
     };
-    if (Platform.OS === 'web') {
-      if (window.confirm(`Remove "${label}"?`)) doDelete();
-    } else {
-      Alert.alert('Remove Date', `Remove "${label}"?`, [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Remove', onPress: doDelete, style: 'destructive' },
-      ]);
-    }
+    showConfirm('Remove Date', `Remove "${label}"?`, doDelete, { confirmLabel: 'Remove', destructive: true });
   };
 
   const handleAddAddress = async () => {
@@ -264,14 +258,7 @@ export default function CustomerDetailScreen({ route, navigation }) {
         fetchData();
       } catch (err) { Alert.alert('Error', err.message); }
     };
-    if (Platform.OS === 'web') {
-      if (window.confirm(`Delete "${label}" address?`)) doDelete();
-    } else {
-      Alert.alert('Delete Address', `Delete "${label}" address?`, [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Delete', onPress: doDelete, style: 'destructive' },
-      ]);
-    }
+    showConfirm('Delete Address', `Delete "${label}" address?`, doDelete, { confirmLabel: 'Delete', destructive: true });
   };
 
   const formatDate = (d) => {
@@ -330,6 +317,23 @@ export default function CustomerDetailScreen({ route, navigation }) {
             </TouchableOpacity>
           </View>
         </View>
+
+        {['owner', 'manager', 'employee', 'counter_staff'].includes(user?.role) && (
+          <TouchableOpacity
+            style={{
+              flexDirection: 'row', alignItems: 'center', justifyContent: 'center', minHeight: 52,
+              backgroundColor: Colors.primary, borderRadius: BorderRadius.md, marginBottom: Spacing.md, gap: 8,
+            }}
+            onPress={() => navigation.navigate('POS', {
+              screen: 'QuickCheckout',
+              params: { prefillCustomer: { id: customer.id, name: customer.name, phone: customer.phone } },
+            })}
+            accessibilityLabel="Start a new order for this customer"
+          >
+            <Ionicons name="add-circle" size={22} color={Colors.white} />
+            <Text style={{ color: Colors.white, fontSize: FontSize.md, fontWeight: '700' }}>New Order</Text>
+          </TouchableOpacity>
+        )}
 
         {/* Stats */}
         <View style={styles.statsGrid}>

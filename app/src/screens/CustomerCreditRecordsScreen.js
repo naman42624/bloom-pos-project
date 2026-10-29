@@ -11,6 +11,7 @@ import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import { formatDate as formatTimestampDate } from '../utils/datetime';
+import { showConfirm } from '../utils/alert';
 import DateTimePickerModal from '../components/DateTimePickerModal';
 
 export default function CustomerCreditRecordsScreen({ route, navigation }) {
@@ -261,14 +262,7 @@ export default function CustomerCreditRecordsScreen({ route, navigation }) {
       }
     };
 
-    if (Platform.OS === 'web') {
-      if (window.confirm('Are you sure you want to delete this record?')) doDelete();
-    } else {
-      Alert.alert('Delete Record', 'Are you sure you want to delete this record?', [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Delete', onPress: doDelete, style: 'destructive' },
-      ]);
-    }
+    showConfirm('Delete Record', 'Are you sure you want to delete this record?', doDelete, { confirmLabel: 'Delete', destructive: true });
   };
 
   const handleAddSubmit = async () => {

@@ -12,6 +12,8 @@ import { useAuth } from '../context/AuthContext';
 import { getShopNow } from '../utils/datetime';
 import { bumpActivity } from '../hooks/useIdleLock';
 import useSubmitGuard from '../hooks/useSubmitGuard';
+import { showConfirm } from '../utils/alert';
+import CollectDuesToggle, { EMPTY_DUES, duesAmountError } from '../components/CollectDuesToggle';
 
 const CHANNELS = [
   { key: 'whatsapp', label: 'WhatsApp', icon: 'logo-whatsapp' },
@@ -53,6 +55,8 @@ export default function LogOrderScreen({ navigation, route }) {
   const [customerId, setCustomerId] = useState(null);
   const [customerSuggestions, setCustomerSuggestions] = useState([]);
   const [showCustomerSuggestions, setShowCustomerSuggestions] = useState(false);
+  const [customerDues, setCustomerDues] = useState(0);
+  const [duesCollect, setDuesCollect] = useState(EMPTY_DUES);
   const [customerSearchTarget, setCustomerSearchTarget] = useState('phone');
   const customerSearchTimer = useRef(null);
 
@@ -189,6 +193,19 @@ export default function LogOrderScreen({ navigation, route }) {
       AsyncStorage.getItem(LAST_CHANNEL_KEY).then((v) => { if (v) setChannel(v); });
     } catch { /* ignore */ }
   }, []);
+
+  // Previous dues for the chosen customer: the same lookup Quick Checkout uses
+  // when a customer is picked, so both screens show the same figure.
+  useEffect(() => {
+    setDuesCollect(EMPTY_DUES);
+    setCustomerDues(0);
+    if (!customerId || !customerPhone || customerPhone.length < 10) return undefined;
+    let cancelled = false;
+    api.customerLookupEnhanced(customerPhone).then((res) => {
+      if (!cancelled && res.data) setCustomerDues(Number(res.data.credit_balance) || 0);
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [customerId]);
 
   const selectChannel = (key) => {
     setChannel(key);
@@ -391,23 +408,32 @@ export default function LogOrderScreen({ navigation, route }) {
         showAlert('Enter payment amount', 'Please enter how much was paid, or switch back to "Not paid yet".');
         return;
       }
-      if (paymentMethod === 'cash') {
-        const isOpen = await checkRegisterStatus(activeLocation?.id);
-        if (!isOpen) {
-          const title = 'Register Closed';
-          const msg = 'The cash register for this location is not open. Please open it before recording a cash payment.';
-          if (Platform.OS === 'web') {
-            if (window.confirm(`${title}\n\n${msg}\n\nOK = Open Register, Cancel = go back.`)) {
-              navigation.navigate('CashRegister');
-            }
-          } else {
-            Alert.alert(title, msg, [
-              { text: 'Open Register', onPress: () => navigation.navigate('CashRegister') },
-              { text: 'Cancel', style: 'cancel' },
-            ]);
-          }
-          return;
-        }
+    }
+
+    // Dues collected here use the order's payment method; an order with no
+    // payment collects dues in cash. Spec section 7.
+    const collectingDues = !!(duesCollect.enabled && customerId && customerDues > 0);
+    if (collectingDues) {
+      const duesErr = duesAmountError(customerDues, duesCollect);
+      if (duesErr) {
+        showAlert('Check the dues amount', duesErr);
+        return;
+      }
+    }
+    const duesMethod = paymentMode !== 'unpaid' ? paymentMethod : 'cash';
+
+    // Only cash touches the physical register, so only cash needs it open.
+    const needsRegister = (paymentMode !== 'unpaid' && paymentMethod === 'cash') || (collectingDues && duesMethod === 'cash');
+    if (needsRegister) {
+      const isOpen = await checkRegisterStatus(activeLocation?.id);
+      if (!isOpen) {
+        showConfirm(
+          'Register Closed',
+          'The cash register for this location is not open. Please open it before recording a cash payment.',
+          () => navigation.navigate('CashRegister'),
+          { confirmLabel: 'Open Register' }
+        );
+        return;
       }
     }
 
@@ -450,6 +476,22 @@ export default function LogOrderScreen({ navigation, route }) {
       setSaving(false);
       showAlert('Could not save order', err.message || 'Please try again.');
       return;
+    }
+
+    // Dues payment: the order stands whatever happens here, and a failure is
+    // told to staff once, never retried silently.
+    if (collectingDues) {
+      const duesAmt = Math.round((parseFloat(duesCollect.amount) || 0) * 100) / 100;
+      try {
+        await api.addCreditPayment(customerId, {
+          amount: duesAmt,
+          method: duesMethod,
+          location_id: activeLocation?.id,
+          notes: 'Collected with order',
+        });
+      } catch (err) {
+        showAlert('Order saved', `Order saved. The ₹${duesAmt} dues payment was not recorded — record it from the customer's page.`);
+      }
     }
 
     // Step 2: the order now exists — from here on, any failure is an attachment
@@ -545,6 +587,15 @@ export default function LogOrderScreen({ navigation, route }) {
               </TouchableOpacity>
             ))}
           </ScrollView>
+        )}
+
+        {customerId && customerDues > 0 && (
+          <View>
+            <Text style={{ color: Colors.error, fontWeight: '600', fontSize: FontSize.md }}>
+              Previous Dues Pending: ₹{customerDues.toFixed(2)}
+            </Text>
+            <CollectDuesToggle dueAmount={customerDues} value={duesCollect} onChange={setDuesCollect} />
+          </View>
         )}
 
         <Text style={styles.sectionLabel}>What are they ordering?</Text>

@@ -13,7 +13,8 @@ import VoiceNoteRecorder from '../components/VoiceNoteRecorder';
 import RoutePicker from '../components/RoutePicker';
 import SavedAddressChips from '../components/SavedAddressChips';
 import AttachmentVoiceRow from '../components/AttachmentVoiceRow';
-import { showAlert } from '../utils/alert';
+import { showAlert, showConfirm } from '../utils/alert';
+import CollectDuesToggle, { EMPTY_DUES, duesAmountError } from '../components/CollectDuesToggle';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
@@ -114,6 +115,9 @@ export default function QuickCheckoutScreen({ navigation, route }) {
   // Submitting
   const [submitting, setSubmitting] = useState(false);
   const guardSubmit = useSubmitGuard();
+  const [duesCollect, setDuesCollect] = useState(EMPTY_DUES);
+  // A different customer means a different dues balance, so the switch starts off again.
+  useEffect(() => { setDuesCollect(EMPTY_DUES); }, [customerId]);
   const [skipAssignment, setSkipAssignment] = useState(true);
   const [submitErrors, setSubmitErrors] = useState([]);
   const [savingDraft, setSavingDraft] = useState(false);
@@ -410,6 +414,16 @@ export default function QuickCheckoutScreen({ navigation, route }) {
       fulfill_from_stock: !!cartItem?.fulfill_from_stock,
     };
   }, []);
+
+  // "New Order" from a customer's profile: fill the customer in once, then clear the
+  // param so a later visit to this screen does not re-apply it. Goes through the
+  // same selectCustomer path as picking from search, so history/dues/addresses load.
+  useEffect(() => {
+    const pc = route.params?.prefillCustomer;
+    if (!pc || !pc.id) return;
+    selectCustomer({ id: pc.id, name: pc.name, phone: pc.phone });
+    navigation.setParams({ prefillCustomer: undefined });
+  }, [route.params?.prefillCustomer]);
 
   useEffect(() => {
     const prefillToken = route.params?.prefillToken;
@@ -1077,9 +1091,24 @@ export default function QuickCheckoutScreen({ navigation, route }) {
       }
     }
 
+    // Dues collected at checkout use the order's own payment method (the first
+    // method when split); an order that takes no payment now (credit / COD)
+    // collects dues in cash. Spec section 7.
+    const collectingDues = !!(duesCollect.enabled && customerId && customerHistory?.credit_balance > 0);
+    if (collectingDues) {
+      const duesErr = duesAmountError(customerHistory.credit_balance, duesCollect);
+      if (duesErr) validationErrors.push(duesErr);
+    }
+    let duesMethod = 'cash';
+    if (paymentMode === 'pay_now' || paymentMode === 'partial') {
+      duesMethod = enableSplitPayment
+        ? ((payments.find((p) => (parseFloat(p.amount) || 0) > 0) || payments[0])?.method || 'cash')
+        : paymentMethod;
+    }
+
     if (validationErrors.length > 0) {
       setSubmitErrors(validationErrors);
-      Alert.alert('Cannot submit order', validationErrors[0]);
+      showAlert('Cannot submit order', validationErrors[0]);
       return;
     }
 
@@ -1102,19 +1131,12 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     const willPayCash = (paymentMode === 'pay_now' || paymentMode === 'partial')
       ? (enableSplitPayment ? payments.some((p) => p.method === 'cash' && (parseFloat(p.amount) || 0) > 0) : paymentMethod === 'cash')
       : false; // 'credit' and 'cod' never submit a payment at checkout time
-    if (willPayCash) {
+    if (willPayCash || (collectingDues && duesMethod === 'cash')) {
       const isRegOpen = await checkRegisterStatus(selectedLocation);
       if (!isRegOpen) {
         const msg = 'The cash register for this location is not open. Please open it before creating a sale.';
         setSubmitErrors([msg]);
-        Alert.alert(
-          'Register Closed',
-          msg,
-          [
-            { text: 'Open Register', onPress: () => navigation.navigate('CashRegister') },
-            { text: 'Cancel', style: 'cancel' },
-          ]
-        );
+        showConfirm('Register Closed', msg, () => navigation.navigate('CashRegister'), { confirmLabel: 'Open Register' });
         return;
       }
     }
@@ -1257,6 +1279,22 @@ export default function QuickCheckoutScreen({ navigation, route }) {
             await api.deleteSaleDraft(activeDraftId);
           } catch (_) { }
           setActiveDraftId(null);
+        }
+
+        // Dues payment: the order stands no matter what happens here, and a
+        // failure is told to staff once, never retried silently.
+        if (collectingDues) {
+          const duesAmt = Math.round((parseFloat(duesCollect.amount) || 0) * 100) / 100;
+          try {
+            await api.addCreditPayment(customerId, {
+              amount: duesAmt,
+              method: duesMethod,
+              location_id: selectedLocation,
+              notes: 'Collected at checkout',
+            });
+          } catch (err) {
+            showAlert('Order saved', `Order saved. The ₹${duesAmt} dues payment was not recorded — record it from the customer's page.`);
+          }
         }
 
         // The sale now exists — from here on, any failure is an attachment
@@ -1628,6 +1666,9 @@ export default function QuickCheckoutScreen({ navigation, route }) {
                 Previous Dues Pending: ₹{Number(customerHistory.credit_balance).toFixed(2)}
               </Text>
             </View>
+          )}
+          {customerId && customerHistory && customerHistory.credit_balance > 0 && (
+            <CollectDuesToggle dueAmount={customerHistory.credit_balance} value={duesCollect} onChange={setDuesCollect} />
           )}
           {needsDelivery && (
             <>
