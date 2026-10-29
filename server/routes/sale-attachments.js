@@ -5,6 +5,9 @@ const fs = require('fs');
 
 const { getDb } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
+const { convertToM4a } = require('../utils/audio-convert');
+
+const ATTACHMENT_DIR = path.join(__dirname, '..', 'uploads', 'sale-attachments');
 
 const router = express.Router();
 
@@ -79,7 +82,8 @@ router.post('/attachments/draft-upload', authenticate, authorize('owner', 'manag
       }
       durationSeconds = parsed;
     }
-    res.json({ success: true, data: { url: `/uploads/sale-attachments/${req.file.filename}`, duration_seconds: durationSeconds } });
+    const storedName = await convertToM4a(ATTACHMENT_DIR, req.file.filename);
+    res.json({ success: true, data: { url: `/uploads/sale-attachments/${storedName}`, duration_seconds: durationSeconds } });
   } catch (err) {
     await cleanupUploadedFile(req);
     next(err);
@@ -188,7 +192,8 @@ router.post('/:saleId(\\d+)/attachments', authenticate, authorize('owner', 'mana
       saleItemId = parsed;
     }
 
-    const fileUrl = `/uploads/sale-attachments/${req.file.filename}`;
+    const storedName = type === 'voice_note' ? await convertToM4a(ATTACHMENT_DIR, req.file.filename) : req.file.filename;
+    const fileUrl = `/uploads/sale-attachments/${storedName}`;
 
     const result = await db.prepare(
       'INSERT INTO sale_attachments (sale_id, sale_item_id, type, file_url, duration_seconds, uploaded_by, created_at) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) RETURNING *'

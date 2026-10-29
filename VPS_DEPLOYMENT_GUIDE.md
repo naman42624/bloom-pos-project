@@ -171,6 +171,8 @@ cd server
 npm ci --omit=dev
 ```
 
+`ffmpeg-static` downloads its `ffmpeg` binary in an install script. It turns voice notes recorded in a web browser (WebM) into M4A so they play on iPhone Safari. Do not install with `--ignore-scripts`. If npm reports that install scripts were blocked, run `npm install-scripts approve ffmpeg-static` (npm 11+) and install again. Check with `node -e "console.log(require('fs').existsSync(require('ffmpeg-static')))"`, which should print `true`. Without the binary the server logs `[audio-convert] ffmpeg binary not found` on startup and keeps saving WebM. Nothing breaks, but those notes won't play on iPhones.
+
 ### 6.3 Create production `.env`
 
 Create `server/.env`:

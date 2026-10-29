@@ -590,6 +590,72 @@ check('open submit: unknown item keys are not stored', async () => {
   assert(item.description === 'Plain bouquet' && item.quantity === 1 && item.custom === true, `Item wrong: ${JSON.stringify(item)}`);
 });
 
+// ─── Voice notes play on iPhone; slip shows every photo ───────
+function realWebm() {
+  const { execFileSync } = require('child_process');
+  const out = pathMod.join(require('os').tmpdir(), `verify-voice-${Date.now()}.webm`);
+  execFileSync(require('ffmpeg-static'), ['-y', '-loglevel', 'error', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=1', '-c:a', 'libopus', out]);
+  const buf = fs.readFileSync(out);
+  fs.unlinkSync(out);
+  return buf;
+}
+const TINY_PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64');
+async function uploadAttachment(token, saleId, { buf, mime, name, type, saleItemId }) {
+  const fd = new FormData();
+  fd.append('file', new Blob([buf], { type: mime }), name);
+  fd.append('type', type);
+  if (saleItemId) fd.append('sale_item_id', String(saleItemId));
+  const url = saleId ? `${API_BASE}/sales/${saleId}/attachments` : `${API_BASE}/sales/attachments/draft-upload`;
+  const res = await fetch(url, { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: fd });
+  let body = null; try { body = await res.json(); } catch { /* */ }
+  return { status: res.status, body };
+}
+function diskPathOf(url) { return pathMod.join(__dirname, '..', url.replace(/^\//, '')); }
+
+check('a real WebM voice note is stored as M4A (sale upload and draft upload), original removed', async () => {
+  const owner = await slipOwner();
+  const s = await createSlipSale(owner.token, 'pickup');
+  const webm = realWebm();
+  const onSale = await uploadAttachment(owner.token, s.saleId, { buf: webm, mime: 'audio/webm', name: 'note.webm', type: 'voice_note' });
+  assert(onSale.status === 201, `Sale upload ${onSale.status} ${JSON.stringify(onSale.body)}`);
+  const saleUrl = onSale.body.data.file_url;
+  draftFiles.push(saleUrl);
+  assert(/\.m4a$/.test(saleUrl), `Expected .m4a, got ${saleUrl}`);
+  assert(fs.statSync(diskPathOf(saleUrl)).size > 0, 'm4a file missing or empty');
+  assert(!fs.existsSync(diskPathOf(saleUrl.replace(/\.m4a$/, '.webm'))), 'original .webm left behind');
+  const draft = await uploadAttachment(owner.token, null, { buf: webm, mime: 'audio/webm', name: 'draft.webm', type: 'voice_note' });
+  assert(draft.status === 200 && /\.m4a$/.test(draft.body.data.url), `Draft upload ${draft.status} ${JSON.stringify(draft.body)}`);
+  draftFiles.push(draft.body.data.url);
+  const attached = await api('POST', `/sales/${s.saleId}/attachments/from-url`, owner.token, { type: 'voice_note', file_url: draft.body.data.url });
+  assert(attached.status === 201, `from-url with an .m4a draft ${attached.status} ${JSON.stringify(attached.body)}`);
+});
+
+check('a photo upload is not converted', async () => {
+  const owner = await slipOwner();
+  const s = await createSlipSale(owner.token, 'pickup');
+  const r = await uploadAttachment(owner.token, s.saleId, { buf: TINY_PNG, mime: 'image/png', name: 'p.png', type: 'photo' });
+  assert(r.status === 201 && /\.png$/.test(r.body.data.file_url), `Photo ${r.status} ${JSON.stringify(r.body)}`);
+  draftFiles.push(r.body.data.file_url);
+});
+
+check('public slip shows order photos, item photos and an item photo stored at checkout', async () => {
+  const owner = await slipOwner();
+  const s = await createSlipSale(owner.token, 'delivery');
+  const orderPhoto = await uploadAttachment(owner.token, s.saleId, { buf: TINY_PNG, mime: 'image/png', name: 'o.png', type: 'photo' });
+  const itemPhoto = await uploadAttachment(owner.token, s.saleId, { buf: TINY_PNG, mime: 'image/png', name: 'i.png', type: 'photo', saleItemId: s.itemIds[0] });
+  assert(orderPhoto.status === 201 && itemPhoto.status === 201, `Photo uploads ${orderPhoto.status}/${itemPhoto.status}`);
+  draftFiles.push(orderPhoto.body.data.file_url, itemPhoto.body.data.file_url);
+  const db = await getDb();
+  await db.prepare('UPDATE sale_items SET image_url = ? WHERE id = ?').run('/uploads/products/checkout-photo-test.jpg', s.itemIds[1]);
+  const res = await api('GET', `/slip/${s.token}`, null);
+  assert(res.status === 200, `Slip ${res.status}`);
+  const d = res.body.data;
+  assert(Array.isArray(d.order_photos) && d.order_photos.length === 1 && d.order_photos[0].url === orderPhoto.body.data.file_url, `order_photos ${JSON.stringify(d.order_photos)}`);
+  assert(d.items[0].photos.length === 1 && d.items[0].photos[0].url === itemPhoto.body.data.file_url, `item 1 photos ${JSON.stringify(d.items[0].photos)}`);
+  assert(d.items[1].photos.length === 1 && d.items[1].photos[0].url === '/uploads/products/checkout-photo-test.jpg', `item 2 photos ${JSON.stringify(d.items[1].photos)}`);
+  assert(findDeniedKeys(res.body).length === 0, 'photo fields leaked a denied key');
+});
+
 async function cleanupDraftFiles() {
   for (const u of draftFiles) {
     try { fs.unlinkSync(pathMod.join(__dirname, '..', u.replace(/^\//, ''))); } catch { /* */ }
