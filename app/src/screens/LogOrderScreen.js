@@ -488,6 +488,7 @@ export default function LogOrderScreen({ navigation, route }) {
           method: duesMethod,
           location_id: activeLocation?.id,
           notes: 'Collected with order',
+          exclude_sale_id: saleId || undefined,
         });
       } catch (err) {
         showAlert('Order saved', `Order saved. The ₹${duesAmt} dues payment was not recorded — record it from the customer's page.`);

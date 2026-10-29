@@ -905,6 +905,31 @@ check('FIXED: POST /customers/:id/credits (credit payoff) is blocked for cash wh
   assert(okRes.status === 200 || okRes.status === 201, `Expected the payoff to succeed with the register open, got ${okRes.status}: ${JSON.stringify(okRes.body)}`);
 });
 
+check('FIXED: dues paid at checkout with exclude_sale_id never land on the order just created (final review I2)', async () => {
+  const owner = await loginOwner();
+  await ensureRegisterOpen(owner.token, TEST_LOCATION_ID);
+  const customer = await createCustomer(owner.token);
+  const dueRes = await api('POST', `/customers/${customer.id}/add-due`, owner.token, { amount: 250, location_id: TEST_LOCATION_ID, notes: 'Past due, no sale' });
+  assert(dueRes.status === 200 || dueRes.status === 201, `add-due failed: ${JSON.stringify(dueRes.body)}`);
+  const saleRes = await api('POST', '/sales', owner.token, {
+    location_id: TEST_LOCATION_ID, order_type: 'pickup', channel: 'walk_in', customer_id: customer.id,
+    items: [{ quantity: 1, unit_price: 500, product_name: 'Test Dues Exclusion Bouquet' }],
+  });
+  assert(saleRes.status === 201 || saleRes.status === 200, `sale failed: ${JSON.stringify(saleRes.body)}`);
+  const saleId = saleRes.body.data.id;
+  createdSaleIds.push(saleId);
+  const before = await api('GET', `/sales/${saleId}`, owner.token);
+  const balBefore = Number((await api('GET', `/customers/${customer.id}`, owner.token)).body.data.credit_balance);
+  const pay = await api('POST', `/customers/${customer.id}/credits`, owner.token, { amount: 250, method: 'cash', location_id: TEST_LOCATION_ID, exclude_sale_id: saleId });
+  assert(pay.status === 200 || pay.status === 201, `credits failed: ${JSON.stringify(pay.body)}`);
+  const after = await api('GET', `/sales/${saleId}`, owner.token);
+  assert(after.body.data.payment_status === before.body.data.payment_status, `payment_status changed: ${before.body.data.payment_status} -> ${after.body.data.payment_status}`);
+  assert(Number(after.body.data.paid_amount ?? after.body.data.amount_paid ?? 0) === Number(before.body.data.paid_amount ?? before.body.data.amount_paid ?? 0), 'paid amount on the new order changed');
+  assert((after.body.data.payments || []).length === 0, `Payment landed on the new order: ${JSON.stringify(after.body.data.payments)}`);
+  const balAfter = Number((await api('GET', `/customers/${customer.id}`, owner.token)).body.data.credit_balance);
+  assert(Math.abs((balBefore - balAfter) - 250) < 0.01, `balance ${balBefore} -> ${balAfter}, expected -250`);
+});
+
 check('add-payment (POST /:id/payments) blocked when register is closed for cash', async () => {
   const owner = await loginOwner();
   await ensureRegisterOpen(owner.token, TEST_LOCATION_ID);

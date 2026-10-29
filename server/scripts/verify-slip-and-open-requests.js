@@ -427,7 +427,7 @@ check('missing name or a 9-digit phone gives 400 with a plain message', async ()
   const a = await api('POST', '/order-request/open', null, openBody({ requester_name: '' }));
   const b = await api('POST', '/order-request/open', null, openBody({ requester_phone: '987654321' }));
   assert(a.status === 400 && /name/i.test(a.body.message), `Missing name: ${a.status} ${JSON.stringify(a.body)}`);
-  assert(b.status === 400 && /phone/i.test(b.body.message), `9-digit phone: ${b.status} ${JSON.stringify(b.body)}`);
+  assert(b.status === 400 && /10-digit mobile number/i.test(b.body.message), `9-digit phone: ${b.status} ${JSON.stringify(b.body)}`);
 });
 
 check('resolve-customer: new phone creates one customer, second call returns the same id', async () => {
@@ -440,6 +440,7 @@ check('resolve-customer: new phone creates one customer, second call returns the
   assert(r1.status === 200 && r1.body.data.created === true && r1.body.data.customer_id, `First resolve ${r1.status} ${JSON.stringify(r1.body)}`);
   const r2 = await api('POST', `/order-requests/${openCtx.first.id}/resolve-customer`, owner.token);
   assert(r2.status === 200 && r2.body.data.created === false && r2.body.data.customer_id === r1.body.data.customer_id, `Second resolve ${JSON.stringify(r2.body)}`);
+  assert(r1.body.data.name === 'Open Link Tester' && r1.body.data.phone === openCtx.phone && r2.body.data.name === r1.body.data.name, `Resolve identity ${JSON.stringify(r1.body.data)}`);
   assert((await usersCount()) === before + 1, 'Expected exactly one new user');
   const db = await getDb();
   const u = await db.prepare('SELECT role, phone, name FROM users WHERE id = ?').get(r1.body.data.customer_id);
@@ -551,7 +552,7 @@ check('from-url rejects traversal and unknown files, accepts an uploaded file', 
   const owner = await slipOwner();
   const s = await createSlipSale(owner.token, 'pickup');
   const post = (file_url) => api('POST', `/sales/${s.saleId}/attachments/from-url`, owner.token, { type: 'voice_note', file_url, duration_seconds: 4 });
-  for (const bad of ['/uploads/sale-attachments/../../.env', '/uploads/other/x.webm', '/uploads/sale-attachments/missing-file-zzz.webm', 'http://evil/x.webm']) {
+  for (const bad of ['/uploads/sale-attachments/../../.env', '/uploads/other/x.webm', '/uploads/sale-attachments/.', '/uploads/sale-attachments/missing-file-zzz.webm', 'http://evil/x.webm']) {
     const r = await post(bad);
     assert(r.status === 400, `Expected 400 for ${bad}, got ${r.status}`);
   }
@@ -563,6 +564,32 @@ check('from-url rejects traversal and unknown files, accepts an uploaded file', 
   const row = await db.prepare('SELECT * FROM sale_attachments WHERE sale_id = ?').get(s.saleId);
   assert(row && row.duration_seconds === 4, 'attachment row missing');
 });
+check('open submit: overlong field, impossible date, 51 items and a non-mobile number all give a plain 400', async () => {
+  const cases = [
+    ['overlong recipient_phone', { recipient_phone: '9'.repeat(25) }],
+    ['overlong requested_time', { requested_time: 'x'.repeat(60) }],
+    ['overlong payment_reference', { payment_reference: 'r'.repeat(150) }],
+    ['2026-02-30', { requested_date: '2026-02-30' }],
+    ['51 items', { items: Array.from({ length: 51 }, () => ({ custom: true, description: 'x', quantity: 1 })) }],
+    ['quantity 1000', { items: [{ custom: true, description: 'x', quantity: 1000 }] }],
+    ['landline-style number', { requester_phone: '1234567890' }],
+  ];
+  for (const [label, extra] of cases) {
+    const r = await api('POST', '/order-request/open', null, openBody(extra));
+    assert(r.status === 400, `${label}: expected 400, got ${r.status} ${JSON.stringify(r.body)}`);
+    assert(r.body.message && r.body.message !== 'Validation failed' && !/internal/i.test(r.body.message), `${label}: message not plain: ${r.body.message}`);
+  }
+});
+check('open submit: unknown item keys are not stored', async () => {
+  const { res, id } = await submitOpen({ items: [{ custom: true, description: 'Plain bouquet', quantity: 1, evil: 'x', price: 1 }] });
+  assert(res.status === 201, `Expected 201, got ${res.status} ${JSON.stringify(res.body)}`);
+  const db = await getDb();
+  const row = await db.prepare('SELECT items_json FROM order_requests WHERE id = ?').get(id);
+  const item = row.items_json[0];
+  assert(!('evil' in item) && !('price' in item), `Unknown keys stored: ${JSON.stringify(item)}`);
+  assert(item.description === 'Plain bouquet' && item.quantity === 1 && item.custom === true, `Item wrong: ${JSON.stringify(item)}`);
+});
+
 async function cleanupDraftFiles() {
   for (const u of draftFiles) {
     try { fs.unlinkSync(pathMod.join(__dirname, '..', u.replace(/^\//, ''))); } catch { /* */ }

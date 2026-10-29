@@ -415,16 +415,6 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     };
   }, []);
 
-  // "New Order" from a customer's profile: fill the customer in once, then clear the
-  // param so a later visit to this screen does not re-apply it. Goes through the
-  // same selectCustomer path as picking from search, so history/dues/addresses load.
-  useEffect(() => {
-    const pc = route.params?.prefillCustomer;
-    if (!pc || !pc.id) return;
-    selectCustomer({ id: pc.id, name: pc.name, phone: pc.phone });
-    navigation.setParams({ prefillCustomer: undefined });
-  }, [route.params?.prefillCustomer]);
-
   useEffect(() => {
     const prefillToken = route.params?.prefillToken;
     const prefillCart = route.params?.prefillCart;
@@ -883,7 +873,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
         // a recorded voice note has not been saved anywhere yet.
         if (err?.voiceNoteUpload) {
           showAlert('Draft not saved', err.message);
-          return;
+          return false;
         }
       } finally {
         setSavingDraft(false);
@@ -891,7 +881,28 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     }
     resetForm();
     loadDrafts();
+    return true;
   }, [items.length, customerName, customerPhone, orderNotes, activeDraftId, selectedLocation, orderType, customerAddress, totals.finalTotal, buildDraftPayloadWithUploads, resetForm, loadDrafts]);
+
+  // "New Order" from a customer's profile: fill the customer in once, then clear the
+  // param so a later visit to this screen does not re-apply it. If a checkout is
+  // already in progress it is saved as a draft and cleared first (the exact same
+  // path as the New Sale button), so the customer never lands on someone else's cart.
+  // Goes through the same selectCustomer path as picking from search, so
+  // history/dues/addresses load.
+  useEffect(() => {
+    const pc = route.params?.prefillCustomer;
+    if (!pc || !pc.id) return;
+    navigation.setParams({ prefillCustomer: undefined });
+    (async () => {
+      const hasAnyData = items.length > 0 || customerName.trim() || customerPhone.trim() || orderNotes.trim();
+      if (hasAnyData && !(customerId && String(customerId) === String(pc.id) && items.length === 0)) {
+        const cleared = await handleNewSale();
+        if (!cleared) return;
+      }
+      selectCustomer({ id: pc.id, name: pc.name, phone: pc.phone });
+    })();
+  }, [route.params?.prefillCustomer]);
 
   const handleSaveDraft = useCallback(async () => {
     if (savingDraft || submitting) return;
@@ -1291,6 +1302,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
               method: duesMethod,
               location_id: selectedLocation,
               notes: 'Collected at checkout',
+              exclude_sale_id: res.data?.id || undefined,
             });
           } catch (err) {
             showAlert('Order saved', `Order saved. The ₹${duesAmt} dues payment was not recorded — record it from the customer's page.`);
@@ -1853,9 +1865,19 @@ export default function QuickCheckoutScreen({ navigation, route }) {
             </View>
           ))}
           {pendingAttachments.map((a) => (
-            <Text key={a.uri} style={styles.attachmentNote}>
-              🎤 Voice note recorded ({a.durationSeconds}s) — will attach when the order is placed
-            </Text>
+            <View key={a.uri} style={{ flexDirection: 'row', alignItems: 'center', gap: Spacing.sm }}>
+              <Text style={[styles.attachmentNote, { flex: 1 }]}>
+                🎤 Voice note recorded ({a.durationSeconds}s) — will attach when the order is placed
+              </Text>
+              <TouchableOpacity
+                onPress={() => setPendingAttachments((prev) => prev.filter((x) => x.uri !== a.uri))}
+                accessibilityLabel="Remove this voice note"
+                hitSlop={8}
+                style={{ minWidth: 44, minHeight: 44, alignItems: 'center', justifyContent: 'center' }}
+              >
+                <Ionicons name="trash-outline" size={22} color={Colors.error} />
+              </TouchableOpacity>
+            </View>
           ))}
         </View>
 

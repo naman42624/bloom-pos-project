@@ -48,7 +48,7 @@ export default function SlipScreen({ token }) {
       if (busy.current === 0) applyChecklist(res.data.checklist);
     } catch (err) {
       if (!first) return; // keep showing what we have if a refresh blips
-      setState({ loading: false, data: null, errorKind: err?.status === 404 ? 'not_found' : 'server_error' });
+      setState({ loading: false, data: null, errorKind: err?.status === 404 ? 'not_found' : (err?.status === 429 ? 'rate_limited' : 'server_error') });
     }
   }, [token, applyChecklist]);
 
@@ -76,7 +76,7 @@ export default function SlipScreen({ token }) {
       } else if (err?.status === 404) {
         setState({ loading: false, data: null, errorKind: 'not_found' });
       } else {
-        setToast("Couldn't save, try again");
+        setToast(err?.status === 429 ? 'Too many tries — please wait a minute and try again.' : "Couldn't save, try again");
       }
     }
   };
@@ -89,6 +89,17 @@ export default function SlipScreen({ token }) {
       <View style={styles.center}>
         <Ionicons name="link-outline" size={48} color={Colors.textLight} />
         <Text style={styles.bigMsg}>This slip link has expired or is not valid. Ask the shop for a new slip.</Text>
+      </View>
+    );
+  }
+  if (state.errorKind === 'rate_limited') {
+    return (
+      <View style={styles.center}>
+        <Ionicons name="time-outline" size={48} color={Colors.textLight} />
+        <Text style={styles.bigMsg}>Too many tries — please wait a minute and try again.</Text>
+        <TouchableOpacity style={styles.retryBtn} onPress={() => { setState({ loading: true, data: null, errorKind: null }); load(true); }}>
+          <Text style={styles.retryText}>Try again</Text>
+        </TouchableOpacity>
       </View>
     );
   }

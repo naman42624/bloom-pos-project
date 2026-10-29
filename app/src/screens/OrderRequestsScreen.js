@@ -65,12 +65,14 @@ export default function OrderRequestsScreen({ navigation }) {
         prefill = {
           ...request,
           customer_id: res.data.customer_id,
-          customer_name: request.matched_customer?.name || request.requester_name,
-          customer_phone: request.requester_phone,
+          customer_name: res.data.name || request.requester_name,
+          customer_phone: res.data.phone || request.requester_phone,
         };
       } catch (err) {
-        // 409 (phone belongs to a staff account) carries its own plain message.
-        showAlert("Couldn't set up this customer — try again", err?.status === 409 ? err.message : undefined);
+        // Any 4xx (staff phone, no phone on the request, already reviewed) carries
+        // its own plain message saying what to do next.
+        const isClientError = err?.status >= 400 && err?.status < 500;
+        showAlert("Couldn't set up this customer — try again", isClientError ? err.message : undefined);
         return;
       }
     }

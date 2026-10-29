@@ -88,7 +88,7 @@ router.post('/attachments/draft-upload', authenticate, authorize('owner', 'manag
 
 // ─── POST /api/sales/:saleId/attachments/from-url ─────────────
 // Attaches a file already stored by draft-upload to a real sale.
-const DRAFT_FILE_URL_RE = /^\/uploads\/sale-attachments\/[A-Za-z0-9._-]+$/;
+const DRAFT_FILE_URL_RE = /^\/uploads\/sale-attachments\/attachment-\d+-\d+(\.[A-Za-z0-9_-]+)?$/;
 router.post('/:saleId(\\d+)/attachments/from-url', authenticate, authorize('owner', 'manager', 'employee', 'counter_staff'), async (req, res, next) => {
   try {
     const db = await getDb();
@@ -104,7 +104,9 @@ router.post('/:saleId(\\d+)/attachments/from-url', authenticate, authorize('owne
     }
     const baseName = path.basename(fileUrl);
     const diskPath = path.join(__dirname, '..', 'uploads', 'sale-attachments', baseName);
-    if (!fs.existsSync(diskPath)) {
+    let isFile = false;
+    try { isFile = fs.statSync(diskPath).isFile(); } catch (_e) { isFile = false; }
+    if (!isFile) {
       return res.status(400).json({ success: false, message: 'That voice note file is missing' });
     }
 

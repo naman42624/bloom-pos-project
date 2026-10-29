@@ -41,22 +41,38 @@ function rateLimit(req, res, next) {
 router.use(rateLimit);
 
 // ─── Shared request-body rules (per-customer and open link) ─────────────
+const TOO_LONG = 'One of the answers is too long. Please shorten it and try again.';
+const isRealDate = (v) => {
+  if (typeof v !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(v)) return false;
+  const d = new Date(`${v}T00:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === v;
+};
 const submitValidators = [
-  body('recipient_name').trim().notEmpty().withMessage('Recipient name is required'),
-  body('recipient_phone').trim().notEmpty().withMessage('Recipient phone is required'),
-  body('order_type').isIn(['delivery', 'pickup']),
-  body('delivery_address').optional({ nullable: true }).trim(),
-  body('message').optional({ nullable: true }).trim(),
-  body('requested_date').notEmpty().withMessage('Requested date is required'),
-  body('requested_time').optional({ nullable: true }).trim(),
-  body('items').isArray({ min: 1 }).withMessage('At least one item is required'),
-  body('items.*.quantity').isInt({ min: 1 }),
-  body('items.*.product_id').optional({ nullable: true }).isInt(),
-  body('items.*.custom').optional().isBoolean(),
-  body('items.*.description').optional({ nullable: true }).trim(),
+  body('recipient_name').trim().notEmpty().withMessage('Recipient name is required')
+    .isLength({ max: 100 }).withMessage(TOO_LONG),
+  body('recipient_phone').trim().notEmpty().withMessage('Recipient phone is required')
+    .isLength({ max: 20 }).withMessage('Please enter one phone number (up to 20 characters).'),
+  body('order_type').isIn(['delivery', 'pickup']).withMessage('Please choose delivery or pickup'),
+  body('delivery_address').optional({ nullable: true }).trim().isLength({ max: 500 }).withMessage(TOO_LONG),
+  body('message').optional({ nullable: true }).trim().isLength({ max: 500 }).withMessage(TOO_LONG),
+  body('requested_date').notEmpty().withMessage('Requested date is required')
+    .bail().custom(isRealDate).withMessage('Please pick a real date.'),
+  body('requested_time').optional({ nullable: true }).trim().isLength({ max: 50 }).withMessage(TOO_LONG),
+  body('items').isArray({ min: 1, max: 50 }).withMessage('Please add between 1 and 50 items.'),
+  body('items.*.quantity').isInt({ min: 1, max: 999 }).withMessage('Each quantity must be between 1 and 999.'),
+  body('items.*.product_id').optional({ nullable: true }).isInt().withMessage('Please check the items and try again'),
+  body('items.*.custom').optional().isBoolean().withMessage('Please check the items and try again'),
+  body('items.*.description').optional({ nullable: true }).trim().isLength({ max: 200 }).withMessage(TOO_LONG),
+  body('items.*.name').optional({ nullable: true }).isString().isLength({ max: 200 }).withMessage(TOO_LONG),
   body('payment_claimed').optional().isBoolean().toBoolean(),
-  body('payment_reference').optional({ nullable: true }).trim(),
+  body('payment_reference').optional({ nullable: true }).trim().isLength({ max: 100 }).withMessage(TOO_LONG),
 ];
+
+function firstMessage(errors) {
+  const list = errors.array();
+  const m = list[0].msg;
+  return m === 'Invalid value' ? 'Please check the form and try again' : m;
+}
 
 // Validates the order part of a submit body. Returns { error } with a plain
 // message, or { fields } ready to insert.
@@ -76,9 +92,21 @@ function readOrderFields(reqBody) {
   // to show for it). Product existence/active-state is deliberately
   // NOT re-validated here — see spec §7: drift is handled entirely at
   // approve time by LogOrderScreen's own live checks, not here.
+  // Each stored item is rebuilt from a fixed field set, never the client
+  // object, so unknown keys are never persisted.
   const validItems = items.filter((item) => {
     if (item.custom) return typeof item.description === 'string' && item.description.trim().length > 0;
     return Number.isInteger(item.product_id);
+  }).map((item) => {
+    const out = { quantity: Number(item.quantity) };
+    if (item.custom) {
+      out.custom = true;
+      out.description = item.description.trim();
+    } else {
+      out.product_id = item.product_id;
+    }
+    if (typeof item.name === 'string' && item.name.trim()) out.name = item.name.trim();
+    return out;
   });
   if (validItems.length === 0) return { error: 'At least one item is required' };
 
@@ -123,16 +151,15 @@ router.post(
     body('requester_name').trim()
       .notEmpty().withMessage('Please enter your name')
       .isLength({ min: 2, max: 80 }).withMessage('Please enter your name (2 to 80 letters)'),
-    body('requester_phone').custom((v) => normalizeIndianPhone(v) !== null)
-      .withMessage('Please enter a 10-digit phone number'),
+    body('requester_phone').custom((v) => /^[6-9]\d{9}$/.test(normalizeIndianPhone(v) || ''))
+      .withMessage('Please enter a 10-digit mobile number.'),
     ...submitValidators,
   ],
   async (req, res, next) => {
     try {
       const errors = validationResult(req);
       if (!errors.isEmpty()) {
-        const list = errors.array();
-        return res.status(400).json({ success: false, message: list[0].msg === 'Invalid value' ? 'Please check the form and try again' : list[0].msg, errors: list });
+        return res.status(400).json({ success: false, message: firstMessage(errors), errors: errors.array() });
       }
 
       const parsed = readOrderFields(req.body);
@@ -234,7 +261,7 @@ router.post(
   async (req, res, next) => {
     try {
       const errors = validationResult(req);
-      if (!errors.isEmpty()) return res.status(400).json({ success: false, message: 'Validation failed', errors: errors.array() });
+      if (!errors.isEmpty()) return res.status(400).json({ success: false, message: firstMessage(errors), errors: errors.array() });
 
       const db = await getAsyncDb();
       const customer = await db.prepare(

@@ -596,6 +596,7 @@ router.post(
     body('method').optional().isIn(['cash', 'card', 'upi']),
     body('write_off_amount').optional().isFloat({ min: 0.01 }),
     body('sale_id').optional({ nullable: true }).isInt(),
+    body('exclude_sale_id').optional({ nullable: true }).isInt(),
     body('location_id').isInt({ min: 1 }).withMessage('Location ID is required'),
     body('notes').optional().trim(),
   ],
@@ -606,6 +607,9 @@ router.post(
 
       const db = getDb();
       const customerId = req.params.id;
+      // Optional: a sale the auto-allocation must skip (the order just created
+      // at checkout, so dues money never lands on it).
+      const excludeSaleId = parseInt(req.body.exclude_sale_id, 10) || 0;
 
       const customer = db.prepare("SELECT id, credit_balance FROM users WHERE id = ? AND role = 'customer'").get(customerId);
       if (!customer) return res.status(404).json({ success: false, message: 'Customer not found' });
@@ -697,9 +701,9 @@ router.post(
           const unpaidSales = db.prepare(`
             SELECT s.id, s.grand_total, COALESCE((SELECT SUM(amount) FROM payments WHERE sale_id = s.id), 0) as total_paid
             FROM sales s
-            WHERE (s.customer_id = ? OR s.sender_customer_id = ?) AND s.status != 'cancelled' AND s.payment_status != 'paid'
+            WHERE (s.customer_id = ? OR s.sender_customer_id = ?) AND s.status != 'cancelled' AND s.payment_status != 'paid' AND s.id <> ?
             ORDER BY s.created_at ASC
-          `).all(customerId, customerId);
+          `).all(customerId, customerId, excludeSaleId);
 
           for (const s of unpaidSales) {
             if (totalRemaining <= 0.01) break;
