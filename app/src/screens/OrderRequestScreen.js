@@ -75,7 +75,7 @@ export default function OrderRequestScreen({ token, mode, statusToken }) {
     fetchPage()
       .then((res) => setState({ loading: false, data: res.data, errorKind: null }))
       .catch((err) => {
-        const kind = err?.status === 404 ? 'not_found' : 'server_error';
+        const kind = err?.status === 404 ? 'not_found' : (err?.status === 429 ? 'rate_limited' : 'server_error');
         setState({ loading: false, data: null, errorKind: kind });
       });
   };
@@ -86,7 +86,7 @@ export default function OrderRequestScreen({ token, mode, statusToken }) {
       .then((res) => { if (!cancelled) setState({ loading: false, data: res.data, errorKind: null }); })
       .catch((err) => {
         if (cancelled) return;
-        const kind = err?.status === 404 ? 'not_found' : 'server_error';
+        const kind = err?.status === 404 ? 'not_found' : (err?.status === 429 ? 'rate_limited' : 'server_error');
         setState({ loading: false, data: null, errorKind: kind });
       });
     return () => { cancelled = true; };
@@ -116,8 +116,8 @@ export default function OrderRequestScreen({ token, mode, statusToken }) {
     if (isOpen) {
       const errs = {};
       if (requesterName.trim().length < 2) errs.name = 'Please enter your name.';
-      if (requesterPhone.replace(/\D/g, '').replace(/^91(?=\d{10}$)/, '').replace(/^0(?=\d{10}$)/, '').length !== 10) {
-        errs.phone = 'Please enter your 10-digit phone number.';
+      if (!/^[6-9]\d{9}$/.test(requesterPhone.replace(/[\s\-().]/g, '').replace(/^\+91/, '').replace(/^91(?=\d{10}$)/, '').replace(/^0(?=\d{10}$)/, ''))) {
+        errs.phone = 'Please enter a 10-digit mobile number.';
       }
       setFieldErrors(errs);
       if (errs.name || errs.phone) return;
@@ -165,7 +165,7 @@ export default function OrderRequestScreen({ token, mode, statusToken }) {
       }
       setSubmitted(true);
     } catch (err) {
-      setFormError(err.message || 'Something went wrong — please try again in a moment.');
+      setFormError(err?.status === 429 ? 'Too many tries — please wait a minute and try again.' : (err.message || 'Something went wrong — please try again in a moment.'));
     } finally {
       setSubmitting(false);
     }
@@ -199,13 +199,16 @@ export default function OrderRequestScreen({ token, mode, statusToken }) {
   }
 
   if (state.errorKind || !state.data) {
-    const isServerError = state.errorKind === 'server_error';
+    const isRateLimited = state.errorKind === 'rate_limited';
+    const isServerError = state.errorKind === 'server_error' || isRateLimited;
     return (
       <View style={styles.center}>
         <Ionicons name={isServerError ? 'cloud-offline-outline' : 'link-outline'} size={40} color={Colors.textLight} style={{ marginBottom: Spacing.sm }} />
-        <Text style={styles.notFoundTitle}>{isServerError ? "We couldn't load this page" : "This link isn't valid"}</Text>
+        <Text style={styles.notFoundTitle}>{isRateLimited ? 'Please wait a moment' : (isServerError ? "We couldn't load this page" : "This link isn't valid")}</Text>
         <Text style={styles.notFoundText}>
-          {isServerError
+          {isRateLimited
+            ? 'Too many tries — please wait a minute and try again.'
+            : isServerError
             ? 'Something went wrong on our end — please try reloading this page in a moment.'
             : 'Please ask the shop to send you a fresh link.'}
         </Text>

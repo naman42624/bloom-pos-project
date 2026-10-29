@@ -427,7 +427,7 @@ check('missing name or a 9-digit phone gives 400 with a plain message', async ()
   const a = await api('POST', '/order-request/open', null, openBody({ requester_name: '' }));
   const b = await api('POST', '/order-request/open', null, openBody({ requester_phone: '987654321' }));
   assert(a.status === 400 && /name/i.test(a.body.message), `Missing name: ${a.status} ${JSON.stringify(a.body)}`);
-  assert(b.status === 400 && /phone/i.test(b.body.message), `9-digit phone: ${b.status} ${JSON.stringify(b.body)}`);
+  assert(b.status === 400 && /10-digit mobile number/i.test(b.body.message), `9-digit phone: ${b.status} ${JSON.stringify(b.body)}`);
 });
 
 check('resolve-customer: new phone creates one customer, second call returns the same id', async () => {
@@ -440,6 +440,7 @@ check('resolve-customer: new phone creates one customer, second call returns the
   assert(r1.status === 200 && r1.body.data.created === true && r1.body.data.customer_id, `First resolve ${r1.status} ${JSON.stringify(r1.body)}`);
   const r2 = await api('POST', `/order-requests/${openCtx.first.id}/resolve-customer`, owner.token);
   assert(r2.status === 200 && r2.body.data.created === false && r2.body.data.customer_id === r1.body.data.customer_id, `Second resolve ${JSON.stringify(r2.body)}`);
+  assert(r1.body.data.name === 'Open Link Tester' && r1.body.data.phone === openCtx.phone && r2.body.data.name === r1.body.data.name, `Resolve identity ${JSON.stringify(r1.body.data)}`);
   assert((await usersCount()) === before + 1, 'Expected exactly one new user');
   const db = await getDb();
   const u = await db.prepare('SELECT role, phone, name FROM users WHERE id = ?').get(r1.body.data.customer_id);
@@ -525,6 +526,142 @@ async function cleanupOpenRequests() {
   }
 }
 
+// ─── Task 7: draft voice notes ────────────────────────────────
+const draftFiles = [];
+async function draftUpload(token) {
+  const fd = new FormData();
+  fd.append('file', new Blob([Buffer.from('RIFFtestaudio')], { type: 'audio/webm' }), 'draft-test.webm');
+  fd.append('type', 'voice_note');
+  fd.append('duration_seconds', '4');
+  const res = await fetch(`${API_BASE}/sales/attachments/draft-upload`, { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: fd });
+  let body = null; try { body = await res.json(); } catch { /* */ }
+  return { status: res.status, body };
+}
+const fs = require('fs');
+const pathMod = require('path');
+check('draft-upload stores a voice note and returns url + duration', async () => {
+  const owner = await slipOwner();
+  const r = await draftUpload(owner.token);
+  assert(r.status === 200 && /^\/uploads\/sale-attachments\/[A-Za-z0-9._-]+$/.test(r.body?.data?.url || ''), `Upload ${r.status} ${JSON.stringify(r.body)}`);
+  assert(r.body.data.duration_seconds === 4, `duration ${JSON.stringify(r.body)}`);
+  draftFiles.push(r.body.data.url);
+  const noAuth = await draftUpload('bad');
+  assert(noAuth.status === 401, `Unauth upload ${noAuth.status}`);
+});
+check('from-url rejects traversal and unknown files, accepts an uploaded file', async () => {
+  const owner = await slipOwner();
+  const s = await createSlipSale(owner.token, 'pickup');
+  const post = (file_url) => api('POST', `/sales/${s.saleId}/attachments/from-url`, owner.token, { type: 'voice_note', file_url, duration_seconds: 4 });
+  for (const bad of ['/uploads/sale-attachments/../../.env', '/uploads/other/x.webm', '/uploads/sale-attachments/.', '/uploads/sale-attachments/missing-file-zzz.webm', 'http://evil/x.webm']) {
+    const r = await post(bad);
+    assert(r.status === 400, `Expected 400 for ${bad}, got ${r.status}`);
+  }
+  const up = await draftUpload(owner.token);
+  draftFiles.push(up.body.data.url);
+  const ok = await post(up.body.data.url);
+  assert(ok.status === 201 && ok.body.data.file_url === up.body.data.url && ok.body.data.type === 'voice_note', `Attach ${ok.status} ${JSON.stringify(ok.body)}`);
+  const db = await getDb();
+  const row = await db.prepare('SELECT * FROM sale_attachments WHERE sale_id = ?').get(s.saleId);
+  assert(row && row.duration_seconds === 4, 'attachment row missing');
+});
+check('open submit: overlong field, impossible date, 51 items and a non-mobile number all give a plain 400', async () => {
+  const cases = [
+    ['overlong recipient_phone', { recipient_phone: '9'.repeat(25) }],
+    ['overlong requested_time', { requested_time: 'x'.repeat(60) }],
+    ['overlong payment_reference', { payment_reference: 'r'.repeat(150) }],
+    ['2026-02-30', { requested_date: '2026-02-30' }],
+    ['51 items', { items: Array.from({ length: 51 }, () => ({ custom: true, description: 'x', quantity: 1 })) }],
+    ['quantity 1000', { items: [{ custom: true, description: 'x', quantity: 1000 }] }],
+    ['landline-style number', { requester_phone: '1234567890' }],
+  ];
+  for (const [label, extra] of cases) {
+    const r = await api('POST', '/order-request/open', null, openBody(extra));
+    assert(r.status === 400, `${label}: expected 400, got ${r.status} ${JSON.stringify(r.body)}`);
+    assert(r.body.message && r.body.message !== 'Validation failed' && !/internal/i.test(r.body.message), `${label}: message not plain: ${r.body.message}`);
+  }
+});
+check('open submit: unknown item keys are not stored', async () => {
+  const { res, id } = await submitOpen({ items: [{ custom: true, description: 'Plain bouquet', quantity: 1, evil: 'x', price: 1 }] });
+  assert(res.status === 201, `Expected 201, got ${res.status} ${JSON.stringify(res.body)}`);
+  const db = await getDb();
+  const row = await db.prepare('SELECT items_json FROM order_requests WHERE id = ?').get(id);
+  const item = row.items_json[0];
+  assert(!('evil' in item) && !('price' in item), `Unknown keys stored: ${JSON.stringify(item)}`);
+  assert(item.description === 'Plain bouquet' && item.quantity === 1 && item.custom === true, `Item wrong: ${JSON.stringify(item)}`);
+});
+
+// ─── Voice notes play on iPhone; slip shows every photo ───────
+function realWebm() {
+  const { execFileSync } = require('child_process');
+  const out = pathMod.join(require('os').tmpdir(), `verify-voice-${Date.now()}.webm`);
+  execFileSync(require('ffmpeg-static'), ['-y', '-loglevel', 'error', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=1', '-c:a', 'libopus', out]);
+  const buf = fs.readFileSync(out);
+  fs.unlinkSync(out);
+  return buf;
+}
+const TINY_PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64');
+async function uploadAttachment(token, saleId, { buf, mime, name, type, saleItemId }) {
+  const fd = new FormData();
+  fd.append('file', new Blob([buf], { type: mime }), name);
+  fd.append('type', type);
+  if (saleItemId) fd.append('sale_item_id', String(saleItemId));
+  const url = saleId ? `${API_BASE}/sales/${saleId}/attachments` : `${API_BASE}/sales/attachments/draft-upload`;
+  const res = await fetch(url, { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: fd });
+  let body = null; try { body = await res.json(); } catch { /* */ }
+  return { status: res.status, body };
+}
+function diskPathOf(url) { return pathMod.join(__dirname, '..', url.replace(/^\//, '')); }
+
+check('a real WebM voice note is stored as M4A (sale upload and draft upload), original removed', async () => {
+  const owner = await slipOwner();
+  const s = await createSlipSale(owner.token, 'pickup');
+  const webm = realWebm();
+  const onSale = await uploadAttachment(owner.token, s.saleId, { buf: webm, mime: 'audio/webm', name: 'note.webm', type: 'voice_note' });
+  assert(onSale.status === 201, `Sale upload ${onSale.status} ${JSON.stringify(onSale.body)}`);
+  const saleUrl = onSale.body.data.file_url;
+  draftFiles.push(saleUrl);
+  assert(/\.m4a$/.test(saleUrl), `Expected .m4a, got ${saleUrl}`);
+  assert(fs.statSync(diskPathOf(saleUrl)).size > 0, 'm4a file missing or empty');
+  assert(!fs.existsSync(diskPathOf(saleUrl.replace(/\.m4a$/, '.webm'))), 'original .webm left behind');
+  const draft = await uploadAttachment(owner.token, null, { buf: webm, mime: 'audio/webm', name: 'draft.webm', type: 'voice_note' });
+  assert(draft.status === 200 && /\.m4a$/.test(draft.body.data.url), `Draft upload ${draft.status} ${JSON.stringify(draft.body)}`);
+  draftFiles.push(draft.body.data.url);
+  const attached = await api('POST', `/sales/${s.saleId}/attachments/from-url`, owner.token, { type: 'voice_note', file_url: draft.body.data.url });
+  assert(attached.status === 201, `from-url with an .m4a draft ${attached.status} ${JSON.stringify(attached.body)}`);
+});
+
+check('a photo upload is not converted', async () => {
+  const owner = await slipOwner();
+  const s = await createSlipSale(owner.token, 'pickup');
+  const r = await uploadAttachment(owner.token, s.saleId, { buf: TINY_PNG, mime: 'image/png', name: 'p.png', type: 'photo' });
+  assert(r.status === 201 && /\.png$/.test(r.body.data.file_url), `Photo ${r.status} ${JSON.stringify(r.body)}`);
+  draftFiles.push(r.body.data.file_url);
+});
+
+check('public slip shows order photos, item photos and an item photo stored at checkout', async () => {
+  const owner = await slipOwner();
+  const s = await createSlipSale(owner.token, 'delivery');
+  const orderPhoto = await uploadAttachment(owner.token, s.saleId, { buf: TINY_PNG, mime: 'image/png', name: 'o.png', type: 'photo' });
+  const itemPhoto = await uploadAttachment(owner.token, s.saleId, { buf: TINY_PNG, mime: 'image/png', name: 'i.png', type: 'photo', saleItemId: s.itemIds[0] });
+  assert(orderPhoto.status === 201 && itemPhoto.status === 201, `Photo uploads ${orderPhoto.status}/${itemPhoto.status}`);
+  draftFiles.push(orderPhoto.body.data.file_url, itemPhoto.body.data.file_url);
+  const db = await getDb();
+  await db.prepare('UPDATE sale_items SET image_url = ? WHERE id = ?').run('/uploads/products/checkout-photo-test.jpg', s.itemIds[1]);
+  const res = await api('GET', `/slip/${s.token}`, null);
+  assert(res.status === 200, `Slip ${res.status}`);
+  const d = res.body.data;
+  assert(Array.isArray(d.order_photos) && d.order_photos.length === 1 && d.order_photos[0].url === orderPhoto.body.data.file_url, `order_photos ${JSON.stringify(d.order_photos)}`);
+  assert(d.items[0].photos.length === 1 && d.items[0].photos[0].url === itemPhoto.body.data.file_url, `item 1 photos ${JSON.stringify(d.items[0].photos)}`);
+  assert(d.items[1].photos.length === 1 && d.items[1].photos[0].url === '/uploads/products/checkout-photo-test.jpg', `item 2 photos ${JSON.stringify(d.items[1].photos)}`);
+  assert(findDeniedKeys(res.body).length === 0, 'photo fields leaked a denied key');
+});
+
+async function cleanupDraftFiles() {
+  for (const u of draftFiles) {
+    try { fs.unlinkSync(pathMod.join(__dirname, '..', u.replace(/^\//, ''))); } catch { /* */ }
+  }
+}
+
 // Must stay last: it exhausts this process's public slip budget.
 check('61 rapid public slip GETs hit the 60/min limiter (429)', async () => {
   const owner = await slipOwner();
@@ -549,6 +686,7 @@ async function main() {
   }
   await cleanup();
   await cleanupOpenRequests();
+  await cleanupDraftFiles();
   console.log(`\n${pass}/${pass + fail} checks passed`);
   process.exit(fail > 0 ? 1 : 0);
 }

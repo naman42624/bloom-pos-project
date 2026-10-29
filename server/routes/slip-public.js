@@ -84,7 +84,7 @@ router.get('/:token', async (req, res, next) => {
     if (!sale) return notFound(res);
 
     const itemRows = await db.prepare(`
-      SELECT si.id, si.quantity,
+      SELECT si.id, si.quantity, si.image_url AS custom_image_url,
              COALESCE(si.product_name, p.name, m.name, 'Item') AS item_name,
              COALESCE(
                (SELECT pi.image_url FROM product_images pi WHERE pi.product_id = si.product_id ORDER BY pi.sort_order, pi.id LIMIT 1),
@@ -97,22 +97,31 @@ router.get('/:token', async (req, res, next) => {
       ORDER BY si.id ASC
     `).all(sale.id);
 
-    const voiceRows = await db.prepare(`
-      SELECT sale_item_id, file_url, duration_seconds
+    const attachmentRows = await db.prepare(`
+      SELECT sale_item_id, type, file_url, duration_seconds
       FROM sale_attachments
-      WHERE sale_id = ? AND type = 'voice_note'
+      WHERE sale_id = ? AND type IN ('voice_note', 'photo')
       ORDER BY created_at ASC, id ASC
     `).all(sale.id);
 
     const itemIds = new Set(itemRows.map((r) => r.id));
     const orderVoiceNotes = [];
+    const orderPhotos = [];
     const notesByItem = new Map();
-    for (const v of voiceRows) {
-      if (v.sale_item_id != null && itemIds.has(v.sale_item_id)) {
-        if (!notesByItem.has(v.sale_item_id)) notesByItem.set(v.sale_item_id, []);
-        notesByItem.get(v.sale_item_id).push(voiceNote(v));
+    const photosByItem = new Map();
+    const push = (map, key, value) => {
+      if (!map.has(key)) map.set(key, []);
+      map.get(key).push(value);
+    };
+    for (const a of attachmentRows) {
+      const forItem = a.sale_item_id != null && itemIds.has(a.sale_item_id);
+      if (a.type === 'photo') {
+        if (forItem) push(photosByItem, a.sale_item_id, { url: a.file_url });
+        else orderPhotos.push({ url: a.file_url });
+      } else if (forItem) {
+        push(notesByItem, a.sale_item_id, voiceNote(a));
       } else {
-        orderVoiceNotes.push(voiceNote(v));
+        orderVoiceNotes.push(voiceNote(a));
       }
     }
 
@@ -132,8 +141,15 @@ router.get('/:token', async (req, res, next) => {
           name: r.item_name,
           quantity: Number(r.quantity),
           image_url: r.item_image_url || null,
+          // Photos taken for this line at checkout (stored on the item) and
+          // photos attached to this item afterwards, oldest first.
+          photos: [
+            ...(r.custom_image_url && r.custom_image_url !== r.item_image_url ? [{ url: r.custom_image_url }] : []),
+            ...(photosByItem.get(r.id) || []),
+          ],
           voice_notes: notesByItem.get(r.id) || [],
         })),
+        order_photos: orderPhotos,
         order_voice_notes: orderVoiceNotes,
         checklist: publicChecklist(checklist),
       },

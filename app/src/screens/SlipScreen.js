@@ -4,7 +4,7 @@
 // nothing that depends on auth or navigation. It talks to /api/slip/:token
 // through the unauthenticated api helpers only.
 import React, { useEffect, useState, useCallback, useRef } from 'react';
-import { View, Text, StyleSheet, ActivityIndicator, ScrollView, TouchableOpacity, Image, Platform } from 'react-native';
+import { View, Text, StyleSheet, ActivityIndicator, ScrollView, TouchableOpacity, Image, Platform, Linking } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import api from '../services/api';
 import { formatShopDateLabel, formatTimeString } from '../utils/datetime';
@@ -22,6 +22,32 @@ function VoiceNote({ note, label }) {
       {Platform.OS === 'web'
         ? React.createElement('audio', { controls: true, preload: 'none', src, style: { height: 40, maxWidth: '100%' } })
         : null}
+      <TouchableOpacity onPress={() => openMedia(src)} accessibilityRole="link" style={styles.openLink}>
+        <Text style={styles.openLinkText}>Open voice note</Text>
+      </TouchableOpacity>
+    </View>
+  );
+}
+
+function openMedia(url) {
+  if (!url) return;
+  if (Platform.OS === 'web' && typeof window !== 'undefined') window.open(url, '_blank', 'noopener');
+  else Linking.openURL(url).catch(() => {});
+}
+
+// Tappable thumbnails; a tap opens the full-size photo.
+function PhotoStrip({ photos }) {
+  if (!photos || photos.length === 0) return null;
+  return (
+    <View style={styles.photoStrip}>
+      {photos.map((p, i) => {
+        const uri = api.getMediaUrl(p.url);
+        return (
+          <TouchableOpacity key={`${p.url}-${i}`} onPress={() => openMedia(uri)} accessibilityRole="imagebutton" accessibilityLabel="Open photo full size" activeOpacity={0.8}>
+            <Image source={{ uri }} style={styles.stripPhoto} resizeMode="cover" />
+          </TouchableOpacity>
+        );
+      })}
     </View>
   );
 }
@@ -48,7 +74,7 @@ export default function SlipScreen({ token }) {
       if (busy.current === 0) applyChecklist(res.data.checklist);
     } catch (err) {
       if (!first) return; // keep showing what we have if a refresh blips
-      setState({ loading: false, data: null, errorKind: err?.status === 404 ? 'not_found' : 'server_error' });
+      setState({ loading: false, data: null, errorKind: err?.status === 404 ? 'not_found' : (err?.status === 429 ? 'rate_limited' : 'server_error') });
     }
   }, [token, applyChecklist]);
 
@@ -76,7 +102,7 @@ export default function SlipScreen({ token }) {
       } else if (err?.status === 404) {
         setState({ loading: false, data: null, errorKind: 'not_found' });
       } else {
-        setToast("Couldn't save, try again");
+        setToast(err?.status === 429 ? 'Too many tries — please wait a minute and try again.' : "Couldn't save, try again");
       }
     }
   };
@@ -89,6 +115,17 @@ export default function SlipScreen({ token }) {
       <View style={styles.center}>
         <Ionicons name="link-outline" size={48} color={Colors.textLight} />
         <Text style={styles.bigMsg}>This slip link has expired or is not valid. Ask the shop for a new slip.</Text>
+      </View>
+    );
+  }
+  if (state.errorKind === 'rate_limited') {
+    return (
+      <View style={styles.center}>
+        <Ionicons name="time-outline" size={48} color={Colors.textLight} />
+        <Text style={styles.bigMsg}>Too many tries — please wait a minute and try again.</Text>
+        <TouchableOpacity style={styles.retryBtn} onPress={() => { setState({ loading: true, data: null, errorKind: null }); load(true); }}>
+          <Text style={styles.retryText}>Try again</Text>
+        </TouchableOpacity>
       </View>
     );
   }
@@ -145,6 +182,13 @@ export default function SlipScreen({ token }) {
         </View>
       ) : null}
 
+      {(d.order_photos || []).length > 0 ? (
+        <View style={styles.card}>
+          <Text style={styles.sectionLabel}>Photos for this order</Text>
+          <PhotoStrip photos={d.order_photos} />
+        </View>
+      ) : null}
+
       {d.order_voice_notes.length > 0 ? (
         <View style={styles.card}>
           <Text style={styles.sectionLabel}>Voice notes for this order</Text>
@@ -155,11 +199,17 @@ export default function SlipScreen({ token }) {
       {d.items.map((item) => {
         const isOn = !!checked[item.sale_item_id];
         const locked = !!readOnlyMsg || !enabled;
+        const itemPhotos = item.photos || [];
+        // Catalog photo first; a custom item with only its own photo shows that instead.
+        const mainImage = item.image_url || (itemPhotos[0] && itemPhotos[0].url) || null;
+        const extraPhotos = item.image_url ? itemPhotos : itemPhotos.slice(1);
         return (
           <View key={item.sale_item_id} style={[styles.card, isOn && styles.cardOn]}>
             <View style={styles.itemTop}>
-              {item.image_url ? (
-                <Image source={{ uri: api.getMediaUrl(item.image_url) }} style={styles.photo} resizeMode="cover" />
+              {mainImage ? (
+                <TouchableOpacity onPress={() => openMedia(api.getMediaUrl(mainImage))} accessibilityRole="imagebutton" accessibilityLabel={`Open photo of ${item.name}`} activeOpacity={0.8}>
+                  <Image source={{ uri: api.getMediaUrl(mainImage) }} style={styles.photo} resizeMode="cover" />
+                </TouchableOpacity>
               ) : (
                 <View style={[styles.photo, styles.photoEmpty]}>
                   <Ionicons name="flower-outline" size={32} color={Colors.textLight} />
@@ -183,6 +233,7 @@ export default function SlipScreen({ token }) {
                 </TouchableOpacity>
               ) : null}
             </View>
+            <PhotoStrip photos={extraPhotos} />
             {item.voice_notes.map((n, i) => <VoiceNote key={i} note={n} label="Voice note" />)}
           </View>
         );
@@ -215,6 +266,10 @@ const styles = StyleSheet.create({
   tickOn: { backgroundColor: Colors.success, borderColor: Colors.success },
   voiceRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: Spacing.sm, marginTop: Spacing.sm, minHeight: 48 },
   voiceLabel: { fontSize: FontSize.md, color: Colors.text, fontWeight: '600' },
+  openLink: { minHeight: 44, justifyContent: 'center', paddingHorizontal: Spacing.xs },
+  openLinkText: { fontSize: FontSize.md, color: Colors.primary, fontWeight: '600', textDecorationLine: 'underline' },
+  photoStrip: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm, marginTop: Spacing.sm },
+  stripPhoto: { width: 96, height: 96, borderRadius: BorderRadius.md, backgroundColor: Colors.surfaceAlt },
   infoBanner: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, backgroundColor: Colors.surfaceAlt, borderRadius: BorderRadius.md, padding: Spacing.md, marginBottom: Spacing.md },
   infoText: { flex: 1, fontSize: FontSize.md, color: Colors.textSecondary },
   errBanner: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, backgroundColor: '#FFEBEE', borderRadius: BorderRadius.md, padding: Spacing.md, marginBottom: Spacing.md },

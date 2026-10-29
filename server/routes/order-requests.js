@@ -55,7 +55,7 @@ router.get('/', authenticate, authorize(...REVIEW_ROLES), async (req, res, next)
         SELECT u.id, u.name, ${NORM_USER_PHONE} AS norm_phone
         FROM users u
         WHERE u.role = 'customer' AND ${NORM_USER_PHONE} IN (${unresolvedPhones.map(() => '?').join(', ')})
-        ORDER BY u.id ASC
+        ORDER BY (u.phone = ${NORM_USER_PHONE}) DESC, u.id ASC
       `).all(...unresolvedPhones);
       rows.forEach((u) => { if (!matchByPhone.has(u.norm_phone)) matchByPhone.set(u.norm_phone, { id: u.id, name: u.name }); });
     }
@@ -87,7 +87,11 @@ router.post('/:id/resolve-customer', authenticate, authorize(...REVIEW_ROLES), a
         'SELECT id, status, customer_id, requester_name, requester_phone FROM order_requests WHERE id = ? FOR UPDATE'
       ).get(id);
       if (!request) return { http: 404, message: 'Request not found' };
-      if (request.customer_id) return { customer_id: request.customer_id, created: false };
+      const withIdentity = async (customerId, created) => {
+        const u = await tx.prepare('SELECT id, name, phone FROM users WHERE id = ?').get(customerId);
+        return { customer_id: customerId, name: u ? u.name : null, phone: u ? u.phone : null, created };
+      };
+      if (request.customer_id) return withIdentity(request.customer_id, false);
       if (request.status !== 'pending') return { http: 400, message: 'This request has already been reviewed.' };
 
       const phone = normalizeIndianPhone(request.requester_phone);
@@ -131,7 +135,7 @@ router.post('/:id/resolve-customer', authenticate, authorize(...REVIEW_ROLES), a
       }
 
       await tx.prepare('UPDATE order_requests SET customer_id = ? WHERE id = ?').run(customerId, id);
-      return { customer_id: customerId, created };
+      return withIdentity(customerId, created);
     });
 
     if (result.http) return res.status(result.http).json({ success: false, message: result.message });

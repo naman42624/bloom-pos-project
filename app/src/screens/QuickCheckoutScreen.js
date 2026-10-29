@@ -12,6 +12,9 @@ import DateTimePickerModal from '../components/DateTimePickerModal';
 import VoiceNoteRecorder from '../components/VoiceNoteRecorder';
 import RoutePicker from '../components/RoutePicker';
 import SavedAddressChips from '../components/SavedAddressChips';
+import AttachmentVoiceRow from '../components/AttachmentVoiceRow';
+import { showAlert, showConfirm } from '../utils/alert';
+import CollectDuesToggle, { EMPTY_DUES, duesAmountError } from '../components/CollectDuesToggle';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
@@ -76,6 +79,9 @@ export default function QuickCheckoutScreen({ navigation, route }) {
   // Voice notes recorded for this order, uploaded after the sale is created (see
   // handlePlaceOrder). Local file URIs only — never carried into a saved draft.
   const [pendingAttachments, setPendingAttachments] = useState([]);
+  // Voice notes already uploaded by a saved draft: [{ url, duration_seconds }]. They are
+  // attached to the real order by URL when it is placed.
+  const [uploadedVoiceNotes, setUploadedVoiceNotes] = useState([]);
   // Which item (by index in `items`) currently has the per-item voice-note modal
   // open, or null. A per-item reference photo already exists (item.image_url via
   // pickImage) — this adds the equivalent for voice notes, using the same
@@ -109,6 +115,9 @@ export default function QuickCheckoutScreen({ navigation, route }) {
   // Submitting
   const [submitting, setSubmitting] = useState(false);
   const guardSubmit = useSubmitGuard();
+  const [duesCollect, setDuesCollect] = useState(EMPTY_DUES);
+  // A different customer means a different dues balance, so the switch starts off again.
+  useEffect(() => { setDuesCollect(EMPTY_DUES); }, [customerId]);
   const [skipAssignment, setSkipAssignment] = useState(true);
   const [submitErrors, setSubmitErrors] = useState([]);
   const [savingDraft, setSavingDraft] = useState(false);
@@ -621,10 +630,12 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     customerName,
     customerPhone,
     customerAddress,
-    // Strip per-item pendingAttachments (local device file URIs) — same reasoning
-    // as order-level pendingAttachments never being included here: a recorded
-    // voice note can't be meaningfully persisted into a draft or resumed later.
+    // pendingAttachments are local device file URIs, so they are dropped here;
+    // buildDraftPayloadWithUploads uploads them first and stores their URLs in
+    // uploadedVoiceNotes (per item) and voiceNoteUrls (order level).
     items: items.map(({ pendingAttachments, ...rest }) => rest),
+    voiceNoteUrls: uploadedVoiceNotes,
+    routeId,
     scheduledDate,
     scheduledTime,
     orderType,
@@ -653,6 +664,8 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     skipAssignment,
     assignedTo,
   }), [
+    routeId,
+    uploadedVoiceNotes,
     customerName,
     customerPhone,
     customerAddress,
@@ -706,6 +719,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     setReceiverName(p.receiverName || '');
     setReceiverPhone(p.receiverPhone || '');
     setReceiverId(p.receiverId || null);
+    setRouteId(p.routeId || null);
     setOrderNotes(p.orderNotes || '');
     setDeliveryCharges(p.deliveryCharges || '');
     setDiscountValue(p.discountValue || '');
@@ -720,10 +734,61 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     setSkipAssignment(p.skipAssignment !== false);
     setAssignedTo(p.assignedTo || null);
     setActiveDraftId(draftId);
-    // A voice note is a local file URI — it can't be persisted in a draft
-    // payload, so resuming a draft never carries one over from a prior attempt.
+    // Local voice-note files are uploaded when the draft is saved; what comes
+    // back here are the uploaded copies, shown as already attached.
     setPendingAttachments([]);
+    setUploadedVoiceNotes(Array.isArray(p.voiceNoteUrls) ? p.voiceNoteUrls.filter((v) => v && v.url) : []);
+    // Reload dues / order history, the same lookup the phone box and the
+    // customer picker use, so the balance shows and saved-address chips
+    // (which follow customerId / receiverId) work after resuming.
+    setCustomerHistory(null);
+    setReceiverHistory(null);
+    const custDigits = String(p.customerPhone || '').replace(/\D/g, '');
+    if (custDigits.length >= 10) {
+      api.customerLookupEnhanced(p.customerPhone).then((res) => {
+        if (res.data) setCustomerHistory(res.data);
+      }).catch(() => {});
+    }
+    const recvDigits = String(p.receiverPhone || '').replace(/\D/g, '');
+    if (recvDigits.length >= 10 && !p.senderSameAsReceiver) {
+      api.customerLookupEnhanced(p.receiverPhone).then((res) => {
+        if (res.data) setReceiverHistory(res.data);
+      }).catch(() => {});
+    }
   }, []);
+
+  // Upload every pending voice note (order level and per item) and any picked
+  // item photo that is still a local file, then return the draft payload that
+  // points at the uploaded copies. Throws a plain-language Error if a voice
+  // note cannot be uploaded, so the caller can keep the form as it is.
+  const buildDraftPayloadWithUploads = useCallback(async () => {
+    const uploadNote = async (a) => {
+      try {
+        const res = await api.uploadDraftVoiceNote(a.uri, a.durationSeconds);
+        return { url: res.data.url, duration_seconds: res.data.duration_seconds ?? a.durationSeconds ?? null };
+      } catch (err) {
+        const e = new Error('A voice note could not be saved. Check your connection and try again. Your sale has not been cleared.');
+        e.voiceNoteUpload = true;
+        throw e;
+      }
+    };
+    const voiceNoteUrls = [...uploadedVoiceNotes];
+    for (const a of pendingAttachments) voiceNoteUrls.push(await uploadNote(a));
+    const draftItems = [];
+    for (const it of items) {
+      const { pendingAttachments: itemPending, ...rest } = it;
+      const uploaded = [...(it.uploadedVoiceNotes || [])];
+      for (const a of (itemPending || [])) uploaded.push(await uploadNote(a));
+      if (rest.image_url && !rest.image_url.startsWith('http') && !rest.image_url.startsWith('/')) {
+        try {
+          const img = await api.uploadGenericMedia(rest.image_url);
+          if (img.success && img.url) rest.image_url = img.url;
+        } catch (_) { /* keep the local photo reference */ }
+      }
+      draftItems.push({ ...rest, uploadedVoiceNotes: uploaded });
+    }
+    return { ...buildDraftPayload(), items: draftItems, voiceNoteUrls };
+  }, [buildDraftPayload, uploadedVoiceNotes, pendingAttachments, items]);
 
   const loadDrafts = useCallback(async () => {
     setDraftsLoading(true);
@@ -783,6 +848,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     setActiveDraftId(null);
     setSubmitErrors([]);
     setPendingAttachments([]);
+    setUploadedVoiceNotes([]);
   }, []);
 
   const handleNewSale = useCallback(async () => {
@@ -800,17 +866,43 @@ export default function QuickCheckoutScreen({ navigation, route }) {
           customer_address: customerAddress || null,
           item_count: items.length,
           grand_total: totals.finalTotal,
-          payload: buildDraftPayload(),
+          payload: await buildDraftPayloadWithUploads(),
         });
       } catch (err) {
-        // ignore errors on auto-save
+        // Other auto-save errors are ignored, but never clear the screen while
+        // a recorded voice note has not been saved anywhere yet.
+        if (err?.voiceNoteUpload) {
+          showAlert('Draft not saved', err.message);
+          return false;
+        }
       } finally {
         setSavingDraft(false);
       }
     }
     resetForm();
     loadDrafts();
-  }, [items.length, customerName, customerPhone, orderNotes, activeDraftId, selectedLocation, orderType, customerAddress, totals.finalTotal, buildDraftPayload, resetForm, loadDrafts]);
+    return true;
+  }, [items.length, customerName, customerPhone, orderNotes, activeDraftId, selectedLocation, orderType, customerAddress, totals.finalTotal, buildDraftPayloadWithUploads, resetForm, loadDrafts]);
+
+  // "New Order" from a customer's profile: fill the customer in once, then clear the
+  // param so a later visit to this screen does not re-apply it. If a checkout is
+  // already in progress it is saved as a draft and cleared first (the exact same
+  // path as the New Sale button), so the customer never lands on someone else's cart.
+  // Goes through the same selectCustomer path as picking from search, so
+  // history/dues/addresses load.
+  useEffect(() => {
+    const pc = route.params?.prefillCustomer;
+    if (!pc || !pc.id) return;
+    navigation.setParams({ prefillCustomer: undefined });
+    (async () => {
+      const hasAnyData = items.length > 0 || customerName.trim() || customerPhone.trim() || orderNotes.trim();
+      if (hasAnyData && !(customerId && String(customerId) === String(pc.id) && items.length === 0)) {
+        const cleared = await handleNewSale();
+        if (!cleared) return;
+      }
+      selectCustomer({ id: pc.id, name: pc.name, phone: pc.phone });
+    })();
+  }, [route.params?.prefillCustomer]);
 
   const handleSaveDraft = useCallback(async () => {
     if (savingDraft || submitting) return;
@@ -832,16 +924,16 @@ export default function QuickCheckoutScreen({ navigation, route }) {
         customer_address: customerAddress || null,
         item_count: items.length,
         grand_total: totals.finalTotal,
-        payload: buildDraftPayload(),
+        payload: await buildDraftPayloadWithUploads(),
       });
       resetForm();
       loadDrafts();
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to save draft');
+      showAlert('Draft not saved', err.message || 'The draft could not be saved. Please try again.');
     } finally {
       setSavingDraft(false);
     }
-  }, [savingDraft, submitting, items.length, customerName, customerPhone, orderNotes, activeDraftId, selectedLocation, orderType, customerAddress, totals.finalTotal, buildDraftPayload, resetForm, loadDrafts]);
+  }, [savingDraft, submitting, items.length, customerName, customerPhone, orderNotes, activeDraftId, selectedLocation, orderType, customerAddress, totals.finalTotal, buildDraftPayloadWithUploads, resetForm, loadDrafts]);
 
   const handleOpenDraftPicker = useCallback(async () => {
     setDraftPickerVisible(true);
@@ -863,10 +955,15 @@ export default function QuickCheckoutScreen({ navigation, route }) {
           customer_address: customerAddress || null,
           item_count: items.length,
           grand_total: totals.finalTotal,
-          payload: buildDraftPayload(),
+          payload: await buildDraftPayloadWithUploads(),
         });
       } catch (err) {
-        // ignore errors on auto-save
+        // Other auto-save errors are ignored, but never clear the screen while
+        // a recorded voice note has not been saved anywhere yet.
+        if (err?.voiceNoteUpload) {
+          showAlert('Draft not saved', err.message);
+          return;
+        }
       } finally {
         setSavingDraft(false);
       }
@@ -881,7 +978,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     } catch (err) {
       Alert.alert('Error', err.message || 'Failed to load draft');
     }
-  }, [items.length, customerName, customerPhone, orderNotes, activeDraftId, selectedLocation, orderType, customerAddress, totals.finalTotal, buildDraftPayload, applyDraftPayload, loadDrafts]);
+  }, [items.length, customerName, customerPhone, orderNotes, activeDraftId, selectedLocation, orderType, customerAddress, totals.finalTotal, buildDraftPayloadWithUploads, applyDraftPayload, loadDrafts]);
 
   const handleDeleteDraft = useCallback(async (draftId) => {
     try {
@@ -1005,9 +1102,24 @@ export default function QuickCheckoutScreen({ navigation, route }) {
       }
     }
 
+    // Dues collected at checkout use the order's own payment method (the first
+    // method when split); an order that takes no payment now (credit / COD)
+    // collects dues in cash. Spec section 7.
+    const collectingDues = !!(duesCollect.enabled && customerId && customerHistory?.credit_balance > 0);
+    if (collectingDues) {
+      const duesErr = duesAmountError(customerHistory.credit_balance, duesCollect);
+      if (duesErr) validationErrors.push(duesErr);
+    }
+    let duesMethod = 'cash';
+    if (paymentMode === 'pay_now' || paymentMode === 'partial') {
+      duesMethod = enableSplitPayment
+        ? ((payments.find((p) => (parseFloat(p.amount) || 0) > 0) || payments[0])?.method || 'cash')
+        : paymentMethod;
+    }
+
     if (validationErrors.length > 0) {
       setSubmitErrors(validationErrors);
-      Alert.alert('Cannot submit order', validationErrors[0]);
+      showAlert('Cannot submit order', validationErrors[0]);
       return;
     }
 
@@ -1030,19 +1142,12 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     const willPayCash = (paymentMode === 'pay_now' || paymentMode === 'partial')
       ? (enableSplitPayment ? payments.some((p) => p.method === 'cash' && (parseFloat(p.amount) || 0) > 0) : paymentMethod === 'cash')
       : false; // 'credit' and 'cod' never submit a payment at checkout time
-    if (willPayCash) {
+    if (willPayCash || (collectingDues && duesMethod === 'cash')) {
       const isRegOpen = await checkRegisterStatus(selectedLocation);
       if (!isRegOpen) {
         const msg = 'The cash register for this location is not open. Please open it before creating a sale.';
         setSubmitErrors([msg]);
-        Alert.alert(
-          'Register Closed',
-          msg,
-          [
-            { text: 'Open Register', onPress: () => navigation.navigate('CashRegister') },
-            { text: 'Cancel', style: 'cancel' },
-          ]
-        );
+        showConfirm('Register Closed', msg, () => navigation.navigate('CashRegister'), { confirmLabel: 'Open Register' });
         return;
       }
     }
@@ -1187,6 +1292,23 @@ export default function QuickCheckoutScreen({ navigation, route }) {
           setActiveDraftId(null);
         }
 
+        // Dues payment: the order stands no matter what happens here, and a
+        // failure is told to staff once, never retried silently.
+        if (collectingDues) {
+          const duesAmt = Math.round((parseFloat(duesCollect.amount) || 0) * 100) / 100;
+          try {
+            await api.addCreditPayment(customerId, {
+              amount: duesAmt,
+              method: duesMethod,
+              location_id: selectedLocation,
+              notes: 'Collected at checkout',
+              exclude_sale_id: res.data?.id || undefined,
+            });
+          } catch (err) {
+            showAlert('Order saved', `Order saved. The ₹${duesAmt} dues payment was not recorded — record it from the customer's page.`);
+          }
+        }
+
         // The sale now exists — from here on, any failure is an attachment
         // problem, not a sale problem. Never treat it as a failed checkout
         // (that would invite a duplicate re-submit); just let the staff
@@ -1216,6 +1338,25 @@ export default function QuickCheckoutScreen({ navigation, route }) {
               failedCount += 1;
             }
           }
+        }
+        // Voice notes uploaded earlier by a saved draft are attached by URL.
+        let missingCount = 0;
+        const attachUploaded = async (note, saleItemId) => {
+          try {
+            await api.attachFromUrl(res.data.id, note.url, note.duration_seconds, saleItemId);
+          } catch (err) {
+            if (err?.status === 400) missingCount += 1;
+            else failedCount += 1;
+          }
+        };
+        for (const note of uploadedVoiceNotes) await attachUploaded(note);
+        for (let i = 0; i < items.length; i++) {
+          const savedItemId = savedItems[i]?.id;
+          if (!savedItemId) continue;
+          for (const note of (items[i]?.uploadedVoiceNotes || [])) await attachUploaded(note, savedItemId);
+        }
+        if (missingCount > 0) {
+          showAlert('Order saved', `Order saved. ${missingCount} voice note(s) from the draft were missing and were not attached.`);
         }
         if (failedCount > 0) {
           const noun = failedCount === 1 ? 'attachment' : 'attachments';
@@ -1538,6 +1679,9 @@ export default function QuickCheckoutScreen({ navigation, route }) {
               </Text>
             </View>
           )}
+          {customerId && customerHistory && customerHistory.credit_balance > 0 && (
+            <CollectDuesToggle dueAmount={customerHistory.credit_balance} value={duesCollect} onChange={setDuesCollect} />
+          )}
           {needsDelivery && (
             <>
               <TouchableOpacity
@@ -1706,10 +1850,34 @@ export default function QuickCheckoutScreen({ navigation, route }) {
           <VoiceNoteRecorder
             onRecorded={(uri, durationSeconds) => setPendingAttachments((prev) => [...prev, { uri, type: 'voice_note', durationSeconds }])}
           />
+          {uploadedVoiceNotes.map((v) => (
+            <View key={v.url} style={{ flexDirection: 'row', alignItems: 'center', gap: Spacing.sm }}>
+              <View style={{ flex: 1 }}>
+                <AttachmentVoiceRow attachment={{ file_url: v.url, duration_seconds: v.duration_seconds }} />
+              </View>
+              <TouchableOpacity
+                onPress={() => setUploadedVoiceNotes((prev) => prev.filter((x) => x.url !== v.url))}
+                accessibilityLabel="Remove this voice note"
+                hitSlop={12}
+              >
+                <Ionicons name="trash-outline" size={22} color={Colors.error} />
+              </TouchableOpacity>
+            </View>
+          ))}
           {pendingAttachments.map((a) => (
-            <Text key={a.uri} style={styles.attachmentNote}>
-              🎤 Voice note recorded ({a.durationSeconds}s) — will attach when the order is placed
-            </Text>
+            <View key={a.uri} style={{ flexDirection: 'row', alignItems: 'center', gap: Spacing.sm }}>
+              <Text style={[styles.attachmentNote, { flex: 1 }]}>
+                🎤 Voice note recorded ({a.durationSeconds}s) — will attach when the order is placed
+              </Text>
+              <TouchableOpacity
+                onPress={() => setPendingAttachments((prev) => prev.filter((x) => x.uri !== a.uri))}
+                accessibilityLabel="Remove this voice note"
+                hitSlop={8}
+                style={{ minWidth: 44, minHeight: 44, alignItems: 'center', justifyContent: 'center' }}
+              >
+                <Ionicons name="trash-outline" size={22} color={Colors.error} />
+              </TouchableOpacity>
+            </View>
           ))}
         </View>
 
@@ -1970,9 +2138,9 @@ export default function QuickCheckoutScreen({ navigation, route }) {
                   hitSlop={15}
                 >
                   <Ionicons name="mic-outline" size={22} color={Colors.primary} />
-                  {(item.pendingAttachments || []).length > 0 && (
+                  {((item.pendingAttachments || []).length + (item.uploadedVoiceNotes || []).length) > 0 && (
                     <View style={styles.itemVoiceBadge}>
-                      <Text style={styles.itemVoiceBadgeText}>{item.pendingAttachments.length}</Text>
+                      <Text style={styles.itemVoiceBadgeText}>{(item.pendingAttachments || []).length + (item.uploadedVoiceNotes || []).length}</Text>
                     </View>
                   )}
                 </Pressable>
@@ -2207,6 +2375,30 @@ export default function QuickCheckoutScreen({ navigation, route }) {
               <Text style={styles.grandTotalValue}>₹{Number(totals.finalTotal).toFixed(2)}</Text>
             </View>
           </View>
+
+          {duesCollect.enabled && customerId && customerHistory?.credit_balance > 0 && !duesAmountError(customerHistory.credit_balance, duesCollect) && (() => {
+            const dues = Math.round((parseFloat(duesCollect.amount) || 0) * 100) / 100;
+            let nowPaid = 0;
+            if (paymentMode === 'pay_now') {
+              nowPaid = enableSplitPayment
+                ? payments.reduce((sum, p) => sum + (parseFloat(p.amount) || 0), 0)
+                : Math.round(Number(totals.finalTotal || 0) * 100) / 100;
+            } else if (paymentMode === 'partial') {
+              nowPaid = Math.round((parseFloat(advanceAmount) || 0) * 100) / 100;
+            }
+            const method = (paymentMode === 'pay_now' || paymentMode === 'partial')
+              ? (enableSplitPayment ? ((payments.find((p) => (parseFloat(p.amount) || 0) > 0) || payments[0])?.method || 'cash') : paymentMethod)
+              : 'cash';
+            const total = Math.round((nowPaid + dues) * 100) / 100;
+            return (
+              <View style={{ marginTop: Spacing.sm }}>
+                <Text style={{ fontSize: FontSize.md, color: Colors.textSecondary }}>Old dues: ₹{dues.toFixed(2)}</Text>
+                <Text style={{ fontSize: FontSize.lg, fontWeight: '800', color: Colors.text }}>
+                  Take from customer now: ₹{total.toFixed(2)}{method !== 'cash' ? ` (${method.toUpperCase()})` : ''}
+                </Text>
+              </View>
+            );
+          })()}
 
           <TouchableOpacity
             style={[styles.checkRow, { marginTop: Spacing.md }]}
@@ -2475,6 +2667,20 @@ export default function QuickCheckoutScreen({ navigation, route }) {
                 <VoiceNoteRecorder
                   onRecorded={(uri, durationSeconds) => addItemVoiceNote(itemVoiceModalIdx, uri, durationSeconds)}
                 />
+                {(items[itemVoiceModalIdx]?.uploadedVoiceNotes || []).map((v) => (
+                  <View key={v.url} style={{ flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, marginTop: Spacing.sm }}>
+                    <View style={{ flex: 1 }}>
+                      <AttachmentVoiceRow attachment={{ file_url: v.url, duration_seconds: v.duration_seconds }} />
+                    </View>
+                    <TouchableOpacity
+                      onPress={() => updateItem(itemVoiceModalIdx, 'uploadedVoiceNotes', (items[itemVoiceModalIdx].uploadedVoiceNotes || []).filter((x) => x.url !== v.url))}
+                      accessibilityLabel="Remove this voice note"
+                      hitSlop={12}
+                    >
+                      <Ionicons name="trash-outline" size={22} color={Colors.error} />
+                    </TouchableOpacity>
+                  </View>
+                ))}
                 {(items[itemVoiceModalIdx]?.pendingAttachments || []).length > 0 && (
                   <TouchableOpacity onPress={() => clearItemVoiceNotes(itemVoiceModalIdx)} style={{ alignSelf: 'center', marginTop: Spacing.sm }}>
                     <Text style={{ color: Colors.error, fontWeight: '600' }}>Clear recorded note(s) for this item</Text>
