@@ -1543,7 +1543,7 @@ export default function SaleDetailScreen({ route, navigation }) {
         {due > 0.01 && (
           <View style={[styles.paymentRow, { backgroundColor: Colors.warningLight }]}>
             <Ionicons name="alert-circle" size={18} color={Colors.warning} />
-            <Text style={[styles.payMethod, { marginLeft: Spacing.sm, color: Colors.warning }]}>Balance Due</Text>
+            <Text style={[styles.payMethod, { flex: 1, marginLeft: Spacing.sm, color: Colors.warning }]}>Balance Due</Text>
             <Text style={[styles.payAmount, { color: Colors.warning }]}>₹{Number(due).toFixed(2)}</Text>
           </View>
         )}
