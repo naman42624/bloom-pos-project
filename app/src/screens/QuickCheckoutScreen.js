@@ -14,7 +14,8 @@ import RoutePicker from '../components/RoutePicker';
 import SavedAddressChips from '../components/SavedAddressChips';
 import AttachmentVoiceRow from '../components/AttachmentVoiceRow';
 import { showAlert, showConfirm } from '../utils/alert';
-import CollectDuesToggle, { EMPTY_DUES, duesAmountError } from '../components/CollectDuesToggle';
+import CollectDuesSheet from '../components/CollectDuesSheet';
+import CollectDuesToggle, { EMPTY_DUES, duesAmountError, duesPaymentMethod } from '../components/CollectDuesToggle';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
@@ -23,6 +24,15 @@ import { bumpActivity } from '../hooks/useIdleLock';
 import useSubmitGuard from '../hooks/useSubmitGuard';
 
 
+// Where the order came from. Starts on Walk-in for every new sale.
+const CHANNELS = [
+  { key: 'walk_in', label: 'Walk-in', icon: 'walk' },
+  { key: 'whatsapp', label: 'WhatsApp', icon: 'logo-whatsapp' },
+  { key: 'phone', label: 'Phone', icon: 'call' },
+  { key: 'website', label: 'Website', icon: 'globe' },
+  { key: 'email', label: 'Email', icon: 'mail' },
+];
+
 const ORDER_TYPES = [
   { key: 'walk_in', label: 'Walk-in', icon: 'person', color: '#4CAF50' },
   { key: 'pickup', label: 'Pickup', icon: 'bag-handle', color: '#2196F3' },
@@ -30,8 +40,18 @@ const ORDER_TYPES = [
   { key: 'pre_order', label: 'Pre-Order', icon: 'calendar', color: Colors.primary },
 ];
 
+// "✓ Registered customer • 3 orders • ₹1200 total"; a count that is missing
+// is left out rather than shown blank.
+function historyLine(kind, who, h) {
+  const n = h.order_count == null || h.order_count === '' ? null : Number(h.order_count);
+  const parts = [`${kind} ${who}`];
+  if (n !== null && Number.isFinite(n)) parts.push(n === 0 ? 'no orders yet' : `${n} order${n === 1 ? '' : 's'}`);
+  parts.push(`₹${Number(h.total_spent || 0).toFixed(0)} total`);
+  return parts.join(' • ');
+}
+
 export default function QuickCheckoutScreen({ navigation, route }) {
-  const { user, settings } = useAuth();
+  const { user, settings, activeLocation } = useAuth();
   const timezone = settings?.timezone?.value || 'Asia/Kolkata';
   const { width } = useWindowDimensions();
   const isNarrowMobile = width < 380;
@@ -60,6 +80,8 @@ export default function QuickCheckoutScreen({ navigation, route }) {
   // Location
   const [locations, setLocations] = useState([]);
   const [selectedLocation, setSelectedLocation] = useState(null);
+  const [channel, setChannel] = useState('walk_in');
+  const [showDuesSheet, setShowDuesSheet] = useState(false);
 
   // Materials list (for building custom products)
   const [allMaterials, setAllMaterials] = useState([]);
@@ -162,7 +184,10 @@ export default function QuickCheckoutScreen({ navigation, route }) {
       const res = await api.getLocations();
       const locs = res.data?.locations || res.data || [];
       setLocations(locs);
-      if (locs.length > 0 && !selectedLocation) setSelectedLocation(locs[0].id);
+      // Default to this device's location (as Log Order does), not the first
+      // shop in the list; a location passed in by POS still wins (set below).
+      const preferred = activeLocation && locs.find((l) => l.id === activeLocation.id);
+      if (locs.length > 0) setSelectedLocation((cur) => cur || (preferred ? preferred.id : locs[0].id));
     } catch { }
   };
 
@@ -639,6 +664,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     scheduledDate,
     scheduledTime,
     orderType,
+    channel,
     preOrderType,
     selectedLocation,
     useCustomerAsSender,
@@ -673,6 +699,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     scheduledDate,
     scheduledTime,
     orderType,
+    channel,
     preOrderType,
     selectedLocation,
     useCustomerAsSender,
@@ -708,6 +735,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     setScheduledDate(p.scheduledDate || '');
     setScheduledTime(p.scheduledTime || '');
     setOrderType(p.orderType || 'walk_in');
+    setChannel(CHANNELS.some((c) => c.key === p.channel) ? p.channel : 'walk_in');
     setPreOrderType(p.preOrderType || 'pickup');
     setSelectedLocation(p.selectedLocation || null);
     setUseCustomerAsSender(p.useCustomerAsSender !== false);
@@ -818,6 +846,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     setScheduledDate('');
     setScheduledTime('');
     setOrderType('walk_in');
+    setChannel('walk_in');
     setPreOrderType('pickup');
     setUseCustomerAsSender(true);
     setSenderSameAsReceiver(false);
@@ -1008,6 +1037,12 @@ export default function QuickCheckoutScreen({ navigation, route }) {
   }, [route.params?.draftId, applyDraftPayload, navigation]);
 
   // Place order
+  // The order's own payment method when something is paid now, else null
+  // (credit / COD / pay later), in which case dues get their own Cash/UPI choice.
+  const orderMethodIfPaidNow = (paymentMode === 'pay_now' || paymentMode === 'partial')
+    ? (enableSplitPayment ? ((payments.find((p) => (parseFloat(p.amount) || 0) > 0) || payments[0])?.method || 'cash') : paymentMethod)
+    : null;
+
   const handlePlaceOrder = async () => {
     if (submitting) {
       setSubmitErrors(['Order submission is already in progress. Please wait.']);
@@ -1110,12 +1145,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
       const duesErr = duesAmountError(customerHistory.credit_balance, duesCollect);
       if (duesErr) validationErrors.push(duesErr);
     }
-    let duesMethod = 'cash';
-    if (paymentMode === 'pay_now' || paymentMode === 'partial') {
-      duesMethod = enableSplitPayment
-        ? ((payments.find((p) => (parseFloat(p.amount) || 0) > 0) || payments[0])?.method || 'cash')
-        : paymentMethod;
-    }
+    const duesMethod = duesPaymentMethod(duesCollect, orderMethodIfPaidNow);
 
     if (validationErrors.length > 0) {
       setSubmitErrors(validationErrors);
@@ -1239,7 +1269,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
       const saleData = {
         location_id: selectedLocation,
         order_type: orderType,
-        channel: 'walk_in',
+        channel,
         customer_id: needsDelivery ? (customerId || null) : customerId,
         customer_name: needsDelivery ? (effectiveCustomerName || null) : (customerName.trim() || null),
         customer_phone: needsDelivery ? (effectiveCustomerPhone || null) : (customerPhone.trim() || null),
@@ -1536,6 +1566,26 @@ export default function QuickCheckoutScreen({ navigation, route }) {
               </TouchableOpacity>
             ))}
           </View>
+          <View style={{ marginTop: Spacing.sm }}>
+            <Text style={styles.label}>Where did this order come from?</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: Spacing.xs }}>
+              {CHANNELS.map((c) => {
+                const on = channel === c.key;
+                return (
+                  <TouchableOpacity
+                    key={c.key}
+                    style={[styles.chip, styles.channelChip, on && styles.chipActive]}
+                    onPress={() => setChannel(c.key)}
+                    accessibilityRole="radio"
+                    accessibilityState={{ selected: on }}
+                  >
+                    <Ionicons name={c.icon} size={16} color={on ? Colors.white : Colors.textSecondary} />
+                    <Text style={[styles.chipText, on && styles.chipTextActive]}>{c.label}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+          </View>
           {locations.length > 1 && (
             <View style={{ marginTop: Spacing.sm }}>
               <Text style={styles.label}>Location</Text>
@@ -1667,7 +1717,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
             <View style={styles.customerHint}>
               <Ionicons name="person-circle" size={16} color={Colors.primary} />
               <Text style={styles.customerHintText}>
-                {customerId ? '✓ Registered' : 'Returning'} customer • {customerHistory.order_count} orders • ₹{Number(customerHistory.total_spent || 0).toFixed(0)} total
+                {historyLine(customerId ? '✓ Registered' : 'Returning', 'customer', customerHistory)}
               </Text>
             </View>
           )}
@@ -1679,8 +1729,20 @@ export default function QuickCheckoutScreen({ navigation, route }) {
               </Text>
             </View>
           )}
+          {/* Customer came only to pay old dues: no cart needed. */}
+          {customerId && customerHistory && customerHistory.credit_balance > 0 && items.length === 0 && (
+            <TouchableOpacity
+              style={styles.duesOnlyBtn}
+              onPress={() => setShowDuesSheet(true)}
+              accessibilityRole="button"
+              accessibilityLabel={`Collect ${Number(customerHistory.credit_balance).toFixed(0)} rupees of dues only, without a new order`}
+            >
+              <Ionicons name="wallet-outline" size={20} color={Colors.white} />
+              <Text style={styles.duesOnlyBtnText}>Collect ₹{Number(customerHistory.credit_balance).toFixed(0)} dues only</Text>
+            </TouchableOpacity>
+          )}
           {customerId && customerHistory && customerHistory.credit_balance > 0 && (
-            <CollectDuesToggle dueAmount={customerHistory.credit_balance} value={duesCollect} onChange={setDuesCollect} />
+            <CollectDuesToggle dueAmount={customerHistory.credit_balance} value={duesCollect} onChange={setDuesCollect} askMethod={!orderMethodIfPaidNow} />
           )}
           {needsDelivery && (
             <>
@@ -1785,7 +1847,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
                     <View style={styles.customerHint}>
                       <Ionicons name="person-circle" size={16} color={Colors.primary} />
                       <Text style={styles.customerHintText}>
-                        {receiverId ? '✓ Registered' : 'Returning'} receiver • {receiverHistory.order_count} orders • ₹{Number(receiverHistory.total_spent || 0).toFixed(0)} total
+                        {historyLine(receiverId ? '✓ Registered' : 'Returning', 'receiver', receiverHistory)}
                       </Text>
                     </View>
                   )}
@@ -2386,9 +2448,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
             } else if (paymentMode === 'partial') {
               nowPaid = Math.round((parseFloat(advanceAmount) || 0) * 100) / 100;
             }
-            const method = (paymentMode === 'pay_now' || paymentMode === 'partial')
-              ? (enableSplitPayment ? ((payments.find((p) => (parseFloat(p.amount) || 0) > 0) || payments[0])?.method || 'cash') : paymentMethod)
-              : 'cash';
+            const method = duesPaymentMethod(duesCollect, orderMethodIfPaidNow);
             const total = Math.round((nowPaid + dues) * 100) / 100;
             return (
               <View style={{ marginTop: Spacing.sm }}>
@@ -2707,6 +2767,18 @@ export default function QuickCheckoutScreen({ navigation, route }) {
         onConfirm={handleTimeConfirm}
         onCancel={() => setShowTimePicker(false)}
       />
+      <CollectDuesSheet
+        visible={showDuesSheet}
+        customer={customerId && customerHistory ? { id: customerId, name: customerName || customerHistory.name, credit_balance: customerHistory.credit_balance } : null}
+        locationId={selectedLocation}
+        onClose={() => setShowDuesSheet(false)}
+        onDone={({ newBalance }) => {
+          setShowDuesSheet(false);
+          setDuesCollect(EMPTY_DUES);
+          setCustomerHistory((h) => (h ? { ...h, credit_balance: newBalance } : h));
+        }}
+        onOpenRegister={() => navigation.navigate('CashRegister')}
+      />
     </KeyboardAvoidingView>
   );
 }
@@ -2763,6 +2835,9 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.background, borderWidth: 1, borderColor: Colors.border,
   },
   chipActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
+  duesOnlyBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, minHeight: 52, marginTop: 6, borderRadius: BorderRadius.md, backgroundColor: Colors.success },
+  duesOnlyBtnText: { color: Colors.white, fontSize: FontSize.md, fontWeight: '800' },
+  channelChip: { flexDirection: 'row', alignItems: 'center', gap: 6, minHeight: 44 },
   chipText: { fontSize: FontSize.sm, color: Colors.textSecondary, fontWeight: '500' },
   chipTextActive: { color: Colors.white },
 

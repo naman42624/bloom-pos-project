@@ -147,9 +147,10 @@ router.get('/lookup', authenticate, async (req, res, next) => {
     ).get(phone);
 
     if (user) {
-      const orderCount = await db.prepare(
+      const countRow = await db.prepare(
         `SELECT COUNT(*) as c FROM sales WHERE (customer_id = ? OR sender_customer_id = ?) AND status != 'cancelled'`
-      ).get(user.id, user.id).c;
+      ).get(user.id, user.id);
+      const orderCount = Number(countRow?.c || 0);
       const lastOrder = await db.prepare(
         `SELECT created_at FROM sales WHERE (customer_id = ? OR sender_customer_id = ?) AND status != 'cancelled' ORDER BY created_at DESC LIMIT 1`
       ).get(user.id, user.id);
@@ -176,7 +177,7 @@ router.get('/lookup', authenticate, async (req, res, next) => {
       LIMIT 1
     `).get(phone, phone);
 
-    res.json({ success: true, data: salesCustomer ? { ...salesCustomer, is_registered: false } : null });
+    res.json({ success: true, data: salesCustomer ? { ...salesCustomer, order_count: Number(salesCustomer.order_count || 0), is_registered: false } : null });
   } catch (err) { next(err); }
 });
 
@@ -613,6 +614,11 @@ router.post(
 
       const customer = db.prepare("SELECT id, credit_balance FROM users WHERE id = ? AND role = 'customer'").get(customerId);
       if (!customer) return res.status(404).json({ success: false, message: 'Customer not found' });
+      // Shown on that order's details only when it really is this customer's order.
+      const collectedWithSale = excludeSaleId
+        ? db.prepare('SELECT id FROM sales WHERE id = ? AND (customer_id = ? OR sender_customer_id = ?)').get(excludeSaleId, customerId, customerId)
+        : null;
+      const collectedWithSaleId = collectedWithSale ? collectedWithSale.id : null;
 
       const { amount, method, notes, sale_id, location_id, payments, write_off_amount } = req.body;
       const numLocationId = parseInt(location_id, 10);
@@ -652,8 +658,8 @@ router.post(
         // 1. Record credit payments (cash, card, upi)
         for (const p of paymentList) {
           const result = db.prepare(
-            'INSERT INTO credit_payments (customer_id, amount, payment_method, recorded_by, notes, sale_id, location_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
-          ).run(customerId, p.amount, p.method, req.user.id, notes || '', sale_id || null, numLocationId);
+            'INSERT INTO credit_payments (customer_id, amount, payment_method, recorded_by, notes, sale_id, location_id, collected_with_sale_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+          ).run(customerId, p.amount, p.method, req.user.id, notes || '', sale_id || null, numLocationId, collectedWithSaleId);
           lastInsertId = result.lastInsertRowid;
         }
 

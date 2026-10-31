@@ -1288,6 +1288,30 @@ export default function DashboardScreen({ navigation }) {
     };
   }, [myTasks]);
 
+  // Customers used to sit on the Profile page (2026-10-31: moved here, where
+  // staff look during the day). "Collect dues" opens the same list showing only
+  // customers who owe, highest first, each with a Collect button.
+  const renderCustomerRows = () => (
+    <View style={{ flexDirection: 'row', gap: 8 }}>
+      <TouchableOpacity
+        style={[styles.codBannerCompact, { flex: 1 }]}
+        onPress={() => navigation.navigate('EmployeeOrders', { screen: 'Customers', initial: false, params: { dueOnly: false, dueToken: Date.now() } })}
+      >
+        <Ionicons name="people-outline" size={20} color="#92400E" />
+        <Text style={styles.codBannerCompactText}>Customers</Text>
+        <Ionicons name="chevron-forward" size={16} color="#92400E" />
+      </TouchableOpacity>
+      <TouchableOpacity
+        style={[styles.codBannerCompact, { flex: 1 }]}
+        onPress={() => navigation.navigate('EmployeeOrders', { screen: 'Customers', initial: false, params: { dueOnly: true, dueToken: Date.now() } })}
+      >
+        <Ionicons name="wallet-outline" size={20} color="#92400E" />
+        <Text style={styles.codBannerCompactText}>Collect dues</Text>
+        <Ionicons name="chevron-forward" size={16} color="#92400E" />
+      </TouchableOpacity>
+    </View>
+  );
+
   return (
     <View style={styles.root}>
       <ScrollView
@@ -1557,6 +1581,7 @@ export default function DashboardScreen({ navigation }) {
               <Text style={styles.codBannerCompactText}>Add an expense</Text>
               <Ionicons name="chevron-forward" size={16} color="#92400E" />
             </TouchableOpacity>
+            {renderCustomerRows()}
 
             {/* Added 2026-09-13 (staff-ux fix): evening prep planning needs
                 "what's due tomorrow morning," and this used to mean checking
@@ -1742,6 +1767,7 @@ export default function DashboardScreen({ navigation }) {
                 <Ionicons name="chevron-forward" size={16} color="#92400E" />
               </TouchableOpacity>
             )}
+            {role === 'employee' && renderCustomerRows()}
 
             {/* Both employee and florist_staff (not role-gated like Register/
                 Expense above — production tasks are a florist_staff thing

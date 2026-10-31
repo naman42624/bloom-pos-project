@@ -1486,6 +1486,13 @@ router.get('/:id', authenticate, async (req, res, next) => {
     }
     sale.refund = refund;
     sale.delivery = delivery;
+    // Old dues the customer paid together with this order (not part of its total).
+    sale.dues_collected = (await db.prepare(`
+      SELECT payment_method AS method, amount
+      FROM credit_payments
+      WHERE collected_with_sale_id = ? AND payment_method IN ('cash', 'card', 'upi')
+      ORDER BY id
+    `).all(req.params.id)).map((r) => ({ method: r.method, amount: Number(r.amount) }));
 
     // Load-verify indicator — same fields/reasoning as GET /'s two
     // correlated subqueries (see that route). load_total_count comes off the

@@ -6,15 +6,24 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import api from '../services/api';
+import { useAuth } from '../context/AuthContext';
+import CollectDuesSheet from '../components/CollectDuesSheet';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
+
+const CAN_COLLECT_ROLES = ['owner', 'manager', 'employee', 'counter_staff'];
 
 const LIMIT = 20;
 
-export default function CustomersScreen({ navigation }) {
+export default function CustomersScreen({ navigation, route }) {
+  const { user, activeLocation } = useAuth();
+  const canCollect = CAN_COLLECT_ROLES.includes(user?.role);
+  // Opened from the dashboard's "Collect dues": only customers who owe, highest first.
+  const dueOnly = !!route?.params?.dueOnly;
   const [customers, setCustomers] = useState([]);
   const [search, setSearch] = useState('');
-  const [sort, setSort] = useState('name_asc');
-  const [hasDue, setHasDue] = useState(false);
+  const [sort, setSort] = useState(dueOnly ? 'due_desc' : 'name_asc');
+  const [hasDue, setHasDue] = useState(dueOnly);
+  const [collectFor, setCollectFor] = useState(null);
   const [showFilters, setShowFilters] = useState(false);
 
   // ─── UI state (only for rendering) ───────────────────────────────────────
@@ -32,8 +41,18 @@ export default function CustomersScreen({ navigation }) {
   // Keep the latest filter values in refs so loadMore can read them without
   // capturing a stale closure.
   const searchRef = useRef('');
-  const sortRef = useRef('name_asc');
-  const hasDueRef = useRef(false);
+  const sortRef = useRef(dueOnly ? 'due_desc' : 'name_asc');
+  const hasDueRef = useRef(dueOnly);
+
+  // The dashboard opened this list again while it was already open: apply the
+  // row that was tapped ("Collect dues" = owes money, highest first; "Customers" = everyone).
+  useEffect(() => {
+    if (!route?.params?.dueToken) return;
+    const d = !!route.params.dueOnly;
+    setHasDue(d); hasDueRef.current = d;
+    const nextSort = d ? 'due_desc' : 'name_asc';
+    setSort(nextSort); sortRef.current = nextSort;
+  }, [route?.params?.dueToken]);
 
   // ─── Core fetch ───────────────────────────────────────────────────────────
   const fetchCustomers = useCallback(async (opts = {}) => {
@@ -147,7 +166,18 @@ export default function CustomersScreen({ navigation }) {
           ) : null}
         </View>
       </View>
-      <Ionicons name="chevron-forward" size={18} color={Colors.textLight} />
+      {canCollect && item.id && Number(item.credit_balance) > 0 ? (
+        <TouchableOpacity
+          style={styles.collectBtn}
+          onPress={() => setCollectFor(item)}
+          accessibilityRole="button"
+          accessibilityLabel={`Collect dues from ${item.name}`}
+        >
+          <Text style={styles.collectBtnText}>Collect</Text>
+        </TouchableOpacity>
+      ) : (
+        <Ionicons name="chevron-forward" size={18} color={Colors.textLight} />
+      )}
     </TouchableOpacity>
   );
 
@@ -268,11 +298,22 @@ export default function CustomersScreen({ navigation }) {
           ListEmptyComponent={
             <View style={styles.empty}>
               <Ionicons name="people-outline" size={48} color={Colors.textLight} />
-              <Text style={styles.emptyText}>No customers found</Text>
+              <Text style={styles.emptyText}>{hasDue ? 'Nobody owes the shop anything right now' : 'No customers found'}</Text>
             </View>
           }
         />
       )}
+      <CollectDuesSheet
+        visible={!!collectFor}
+        customer={collectFor}
+        locationId={activeLocation?.id}
+        onClose={() => setCollectFor(null)}
+        onDone={() => {
+          setCollectFor(null);
+          fetchCustomers({ page: 1, reset: true });
+        }}
+        onOpenRegister={() => navigation.navigate('POS', { screen: 'CashRegister' })}
+      />
 
       {/* FAB */}
       <TouchableOpacity style={styles.fab} onPress={() => navigation.navigate('CustomerForm')}>
@@ -283,6 +324,8 @@ export default function CustomersScreen({ navigation }) {
 }
 
 const styles = StyleSheet.create({
+  collectBtn: { minHeight: 44, minWidth: 84, paddingHorizontal: Spacing.md, borderRadius: BorderRadius.md, backgroundColor: Colors.success, alignItems: 'center', justifyContent: 'center', marginLeft: Spacing.sm },
+  collectBtnText: { color: Colors.white, fontSize: FontSize.md, fontWeight: '800' },
   container: { flex: 1, backgroundColor: Colors.background },
   centered: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   headerContainer: {

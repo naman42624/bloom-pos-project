@@ -208,20 +208,8 @@ export default function ProfileScreen() {
         )}
       </View>
 
-      {/* Customers — employee/counter_staff only (2026-09-13, staff-ux fix):
-          owner/manager already reach this via the More tab; these two
-          roles' only prior path was a small floating button on Orders
-          Inbox, easy to forget was there. Same role check
-          OrdersInboxScreen.js's own shortcut already uses. */}
-      {(user?.role === 'employee' || user?.role === 'counter_staff') && (
-        <Button
-          title="Customers"
-          variant="outline"
-          onPress={() => navigation.navigate('Customers')}
-          icon={<Ionicons name="people-outline" size={20} color={Colors.primary} />}
-          style={{ marginBottom: Spacing.md }}
-        />
-      )}
+      {/* Customers moved to the dashboard (2026-10-31): it is a daily work
+          page, not a profile setting. */}
 
       {/* Logout */}
       <Button
