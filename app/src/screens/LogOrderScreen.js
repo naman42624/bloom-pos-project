@@ -12,9 +12,9 @@ import { useAuth } from '../context/AuthContext';
 import { getShopNow } from '../utils/datetime';
 import { bumpActivity } from '../hooks/useIdleLock';
 import useSubmitGuard from '../hooks/useSubmitGuard';
-import { showConfirm } from '../utils/alert';
 import OldDuesCard, { EMPTY_DUES, duesAmountError } from '../components/OldDuesCard';
 import CollectDuesSheet from '../components/CollectDuesSheet';
+import OpenRegisterSheet from '../components/OpenRegisterSheet';
 
 const CHANNELS = [
   { key: 'whatsapp', label: 'WhatsApp', icon: 'logo-whatsapp' },
@@ -58,6 +58,7 @@ export default function LogOrderScreen({ navigation, route }) {
   const [showCustomerSuggestions, setShowCustomerSuggestions] = useState(false);
   const [customerDues, setCustomerDues] = useState(0);
   const [showDuesSheet, setShowDuesSheet] = useState(false);
+  const [showOpenRegister, setShowOpenRegister] = useState(false);
   const [duesCollect, setDuesCollect] = useState(EMPTY_DUES);
   const [customerSearchTarget, setCustomerSearchTarget] = useState('phone');
   const customerSearchTimer = useRef(null);
@@ -435,12 +436,8 @@ export default function LogOrderScreen({ navigation, route }) {
     if (needsRegister) {
       const isOpen = await checkRegisterStatus(activeLocation?.id);
       if (!isOpen) {
-        showConfirm(
-          'Register Closed',
-          'The cash register for this location is not open. Please open it before recording a cash payment.',
-          () => navigation.navigate('CashRegister'),
-          { confirmLabel: 'Open Register' }
-        );
+        // Open it right here instead of a trip to Cash Register.
+        setShowOpenRegister(true);
         return;
       }
     }
@@ -876,6 +873,16 @@ export default function LogOrderScreen({ navigation, route }) {
           setDuesCollect({ enabled: true, amount: String(amount), method });
         }}
         initial={duesCollect.enabled ? duesCollect : undefined}
+      />
+      <OpenRegisterSheet
+        visible={showOpenRegister}
+        locationId={activeLocation?.id}
+        actionLabel="save order"
+        onClose={() => setShowOpenRegister(false)}
+        onOpened={() => {
+          setShowOpenRegister(false);
+          guardSubmit(handleSave)();
+        }}
       />
     </>
   );

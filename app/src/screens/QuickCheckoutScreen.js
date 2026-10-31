@@ -13,8 +13,9 @@ import VoiceNoteRecorder from '../components/VoiceNoteRecorder';
 import RoutePicker from '../components/RoutePicker';
 import SavedAddressChips from '../components/SavedAddressChips';
 import AttachmentVoiceRow from '../components/AttachmentVoiceRow';
-import { showAlert, showConfirm } from '../utils/alert';
+import { showAlert } from '../utils/alert';
 import CollectDuesSheet from '../components/CollectDuesSheet';
+import OpenRegisterSheet from '../components/OpenRegisterSheet';
 import OldDuesCard, { EMPTY_DUES, duesAmountError } from '../components/OldDuesCard';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
@@ -82,6 +83,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
   const [selectedLocation, setSelectedLocation] = useState(null);
   const [channel, setChannel] = useState('walk_in');
   const [showDuesSheet, setShowDuesSheet] = useState(false);
+  const [showOpenRegister, setShowOpenRegister] = useState(false);
 
   // Materials list (for building custom products)
   const [allMaterials, setAllMaterials] = useState([]);
@@ -959,8 +961,10 @@ export default function QuickCheckoutScreen({ navigation, route }) {
       });
       resetForm();
       loadDrafts();
+      return true;
     } catch (err) {
       showAlert('Draft not saved', err.message || 'The draft could not be saved. Please try again.');
+      return false;
     } finally {
       setSavingDraft(false);
     }
@@ -1170,9 +1174,9 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     if (willPayCash || (collectingDues && duesMethod === 'cash')) {
       const isRegOpen = await checkRegisterStatus(selectedLocation);
       if (!isRegOpen) {
-        const msg = 'The cash register for this location is not open. Please open it before creating a sale.';
-        setSubmitErrors([msg]);
-        showConfirm('Register Closed', msg, () => navigation.navigate('CashRegister'), { confirmLabel: 'Open Register' });
+        // Open it right here (or save a draft) instead of a trip to Cash Register.
+        setSubmitErrors([]);
+        setShowOpenRegister(true);
         return;
       }
     }
@@ -2772,6 +2776,21 @@ export default function QuickCheckoutScreen({ navigation, route }) {
           setDuesCollect({ enabled: true, amount: String(amount), method });
         } : undefined}
         initial={duesCollect.enabled ? duesCollect : undefined}
+      />
+      <OpenRegisterSheet
+        visible={showOpenRegister}
+        locationId={selectedLocation}
+        actionLabel="place order"
+        onClose={() => setShowOpenRegister(false)}
+        onOpened={() => {
+          setShowOpenRegister(false);
+          guardSubmit(handlePlaceOrder)();
+        }}
+        onSaveDraft={async () => {
+          setShowOpenRegister(false);
+          const saved = await handleSaveDraft();
+          if (saved) showAlert('Saved as a draft', 'Open the register when you are ready, then pick this order from Drafts to finish it.');
+        }}
       />
     </KeyboardAvoidingView>
   );
