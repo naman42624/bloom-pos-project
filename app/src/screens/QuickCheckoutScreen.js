@@ -13,9 +13,10 @@ import VoiceNoteRecorder from '../components/VoiceNoteRecorder';
 import RoutePicker from '../components/RoutePicker';
 import SavedAddressChips from '../components/SavedAddressChips';
 import AttachmentVoiceRow from '../components/AttachmentVoiceRow';
-import { showAlert, showConfirm } from '../utils/alert';
+import { showAlert } from '../utils/alert';
 import CollectDuesSheet from '../components/CollectDuesSheet';
-import CollectDuesToggle, { EMPTY_DUES, duesAmountError, duesPaymentMethod } from '../components/CollectDuesToggle';
+import OpenRegisterSheet from '../components/OpenRegisterSheet';
+import OldDuesCard, { EMPTY_DUES, duesAmountError } from '../components/OldDuesCard';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
@@ -40,13 +41,13 @@ const ORDER_TYPES = [
   { key: 'pre_order', label: 'Pre-Order', icon: 'calendar', color: Colors.primary },
 ];
 
-// "✓ Registered customer • 3 orders • ₹1200 total"; a count that is missing
-// is left out rather than shown blank.
+// "✓ Registered customer • 3 orders"; a count that is missing is left out
+// rather than shown blank. Dues have their own card; the lifetime total is on
+// the customer's profile, not needed at the counter.
 function historyLine(kind, who, h) {
   const n = h.order_count == null || h.order_count === '' ? null : Number(h.order_count);
   const parts = [`${kind} ${who}`];
   if (n !== null && Number.isFinite(n)) parts.push(n === 0 ? 'no orders yet' : `${n} order${n === 1 ? '' : 's'}`);
-  parts.push(`₹${Number(h.total_spent || 0).toFixed(0)} total`);
   return parts.join(' • ');
 }
 
@@ -82,6 +83,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
   const [selectedLocation, setSelectedLocation] = useState(null);
   const [channel, setChannel] = useState('walk_in');
   const [showDuesSheet, setShowDuesSheet] = useState(false);
+  const [showOpenRegister, setShowOpenRegister] = useState(false);
 
   // Materials list (for building custom products)
   const [allMaterials, setAllMaterials] = useState([]);
@@ -138,8 +140,10 @@ export default function QuickCheckoutScreen({ navigation, route }) {
   const [submitting, setSubmitting] = useState(false);
   const guardSubmit = useSubmitGuard();
   const [duesCollect, setDuesCollect] = useState(EMPTY_DUES);
-  // A different customer means a different dues balance, so the switch starts off again.
+  // A different customer means a different dues balance, so added dues are dropped.
   useEffect(() => { setDuesCollect(EMPTY_DUES); }, [customerId]);
+  // Dues ride along with an order; with the cart emptied there is no order to add them to.
+  useEffect(() => { if (items.length === 0) setDuesCollect(EMPTY_DUES); }, [items.length]);
   const [skipAssignment, setSkipAssignment] = useState(true);
   const [submitErrors, setSubmitErrors] = useState([]);
   const [savingDraft, setSavingDraft] = useState(false);
@@ -957,8 +961,10 @@ export default function QuickCheckoutScreen({ navigation, route }) {
       });
       resetForm();
       loadDrafts();
+      return true;
     } catch (err) {
       showAlert('Draft not saved', err.message || 'The draft could not be saved. Please try again.');
+      return false;
     } finally {
       setSavingDraft(false);
     }
@@ -1037,12 +1043,6 @@ export default function QuickCheckoutScreen({ navigation, route }) {
   }, [route.params?.draftId, applyDraftPayload, navigation]);
 
   // Place order
-  // The order's own payment method when something is paid now, else null
-  // (credit / COD / pay later), in which case dues get their own Cash/UPI choice.
-  const orderMethodIfPaidNow = (paymentMode === 'pay_now' || paymentMode === 'partial')
-    ? (enableSplitPayment ? ((payments.find((p) => (parseFloat(p.amount) || 0) > 0) || payments[0])?.method || 'cash') : paymentMethod)
-    : null;
-
   const handlePlaceOrder = async () => {
     if (submitting) {
       setSubmitErrors(['Order submission is already in progress. Please wait.']);
@@ -1137,15 +1137,14 @@ export default function QuickCheckoutScreen({ navigation, route }) {
       }
     }
 
-    // Dues collected at checkout use the order's own payment method (the first
-    // method when split); an order that takes no payment now (credit / COD)
-    // collects dues in cash. Spec section 7.
+    // Old dues added to this order (from the Old dues panel) are taken in the
+    // method chosen there, after the order is created.
     const collectingDues = !!(duesCollect.enabled && customerId && customerHistory?.credit_balance > 0);
     if (collectingDues) {
       const duesErr = duesAmountError(customerHistory.credit_balance, duesCollect);
       if (duesErr) validationErrors.push(duesErr);
     }
-    const duesMethod = duesPaymentMethod(duesCollect, orderMethodIfPaidNow);
+    const duesMethod = duesCollect.method === 'upi' ? 'upi' : 'cash';
 
     if (validationErrors.length > 0) {
       setSubmitErrors(validationErrors);
@@ -1175,9 +1174,9 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     if (willPayCash || (collectingDues && duesMethod === 'cash')) {
       const isRegOpen = await checkRegisterStatus(selectedLocation);
       if (!isRegOpen) {
-        const msg = 'The cash register for this location is not open. Please open it before creating a sale.';
-        setSubmitErrors([msg]);
-        showConfirm('Register Closed', msg, () => navigation.navigate('CashRegister'), { confirmLabel: 'Open Register' });
+        // Open it right here (or save a draft) instead of a trip to Cash Register.
+        setSubmitErrors([]);
+        setShowOpenRegister(true);
         return;
       }
     }
@@ -1682,7 +1681,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
                       <Ionicons name={c.id ? 'person' : 'person-outline'} size={16} color={Colors.primary} />
                       <View style={{ flex: 1, marginLeft: 8 }}>
                         <Text style={styles.suggestionName}>{c.name || 'Unknown'}</Text>
-                        <Text style={styles.suggestionPhone}>{c.phone}{c.total_spent > 0 ? ` • ₹${Math.round(c.total_spent)}` : ''}</Text>
+                        <Text style={styles.suggestionPhone}>{c.phone}{Number(c.credit_balance) > 0 ? ` • Owes ₹${Math.round(c.credit_balance)}` : ''}</Text>
                       </View>
                     </TouchableOpacity>
                   ))}
@@ -1705,7 +1704,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
                       <Ionicons name={c.id ? 'person' : 'person-outline'} size={16} color={Colors.primary} />
                       <View style={{ flex: 1, marginLeft: 8 }}>
                         <Text style={styles.suggestionName}>{c.name || 'Unknown'}</Text>
-                        <Text style={styles.suggestionPhone}>{c.phone}{c.total_spent > 0 ? ` • ₹${Math.round(c.total_spent)}` : ''}</Text>
+                        <Text style={styles.suggestionPhone}>{c.phone}{Number(c.credit_balance) > 0 ? ` • Owes ₹${Math.round(c.credit_balance)}` : ''}</Text>
                       </View>
                     </TouchableOpacity>
                   ))}
@@ -1721,29 +1720,23 @@ export default function QuickCheckoutScreen({ navigation, route }) {
               </Text>
             </View>
           )}
-          {customerHistory && customerHistory.credit_balance > 0 && (
+          {/* Old dues: one card, one button. The panel it opens takes the dues
+              now, or adds them to this order when there are items. */}
+          {customerId && customerHistory && customerHistory.credit_balance > 0 ? (
+            <OldDuesCard
+              dueAmount={customerHistory.credit_balance}
+              value={duesCollect}
+              onCollect={() => setShowDuesSheet(true)}
+              onRemove={() => setDuesCollect(EMPTY_DUES)}
+            />
+          ) : customerHistory && customerHistory.credit_balance > 0 ? (
             <View style={[styles.customerHint, { backgroundColor: Colors.error + '10', borderColor: Colors.error + '30', marginTop: 4 }]}>
               <Ionicons name="alert-circle" size={16} color={Colors.error} />
               <Text style={[styles.customerHintText, { color: Colors.error, fontWeight: '600' }]}>
                 Previous Dues Pending: ₹{Number(customerHistory.credit_balance).toFixed(2)}
               </Text>
             </View>
-          )}
-          {/* Customer came only to pay old dues: no cart needed. */}
-          {customerId && customerHistory && customerHistory.credit_balance > 0 && items.length === 0 && (
-            <TouchableOpacity
-              style={styles.duesOnlyBtn}
-              onPress={() => setShowDuesSheet(true)}
-              accessibilityRole="button"
-              accessibilityLabel={`Collect ${Number(customerHistory.credit_balance).toFixed(0)} rupees of dues only, without a new order`}
-            >
-              <Ionicons name="wallet-outline" size={20} color={Colors.white} />
-              <Text style={styles.duesOnlyBtnText}>Collect ₹{Number(customerHistory.credit_balance).toFixed(0)} dues only</Text>
-            </TouchableOpacity>
-          )}
-          {customerId && customerHistory && customerHistory.credit_balance > 0 && (
-            <CollectDuesToggle dueAmount={customerHistory.credit_balance} value={duesCollect} onChange={setDuesCollect} askMethod={!orderMethodIfPaidNow} />
-          )}
+          ) : null}
           {needsDelivery && (
             <>
               <TouchableOpacity
@@ -1813,7 +1806,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
                               <Ionicons name={c.id ? 'person' : 'person-outline'} size={16} color={Colors.primary} />
                               <View style={{ flex: 1, marginLeft: 8 }}>
                                 <Text style={styles.suggestionName}>{c.name || 'Unknown'}</Text>
-                                <Text style={styles.suggestionPhone}>{c.phone}{c.total_spent > 0 ? ` • ₹${Math.round(c.total_spent)}` : ''}</Text>
+                                <Text style={styles.suggestionPhone}>{c.phone}{Number(c.credit_balance) > 0 ? ` • Owes ₹${Math.round(c.credit_balance)}` : ''}</Text>
                               </View>
                             </TouchableOpacity>
                           ))}
@@ -1835,7 +1828,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
                               <Ionicons name={c.id ? 'person' : 'person-outline'} size={16} color={Colors.primary} />
                               <View style={{ flex: 1, marginLeft: 8 }}>
                                 <Text style={styles.suggestionName}>{c.name || 'Unknown'}</Text>
-                                <Text style={styles.suggestionPhone}>{c.phone}{c.total_spent > 0 ? ` • ₹${Math.round(c.total_spent)}` : ''}</Text>
+                                <Text style={styles.suggestionPhone}>{c.phone}{Number(c.credit_balance) > 0 ? ` • Owes ₹${Math.round(c.credit_balance)}` : ''}</Text>
                               </View>
                             </TouchableOpacity>
                           ))}
@@ -2448,7 +2441,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
             } else if (paymentMode === 'partial') {
               nowPaid = Math.round((parseFloat(advanceAmount) || 0) * 100) / 100;
             }
-            const method = duesPaymentMethod(duesCollect, orderMethodIfPaidNow);
+            const method = duesCollect.method === 'upi' ? 'upi' : 'cash';
             const total = Math.round((nowPaid + dues) * 100) / 100;
             return (
               <View style={{ marginTop: Spacing.sm }}>
@@ -2777,7 +2770,26 @@ export default function QuickCheckoutScreen({ navigation, route }) {
           setDuesCollect(EMPTY_DUES);
           setCustomerHistory((h) => (h ? { ...h, credit_balance: newBalance } : h));
         }}
-        onOpenRegister={() => navigation.navigate('CashRegister')}
+        onAddToOrder={items.length > 0 ? ({ amount, method }) => {
+          setShowDuesSheet(false);
+          setDuesCollect({ enabled: true, amount: String(amount), method });
+        } : undefined}
+        initial={duesCollect.enabled ? duesCollect : undefined}
+      />
+      <OpenRegisterSheet
+        visible={showOpenRegister}
+        locationId={selectedLocation}
+        actionLabel="place order"
+        onClose={() => setShowOpenRegister(false)}
+        onOpened={() => {
+          setShowOpenRegister(false);
+          guardSubmit(handlePlaceOrder)();
+        }}
+        onSaveDraft={async () => {
+          setShowOpenRegister(false);
+          const saved = await handleSaveDraft();
+          if (saved) showAlert('Saved as a draft', 'Open the register when you are ready, then pick this order from Drafts to finish it.');
+        }}
       />
     </KeyboardAvoidingView>
   );
@@ -2835,8 +2847,6 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.background, borderWidth: 1, borderColor: Colors.border,
   },
   chipActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
-  duesOnlyBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, minHeight: 52, marginTop: 6, borderRadius: BorderRadius.md, backgroundColor: Colors.success },
-  duesOnlyBtnText: { color: Colors.white, fontSize: FontSize.md, fontWeight: '800' },
   channelChip: { flexDirection: 'row', alignItems: 'center', gap: 6, minHeight: 44 },
   chipText: { fontSize: FontSize.sm, color: Colors.textSecondary, fontWeight: '500' },
   chipTextActive: { color: Colors.white },

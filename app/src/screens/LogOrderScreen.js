@@ -12,8 +12,9 @@ import { useAuth } from '../context/AuthContext';
 import { getShopNow } from '../utils/datetime';
 import { bumpActivity } from '../hooks/useIdleLock';
 import useSubmitGuard from '../hooks/useSubmitGuard';
-import { showConfirm } from '../utils/alert';
-import CollectDuesToggle, { EMPTY_DUES, duesAmountError, duesPaymentMethod } from '../components/CollectDuesToggle';
+import OldDuesCard, { EMPTY_DUES, duesAmountError } from '../components/OldDuesCard';
+import CollectDuesSheet from '../components/CollectDuesSheet';
+import OpenRegisterSheet from '../components/OpenRegisterSheet';
 
 const CHANNELS = [
   { key: 'whatsapp', label: 'WhatsApp', icon: 'logo-whatsapp' },
@@ -56,6 +57,8 @@ export default function LogOrderScreen({ navigation, route }) {
   const [customerSuggestions, setCustomerSuggestions] = useState([]);
   const [showCustomerSuggestions, setShowCustomerSuggestions] = useState(false);
   const [customerDues, setCustomerDues] = useState(0);
+  const [showDuesSheet, setShowDuesSheet] = useState(false);
+  const [showOpenRegister, setShowOpenRegister] = useState(false);
   const [duesCollect, setDuesCollect] = useState(EMPTY_DUES);
   const [customerSearchTarget, setCustomerSearchTarget] = useState('phone');
   const customerSearchTimer = useRef(null);
@@ -416,8 +419,8 @@ export default function LogOrderScreen({ navigation, route }) {
       }
     }
 
-    // Dues collected here use the order's payment method; an order with no
-    // payment collects dues in cash. Spec section 7.
+    // Old dues added to this order (from the Old dues panel) are taken in the
+    // method chosen there, after the order is created.
     const collectingDues = !!(duesCollect.enabled && customerId && customerDues > 0);
     if (collectingDues) {
       const duesErr = duesAmountError(customerDues, duesCollect);
@@ -426,19 +429,15 @@ export default function LogOrderScreen({ navigation, route }) {
         return;
       }
     }
-    const duesMethod = duesPaymentMethod(duesCollect, paymentMode !== 'unpaid' ? paymentMethod : null);
+    const duesMethod = duesCollect.method === 'upi' ? 'upi' : 'cash';
 
     // Only cash touches the physical register, so only cash needs it open.
     const needsRegister = (paymentMode !== 'unpaid' && paymentMethod === 'cash') || (collectingDues && duesMethod === 'cash');
     if (needsRegister) {
       const isOpen = await checkRegisterStatus(activeLocation?.id);
       if (!isOpen) {
-        showConfirm(
-          'Register Closed',
-          'The cash register for this location is not open. Please open it before recording a cash payment.',
-          () => navigation.navigate('CashRegister'),
-          { confirmLabel: 'Open Register' }
-        );
+        // Open it right here instead of a trip to Cash Register.
+        setShowOpenRegister(true);
         return;
       }
     }
@@ -578,7 +577,7 @@ export default function LogOrderScreen({ navigation, route }) {
                 <Ionicons name={c.id ? 'person' : 'person-outline'} size={16} color={Colors.primary} />
                 <View style={{ flex: 1, marginLeft: 8 }}>
                   <Text style={styles.suggestionName}>{c.name || 'Unknown'}</Text>
-                  <Text style={styles.suggestionSub}>{c.phone}{c.total_spent > 0 ? ` • ₹${Math.round(c.total_spent)}` : ''}</Text>
+                  <Text style={styles.suggestionSub}>{c.phone}{Number(c.credit_balance) > 0 ? ` • Owes ₹${Math.round(c.credit_balance)}` : ''}</Text>
                 </View>
               </TouchableOpacity>
             ))}
@@ -592,7 +591,7 @@ export default function LogOrderScreen({ navigation, route }) {
                 <Ionicons name={c.id ? 'person' : 'person-outline'} size={16} color={Colors.primary} />
                 <View style={{ flex: 1, marginLeft: 8 }}>
                   <Text style={styles.suggestionName}>{c.name || 'Unknown'}</Text>
-                  <Text style={styles.suggestionSub}>{c.phone}{c.total_spent > 0 ? ` • ₹${Math.round(c.total_spent)}` : ''}</Text>
+                  <Text style={styles.suggestionSub}>{c.phone}{Number(c.credit_balance) > 0 ? ` • Owes ₹${Math.round(c.credit_balance)}` : ''}</Text>
                 </View>
               </TouchableOpacity>
             ))}
@@ -600,12 +599,12 @@ export default function LogOrderScreen({ navigation, route }) {
         )}
 
         {customerId && customerDues > 0 && (
-          <View>
-            <Text style={{ color: Colors.error, fontWeight: '600', fontSize: FontSize.md }}>
-              Previous Dues Pending: ₹{customerDues.toFixed(2)}
-            </Text>
-            <CollectDuesToggle dueAmount={customerDues} value={duesCollect} onChange={setDuesCollect} askMethod={paymentMode === 'unpaid'} />
-          </View>
+          <OldDuesCard
+            dueAmount={customerDues}
+            value={duesCollect}
+            onCollect={() => setShowDuesSheet(true)}
+            onRemove={() => setDuesCollect(EMPTY_DUES)}
+          />
         )}
 
         <Text style={styles.sectionLabel}>What are they ordering?</Text>
@@ -822,7 +821,7 @@ export default function LogOrderScreen({ navigation, route }) {
         {duesCollect.enabled && customerId && customerDues > 0 && !duesAmountError(customerDues, duesCollect) && (() => {
           const dues = Math.round((parseFloat(duesCollect.amount) || 0) * 100) / 100;
           const nowPaid = paymentMode !== 'unpaid' ? Math.round((parseFloat(paymentAmount) || 0) * 100) / 100 : 0;
-          const method = duesPaymentMethod(duesCollect, paymentMode !== 'unpaid' ? paymentMethod : null);
+          const method = duesCollect.method === 'upi' ? 'upi' : 'cash';
           const total = Math.round((nowPaid + dues) * 100) / 100;
           return (
             <View style={{ marginTop: Spacing.sm }}>
@@ -857,6 +856,32 @@ export default function LogOrderScreen({ navigation, route }) {
         value={datePickerDate}
         onConfirm={handleTimeConfirm}
         onCancel={() => setShowTimePicker(false)}
+      />
+      <CollectDuesSheet
+        visible={showDuesSheet}
+        customer={customerId && customerDues > 0 ? { id: customerId, name: customerName, credit_balance: customerDues } : null}
+        locationId={activeLocation?.id}
+        onClose={() => setShowDuesSheet(false)}
+        onDone={({ newBalance }) => {
+          setShowDuesSheet(false);
+          setDuesCollect(EMPTY_DUES);
+          setCustomerDues(newBalance);
+        }}
+        onAddToOrder={({ amount, method }) => {
+          setShowDuesSheet(false);
+          setDuesCollect({ enabled: true, amount: String(amount), method });
+        }}
+        initial={duesCollect.enabled ? duesCollect : undefined}
+      />
+      <OpenRegisterSheet
+        visible={showOpenRegister}
+        locationId={activeLocation?.id}
+        actionLabel="save order"
+        onClose={() => setShowOpenRegister(false)}
+        onOpened={() => {
+          setShowOpenRegister(false);
+          guardSubmit(handleSave)();
+        }}
       />
     </>
   );

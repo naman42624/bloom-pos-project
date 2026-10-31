@@ -373,7 +373,9 @@ export default function DashboardScreen({ navigation }) {
           const registerRes = await api.getRegisterStatus(activeLocation.id).catch(() => ({}));
           setCounterStats((prev) => ({
             ...prev,
-            registerOpen: registerRes?.data ? !registerRes.data.closed_at : null,
+            // isOpen is false (not missing) when nobody has opened the register today;
+            // null only when the status call itself failed.
+            registerOpen: typeof registerRes?.isOpen === 'boolean' ? registerRes.isOpen : null,
             registerOpenedBy: registerRes?.data?.opened_by_name || null,
             registerOpenedAt: registerRes?.data?.opening_time || registerRes?.data?.opened_at || null,
             pendingCodTotal: Number(registerRes?.pendingCodTotal || 0),
@@ -440,7 +442,9 @@ export default function DashboardScreen({ navigation }) {
         ]);
         setCounterStats({
           salesCount: Number(summaryRes?.data?.total_sales || 0),
-          registerOpen: registerRes?.data ? !registerRes.data.closed_at : null,
+          // isOpen is false (not missing) when nobody has opened the register today;
+            // null only when the status call itself failed.
+            registerOpen: typeof registerRes?.isOpen === 'boolean' ? registerRes.isOpen : null,
           registerOpenedBy: registerRes?.data?.opened_by_name || null,
           registerOpenedAt: registerRes?.data?.opening_time || registerRes?.data?.opened_at || null,
           // Money a delivery partner has collected (cash or UPI) but hasn't
