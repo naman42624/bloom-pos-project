@@ -40,13 +40,13 @@ const ORDER_TYPES = [
   { key: 'pre_order', label: 'Pre-Order', icon: 'calendar', color: Colors.primary },
 ];
 
-// "✓ Registered customer • 3 orders • ₹1200 total"; a count that is missing
-// is left out rather than shown blank.
+// "✓ Registered customer • 3 orders"; a count that is missing is left out
+// rather than shown blank. Dues have their own card; the lifetime total is on
+// the customer's profile, not needed at the counter.
 function historyLine(kind, who, h) {
   const n = h.order_count == null || h.order_count === '' ? null : Number(h.order_count);
   const parts = [`${kind} ${who}`];
   if (n !== null && Number.isFinite(n)) parts.push(n === 0 ? 'no orders yet' : `${n} order${n === 1 ? '' : 's'}`);
-  parts.push(`₹${Number(h.total_spent || 0).toFixed(0)} total`);
   return parts.join(' • ');
 }
 
@@ -1677,7 +1677,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
                       <Ionicons name={c.id ? 'person' : 'person-outline'} size={16} color={Colors.primary} />
                       <View style={{ flex: 1, marginLeft: 8 }}>
                         <Text style={styles.suggestionName}>{c.name || 'Unknown'}</Text>
-                        <Text style={styles.suggestionPhone}>{c.phone}{c.total_spent > 0 ? ` • ₹${Math.round(c.total_spent)}` : ''}</Text>
+                        <Text style={styles.suggestionPhone}>{c.phone}{Number(c.credit_balance) > 0 ? ` • Owes ₹${Math.round(c.credit_balance)}` : ''}</Text>
                       </View>
                     </TouchableOpacity>
                   ))}
@@ -1700,7 +1700,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
                       <Ionicons name={c.id ? 'person' : 'person-outline'} size={16} color={Colors.primary} />
                       <View style={{ flex: 1, marginLeft: 8 }}>
                         <Text style={styles.suggestionName}>{c.name || 'Unknown'}</Text>
-                        <Text style={styles.suggestionPhone}>{c.phone}{c.total_spent > 0 ? ` • ₹${Math.round(c.total_spent)}` : ''}</Text>
+                        <Text style={styles.suggestionPhone}>{c.phone}{Number(c.credit_balance) > 0 ? ` • Owes ₹${Math.round(c.credit_balance)}` : ''}</Text>
                       </View>
                     </TouchableOpacity>
                   ))}
@@ -1802,7 +1802,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
                               <Ionicons name={c.id ? 'person' : 'person-outline'} size={16} color={Colors.primary} />
                               <View style={{ flex: 1, marginLeft: 8 }}>
                                 <Text style={styles.suggestionName}>{c.name || 'Unknown'}</Text>
-                                <Text style={styles.suggestionPhone}>{c.phone}{c.total_spent > 0 ? ` • ₹${Math.round(c.total_spent)}` : ''}</Text>
+                                <Text style={styles.suggestionPhone}>{c.phone}{Number(c.credit_balance) > 0 ? ` • Owes ₹${Math.round(c.credit_balance)}` : ''}</Text>
                               </View>
                             </TouchableOpacity>
                           ))}
@@ -1824,7 +1824,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
                               <Ionicons name={c.id ? 'person' : 'person-outline'} size={16} color={Colors.primary} />
                               <View style={{ flex: 1, marginLeft: 8 }}>
                                 <Text style={styles.suggestionName}>{c.name || 'Unknown'}</Text>
-                                <Text style={styles.suggestionPhone}>{c.phone}{c.total_spent > 0 ? ` • ₹${Math.round(c.total_spent)}` : ''}</Text>
+                                <Text style={styles.suggestionPhone}>{c.phone}{Number(c.credit_balance) > 0 ? ` • Owes ₹${Math.round(c.credit_balance)}` : ''}</Text>
                               </View>
                             </TouchableOpacity>
                           ))}

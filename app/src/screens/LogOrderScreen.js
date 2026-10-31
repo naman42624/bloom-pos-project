@@ -580,7 +580,7 @@ export default function LogOrderScreen({ navigation, route }) {
                 <Ionicons name={c.id ? 'person' : 'person-outline'} size={16} color={Colors.primary} />
                 <View style={{ flex: 1, marginLeft: 8 }}>
                   <Text style={styles.suggestionName}>{c.name || 'Unknown'}</Text>
-                  <Text style={styles.suggestionSub}>{c.phone}{c.total_spent > 0 ? ` • ₹${Math.round(c.total_spent)}` : ''}</Text>
+                  <Text style={styles.suggestionSub}>{c.phone}{Number(c.credit_balance) > 0 ? ` • Owes ₹${Math.round(c.credit_balance)}` : ''}</Text>
                 </View>
               </TouchableOpacity>
             ))}
@@ -594,7 +594,7 @@ export default function LogOrderScreen({ navigation, route }) {
                 <Ionicons name={c.id ? 'person' : 'person-outline'} size={16} color={Colors.primary} />
                 <View style={{ flex: 1, marginLeft: 8 }}>
                   <Text style={styles.suggestionName}>{c.name || 'Unknown'}</Text>
-                  <Text style={styles.suggestionSub}>{c.phone}{c.total_spent > 0 ? ` • ₹${Math.round(c.total_spent)}` : ''}</Text>
+                  <Text style={styles.suggestionSub}>{c.phone}{Number(c.credit_balance) > 0 ? ` • Owes ₹${Math.round(c.credit_balance)}` : ''}</Text>
                 </View>
               </TouchableOpacity>
             ))}
