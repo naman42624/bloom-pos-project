@@ -15,7 +15,7 @@ import SavedAddressChips from '../components/SavedAddressChips';
 import AttachmentVoiceRow from '../components/AttachmentVoiceRow';
 import { showAlert, showConfirm } from '../utils/alert';
 import CollectDuesSheet from '../components/CollectDuesSheet';
-import CollectDuesToggle, { EMPTY_DUES, duesAmountError, duesPaymentMethod } from '../components/CollectDuesToggle';
+import OldDuesCard, { EMPTY_DUES, duesAmountError } from '../components/OldDuesCard';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
@@ -138,8 +138,10 @@ export default function QuickCheckoutScreen({ navigation, route }) {
   const [submitting, setSubmitting] = useState(false);
   const guardSubmit = useSubmitGuard();
   const [duesCollect, setDuesCollect] = useState(EMPTY_DUES);
-  // A different customer means a different dues balance, so the switch starts off again.
+  // A different customer means a different dues balance, so added dues are dropped.
   useEffect(() => { setDuesCollect(EMPTY_DUES); }, [customerId]);
+  // Dues ride along with an order; with the cart emptied there is no order to add them to.
+  useEffect(() => { if (items.length === 0) setDuesCollect(EMPTY_DUES); }, [items.length]);
   const [skipAssignment, setSkipAssignment] = useState(true);
   const [submitErrors, setSubmitErrors] = useState([]);
   const [savingDraft, setSavingDraft] = useState(false);
@@ -1037,12 +1039,6 @@ export default function QuickCheckoutScreen({ navigation, route }) {
   }, [route.params?.draftId, applyDraftPayload, navigation]);
 
   // Place order
-  // The order's own payment method when something is paid now, else null
-  // (credit / COD / pay later), in which case dues get their own Cash/UPI choice.
-  const orderMethodIfPaidNow = (paymentMode === 'pay_now' || paymentMode === 'partial')
-    ? (enableSplitPayment ? ((payments.find((p) => (parseFloat(p.amount) || 0) > 0) || payments[0])?.method || 'cash') : paymentMethod)
-    : null;
-
   const handlePlaceOrder = async () => {
     if (submitting) {
       setSubmitErrors(['Order submission is already in progress. Please wait.']);
@@ -1137,15 +1133,14 @@ export default function QuickCheckoutScreen({ navigation, route }) {
       }
     }
 
-    // Dues collected at checkout use the order's own payment method (the first
-    // method when split); an order that takes no payment now (credit / COD)
-    // collects dues in cash. Spec section 7.
+    // Old dues added to this order (from the Old dues panel) are taken in the
+    // method chosen there, after the order is created.
     const collectingDues = !!(duesCollect.enabled && customerId && customerHistory?.credit_balance > 0);
     if (collectingDues) {
       const duesErr = duesAmountError(customerHistory.credit_balance, duesCollect);
       if (duesErr) validationErrors.push(duesErr);
     }
-    const duesMethod = duesPaymentMethod(duesCollect, orderMethodIfPaidNow);
+    const duesMethod = duesCollect.method === 'upi' ? 'upi' : 'cash';
 
     if (validationErrors.length > 0) {
       setSubmitErrors(validationErrors);
@@ -1721,31 +1716,23 @@ export default function QuickCheckoutScreen({ navigation, route }) {
               </Text>
             </View>
           )}
-          {customerHistory && customerHistory.credit_balance > 0 && (
+          {/* Old dues: one card, one button. The panel it opens takes the dues
+              now, or adds them to this order when there are items. */}
+          {customerId && customerHistory && customerHistory.credit_balance > 0 ? (
+            <OldDuesCard
+              dueAmount={customerHistory.credit_balance}
+              value={duesCollect}
+              onCollect={() => setShowDuesSheet(true)}
+              onRemove={() => setDuesCollect(EMPTY_DUES)}
+            />
+          ) : customerHistory && customerHistory.credit_balance > 0 ? (
             <View style={[styles.customerHint, { backgroundColor: Colors.error + '10', borderColor: Colors.error + '30', marginTop: 4 }]}>
               <Ionicons name="alert-circle" size={16} color={Colors.error} />
               <Text style={[styles.customerHintText, { color: Colors.error, fontWeight: '600' }]}>
                 Previous Dues Pending: ₹{Number(customerHistory.credit_balance).toFixed(2)}
               </Text>
             </View>
-          )}
-          {/* Customer came only to pay old dues: no cart needed. */}
-          {customerId && customerHistory && customerHistory.credit_balance > 0 && items.length === 0 && (
-            <TouchableOpacity
-              style={styles.duesOnlyBtn}
-              onPress={() => setShowDuesSheet(true)}
-              accessibilityRole="button"
-              accessibilityLabel={`Collect ${Number(customerHistory.credit_balance).toFixed(0)} rupees of dues only, without a new order`}
-            >
-              <Ionicons name="wallet-outline" size={20} color={Colors.white} />
-              <Text style={styles.duesOnlyBtnText}>Collect ₹{Number(customerHistory.credit_balance).toFixed(0)} dues only</Text>
-            </TouchableOpacity>
-          )}
-          {/* "Now too" only makes sense alongside an order; with an empty cart
-              the "dues only" button above is the one way to collect. */}
-          {customerId && customerHistory && customerHistory.credit_balance > 0 && items.length > 0 && (
-            <CollectDuesToggle dueAmount={customerHistory.credit_balance} value={duesCollect} onChange={setDuesCollect} askMethod={!orderMethodIfPaidNow} />
-          )}
+          ) : null}
           {needsDelivery && (
             <>
               <TouchableOpacity
@@ -2450,7 +2437,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
             } else if (paymentMode === 'partial') {
               nowPaid = Math.round((parseFloat(advanceAmount) || 0) * 100) / 100;
             }
-            const method = duesPaymentMethod(duesCollect, orderMethodIfPaidNow);
+            const method = duesCollect.method === 'upi' ? 'upi' : 'cash';
             const total = Math.round((nowPaid + dues) * 100) / 100;
             return (
               <View style={{ marginTop: Spacing.sm }}>
@@ -2780,6 +2767,11 @@ export default function QuickCheckoutScreen({ navigation, route }) {
           setCustomerHistory((h) => (h ? { ...h, credit_balance: newBalance } : h));
         }}
         onOpenRegister={() => navigation.navigate('CashRegister')}
+        onAddToOrder={items.length > 0 ? ({ amount, method }) => {
+          setShowDuesSheet(false);
+          setDuesCollect({ enabled: true, amount: String(amount), method });
+        } : undefined}
+        initial={duesCollect.enabled ? duesCollect : undefined}
       />
     </KeyboardAvoidingView>
   );
@@ -2837,8 +2829,6 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.background, borderWidth: 1, borderColor: Colors.border,
   },
   chipActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
-  duesOnlyBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, minHeight: 52, marginTop: 6, borderRadius: BorderRadius.md, backgroundColor: Colors.success },
-  duesOnlyBtnText: { color: Colors.white, fontSize: FontSize.md, fontWeight: '800' },
   channelChip: { flexDirection: 'row', alignItems: 'center', gap: 6, minHeight: 44 },
   chipText: { fontSize: FontSize.sm, color: Colors.textSecondary, fontWeight: '500' },
   chipTextActive: { color: Colors.white },

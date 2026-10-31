@@ -1,14 +1,22 @@
 /**
- * CollectDuesSheet — take a customer's old dues without a new order.
- * One panel used from Quick Checkout ("Collect ₹X dues only"), the customer
+ * CollectDuesSheet — the one panel for taking a customer's old dues.
+ * Used from the Old dues card on Quick Checkout and Log Order, the customer
  * list's "Collect" button and the dashboard's "Collect dues" list.
  *
  * The amount starts at the full dues; Cash is the default. Cash needs an open
  * register at this location (same rule as every other cash payment), so the
  * register is checked first and staff are offered "Open Register".
  *
+ * When an order is being made (onAddToOrder given), staff also choose:
+ *   "Together with this order" (default) — nothing is recorded yet; the
+ *     amount and method go back to the screen and are taken when the order
+ *     is placed.
+ *   "Only the dues, now" — recorded straight away, like the customer list.
+ *
  * Props: visible, customer { id, name, credit_balance }, locationId,
- *        onClose(), onDone({ amount, newBalance }), onOpenRegister()
+ *        onClose(), onDone({ amount, newBalance }), onOpenRegister(),
+ *        onAddToOrder({ amount, method })  (optional),
+ *        initial { amount, method }        (optional, when changing an added amount)
  */
 import React, { useEffect, useState } from 'react';
 import { Modal, View, Text, TextInput, TouchableOpacity, ActivityIndicator, KeyboardAvoidingView, Platform } from 'react-native';
@@ -26,19 +34,24 @@ const METHODS = [
 
 const money = (n) => Number(n || 0).toFixed(2).replace(/\.00$/, '');
 
-export default function CollectDuesSheet({ visible, customer, locationId, onClose, onDone, onOpenRegister }) {
+export default function CollectDuesSheet({ visible, customer, locationId, onClose, onDone, onOpenRegister, onAddToOrder, initial }) {
+  const canAddToOrder = typeof onAddToOrder === 'function';
   const due = Number(customer?.credit_balance) || 0;
   const [amount, setAmount] = useState('');
   const [method, setMethod] = useState('cash');
   const [saving, setSaving] = useState(false);
+  const [mode, setMode] = useState('order'); // 'order' | 'now'
 
   useEffect(() => {
     if (visible) {
-      setAmount(money(due));
-      setMethod('cash');
+      setAmount(initial && initial.amount ? String(initial.amount) : money(due));
+      setMethod(initial && initial.method === 'upi' ? 'upi' : 'cash');
+      setMode(canAddToOrder ? 'order' : 'now');
       setSaving(false);
     }
   }, [visible, customer?.id]);
+
+  const withOrder = canAddToOrder && mode === 'order';
 
   const amt = Math.round((parseFloat(amount) || 0) * 100) / 100;
   let error = '';
@@ -48,6 +61,11 @@ export default function CollectDuesSheet({ visible, customer, locationId, onClos
   const guard = useSubmitGuard();
   const submit = guard(async () => {
     if (error || !customer) return;
+    if (withOrder) {
+      // Taken when the order is placed (register is checked there too).
+      onAddToOrder({ amount: amt, method });
+      return;
+    }
     if (!locationId) {
       showAlert('Choose a shop', 'This device has no shop selected. Pick your shop on the dashboard, then try again.');
       return;
@@ -142,6 +160,37 @@ export default function CollectDuesSheet({ visible, customer, locationId, onClos
             })}
           </View>
 
+          {canAddToOrder && (
+            <View style={{ marginTop: Spacing.md, gap: Spacing.sm }}>
+              <Text style={{ fontSize: FontSize.sm, color: Colors.textSecondary }}>When?</Text>
+              {[
+                { key: 'order', label: 'Together with this order', hint: 'Taken when you place the order' },
+                { key: 'now', label: 'Only the dues, now', hint: 'Recorded straight away' },
+              ].map((o) => {
+                const on = mode === o.key;
+                return (
+                  <TouchableOpacity
+                    key={o.key}
+                    onPress={() => setMode(o.key)}
+                    accessibilityRole="radio"
+                    accessibilityState={{ selected: on }}
+                    style={{
+                      minHeight: 56, flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
+                      paddingHorizontal: Spacing.md, borderRadius: BorderRadius.md, borderWidth: on ? 2 : 1,
+                      borderColor: on ? Colors.primary : Colors.border, backgroundColor: on ? Colors.primary + '10' : Colors.surface,
+                    }}
+                  >
+                    <Ionicons name={on ? 'radio-button-on' : 'radio-button-off'} size={22} color={on ? Colors.primary : Colors.textSecondary} />
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ fontSize: FontSize.md, fontWeight: '700', color: Colors.text }}>{o.label}</Text>
+                      <Text style={{ fontSize: FontSize.sm, color: Colors.textSecondary }}>{o.hint}</Text>
+                    </View>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          )}
+
           <TouchableOpacity
             onPress={submit}
             disabled={!!error || saving}
@@ -154,7 +203,7 @@ export default function CollectDuesSheet({ visible, customer, locationId, onClos
             {saving
               ? <ActivityIndicator color={Colors.white} />
               : <Text style={{ color: Colors.white, fontSize: FontSize.lg, fontWeight: '800' }}>
-                  Collect ₹{error ? money(due) : money(amt)}{method === 'upi' ? ' (UPI)' : ''}
+                  {withOrder ? 'Add' : 'Collect'} ₹{error ? money(due) : money(amt)}{method === 'upi' ? ' (UPI)' : ''}{withOrder ? ' to this order' : ''}
                 </Text>}
           </TouchableOpacity>
         </View>
