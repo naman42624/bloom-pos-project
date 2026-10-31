@@ -1741,7 +1741,9 @@ export default function QuickCheckoutScreen({ navigation, route }) {
               <Text style={styles.duesOnlyBtnText}>Collect ₹{Number(customerHistory.credit_balance).toFixed(0)} dues only</Text>
             </TouchableOpacity>
           )}
-          {customerId && customerHistory && customerHistory.credit_balance > 0 && (
+          {/* "Now too" only makes sense alongside an order; with an empty cart
+              the "dues only" button above is the one way to collect. */}
+          {customerId && customerHistory && customerHistory.credit_balance > 0 && items.length > 0 && (
             <CollectDuesToggle dueAmount={customerHistory.credit_balance} value={duesCollect} onChange={setDuesCollect} askMethod={!orderMethodIfPaidNow} />
           )}
           {needsDelivery && (
