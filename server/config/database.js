@@ -1153,6 +1153,9 @@ function ensureCompatibilityColumns() {
   renameColumn('credit_payments', 'method', 'payment_method');
   renameColumn('credit_payments', 'received_by', 'recorded_by');
   ensureColumn('credit_payments', 'location_id', 'INTEGER REFERENCES locations(id)');
+  // Additive (2026-10-31): the order a dues payment was taken together with at
+  // checkout, so Sale Details can show it. NULL for every older row.
+  ensureColumn('credit_payments', 'collected_with_sale_id', 'INTEGER REFERENCES sales(id) ON DELETE SET NULL');
 
   // Create additional indexes only when required tables/columns exist.
   ensurePerformanceIndexes();

@@ -366,7 +366,7 @@ export default function CustomerDetailScreen({ route, navigation }) {
                   </TouchableOpacity>
                 )}
                 {customer.credit_balance > 0 && (
-                  <TouchableOpacity style={styles.addBtn} onPress={() => setShowCreditModal(true)}>
+                  <TouchableOpacity style={styles.addBtn} onPress={() => { setPayments([{ method: 'cash', amount: Number(customer.credit_balance || 0).toFixed(2).replace(/\.00$/, '') }]); setShowCreditModal(true); }}>
                     <Ionicons name="cash" size={16} color={Colors.success} />
                     <Text style={[styles.addBtnText, { color: Colors.success }]}>Record Payment</Text>
                   </TouchableOpacity>

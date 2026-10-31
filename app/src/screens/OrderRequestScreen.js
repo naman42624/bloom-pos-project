@@ -9,13 +9,36 @@
 import React, { useEffect, useState } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TextInput, TouchableOpacity,
-  ActivityIndicator, Image, Switch,
+  ActivityIndicator, Image, Switch, Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import api from '../services/api';
 import Button from '../components/Button';
 import useSubmitGuard from '../hooks/useSubmitGuard';
 import { Colors, Spacing, FontSize, BorderRadius, Shadows } from '../constants/theme';
+import { getShopTodayStr, getShopTomorrowStr } from '../utils/datetime';
+
+// The phone's own date picker on the web (where customers open this page);
+// a plain text box elsewhere. Value is always YYYY-MM-DD.
+function DateField({ value, onChange }) {
+  if (Platform.OS === 'web') {
+    return React.createElement('input', {
+      type: 'date',
+      value,
+      min: getShopTodayStr(),
+      onChange: (e) => onChange(e.target.value),
+      'aria-label': 'Date',
+      style: {
+        backgroundColor: Colors.background, borderRadius: BorderRadius.sm, padding: '10px 16px',
+        fontSize: FontSize.md, color: Colors.text, border: `1px solid ${Colors.border}`,
+        marginBottom: Spacing.sm, minHeight: 48, width: '100%', boxSizing: 'border-box', fontFamily: 'inherit',
+      },
+    });
+  }
+  return (
+    <TextInput style={styles.input} placeholder="Date, like 2026-12-25" value={value} onChangeText={onChange} placeholderTextColor={Colors.textLight} />
+  );
+}
 
 const WASH = '#FBF3EC';
 
@@ -51,7 +74,8 @@ export default function OrderRequestScreen({ token, mode, statusToken }) {
   const [recipientPhone, setRecipientPhone] = useState('');
   const [deliveryAddress, setDeliveryAddress] = useState('');
   const [message, setMessage] = useState('');
-  const [requestedDate, setRequestedDate] = useState('');
+  const [requestedDate, setRequestedDate] = useState(() => getShopTomorrowStr());
+  const [forMe, setForMe] = useState(false);
   const [requestedTime, setRequestedTime] = useState('');
   const [items, setItems] = useState([]);
   const [productQuery, setProductQuery] = useState('');
@@ -122,7 +146,10 @@ export default function OrderRequestScreen({ token, mode, statusToken }) {
       setFieldErrors(errs);
       if (errs.name || errs.phone) return;
     }
-    if (!recipientName.trim() || !recipientPhone.trim()) {
+    const sendForMe = isOpen && forMe;
+    const toName = sendForMe ? requesterName.trim() : recipientName.trim();
+    const toPhone = sendForMe ? requesterPhone.trim() : recipientPhone.trim();
+    if (!toName || !toPhone) {
       setFormError('Please enter who the order is for, and their phone number.');
       return;
     }
@@ -131,7 +158,11 @@ export default function OrderRequestScreen({ token, mode, statusToken }) {
       return;
     }
     if (!/^\d{4}-\d{2}-\d{2}$/.test(requestedDate.trim())) {
-      setFormError('Please enter a date like 2026-09-25.');
+      setFormError('Please choose the date you would like this, like 2026-12-25.');
+      return;
+    }
+    if (requestedDate.trim() < getShopTodayStr()) {
+      setFormError('That date has already passed. Please choose today or a later date.');
       return;
     }
     if (items.length === 0) {
@@ -141,8 +172,8 @@ export default function OrderRequestScreen({ token, mode, statusToken }) {
     setSubmitting(true);
     try {
       const payload = {
-        recipient_name: recipientName.trim(),
-        recipient_phone: recipientPhone.trim(),
+        recipient_name: toName,
+        recipient_phone: toPhone,
         order_type: orderType,
         delivery_address: orderType === 'delivery' ? deliveryAddress.trim() : undefined,
         message: message.trim() || undefined,
@@ -178,7 +209,7 @@ export default function OrderRequestScreen({ token, mode, statusToken }) {
     setRecipientPhone('');
     setDeliveryAddress('');
     setMessage('');
-    setRequestedDate('');
+    setRequestedDate(getShopTomorrowStr());
     setRequestedTime('');
     setItems([]);
     setPaymentClaimed(false);
@@ -309,8 +340,20 @@ export default function OrderRequestScreen({ token, mode, statusToken }) {
           </View>
 
           <Text style={styles.label}>Who is this order for?</Text>
-          <TextInput style={styles.input} placeholder="Recipient's name" value={recipientName} onChangeText={setRecipientName} placeholderTextColor={Colors.textLight} />
-          <TextInput style={styles.input} placeholder="Recipient's phone number" value={recipientPhone} onChangeText={setRecipientPhone} keyboardType="phone-pad" placeholderTextColor={Colors.textLight} />
+          {isOpen && (
+            <View style={styles.forMeRow}>
+              <Text style={styles.forMeText}>This order is for me</Text>
+              <Switch value={forMe} onValueChange={setForMe} trackColor={{ true: Colors.primary }} accessibilityLabel="This order is for me" />
+            </View>
+          )}
+          {isOpen && forMe ? (
+            <Text style={styles.forMeNote}>We'll use your name and phone number above.</Text>
+          ) : (
+            <>
+              <TextInput style={styles.input} placeholder="Recipient's name" value={recipientName} onChangeText={setRecipientName} placeholderTextColor={Colors.textLight} />
+              <TextInput style={styles.input} placeholder="Recipient's phone number" value={recipientPhone} onChangeText={setRecipientPhone} keyboardType="phone-pad" placeholderTextColor={Colors.textLight} />
+            </>
+          )}
 
           {orderType === 'delivery' && (
             <TextInput style={[styles.input, styles.multiline]} placeholder="Delivery address" value={deliveryAddress} onChangeText={setDeliveryAddress} multiline placeholderTextColor={Colors.textLight} />
@@ -319,7 +362,7 @@ export default function OrderRequestScreen({ token, mode, statusToken }) {
           <TextInput style={[styles.input, styles.multiline]} placeholder="Card message (optional)" value={message} onChangeText={setMessage} multiline placeholderTextColor={Colors.textLight} />
 
           <Text style={styles.label}>When would you like this?</Text>
-          <TextInput style={styles.input} placeholder="Date (e.g. 2026-09-25)" value={requestedDate} onChangeText={setRequestedDate} placeholderTextColor={Colors.textLight} />
+          <DateField value={requestedDate} onChange={setRequestedDate} />
           <TextInput style={styles.input} placeholder="Time (e.g. morning, or 6 PM) — optional" value={requestedTime} onChangeText={setRequestedTime} placeholderTextColor={Colors.textLight} />
 
           <Text style={styles.label}>What would you like to order?</Text>
@@ -392,6 +435,9 @@ const styles = StyleSheet.create({
   statusDeclined: { color: Colors.error },
   declineReason: { fontSize: FontSize.xs, color: Colors.textSecondary, marginTop: 2, fontStyle: 'italic' },
   chipRow: { flexDirection: 'row', gap: Spacing.sm, marginBottom: Spacing.md },
+  forMeRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', minHeight: 48, marginBottom: Spacing.xs },
+  forMeText: { fontSize: FontSize.md, color: Colors.text, fontWeight: '600' },
+  forMeNote: { fontSize: FontSize.sm, color: Colors.textSecondary, marginBottom: Spacing.sm },
   chip: { flex: 1, paddingVertical: Spacing.sm, borderRadius: BorderRadius.md, borderWidth: 1.5, borderColor: Colors.border, alignItems: 'center' },
   chipActive: { borderColor: Colors.primary, backgroundColor: Colors.primary + '18' },
   chipText: { color: Colors.textSecondary, fontWeight: '600' },

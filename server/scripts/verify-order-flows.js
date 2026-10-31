@@ -930,6 +930,62 @@ check('FIXED: dues paid at checkout with exclude_sale_id never land on the order
   assert(Math.abs((balBefore - balAfter) - 250) < 0.01, `balance ${balBefore} -> ${balAfter}, expected -250`);
 });
 
+check('dues taken with an order show on that order (dues_collected); another customer\'s order is never linked; dues-only links nothing', async () => {
+  const owner = await loginOwner();
+  await ensureRegisterOpen(owner.token, TEST_LOCATION_ID);
+  const customer = await createCustomer(owner.token);
+  const other = await createCustomer(owner.token);
+  const due = await api('POST', `/customers/${customer.id}/add-due`, owner.token, { amount: 300, location_id: TEST_LOCATION_ID, notes: 'Past due' });
+  assert(due.status === 200 || due.status === 201, `add-due failed: ${JSON.stringify(due.body)}`);
+  const mkSale = async (custId, name) => {
+    const r = await api('POST', '/sales', owner.token, {
+      location_id: TEST_LOCATION_ID, order_type: 'pickup', channel: 'walk_in', customer_id: custId,
+      items: [{ quantity: 1, unit_price: 200, product_name: name }],
+    });
+    assert(r.status === 201 || r.status === 200, `sale failed: ${JSON.stringify(r.body)}`);
+    createdSaleIds.push(r.body.data.id);
+    return r.body.data.id;
+  };
+  const saleId = await mkSale(customer.id, 'Test Dues Shown Bouquet');
+  const otherSaleId = await mkSale(other.id, 'Test Dues Other Bouquet');
+
+  const withOrder = await api('POST', `/customers/${customer.id}/credits`, owner.token, { amount: 100, method: 'upi', location_id: TEST_LOCATION_ID, exclude_sale_id: saleId });
+  assert(withOrder.status === 201, `credits with order failed: ${JSON.stringify(withOrder.body)}`);
+  const detail = (await api('GET', `/sales/${saleId}`, owner.token)).body.data;
+  assert(JSON.stringify(detail.dues_collected) === JSON.stringify([{ method: 'upi', amount: 100 }]), `dues_collected ${JSON.stringify(detail.dues_collected)}`);
+
+  const wrongSale = await api('POST', `/customers/${customer.id}/credits`, owner.token, { amount: 50, method: 'upi', location_id: TEST_LOCATION_ID, exclude_sale_id: otherSaleId });
+  assert(wrongSale.status === 201, `credits with another customer's sale should still record, got ${wrongSale.status}: ${JSON.stringify(wrongSale.body)}`);
+  const otherDetail = (await api('GET', `/sales/${otherSaleId}`, owner.token)).body.data;
+  assert(Array.isArray(otherDetail.dues_collected) && otherDetail.dues_collected.length === 0, `other customer's order got dues: ${JSON.stringify(otherDetail.dues_collected)}`);
+
+  const missingSale = await api('POST', `/customers/${customer.id}/credits`, owner.token, { amount: 10, method: 'upi', location_id: TEST_LOCATION_ID, exclude_sale_id: 999999999 });
+  assert(missingSale.status === 201, `credits with a missing sale id should still record, got ${missingSale.status}: ${JSON.stringify(missingSale.body)}`);
+
+  const balBefore = Number((await api('GET', `/customers/${customer.id}`, owner.token)).body.data.credit_balance);
+  const duesOnly = await api('POST', `/customers/${customer.id}/credits`, owner.token, { amount: 40, method: 'cash', location_id: TEST_LOCATION_ID, notes: 'Dues collected' });
+  assert(duesOnly.status === 201 && Math.abs(Number(duesOnly.body.new_balance) - (balBefore - 40)) < 0.01, `dues-only ${duesOnly.status} ${JSON.stringify(duesOnly.body)}`);
+  const db = await getDb();
+  const row = await db.prepare('SELECT collected_with_sale_id FROM credit_payments WHERE id = ?').get(duesOnly.body.data.id);
+  assert(row && row.collected_with_sale_id === null, `dues-only row linked to ${row && row.collected_with_sale_id}`);
+});
+
+check('customer lookup returns a real order count (was always blank)', async () => {
+  const owner = await loginOwner();
+  const customer = await createCustomer(owner.token);
+  const db = await getDb();
+  const u = await db.prepare('SELECT phone FROM users WHERE id = ?').get(customer.id);
+  const zero = await api('GET', `/customers/lookup?phone=${encodeURIComponent(u.phone)}`, owner.token);
+  assert(zero.body.data && zero.body.data.order_count === 0, `expected 0, got ${JSON.stringify(zero.body.data && zero.body.data.order_count)}`);
+  const r = await api('POST', '/sales', owner.token, {
+    location_id: TEST_LOCATION_ID, order_type: 'pickup', channel: 'walk_in', customer_id: customer.id,
+    items: [{ quantity: 1, unit_price: 100, product_name: 'Test Order Count Bouquet' }],
+  });
+  createdSaleIds.push(r.body.data.id);
+  const one = await api('GET', `/customers/lookup?phone=${encodeURIComponent(u.phone)}`, owner.token);
+  assert(one.body.data.order_count === 1, `expected 1, got ${JSON.stringify(one.body.data.order_count)}`);
+});
+
 check('add-payment (POST /:id/payments) blocked when register is closed for cash', async () => {
   const owner = await loginOwner();
   await ensureRegisterOpen(owner.token, TEST_LOCATION_ID);

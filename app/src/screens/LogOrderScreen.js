@@ -13,7 +13,7 @@ import { getShopNow } from '../utils/datetime';
 import { bumpActivity } from '../hooks/useIdleLock';
 import useSubmitGuard from '../hooks/useSubmitGuard';
 import { showConfirm } from '../utils/alert';
-import CollectDuesToggle, { EMPTY_DUES, duesAmountError } from '../components/CollectDuesToggle';
+import CollectDuesToggle, { EMPTY_DUES, duesAmountError, duesPaymentMethod } from '../components/CollectDuesToggle';
 
 const CHANNELS = [
   { key: 'whatsapp', label: 'WhatsApp', icon: 'logo-whatsapp' },
@@ -110,6 +110,7 @@ export default function LogOrderScreen({ navigation, route }) {
 
   const [sourceOrderRequestId, setSourceOrderRequestId] = useState(null);
   const prefillAppliedTokenRef = useRef(null);
+  const channelFromRequestRef = useRef(false);
 
   useEffect(() => {
     const prefillToken = route.params?.prefillToken;
@@ -117,6 +118,11 @@ export default function LogOrderScreen({ navigation, route }) {
     if (!prefillToken || !req || prefillAppliedTokenRef.current === prefillToken) return;
     prefillAppliedTokenRef.current = prefillToken;
 
+    // The customer sent this through the shop's order link, so tag it Website.
+    // Not saved as the remembered channel, and the remembered one must not
+    // overwrite it when it loads late.
+    channelFromRequestRef.current = true;
+    setChannel('website');
     setSourceOrderRequestId(req.id);
     setFulfilment(req.order_type === 'delivery' ? 'delivery' : 'pickup');
     setReceiverName(req.recipient_name || '');
@@ -190,7 +196,7 @@ export default function LogOrderScreen({ navigation, route }) {
     // Remember last-used channel per staff member, per staff-ux-checklist §4
     try {
       const AsyncStorage = require('@react-native-async-storage/async-storage').default;
-      AsyncStorage.getItem(LAST_CHANNEL_KEY).then((v) => { if (v) setChannel(v); });
+      AsyncStorage.getItem(LAST_CHANNEL_KEY).then((v) => { if (v && !channelFromRequestRef.current) setChannel(v); });
     } catch { /* ignore */ }
   }, []);
 
@@ -420,7 +426,7 @@ export default function LogOrderScreen({ navigation, route }) {
         return;
       }
     }
-    const duesMethod = paymentMode !== 'unpaid' ? paymentMethod : 'cash';
+    const duesMethod = duesPaymentMethod(duesCollect, paymentMode !== 'unpaid' ? paymentMethod : null);
 
     // Only cash touches the physical register, so only cash needs it open.
     const needsRegister = (paymentMode !== 'unpaid' && paymentMethod === 'cash') || (collectingDues && duesMethod === 'cash');
@@ -480,6 +486,7 @@ export default function LogOrderScreen({ navigation, route }) {
 
     // Dues payment: the order stands whatever happens here, and a failure is
     // told to staff once, never retried silently.
+    let duesDone = 0;
     if (collectingDues) {
       const duesAmt = Math.round((parseFloat(duesCollect.amount) || 0) * 100) / 100;
       try {
@@ -490,6 +497,7 @@ export default function LogOrderScreen({ navigation, route }) {
           notes: 'Collected with order',
           exclude_sale_id: saleId || undefined,
         });
+        duesDone = duesAmt;
       } catch (err) {
         showAlert('Order saved', `Order saved. The ₹${duesAmt} dues payment was not recorded — record it from the customer's page.`);
       }
@@ -533,7 +541,8 @@ export default function LogOrderScreen({ navigation, route }) {
         () => navigation.goBack()
       );
     } else {
-      showAlert('Order logged', 'The order has been added to the inbox.', () => navigation.goBack());
+      const duesNote = duesDone > 0 ? ` ₹${duesDone.toFixed(0)} old dues collected.` : '';
+      showAlert('Order logged', `The order has been added to the inbox.${duesNote}`, () => navigation.goBack());
     }
   };
 
@@ -595,7 +604,7 @@ export default function LogOrderScreen({ navigation, route }) {
             <Text style={{ color: Colors.error, fontWeight: '600', fontSize: FontSize.md }}>
               Previous Dues Pending: ₹{customerDues.toFixed(2)}
             </Text>
-            <CollectDuesToggle dueAmount={customerDues} value={duesCollect} onChange={setDuesCollect} />
+            <CollectDuesToggle dueAmount={customerDues} value={duesCollect} onChange={setDuesCollect} askMethod={paymentMode === 'unpaid'} />
           </View>
         )}
 
@@ -813,7 +822,7 @@ export default function LogOrderScreen({ navigation, route }) {
         {duesCollect.enabled && customerId && customerDues > 0 && !duesAmountError(customerDues, duesCollect) && (() => {
           const dues = Math.round((parseFloat(duesCollect.amount) || 0) * 100) / 100;
           const nowPaid = paymentMode !== 'unpaid' ? Math.round((parseFloat(paymentAmount) || 0) * 100) / 100 : 0;
-          const method = paymentMode !== 'unpaid' ? paymentMethod : 'cash';
+          const method = duesPaymentMethod(duesCollect, paymentMode !== 'unpaid' ? paymentMethod : null);
           const total = Math.round((nowPaid + dues) * 100) / 100;
           return (
             <View style={{ marginTop: Spacing.sm }}>
@@ -855,7 +864,7 @@ export default function LogOrderScreen({ navigation, route }) {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
-  content: { padding: Spacing.md, paddingBottom: 60 },
+  content: { padding: Spacing.md, paddingBottom: 60, alignSelf: 'center', maxWidth: 800, width: '100%' },
   sectionLabel: { fontSize: FontSize.sm, fontWeight: '700', color: Colors.textSecondary, marginTop: Spacing.lg, marginBottom: Spacing.sm, textTransform: 'uppercase' },
   sectionHint: { fontSize: FontSize.xs, color: Colors.textLight, marginBottom: Spacing.sm },
   chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },

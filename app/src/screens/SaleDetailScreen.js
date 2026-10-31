@@ -1073,6 +1073,15 @@ export default function SaleDetailScreen({ route, navigation }) {
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+      {/* Straight after checkout: confirm old dues taken with the order. */}
+      {fromCheckout && (sale.dues_collected || []).length > 0 && (
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, backgroundColor: Colors.success + '18', borderColor: Colors.success, borderWidth: 1, borderRadius: BorderRadius.md, padding: Spacing.md, marginBottom: Spacing.md }}>
+          <Ionicons name="checkmark-circle" size={22} color={Colors.success} />
+          <Text style={{ flex: 1, fontSize: FontSize.md, fontWeight: '700', color: Colors.text }}>
+            Order saved. ₹{sale.dues_collected.reduce((t, d) => t + Number(d.amount || 0), 0).toFixed(0)} old dues collected.
+          </Text>
+        </View>
+      )}
       {/* Header card */}
       <View style={styles.headerCard}>
         <View style={styles.headerRow}>
@@ -1519,6 +1528,16 @@ export default function SaleDetailScreen({ route, navigation }) {
               {p.reference_number ? <Text style={styles.payRef}>Ref: {p.reference_number}</Text> : null}
             </View>
             <Text style={styles.payAmount}>₹{Number(p.amount || 0).toFixed(2)}</Text>
+          </View>
+        ))}
+        {(sale.dues_collected || []).map((d, idx) => (
+          <View key={`dues-${idx}`} style={[styles.paymentRow, { backgroundColor: Colors.success + '12' }]}>
+            <Ionicons name="wallet-outline" size={18} color={Colors.success} />
+            <View style={{ flex: 1, marginLeft: Spacing.sm }}>
+              <Text style={[styles.payMethod, { color: Colors.success }]}>Old dues collected ({d.method === 'upi' ? 'UPI' : d.method === 'card' ? 'Card' : 'Cash'})</Text>
+              <Text style={styles.payRef}>Paid with this order, not part of its total</Text>
+            </View>
+            <Text style={[styles.payAmount, { color: Colors.success }]}>₹{Number(d.amount || 0).toFixed(2)}</Text>
           </View>
         ))}
         {due > 0.01 && (
