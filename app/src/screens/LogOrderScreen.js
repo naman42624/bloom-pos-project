@@ -867,7 +867,6 @@ export default function LogOrderScreen({ navigation, route }) {
           setDuesCollect(EMPTY_DUES);
           setCustomerDues(newBalance);
         }}
-        onOpenRegister={() => navigation.navigate('CashRegister')}
         onAddToOrder={({ amount, method }) => {
           setShowDuesSheet(false);
           setDuesCollect({ enabled: true, amount: String(amount), method });

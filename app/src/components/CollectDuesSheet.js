@@ -5,7 +5,8 @@
  *
  * The amount starts at the full dues; Cash is the default. Cash needs an open
  * register at this location (same rule as every other cash payment), so the
- * register is checked first and staff are offered "Open Register".
+ * register is checked first; if it is closed the panel switches to "Register
+ * is closed" (OpenRegisterForm), which opens it and then records the payment.
  *
  * When an order is being made (onAddToOrder given), staff also choose:
  *   "Together with this order" (default) — nothing is recorded yet; the
@@ -14,7 +15,7 @@
  *   "Only the dues, now" — recorded straight away, like the customer list.
  *
  * Props: visible, customer { id, name, credit_balance }, locationId,
- *        onClose(), onDone({ amount, newBalance }), onOpenRegister(),
+ *        onClose(), onDone({ amount, newBalance }),
  *        onAddToOrder({ amount, method })  (optional),
  *        initial { amount, method }        (optional, when changing an added amount)
  */
@@ -22,7 +23,8 @@ import React, { useEffect, useState } from 'react';
 import { Modal, View, Text, TextInput, TouchableOpacity, ActivityIndicator, KeyboardAvoidingView, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import api from '../services/api';
-import { showAlert, showConfirm } from '../utils/alert';
+import { showAlert } from '../utils/alert';
+import { OpenRegisterForm } from './OpenRegisterSheet';
 import useSubmitGuard from '../hooks/useSubmitGuard';
 import { bumpActivity } from '../hooks/useIdleLock';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
@@ -34,13 +36,14 @@ const METHODS = [
 
 const money = (n) => Number(n || 0).toFixed(2).replace(/\.00$/, '');
 
-export default function CollectDuesSheet({ visible, customer, locationId, onClose, onDone, onOpenRegister, onAddToOrder, initial }) {
+export default function CollectDuesSheet({ visible, customer, locationId, onClose, onDone, onAddToOrder, initial }) {
   const canAddToOrder = typeof onAddToOrder === 'function';
   const due = Number(customer?.credit_balance) || 0;
   const [amount, setAmount] = useState('');
   const [method, setMethod] = useState('cash');
   const [saving, setSaving] = useState(false);
   const [mode, setMode] = useState('order'); // 'order' | 'now'
+  const [needRegister, setNeedRegister] = useState(false);
 
   useEffect(() => {
     if (visible) {
@@ -48,6 +51,7 @@ export default function CollectDuesSheet({ visible, customer, locationId, onClos
       setMethod(initial && initial.method === 'upi' ? 'upi' : 'cash');
       setMode(canAddToOrder ? 'order' : 'now');
       setSaving(false);
+      setNeedRegister(false);
     }
   }, [visible, customer?.id]);
 
@@ -71,21 +75,21 @@ export default function CollectDuesSheet({ visible, customer, locationId, onClos
       return;
     }
     setSaving(true);
-    try {
-      if (method === 'cash') {
-        let open = false;
-        try { open = (await api.getRegisterStatus(locationId)).isOpen === true; } catch { open = false; }
-        if (!open) {
-          setSaving(false);
-          showConfirm(
-            'Register Closed',
-            'Open the cash register before taking cash. Or choose UPI if they paid by UPI.',
-            () => { onClose && onClose(); onOpenRegister && onOpenRegister(); },
-            { confirmLabel: 'Open Register' }
-          );
-          return;
-        }
+    if (method === 'cash') {
+      let open = false;
+      try { open = (await api.getRegisterStatus(locationId)).isOpen === true; } catch { open = false; }
+      if (!open) {
+        setSaving(false);
+        setNeedRegister(true);
+        return;
       }
+    }
+    await record();
+  });
+
+  const record = async () => {
+    setSaving(true);
+    try {
       const res = await api.addCreditPayment(customer.id, {
         amount: amt,
         method,
@@ -100,7 +104,7 @@ export default function CollectDuesSheet({ visible, customer, locationId, onClos
       setSaving(false);
       showAlert('Could not record the payment', err?.message || 'Please check the connection and try again.');
     }
-  });
+  };
 
   if (!customer) return null;
 
@@ -111,6 +115,17 @@ export default function CollectDuesSheet({ visible, customer, locationId, onClos
           backgroundColor: Colors.surface, borderTopLeftRadius: BorderRadius.lg, borderTopRightRadius: BorderRadius.lg,
           padding: Spacing.lg, paddingBottom: Spacing.xl, width: '100%', maxWidth: 560, alignSelf: 'center',
         }}>
+          {needRegister ? (
+            <OpenRegisterForm
+              locationId={locationId}
+              actionLabel={`collect ₹${money(amt)}`}
+              onClose={onClose}
+              onOpened={() => { setNeedRegister(false); record(); }}
+              onBack={() => { setMethod('upi'); setNeedRegister(false); }}
+              backLabel="They paid by UPI instead"
+            />
+          ) : (
+          <>
           <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
             <Text style={{ fontSize: FontSize.lg, fontWeight: '800', color: Colors.text, flex: 1 }} numberOfLines={1}>
               Collect dues — {customer.name || 'Customer'}
@@ -206,6 +221,8 @@ export default function CollectDuesSheet({ visible, customer, locationId, onClos
                   {withOrder ? 'Add' : 'Collect'} ₹{error ? money(due) : money(amt)}{method === 'upi' ? ' (UPI)' : ''}{withOrder ? ' to this order' : ''}
                 </Text>}
           </TouchableOpacity>
+          </>
+          )}
         </View>
       </KeyboardAvoidingView>
     </Modal>

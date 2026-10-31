@@ -2770,7 +2770,6 @@ export default function QuickCheckoutScreen({ navigation, route }) {
           setDuesCollect(EMPTY_DUES);
           setCustomerHistory((h) => (h ? { ...h, credit_balance: newBalance } : h));
         }}
-        onOpenRegister={() => navigation.navigate('CashRegister')}
         onAddToOrder={items.length > 0 ? ({ amount, method }) => {
           setShowDuesSheet(false);
           setDuesCollect({ enabled: true, amount: String(amount), method });

@@ -312,7 +312,6 @@ export default function CustomersScreen({ navigation, route }) {
           setCollectFor(null);
           fetchCustomers({ page: 1, reset: true });
         }}
-        onOpenRegister={() => navigation.navigate('POS', { screen: 'CashRegister' })}
       />
 
       {/* FAB */}

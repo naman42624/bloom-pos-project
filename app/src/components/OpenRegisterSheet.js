@@ -14,6 +14,10 @@
  * Props: visible, locationId, actionLabel ('place order'), onClose(),
  *        onOpened()  — register is open now; carry on,
  *        onSaveDraft() (optional)
+ *
+ * OpenRegisterForm is the same content without the pop-up, for a panel that
+ * is already open (the Collect dues panel swaps to it in place). It also
+ * takes onBack + backLabel for a "go back" link under the buttons.
  */
 import React, { useEffect, useState } from 'react';
 import { Modal, View, Text, TextInput, TouchableOpacity, ActivityIndicator, KeyboardAvoidingView, Platform } from 'react-native';
@@ -26,17 +30,36 @@ import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 const money = (n) => Number(n || 0).toFixed(2).replace(/\.00$/, '');
 
 export default function OpenRegisterSheet({ visible, locationId, actionLabel = 'place order', onClose, onOpened, onSaveDraft }) {
+  return (
+    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.4)' }}>
+        <View onTouchStart={bumpActivity} style={{
+          backgroundColor: Colors.surface, borderTopLeftRadius: BorderRadius.lg, borderTopRightRadius: BorderRadius.lg,
+          padding: Spacing.lg, paddingBottom: Spacing.xl, width: '100%', maxWidth: 560, alignSelf: 'center',
+        }}>
+          {visible && (
+            <OpenRegisterForm
+              locationId={locationId}
+              actionLabel={actionLabel}
+              onClose={onClose}
+              onOpened={onOpened}
+              onSaveDraft={onSaveDraft}
+            />
+          )}
+        </View>
+      </KeyboardAvoidingView>
+    </Modal>
+  );
+}
+
+// Mounted fresh each time it is shown, so it starts from a clean slate.
+export function OpenRegisterForm({ locationId, actionLabel = 'place order', onClose, onOpened, onSaveDraft, onBack, backLabel = 'Back' }) {
   const [cash, setCash] = useState('');
   const [lastCount, setLastCount] = useState(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
   useEffect(() => {
-    if (!visible) return undefined;
-    setCash('');
-    setLastCount(null);
-    setError('');
-    setSaving(false);
     let cancelled = false;
     if (locationId) {
       api.getRegisterStatus(locationId).then((res) => {
@@ -48,7 +71,7 @@ export default function OpenRegisterSheet({ visible, locationId, actionLabel = '
       }).catch(() => {});
     }
     return () => { cancelled = true; };
-  }, [visible, locationId]);
+  }, [locationId]);
 
   const amount = parseFloat(cash);
   const valid = cash.trim() !== '' && Number.isFinite(amount) && amount >= 0;
@@ -70,12 +93,7 @@ export default function OpenRegisterSheet({ visible, locationId, actionLabel = '
   });
 
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.4)' }}>
-        <View onTouchStart={bumpActivity} style={{
-          backgroundColor: Colors.surface, borderTopLeftRadius: BorderRadius.lg, borderTopRightRadius: BorderRadius.lg,
-          padding: Spacing.lg, paddingBottom: Spacing.xl, width: '100%', maxWidth: 560, alignSelf: 'center',
-        }}>
+        <View>
           <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, flex: 1 }}>
               <Ionicons name="lock-closed" size={22} color={Colors.error} />
@@ -86,7 +104,7 @@ export default function OpenRegisterSheet({ visible, locationId, actionLabel = '
             </TouchableOpacity>
           </View>
           <Text style={{ fontSize: FontSize.md, color: Colors.textSecondary, marginTop: 4 }}>
-            Open it here to take cash. Your order stays as it is.
+            Open it here to take cash. Nothing you entered is lost.
           </Text>
 
           <Text style={{ fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: Spacing.md, marginBottom: 4 }}>
@@ -144,8 +162,17 @@ export default function OpenRegisterSheet({ visible, locationId, actionLabel = '
               <Text style={{ color: Colors.primary, fontSize: FontSize.md, fontWeight: '700' }}>Save as draft for later</Text>
             </TouchableOpacity>
           )}
+
+          {onBack && (
+            <TouchableOpacity
+              onPress={onBack}
+              disabled={saving}
+              accessibilityRole="button"
+              style={{ marginTop: Spacing.sm, minHeight: 48, alignItems: 'center', justifyContent: 'center' }}
+            >
+              <Text style={{ color: Colors.textSecondary, fontSize: FontSize.md, fontWeight: '600' }}>{backLabel}</Text>
+            </TouchableOpacity>
+          )}
         </View>
-      </KeyboardAvoidingView>
-    </Modal>
   );
 }
