@@ -32,7 +32,7 @@ Quick Checkout gets a two-way switch at the very top: **Quick sale | Full order*
 
 - The choice is remembered on the device (local storage; per-viewer convenience, falls back to Full order if storage is unavailable).
 - **Full order** is today's Quick Checkout, unchanged — pickup, delivery, pre-order, customer details, credit, split, drafts. Nothing is removed.
-- Roles: owner, manager, employee, counter_staff (the same roles that see the POS tab today).
+- Roles: owner, manager, employee, counter_staff (the same roles that see the POS tab today). Tile editing (Settings) is owner-only.
 - Helpers (see the scan-and-sell spec) do not get this screen; their screen has its own tap-to-add price cards.
 
 ## 5. The screen
@@ -138,7 +138,7 @@ Reuse `POST /api/sales` (no new create route), so every existing rule — regist
 
 `entry_mode` is validated against `['quick', 'close_topup']` and stored; anything else stores NULL (a normal sale).
 
-### 7.2 Undo — `POST /api/sales/:id/undo-quick`
+### 7.2 Undo — `POST /api/quick-sale/:id/undo`
 
 Roles: owner, manager, employee, counter_staff. Rules, checked in one transaction:
 
@@ -156,13 +156,13 @@ The existing `PUT /:id/cancel` is not used, because it deliberately blocks cance
 
 The line's "Change to UPI/Cash" calls the existing `PUT /api/sales/:id` payment-method edit, which already moves only the per-method difference in the open register and blocks cash edits with no open register (fixed 2026-09-04). No new route.
 
-### 7.4 Roll data — `GET /api/sales/quick-roll?location_id=`
+### 7.4 Roll data — `GET /api/quick-sale/roll?location_id=`
 
 Returns this location's `entry_mode IN ('quick','close_topup')` sales since the open register's `opening_time` (or since local midnight when none is open): id, time, item name, amount, method, status, undone flag, created_by name — plus totals. Same roles as above.
 
 ### 7.5 Tiles — settings
 
-New setting key `quick_sale_tiles` (JSON array, max 12): `{ type: 'product', product_id }` or `{ type: 'label', label, price }`. Owner/manager edit in Settings. `GET /api/sales/quick-tiles?location_id=` returns resolved tiles (product name + current price; inactive products dropped) or, when the setting is empty, the top-12 suggestion.
+New setting key `quick_sale_tiles` (JSON array, max 12): `{ type: 'product', product_id }` or `{ type: 'label', label, price }`. Only the owner edits tiles in Settings. `GET /api/quick-sale/tiles?location_id=` returns resolved tiles (product name + current price; inactive products dropped) or, when the setting is empty, the top-12 suggestion.
 
 ## 8. Data changes (all additive — read `db-migration-safety` before writing)
 

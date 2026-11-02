@@ -1621,6 +1621,7 @@ router.post(
     body('vendor_name').optional({ nullable: true }).trim(),
     body('route_id').optional({ nullable: true }).isInt(),
     body('source_order_request_id').optional({ nullable: true }).isInt(),
+    body('entry_mode').optional({ nullable: true }).isString(),
   ],
   (req, res, next) => {
     try {
@@ -1642,6 +1643,8 @@ router.post(
         is_credit_sale, skip_assignment,
         vendor_name, route_id, source_order_request_id,
       } = req.body;
+      // Only known values are kept; anything else is stored as NULL
+      const entryMode = ['quick', 'close_topup'].includes(req.body.entry_mode) ? req.body.entry_mode : null;
       // Mutable alias — may be set by auto-create logic below
       let customer_id = customer_id_from_body || null;
       // Owner-only field, but only owner/manager may set it at creation —
@@ -1672,6 +1675,11 @@ router.post(
           } else if (item.product_id) {
             // Product sale
             const product = db.prepare('SELECT id, name, tax_rate_id, selling_price FROM products WHERE id = ? AND is_active = 1').get(item.product_id);
+            if (!product && entryMode) {
+              const inactiveErr = new Error("This item isn't sold any more — the buttons have been refreshed");
+              inactiveErr.statusCode = 400;
+              throw inactiveErr;
+            }
             if (!product) throw new Error(`Product ID ${item.product_id} not found or inactive`);
             unitPrice = item.unit_price != null ? item.unit_price : product.selling_price;
             taxRate = 0;
@@ -1907,8 +1915,8 @@ router.post(
             special_instructions, customer_notes,
             sender_customer_id, receiver_customer_id, sender_same_as_receiver,
             sender_name, sender_phone, receiver_name, receiver_phone, sender_message,
-            created_by, created_at, is_credit_sale, vendor_name)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            created_by, created_at, is_credit_sale, vendor_name, entry_mode)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           saleNumber, location_id, customer_id || null, saleCustomerName || null, saleCustomerPhone || null,
           subtotal, taxTotal, discountAmount, discount_type || null, discountPercentage, discountApprovedBy,
@@ -1919,7 +1927,7 @@ router.post(
           notes || special_instructions || '', customer_notes || '',
           senderCustomerId || null, receiverCustomerId || null, senderReceiverSame ? 1 : 0,
           senderNameForSale || '', senderPhoneForSale || '', receiverNameForSale || '', receiverPhoneForSale || '', sender_message || '', req.user.id,
-          nowLocal(), is_credit_sale ? 1 : 0, vendorNameToStore
+          nowLocal(), is_credit_sale ? 1 : 0, vendorNameToStore, entryMode
         );
         const saleId = saleResult.lastInsertRowid;
 

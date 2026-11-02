@@ -1071,6 +1071,11 @@ function ensureCompatibilityColumns() {
   ensureColumn('sales', 'channel', "TEXT");
   ensureColumn('sales', 'priority', "TEXT DEFAULT 'normal'");
   ensureColumn('sales', 'vendor_name', 'VARCHAR(150)');
+  // Quick sale: how a sale was entered (quick, close_topup) and who undid it
+  ensureColumn('sales', 'entry_mode', 'VARCHAR(20)');
+  ensureColumn('sales', 'undone_by', 'INTEGER REFERENCES users(id) ON DELETE SET NULL');
+  ensureColumn('sales', 'undone_at', 'TIMESTAMP');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_sales_location_entry_mode_created ON sales(location_id, entry_mode, created_at)');
   // Optional per-item attachment scoping: NULL = order-level (existing behavior
   // unchanged), set = this photo/voice note belongs to one specific line item.
   ensureColumn('sale_attachments', 'sale_item_id', 'INTEGER REFERENCES sale_items(id) ON DELETE CASCADE');
