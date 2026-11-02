@@ -44,9 +44,14 @@ async function writeKey(key, value) {
   try { await AsyncStorage.setItem(key, value); } catch { /* per-device convenience only */ }
 }
 
-export default function QuickSalePanel({ locationId, navigation, helpSignal = 0 }) {
-  const { width } = useWindowDimensions();
+// The roll always keeps room for at least 3 rows (plus its totals line).
+const ROLL_MIN_HEIGHT = 56 * 3 + 48;
+
+export default function QuickSalePanel({ locationId, navigation, helpSignal = 0, onBusyChange }) {
+  const { width, height } = useWindowDimensions();
   const columns = width >= 600 ? 4 : 3;
+  const compact = height < 760;
+  const narrow = width < 420;
 
   const [method, setMethod] = useState('cash');
   const [showHelp, setShowHelp] = useState(false);
@@ -70,6 +75,15 @@ export default function QuickSalePanel({ locationId, navigation, helpSignal = 0 
   const errorByKey = useRef({});
   const busyRef = useRef({});
   const rollTimer = useRef(null);
+  const redoTimers = useRef([]);
+  const redoneRef = useRef(new Set());
+  // Roll responses are applied in request order. A "mark" is the last request
+  // number started when a local change happened; a response from a request
+  // started after that mark already reflects the change.
+  const reqSeq = useRef(0);
+  const appliedSeq = useRef(0);
+  const undoneMark = useRef(new Map());   // saleId -> mark
+  const overrideMark = useRef(new Map()); // saleId -> { method, mark }
   const locationRef = useRef(locationId);
   locationRef.current = locationId;
 
@@ -86,26 +100,49 @@ export default function QuickSalePanel({ locationId, navigation, helpSignal = 0 
     }
   }, []);
 
+  const syncOverrides = useCallback(() => {
+    const o = {};
+    overrideMark.current.forEach((v, id) => { o[id] = v.method; });
+    setMethodOverride(o);
+  }, []);
+
   const loadRoll = useCallback(async () => {
     if (!locationRef.current) return;
+    const seq = ++reqSeq.current;
     try {
       const res = await api.getQuickRoll(locationRef.current);
+      if (seq < appliedSeq.current) return; // a newer response is already shown
+      appliedSeq.current = seq;
       const d = res?.data || {};
-      setRoll({ entries: d.entries || [], totals: d.totals || { cash: 0, upi: 0, count: 0 } });
+      undoneMark.current.forEach((mark, id) => { if (mark < seq) undoneMark.current.delete(id); });
+      overrideMark.current.forEach((v, id) => { if (v.mark < seq) overrideMark.current.delete(id); });
+      const entries = (d.entries || []).map((e) => (undoneMark.current.has(e.id) ? { ...e, undone: true } : e));
+      setRoll({ entries, totals: d.totals || { cash: 0, upi: 0, count: 0 } });
+      // Saved / undone local lines give way to the server once it has caught up.
+      setPending((prev) => prev.filter((p) => p.status === 'saving' || p.status === 'failed' || (p.markSeq != null && p.markSeq >= seq)));
+      syncOverrides();
       setRegisterOpen(!!d.register_open);
       setRollError(false);
-      setMethodOverride({});
     } catch {
-      setRollError(true);
+      if (seq >= appliedSeq.current) setRollError(true);
     }
-  }, []);
+  }, [syncOverrides]);
 
   const loadRollSoon = useCallback(() => {
     if (rollTimer.current) clearTimeout(rollTimer.current);
     rollTimer.current = setTimeout(loadRoll, 400);
   }, [loadRoll]);
 
-  useEffect(() => () => { if (rollTimer.current) clearTimeout(rollTimer.current); }, []);
+  useEffect(() => () => {
+    if (rollTimer.current) clearTimeout(rollTimer.current);
+    redoTimers.current.forEach(clearTimeout);
+  }, []);
+
+  // Tell the screen whether a line is still saving or failed (blocks leaving).
+  const busyState = pending.some((p) => p.status === 'saving') ? 'saving'
+    : (pending.some((p) => p.status === 'failed') ? 'failed' : null);
+  useEffect(() => { if (onBusyChange) onBusyChange(busyState); }, [busyState, onBusyChange]);
+  useEffect(() => () => { if (onBusyChange) onBusyChange(null); }, [onBusyChange]);
 
   useEffect(() => {
     let cancelled = false;
@@ -159,6 +196,7 @@ export default function QuickSalePanel({ locationId, navigation, helpSignal = 0 
           const errorText = rec.status === 'failed' ? (errorByKey.current[rec.entry.key] || '') : '';
           const next = {
             localId, saleId: rec.saleId, status: rec.status, errorText,
+            markSeq: rec.status === 'saved' ? reqSeq.current : null,
             amount: rec.entry.amount, method: rec.entry.method, label: rec.entry.label, createdAt: rec.entry.createdAt,
           };
           const i = prev.findIndex((p) => p.localId === localId);
@@ -197,9 +235,9 @@ export default function QuickSalePanel({ locationId, navigation, helpSignal = 0 
   };
 
   const onAdd = () => {
-    if (!tapGuardRef.current('add')) return;
     const err = amountError(amount);
     if (err) { setAmountErr(err); amountRef.current && amountRef.current.focus(); return; }
+    if (!tapGuardRef.current('add')) return;
     const label = chip || DEFAULT_QUICK_LABEL;
     const payload = buildQuickSalePayload({ locationId, method, amount, label });
     record(payload, { label, amount: payload.payments[0].amount, method });
@@ -222,10 +260,16 @@ export default function QuickSalePanel({ locationId, navigation, helpSignal = 0 
     setRowBusy(id, true);
     try {
       await api.undoQuickSale(id);
-      setPending((prev) => prev.map((p) => (p.saleId === id ? { ...p, status: 'undone' } : p)));
+      const mark = reqSeq.current;
+      undoneMark.current.set(id, mark);
+      setPending((prev) => prev.map((p) => (p.saleId === id ? { ...p, status: 'undone', markSeq: mark } : p)));
       setRoll((r) => ({ ...r, entries: r.entries.map((e) => (e.id === id ? { ...e, undone: true } : e)) }));
       setUndoneUntil((u) => ({ ...u, [id]: Date.now() + REDO_WINDOW_MS }));
-      setTimeout(() => setUndoneUntil((u) => { const c = { ...u }; delete c[id]; return c; }), REDO_WINDOW_MS);
+      const t = setTimeout(() => {
+        redoTimers.current = redoTimers.current.filter((x) => x !== t);
+        setUndoneUntil((u) => { const c = { ...u }; delete c[id]; return c; });
+      }, REDO_WINDOW_MS);
+      redoTimers.current.push(t);
       loadRoll();
     } catch (err) {
       showAlert('Could not undo', err?.message || 'Check the connection and try again.');
@@ -236,6 +280,9 @@ export default function QuickSalePanel({ locationId, navigation, helpSignal = 0 
 
   // Redo = a new entry with the same payload as the undone one.
   const onRedo = (row) => {
+    if (!row.saleId || redoneRef.current.has(row.saleId)) return;
+    if (!tapGuardRef.current(`redo:${row.saleId}`)) return;
+    redoneRef.current.add(row.saleId);
     setUndoneUntil((u) => { const c = { ...u }; delete c[row.saleId]; return c; });
     const saved = payloadBySale.current[row.saleId];
     const payload = saved || buildQuickSalePayload({
@@ -257,15 +304,18 @@ export default function QuickSalePanel({ locationId, navigation, helpSignal = 0 
     const id = row.saleId;
     if (!id || busyRef.current[id]) return;
     setRowBusy(id, true);
-    setMethodOverride((o) => ({ ...o, [id]: newMethod }));
+    overrideMark.current.set(id, { method: newMethod, mark: Infinity });
+    syncOverrides();
     try {
       await api.updateSale(id, { payments: [{ method: newMethod, amount: Number(row.amount) }] });
+      overrideMark.current.set(id, { method: newMethod, mark: reqSeq.current });
       const p = payloadBySale.current[id];
       if (p) payloadBySale.current[id] = { ...p, payments: [{ ...p.payments[0], method: newMethod }] };
       setPending((prev) => prev.map((x) => (x.saleId === id ? { ...x, method: newMethod } : x)));
       await loadRoll();
     } catch (err) {
-      setMethodOverride((o) => { const c = { ...o }; delete c[id]; return c; });
+      overrideMark.current.delete(id);
+      syncOverrides();
       showAlert('Could not change the method', err?.message || 'Check the connection and try again.');
     } finally {
       setRowBusy(id, false);
@@ -312,6 +362,8 @@ export default function QuickSalePanel({ locationId, navigation, helpSignal = 0 
 
   return (
     <View style={styles.root}>
+      {/* Only this top area scrolls (when it does not fit); the roll below always keeps its room. */}
+      <ScrollView style={styles.top} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator>
       {showHelp && (
         <View style={styles.help}>
           <Text style={styles.helpLine}>1. Pick <Text style={styles.bold}>Cash</Text> or <Text style={styles.bold}>UPI</Text>.</Text>
@@ -366,13 +418,15 @@ export default function QuickSalePanel({ locationId, navigation, helpSignal = 0 
               state={tilesState}
               source={tilesSource}
               columns={columns}
+              compact={compact}
               accent={accent}
               onTile={onTile}
               onReload={loadTiles}
             />
 
+            {narrow && <Text style={[styles.amountLabel, styles.amountLabelAbove]}>Other amount ₹</Text>}
             <View style={styles.amountRow}>
-              <Text style={styles.amountLabel}>Other amount ₹</Text>
+              {!narrow && <Text style={styles.amountLabel}>Other amount ₹</Text>}
               <TextInput
                 ref={amountRef}
                 value={amount}
@@ -416,7 +470,9 @@ export default function QuickSalePanel({ locationId, navigation, helpSignal = 0 
           </>
         )}
       </View>
+      </ScrollView>
 
+      <View style={styles.rollWrap}>
       <QuickSaleRoll
         entries={roll.entries}
         pending={pending}
@@ -434,11 +490,12 @@ export default function QuickSalePanel({ locationId, navigation, helpSignal = 0 
         onPrint={onPrint}
         onAddDetails={onAddDetails}
       />
+      </View>
     </View>
   );
 }
 
-function TileGrid({ tiles, state, source, columns, accent, onTile, onReload }) {
+function TileGrid({ tiles, state, source, columns, compact, accent, onTile, onReload }) {
   if (state === 'loading' && tiles.length === 0) {
     return <View style={styles.tilesMsg}><ActivityIndicator color={Colors.primary} /></View>;
   }
@@ -461,7 +518,7 @@ function TileGrid({ tiles, state, source, columns, accent, onTile, onReload }) {
       <View style={styles.grid}>
         {tiles.map((t) => (
           <View key={t.key} style={{ width: `${100 / columns}%`, padding: Spacing.xs }}>
-            <Tile tile={t} accent={accent} onTile={onTile} />
+            <Tile tile={t} compact={compact} accent={accent} onTile={onTile} />
           </View>
         ))}
       </View>
@@ -472,7 +529,7 @@ function TileGrid({ tiles, state, source, columns, accent, onTile, onReload }) {
   );
 }
 
-function Tile({ tile, accent, onTile }) {
+function Tile({ tile, compact, accent, onTile }) {
   const flash = useRef(new Animated.Value(0)).current;
   const shake = useRef(new Animated.Value(0)).current;
   const useNative = Platform.OS !== 'web';
@@ -497,10 +554,18 @@ function Tile({ tile, accent, onTile }) {
   return (
     <Animated.View style={{ transform: [{ translateX: tx }] }}>
       <TouchableOpacity onPress={onPress} activeOpacity={0.7} accessibilityRole="button" accessibilityLabel={`${tile.label}, ${inr(tile.price)}. Tap to record a sale.`}>
-        <Animated.View style={[styles.tile, { backgroundColor: bg, borderColor: accent }]}>
-          <Text style={styles.tileLabel} numberOfLines={2}>{tile.label}</Text>
-          <Text style={styles.tilePrice}>{inr(tile.price)}</Text>
-        </Animated.View>
+        {compact ? (
+          // Short screens: one line, price beside the name, 56 px tall.
+          <Animated.View style={[styles.tile, styles.tileCompact, { backgroundColor: bg, borderColor: accent }]}>
+            <Text style={[styles.tileLabel, styles.tileLabelCompact]} numberOfLines={1}>{tile.label}</Text>
+            <Text style={[styles.tilePrice, styles.tilePriceCompact]}>{inr(tile.price)}</Text>
+          </Animated.View>
+        ) : (
+          <Animated.View style={[styles.tile, { backgroundColor: bg, borderColor: accent }]}>
+            <Text style={styles.tileLabel} numberOfLines={2}>{tile.label}</Text>
+            <Text style={styles.tilePrice}>{inr(tile.price)}</Text>
+          </Animated.View>
+        )}
       </TouchableOpacity>
     </Animated.View>
   );
@@ -509,6 +574,12 @@ function Tile({ tile, accent, onTile }) {
 const styles = StyleSheet.create({
   root: { flex: 1, minHeight: 0, width: '100%', maxWidth: 800, alignSelf: 'center', paddingHorizontal: Spacing.md },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  top: { flexGrow: 0, flexShrink: 1 },
+  rollWrap: { flex: 1, minHeight: ROLL_MIN_HEIGHT },
+  tileCompact: { minHeight: 56, flexDirection: 'row', justifyContent: 'space-between', gap: Spacing.xs },
+  tileLabelCompact: { flexShrink: 1, textAlign: 'left' },
+  tilePriceCompact: { fontSize: FontSize.md },
+  amountLabelAbove: { paddingHorizontal: Spacing.xs, marginTop: Spacing.xs },
   bold: { fontWeight: '800' },
   help: {
     backgroundColor: Colors.surface, borderRadius: BorderRadius.md, borderWidth: 1, borderColor: Colors.border,

@@ -27,7 +27,9 @@ import { Colors, FontSize, Spacing, BorderRadius } from '../../constants/theme';
 import { bumpActivity } from '../../hooks/useIdleLock';
 import { formatTime } from '../../utils/datetime';
 
-export const METHOD_COLOR = { cash: Colors.success, upi: Colors.info };
+// Darker than Colors.success / Colors.info so white text on them, and them
+// as text on white, both reach 4.5:1 (spec ruling 14). The pad tint stays light.
+export const METHOD_COLOR = { cash: '#15803D', upi: '#1D4ED8' };
 export const METHOD_LABEL = { cash: 'Cash', upi: 'UPI' };
 
 // ₹ with Indian digit grouping (1,00,000), paise only when there are any.
@@ -55,6 +57,9 @@ export default function QuickSaleRoll({
 }) {
   const [sheetRow, setSheetRow] = useState(null);
 
+  // Local lines (newest first) sit above the server rows. The panel drops a
+  // saved / undone local line once a later server refresh is applied, so the
+  // server is the only source after that. Totals are the server's only.
   const { rows, shownTotals } = useMemo(() => {
     const serverIds = new Set(entries.map((e) => e.id));
     const local = pending
@@ -62,12 +67,6 @@ export default function QuickSaleRoll({
       .sort((a, b) => b.localId - a.localId);
     const t = { cash: Number(totals?.cash || 0), upi: Number(totals?.upi || 0), count: Number(totals?.count || 0) };
     const localRows = local.map((p) => {
-      if (p.status === 'saved') {
-        // Saved but not yet in the last server refresh: count it now.
-        if (p.method === 'cash') t.cash += Number(p.amount);
-        else if (p.method === 'upi') t.upi += Number(p.amount);
-        t.count += 1;
-      }
       return {
         key: `l${p.localId}`, localId: p.localId, saleId: p.saleId, status: p.status,
         amount: p.amount, method: p.method, label: p.label, time: p.createdAt, errorText: p.errorText,
@@ -103,7 +102,7 @@ export default function QuickSaleRoll({
       hint = 'Tap for more: change method, print, add details, undo';
     }
 
-    let icon = <Ionicons name="checkmark-circle" size={24} color={Colors.success} />;
+    let icon = <Ionicons name="checkmark-circle" size={24} color={METHOD_COLOR.cash} />;
     if (row.status === 'saving' || isBusy) icon = <ActivityIndicator size="small" color={Colors.textSecondary} style={{ width: 24 }} />;
     else if (row.status === 'failed') icon = <Ionicons name="close-circle" size={24} color={Colors.error} />;
     else if (row.status === 'undone') icon = <Ionicons name="arrow-undo-circle" size={24} color={Colors.textLight} />;
@@ -157,9 +156,9 @@ export default function QuickSaleRoll({
       <View style={styles.header}>
         <Text style={styles.headerTitle}>This session</Text>
         <Text style={styles.totals}>
-          <Text style={{ color: Colors.success, fontWeight: '800' }}>Cash {inr(shownTotals.cash)}</Text>
+          <Text style={{ color: METHOD_COLOR.cash, fontWeight: '800' }}>Cash {inr(shownTotals.cash)}</Text>
           {'  ·  '}
-          <Text style={{ color: Colors.info, fontWeight: '800' }}>UPI {inr(shownTotals.upi)}</Text>
+          <Text style={{ color: METHOD_COLOR.upi, fontWeight: '800' }}>UPI {inr(shownTotals.upi)}</Text>
           {'  ·  '}
           {shownTotals.count} {shownTotals.count === 1 ? 'sale' : 'sales'}
         </Text>

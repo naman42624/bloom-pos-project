@@ -87,10 +87,20 @@ export default function QuickCheckoutScreen({ navigation, route }) {
       setCheckoutMode('full');
     }
   }, [route.params?.draftId, route.params?.prefillCart, route.params?.prefillToken, route.params?.prefillCustomer]);
+  // 'saving' | 'failed' | null, reported by the quick sale panel. Leaving Quick
+  // sale is blocked until every line has saved, so nothing fails out of sight.
+  const [quickBusy, setQuickBusy] = useState(null);
+  const [modeBlockMsg, setModeBlockMsg] = useState('');
+  useEffect(() => { if (!quickBusy) setModeBlockMsg(''); }, [quickBusy]);
   const chooseCheckoutMode = useCallback((m) => {
+    if (m === 'full' && checkoutMode === 'quick' && quickBusy) {
+      setModeBlockMsg(quickBusy === 'saving' ? 'Wait — a sale is still saving' : 'A sale did not save — tap it to try again first');
+      return;
+    }
+    setModeBlockMsg('');
     setCheckoutMode(m);
     AsyncStorage.setItem(CHECKOUT_MODE_KEY, m).catch(() => {});
-  }, []);
+  }, [checkoutMode, quickBusy]);
 
 
   // Customer
@@ -1543,6 +1553,9 @@ export default function QuickCheckoutScreen({ navigation, route }) {
             <Text style={styles.modeHelpText}>How this works</Text>
           </TouchableOpacity>
         )}
+        {!!modeBlockMsg && checkoutMode === 'quick' && (
+          <Text style={styles.modeBlockText} accessibilityLiveRegion="polite">{modeBlockMsg}</Text>
+        )}
       </View>
 
       {checkoutMode === 'quick' && (
@@ -1550,6 +1563,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
           locationId={selectedLocation || activeLocation?.id || null}
           navigation={navigation}
           helpSignal={quickHelpSignal}
+          onBusyChange={setQuickBusy}
         />
       )}
 
@@ -2897,6 +2911,7 @@ const styles = StyleSheet.create({
   modeTextOn: { color: Colors.white },
   modeHelp: { flexDirection: 'row', alignItems: 'center', gap: 4, minHeight: 48, paddingHorizontal: Spacing.xs },
   modeHelpText: { fontSize: FontSize.md, color: Colors.primary, fontWeight: '700' },
+  modeBlockText: { width: '100%', fontSize: FontSize.md, color: Colors.error, fontWeight: '700' },
   content: { padding: Spacing.md, paddingBottom: 100 },
 
   section: {
