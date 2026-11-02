@@ -23,6 +23,15 @@ import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import { getShopNow } from '../utils/datetime';
 import { bumpActivity } from '../hooks/useIdleLock';
 import useSubmitGuard from '../hooks/useSubmitGuard';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import QuickSalePanel from '../components/quickSale/QuickSalePanel';
+
+// Quick sale | Full order switch, remembered on this device. Missing or
+// unreadable storage means Full order. Opening a specific order (a draft, a
+// POS cart, a customer) always lands on Full order.
+const CHECKOUT_MODE_KEY = '@petal_checkout_mode';
+const FORCE_FULL_PARAMS = ['draftId', 'prefillCart', 'prefillToken', 'prefillCustomer'];
+const opensSpecificOrder = (params) => !!params && FORCE_FULL_PARAMS.some((k) => params[k] != null);
 
 
 // Where the order came from. Starts on Walk-in for every new sale.
@@ -56,6 +65,32 @@ export default function QuickCheckoutScreen({ navigation, route }) {
   const timezone = settings?.timezone?.value || 'Asia/Kolkata';
   const { width } = useWindowDimensions();
   const isNarrowMobile = width < 380;
+
+  // ── Quick sale | Full order ──
+  const [checkoutMode, setCheckoutMode] = useState(() => (opensSpecificOrder(route.params) ? 'full' : null));
+  const [quickHelpSignal, setQuickHelpSignal] = useState(0);
+  const forcedFullRef = useRef(opensSpecificOrder(route.params));
+  useEffect(() => {
+    if (forcedFullRef.current) return;
+    let cancelled = false;
+    (async () => {
+      let stored = null;
+      try { stored = await AsyncStorage.getItem(CHECKOUT_MODE_KEY); } catch { stored = null; }
+      if (cancelled || forcedFullRef.current) return;
+      setCheckoutMode(stored === 'quick' ? 'quick' : 'full');
+    })();
+    return () => { cancelled = true; };
+  }, []);
+  useEffect(() => {
+    if (opensSpecificOrder(route.params)) {
+      forcedFullRef.current = true;
+      setCheckoutMode('full');
+    }
+  }, [route.params?.draftId, route.params?.prefillCart, route.params?.prefillToken, route.params?.prefillCustomer]);
+  const chooseCheckoutMode = useCallback((m) => {
+    setCheckoutMode(m);
+    AsyncStorage.setItem(CHECKOUT_MODE_KEY, m).catch(() => {});
+  }, []);
 
 
   // Customer
@@ -1485,8 +1520,42 @@ export default function QuickCheckoutScreen({ navigation, route }) {
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
     >
+      <View style={styles.modeBar}>
+        <View style={styles.modeSwitch} accessibilityRole="tablist">
+          {[['quick', 'Quick sale'], ['full', 'Full order']].map(([m, label]) => {
+            const on = checkoutMode === m;
+            return (
+              <TouchableOpacity
+                key={m}
+                onPress={() => chooseCheckoutMode(m)}
+                accessibilityRole="tab"
+                accessibilityState={{ selected: on }}
+                style={[styles.modeBtn, on && styles.modeBtnOn]}
+              >
+                <Text style={[styles.modeText, on && styles.modeTextOn]}>{label}</Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+        {checkoutMode === 'quick' && (
+          <TouchableOpacity onPress={() => setQuickHelpSignal((n) => n + 1)} style={styles.modeHelp} accessibilityRole="button">
+            <Ionicons name="information-circle-outline" size={20} color={Colors.primary} />
+            <Text style={styles.modeHelpText}>How this works</Text>
+          </TouchableOpacity>
+        )}
+      </View>
+
+      {checkoutMode === 'quick' && (
+        <QuickSalePanel
+          locationId={selectedLocation || activeLocation?.id || null}
+          navigation={navigation}
+          helpSignal={quickHelpSignal}
+        />
+      )}
+
+      {/* Full order stays mounted while hidden, so switching back keeps the cart. */}
       <ScrollView
-        style={styles.container}
+        style={[styles.container, checkoutMode !== 'full' && { display: 'none' }]}
         contentContainerStyle={[styles.content, { alignSelf: 'center', maxWidth: 800, width: '100%' }]}
         keyboardShouldPersistTaps="handled"
       >
@@ -2814,6 +2883,20 @@ export default function QuickCheckoutScreen({ navigation, route }) {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
+  modeBar: {
+    flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: Spacing.sm,
+    width: '100%', maxWidth: 800, alignSelf: 'center', paddingHorizontal: Spacing.md, paddingTop: Spacing.sm, paddingBottom: Spacing.sm,
+  },
+  modeSwitch: {
+    flexDirection: 'row', flex: 1, minWidth: 240, backgroundColor: Colors.surfaceAlt,
+    borderRadius: BorderRadius.md, borderWidth: 1, borderColor: Colors.border, padding: 4, gap: 4,
+  },
+  modeBtn: { flex: 1, minHeight: 48, borderRadius: BorderRadius.sm, alignItems: 'center', justifyContent: 'center' },
+  modeBtnOn: { backgroundColor: Colors.primary },
+  modeText: { fontSize: FontSize.md, fontWeight: '700', color: Colors.textSecondary },
+  modeTextOn: { color: Colors.white },
+  modeHelp: { flexDirection: 'row', alignItems: 'center', gap: 4, minHeight: 48, paddingHorizontal: Spacing.xs },
+  modeHelpText: { fontSize: FontSize.md, color: Colors.primary, fontWeight: '700' },
   content: { padding: Spacing.md, paddingBottom: 100 },
 
   section: {
