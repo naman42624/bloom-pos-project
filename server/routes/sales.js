@@ -2345,7 +2345,7 @@ router.put(
   '/:id/cancel',
   authenticate,
   authorize('owner', 'manager', 'counter_staff'),
-  (req, res, next) => {
+  async (req, res, next) => {
     try {
       const db = getDb();
       const sale = db.prepare('SELECT * FROM sales WHERE id = ?').get(req.params.id);
@@ -2395,10 +2395,10 @@ router.put(
         });
       }
 
-      const cancelTx = db.transaction(() => {
+      const cancelTx = db.transaction(async () => {
         db.prepare("UPDATE sales SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(req.params.id);
 
-        reverseSaleEffects(db, sale, { paymentTotal, userId: req.user.id });
+        await reverseSaleEffects(db, sale, { paymentTotal, userId: req.user.id });
 
         // Cascade to any deliveries row still sitting 'pending' or 'failed'
         // for this sale — the guard above already blocked cancel outright
@@ -2421,7 +2421,7 @@ router.put(
           WHERE sale_id = ? AND status IN ('pending', 'failed')
         `).run(req.params.id);
       });
-      cancelTx();
+      await cancelTx();
 
       res.json({ success: true, message: 'Sale cancelled and stock handled' });
     } catch (err) { next(err); }

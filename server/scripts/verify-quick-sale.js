@@ -28,8 +28,8 @@ async function makeTestProduct(name, price) {
 async function quickSale(token, { amount, method, label, productId, entryMode = 'quick', fromStock = false }) {
   const item = { quantity: 1, unit_price: amount };
   if (productId) item.product_id = productId;
-  if (fromStock) item.fulfill_from_stock = true;
   else item.product_name = label || 'Quick sale';
+  if (fromStock) item.fulfill_from_stock = true;
   const res = await api('POST', '/sales', token, {
     location_id: TEST_LOCATION_ID, order_type: 'walk_in', channel: 'walk_in',
     entry_mode: entryMode, skip_assignment: true,
@@ -220,12 +220,44 @@ check('undo restores product stock', async () => {
   assert(await qty() === 5, `stock after undo: ${await qty()}`);
 });
 
+check('undo of a refunded sale is refused', async () => {
+  const owner = await loginOwner();
+  const reg = await openRegister(owner.token, TEST_LOCATION_ID, 100);
+  const sale = await quickSale(owner.token, { amount: 200, method: 'cash' });
+  const id = sale.body.data.id;
+  const refund = await api('POST', `/sales/${id}/refund`, owner.token, { amount: 50, reason: 'verify', refund_method: 'cash' });
+  assert(refund.status === 200 || refund.status === 201, `refund: ${refund.status} ${JSON.stringify(refund.body)}`);
+  const before = await regRow(reg.id);
+  const r = await undo(owner.token, id);
+  assert(r.status === 409 && r.body.message === 'This sale already has a refund. Use Refund on the sale instead.', `got ${r.status} ${JSON.stringify(r.body)}`);
+  const after = await regRow(reg.id);
+  assert(JSON.stringify(after) === JSON.stringify(before), `register changed: ${JSON.stringify(after)} vs ${JSON.stringify(before)}`);
+  const db = await getDb();
+  const s = await db.prepare('SELECT status FROM sales WHERE id = ?').get(id);
+  assert(s.status !== 'cancelled', 'sale must not be cancelled');
+});
+
+check('cash entry with no register open is refused', async () => {
+  const owner = await loginOwner();
+  await openRegister(owner.token, TEST_LOCATION_ID, 100);
+  const sale = await quickSale(owner.token, { amount: 70, method: 'cash' });
+  const id = sale.body.data.id;
+  await ensureClosed(owner.token, TEST_LOCATION_ID);
+  const r = await undo(owner.token, id);
+  assert(r.status === 409 && r.body.message === "This sale is from a register that's already closed. Use Refund on the sale instead.", `got ${r.status} ${JSON.stringify(r.body)}`);
+  const db = await getDb();
+  const s = await db.prepare('SELECT status FROM sales WHERE id = ?').get(id);
+  assert(s.status !== 'cancelled', 'sale must not be cancelled');
+});
+
 async function cleanup() {
   const db = await getDb();
   for (const id of createdSaleIds) {
     try {
       await db.prepare('DELETE FROM production_tasks WHERE sale_id = ?').run(id);
       await db.prepare('DELETE FROM deliveries WHERE sale_id = ?').run(id);
+      await db.prepare('DELETE FROM refunds WHERE sale_id = ?').run(id);
+      await db.prepare("DELETE FROM material_transactions WHERE reference_type = 'sale_cancel' AND reference_id = ?").run(id);
       await db.prepare('DELETE FROM payments WHERE sale_id = ?').run(id);
       await db.prepare('DELETE FROM sale_items WHERE sale_id = ?').run(id);
       await db.prepare("DELETE FROM audit_logs WHERE entity_type = 'sale' AND entity_id = ?").run(id);
