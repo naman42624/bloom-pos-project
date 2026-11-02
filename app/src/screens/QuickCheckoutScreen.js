@@ -140,8 +140,12 @@ export default function QuickCheckoutScreen({ navigation, route }) {
   const [submitting, setSubmitting] = useState(false);
   const guardSubmit = useSubmitGuard();
   const [duesCollect, setDuesCollect] = useState(EMPTY_DUES);
-  // A different customer means a different dues balance, so added dues are dropped.
-  useEffect(() => { setDuesCollect(EMPTY_DUES); }, [customerId]);
+  // A different customer means a different dues balance, so added dues are
+  // dropped. Dues carry the customer they were added for, so resuming a draft
+  // (which sets the same customer back) keeps them.
+  useEffect(() => {
+    setDuesCollect((d) => (d.enabled && d.customerId === customerId ? d : EMPTY_DUES));
+  }, [customerId]);
   // Dues ride along with an order; with the cart emptied there is no order to add them to.
   useEffect(() => { if (items.length === 0) setDuesCollect(EMPTY_DUES); }, [items.length]);
   const [skipAssignment, setSkipAssignment] = useState(true);
@@ -693,6 +697,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     advanceAmount,
     skipAssignment,
     assignedTo,
+    duesCollect,
   }), [
     routeId,
     uploadedVoiceNotes,
@@ -728,6 +733,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     advanceAmount,
     skipAssignment,
     assignedTo,
+    duesCollect,
   ]);
 
   const applyDraftPayload = useCallback((payload, draftId = null) => {
@@ -765,6 +771,13 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     setAdvanceAmount(p.advanceAmount || '');
     setSkipAssignment(p.skipAssignment !== false);
     setAssignedTo(p.assignedTo || null);
+    // Old dues added before the draft was saved come back with it. They only
+    // count for the customer they were added for, and are checked against the
+    // customer's current balance again when the order is placed.
+    const d = p.duesCollect;
+    setDuesCollect(d && d.enabled && p.customerId && d.customerId === p.customerId && Array.isArray(p.items) && p.items.length > 0
+      ? { enabled: true, amount: String(d.amount || ''), method: d.method === 'upi' ? 'upi' : 'cash', customerId: p.customerId }
+      : EMPTY_DUES);
     setActiveDraftId(draftId);
     // Local voice-note files are uploaded when the draft is saved; what comes
     // back here are the uploaded copies, shown as already attached.
@@ -1956,7 +1969,10 @@ export default function QuickCheckoutScreen({ navigation, route }) {
             </View>
           )}
 
-          {items.map((item, idx) => (
+          {/* Newest item first, so a tap on "Add Item" shows the blank item right
+              here instead of below the others. The cart itself keeps the order
+              items were added in (bill, slip), and idx stays the cart index. */}
+          {items.map((item, idx) => ({ item, idx })).reverse().map(({ item, idx }) => (
             <View key={idx} style={styles.itemCard}>
               <View style={styles.itemCardHeader}>
                 <Text style={styles.itemNum}>#{idx + 1}</Text>
@@ -1973,6 +1989,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
                     style={styles.input}
                     value={item.name}
                     onChangeText={(v) => updateItem(idx, 'name', v)}
+                    autoFocus={idx === items.length - 1 && !item.name && !item.baseProduct}
                     placeholder="e.g. Custom Bouquet"
                     placeholderTextColor={Colors.textLight}
                   />
@@ -2772,7 +2789,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
         }}
         onAddToOrder={items.length > 0 ? ({ amount, method }) => {
           setShowDuesSheet(false);
-          setDuesCollect({ enabled: true, amount: String(amount), method });
+          setDuesCollect({ enabled: true, amount: String(amount), method, customerId });
         } : undefined}
         initial={duesCollect.enabled ? duesCollect : undefined}
       />
@@ -2788,7 +2805,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
         onSaveDraft={async () => {
           setShowOpenRegister(false);
           const saved = await handleSaveDraft();
-          if (saved) showAlert('Saved as a draft', 'Open the register when you are ready, then pick this order from Drafts to finish it.');
+          if (saved) showAlert('Saved as a draft', 'Open the register when you are ready, then tap this order at the top of Quick Checkout to finish it.');
         }}
       />
     </KeyboardAvoidingView>
