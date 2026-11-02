@@ -18,7 +18,7 @@ function parseAmount(text) {
 
 export function amountError(text) {
   const n = parseAmount(text);
-  if (!Number.isFinite(n) || n <= 0) return NEED_AMOUNT;
+  if (!Number.isFinite(n) || Math.round(n * 100) < 1) return NEED_AMOUNT;
   if (n > MAX_QUICK_AMOUNT) return TOO_BIG;
   return '';
 }
@@ -58,7 +58,7 @@ export function createSequentialSender(sendFn, onChange) {
   let running = false;
   let nextId = 1;
 
-  const emit = (id) => { if (onChange) onChange(id, { ...entries[id] }); };
+  const emit = (id) => { try { if (onChange) onChange(id, { ...entries[id] }); } catch (e) { /* a broken listener must not stall sending */ } };
 
   async function pump() {
     if (running) return;

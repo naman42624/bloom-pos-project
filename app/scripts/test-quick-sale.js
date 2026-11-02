@@ -27,6 +27,11 @@ test('amountError', () => {
   assert.strictEqual(q.amountError('1,250.50'), '');
   assert.strictEqual(q.amountError(' 1 200 '), '');
   assert.strictEqual(q.amountError('12-3'), 'Type the amount first');
+  assert.strictEqual(q.amountError('0.001'), 'Type the amount first');
+  assert.strictEqual(q.amountError('1e5'), 'Type the amount first');
+  assert.strictEqual(q.amountError('-5'), 'Type the amount first');
+  assert.strictEqual(q.amountError('100000.01'), 'That looks too big \u2014 check the amount');
+  assert.strictEqual(q.amountError('1,500'), '');
 });
 
 test('payload for label', () => {
@@ -95,6 +100,19 @@ test('sequentialSender retries one failed entry once', async () => {
   assert.strictEqual(state[ids[1]].status, 'saved');
   assert.strictEqual(state[ids[1]].saleId, 201);
   assert.strictEqual(calls, 4);
+});
+
+test('sequentialSender survives a throwing onChange', async () => {
+  let sent = 0, threw = false;
+  const final = {};
+  const s = q.createSequentialSender(async () => { sent++; return { id: sent }; }, (id, st) => {
+    if (!threw) { threw = true; throw new Error('listener broke'); }
+    final[id] = st.status;
+  });
+  [1, 2, 3].forEach((n) => s.enqueue({ n }));
+  await delay(50);
+  assert.strictEqual(sent, 3);
+  assert.deepStrictEqual(Object.values(final).filter((x) => x === 'saved').length, 3);
 });
 
 (async () => {
