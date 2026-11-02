@@ -25,9 +25,10 @@ async function makeTestProduct(name, price) {
 
 // Builds the exact quick-entry shape: a one-item walk-in, fully paid, no
 // production assignment.
-async function quickSale(token, { amount, method, label, productId, entryMode = 'quick' }) {
+async function quickSale(token, { amount, method, label, productId, entryMode = 'quick', fromStock = false }) {
   const item = { quantity: 1, unit_price: amount };
   if (productId) item.product_id = productId;
+  if (fromStock) item.fulfill_from_stock = true;
   else item.product_name = label || 'Quick sale';
   const res = await api('POST', '/sales', token, {
     location_id: TEST_LOCATION_ID, order_type: 'walk_in', channel: 'walk_in',
@@ -109,6 +110,114 @@ check('cancel still restores product stock', async () => {
   assert(await qty() === 10, `Stock after cancel should be 10, got ${await qty()}`);
   const sale = await db.prepare('SELECT status, stock_deducted FROM sales WHERE id = ?').get(saleId);
   assert(sale.status === 'cancelled' && Number(sale.stock_deducted) === 0, `sale: ${JSON.stringify(sale)}`);
+});
+
+const undo = (token, id) => api('POST', `/quick-sale/${id}/undo`, token, {});
+const regRow = async (id) => {
+  const db = await getDb();
+  const r = await db.prepare('SELECT total_cash_sales, expected_cash, total_upi_sales FROM cash_registers WHERE id = ?').get(id);
+  return { cash: Number(r.total_cash_sales), expected: Number(r.expected_cash), upi: Number(r.total_upi_sales) };
+};
+
+check('undo reverses register cash and excludes the sale at close', async () => {
+  const owner = await loginOwner();
+  const reg = await openRegister(owner.token, TEST_LOCATION_ID, 100);
+  const base = await regRow(reg.id);
+  const sale = await quickSale(owner.token, { amount: 300, method: 'cash' });
+  const id = sale.body.data.id;
+  assert((await regRow(reg.id)).expected === base.expected + 300, 'entry should add 300 to expected');
+  const r = await undo(owner.token, id);
+  assert(r.status === 200 && r.body.success && r.body.data.id === id && r.body.data.undone_at, `undo: ${r.status} ${JSON.stringify(r.body)}`);
+  const after = await regRow(reg.id);
+  assert(after.expected === base.expected && after.cash === base.cash, `register: ${JSON.stringify(after)} vs ${JSON.stringify(base)}`);
+  const db = await getDb();
+  const s = await db.prepare('SELECT status, undone_by, undone_at FROM sales WHERE id = ?').get(id);
+  assert(s.status === 'cancelled' && s.undone_by === owner.id && s.undone_at, `sale: ${JSON.stringify(s)}`);
+  const audit = await db.prepare("SELECT id FROM audit_logs WHERE entity_type = 'sale' AND entity_id = ? AND action = 'quick_sale_undo'").all(id);
+  assert(audit.length === 1, `audit rows: ${audit.length}`);
+  const closed = await h.closeRegisterWith(owner.token, TEST_LOCATION_ID, 100);
+  assert(Number(closed.discrepancy) === 0, `discrepancy: ${JSON.stringify(closed)}`);
+});
+
+check('undo after method change reverses UPI not cash', async () => {
+  const owner = await loginOwner();
+  const reg = await openRegister(owner.token, TEST_LOCATION_ID, 100);
+  const base = await regRow(reg.id);
+  const sale = await quickSale(owner.token, { amount: 250, method: 'cash' });
+  const id = sale.body.data.id;
+  const put = await api('PUT', `/sales/${id}`, owner.token, { payments: [{ method: 'upi', amount: 250 }] });
+  assert(put.status === 200, `method change: ${put.status} ${JSON.stringify(put.body)}`);
+  const r = await undo(owner.token, id);
+  assert(r.status === 200, `undo: ${r.status} ${JSON.stringify(r.body)}`);
+  const after = await regRow(reg.id);
+  assert(after.upi === base.upi && after.expected === base.expected && after.cash === base.cash, `register: ${JSON.stringify(after)} vs ${JSON.stringify(base)}`);
+});
+
+check('undo twice is refused', async () => {
+  const owner = await loginOwner();
+  await openRegister(owner.token, TEST_LOCATION_ID, 100);
+  const sale = await quickSale(owner.token, { amount: 60, method: 'cash' });
+  const id = sale.body.data.id;
+  assert((await undo(owner.token, id)).status === 200, 'first undo should work');
+  const r = await undo(owner.token, id);
+  assert(r.status === 400 && r.body.message === 'Already undone', `second: ${r.status} ${JSON.stringify(r.body)}`);
+});
+
+check('undo of a normal sale is refused', async () => {
+  const owner = await loginOwner();
+  await openRegister(owner.token, TEST_LOCATION_ID, 100);
+  const res = await api('POST', '/sales', owner.token, {
+    location_id: TEST_LOCATION_ID, order_type: 'walk_in', channel: 'walk_in', skip_assignment: true,
+    items: [{ product_name: 'Normal', quantity: 1, unit_price: 40 }], payments: [{ method: 'cash', amount: 40 }],
+  });
+  createdSaleIds.push(res.body.data.id);
+  const r = await undo(owner.token, res.body.data.id);
+  assert(r.status === 400 && r.body.message === "This sale isn't a quick sale entry", `got ${r.status} ${JSON.stringify(r.body)}`);
+  const none = await undo(owner.token, 99999999);
+  assert(none.status === 404 && none.body.message === 'Sale not found', `404: ${none.status}`);
+});
+
+check('undo from a closed session is refused', async () => {
+  const owner = await loginOwner();
+  await openRegister(owner.token, TEST_LOCATION_ID, 100);
+  const sale = await quickSale(owner.token, { amount: 140, method: 'cash' });
+  const id = sale.body.data.id;
+  await ensureClosed(owner.token, TEST_LOCATION_ID);
+  await openRegister(owner.token, TEST_LOCATION_ID, 100);
+  const r = await undo(owner.token, id);
+  assert(r.status === 409 && r.body.message === "This sale is from a register that's already closed. Use Refund on the sale instead.", `got ${r.status} ${JSON.stringify(r.body)}`);
+  const db = await getDb();
+  const s = await db.prepare('SELECT status FROM sales WHERE id = ?').get(id);
+  assert(s.status !== 'cancelled', 'sale must not be cancelled');
+});
+
+check('UPI entry from a closed session can be undone without touching the new register', async () => {
+  const owner = await loginOwner();
+  await openRegister(owner.token, TEST_LOCATION_ID, 100);
+  const sale = await quickSale(owner.token, { amount: 120, method: 'upi' });
+  const id = sale.body.data.id;
+  await ensureClosed(owner.token, TEST_LOCATION_ID);
+  const reg = await openRegister(owner.token, TEST_LOCATION_ID, 100);
+  const base = await regRow(reg.id);
+  const r = await undo(owner.token, id);
+  assert(r.status === 200, `undo: ${r.status} ${JSON.stringify(r.body)}`);
+  const after = await regRow(reg.id);
+  assert(after.upi === base.upi && after.expected === base.expected, `register changed: ${JSON.stringify(after)} vs ${JSON.stringify(base)}`);
+});
+
+check('undo restores product stock', async () => {
+  const owner = await loginOwner();
+  await openRegister(owner.token, TEST_LOCATION_ID, 100);
+  const productId = await makeTestProduct('Test Quick Sale Undo Stock', 90);
+  const db = await getDb();
+  await db.prepare('INSERT INTO product_stock (product_id, location_id, quantity) VALUES (?, ?, ?)').run(productId, TEST_LOCATION_ID, 5);
+  const qty = async () => Number((await db.prepare('SELECT quantity FROM product_stock WHERE product_id = ? AND location_id = ?').get(productId, TEST_LOCATION_ID)).quantity);
+  const sale = await quickSale(owner.token, { amount: 90, method: 'cash', productId, fromStock: true });
+  assert(sale.status === 200 || sale.status === 201, `sale: ${sale.status} ${JSON.stringify(sale.body)}`);
+  assert(await qty() === 4, `stock after sale: ${await qty()}`);
+  const r = await undo(owner.token, sale.body.data.id);
+  assert(r.status === 200, `undo: ${r.status} ${JSON.stringify(r.body)}`);
+  assert(await qty() === 5, `stock after undo: ${await qty()}`);
 });
 
 async function cleanup() {
