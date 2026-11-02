@@ -63,22 +63,48 @@ export default function QuickSaleTilesScreen({ navigation }) {
 
   const full = tiles.length >= MAX_TILES;
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setLoadError('');
+  // Snapshot of the last loaded/saved list, to tell whether there are unsaved changes.
+  const [savedSnap, setSavedSnap] = useState('[]');
+  const snapOf = (list) => JSON.stringify(list.map((t) => (t.type === 'product'
+    ? [t.type, t.product_id] : [t.type, t.label, t.price])));
+  const dirty = snapOf(tiles) !== savedSnap;
+  const dirtyRef = useRef(false);
+  dirtyRef.current = dirty;
+
+  // silent: used after a save. A failed reload keeps the draft instead of showing the load error.
+  const load = useCallback(async (silent) => {
+    if (!silent) { setLoading(true); setLoadError(''); }
     try {
       const res = await api.getQuickTiles(locationId);
       const data = res.data || res;
+      const list = (data.tiles || []).map(fromServerTile);
       setSource(data.source === 'owner' ? 'owner' : 'suggested');
-      setTiles((data.tiles || []).map(fromServerTile));
+      setTiles(list);
+      setSavedSnap(snapOf(list));
     } catch (err) {
-      setLoadError('Could not load the buttons. Check your connection and tap Try again.');
+      if (!silent) setLoadError('Could not load the buttons. Check your connection and tap Try again.');
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [locationId]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    if (isOwner && locationId) load(); else setLoading(false);
+  }, [load, isOwner, locationId]);
+
+  useEffect(() => {
+    const unsub = navigation.addListener('beforeRemove', (e) => {
+      if (!dirtyRef.current) return;
+      e.preventDefault();
+      showConfirm(
+        'Leave without saving?',
+        'Your changes to the buttons have not been saved.',
+        () => navigation.dispatch(e.data.action),
+        { confirmLabel: 'Leave', cancelLabel: 'Stay', destructive: true },
+      );
+    });
+    return unsub;
+  }, [navigation]);
 
   // Debounced product search (active products only)
   useEffect(() => {
@@ -117,13 +143,15 @@ export default function QuickSaleTilesScreen({ navigation }) {
   const addLabel = () => {
     if (full) return;
     const label = labelText.trim();
-    const price = Number(labelPrice);
+    const typed = labelPrice.trim().replace(/,/g, '');
     if (!label) { setLabelError('Type a name for the button, like "Bouquet".'); return; }
-    if (!labelPrice.trim() || !Number.isFinite(price) || price <= 0) {
-      setLabelError('Type the price in rupees. It must be more than 0.'); return;
+    if (!typed) { setLabelError('Type the price in rupees. It must be more than 0.'); return; }
+    if (!/^\d+(\.\d{1,2})?$/.test(typed)) {
+      setLabelError('Type the price as a number with at most 2 digits after the dot, like 300 or 199.50.'); return;
     }
+    const price = Math.round(Number(typed) * 100) / 100;
+    if (price <= 0) { setLabelError('The price must be more than 0.'); return; }
     if (price > MAX_PRICE) { setLabelError('The price can be at most ₹1,00,000.'); return; }
-    if (Math.round(price * 100) !== price * 100) { setLabelError('Use at most 2 digits after the decimal point.'); return; }
     setLabelError('');
     setTiles((prev) => [...prev, { id: nextId(), type: 'label', label, price }]);
     setLabelText('');
@@ -148,12 +176,18 @@ export default function QuickSaleTilesScreen({ navigation }) {
       // Empty list saves '' so the screen goes back to suggested buttons.
       const value = payload.length ? JSON.stringify(payload) : '';
       await api.updateSettings({ quick_sale_tiles: value });
+      // Saved: the draft is now the saved list (no leave prompt), then refresh quietly.
+      setTiles(list);
+      setSavedSnap(snapOf(list));
+      setSaving(false);
       showAlert('Saved', payload.length
         ? 'Your buttons are saved. Counter staff will see them on the Quick sale screen.'
         : 'Your own buttons were removed. Suggested buttons will be shown again.');
-      await load();
+      await load(true);
+      return true;
     } catch (err) {
       showAlert('Could not save', 'The buttons were not saved. Check your connection and tap Save again.');
+      return false;
     } finally {
       setSaving(false);
     }
@@ -169,7 +203,7 @@ export default function QuickSaleTilesScreen({ navigation }) {
     showConfirm(
       'Remove all buttons?',
       'Counter staff will see suggested buttons again until you add your own.',
-      () => { setTiles([]); persist([]); },
+      () => { persist([]); },
       { confirmLabel: 'Remove all', destructive: true },
     );
   };
@@ -204,7 +238,11 @@ export default function QuickSaleTilesScreen({ navigation }) {
       {source === 'suggested' && (
         <View style={styles.notice}>
           <Ionicons name="information-circle-outline" size={20} color={Colors.info} />
-          <Text style={styles.noticeText}>Showing suggested buttons — add your own to replace them</Text>
+          <Text style={styles.noticeText}>
+            {tiles.length === 0
+              ? 'No suggested buttons yet — add your own below'
+              : 'Showing suggested buttons — add your own to replace them'}
+          </Text>
         </View>
       )}
 
