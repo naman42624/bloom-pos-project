@@ -609,6 +609,22 @@ class ApiService {
     return this.request('/sales', { method: 'POST', body: JSON.stringify(data) });
   }
 
+  undoQuickSale(saleId) {
+    return this.request(`/quick-sale/${saleId}/undo`, { method: 'POST' });
+  }
+
+  getQuickRoll(locationId) {
+    return this.request(`/quick-sale/roll?location_id=${encodeURIComponent(locationId)}`);
+  }
+
+  getQuickTiles(locationId) {
+    return this.request(`/quick-sale/tiles?location_id=${encodeURIComponent(locationId)}`);
+  }
+
+  previewRegisterClose({ location_id, actual_cash }) {
+    return this.request('/sales/register/close', { method: 'PUT', body: JSON.stringify({ location_id, actual_cash, preview: true }) });
+  }
+
   getSaleDrafts(params = {}) {
     const query = new URLSearchParams(params).toString();
     return this.request(`/sales/drafts${query ? `?${query}` : ''}`);
