@@ -250,7 +250,90 @@ check('cash entry with no register open is refused', async () => {
   assert(s.status !== 'cancelled', 'sale must not be cancelled');
 });
 
+const roll = (token) => api('GET', `/quick-sale/roll?location_id=${TEST_LOCATION_ID}`, token);
+const tilesGet = (token) => api('GET', `/quick-sale/tiles?location_id=${TEST_LOCATION_ID}`, token);
+
+check('roll lists this session entries newest first with totals', async () => {
+  const owner = await loginOwner();
+  await ensureClosed(owner.token, TEST_LOCATION_ID);
+  await openRegister(owner.token, TEST_LOCATION_ID, 100);
+  await quickSale(owner.token, { amount: 200, method: 'cash', label: 'Roll A' });
+  await quickSale(owner.token, { amount: 150, method: 'upi', label: 'Roll B' });
+  const c = await quickSale(owner.token, { amount: 50, method: 'cash', label: 'Roll C' });
+  assert((await undo(owner.token, c.body.data.id)).status === 200, 'undo should work');
+  const r = await roll(owner.token);
+  assert(r.status === 200 && r.body.success, `roll: ${r.status} ${JSON.stringify(r.body)}`);
+  const d = r.body.data;
+  assert(d.register_open === true && d.session_start, `open/start: ${JSON.stringify(d)}`);
+  assert(d.entries.length === 3, `entries: ${d.entries.length}`);
+  assert(d.entries.map((e) => e.item_name).join() === 'Roll C,Roll B,Roll A', `order: ${d.entries.map((e) => e.item_name)}`);
+  assert(d.entries[0].undone === true && d.entries[1].undone === false, 'undone flags');
+  assert(d.entries[1].method === 'upi' && d.entries[1].amount === 150 && d.entries[1].entry_mode === 'quick' && d.entries[1].created_by_name, `entry: ${JSON.stringify(d.entries[1])}`);
+  assert(d.totals.cash === 200 && d.totals.upi === 150 && d.totals.count === 2, `totals: ${JSON.stringify(d.totals)}`);
+});
+
+check('roll ignores entries from before the session', async () => {
+  const owner = await loginOwner();
+  await openRegister(owner.token, TEST_LOCATION_ID, 100);
+  await quickSale(owner.token, { amount: 20, method: 'cash', label: 'Old session' });
+  await ensureClosed(owner.token, TEST_LOCATION_ID);
+  await openRegister(owner.token, TEST_LOCATION_ID, 100);
+  const r = await roll(owner.token);
+  assert(r.status === 200 && r.body.data.entries.length === 0, `entries: ${JSON.stringify(r.body.data)}`);
+  assert(r.body.data.totals.count === 0 && r.body.data.totals.cash === 0, `totals: ${JSON.stringify(r.body.data.totals)}`);
+});
+
+let tilesSettingBackup; // undefined = not captured, null = was absent
+async function backupTilesSetting() {
+  if (tilesSettingBackup !== undefined) return;
+  const db = await getDb();
+  tilesSettingBackup = (await db.prepare("SELECT * FROM settings WHERE key = 'quick_sale_tiles'").get()) || null;
+}
+
+check('tiles fall back to suggested when the setting is empty', async () => {
+  const owner = await loginOwner();
+  await backupTilesSetting();
+  const db = await getDb();
+  await db.prepare("DELETE FROM settings WHERE key = 'quick_sale_tiles'").run();
+  const r = await tilesGet(owner.token);
+  assert(r.status === 200 && r.body.success, `tiles: ${r.status} ${JSON.stringify(r.body)}`);
+  assert(r.body.data.source === 'suggested' && Array.isArray(r.body.data.tiles) && r.body.data.tiles.length <= 12, `got ${JSON.stringify(r.body.data)}`);
+  for (const t of r.body.data.tiles) assert(t.type === 'product' && t.product_id && t.key === `p${t.product_id}`, `tile: ${JSON.stringify(t)}`);
+});
+
+check('owner tiles resolve current price and drop inactive products', async () => {
+  const owner = await loginOwner();
+  await backupTilesSetting();
+  const db = await getDb();
+  const active = await makeTestProduct('Test Tile Active', 111);
+  const inactive = await makeTestProduct('Test Tile Inactive', 222);
+  await db.prepare('UPDATE products SET is_active = 0 WHERE id = ?').run(inactive);
+  const value = JSON.stringify([
+    { type: 'product', product_id: active }, { type: 'product', product_id: inactive },
+    { type: 'label', label: 'Bouquet', price: 300 }, { type: 'label', label: 'Free', price: 0 },
+  ]);
+  await db.prepare("DELETE FROM settings WHERE key = 'quick_sale_tiles'").run();
+  await db.prepare("INSERT INTO settings (key, value, description) VALUES ('quick_sale_tiles', ?, 'Quick sale buttons')").run('[]');
+  const put = await api('PUT', '/settings', owner.token, { settings: { quick_sale_tiles: value } });
+  assert(put.status === 200, `put: ${put.status} ${JSON.stringify(put.body)}`);
+  await db.prepare('UPDATE products SET selling_price = 135 WHERE id = ?').run(active);
+  const r = await tilesGet(owner.token);
+  const d = r.body.data;
+  assert(d.source === 'owner' && d.tiles.length === 2, `got ${JSON.stringify(d)}`);
+  assert(d.tiles[0].key === `p${active}` && d.tiles[0].label === 'Test Tile Active' && d.tiles[0].price === 135, `tile0: ${JSON.stringify(d.tiles[0])}`);
+  assert(d.tiles[1].key === 'l2' && d.tiles[1].type === 'label' && d.tiles[1].product_id === null && d.tiles[1].price === 300, `tile1: ${JSON.stringify(d.tiles[1])}`);
+});
+
+async function restoreTilesSetting() {
+  if (tilesSettingBackup === undefined) return;
+  const db = await getDb();
+  await db.prepare("DELETE FROM settings WHERE key = 'quick_sale_tiles'").run();
+  const b = tilesSettingBackup;
+  if (b) await db.prepare('INSERT INTO settings (key, value, description, updated_by, updated_at) VALUES (?, ?, ?, ?, ?)').run(b.key, b.value, b.description, b.updated_by, b.updated_at);
+}
+
 async function cleanup() {
+  await restoreTilesSetting();
   const db = await getDb();
   for (const id of createdSaleIds) {
     try {

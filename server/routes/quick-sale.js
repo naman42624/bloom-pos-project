@@ -1,5 +1,6 @@
 const express = require('express');
-const { withTransaction } = require('../config/database-async');
+const { withTransaction, getDb } = require('../config/database-async');
+const { todayStr } = require('../utils/time');
 const { authenticate, authorize } = require('../middleware/auth');
 const { reverseSaleEffects } = require('../utils/sale-reversal');
 
@@ -90,5 +91,146 @@ router.post(
     } catch (err) { next(err); }
   }
 );
+
+const ROLL_LIMIT = 200;
+const TILE_LIMIT = 12;
+const QUICK_MODES = "('quick','close_topup')";
+const ROLES = ['owner', 'manager', 'employee', 'counter_staff'];
+
+function locationIdFrom(req) {
+  const id = parseInt(req.query.location_id, 10);
+  return Number.isInteger(id) && id > 0 ? id : null;
+}
+
+// GET /api/quick-sale/roll?location_id=
+// Today's quick entries for the open register session (or since local
+// midnight when no register is open), newest first.
+router.get('/roll', authenticate, authorize(...ROLES), async (req, res, next) => {
+  try {
+    const locationId = locationIdFrom(req);
+    if (!locationId) return res.status(400).json({ success: false, message: 'Pick a shop location first' });
+    const db = await getDb();
+
+    const register = await db
+      .prepare('SELECT * FROM cash_registers WHERE location_id = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1')
+      .get(locationId);
+    const sessionStart = register ? (register.opening_time || register.opened_at) : `${todayStr()} 00:00:00`;
+
+    const rows = await db.prepare(`
+      SELECT s.id, s.created_at, s.entry_mode, s.undone_at, u.name AS created_by_name,
+             (SELECT COALESCE(si.product_name, 'Item') FROM sale_items si WHERE si.sale_id = s.id ORDER BY si.id LIMIT 1) AS item_name
+      FROM sales s
+      LEFT JOIN users u ON u.id = s.created_by
+      WHERE s.location_id = ? AND s.entry_mode IN ${QUICK_MODES} AND s.created_at >= ?
+      ORDER BY s.created_at DESC, s.id DESC
+      LIMIT ${ROLL_LIMIT}
+    `).all(locationId, sessionStart);
+
+    const payRows = rows.length
+      ? await db.prepare(`SELECT sale_id, method, amount FROM payments WHERE sale_id IN (${rows.map(() => '?').join(',')}) ORDER BY id`).all(...rows.map((r) => r.id))
+      : [];
+    const bySale = new Map();
+    for (const p of payRows) {
+      if (!bySale.has(p.sale_id)) bySale.set(p.sale_id, []);
+      bySale.get(p.sale_id).push(p);
+    }
+
+    const entries = rows.map((r) => {
+      const pays = bySale.get(r.id) || [];
+      const amount = pays.reduce((sum, p) => sum + Number(p.amount || 0), 0);
+      const largest = pays.reduce((best, p) => (!best || Number(p.amount) > Number(best.amount) ? p : best), null);
+      return {
+        id: r.id,
+        created_at: r.created_at,
+        item_name: r.item_name || 'Item',
+        amount,
+        method: largest ? largest.method : null,
+        undone: r.undone_at != null,
+        entry_mode: r.entry_mode,
+        created_by_name: r.created_by_name || null,
+      };
+    });
+
+    // Totals cover every live entry in the session, not just the listed ones.
+    const t = await db.prepare(`
+      SELECT
+        COALESCE(SUM(CASE WHEN p.method = 'cash' THEN p.amount ELSE 0 END), 0) AS cash,
+        COALESCE(SUM(CASE WHEN p.method = 'upi' THEN p.amount ELSE 0 END), 0) AS upi,
+        COUNT(DISTINCT s.id) AS count
+      FROM sales s
+      LEFT JOIN payments p ON p.sale_id = s.id
+      WHERE s.location_id = ? AND s.entry_mode IN ${QUICK_MODES} AND s.created_at >= ? AND s.undone_at IS NULL
+    `).get(locationId, sessionStart);
+
+    res.json({
+      success: true,
+      data: {
+        session_start: sessionStart,
+        register_open: !!register,
+        totals: { cash: Number(t.cash), upi: Number(t.upi), count: Number(t.count) },
+        entries,
+      },
+    });
+  } catch (err) { next(err); }
+});
+
+// GET /api/quick-sale/tiles?location_id=
+// The owner chosen buttons, or the shop top sellers when none are set.
+router.get('/tiles', authenticate, authorize(...ROLES), async (req, res, next) => {
+  try {
+    const locationId = locationIdFrom(req);
+    if (!locationId) return res.status(400).json({ success: false, message: 'Pick a shop location first' });
+    const db = await getDb();
+
+    let configured = null;
+    const setting = await db.prepare("SELECT value FROM settings WHERE key = 'quick_sale_tiles'").get();
+    if (setting && setting.value) {
+      try {
+        const parsed = JSON.parse(setting.value);
+        if (Array.isArray(parsed) && parsed.length > 0) configured = parsed;
+      } catch (e) { configured = null; }
+    }
+
+    if (configured) {
+      const tiles = [];
+      for (let i = 0; i < configured.length && tiles.length < TILE_LIMIT; i++) {
+        const t = configured[i];
+        if (!t || typeof t !== 'object') continue;
+        if (t.type === 'product') {
+          const pid = Number(t.product_id);
+          if (!Number.isInteger(pid) || pid <= 0) continue;
+          const p = await db.prepare('SELECT id, name, selling_price FROM products WHERE id = ? AND is_active = 1').get(pid);
+          if (!p) continue;
+          tiles.push({ key: `p${p.id}`, type: 'product', product_id: p.id, label: p.name, price: Number(p.selling_price) });
+        } else if (t.type === 'label') {
+          const label = typeof t.label === 'string' ? t.label.trim() : '';
+          const price = Number(t.price);
+          if (!label || !(price > 0)) continue;
+          tiles.push({ key: `l${i}`, type: 'label', product_id: null, label, price });
+        }
+      }
+      return res.json({ success: true, data: { source: 'owner', tiles } });
+    }
+
+    const top = await db.prepare(`
+      SELECT p.id, p.name, p.selling_price, COUNT(si.id) AS uses
+      FROM sale_items si
+      JOIN sales s ON s.id = si.sale_id
+      JOIN products p ON p.id = si.product_id
+      WHERE s.location_id = ? AND s.status != 'cancelled' AND p.is_active = 1
+        AND s.created_at >= NOW() - INTERVAL '30 days'
+      GROUP BY p.id, p.name, p.selling_price
+      ORDER BY uses DESC, p.id
+      LIMIT ${TILE_LIMIT}
+    `).all(locationId);
+    res.json({
+      success: true,
+      data: {
+        source: 'suggested',
+        tiles: top.map((p) => ({ key: `p${p.id}`, type: 'product', product_id: p.id, label: p.name, price: Number(p.selling_price) })),
+      },
+    });
+  } catch (err) { next(err); }
+});
 
 module.exports = router;
