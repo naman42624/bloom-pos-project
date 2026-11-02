@@ -589,7 +589,7 @@ export default function CashRegisterScreen({ navigation, route }) {
             
             {topup ? (
               <View style={styles.topupPanel}>
-                <Text style={styles.topupText}>{rupees(topup.excess)} more than recorded.{topup.bookable >= 1 ? ' Book it as unrecorded sales?' : ''}</Text>
+                <Text style={styles.topupText}>{rupees(topup.excess)} more than recorded.{topup.bookable >= 1 ? (topup.pendingCod > 0 ? ` Book the other ${rupees(topup.bookable)} as unrecorded sales?` : ' Book it as unrecorded sales?') : ''}</Text>
                 {topup.pendingCod > 0 ? (
                   <View>
                     <Text style={styles.topupNote}>{rupees(topup.pendingCod)} of delivery cash is not settled yet and may be in the drawer. Settle it first.</Text>
