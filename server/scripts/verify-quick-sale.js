@@ -348,6 +348,17 @@ check('top-up then close gives zero discrepancy', async () => {
   assert(row.entry_mode === 'close_topup', `entry_mode ${row.entry_mode}`);
 });
 
+check('preview with a non-boolean is refused', async () => {
+  const owner = await loginOwner();
+  const reg = await openRegister(owner.token, TEST_LOCATION_ID, 100);
+  const db = await getDb();
+  const before = await db.prepare('SELECT * FROM cash_registers WHERE id = ?').get(reg.id);
+  const { status } = await api('PUT', '/sales/register/close', owner.token, { location_id: TEST_LOCATION_ID, actual_cash: 100, preview: 1 });
+  assert(status === 400, `expected 400, got ${status}`);
+  const after = await db.prepare('SELECT * FROM cash_registers WHERE id = ?').get(reg.id);
+  assert(after.closed_at === null && JSON.stringify(after) === JSON.stringify(before), 'register changed');
+});
+
 async function restoreTilesSetting() {
   if (tilesSettingBackup === undefined) return;
   const db = await getDb();

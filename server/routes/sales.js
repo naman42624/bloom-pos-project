@@ -727,7 +727,7 @@ router.put(
     body('location_id').isInt(),
     body('actual_cash').isFloat({ min: 0 }),
     body('closing_notes').optional().trim(),
-    body('preview').optional().isBoolean(),
+    body('preview').optional().isBoolean({ strict: true }),
   ],
   (req, res, next) => {
     try {
