@@ -294,7 +294,7 @@ check('tiles fall back to suggested when the setting is empty', async () => {
   const owner = await loginOwner();
   await backupTilesSetting();
   const db = await getDb();
-  await db.prepare("DELETE FROM settings WHERE key = 'quick_sale_tiles'").run();
+  await db.prepare("UPDATE settings SET value = '' WHERE key = 'quick_sale_tiles'").run();
   const r = await tilesGet(owner.token);
   assert(r.status === 200 && r.body.success, `tiles: ${r.status} ${JSON.stringify(r.body)}`);
   assert(r.body.data.source === 'suggested' && Array.isArray(r.body.data.tiles) && r.body.data.tiles.length <= 12, `got ${JSON.stringify(r.body.data)}`);
@@ -312,8 +312,6 @@ check('owner tiles resolve current price and drop inactive products', async () =
     { type: 'product', product_id: active }, { type: 'product', product_id: inactive },
     { type: 'label', label: 'Bouquet', price: 300 }, { type: 'label', label: 'Free', price: 0 },
   ]);
-  await db.prepare("DELETE FROM settings WHERE key = 'quick_sale_tiles'").run();
-  await db.prepare("INSERT INTO settings (key, value, description) VALUES ('quick_sale_tiles', ?, 'Quick sale buttons')").run('[]');
   const put = await api('PUT', '/settings', owner.token, { settings: { quick_sale_tiles: value } });
   assert(put.status === 200, `put: ${put.status} ${JSON.stringify(put.body)}`);
   await db.prepare('UPDATE products SET selling_price = 135 WHERE id = ?').run(active);
@@ -327,9 +325,7 @@ check('owner tiles resolve current price and drop inactive products', async () =
 async function restoreTilesSetting() {
   if (tilesSettingBackup === undefined) return;
   const db = await getDb();
-  await db.prepare("DELETE FROM settings WHERE key = 'quick_sale_tiles'").run();
-  const b = tilesSettingBackup;
-  if (b) await db.prepare('INSERT INTO settings (key, value, description, updated_by, updated_at) VALUES (?, ?, ?, ?, ?)').run(b.key, b.value, b.description, b.updated_by, b.updated_at);
+  await db.prepare("UPDATE settings SET value = '' WHERE key = 'quick_sale_tiles'").run();
 }
 
 async function cleanup() {

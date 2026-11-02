@@ -1386,6 +1386,7 @@ function getDb() {
     runPsql(`INSERT INTO settings (key, value, description) VALUES ('pref_counter_marks_pickup', '0', 'Let counter staff mark a delivery picked up from the shop on behalf of the delivery partner') ON CONFLICT (key) DO NOTHING`);
     runPsql(`INSERT INTO settings (key, value, description) VALUES ('pref_counter_marks_delivered', '0', 'Let counter staff mark a delivery as delivered (and record COD collected) on behalf of the delivery partner') ON CONFLICT (key) DO NOTHING`);
     runPsql(`INSERT INTO settings (key, value, description) VALUES ('upi_qr_image_url', '', 'UPI QR code image shown to customers on the order-request page for self-service payment') ON CONFLICT (key) DO NOTHING`);
+    runPsql(`INSERT INTO settings (key, value, description) VALUES ('quick_sale_tiles', '', 'Quick sale buttons chosen by the owner (JSON list). Empty means suggest top sellers') ON CONFLICT (key) DO NOTHING`);
 
     initialized = true;
     console.log('✅ Connected to PostgreSQL');
