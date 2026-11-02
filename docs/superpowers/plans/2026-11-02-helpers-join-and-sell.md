@@ -25,7 +25,7 @@
 - Helper app: tabs **Sell** and **My sales** only. Personal-device marker in local storage `@petal_personal_device` = user id.
 - Commits end with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
 
-**Decision carried from planning (confirm with the user at Task 3):** managers and the owner have no employee code or PIN today (checked 2026-11-02: owner 0/1, managers 0/2, counter staff 2 of 10 with a PIN). Task 3 lets the owner give managers and themself an **approval PIN** (code auto-assigned). That PIN works only for discount approval — `staff-login` keeps excluding owner/manager, so it never logs anyone in on a counter device.
+**Decision (confirmed by the user 2026-11-03):** managers and the owner have no employee code or PIN today (checked 2026-11-02: owner 0/1, managers 0/2, counter staff 2 of 10 with a PIN). Task 3 lets the owner give managers and themself an **approval PIN** (code auto-assigned). That PIN works only for discount approval — `staff-login` keeps excluding owner/manager, so it never logs anyone in on a counter device.
 
 ## Review Focus
 
@@ -89,7 +89,6 @@
 - Produces: `verifyApprovalPin(db, employeeCode, pin) -> Promise<user>`; throws `{ status: 401, message: "That PIN didn't match. <n> tries left." }` / lockout message exactly as `staff-login` words it; uses and updates `pin_failed_attempts`/`pin_locked_until` the same way. Allowed approver roles: `counter_staff, employee, manager, owner`.
 - Produces: `approverMaxDiscountPct(role, settings) -> number` (counter_staff/employee → `discount_manager_threshold`; manager → `discount_owner_threshold`; owner → Infinity).
 
-- [ ] **Step 0: Confirm with the user** the approval-PIN decision above (one question; record the answer in the ledger).
 - [ ] **Step 1: Failing checks:** `staff-login unchanged` (existing identity-roles suite); `manager can be given an approval PIN`; `manager approval PIN cannot log in at the counter` (staff-login → 401); `override failures lock the approver`; `helper cannot read estimated_cost from product list`; `helper cannot call counter routes` (e.g. `PUT /sales/:id/cancel`, `GET /customers`, `POST /expenses` → 403).
 - [ ] **Step 2–4:** Run → FAIL; implement; run this + `verify-identity-roles.js` → pass.
 - [ ] **Step 5: Commit** `feat(helpers): approval PIN and helper route access`.
@@ -149,7 +148,7 @@
 
 - [ ] **Step 1: Unit tests** for `helperBasket.js` (merge, qty to 0 removes, total with ₹ and % discount, payload shape with option_id and client_ref, change due) → FAIL → implement → PASS.
 - [ ] **Step 2:** Implement the screens; babel-check.
-- [ ] **Step 3: On-screen check** (throwaway helper on a phone over HTTPS per the scanner spike's setup, plus desktop web): scan 3 items incl. a size and an open-price item → cash with change → success → next customer; UPI path; discount within limit; over limit → counter staff override (throwaway counter_staff code + PIN); wrong PIN copy; kill the network on Take payment → retry → one sale; undo within 2 min. Count taps (spec §15: sell cash = 3). Remove all test data.
+- [ ] **Step 3: On-screen check** (throwaway helper on a phone through the temporary HTTPS tunnel set up in the scanner spike, plus desktop web): scan 3 items incl. a size and an open-price item → cash with change → success → next customer; UPI path; discount within limit; over limit → counter staff override (throwaway counter_staff code + PIN); wrong PIN copy; kill the network on Take payment → retry → one sale; undo within 2 min. Count taps (spec §15: sell cash = 3). Remove all test data.
 - [ ] **Step 4: Commit** `feat(helpers): sell screen and take payment`.
 
 ### Task 8: Owner/manager helper management + settings

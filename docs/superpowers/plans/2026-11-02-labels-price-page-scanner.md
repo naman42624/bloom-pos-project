@@ -107,7 +107,7 @@
 **Interfaces:**
 - Produces: `<ProductScanner onCode={(raw) => void} paused={bool} />` — continuous camera, reports each decoded string, applies the 1.5 s same-code cooldown internally, beeps (Web Audio short tone) + `navigator.vibrate(60)` on accept, torch toggle when `MediaStreamTrack.getCapabilities().torch` exists, permission-denied state with the exact copy and a "Try again" button. It does not call the API — the parent does.
 
-- [ ] **Step 1: Spike** (≤ 1 hour): try `BarcodeDetector` (with a JS fallback decoder such as `jsQR` for browsers without it) versus `expo-camera`'s web barcode support. Test on Android Chrome and iPhone Safari against a printed sticker from Task 1 (phones need HTTPS: use a temporary HTTPS tunnel to the dev web server, or the user's staging host — ask the user which; record the answer). Write the evidence and decision to the spike log.
+- [ ] **Step 1: Spike** (≤ 1 hour): try `BarcodeDetector` (with a JS fallback decoder such as `jsQR` for browsers without it) versus `expo-camera`'s web barcode support. Test on Android Chrome and iPhone Safari against a printed sticker from Task 1 (phones need HTTPS: the user chose (2026-11-03) a temporary HTTPS tunnel to the dev web server and API. Expose only for the test session, close it afterwards, and use throwaway accounts only — the tunnel URL reaches the dev database). Write the evidence and decision to the spike log.
 - [ ] **Step 2:** Implement the component per the decision; babel-check.
 - [ ] **Step 3: On-screen check:** desktop webcam + a phone: scan legacy and new labels; hold one label in view for 5 s → one accept; deny permission → copy + Try again works.
 - [ ] **Step 4: Commit** `feat(scan): browser QR scanner component`.
