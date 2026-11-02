@@ -348,6 +348,21 @@ check('top-up then close gives zero discrepancy', async () => {
   assert(row.entry_mode === 'close_topup', `entry_mode ${row.entry_mode}`);
 });
 
+check('zero-stock product tile makes no production task', async () => {
+  const owner = await loginOwner();
+  await openRegister(owner.token, TEST_LOCATION_ID, 100);
+  const pid = await makeTestProduct('ZZ quick zero stock', 90);
+  const { status, body } = await quickSale(owner.token, { amount: 90, method: 'cash', productId: pid, fromStock: true });
+  assert(status === 201, `Expected 201, got ${status}: ${JSON.stringify(body)}`);
+  const db = await getDb();
+  const sale = await db.prepare('SELECT status FROM sales WHERE id = ?').get(body.data.id);
+  assert(sale.status === 'completed', `status: ${sale.status}`);
+  const t = await db.prepare('SELECT COUNT(*) AS c FROM production_tasks WHERE sale_id = ?').get(body.data.id);
+  assert(Number(t.c) === 0, `Expected 0 production tasks, got ${t.c}`);
+  const st = await db.prepare('SELECT quantity FROM product_stock WHERE product_id = ? AND location_id = ?').get(pid, TEST_LOCATION_ID);
+  console.log(`   (product_stock after zero-stock quick sale: ${st ? st.quantity : 'no row'})`);
+});
+
 check('preview with a non-boolean is refused', async () => {
   const owner = await loginOwner();
   const reg = await openRegister(owner.token, TEST_LOCATION_ID, 100);

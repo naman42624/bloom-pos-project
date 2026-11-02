@@ -1972,6 +1972,8 @@ router.post(
         let assignedTaskIds = [];
 
         const insertTaskToDb = (saleId, saleItemId, productId, locId, qty, priority, notes, createdAt) => {
+          // Quick entries are goods already handed over: no production work
+          if (entryMode) return;
           if (skip_assignment) {
             db.prepare(
               `INSERT INTO production_tasks (sale_id, sale_item_id, product_id, location_id, quantity, priority, notes, status, assigned_to, picked_by, completed_at, created_at, updated_at)
