@@ -181,6 +181,9 @@ export default function QuickSalePanel({ locationId, navigation, helpSignal = 0,
           if (msg.includes(INACTIVE_TEXT)) {
             errorByKey.current[entry.key] = msg;
             loadTiles();
+          } else if (err && err.status >= 400 && err.status < 500 && msg) {
+            // The server said why in plain words; show that, not the generic line.
+            errorByKey.current[entry.key] = msg;
           }
           // A closed register (or anything else) shows up on the next refresh.
           loadRoll();

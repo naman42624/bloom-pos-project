@@ -60,12 +60,16 @@ router.post(
           for (const p of payments) {
             if (!inSessionIds.has(p.id)) continue;
             const amt = Number(p.amount || 0);
+            let upd = null;
             if (p.method === 'cash') {
-              await tx.prepare('UPDATE cash_registers SET total_cash_sales = total_cash_sales - ?, expected_cash = expected_cash - ? WHERE id = ?').run(amt, amt, register.id);
+              upd = await tx.prepare('UPDATE cash_registers SET total_cash_sales = total_cash_sales - ?, expected_cash = expected_cash - ? WHERE id = ? AND closed_at IS NULL').run(amt, amt, register.id);
             } else if (p.method === 'upi') {
-              await tx.prepare('UPDATE cash_registers SET total_upi_sales = total_upi_sales - ? WHERE id = ?').run(amt, register.id);
+              upd = await tx.prepare('UPDATE cash_registers SET total_upi_sales = total_upi_sales - ? WHERE id = ? AND closed_at IS NULL').run(amt, register.id);
             } else if (p.method === 'card') {
-              await tx.prepare('UPDATE cash_registers SET total_card_sales = total_card_sales - ? WHERE id = ?').run(amt, register.id);
+              upd = await tx.prepare('UPDATE cash_registers SET total_card_sales = total_card_sales - ? WHERE id = ? AND closed_at IS NULL').run(amt, register.id);
+            }
+            if (upd && upd.changes === 0) {
+              throw Object.assign(new Error('register closed'), { registerClosed: true });
             }
           }
         }
@@ -88,7 +92,12 @@ router.post(
 
       if (outcome.code) return res.status(outcome.code).json({ success: false, message: outcome.message });
       res.json({ success: true, data: outcome.data });
-    } catch (err) { next(err); }
+    } catch (err) {
+      if (err && err.registerClosed) {
+        return res.status(409).json({ success: false, message: 'The register was just closed. Open it again, then undo.' });
+      }
+      next(err);
+    }
   }
 );
 
@@ -117,7 +126,7 @@ router.get('/roll', authenticate, authorize(...ROLES), async (req, res, next) =>
     const sessionStart = register ? (register.opening_time || register.opened_at) : `${todayStr()} 00:00:00`;
 
     const rows = await db.prepare(`
-      SELECT s.id, s.created_at, s.entry_mode, s.undone_at, u.name AS created_by_name,
+      SELECT s.id, s.created_at, s.entry_mode, s.status, s.undone_at, u.name AS created_by_name,
              (SELECT COALESCE(si.product_name, 'Item') FROM sale_items si WHERE si.sale_id = s.id ORDER BY si.id LIMIT 1) AS item_name
       FROM sales s
       LEFT JOIN users u ON u.id = s.created_by
@@ -145,13 +154,14 @@ router.get('/roll', authenticate, authorize(...ROLES), async (req, res, next) =>
         item_name: r.item_name || 'Item',
         amount,
         method: largest ? largest.method : null,
-        undone: r.undone_at != null,
+        undone: r.status === 'cancelled' || r.undone_at != null,
         entry_mode: r.entry_mode,
         created_by_name: r.created_by_name || null,
       };
     });
 
-    // Totals cover every live entry in the session, not just the listed ones.
+    // Totals cover every live entry in the session, not just the listed ones,
+    // less any processed refunds of those sales.
     const t = await db.prepare(`
       SELECT
         COALESCE(SUM(CASE WHEN p.method = 'cash' THEN p.amount ELSE 0 END), 0) AS cash,
@@ -159,15 +169,30 @@ router.get('/roll', authenticate, authorize(...ROLES), async (req, res, next) =>
         COUNT(DISTINCT s.id) AS count
       FROM sales s
       LEFT JOIN payments p ON p.sale_id = s.id
-      WHERE s.location_id = ? AND s.entry_mode IN ${QUICK_MODES} AND s.created_at >= ? AND s.undone_at IS NULL
+      WHERE s.location_id = ? AND s.entry_mode IN ${QUICK_MODES} AND s.created_at >= ? AND s.status != 'cancelled'
     `).get(locationId, sessionStart);
+
+    const refundRows = await db.prepare(`
+      SELECT COALESCE(r.refund_method, 'cash') AS method, COALESCE(SUM(r.amount), 0) AS total
+      FROM refunds r
+      JOIN sales s ON s.id = r.sale_id
+      WHERE s.location_id = ? AND s.entry_mode IN ${QUICK_MODES} AND s.created_at >= ? AND s.status != 'cancelled'
+        AND COALESCE(r.status, 'processed') = 'processed'
+      GROUP BY COALESCE(r.refund_method, 'cash')
+    `).all(locationId, sessionStart);
+    let refundCash = 0;
+    let refundUpi = 0;
+    for (const r of refundRows) {
+      if (r.method === 'upi') refundUpi += Number(r.total);
+      else if (r.method === 'cash') refundCash += Number(r.total);
+    }
 
     res.json({
       success: true,
       data: {
         session_start: sessionStart,
         register_open: !!register,
-        totals: { cash: Number(t.cash), upi: Number(t.upi), count: Number(t.count) },
+        totals: { cash: Number(t.cash) - refundCash, upi: Number(t.upi) - refundUpi, count: Number(t.count) },
         entries,
       },
     });

@@ -835,7 +835,35 @@ router.put(
 
       // Preview: report what a close would record, without closing anything.
       if (req.body.preview === true || req.body.preview === 'true') {
-        return res.json({ success: true, data: { preview: true, expected_cash: expectedCash, actual_cash: Number(actual_cash), discrepancy } });
+        // Same unsettled delivery cash the register status banner shows.
+        let pendingCod = 0;
+        try {
+          const codRow = db.prepare(`
+            SELECT COALESCE(SUM(d.cod_collected), 0) as total
+            FROM deliveries d
+            WHERE d.location_id = ?
+              AND d.status = 'delivered'
+              AND d.cod_collected > 0
+              AND d.cod_status IN ('collected', 'partial')
+              AND d.id NOT IN (SELECT delivery_id FROM delivery_settlement_items)
+          `).get(location_id);
+          pendingCod = Math.round(Number(codRow?.total || 0) * 100) / 100;
+        } catch (_) { /* non-critical, preview still answers */ }
+
+        // Every preview leaves a trail; it never changes the register.
+        try {
+          db.prepare(`
+            INSERT INTO audit_logs (entity_type, entity_id, user_id, action, previous_state, new_state, created_at)
+            VALUES ('cash_register', ?, ?, 'register_close_preview', ?, ?, CURRENT_TIMESTAMP)
+          `).run(
+            register.id,
+            req.user.id,
+            JSON.stringify({ register_id: register.id }),
+            JSON.stringify({ actual_cash: Number(actual_cash), expected_cash: expectedCash, discrepancy })
+          );
+        } catch (auditErr) { console.error('register close preview audit failed:', auditErr.message); }
+
+        return res.json({ success: true, data: { preview: true, expected_cash: expectedCash, actual_cash: Number(actual_cash), discrepancy, pending_cod: pendingCod } });
       }
 
       db.prepare(`
@@ -1109,6 +1137,9 @@ router.put('/:id', authenticate, authorize('owner', 'manager', 'employee', 'coun
     // Fetch existing sale state for the audit log
     const oldSale = await db.prepare('SELECT * FROM sales WHERE id = ?').get(saleId);
     if (!oldSale) return res.status(404).json({ success: false, message: 'Sale not found' });
+    if (oldSale.status === 'cancelled') {
+      return res.status(400).json({ success: false, message: "This sale was undone or cancelled — it can't be changed." });
+    }
 
     // 1. Permission Check
     if (['employee', 'counter_staff'].includes(req.user.role) && oldSale.created_by !== req.user.id) {

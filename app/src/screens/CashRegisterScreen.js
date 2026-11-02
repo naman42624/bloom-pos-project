@@ -315,7 +315,9 @@ export default function CashRegisterScreen({ navigation, route }) {
 
     const excess = preview ? Math.round(-Number(preview.discrepancy) * 100) / 100 : 0;
     if (preview && Number.isFinite(excess) && excess >= 1) {
-      setTopup({ excess, cash, locationId: selectedLocation, registerId: (register && register.id) || null });
+      const pendingCod = Math.round(Number(preview.pending_cod || 0) * 100) / 100;
+      const bookable = Math.round((excess - pendingCod) * 100) / 100;
+      setTopup({ excess, pendingCod, bookable, cash, locationId: selectedLocation, registerId: (register && register.id) || null });
       return;
     }
     setTopup(null);
@@ -324,14 +326,34 @@ export default function CashRegisterScreen({ navigation, route }) {
 
   const handleBookTopup = async () => {
     if (!topup) return;
-    const { excess, cash, locationId } = topup;
+    const { bookable, cash, locationId } = topup;
     if (selectedLocation !== locationId) { dropTopup(); return; }
     const prev = topupSaleRef.current;
     if (!(prev && prev.cash === cash && prev.locationId === locationId)) {
       setSubmitting(true);
+      // Look again right before booking: if the amount moved, show the new one
+      // and let staff tap Book again instead of booking a stale figure.
+      try {
+        const fresh = await api.previewRegisterClose({ location_id: locationId, actual_cash: cash });
+        if (fresh && fresh.success && fresh.data) {
+          const freshExcess = Math.round(-Number(fresh.data.discrepancy) * 100) / 100;
+          const freshCod = Math.round(Number(fresh.data.pending_cod || 0) * 100) / 100;
+          const freshBookable = Math.round((freshExcess - freshCod) * 100) / 100;
+          if (freshBookable !== bookable) {
+            setSubmitting(false);
+            if (freshExcess >= 1) {
+              setTopup({ ...topup, excess: freshExcess, pendingCod: freshCod, bookable: freshBookable });
+            } else {
+              dropTopup();
+            }
+            showAlert('Amount changed', 'The amount changed since you counted. Please check the new amount and tap again.');
+            return;
+          }
+        }
+      } catch (e) { /* if the look-again fails, the booking below reports its own error */ }
       try {
         const payload = buildQuickSalePayload({
-          locationId, method: 'cash', amount: excess, label: TOPUP_LABEL, entryMode: 'close_topup',
+          locationId, method: 'cash', amount: bookable, label: TOPUP_LABEL, entryMode: 'close_topup',
         });
         const res = await api.createSale(payload);
         const id = res && (res.id != null ? res.id : res.data && res.data.id);
@@ -567,8 +589,20 @@ export default function CashRegisterScreen({ navigation, route }) {
             
             {topup ? (
               <View style={styles.topupPanel}>
-                <Text style={styles.topupText}>{rupees(topup.excess)} more than recorded. Book it as unrecorded sales?</Text>
-                {amountError(topup.excess) ? (
+                <Text style={styles.topupText}>{rupees(topup.excess)} more than recorded.{topup.bookable >= 1 ? ' Book it as unrecorded sales?' : ''}</Text>
+                {topup.pendingCod > 0 ? (
+                  <View>
+                    <Text style={styles.topupNote}>{rupees(topup.pendingCod)} of delivery cash is not settled yet and may be in the drawer. Settle it first.</Text>
+                    <TouchableOpacity
+                      style={styles.topupNo}
+                      onPress={() => { dropTopup(); navigation.navigate('Settlements', { locationId: selectedLocation }); }}
+                      accessibilityRole="button"
+                    >
+                      <Text style={styles.topupNoText}>Settle</Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : null}
+                {topup.bookable < 1 ? null : amountError(topup.bookable) ? (
                   <Text style={styles.topupNote}>That is too big to book here. Close as it is, or count the cash again.</Text>
                 ) : (
                   <TouchableOpacity
@@ -578,7 +612,7 @@ export default function CashRegisterScreen({ navigation, route }) {
                     accessibilityRole="button"
                   >
                     {submitting ? <ActivityIndicator color={Colors.white} /> : (
-                      <Text style={styles.btnCloseText}>Book {rupees(topup.excess)} as sales</Text>
+                      <Text style={styles.btnCloseText}>Book {rupees(topup.bookable)} as sales</Text>
                     )}
                   </TouchableOpacity>
                 )}

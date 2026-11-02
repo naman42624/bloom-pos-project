@@ -374,6 +374,43 @@ check('preview with a non-boolean is refused', async () => {
   assert(after.closed_at === null && JSON.stringify(after) === JSON.stringify(before), 'register changed');
 });
 
+check('Edit Sale refuses an undone quick sale', async () => {
+  const owner = await loginOwner();
+  await openRegister(owner.token, TEST_LOCATION_ID, 100);
+  const sale = await quickSale(owner.token, { amount: 40, method: 'cash' });
+  const id = sale.body.data.id;
+  const u = await undo(owner.token, id);
+  assert(u.status === 200, `undo: ${u.status}`);
+  const put = await api('PUT', `/sales/${id}`, owner.token, { payments: [{ method: 'upi', amount: 40 }] });
+  assert(put.status === 400 && /undone or cancelled/.test(put.body?.message || ''), `put: ${put.status} ${JSON.stringify(put.body)}`);
+});
+
+check('preview leaves one audit row and reports pending_cod', async () => {
+  const owner = await loginOwner();
+  const reg = await openRegister(owner.token, TEST_LOCATION_ID, 100);
+  const db = await getDb();
+  const count = async () => Number((await db.prepare("SELECT COUNT(*) AS c FROM audit_logs WHERE action = 'register_close_preview' AND entity_id = ?").get(reg.id)).c);
+  const before = await count();
+  const { status, body } = await api('PUT', '/sales/register/close', owner.token, { location_id: TEST_LOCATION_ID, actual_cash: 500, preview: true });
+  assert(status === 200 && body.data?.preview === true, `preview ${status} ${JSON.stringify(body)}`);
+  assert(typeof body.data.pending_cod === 'number', `pending_cod: ${JSON.stringify(body.data)}`);
+  assert((await count()) === before + 1, 'expected exactly one new register_close_preview audit row');
+  await db.prepare("DELETE FROM audit_logs WHERE action = 'register_close_preview' AND entity_id = ?").run(reg.id);
+});
+
+check('undo after the register is closed is refused (409)', async () => {
+  const owner = await loginOwner();
+  await openRegister(owner.token, TEST_LOCATION_ID, 100);
+  const sale = await quickSale(owner.token, { amount: 70, method: 'cash' });
+  const id = sale.body.data.id;
+  await h.closeRegisterWith(owner.token, TEST_LOCATION_ID, 170);
+  const r = await undo(owner.token, id);
+  assert(r.status === 409, `expected 409, got ${r.status} ${JSON.stringify(r.body)}`);
+  const db = await getDb();
+  const s = await db.prepare('SELECT status FROM sales WHERE id = ?').get(id);
+  assert(s.status !== 'cancelled', 'sale must stay live');
+});
+
 async function restoreTilesSetting() {
   if (tilesSettingBackup === undefined) return;
   const db = await getDb();
