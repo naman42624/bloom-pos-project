@@ -322,6 +322,32 @@ check('owner tiles resolve current price and drop inactive products', async () =
   assert(d.tiles[1].key === 'l2' && d.tiles[1].type === 'label' && d.tiles[1].product_id === null && d.tiles[1].price === 300, `tile1: ${JSON.stringify(d.tiles[1])}`);
 });
 
+check('preview writes nothing', async () => {
+  const owner = await loginOwner();
+  const reg = await openRegister(owner.token, TEST_LOCATION_ID, 100);
+  const sale = await quickSale(owner.token, { amount: 200, method: 'cash', label: 'Preview probe' });
+  assert(sale.status === 201, `sale ${sale.status}`);
+  const db = await getDb();
+  const before = await db.prepare('SELECT * FROM cash_registers WHERE id = ?').get(reg.id);
+  const { status, body } = await api('PUT', '/sales/register/close', owner.token, { location_id: TEST_LOCATION_ID, actual_cash: 500, preview: true });
+  assert(status === 200 && body.data?.preview === true, `preview ${status} ${JSON.stringify(body)}`);
+  assert(Number(body.data.expected_cash) === 300 && Number(body.data.discrepancy) === -200 && Number(body.data.actual_cash) === 500, `got ${JSON.stringify(body.data)}`);
+  const after = await db.prepare('SELECT * FROM cash_registers WHERE id = ?').get(reg.id);
+  assert(after.closed_at === null && JSON.stringify(after) === JSON.stringify(before), 'register row changed or closed by preview');
+});
+
+check('top-up then close gives zero discrepancy', async () => {
+  const owner = await loginOwner();
+  await openRegister(owner.token, TEST_LOCATION_ID, 100);
+  const top = await quickSale(owner.token, { amount: 200, method: 'cash', label: 'Unrecorded sales (booked at close)', entryMode: 'close_topup' });
+  assert(top.status === 201, `top-up ${top.status} ${JSON.stringify(top.body)}`);
+  const closed = await h.closeRegisterWith(owner.token, TEST_LOCATION_ID, 300);
+  assert(Number(closed.discrepancy) === 0, `discrepancy ${closed.discrepancy}`);
+  const db = await getDb();
+  const row = await db.prepare('SELECT entry_mode FROM sales WHERE id = ?').get(top.body.data.id);
+  assert(row.entry_mode === 'close_topup', `entry_mode ${row.entry_mode}`);
+});
+
 async function restoreTilesSetting() {
   if (tilesSettingBackup === undefined) return;
   const db = await getDb();

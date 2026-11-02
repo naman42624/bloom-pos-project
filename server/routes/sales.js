@@ -727,6 +727,7 @@ router.put(
     body('location_id').isInt(),
     body('actual_cash').isFloat({ min: 0 }),
     body('closing_notes').optional().trim(),
+    body('preview').optional().isBoolean(),
   ],
   (req, res, next) => {
     try {
@@ -831,6 +832,11 @@ router.put(
 
       const expectedCash = register.opening_balance + paymentTotals.cash_total - refundTotal - expenseTotal;
       const discrepancy = expectedCash - actual_cash;
+
+      // Preview: report what a close would record, without closing anything.
+      if (req.body.preview === true || req.body.preview === 'true') {
+        return res.json({ success: true, data: { preview: true, expected_cash: expectedCash, actual_cash: Number(actual_cash), discrepancy } });
+      }
 
       db.prepare(`
         UPDATE cash_registers SET
