@@ -58,10 +58,10 @@
 
 **Interfaces:**
 - Produces: `GET /api/reports/staff-sales?from=YYYY-MM-DD&to=YYYY-MM-DD&location_id=` (`authorize('owner')`; defaults: today..today, all locations) →
-  `{ success, data: { from, to, rows: [{ user_id, name, role, is_active, orders, amount, refunds, net, discount_count, discount_total, override_count, undone_count, undone_total }] } }`, sorted by `net` desc, only people with at least one non-zero figure. `override_count` = their sales with `discount_approved_by` not null and ≠ seller. `undone_*` = quick-sale entries with `undone_by` = that user and `undone_at` in the period. `refunds` = processed refunds on their sales (`COALESCE(status,'processed') = 'processed'`).
+  `{ success, data: { from, to, rows: [{ user_id, name, role, is_active, orders, amount, refunds, net, discount_count, discount_total, override_count, undone_count, undone_total, topup_count, topup_total }] } }`, sorted by `net` desc, only people with at least one non-zero figure. `override_count` = their sales with `discount_approved_by` not null and ≠ seller. `undone_*` = quick-sale entries with `undone_by` = that user and `undone_at` in the period. `refunds` = processed refunds on their sales (`COALESCE(status,'processed') = 'processed'`). `topup_*` = non-cancelled sales with `entry_mode = 'close_topup'` created by that user (the person who closed) in the period (quick-sale spec §6, §9).
 - Produces: `GET /api/reports/staff-sales/:userId/sales?from&to&location_id` (owner only) → `{ success, data: [sale list rows in the same shape `GET /api/sales` returns for cards] }` (reuse that route's SELECT columns; do not duplicate its enrichment logic — call a shared function if one exists, otherwise return id, sale_number, created_at, grand_total, status, order_type, customer_name and let the screen open Sale Details).
 
-- [ ] **Step 1: Failing checks:** `report is owner only` (manager token → 403); `orders and amount per seller` (two sellers, three sales → exact rows); `refund and cancel accounting`; `inactive seller still listed for the period`; `undo counted against the undoer`; `local-day boundary` (insert a sale with `created_at` = today 23:50 local via SQL, query today → included; query tomorrow → excluded); `per-person sales list`.
+- [ ] **Step 1: Failing checks:** `report is owner only` (manager token → 403); `orders and amount per seller` (two sellers, three sales → exact rows); `refund and cancel accounting`; `inactive seller still listed for the period`; `undo counted against the undoer`; `close top-ups counted for the closer`; `local-day boundary` (insert a sale with `created_at` = today 23:50 local via SQL, query today → included; query tomorrow → excluded); `per-person sales list`.
 - [ ] **Step 2: Run** → FAIL. **Step 3: Implement** with the async layer. **Step 4: Run** → pass.
 - [ ] **Step 5: Commit** `feat(staff-sales): owner-only staff sales report`.
 
@@ -89,7 +89,7 @@
 
 **Interfaces:**
 - Consumes: Task 2 endpoints.
-- Behaviour: period chips (exact labels above; "Pick dates" opens the existing `DateTimePickerModal` twice: from, to), location chips (All + each location), one card per row: name, role, ended/inactive tag, Orders, Amount, Refunds, Net, Discounts (`n · ₹x · m needed approval`), Undone (`n · ₹x`). Tap → that person's sales list → tap → Sale Details. Empty state: "No sales in this period."
+- Behaviour: period chips (exact labels above; "Pick dates" opens the existing `DateTimePickerModal` twice: from, to), location chips (All + each location), one card per row: name, role, ended/inactive tag, Orders, Amount, Refunds, Net, Discounts (`n · ₹x · m needed approval`), Undone (`n · ₹x`), Booked at close (`n · ₹x`). Tap → that person's sales list → tap → Sale Details. Empty state: "No sales in this period."
 
 - [ ] **Step 1:** Implement; babel-check.
 - [ ] **Step 2: On-screen check** as owner: Today and This month match the endpoint; a manager login does not see the row. 
