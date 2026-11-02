@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TextInput,
   TouchableOpacity, Alert, ActivityIndicator, Platform,
@@ -12,6 +12,7 @@ import { isRegisterStale } from '../hooks/useRegisterStatus';
 import { formatDateLabel } from '../utils/datetime';
 import { showAlert, showConfirm } from '../utils/alert';
 import { buildQuickSalePayload, amountError, TOPUP_LABEL } from '../utils/quickSale';
+import { METHOD_COLOR } from '../components/quickSale/QuickSaleRoll';
 import useSubmitGuard from '../hooks/useSubmitGuard';
 
 const formatTime = (timeStr) => {
@@ -192,6 +193,9 @@ export default function CashRegisterScreen({ navigation, route }) {
   const [topup, setTopup] = useState(null);
   const topupSaleRef = useRef(null);
   const closingRef = useRef(false);
+  const dropTopup = () => { topupSaleRef.current = null; setTopup(null); };
+  // A top-up belongs to one location and one count; leaving either drops it.
+  useEffect(() => { dropTopup(); }, [selectedLocation]);
   const guardSubmit = useSubmitGuard();
   const [pendingCodTotal, setPendingCodTotal] = useState(0);
   const [pendingCodDeliveries, setPendingCodDeliveries] = useState(0);
@@ -231,6 +235,7 @@ export default function CashRegisterScreen({ navigation, route }) {
   };
 
   const handleLocationChange = (locId) => {
+    dropTopup();
     setSelectedLocation(locId);
     fetchStatus(locId);
   };
@@ -262,13 +267,13 @@ export default function CashRegisterScreen({ navigation, route }) {
   // Rs 1 more than expected, show the top-up panel; otherwise the usual confirm.
   const rupees = (n) => '₹' + Number(n).toLocaleString('en-IN', { maximumFractionDigits: 2 });
 
-  const doClose = async (cash) => {
+  const doClose = async (cash, locationId = selectedLocation) => {
     if (closingRef.current) return;
     closingRef.current = true;
     setSubmitting(true);
     try {
       const res = await api.closeRegister({
-        location_id: selectedLocation,
+        location_id: locationId,
         actual_cash: cash,
         closing_notes: closingNotes,
       });
@@ -285,6 +290,11 @@ export default function CashRegisterScreen({ navigation, route }) {
         showAlert('Could not close', res.message || 'The register did not close. Please tap Close Register again.');
       }
     } catch (err) {
+      if (err && (err.status === 404 || /not open|no open|open register/i.test(err.message || ''))) {
+        dropTopup();
+        fetchStatus(locationId);
+        showAlert('Could not close', err.message || 'This register is no longer open.');
+      } else
       showAlert('Could not close', 'The register did not close. Check your connection and tap Close Register again.');
     } finally { closingRef.current = false; setSubmitting(false); }
   };
@@ -305,7 +315,7 @@ export default function CashRegisterScreen({ navigation, route }) {
 
     const excess = preview ? Math.round(-Number(preview.discrepancy) * 100) / 100 : 0;
     if (preview && Number.isFinite(excess) && excess >= 1) {
-      setTopup({ excess, cash });
+      setTopup({ excess, cash, locationId: selectedLocation, registerId: (register && register.id) || null });
       return;
     }
     setTopup(null);
@@ -314,12 +324,14 @@ export default function CashRegisterScreen({ navigation, route }) {
 
   const handleBookTopup = async () => {
     if (!topup) return;
-    const { excess, cash } = topup;
-    if (!topupSaleRef.current) {
+    const { excess, cash, locationId } = topup;
+    if (selectedLocation !== locationId) { dropTopup(); return; }
+    const prev = topupSaleRef.current;
+    if (!(prev && prev.cash === cash && prev.locationId === locationId)) {
       setSubmitting(true);
       try {
         const payload = buildQuickSalePayload({
-          locationId: selectedLocation, method: 'cash', amount: excess, label: TOPUP_LABEL, entryMode: 'close_topup',
+          locationId, method: 'cash', amount: excess, label: TOPUP_LABEL, entryMode: 'close_topup',
         });
         const res = await api.createSale(payload);
         const id = res && (res.id != null ? res.id : res.data && res.data.id);
@@ -328,7 +340,7 @@ export default function CashRegisterScreen({ navigation, route }) {
           showAlert('Not booked', (res && res.message) || 'The extra cash was not booked. Please tap Book again.');
           return;
         }
-        topupSaleRef.current = id;
+        topupSaleRef.current = { saleId: id, cash, locationId };
       } catch (err) {
         setSubmitting(false);
         showAlert('Not booked', 'The extra cash was not booked. Check your connection and tap Book again.');
@@ -336,12 +348,13 @@ export default function CashRegisterScreen({ navigation, route }) {
       }
       setSubmitting(false);
     }
-    await doClose(cash);
+    await doClose(cash, locationId);
   };
 
   const handleCloseAsIs = async () => {
     if (!topup) return;
-    await doClose(topup.cash);
+    if (selectedLocation !== topup.locationId) { dropTopup(); return; }
+    await doClose(topup.cash, topup.locationId);
   };
 
   const fetchHistory = async () => {
@@ -535,7 +548,7 @@ export default function CashRegisterScreen({ navigation, route }) {
               <TextInput
                 style={styles.inputLarge}
                 value={actualCash}
-                onChangeText={(t) => { setActualCash(t); setTopup(null); }}
+                onChangeText={(t) => { setActualCash(t); dropTopup(); }}
                 placeholder="0.00"
                 placeholderTextColor={Colors.textLight}
                 keyboardType="numeric"
@@ -727,7 +740,7 @@ const styles = StyleSheet.create({
   topupPanel: { marginTop: Spacing.lg, backgroundColor: Colors.surfaceAlt, borderRadius: BorderRadius.md, padding: Spacing.md },
   topupText: { fontSize: FontSize.lg, fontWeight: '700', color: Colors.text, marginBottom: Spacing.md },
   topupNote: { fontSize: FontSize.md, color: Colors.textSecondary, marginBottom: Spacing.md },
-  topupBook: { backgroundColor: Colors.success, borderRadius: BorderRadius.md, minHeight: TouchTarget.min || 48, padding: Spacing.md, alignItems: 'center', justifyContent: 'center' },
+  topupBook: { backgroundColor: METHOD_COLOR.cash, borderRadius: BorderRadius.md, minHeight: TouchTarget.min || 48, padding: Spacing.md, alignItems: 'center', justifyContent: 'center' },
   topupNo: { borderRadius: BorderRadius.md, borderWidth: 1, borderColor: Colors.border, minHeight: TouchTarget.min || 48, padding: Spacing.md, alignItems: 'center', justifyContent: 'center', marginTop: Spacing.sm },
   topupNoText: { color: Colors.text, fontSize: FontSize.md, fontWeight: '600' },
   btnCloseText: { color: Colors.white, fontSize: FontSize.md, fontWeight: '700' },
