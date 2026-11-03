@@ -22,8 +22,10 @@ export default function QRScannerScreen({ navigation, route }) {
       const res = await api.scanProductQR(data);
       if (res.success && res.data) {
         if (fromPOS) {
-          // Return product to POS cart
-          navigation.navigate('POSHome', { scannedProduct: res.data });
+          // Scan is selling-only; re-read the full product so tax, sku and stock match the cart
+          const full = await api.getProduct(res.data.id);
+          if (!full || !full.success || !full.data) throw new Error('Could not load this product. Please try again.');
+          navigation.navigate('POSHome', { scannedProduct: full.data });
         } else {
           navigation.replace('ProductDetail', { productId: res.data.id });
         }
@@ -32,7 +34,7 @@ export default function QRScannerScreen({ navigation, route }) {
         setScanned(false);
       }
     } catch (err) {
-      Alert.alert('Error', err.message || 'Invalid QR code');
+      Alert.alert('Cannot add this item', err.message || 'Could not read this code. Please try again.');
       setScanned(false);
     } finally {
       setProcessing(false);
