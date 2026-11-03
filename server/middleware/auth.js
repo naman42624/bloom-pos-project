@@ -1,6 +1,6 @@
 const jwt = require('jsonwebtoken');
 const { getDb } = require('../config/database');
-const { isAccessExpired, expiredMessage } = require('../utils/helper-access');
+const { refuseIfExpired } = require('../utils/helper-access');
 
 /**
  * Authentication middleware - verifies JWT token and attaches user to request
@@ -39,11 +39,9 @@ function authenticate(req, res, next) {
       });
     }
 
-    if (user.role === 'helper' && isAccessExpired(user.access_until)) {
-      return res.status(401).json({
-        success: false,
-        message: expiredMessage(user.access_until),
-      });
+    const expiredMsg = refuseIfExpired(user);
+    if (expiredMsg) {
+      return res.status(401).json({ success: false, message: expiredMsg });
     }
 
     req.user = user;
@@ -106,7 +104,7 @@ function optionalAuth(req, res, next) {
       .prepare('SELECT id, phone, email, name, role, is_active, access_until FROM users WHERE id = ?')
       .get(decoded.id);
 
-    if (user && user.is_active && !(user.role === 'helper' && isAccessExpired(user.access_until))) {
+    if (user && user.is_active && !refuseIfExpired(user)) {
       req.user = user;
     }
     next();

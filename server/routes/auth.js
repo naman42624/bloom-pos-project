@@ -5,6 +5,7 @@ const { body, validationResult } = require('express-validator');
 const { getDb } = require('../config/database');
 const { getDb: getAsyncDb } = require('../config/database-async');
 const { authenticate } = require('../middleware/auth');
+const { refuseIfExpired } = require('../utils/helper-access');
 
 const router = express.Router();
 
@@ -176,6 +177,11 @@ router.post(
           success: false,
           message: 'Invalid phone number or password',
         });
+      }
+
+      const expiredMsg = refuseIfExpired(user);
+      if (expiredMsg) {
+        return res.status(401).json({ success: false, message: expiredMsg });
       }
 
       const token = generateToken(user);

@@ -17,9 +17,10 @@ function shopDate(offsetDays) {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
 }
 
+const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 function shortDate(iso) {
-  const [y, m, d] = iso.split('-').map(Number);
-  return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' });
+  const [, m, d] = iso.split('-');
+  return `${parseInt(d, 10)} ${MONTH_NAMES[parseInt(m, 10) - 1]}`;
 }
 
 let phoneSeq = 0;
@@ -103,6 +104,35 @@ check('deactivated helper is signed out', async () => {
   const r = await api('GET', '/auth/me', token);
   assert(r.status === 403, `Expected 403, got ${r.status}`);
   assert(r.body?.message === 'Account has been deactivated. Contact your manager.', `Message: ${r.body?.message}`);
+});
+
+check('expired helper cannot log in', async () => {
+  const owner = await loginOwner();
+  const res = await makeHelper(owner.token, shopDate(2));
+  const yesterday = shopDate(-1);
+  const db = await getDb();
+  await db.prepare('UPDATE users SET access_until = ? WHERE id = ?').run(yesterday, res.body.data.user.id);
+  const r = await api('POST', '/auth/login', null, { phone: res.body.data.user.phone, password: PASSWORD });
+  assert(r.status === 401, `Expected 401, got ${r.status}`);
+  assert(r.body?.message === `Your access ended on ${shortDate(yesterday)}. Ask the owner if you need more days.`, `Message: ${r.body?.message}`);
+  assert(!r.body?.data?.token, 'no token should be issued');
+});
+
+check('cannot change someone into a helper', async () => {
+  const owner = await loginOwner();
+  const res = await makeHelper(owner.token, shopDate(2));
+  const emp = await api('POST', '/users', owner.token, { name: 'Verify Emp', phone: testPhone(), password: PASSWORD, role: 'employee', location_ids: [TEST_LOCATION_ID] });
+  createdUserIds.push(emp.body.data.user.id);
+  const r = await api('PUT', `/users/${emp.body.data.user.id}/change-role`, owner.token, { role: 'helper' });
+  assert(r.status === 400 && r.body?.message === 'Use Add helper to give someone helper access.', `${r.status} ${JSON.stringify(r.body)}`);
+});
+
+check('Works until must be a real date and not in the past', async () => {
+  const owner = await loginOwner();
+  const bad = await makeHelper(owner.token, '2026-02-31');
+  assert(bad.status === 400 && JSON.stringify(bad.body).includes('Pick a real date for Works until.'), `bad date: ${bad.status} ${JSON.stringify(bad.body)}`);
+  const past = await makeHelper(owner.token, shopDate(-1));
+  assert(past.status === 400 && past.body?.message === "Works until can't be in the past.", `past: ${past.status} ${JSON.stringify(past.body)}`);
 });
 
 check('schema pieces exist (client_ref, join tokens, helper threshold)', async () => {

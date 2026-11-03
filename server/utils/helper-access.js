@@ -26,16 +26,27 @@ function isAccessExpired(accessUntil, today = localToday()) {
   return until < now;
 }
 
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
 // "15 Nov" - day and short month, no year.
 function formatAccessDate(accessUntil) {
   const iso = normaliseDate(accessUntil);
   if (!iso) return '';
-  const [y, m, d] = iso.split('-').map(Number);
-  return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' });
+  const [, m, d] = iso.split('-').map(Number);
+  return `${d} ${MONTHS[m - 1]}`;
 }
 
 function expiredMessage(accessUntil) {
   return `Your access ended on ${formatAccessDate(accessUntil)}. Ask the owner if you need more days.`;
 }
 
-module.exports = { isAccessExpired, normaliseDate, localToday, formatAccessDate, expiredMessage };
+// Returns the 401 message when this user is a helper whose access has ended,
+// otherwise null. Shared by the auth middleware and every login path.
+function refuseIfExpired(user) {
+  if (user && user.role === 'helper' && isAccessExpired(user.access_until)) {
+    return expiredMessage(user.access_until);
+  }
+  return null;
+}
+
+module.exports = { refuseIfExpired, isAccessExpired, normaliseDate, localToday, formatAccessDate, expiredMessage };

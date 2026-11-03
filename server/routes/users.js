@@ -1,6 +1,7 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const { body, param, query, validationResult } = require('express-validator');
+const { localToday } = require('../utils/helper-access');
 const { getDb } = require('../config/database');
 const { getDb: getAsyncDb } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
@@ -176,8 +177,10 @@ router.post(
       .withMessage('location_ids must be an array'),
     body('access_until')
       .optional({ nullable: true, checkFalsy: true })
+      .isISO8601({ strict: true, strictSeparator: true })
+      .withMessage('Pick a real date for Works until.')
       .matches(/^\d{4}-\d{2}-\d{2}$/)
-      .withMessage('Works until must be a date'),
+      .withMessage('Pick a real date for Works until.'),
   ],
   async (req, res, next) => {
     try {
@@ -192,6 +195,9 @@ router.post(
 
       const { name, phone, email, password, role, location_ids, access_until } = req.body;
 
+      if (role === 'helper' && access_until && access_until < localToday()) {
+        return res.status(400).json({ success: false, message: "Works until can't be in the past." });
+      }
       if (role === 'helper' && !access_until) {
         return res.status(400).json({
           success: false,
@@ -211,7 +217,7 @@ router.post(
       if (req.user.role === 'manager' && !['employee', 'counter_staff', 'florist_staff', 'delivery_partner', 'customer', 'helper'].includes(role)) {
         return res.status(403).json({
           success: false,
-          message: 'You can only create employee, delivery partner, or customer accounts',
+          message: 'You can only create employee, delivery partner, helper, or customer accounts',
         });
       }
 
@@ -306,7 +312,7 @@ router.put(
     body('email').optional({ nullable: true, checkFalsy: true }).isEmail().normalizeEmail(),
     body('is_active').optional().isIn([0, 1, true, false]),
     body('location_ids').optional().isArray(),
-    body('access_until').optional({ nullable: true, checkFalsy: true }).matches(/^\d{4}-\d{2}-\d{2}$/).withMessage('Works until must be a date'),
+    body('access_until').optional({ nullable: true, checkFalsy: true }).isISO8601({ strict: true, strictSeparator: true }).withMessage('Pick a real date for Works until.').matches(/^\d{4}-\d{2}-\d{2}$/).withMessage('Pick a real date for Works until.'),
   ],
   (req, res, next) => {
     try {
@@ -525,6 +531,10 @@ router.put(
       const db = getDb();
       const targetId = parseInt(req.params.id);
       const { role } = req.body;
+
+      if (role === 'helper') {
+        return res.status(400).json({ success: false, message: 'Use Add helper to give someone helper access.' });
+      }
 
       // Cannot change your own role
       if (targetId === req.user.id) {

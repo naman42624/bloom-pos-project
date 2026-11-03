@@ -801,7 +801,9 @@ function ensureCompatibilityColumns() {
   try { runPsql('ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check'); } catch (_) {}
   try {
     runPsql("ALTER TABLE users ADD CONSTRAINT users_role_check CHECK(role IN ('owner', 'manager', 'employee', 'counter_staff', 'florist_staff', 'delivery_partner', 'customer', 'helper'))");
-  } catch (_) {}
+  } catch (err) {
+    console.error('users_role_check could not be re-added:', err && err.message);
+  }
 
   ensureColumn('settings', 'updated_by', 'INTEGER REFERENCES users(id) ON DELETE SET NULL');
   ensureColumn('expenses', 'is_return', 'INTEGER DEFAULT 0');
