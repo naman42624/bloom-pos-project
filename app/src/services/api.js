@@ -1345,6 +1345,16 @@ class ApiService {
     return this.request(`/reports/employee-performance${q ? `?${q}` : ''}`);
   }
 
+  getStaffSales(params = {}) {
+    const q = new URLSearchParams(params).toString();
+    return this.request(`/reports/staff-sales${q ? `?${q}` : ''}`);
+  }
+
+  getStaffSalesFor(userId, params = {}) {
+    const q = new URLSearchParams(params).toString();
+    return this.request(`/reports/staff-sales/${userId}/sales${q ? `?${q}` : ''}`);
+  }
+
   // ─── Notifications ─────────────────────────────────────────
   registerPushToken(token, platform = 'expo') {
     return this.request('/notifications/register-token', { method: 'POST', body: JSON.stringify({ token, platform }) });

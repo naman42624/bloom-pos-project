@@ -1078,6 +1078,9 @@ function ensureCompatibilityColumns() {
   ensureColumn('sales', 'undone_by', 'INTEGER REFERENCES users(id) ON DELETE SET NULL');
   ensureColumn('sales', 'undone_at', 'TIMESTAMP');
   runPsql('CREATE INDEX IF NOT EXISTS idx_sales_location_entry_mode_created ON sales(location_id, entry_mode, created_at)');
+  // Staff sales tracking: who sold the sale (NULL on old rows)
+  ensureColumn('sales', 'sold_by', 'INTEGER REFERENCES users(id) ON DELETE SET NULL');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_sales_sold_by_created ON sales(sold_by, created_at)');
   // Optional per-item attachment scoping: NULL = order-level (existing behavior
   // unchanged), set = this photo/voice note belongs to one specific line item.
   ensureColumn('sale_attachments', 'sale_item_id', 'INTEGER REFERENCES sale_items(id) ON DELETE CASCADE');

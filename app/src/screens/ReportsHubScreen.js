@@ -9,13 +9,16 @@ const REPORTS = [
   { key: 'InventoryReport', icon: 'leaf', label: 'Inventory Report', desc: 'Stock levels & wastage', color: '#4CAF50' },
   { key: 'CustomerInsights', icon: 'people', label: 'Customer Insights', desc: 'Top customers & segments', color: '#2196F3' },
   { key: 'EmployeePerformance', icon: 'person', label: 'Employee Performance', desc: 'Sales, attendance & tasks', color: '#FF9800' },
+  { key: 'StaffSales', icon: 'receipt', label: 'Staff sales', desc: 'Who sold what, discounts & undone sales', color: '#9C27B0', ownerOnly: true },
 ];
 
 export default function ReportsHubScreen({ navigation }) {
+  const { user } = useAuth();
+  const visible = REPORTS.filter(r => !r.ownerOnly || user?.role === 'owner');
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       <Text style={styles.heading}>Reports & Analytics</Text>
-      {REPORTS.map(r => (
+      {visible.map(r => (
         <TouchableOpacity
           key={r.key}
           style={styles.card}
