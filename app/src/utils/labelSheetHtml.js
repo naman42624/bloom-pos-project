@@ -27,13 +27,16 @@ const priceText = (item) => {
   if (item.price == null || item.price === '') return '';
   const n = Number(item.price);
   if (!isFinite(n) || n === 0) return '';
-  return `₹${n.toFixed(2)}`;
+  const whole = Math.abs(n - Math.round(n)) < 0.005;
+  return `\u20B9${n.toLocaleString('en-IN', { minimumFractionDigits: whole ? 0 : 2, maximumFractionDigits: whole ? 0 : 2 })}`;
 };
+
+const isHint = (item) => item.price_mode === 'open';
 
 const cellHtml = (item, showPrice, dateLine) => {
   const p = showPrice ? priceText(item) : '';
   const priceBlock = p
-    ? `<div class="price">${p}</div><div class="asof">${esc(dateLine)}</div>`
+    ? `<div class="price${isHint(item) ? ' hint' : ''}">${p}</div><div class="asof">${esc(dateLine)}</div>`
     : '';
   const img = item.qr_data_url ? `<img class="qr" src="${esc(item.qr_data_url)}" />` : '';
   return `<div class="cell${p ? ' withprice' : ''}"><div class="name">${esc(item.name)}</div>${img}${priceBlock}</div>`;
@@ -43,7 +46,7 @@ const cellHtml = (item, showPrice, dateLine) => {
 const rowHtml = (item, dateLine) => {
   const p = priceText(item) || 'Ask at the counter';
   const img = item.qr_data_url ? `<img class="qr" src="${esc(item.qr_data_url)}" />` : '';
-  return `<div class="cell"><div class="name">${esc(item.name)}</div><div class="priceblock"><div class="price">${p}</div><div class="asof">${esc(dateLine)}</div></div>${img}</div>`;
+  return `<div class="cell"><div class="name">${esc(item.name)}</div><div class="priceblock"><div class="price${isHint(item) ? ' hint' : ''}">${p}</div><div class="asof">${esc(dateLine)}</div></div>${img}</div>`;
 };
 
 export const buildLabelSheetHtml = ({ layout = 'stickers', items = [], showPrice = false, date = new Date() } = {}) => {
@@ -84,11 +87,11 @@ export const buildLabelSheetHtml = ({ layout = 'stickers', items = [], showPrice
     .cell { display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 1mm; border: 0.2mm dashed #bbb; overflow: hidden; }
     .name { font-weight: bold; line-height: 1.15; margin-bottom: 1mm; max-width: 100%; word-break: break-word; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
     .qr { image-rendering: pixelated; }
-    .price { font-weight: bold; margin-top: 1mm; }
+    .price { font-weight: bold; margin-top: 1mm; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
     .asof { color: #444; }
-    ${key === 'stickers' ? '.name{font-size:8pt}.qr{width:20mm;height:20mm}.withprice .qr{width:16mm;height:16mm}.price{font-size:10pt}.asof{font-size:6.5pt}' : ''}
-    ${key === 'bucket' ? '.cell{padding:2mm}.name{font-size:22pt;margin-bottom:1.5mm}.qr{width:60mm;height:60mm}.withprice .qr{width:48mm;height:48mm}.price{font-size:30pt;margin-top:1.5mm}.asof{font-size:11pt}' : ''}
-    ${key === 'price_card' ? '.cell{flex-direction:row;justify-content:space-between;gap:6mm;padding:2mm 8mm;text-align:left;border-style:solid}.name{font-size:16pt;margin:0;flex:1}.priceblock{text-align:right}.price{font-size:18pt;margin:0}.asof{font-size:8pt}.qr{width:18mm;height:18mm}' : ''}
+    ${key === 'stickers' ? '.name{font-size:8pt}.qr{width:20mm;height:20mm}.withprice .qr{width:16mm;height:16mm}.price{font-size:10pt}.price.hint{font-size:6pt}.asof{font-size:6.5pt}' : ''}
+    ${key === 'bucket' ? '.cell{padding:2mm}.name{font-size:22pt;margin-bottom:1.5mm}.qr{width:60mm;height:60mm}.withprice .qr{width:48mm;height:48mm}.price{font-size:30pt;margin-top:1.5mm}.price.hint{font-size:18pt}.asof{font-size:11pt}' : ''}
+    ${key === 'price_card' ? '.cell{flex-direction:row;justify-content:space-between;gap:6mm;padding:2mm 8mm;text-align:left;border-style:solid}.name{font-size:16pt;margin:0;flex:1}.priceblock{text-align:right}.price{font-size:18pt;margin:0;white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}.price.hint{font-size:11pt}.asof{font-size:8pt}.qr{width:18mm;height:18mm}' : ''}
   `;
 
   return `<!doctype html><html><head><meta charset="utf-8"><title>Labels</title><style>${css}</style></head><body>${pages.join('')}</body></html>`;

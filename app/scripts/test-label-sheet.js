@@ -29,18 +29,18 @@ test('30 stickers make 2 pages, 24 per page', () => {
 });
 test('price hidden by default', () => {
   const h = buildLabelSheetHtml({ layout: 'stickers', items: [item()], date });
-  assert.ok(!h.includes('120.00'));
+  assert.ok(!h.includes('\u20B9120'));
   assert.ok(!h.includes('price on'));
 });
 test('price shown with date line when on', () => {
   const h = buildLabelSheetHtml({ layout: 'stickers', items: [item()], showPrice: true, date });
-  assert.ok(h.includes('₹120.00'));
+  assert.ok(h.includes('₹120'));
   assert.ok(h.includes('price on 3 Nov 2026'));
 });
 test('open price shows hint, not a number', () => {
   const h = buildLabelSheetHtml({ layout: 'stickers', items: [item({ price_mode: 'open', price_hint: 'Ask at counter' })], showPrice: true, date });
   assert.ok(h.includes('Ask at counter'));
-  assert.ok(!h.includes('120.00'));
+  assert.ok(!h.includes('\u20B9120'));
 });
 test('bucket layout 6 per page', () => {
   const h = buildLabelSheetHtml({ layout: 'bucket', items: [item({ count: 7 })], date });
@@ -54,7 +54,7 @@ test('names are HTML-escaped', () => {
 });
 test('price_card always shows prices, one row per product, ignores count', () => {
   const h = buildLabelSheetHtml({ layout: 'price_card', items: [item({ count: 5 }), item({ name: 'Open', price_mode: 'open' })], showPrice: false, date });
-  assert.ok(h.includes('\u20B9120.00'));
+  assert.ok(h.includes('\u20B9120'));
   assert.ok(h.includes('Ask at the counter'));
   assert.strictEqual(count(h, /<div class="cell">/g), 2);
 });
@@ -70,6 +70,12 @@ test('price_hint is HTML-escaped', () => {
 test('fixed price 0 is treated as no price', () => {
   const h = buildLabelSheetHtml({ layout: 'stickers', items: [item({ price: 0 })], showPrice: true, date });
   assert.ok(!h.includes('0.00') && !h.includes('price on'));
+});
+
+test('rupees are grouped en-IN, whole rupees without decimals', () => {
+  const h = buildLabelSheetHtml({ layout: 'stickers', items: [item({ price: 1250.5 }), item({ price: 99 })], showPrice: true, date });
+  assert.ok(h.includes('\u20B91,250.50'));
+  assert.ok(h.includes('\u20B999<'));
 });
 
 let failed = 0;

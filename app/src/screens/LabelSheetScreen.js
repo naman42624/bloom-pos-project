@@ -73,15 +73,15 @@ export default function LabelSheetScreen({ route }) {
 
   const toggle = (id) => {
     const n = { ...counts };
-    if (n[id]) { delete n[id]; setCounts(n); setError(''); return; }
+    if (n[id] !== undefined) { delete n[id]; setCounts(n); setError(''); return; }
     if (Object.keys(n).length >= MAX_PRODUCTS) { setError(MSG_PRODUCTS); return; }
     n[id] = 1;
-    if (sumLabels(n) > MAX_LABELS) { setError(MSG_LABELS); return; }
+    if (!isCard && sumLabels(n) > MAX_LABELS) { setError(MSG_LABELS); return; }
     setCounts(n); setError('');
   };
   const setCount = (id, v) => {
     const n = { ...counts, [id]: v };
-    if (sumLabels(n) > MAX_LABELS) { setError(MSG_LABELS); return; }
+    if (!isCard && sumLabels(n) > MAX_LABELS) { setError(MSG_LABELS); return; }
     setCounts(n); setError('');
   };
   const step = (id, d) => setCount(id, numOf(counts[id]) + d < 1 ? 1 : Math.min(MAX_COUNT, numOf(counts[id]) + d));
@@ -91,7 +91,7 @@ export default function LabelSheetScreen({ route }) {
     const n = { ...counts };
     let hitCap = false;
     products.filter((p) => p.category === category).forEach((p) => {
-      if (n[p.id]) return;
+      if (n[p.id] !== undefined) return;
       if (Object.keys(n).length >= MAX_PRODUCTS) { hitCap = true; return; }
       n[p.id] = 1;
     });
@@ -164,7 +164,7 @@ export default function LabelSheetScreen({ route }) {
 
           {visible.length === 0 && <Text style={styles.msg}>No products match.</Text>}
           {visible.map((p) => {
-            const on = !!counts[p.id];
+            const on = counts[p.id] !== undefined;
             return (
               <View key={p.id} style={[styles.row, on && styles.rowOn]}>
                 <TouchableOpacity style={styles.rowMain} onPress={() => toggle(p.id)} accessibilityRole="checkbox" accessibilityState={{ checked: on }}>
