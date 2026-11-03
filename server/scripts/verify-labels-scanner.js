@@ -111,10 +111,90 @@ check('price_mode open saved', async () => {
   assert(bad.status === 400, `bad mode -> ${bad.status}`);
 });
 
+const scan = (token, payload, location_id) => api('POST', '/products/scan', token, { payload, location_id });
+const UNKNOWN = 'This isn\'t one of our product codes. Try Find by name.';
+
+check('legacy json payload resolves', async () => {
+  const owner = await loginOwner();
+  const id = await makeProduct('ScanLegacy', 120);
+  const r = await scan(owner.token, JSON.stringify({ type: 'bloomcart_product', id, name: 'x' }));
+  assert(r.status === 200 && r.body.data.id === id && r.body.data.selling_price === 120, JSON.stringify(r.body));
+});
+
+check('url payload resolves', async () => {
+  const owner = await loginOwner();
+  const db = await getDb();
+  const id = await makeProduct('ScanUrl');
+  const code = await ensureLabelCode(db, id);
+  const r = await scan(owner.token, labelUrl(code));
+  assert(r.status === 200 && r.body.data.id === id, JSON.stringify(r.body));
+  const other = await scan(owner.token, `https://example.org/p/${code}`);
+  assert(other.status === 200 && other.body.data.id === id, 'any host with exact path');
+});
+
+check('bare code resolves', async () => {
+  const owner = await loginOwner();
+  const db = await getDb();
+  const id = await makeProduct('ScanBare');
+  const code = await ensureLabelCode(db, id);
+  const r = await scan(owner.token, code.toLowerCase());
+  assert(r.status === 200 && r.body.data.id === id, JSON.stringify(r.body));
+});
+
+check('foreign url refused', async () => {
+  const owner = await loginOwner();
+  const db = await getDb();
+  const id = await makeProduct('ScanForeign');
+  const code = await ensureLabelCode(db, id);
+  for (const p of [`https://example.com/x/p/${code}`, `https://example.com/p/${code}/extra`, 'https://example.com/p/ABCDEFG', `https://example.com/p/${code}0`, 'hello', '{"type":"other","id":1}']) {
+    const r = await scan(owner.token, p);
+    assert(r.status === 400 && r.body.message === UNKNOWN, `${p} -> ${r.status} ${r.body.message}`);
+  }
+  const none = await scan(owner.token, 'AAAAAAAA');
+  assert(none.status === 404 && none.body.message === UNKNOWN, `unknown code -> ${none.status}`);
+});
+
+check('no estimated_cost in scan response', async () => {
+  const owner = await loginOwner();
+  const id = await makeProduct('ScanNoCost');
+  const db = await getDb();
+  await db.prepare('UPDATE products SET estimated_cost = 7731 WHERE id = ?').run(id);
+  await db.prepare('INSERT INTO product_options (product_id, label, price, sort_order, is_active) VALUES (?, ?, ?, 0, 1)').run(id, 'Small', 99);
+  const loc = await db.prepare('SELECT id FROM locations ORDER BY id LIMIT 1').get();
+  const r = await scan(owner.token, JSON.stringify({ type: 'bloomcart_product', id }), loc.id);
+  assert(r.status === 200, `status ${r.status}`);
+  const d = r.body.data;
+  assert(!('estimated_cost' in d) && !('materials' in d) && !('stock_quantity' in d) && !JSON.stringify(r.body).includes('7731'), JSON.stringify(d));
+  assert(typeof d.in_stock === 'boolean' && d.options.length === 1 && d.options[0].price === 99, JSON.stringify(d));
+});
+
+check('inactive product message', async () => {
+  const owner = await loginOwner();
+  const id = await makeProduct('ScanOff');
+  const db = await getDb();
+  await db.prepare('UPDATE products SET is_active = 0 WHERE id = ?').run(id);
+  const r = await scan(owner.token, JSON.stringify({ type: 'bloomcart_product', id }));
+  assert(r.status === 409 && r.body.message === 'Not for sale right now — ask the counter.', JSON.stringify(r.body));
+});
+
+check('one-off sold message', async () => {
+  const owner = await loginOwner();
+  const id = await makeProduct('ScanOneOff');
+  const db = await getDb();
+  await db.prepare('UPDATE products SET is_one_off = 1 WHERE id = ?').run(id);
+  const loc = await db.prepare('SELECT id FROM locations ORDER BY id LIMIT 1').get();
+  const sold = await scan(owner.token, JSON.stringify({ type: 'bloomcart_product', id }), loc.id);
+  assert(sold.status === 409 && sold.body.message === 'This one-off item is already sold. Check with the counter.', JSON.stringify(sold.body));
+  await db.prepare('INSERT INTO product_stock (product_id, location_id, quantity) VALUES (?, ?, 1)').run(id, loc.id);
+  const ok = await scan(owner.token, JSON.stringify({ type: 'bloomcart_product', id }), loc.id);
+  assert(ok.status === 200 && ok.body.data.in_stock === true, JSON.stringify(ok.body));
+});
+
 async function cleanup() {
   const db = await getDb();
   for (const id of createdProductIds) {
     try {
+      await db.prepare('DELETE FROM product_stock WHERE product_id = ?').run(id);
       await db.prepare('DELETE FROM product_options WHERE product_id = ?').run(id);
       await db.prepare('DELETE FROM products WHERE id = ?').run(id);
     } catch (err) { console.error(`   (cleanup warning: product ${id}: ${err.message})`); }

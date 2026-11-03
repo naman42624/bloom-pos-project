@@ -8,7 +8,7 @@ const fs = require('fs');
 const { getDb } = require('../config/database');
 const { getDb: getAsyncDb, withTransaction } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
-const { ensureLabelCode, labelUrl } = require('../utils/label-code');
+const { ensureLabelCode, labelUrl, ALPHABET, CODE_LENGTH } = require('../utils/label-code');
 
 const router = express.Router();
 
@@ -714,37 +714,82 @@ router.get('/:id/qr', authenticate, async (req, res, next) => {
 });
 
 // ─── POST /api/products/scan ─────────────────────────────────
-// Look up product by scanned QR payload
-router.post('/scan', authenticate, (req, res, next) => {
+// Selling-only lookup by scanned payload: legacy JSON, a /p/<code> URL, or a bare code.
+// Never returns cost, stock quantities, supplier or material data.
+const SCAN_UNKNOWN = 'This isn\'t one of our product codes. Try Find by name.';
+const SCAN_OFF = 'Not for sale right now — ask the counter.';
+const SCAN_SOLD = 'This one-off item is already sold. Check with the counter.';
+const SCAN_CODE_RE = new RegExp(`^[${ALPHABET}]{${CODE_LENGTH}}$`);
+
+// Returns { id } or { code } or null. Bare codes and URL codes are uppercased first.
+function parseScanPayload(raw) {
+  const text = String(raw || '').trim();
+  if (!text) return null;
+  if (text.startsWith('{')) {
+    try {
+      const j = JSON.parse(text);
+      const id = Number(j && j.id);
+      if (j && j.type === 'bloomcart_product' && Number.isInteger(id) && id > 0) return { id };
+    } catch { /* fall through */ }
+    return null;
+  }
+  if (/^https?:\/\//i.test(text)) {
+    let u;
+    try { u = new URL(text); } catch { return null; }
+    const m = u.pathname.match(/^\/p\/([^/]+)\/?$/);
+    if (!m) return null;
+    const code = m[1].toUpperCase();
+    return SCAN_CODE_RE.test(code) ? { code } : null;
+  }
+  const code = text.toUpperCase();
+  return SCAN_CODE_RE.test(code) ? { code } : null;
+}
+
+router.post('/scan', authenticate, async (req, res, next) => {
   try {
-    const { payload } = req.body;
-    if (!payload) return res.status(400).json({ success: false, message: 'No QR payload provided' });
+    const { payload } = req.body || {};
+    const unknown = (status) => res.status(status).json({ success: false, message: SCAN_UNKNOWN });
+    const parsed = parseScanPayload(payload);
+    if (!parsed) return unknown(400);
 
-    let parsed;
-    try { parsed = JSON.parse(payload); } catch { return res.status(400).json({ success: false, message: 'Invalid QR code' }); }
+    const db = await getAsyncDb();
+    const cols = 'id, name, image_url, selling_price, price_mode, price_hint, is_one_off, is_active';
+    const product = parsed.id
+      ? await db.prepare(`SELECT ${cols} FROM products WHERE id = ?`).get(parsed.id)
+      : await db.prepare(`SELECT ${cols} FROM products WHERE label_code = ?`).get(parsed.code);
+    if (!product) return unknown(404);
 
-    if (parsed.type !== 'bloomcart_product') {
-      return res.status(400).json({ success: false, message: 'Not a Flower point product QR code' });
+    if (!Number(product.is_active)) return res.status(409).json({ success: false, message: SCAN_OFF });
+
+    const locationId = Number(req.body.location_id) || null;
+    let inStock = false;
+    if (locationId) {
+      const st = await db.prepare('SELECT quantity FROM product_stock WHERE product_id = ? AND location_id = ?').get(product.id, locationId);
+      inStock = !!st && Number(st.quantity) > 0;
+    }
+    if (Number(product.is_one_off) === 1 && locationId && !inStock) {
+      return res.status(409).json({ success: false, message: SCAN_SOLD });
     }
 
-    const db = getDb();
-    const product = db.prepare(`
-      SELECT p.*, tr.name as tax_name, tr.percentage as tax_percentage
-      FROM products p LEFT JOIN tax_rates tr ON p.tax_rate_id = tr.id
-      WHERE p.id = ?
-    `).get(parsed.id);
+    const options = await db.prepare(
+      'SELECT id, label, price FROM product_options WHERE product_id = ? AND is_active = 1 ORDER BY sort_order, id'
+    ).all(product.id);
 
-    if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
-
-    product.materials = db.prepare(`
-      SELECT pm.*, m.name as material_name, mc.unit as unit
-      FROM product_materials pm
-      JOIN materials m ON pm.material_id = m.id
-      JOIN material_categories mc ON m.category_id = mc.id
-      WHERE pm.product_id = ?
-    `).all(product.id);
-
-    res.json({ success: true, data: product });
+    res.json({
+      success: true,
+      data: {
+        id: product.id,
+        name: product.name,
+        image_url: product.image_url || null,
+        selling_price: Number(product.selling_price) || 0,
+        price_mode: product.price_mode || 'fixed',
+        price_hint: product.price_hint || null,
+        is_one_off: Number(product.is_one_off) === 1 ? 1 : 0,
+        is_active: 1,
+        in_stock: inStock,
+        options: options.map((o) => ({ id: o.id, label: o.label, price: Number(o.price) })),
+      },
+    });
   } catch (err) { next(err); }
 });
 
