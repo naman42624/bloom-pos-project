@@ -26,9 +26,20 @@ export default function SoldByPicker({ locationId, value, onChange }) {
     return () => { alive = false; };
   }, [locationId, user?.id]);
 
+  // A pick that is not on this location's list (location changed) goes back to You,
+  // so the row never says "You" while sending someone else.
+  useEffect(() => {
+    if (value != null && !staff.some((s) => s.id === value)) onChange(null);
+  }, [staff, value]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const firstName = (n) => String(n || '').trim().split(/\s+/)[0] || 'Staff';
+  // Two people with the same first name get their full names.
+  const shortName = (n) => {
+    const f = firstName(n);
+    return staff.filter((s) => firstName(s.name) === f).length > 1 ? String(n).trim() : f;
+  };
   const picked = value == null ? null : staff.find((s) => s.id === value);
-  const label = picked ? firstName(picked.name) : 'You';
+  const label = picked ? shortName(picked.name) : 'You';
 
   if (staff.length === 0 && value == null) return null;
 
@@ -63,7 +74,7 @@ export default function SoldByPicker({ locationId, value, onChange }) {
               accessibilityRole="button"
               accessibilityState={{ selected: value === s.id }}
             >
-              <Text style={[styles.chipText, value === s.id && styles.chipTextActive]}>{firstName(s.name)}</Text>
+              <Text style={[styles.chipText, value === s.id && styles.chipTextActive]}>{shortName(s.name)}</Text>
             </TouchableOpacity>
           ))}
         </View>
