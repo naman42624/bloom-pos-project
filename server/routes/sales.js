@@ -833,8 +833,26 @@ router.put(
       const expectedCash = register.opening_balance + paymentTotals.cash_total - refundTotal - expenseTotal;
       const discrepancy = expectedCash - actual_cash;
 
+      // Blind count: once a close has offered to book extra cash, the count is
+      // fixed for staff, so trying other numbers cannot reveal the expected
+      // amount. Owner and manager may close with a corrected count.
+      const isPreview = req.body.preview === true || req.body.preview === 'true';
+      const lockedCount = register.close_count_locked == null ? null : Number(register.close_count_locked);
+      const canOverrideCount = req.user.role === 'owner' || req.user.role === 'manager';
+      if (lockedCount != null && !canOverrideCount && Math.abs(lockedCount - Number(actual_cash)) >= 0.005) {
+        return res.status(409).json({
+          success: false,
+          code: 'COUNT_LOCKED',
+          locked_cash: lockedCount,
+          message: 'You already counted ₹' + lockedCount.toLocaleString('en-IN', { maximumFractionDigits: 2 }) + ' in the drawer. Close with that amount, or ask a manager to close the register.',
+        });
+      }
+      if (isPreview && lockedCount == null && -discrepancy >= 1) {
+        db.prepare('UPDATE cash_registers SET close_count_locked = ? WHERE id = ? AND close_count_locked IS NULL').run(Number(actual_cash), register.id);
+      }
+
       // Preview: report what a close would record, without closing anything.
-      if (req.body.preview === true || req.body.preview === 'true') {
+      if (isPreview) {
         // Same unsettled delivery cash the register status banner shows.
         let pendingCod = 0;
         try {
@@ -850,7 +868,7 @@ router.put(
           pendingCod = Math.round(Number(codRow?.total || 0) * 100) / 100;
         } catch (_) { /* non-critical, preview still answers */ }
 
-        // Every preview leaves a trail; it never changes the register.
+        // Every preview leaves a trail; apart from the count lock above it never changes the register.
         try {
           db.prepare(`
             INSERT INTO audit_logs (entity_type, entity_id, user_id, action, previous_state, new_state, created_at)

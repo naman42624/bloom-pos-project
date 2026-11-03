@@ -322,7 +322,7 @@ check('owner tiles resolve current price and drop inactive products', async () =
   assert(d.tiles[1].key === 'l2' && d.tiles[1].type === 'label' && d.tiles[1].product_id === null && d.tiles[1].price === 300, `tile1: ${JSON.stringify(d.tiles[1])}`);
 });
 
-check('preview writes nothing', async () => {
+check('preview writes nothing but the count lock', async () => {
   const owner = await loginOwner();
   const reg = await openRegister(owner.token, TEST_LOCATION_ID, 100);
   const sale = await quickSale(owner.token, { amount: 200, method: 'cash', label: 'Preview probe' });
@@ -333,7 +333,65 @@ check('preview writes nothing', async () => {
   assert(status === 200 && body.data?.preview === true, `preview ${status} ${JSON.stringify(body)}`);
   assert(Number(body.data.expected_cash) === 300 && Number(body.data.discrepancy) === -200 && Number(body.data.actual_cash) === 500, `got ${JSON.stringify(body.data)}`);
   const after = await db.prepare('SELECT * FROM cash_registers WHERE id = ?').get(reg.id);
-  assert(after.closed_at === null && JSON.stringify(after) === JSON.stringify(before), 'register row changed or closed by preview');
+  assert(after.closed_at === null, 'register closed by preview');
+  assert(Number(after.close_count_locked) === 500, `lock ${after.close_count_locked}`);
+  const { close_count_locked: _a, ...afterRest } = after;
+  const { close_count_locked: _b, ...beforeRest } = before;
+  assert(JSON.stringify(afterRest) === JSON.stringify(beforeRest), 'register row changed by preview beyond the count lock');
+});
+
+const createdUserIds = [];
+let staffCounter = 0;
+async function createCounterStaff(ownerToken) {
+  staffCounter += 1;
+  const phone = '9' + String(Date.now()).slice(-8) + String(staffCounter % 10);
+  const { status, body } = await api('POST', '/users', ownerToken, {
+    name: `QuickSaleTest staff ${staffCounter}`, phone, password: 'testpass123', role: 'counter_staff', location_ids: [TEST_LOCATION_ID],
+  });
+  if (status !== 201 && status !== 200) throw new Error(`Could not create test staff: ${status} ${JSON.stringify(body)}`);
+  const id = body.data.id || body.data.user?.id;
+  createdUserIds.push(id);
+  const login = await api('POST', '/auth/login', null, { phone, password: 'testpass123' });
+  if (login.status !== 200) throw new Error(`staff login ${login.status}`);
+  return { token: login.body.data.token, id };
+}
+
+check('staff count is locked once extra cash is offered', async () => {
+  const owner = await loginOwner();
+  const staff = await createCounterStaff(owner.token);
+  const reg = await openRegister(owner.token, TEST_LOCATION_ID, 100);
+  const close = (token, cash, preview) => api('PUT', '/sales/register/close', token, { location_id: TEST_LOCATION_ID, actual_cash: cash, ...(preview ? { preview: true } : {}) });
+  // A shortage preview offers nothing and locks nothing.
+  const short = await close(staff.token, 50, true);
+  assert(short.status === 200, `short preview ${short.status}`);
+  const db = await getDb();
+  assert((await db.prepare('SELECT close_count_locked FROM cash_registers WHERE id = ?').get(reg.id)).close_count_locked === null, 'shortage locked the count');
+  // An excess preview locks the count.
+  const over = await close(staff.token, 400, true);
+  assert(over.status === 200 && Number(over.body.data.discrepancy) === -300, `over preview ${over.status} ${JSON.stringify(over.body)}`);
+  // Another number is refused, for preview and for close.
+  const retry = await close(staff.token, 120, true);
+  assert(retry.status === 409 && retry.body.code === 'COUNT_LOCKED' && Number(retry.body.locked_cash) === 400, `retry ${retry.status} ${JSON.stringify(retry.body)}`);
+  assert(/already counted/.test(retry.body.message), `message ${retry.body.message}`);
+  const closeOther = await close(staff.token, 100, false);
+  assert(closeOther.status === 409, `close other ${closeOther.status}`);
+  const stillOpen = await db.prepare('SELECT closed_at FROM cash_registers WHERE id = ?').get(reg.id);
+  assert(stillOpen.closed_at === null, 'refused close still closed the register');
+  // The same number closes.
+  const closed = await close(staff.token, 400, false);
+  assert(closed.status === 200 && Number(closed.body.data.discrepancy) === -300, `close same ${closed.status} ${JSON.stringify(closed.body)}`);
+});
+
+check('owner may close with a corrected count after the lock', async () => {
+  const owner = await loginOwner();
+  const reg = await openRegister(owner.token, TEST_LOCATION_ID, 100);
+  const over = await api('PUT', '/sales/register/close', owner.token, { location_id: TEST_LOCATION_ID, actual_cash: 1000, preview: true });
+  assert(over.status === 200, `preview ${over.status}`);
+  const closed = await h.closeRegisterWith(owner.token, TEST_LOCATION_ID, 100);
+  assert(Number(closed.discrepancy) === 0, `discrepancy ${closed.discrepancy}`);
+  const db = await getDb();
+  const row = await db.prepare('SELECT close_count_locked FROM cash_registers WHERE id = ?').get(reg.id);
+  assert(Number(row.close_count_locked) === 1000, 'lock value should stay as the record of the first count');
 });
 
 check('top-up then close gives zero discrepancy', async () => {
@@ -442,7 +500,16 @@ async function cleanup() {
       console.error(`   (cleanup warning: product ${id}: ${err.message})`);
     }
   }
-  console.log(`Cleaned up ${createdSaleIds.length} test sale(s) and ${createdProductIds.length} test product(s)`);
+  for (const id of createdUserIds) {
+    try {
+      await db.prepare('DELETE FROM audit_logs WHERE user_id = ?').run(id);
+      await db.prepare('DELETE FROM user_locations WHERE user_id = ?').run(id);
+      await db.prepare('DELETE FROM users WHERE id = ?').run(id);
+    } catch (err) {
+      console.error(`   (cleanup warning: user ${id}: ${err.message})`);
+    }
+  }
+  console.log(`Cleaned up ${createdSaleIds.length} test sale(s), ${createdProductIds.length} test product(s) and ${createdUserIds.length} test user(s)`);
 }
 
 h.run({ cleanup });

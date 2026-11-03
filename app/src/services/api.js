@@ -67,6 +67,8 @@ class ApiService {
           status: response.status,
           message: data.message || 'Something went wrong',
           errors: data.errors,
+          code: data.code,
+          body: data,
         };
       }
 

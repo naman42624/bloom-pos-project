@@ -948,6 +948,8 @@ function ensureCompatibilityColumns() {
   ensureColumn('cash_registers', 'total_card_sales', 'DECIMAL(10,2) DEFAULT 0');
   ensureColumn('cash_registers', 'total_upi_sales', 'DECIMAL(10,2) DEFAULT 0');
   ensureColumn('cash_registers', 'total_refunds_cash', 'DECIMAL(10,2) DEFAULT 0');
+  // Counted cash fixed once the close offers to book extra cash (blind count).
+  ensureColumn('cash_registers', 'close_count_locked', 'DECIMAL(10,2)');
   runPsql('CREATE INDEX IF NOT EXISTS idx_cash_registers_location_date ON cash_registers(location_id, date)');
 
   ensureColumn('salary_advances', 'repaid_amount', 'DECIMAL(10,2) DEFAULT 0');

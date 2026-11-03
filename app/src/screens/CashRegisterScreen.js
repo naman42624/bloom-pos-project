@@ -267,6 +267,16 @@ export default function CashRegisterScreen({ navigation, route }) {
   // Rs 1 more than expected, show the top-up panel; otherwise the usual confirm.
   const rupees = (n) => '₹' + Number(n).toLocaleString('en-IN', { maximumFractionDigits: 2 });
 
+  // Server refused because the count was already fixed by an earlier offer.
+  const handleCountLocked = (err) => {
+    if (!(err && err.status === 409 && err.code === 'COUNT_LOCKED')) return false;
+    const locked = err.body && err.body.locked_cash;
+    dropTopup();
+    if (locked != null) setActualCash(String(locked));
+    showAlert('Count already entered', err.message || 'The cash count was already entered. Close with that amount.');
+    return true;
+  };
+
   const doClose = async (cash, locationId = selectedLocation) => {
     if (closingRef.current) return;
     closingRef.current = true;
@@ -290,7 +300,9 @@ export default function CashRegisterScreen({ navigation, route }) {
         showAlert('Could not close', res.message || 'The register did not close. Please tap Close Register again.');
       }
     } catch (err) {
-      if (err && (err.status === 404 || /not open|no open|open register/i.test(err.message || ''))) {
+      if (handleCountLocked(err)) {
+        // message shown, count put back
+      } else if (err && (err.status === 404 || /not open|no open|open register/i.test(err.message || ''))) {
         dropTopup();
         fetchStatus(locationId);
         showAlert('Could not close', err.message || 'This register is no longer open.');
@@ -310,7 +322,10 @@ export default function CashRegisterScreen({ navigation, route }) {
     try {
       const res = await api.previewRegisterClose({ location_id: selectedLocation, actual_cash: cash });
       if (res && res.success && res.data) preview = res.data;
-    } catch (e) { /* preview is a nicety, closing must never wait on it */ }
+    } catch (e) {
+      // preview is a nicety, closing must never wait on it, except a locked count
+      if (handleCountLocked(e)) { setSubmitting(false); return; }
+    }
     setSubmitting(false);
 
     const excess = preview ? Math.round(-Number(preview.discrepancy) * 100) / 100 : 0;
@@ -571,6 +586,7 @@ export default function CashRegisterScreen({ navigation, route }) {
                 style={styles.inputLarge}
                 value={actualCash}
                 onChangeText={(t) => { setActualCash(t); dropTopup(); }}
+                editable={!(topup && !canManage)}
                 placeholder="0.00"
                 placeholderTextColor={Colors.textLight}
                 keyboardType="numeric"
@@ -589,6 +605,9 @@ export default function CashRegisterScreen({ navigation, route }) {
             
             {topup ? (
               <View style={styles.topupPanel}>
+                {!canManage ? (
+                  <Text style={styles.topupNote}>Your count of {rupees(topup.cash)} is saved and cannot be changed now.</Text>
+                ) : null}
                 <Text style={styles.topupText}>{rupees(topup.excess)} more than recorded.{topup.bookable >= 1 ? (topup.pendingCod > 0 ? ` Book the other ${rupees(topup.bookable)} as unrecorded sales?` : ' Book it as unrecorded sales?') : ''}</Text>
                 {topup.pendingCod > 0 ? (
                   <View>
