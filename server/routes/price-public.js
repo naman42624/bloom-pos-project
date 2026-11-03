@@ -59,7 +59,7 @@ router.get('/:code', async (req, res, next) => {
         shop_name: (shop && shop.value) || 'Our shop',
         name: p.name,
         image_url: p.image_url || null,
-        price: isOpen ? null : Number(p.selling_price),
+        price: isOpen || p.selling_price == null ? null : Number(p.selling_price),
         price_mode: isOpen ? 'open' : 'fixed',
         price_hint: p.price_hint || null,
         options: opts.map((o) => ({ label: o.label, price: Number(o.price) })),
@@ -67,7 +67,9 @@ router.get('/:code', async (req, res, next) => {
       },
     });
   } catch (error) {
-    next(error);
+    // Public route: never send internal error details to a customer.
+    console.error('public price lookup failed:', error.message);
+    res.status(500).json({ success: false, message: 'Something went wrong — please ask at the counter.' });
   }
 });
 
