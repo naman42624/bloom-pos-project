@@ -190,6 +190,64 @@ check('one-off sold message', async () => {
   assert(ok.status === 200 && ok.body.data.in_stock === true, JSON.stringify(ok.body));
 });
 
+// ---- Public price page (no auth). Rate-limit check MUST stay last: it uses up this IP's budget. ----
+const PUBLIC_BASE = process.env.API_BASE_URL || 'http://localhost:3001/api';
+async function pub(code) {
+  const res = await fetch(`${PUBLIC_BASE}/price/${code}`);
+  return { status: res.status, body: await res.json().catch(() => ({})) };
+}
+const NOT_FOUND_COPY = "We couldn't find this item — please ask at the counter.";
+
+check('public price works without auth', async () => {
+  const db = await getDb();
+  const id = await makeProduct('PubPrice', 250);
+  const code = await ensureLabelCode(db, id);
+  await db.prepare('INSERT INTO product_options (product_id, label, price, sort_order, is_active) VALUES (?, ?, 300, 2, 1)').run(id, 'Large');
+  await db.prepare('INSERT INTO product_options (product_id, label, price, sort_order, is_active) VALUES (?, ?, 100, 1, 1)').run(id, 'Small');
+  await db.prepare('INSERT INTO product_options (product_id, label, price, sort_order, is_active) VALUES (?, ?, 999, 3, 0)').run(id, 'Hidden');
+  const r = await pub(code);
+  const d = r.body.data;
+  assert(r.status === 200 && r.body.success && d.price === 250 && d.price_mode === 'fixed' && d.available === true, JSON.stringify(r.body));
+  assert(d.options.length === 2 && d.options[0].label === 'Small' && d.options[1].label === 'Large', JSON.stringify(d.options));
+  assert(typeof d.shop_name === 'string' && d.shop_name.length > 0, 'shop_name');
+});
+
+check('public price hides cost and stock', async () => {
+  const db = await getDb();
+  const id = await makeProduct('PubHide');
+  await db.prepare('UPDATE products SET estimated_cost = 7731 WHERE id = ?').run(id);
+  const code = await ensureLabelCode(db, id);
+  const r = await pub(code);
+  const keys = Object.keys(r.body.data).sort().join(',');
+  assert(keys === 'available,image_url,name,options,price,price_hint,price_mode,shop_name', keys);
+  assert(!JSON.stringify(r.body).includes('7731') && !/estimated_cost|quantity|stock|supplier|material/i.test(JSON.stringify(r.body)), JSON.stringify(r.body));
+});
+
+check('public price: sold one-off and inactive', async () => {
+  const db = await getDb();
+  const id = await makeProduct('PubOneOff');
+  await db.prepare('UPDATE products SET is_one_off = 1 WHERE id = ?').run(id);
+  const code = await ensureLabelCode(db, id);
+  const r = await pub(code);
+  assert(r.status === 200 && r.body.data.available === false, JSON.stringify(r.body));
+  await db.prepare('UPDATE products SET is_active = 0 WHERE id = ?').run(id);
+  const r2 = await pub(code);
+  assert(r2.status === 404 && r2.body.message === NOT_FOUND_COPY, JSON.stringify(r2.body));
+});
+
+check('unknown code 404 copy', async () => {
+  for (const c of ['ZZZZZZZZ', 'bad', 'ABCDEFG0']) {
+    const r = await pub(c);
+    assert(r.status === 404 && r.body.success === false && r.body.message === NOT_FOUND_COPY, `${c}: ${JSON.stringify(r.body)}`);
+  }
+});
+
+check('rate limited', async () => {
+  let last;
+  for (let i = 0; i < 31; i++) last = await pub('ZZZZZZZZ');
+  assert(last.status === 429 && last.body.message === 'Too many requests — please try again in a minute.', JSON.stringify(last));
+});
+
 async function cleanup() {
   const db = await getDb();
   for (const id of createdProductIds) {

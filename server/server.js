@@ -25,6 +25,7 @@ const orderRequestsRoutes = require('./routes/order-requests');
 const productionRoutes = require('./routes/production');
 const deliveriesRoutes = require('./routes/deliveries');
 const trackRoutes = require('./routes/track');
+const pricePublicRoutes = require('./routes/price-public');
 const slipPublicRoutes = require('./routes/slip-public');
 const orderRequestPublicRoutes = require('./routes/order-request-public');
 const deliveryRoutesRoutes = require('./routes/delivery-routes');
@@ -98,6 +99,8 @@ app.use('/api/deliveries', deliveriesRoutes);
 // No `authenticate` middleware — this is the app's first public route.
 // See server/routes/track.js and server/utils/tracking-token.js.
 app.use('/api/track', trackRoutes);
+// Public price page data (label QR). Own rate limiter, no auth.
+app.use('/api/price', pricePublicRoutes);
 // No `authenticate` middleware: public slip QR scan page. Own 60/min
 // limiter (see server/routes/slip-public.js), not shared with track's.
 app.use('/api/slip', slipPublicRoutes);
