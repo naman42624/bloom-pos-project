@@ -4,15 +4,32 @@
 
 let audioCtx = null;
 
+function getAudioContext() {
+  if (audioCtx) return audioCtx;
+  const Ctx = typeof window !== 'undefined' && (window.AudioContext || window.webkitAudioContext);
+  if (!Ctx) return null;
+  try { audioCtx = new Ctx(); } catch (e) { audioCtx = null; }
+  return audioCtx;
+}
+
+// iPhone Safari keeps an AudioContext suspended until it is resumed inside a
+// user gesture, and iPhone has no navigator.vibrate - without this, iPhone
+// scans give no feedback at all. Call from a tap (pointerdown/touchend, the
+// Try again button). Safe to call any number of times.
+export function unlockAudio() {
+  try {
+    const ctx = getAudioContext();
+    if (ctx && ctx.state !== 'running') ctx.resume().catch(() => {});
+  } catch (e) { /* audio not available */ }
+}
+
 export function playAcceptFeedback() {
   try {
     if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') navigator.vibrate(60);
   } catch (e) { /* not supported */ }
   try {
-    const Ctx = typeof window !== 'undefined' && (window.AudioContext || window.webkitAudioContext);
-    if (!Ctx) return;
-    if (!audioCtx) audioCtx = new Ctx();
-    if (audioCtx.state === 'suspended') audioCtx.resume();
+    if (!getAudioContext()) return;
+    if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
     const osc = audioCtx.createOscillator();
     const gain = audioCtx.createGain();
     osc.type = 'sine';

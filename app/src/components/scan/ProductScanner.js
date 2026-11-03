@@ -13,7 +13,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { View, StyleSheet } from 'react-native';
 import jsQR from 'jsqr';
 import { createScanCooldown, cameraErrorKind, SCANNER_COPY } from './scanCooldown';
-import { playAcceptFeedback } from './scanFeedback';
+import { playAcceptFeedback, unlockAudio } from './scanFeedback';
 import ScannerMessage from './ScannerMessage';
 import ScannerFrame from './ScannerFrame';
 import { Colors } from '../../constants/theme';
@@ -61,6 +61,26 @@ export default function ProductScanner({ onCode, paused = false, children, style
   const [attempt, setAttempt] = useState(0);
   const [torchAvailable, setTorchAvailable] = useState(false);
   const [torchOn, setTorchOn] = useState(false);
+  const mountedRef = useRef(true);
+
+  // One-time audio unlock on the first tap anywhere (iPhone Safari needs a
+  // user gesture before the accept beep can play).
+  useEffect(() => {
+    mountedRef.current = true;
+    if (typeof window === 'undefined') return () => { mountedRef.current = false; };
+    const onGesture = () => {
+      unlockAudio();
+      window.removeEventListener('pointerdown', onGesture, true);
+      window.removeEventListener('touchend', onGesture, true);
+    };
+    window.addEventListener('pointerdown', onGesture, true);
+    window.addEventListener('touchend', onGesture, true);
+    return () => {
+      mountedRef.current = false;
+      window.removeEventListener('pointerdown', onGesture, true);
+      window.removeEventListener('touchend', onGesture, true);
+    };
+  }, []);
 
   useEffect(() => {
     if (paused) return undefined;
@@ -149,7 +169,7 @@ export default function ProductScanner({ onCode, paused = false, children, style
       if (cancelled) { stopStream(stream); return; }
 
       const video = videoRef.current;
-      if (!video) { stopStream(stream); return; }
+      if (!video) { stopStream(stream); setStatus('failed'); return; }
       video.muted = true;
       video.setAttribute('playsinline', 'true'); // iPhone Safari: no full-screen takeover
       video.srcObject = stream;
@@ -190,13 +210,17 @@ export default function ProductScanner({ onCode, paused = false, children, style
     const next = !torchOn;
     try {
       await track.applyConstraints({ advanced: [{ torch: next }] });
-      setTorchOn(next);
+      if (mountedRef.current) setTorchOn(next);
     } catch (e) {
-      setTorchAvailable(false);
+      if (mountedRef.current) setTorchAvailable(false);
     }
   };
 
-  const retry = () => setAttempt((n) => n + 1);
+  const retry = () => {
+    unlockAudio();
+    setStatus('starting');
+    setAttempt((n) => n + 1);
+  };
   const failed = status !== 'starting' && status !== 'running';
 
   return (

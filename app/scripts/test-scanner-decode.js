@@ -133,7 +133,8 @@ test('camera error mapping + exact blocked copy', () => {
   assert.strictEqual(cd.cameraErrorKind(new Error('x')), 'failed');
   assert.strictEqual(cd.SCANNER_COPY.blocked,
     'Camera is blocked. Tap the \u{1F512} next to the web address → Camera → Allow, then tap Try again.');
-  assert.strictEqual(cd.SCANNER_COPY.noCamera, 'No camera found on this device. Use Find by name instead.');
+  assert.strictEqual(cd.SCANNER_COPY.noCamera, 'No camera found on this device. Go back and search for the item by name.');
+  assert.strictEqual(cd.SCANNER_COPY.unsupported, 'This browser cannot open the camera here. Go back and search for the item by name.');
 });
 
 let failed = 0;

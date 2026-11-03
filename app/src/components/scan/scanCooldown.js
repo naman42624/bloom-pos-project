@@ -42,9 +42,9 @@ export function createScanCooldown(ms = SCAN_COOLDOWN_MS, now = () => Date.now()
 export const SCANNER_COPY = {
   blocked: 'Camera is blocked. Tap the \u{1F512} next to the web address → Camera → Allow, then tap Try again.',
   blockedNative: 'Camera is blocked. Allow the camera for this app in your phone Settings, then tap Try again.',
-  noCamera: 'No camera found on this device. Use Find by name instead.',
+  noCamera: 'No camera found on this device. Go back and search for the item by name.',
   busy: 'The camera is being used by another app or tab. Close it, then tap Try again.',
-  unsupported: 'This browser cannot open the camera here. Use Find by name instead.',
+  unsupported: 'This browser cannot open the camera here. Go back and search for the item by name.',
   failed: 'The camera did not start. Tap Try again.',
   starting: 'Starting the camera…',
   hint: 'Point the camera at the QR code on the label',

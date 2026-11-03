@@ -5,3 +5,6 @@ import { Vibration } from 'react-native';
 export function playAcceptFeedback() {
   try { Vibration.vibrate(60); } catch (e) { /* not supported */ }
 }
+
+// Web needs a tap to unlock audio; native has nothing to unlock.
+export function unlockAudio() {}

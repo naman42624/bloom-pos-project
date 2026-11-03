@@ -34,8 +34,8 @@ The window **slides**: each sighting of the same code restarts the 1.5 s timer. 
 | Safari on iPhone / iPad (every iOS browser is WebKit) | No | jsQR |
 | Firefox (desktop and Android) | No | jsQR |
 
-- **The camera needs a secure origin.** On plain `http://` (except `localhost`), `navigator.mediaDevices` is undefined. The scanner then shows "This browser cannot open the camera here. Use Find by name instead." That is why the phone test needs an HTTPS tunnel.
-- iPhone Safari has no `navigator.vibrate`. There the accept is signalled by the beep only, and audio can stay muted until the page has been tapped once.
+- **The camera needs a secure origin.** On plain `http://` (except `localhost`), `navigator.mediaDevices` is undefined. The scanner then shows "This browser cannot open the camera here. Go back and search for the item by name." That is why the phone test needs an HTTPS tunnel.
+- iPhone Safari has no `navigator.vibrate`. There the accept is signalled by the beep only. Safari keeps an AudioContext suspended until it is resumed inside a tap, so the scanner unlocks audio on the first `pointerdown`/`touchend` anywhere on the page, and again on Try again (`unlockAudio()` in `scanFeedback.js`).
 - Torch support through `getCapabilities().torch` is Chrome-on-Android only in practice. Safari and desktop webcams do not report it, so they show no torch button.
 
 ## Camera states and copy
@@ -43,10 +43,10 @@ The window **slides**: each sighting of the same code restarts the 1.5 s timer. 
 | State | Copy | Button |
 |---|---|---|
 | Permission denied (`NotAllowedError` / `SecurityError`) | `Camera is blocked. Tap the 🔒 next to the web address → Camera → Allow, then tap Try again.` (exact, spec §13) | Try again (re-requests the camera) |
-| No camera (`NotFoundError` / `OverconstrainedError`) | `No camera found on this device. Use Find by name instead.` | Try again |
+| No camera (`NotFoundError` / `OverconstrainedError`) | `No camera found on this device. Go back and search for the item by name.` | Try again |
 | Camera in use (`NotReadableError`) | `The camera is being used by another app or tab. Close it, then tap Try again.` | Try again |
 | Any other start failure | `The camera did not start. Tap Try again.` | Try again |
-| No `getUserMedia` / not https | `This browser cannot open the camera here. Use Find by name instead.` | none |
+| No `getUserMedia` / not https | `This browser cannot open the camera here. Go back and search for the item by name.` | none |
 | Native: permission refused | `Camera is blocked. Allow the camera for this app in your phone Settings, then tap Try again.` | Try again (re-asks; opens phone Settings when the system will not ask again) |
 
 ## Evidence produced here
@@ -74,4 +74,5 @@ Nothing in this log has been run against a real camera, on desktop or on a phone
 4. Deny the camera, check the exact blocked copy appears, allow it from the 🔒 menu, then tap Try again and check the camera starts.
 5. Android Chrome: check the Light button appears and switches the torch.
 6. Small stickers (A4 3 × 8) at a normal hand distance: if jsQR misses them on iPhone, raise `MAX_DECODE_WIDTH` in `ProductScanner.js`.
-7. Native app build (expo-camera path): not tested at all in this pass.
+7. iPhone audio: open the scanner, tap the screen once, scan a label and check the beep is heard. Also check whether a scan with no tap at all is silent, which is expected; the team needs to know staff must touch the screen once.
+8. Native app build (expo-camera path): not tested at all in this pass.
