@@ -1,29 +1,33 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { View, Text, StyleSheet, FlatList, TouchableOpacity, ActivityIndicator, RefreshControl } from 'react-native';
 import api from '../services/api';
+import { useAuth } from '../context/AuthContext';
 import { Colors, Spacing, FontSize, BorderRadius, TouchTarget } from '../constants/theme';
 import { money } from '../utils/staffSalesFormat';
 
 export default function StaffSalesPersonScreen({ route, navigation }) {
   const { userId, from, to, locationId } = route.params;
+  const { user } = useAuth();
+  const reqId = useRef(0);
   const [sales, setSales] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState(false);
 
   const load = useCallback(async (isRefresh) => {
+    const id = ++reqId.current;
     if (isRefresh) setRefreshing(true); else setLoading(true);
     setError(false);
     try {
       const params = { from, to };
       if (locationId) params.location_id = locationId;
       const res = await api.getStaffSalesFor(userId, params);
+      if (id !== reqId.current) return;
       setSales(res.data || []);
     } catch (e) {
-      setError(true);
+      if (id === reqId.current) setError(true);
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      if (id === reqId.current) { setLoading(false); setRefreshing(false); }
     }
   }, [userId, from, to, locationId]);
 
@@ -35,6 +39,7 @@ export default function StaffSalesPersonScreen({ route, navigation }) {
     return d.toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
   };
 
+  if (user?.role !== 'owner') return null;
   if (loading) return <ActivityIndicator size="large" color={Colors.primary} style={{ marginTop: Spacing.xl }} />;
 
   return (

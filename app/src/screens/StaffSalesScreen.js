@@ -1,6 +1,7 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, RefreshControl } from 'react-native';
 import api from '../services/api';
+import { useAuth } from '../context/AuthContext';
 import DateTimePickerModal from '../components/DateTimePickerModal';
 import { Colors, Spacing, FontSize, BorderRadius, TouchTarget } from '../constants/theme';
 import { money, dayStr, periodRange } from '../utils/staffSalesFormat';
@@ -28,6 +29,9 @@ function Line({ label, value, bold }) {
 }
 
 export default function StaffSalesScreen({ navigation }) {
+  const { user } = useAuth();
+  const reqId = useRef(0);
+  const [pickerValue, setPickerValue] = useState(() => new Date());
   const [period, setPeriod] = useState('today');
   const [custom, setCustom] = useState(null); // { from, to }
   const [picking, setPicking] = useState(null); // null | 'from' | 'to'
@@ -45,22 +49,23 @@ export default function StaffSalesScreen({ navigation }) {
   );
 
   useEffect(() => {
-    api.getLocations().then(r => setLocations(r.data?.locations || [])).catch(() => {});
+    api.getLocations().then(r => setLocations((r.data?.locations || []).filter(l => l.type === 'shop' && l.is_active))).catch(() => {});
   }, []);
 
   const load = useCallback(async (isRefresh) => {
+    const id = ++reqId.current;
     if (isRefresh) setRefreshing(true); else setLoading(true);
     setError(false);
     try {
       const params = { from: range.from, to: range.to };
       if (locationId) params.location_id = locationId;
       const res = await api.getStaffSales(params);
+      if (id !== reqId.current) return;
       setRows(res.data?.rows || []);
     } catch (e) {
-      setError(true);
+      if (id === reqId.current) setError(true);
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      if (id === reqId.current) { setLoading(false); setRefreshing(false); }
     }
   }, [range, locationId]);
 
@@ -91,6 +96,8 @@ export default function StaffSalesScreen({ navigation }) {
       <Text style={[styles.chipText, active && styles.chipTextActive]}>{label}</Text>
     </TouchableOpacity>
   );
+
+  if (user?.role !== 'owner') return null;
 
   const rangeLabel = range.from === range.to ? range.from : `${range.from} to ${range.to}`;
 
@@ -140,16 +147,16 @@ export default function StaffSalesScreen({ navigation }) {
                 <Text style={styles.role}>{ROLE_LABEL[r.role] || r.role}</Text>
                 {(r.is_active === false || r.is_active === 0) && <Text style={styles.tag}>No longer on the team</Text>}
               </View>
-              <Line label="Orders" value={String(r.orders)} />
-              <Line label="Amount" value={money(r.amount)} />
-              <Line label="Refunds" value={money(r.refunds)} />
-              <Line label="Net" value={money(r.net)} bold />
+              <Line label="Orders" value={String(r.orders ?? 0)} />
+              <Line label="Amount" value={money(r.amount ?? 0)} />
+              <Line label="Refunds" value={money(r.refunds ?? 0)} />
+              <Line label="Net" value={money(r.net ?? 0)} bold />
               <Line
                 label="Discounts"
-                value={`${r.discount_count} · ${money(r.discount_total)} · ${r.override_count} needed approval`}
+                value={`${r.discount_count ?? 0} · ${money(r.discount_total ?? 0)} · ${r.override_count ?? 0} needed approval`}
               />
-              <Line label="Undone" value={`${r.undone_count} · ${money(r.undone_total)}`} />
-              <Line label="Booked at close" value={`${r.topup_count} · ${money(r.topup_total)}`} />
+              <Line label="Undone" value={`${r.undone_count ?? 0} · ${money(r.undone_total ?? 0)}`} />
+              <Line label="Booked at close" value={`${r.topup_count ?? 0} · ${money(r.topup_total ?? 0)}`} />
               <Text style={styles.more}>See their sales ›</Text>
             </TouchableOpacity>
           ))
@@ -159,7 +166,7 @@ export default function StaffSalesScreen({ navigation }) {
       <DateTimePickerModal
         visible={!!picking}
         mode="date"
-        value={picking === 'to' ? (pendingFrom || new Date()) : new Date()}
+        value={picking === 'to' ? (pendingFrom || pickerValue) : pickerValue}
         title={picking === 'to' ? 'To which day?' : 'From which day?'}
         onCancel={() => setPicking(null)}
         onConfirm={onPicked}

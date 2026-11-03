@@ -1,5 +1,5 @@
 // Shared helpers for the owner Staff sales screens.
-export const money = (n) => '₹' + Math.round(Number(n) || 0).toLocaleString('en-IN');
+export const money = (n) => '₹' + (Number(n) || 0).toLocaleString('en-IN', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
 
 const pad = (n) => String(n).padStart(2, '0');
 // Local-day string built from local date parts (never toISOString, which is UTC).
