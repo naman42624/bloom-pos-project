@@ -220,6 +220,7 @@ export default function ProduceScreen({ navigation }) {
         const res = await api.getLabels([lastMade.id]);
         rows = res?.data || [];
       } catch (e) {
+        if (e && e.status === 409 && e.message) throw new Error(e.message);
         throw new Error('Could not make the tag. Check the connection and tap Print tag again.');
       }
       if (!rows.length) throw new Error('This item could not be found. Refresh and tap Print tag again.');

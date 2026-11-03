@@ -139,3 +139,15 @@ export const parseTypedPrice = (text) => {
 };
 
 export const formatRupees = (n) => `₹${Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
+
+// Which question a product needs before it can go on a line:
+//   'size'  -> it has active sizes (pick one)
+//   'price' -> it is a "type the price" product
+//   null    -> add it straight away at its selling price
+// Sizes win over a typed price, the same as Scan.
+export const sheetModeFor = (product) => {
+  if (!product) return null;
+  if (Array.isArray(product.options) && product.options.length > 0) return 'size';
+  if (product.price_mode === 'open') return 'price';
+  return null;
+};

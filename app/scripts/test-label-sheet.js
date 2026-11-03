@@ -78,6 +78,55 @@ test('rupees are grouped en-IN, whole rupees without decimals', () => {
   assert.ok(h.includes('\u20B999<'));
 });
 
+const sized = (o = {}) => item({ name: 'Bouquet', price: 500, options: [{ label: 'Small', price: 400 }, { label: 'Medium', price: 650 }, { label: 'Large', price: 900 }], ...o });
+test('sized product sticker shows From cheapest when price is on', () => {
+  const h = buildLabelSheetHtml({ layout: 'stickers', items: [sized({ options: [{ label: 'Large', price: 900 }, { label: 'Small', price: 400 }] })], showPrice: true, date });
+  assert.ok(h.includes('From \u20B9400'));
+  assert.ok(!h.includes('\u20B9500'));
+});
+test('sized product bucket shows From price, hidden when price is off', () => {
+  const on = buildLabelSheetHtml({ layout: 'bucket', items: [sized()], showPrice: true, date });
+  assert.ok(on.includes('From \u20B9400'));
+  const off = buildLabelSheetHtml({ layout: 'bucket', items: [sized()], showPrice: false, date });
+  assert.ok(!off.includes('From'));
+});
+test('sized product price card lists every size in order', () => {
+  const h = buildLabelSheetHtml({ layout: 'price_card', items: [sized()], date });
+  assert.ok(h.includes('Small \u20B9400 \u00B7 Medium \u20B9650 \u00B7 Large \u20B9900'));
+  assert.ok(h.includes('class="price sizes"'));
+});
+test('size labels are HTML-escaped on the price card', () => {
+  const h = buildLabelSheetHtml({ layout: 'price_card', items: [sized({ options: [{ label: '<x>', price: 10 }] })], date });
+  assert.ok(h.includes('&lt;x&gt; \u20B910'));
+});
+test('sized open-price product shows sizes, not the hint', () => {
+  const h = buildLabelSheetHtml({ layout: 'stickers', items: [sized({ price_mode: 'open', price_hint: 'Ask' })], showPrice: true, date });
+  assert.ok(h.includes('From \u20B9400'));
+  assert.ok(!h.includes('>Ask<'));
+});
+test('empty options behave like a plain product', () => {
+  const h = buildLabelSheetHtml({ layout: 'stickers', items: [item({ options: [] })], showPrice: true, date });
+  assert.ok(h.includes('\u20B9120') && !h.includes('From'));
+});
+test('label host is printed on stickers (own line without price, on date line with price)', () => {
+  const it = item({ url: 'https://shop.example.com/p/ABCDEFG' });
+  const off = buildLabelSheetHtml({ layout: 'stickers', items: [it], showPrice: false, date });
+  assert.ok(off.includes('<div class="hostline">shop.example.com</div>'));
+  const on = buildLabelSheetHtml({ layout: 'stickers', items: [it], showPrice: true, date });
+  assert.ok(on.includes('price on 3 Nov 2026<span class="host"> \u00B7 shop.example.com</span>'));
+});
+test('url_host from the server wins, and shows on bucket and price card', () => {
+  const it = item({ url: 'http://localhost:8081/p/X', url_host: 'petal.in' });
+  assert.ok(buildLabelSheetHtml({ layout: 'bucket', items: [it], date }).includes('petal.in'));
+  const card = buildLabelSheetHtml({ layout: 'price_card', items: [it], date });
+  assert.ok(card.includes('<span class="host"> \u00B7 petal.in</span>'));
+  assert.ok(!card.includes('localhost'));
+});
+test('no url means no host line', () => {
+  const h = buildLabelSheetHtml({ layout: 'stickers', items: [item()], date });
+  assert.ok(!h.includes('class="hostline"') && !h.includes('class="host"'));
+});
+
 let failed = 0;
 for (const t of tests) {
   try { t.f(); console.log('PASS', t.n); } catch (e) { failed++; console.log('FAIL', t.n, e.message); }

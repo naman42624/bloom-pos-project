@@ -115,7 +115,9 @@ export default function LabelSheetScreen({ route }) {
       const html = buildLabelSheetHtml({ layout, items, showPrice, date: new Date() });
       await printHtml(html, 'Labels');
     } catch (e) {
-      setError(e && e.status === 400
+      setError(e && e.status === 409 && e.message
+        ? e.message
+        : e && e.status === 400
         ? 'Some of these products can\'t be printed. Untick a few and tap Print again.'
         : 'Could not make the labels. Check the connection and tap Print again.');
     } finally {

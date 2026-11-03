@@ -15,6 +15,7 @@ function loadModule(file) {
 
 const {
   blankLine, isBlankLine, buildScannedLine, mergeScannedLine, parseTypedPrice, productLineFields, readyQtyFor,
+  sheetModeFor,
 } = loadModule(path.join(__dirname, '../src/utils/scanAddLine.js'));
 
 const rose = { id: 7, name: 'Rose', selling_price: 120, tax_percentage: 5, stock: [{ location_id: 4, quantity: 3 }], total_ready_qty: 3 };
@@ -142,6 +143,23 @@ test('typed price must be more than 0', () => {
   assert.strictEqual(parseTypedPrice(''), null);
   assert.strictEqual(parseTypedPrice('-5'), null);
   assert.strictEqual(parseTypedPrice('abc'), null);
+});
+
+test('sheetModeFor: sizes ask which size, even on a typed-price product', () => {
+  assert.strictEqual(sheetModeFor({ ...bouquet, options: [medium, large] }), 'size');
+  assert.strictEqual(sheetModeFor({ ...bouquet, price_mode: 'open', options: [medium] }), 'size');
+});
+test('sheetModeFor: typed price asks for the price; plain adds straight away', () => {
+  assert.strictEqual(sheetModeFor({ ...bouquet, price_mode: 'open', options: [] }), 'price');
+  assert.strictEqual(sheetModeFor({ ...bouquet, price_mode: 'fixed', options: [] }), null);
+  assert.strictEqual(sheetModeFor(rose), null);
+  assert.strictEqual(sheetModeFor(null), null);
+});
+test('a picked sized product builds the same line as a scanned one', () => {
+  const line = buildScannedLine({ ...bouquet, options: [medium] }, { option: medium, materials: [], locationId: 4 });
+  assert.strictEqual(line.name, 'Bouquet (Medium)');
+  assert.strictEqual(line.price, '650');
+  assert.strictEqual(line.scan_price_mode, 'option');
 });
 
 let failed = 0;

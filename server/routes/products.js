@@ -9,6 +9,7 @@ const { getDb } = require('../config/database');
 const { getDb: getAsyncDb, withTransaction } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
 const { ensureLabelCode, labelUrl, ALPHABET, CODE_LENGTH } = require('../utils/label-code');
+const { publicUrlMissingInProduction, publicUrlHost, PUBLIC_APP_URL } = require('../utils/public-url');
 
 const router = express.Router();
 
@@ -431,6 +432,9 @@ router.put(
       if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
       const options = req.body.options;
       await withTransaction(async (tx) => {
+        // Row lock: two saves of the same list at once must not interleave
+        // their delete + insert and leave a doubled list.
+        await tx.prepare('SELECT id FROM products WHERE id = ? FOR UPDATE').get(req.params.id);
         await tx.prepare('DELETE FROM product_options WHERE product_id = ?').run(req.params.id);
         for (let i = 0; i < options.length; i++) {
           await tx.prepare('INSERT INTO product_options (product_id, label, price, sort_order) VALUES (?, ?, ?, ?)')
@@ -479,14 +483,23 @@ router.post(
     try {
       const errors = validationResult(req);
       if (!errors.isEmpty()) return res.status(400).json({ success: false, message: 'Validation failed', errors: errors.array() });
+      // A production server without PUBLIC_APP_URL would print localhost links
+      // that no phone can open once the labels are stuck on.
+      if (publicUrlMissingInProduction()) {
+        return res.status(409).json({ success: false, message: "Labels can't be printed yet — the shop's web address isn't set up. Ask the owner." });
+      }
       const db = await getAsyncDb();
       const ids = [...new Set(req.body.product_ids.map(Number))];
+      const host = publicUrlHost(PUBLIC_APP_URL);
       const out = [];
       for (const id of ids) {
         const p = await db.prepare('SELECT id, name, selling_price, price_mode, price_hint FROM products WHERE id = ?').get(id);
         if (!p) continue;
         const code = await ensureLabelCode(db, id);
         const url = labelUrl(code);
+        const options = await db.prepare(
+          'SELECT label, price FROM product_options WHERE product_id = ? AND is_active = 1 ORDER BY sort_order, id'
+        ).all(id);
         out.push({
           product_id: p.id,
           name: p.name,
@@ -495,6 +508,8 @@ router.post(
           price_hint: p.price_hint || null,
           label_code: code,
           url,
+          url_host: host,
+          options: options.map((o) => ({ label: o.label, price: Number(o.price) })),
           qr_data_url: await QRCode.toDataURL(url, { width: 300, margin: 1 }),
         });
       }
@@ -783,7 +798,12 @@ router.post('/scan', authenticate, async (req, res, next) => {
       : await db.prepare(`SELECT ${cols} FROM products WHERE label_code = ?`).get(parsed.code);
     if (!product) return unknown(404);
 
-    if (!Number(product.is_active)) return res.status(409).json({ success: false, message: SCAN_OFF });
+    // Inventory lookup (purpose 'lookup') by owner/manager may open a
+    // switched-off product so it can be found and switched back on. Every
+    // other scan (the counter) still refuses it.
+    const ownerLookup = req.body.purpose === 'lookup' && ['owner', 'manager'].includes(req.user.role);
+    const active = Number(product.is_active) ? 1 : 0;
+    if (!active && !ownerLookup) return res.status(409).json({ success: false, message: SCAN_OFF });
 
     const locationId = Number(req.body.location_id) || null;
     let inStock = false;
@@ -809,7 +829,7 @@ router.post('/scan', authenticate, async (req, res, next) => {
         price_mode: product.price_mode || 'fixed',
         price_hint: product.price_hint || null,
         is_one_off: Number(product.is_one_off) === 1 ? 1 : 0,
-        is_active: 1,
+        is_active: active,
         in_stock: inStock,
         options: options.map((o) => ({ id: o.id, label: o.label, price: Number(o.price) })),
       },

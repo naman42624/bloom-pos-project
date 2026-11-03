@@ -14,6 +14,7 @@ import { View, StyleSheet } from 'react-native';
 import jsQR from 'jsqr';
 import { createScanCooldown, cameraErrorKind, SCANNER_COPY } from './scanCooldown';
 import { playAcceptFeedback, unlockAudio } from './scanFeedback';
+import { bumpActivity } from '../../hooks/useIdleLock';
 import ScannerMessage from './ScannerMessage';
 import ScannerFrame from './ScannerFrame';
 import { Colors } from '../../constants/theme';
@@ -143,6 +144,7 @@ export default function ProductScanner({ onCode, paused = false, children, style
           if (cancelled || !raw) return;
           if (cooldownRef.current.accept(raw)) {
             playAcceptFeedback();
+            bumpActivity(); // a scan is activity too: scanning a pile of items must not idle-lock
             if (onCodeRef.current) onCodeRef.current(raw);
           }
         })

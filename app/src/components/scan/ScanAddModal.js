@@ -11,8 +11,7 @@
 //     in the modal, and scanning carries on
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  View, Text, StyleSheet, Modal, TouchableOpacity, TextInput, ActivityIndicator, ScrollView,
-  KeyboardAvoidingView, Platform,
+  View, Text, StyleSheet, Modal, TouchableOpacity, ActivityIndicator,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -20,10 +19,10 @@ import ProductScanner from './ProductScanner';
 import { SCANNER_COPY } from './scanCooldown';
 import api from '../../services/api';
 import { bumpActivity } from '../../hooks/useIdleLock';
-import { parseTypedPrice, formatRupees } from '../../utils/scanAddLine';
+import { sheetModeFor } from '../../utils/scanAddLine';
+import SizeOrPriceSheet from './SizeOrPriceSheet';
 import { Colors, FontSize, Spacing, BorderRadius } from '../../constants/theme';
 
-const PRICE_ERROR = 'Type the price, more than ₹0.';
 const LOOKUP_FAILED = 'Could not look up this item. Check the connection and scan it again.';
 
 export default function ScanAddModal({ visible, onClose, locationId, onAdd, onFindByName }) {
@@ -31,8 +30,6 @@ export default function ScanAddModal({ visible, onClose, locationId, onAdd, onFi
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState(null); // { kind: 'ok' | 'error', text }
   const [pending, setPending] = useState(null); // { product, mode: 'size' | 'price' }
-  const [priceText, setPriceText] = useState('');
-  const [priceError, setPriceError] = useState('');
   const busyRef = useRef(false);
   // A second tap on a size / "Add to order" before the sheet re-renders away
   // must not add the item twice.
@@ -42,8 +39,6 @@ export default function ScanAddModal({ visible, onClose, locationId, onAdd, onFi
     if (visible) {
       setMessage(null);
       setPending(null);
-      setPriceText('');
-      setPriceError('');
     }
   }, [visible]);
 
@@ -75,13 +70,7 @@ export default function ScanAddModal({ visible, onClose, locationId, onAdd, onFi
       const res = await api.scanProductQR(raw, locationId || undefined);
       const product = res && res.data;
       if (!product) throw new Error(LOOKUP_FAILED);
-      if (Array.isArray(product.options) && product.options.length > 0) {
-        next = { product, mode: 'size' };
-      } else if (product.price_mode === 'open') {
-        next = { product, mode: 'price' };
-      } else {
-        next = { product, mode: 'add' };
-      }
+      next = { product, mode: sheetModeFor(product) || 'add' };
     } catch (err) {
       setMessage({ kind: 'error', text: (err && err.message) || LOOKUP_FAILED });
     } finally {
@@ -92,23 +81,13 @@ export default function ScanAddModal({ visible, onClose, locationId, onAdd, onFi
     if (next.mode === 'add') {
       await commit(next.product);
     } else {
-      setPriceText('');
-      setPriceError('');
       setPending(next);
     }
   };
 
   const cancelPending = () => {
     setPending(null);
-    setPriceError('');
     setMessage({ kind: 'ok', text: 'Nothing added. Scan the next item.' });
-  };
-
-  const submitPrice = () => {
-    if (committingRef.current || !pending) return;
-    const price = parseTypedPrice(priceText);
-    if (price == null) { setPriceError(PRICE_ERROR); return; }
-    commit(pending.product, { price });
   };
 
   const paused = !visible || busy || !!pending;
@@ -176,75 +155,12 @@ export default function ScanAddModal({ visible, onClose, locationId, onAdd, onFi
           </TouchableOpacity>
         </View>
 
-        {pending ? (
-          <KeyboardAvoidingView
-            style={styles.sheetOverlay}
-            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-          >
-            <View style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, Spacing.lg) }]}>
-              <Text style={styles.sheetTitle}>{pending.product.name}</Text>
-
-              {pending.mode === 'size' ? (
-                <>
-                  <Text style={styles.sheetSub}>Which size?</Text>
-                  <ScrollView style={{ maxHeight: 420 }} contentContainerStyle={{ gap: Spacing.sm }}>
-                    {pending.product.options.map((o) => (
-                      <TouchableOpacity
-                        key={o.id}
-                        style={styles.sizeBtn}
-                        onPress={() => commit(pending.product, { option: o })}
-                        accessibilityRole="button"
-                        accessibilityLabel={`${o.label}, ${formatRupees(o.price)}`}
-                      >
-                        <Text style={styles.sizeLabel}>{o.label}</Text>
-                        <Text style={styles.sizePrice}>{formatRupees(o.price)}</Text>
-                      </TouchableOpacity>
-                    ))}
-                  </ScrollView>
-                </>
-              ) : (
-                <>
-                  <Text style={styles.sheetSub}>Type the price</Text>
-                  {pending.product.price_hint ? (
-                    <Text style={styles.hint}>{pending.product.price_hint}</Text>
-                  ) : null}
-                  <Text style={styles.inputLabel}>Price (₹)</Text>
-                  <TextInput
-                    style={[styles.priceInput, priceError ? styles.priceInputError : null]}
-                    value={priceText}
-                    onChangeText={(t) => { setPriceText(t); if (priceError) setPriceError(''); }}
-                    keyboardType="decimal-pad"
-                    placeholder="0"
-                    placeholderTextColor={Colors.textLight}
-                    autoFocus
-                    onSubmitEditing={submitPrice}
-                    returnKeyType="done"
-                    accessibilityLabel="Price in rupees"
-                  />
-                  {priceError ? <Text style={styles.errorText}>{priceError}</Text> : null}
-                  <TouchableOpacity
-                    style={styles.addBtn}
-                    onPress={submitPrice}
-                    accessibilityRole="button"
-                    accessibilityLabel="Add to order"
-                  >
-                    <Ionicons name="add-circle" size={24} color={Colors.white} />
-                    <Text style={styles.addText}>Add to order</Text>
-                  </TouchableOpacity>
-                </>
-              )}
-
-              <TouchableOpacity
-                style={styles.cancelBtn}
-                onPress={cancelPending}
-                accessibilityRole="button"
-                accessibilityLabel="Cancel, add nothing"
-              >
-                <Text style={styles.cancelText}>Cancel</Text>
-              </TouchableOpacity>
-            </View>
-          </KeyboardAvoidingView>
-        ) : null}
+        <SizeOrPriceSheet
+          pending={pending}
+          onPickOption={(o) => commit(pending.product, { option: o })}
+          onSubmitPrice={(price) => { if (!committingRef.current && pending) commit(pending.product, { price }); }}
+          onCancel={cancelPending}
+        />
       </View>
     </Modal>
   );
@@ -283,42 +199,4 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.surface,
   },
   findText: { color: Colors.primary, fontSize: FontSize.md, fontWeight: '700' },
-  sheetOverlay: {
-    ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'flex-end',
-  },
-  sheet: {
-    backgroundColor: Colors.surface, borderTopLeftRadius: BorderRadius.xl, borderTopRightRadius: BorderRadius.xl,
-    padding: Spacing.lg, width: '100%', maxWidth: 640, alignSelf: 'center',
-  },
-  sheetTitle: { fontSize: FontSize.xl, fontWeight: '700', color: Colors.text },
-  sheetSub: { fontSize: FontSize.lg, fontWeight: '600', color: Colors.textSecondary, marginTop: Spacing.xs, marginBottom: Spacing.md },
-  sizeBtn: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    minHeight: 64, paddingHorizontal: Spacing.lg, borderRadius: BorderRadius.md,
-    backgroundColor: Colors.primaryGlow, borderWidth: 2, borderColor: Colors.primary,
-  },
-  sizeLabel: { fontSize: FontSize.lg, fontWeight: '700', color: Colors.text, flexShrink: 1 },
-  sizePrice: { fontSize: FontSize.lg, fontWeight: '700', color: Colors.primaryDark, fontVariant: ['tabular-nums'], marginLeft: Spacing.md },
-  hint: {
-    fontSize: FontSize.md, color: Colors.text, backgroundColor: Colors.warningLight,
-    borderRadius: BorderRadius.sm, padding: Spacing.sm, marginBottom: Spacing.sm,
-  },
-  inputLabel: { fontSize: FontSize.md, fontWeight: '600', color: Colors.text, marginBottom: Spacing.xs },
-  priceInput: {
-    minHeight: 56, borderWidth: 2, borderColor: Colors.border, borderRadius: BorderRadius.md,
-    paddingHorizontal: Spacing.md, fontSize: FontSize.xl, fontWeight: '700', color: Colors.text,
-    backgroundColor: Colors.background, fontVariant: ['tabular-nums'],
-  },
-  priceInputError: { borderColor: Colors.error },
-  errorText: { color: Colors.error, fontSize: FontSize.md, fontWeight: '600', marginTop: Spacing.xs },
-  addBtn: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.sm,
-    minHeight: 56, borderRadius: BorderRadius.md, backgroundColor: Colors.primary, marginTop: Spacing.md,
-  },
-  addText: { color: Colors.white, fontSize: FontSize.lg, fontWeight: '700' },
-  cancelBtn: {
-    minHeight: 56, alignItems: 'center', justifyContent: 'center', marginTop: Spacing.sm,
-    borderRadius: BorderRadius.md, borderWidth: 1, borderColor: Colors.border,
-  },
-  cancelText: { color: Colors.textSecondary, fontSize: FontSize.lg, fontWeight: '600' },
 });

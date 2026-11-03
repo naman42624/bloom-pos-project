@@ -5,7 +5,8 @@
  */
 const h = require('./lib/verify-harness');
 const { ALPHABET, ensureLabelCode, generateLabelCode, labelUrl } = require('../utils/label-code');
-const { check, api, loginOwner, assert, getDb } = h;
+const { publicUrlMissingInProduction, publicUrlHost, DEV_FALLBACK } = require('../utils/public-url');
+const { check, api, loginOwner, assert, getDb, TEST_LOCATION_ID } = h;
 
 const createdProductIds = [];
 
@@ -190,6 +191,88 @@ check('one-off sold message', async () => {
   assert(ok.status === 200 && ok.body.data.in_stock === true, JSON.stringify(ok.body));
 });
 
+check('labels rows include active sizes in order, and the url host', async () => {
+  const owner = await loginOwner();
+  const id = await makeProduct('LblSized', 500);
+  const plain = await makeProduct('LblPlain', 200);
+  const put = await api('PUT', `/products/${id}/options`, owner.token, { options: [{ label: 'Small', price: 400 }, { label: 'Large', price: 900 }] });
+  assert(put.status === 200, `options ${put.status}`);
+  const db = await getDb();
+  await db.prepare('INSERT INTO product_options (product_id, label, price, sort_order, is_active) VALUES (?, ?, 999, 9, 0)').run(id, 'Gone');
+  const { status, body } = await api('POST', '/products/labels', owner.token, { product_ids: [id, plain] });
+  assert(status === 200, `status ${status}`);
+  const sized = body.data.find((r) => r.product_id === id);
+  const flat = body.data.find((r) => r.product_id === plain);
+  assert(JSON.stringify(sized.options) === JSON.stringify([{ label: 'Small', price: 400 }, { label: 'Large', price: 900 }]), JSON.stringify(sized.options));
+  assert(Array.isArray(flat.options) && flat.options.length === 0, JSON.stringify(flat.options));
+  assert(sized.url_host && sized.url.includes(`//${sized.url_host}/p/`), `host ${sized.url_host} url ${sized.url}`);
+});
+
+// Tested on the helper, not the live server: the dev server runs without
+// NODE_ENV=production, and restarting it in production mode just for this
+// would change other behaviour for the rest of the run.
+check('production without PUBLIC_APP_URL refuses labels (helper)', async () => {
+  assert(publicUrlMissingInProduction({ NODE_ENV: 'production' }) === true, 'prod + unset');
+  assert(publicUrlMissingInProduction({ NODE_ENV: 'production', PUBLIC_APP_URL: '   ' }) === true, 'prod + blank');
+  assert(publicUrlMissingInProduction({ NODE_ENV: 'production', PUBLIC_APP_URL: 'https://shop.example.com' }) === false, 'prod + set');
+  assert(publicUrlMissingInProduction({ NODE_ENV: 'development' }) === false, 'dev + unset');
+  assert(publicUrlMissingInProduction({}) === false, 'no env');
+  assert(DEV_FALLBACK === 'http://localhost:8081', DEV_FALLBACK);
+  assert(publicUrlHost('https://shop.example.com/x') === 'shop.example.com', 'host');
+  // This dev server is not production, so labels still print here.
+  const owner = await loginOwner();
+  const id = await makeProduct('LblDevOk');
+  const r = await api('POST', '/products/labels', owner.token, { product_ids: [id] });
+  assert(r.status === 200, `dev labels ${r.status}`);
+});
+
+const createdUserIds = [];
+async function createCounterStaff(ownerToken) {
+  const phone = '9' + String(Date.now()).slice(-8) + String(createdUserIds.length % 10);
+  const { status, body } = await api('POST', '/users', ownerToken, {
+    name: 'LabelsTest staff', phone, password: 'testpass123', role: 'counter_staff', location_ids: [TEST_LOCATION_ID],
+  });
+  if (status !== 201 && status !== 200) throw new Error(`Could not create test staff: ${status} ${JSON.stringify(body)}`);
+  createdUserIds.push(body.data.id || body.data.user?.id);
+  const login = await api('POST', '/auth/login', null, { phone, password: 'testpass123' });
+  if (login.status !== 200) throw new Error(`staff login ${login.status}`);
+  return { token: login.body.data.token };
+}
+
+check('lookup scan: owner opens a switched-off product, counter_staff still refused', async () => {
+  const owner = await loginOwner();
+  const staff = await createCounterStaff(owner.token);
+  const id = await makeProduct('ScanLookupOff');
+  const db = await getDb();
+  await db.prepare('UPDATE products SET is_active = 0 WHERE id = ?').run(id);
+  const payload = JSON.stringify({ type: 'bloomcart_product', id });
+  const ownerLookup = await api('POST', '/products/scan', owner.token, { payload, purpose: 'lookup' });
+  assert(ownerLookup.status === 200 && ownerLookup.body.data.id === id && ownerLookup.body.data.is_active === 0, JSON.stringify(ownerLookup.body));
+  const ownerCounter = await api('POST', '/products/scan', owner.token, { payload });
+  assert(ownerCounter.status === 409, `owner without lookup -> ${ownerCounter.status}`);
+  const staffLookup = await api('POST', '/products/scan', staff.token, { payload, purpose: 'lookup' });
+  assert(staffLookup.status === 409 && staffLookup.body.message === 'Not for sale right now — ask the counter.', JSON.stringify(staffLookup.body));
+  // An active product still reports is_active 1 on a lookup.
+  const on = await makeProduct('ScanLookupOn');
+  const onR = await api('POST', '/products/scan', owner.token, { payload: JSON.stringify({ type: 'bloomcart_product', id: on }), purpose: 'lookup' });
+  assert(onR.status === 200 && onR.body.data.is_active === 1, JSON.stringify(onR.body));
+});
+
+check('concurrent option saves leave one list', async () => {
+  const owner = await loginOwner();
+  const id = await makeProduct('LblOptsRace');
+  const lists = [
+    [{ label: 'A', price: 1 }, { label: 'B', price: 2 }],
+    [{ label: 'C', price: 3 }, { label: 'D', price: 4 }, { label: 'E', price: 5 }],
+  ];
+  const rs = await Promise.all([0, 1, 0, 1].map((i) => api('PUT', `/products/${id}/options`, owner.token, { options: lists[i] })));
+  assert(rs.every((r) => r.status === 200), rs.map((r) => r.status).join(','));
+  const db = await getDb();
+  const rows = await db.prepare('SELECT label FROM product_options WHERE product_id = ? ORDER BY sort_order, id').all(id);
+  const labels = rows.map((r) => r.label).join('');
+  assert(labels === 'AB' || labels === 'CDE', `mixed list: ${labels}`);
+});
+
 // ---- Public price page (no auth). Rate-limit check MUST stay last: it uses up this IP's budget. ----
 const PUBLIC_BASE = process.env.API_BASE_URL || 'http://localhost:3001/api';
 async function pub(code) {
@@ -257,7 +340,14 @@ async function cleanup() {
       await db.prepare('DELETE FROM products WHERE id = ?').run(id);
     } catch (err) { console.error(`   (cleanup warning: product ${id}: ${err.message})`); }
   }
-  console.log(`Cleaned up ${createdProductIds.length} test product(s)`);
+  for (const id of createdUserIds) {
+    try {
+      await db.prepare('DELETE FROM audit_logs WHERE user_id = ?').run(id);
+      await db.prepare('DELETE FROM user_locations WHERE user_id = ?').run(id);
+      await db.prepare('DELETE FROM users WHERE id = ?').run(id);
+    } catch (err) { console.error(`   (cleanup warning: user ${id}: ${err.message})`); }
+  }
+  console.log(`Cleaned up ${createdProductIds.length} test product(s) and ${createdUserIds.length} test user(s)`);
 }
 
 h.run({ cleanup });

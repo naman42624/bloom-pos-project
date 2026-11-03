@@ -520,9 +520,11 @@ class ApiService {
   }
 
   // locationId (optional): lets the server say whether a one-off tag is already sold here.
-  scanProductQR(payload, locationId) {
+  // purpose 'lookup' (Inventory scan): owner/manager may open a switched-off product.
+  scanProductQR(payload, locationId, purpose) {
     const body = { payload };
     if (locationId) body.location_id = locationId;
+    if (purpose) body.purpose = purpose;
     return this.request('/products/scan', { method: 'POST', body: JSON.stringify(body) });
   }
 

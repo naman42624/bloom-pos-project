@@ -26,9 +26,11 @@ import useSubmitGuard from '../hooks/useSubmitGuard';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import QuickSalePanel from '../components/quickSale/QuickSalePanel';
 import ScanAddModal from '../components/scan/ScanAddModal';
+import SizeOrPriceSheet from '../components/scan/SizeOrPriceSheet';
 import { unlockAudio } from '../components/scan/scanFeedback';
 import {
   blankLine, bomToLineMaterials, productLineFields, buildScannedLine, mergeScannedLine, isBlankLine, formatRupees,
+  sheetModeFor,
 } from '../utils/scanAddLine';
 
 // Quick sale | Full order switch, remembered on this device. Missing or
@@ -562,22 +564,90 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     setItems((prev) => [...prev, blankLine()]);
   };
 
-  // Add from existing product (product picker). Same line fields as Scan
-  // (utils/scanAddLine.productLineFields); a BOM that fails to load keeps the
-  // line's existing materials.
-  const addFromProduct = async (product, idx) => {
+  // Add from existing product (product picker, also Scan's "Find by name").
+  // The full product is loaded first (GET /products/:id carries the BOM and
+  // the sizes). A product with sizes or a typed price asks the same question
+  // Scan asks (SizeOrPriceSheet) and its line is built exactly like a scanned
+  // one (utils/scanAddLine.buildScannedLine); a plain product keeps the
+  // picker's merge (productLineFields onto the line being edited).
+  const pickingRef = useRef(false); // a second tap on a product before the first is placed
+  const sheetCommitRef = useRef(false); // a second tap on a size / Add to order
+  const [pickSheet, setPickSheet] = useState(null); // { product, mode, idx, materials }
+
+  const loadFullProduct = async (id) => {
+    const res = await api.getProduct(id);
+    const full = res && res.data;
+    if (!full) throw new Error('not found');
     let materials = null;
+    if (Array.isArray(full.materials)) {
+      materials = bomToLineMaterials(full.materials);
+    } else {
+      try {
+        const bomRes = await api.getProductMaterials(full.id);
+        materials = bomToLineMaterials(bomRes.data);
+      } catch { materials = null; }
+    }
+    return { full, materials };
+  };
+
+  const addFromProduct = async (product, idx) => {
+    if (pickingRef.current || pickSheet) return;
+    pickingRef.current = true;
     try {
-      const bomRes = await api.getProductMaterials(product.id);
-      materials = bomToLineMaterials(bomRes.data);
-    } catch { materials = null; }
-    const fields = productLineFields(product, { materials, locationId: selectedLocation });
+      let loaded;
+      try {
+        loaded = await loadFullProduct(product.id);
+      } catch {
+        showAlert('Could not add this item', 'Check the connection and tap the item again.');
+        return;
+      }
+      const { full, materials } = loaded;
+      const mode = sheetModeFor(full);
+      setShowProductPicker(false);
+      if (mode) {
+        sheetCommitRef.current = false;
+        // iOS cannot open a Modal while another one is still closing.
+        setTimeout(() => setPickSheet({ product: full, mode, idx, materials }), Platform.OS === 'ios' ? 450 : 0);
+        return;
+      }
+      const fields = productLineFields(full, { materials, locationId: selectedLocation });
+      setItems((prev) => {
+        const updated = [...prev];
+        updated[idx] = { ...(updated[idx] || blankLine()), ...fields };
+        return updated;
+      });
+    } finally {
+      pickingRef.current = false;
+    }
+  };
+
+  // Size picked / price typed for the line the picker was filling. What the
+  // person already typed on that line (quantity, note, photo, voice notes) stays.
+  const commitPickSheet = ({ option = null, price = null } = {}) => {
+    if (sheetCommitRef.current || !pickSheet) return;
+    sheetCommitRef.current = true;
+    const { product, idx, materials } = pickSheet;
+    const line = buildScannedLine(product, { option, price, materials: materials || [], locationId: selectedLocation });
     setItems((prev) => {
       const updated = [...prev];
-      updated[idx] = { ...(updated[idx] || blankLine()), ...fields };
+      const existing = updated[idx] || {};
+      const kept = {};
+      ['quantity', 'special_instructions', 'image_url', 'pendingAttachments'].forEach((k) => {
+        if (existing[k] != null && existing[k] !== '') kept[k] = existing[k];
+      });
+      updated[idx] = { ...line, ...kept };
       return updated;
     });
-    setShowProductPicker(false);
+    setPickSheet(null);
+  };
+
+  // Cancel adds nothing. The blank line the picker was filling goes away when
+  // it is still blank (and is not the only line in the order).
+  const cancelPickSheet = () => {
+    const idx = pickSheet ? pickSheet.idx : null;
+    setPickSheet(null);
+    if (idx == null) return;
+    setItems((prev) => (prev.length > 1 && isBlankLine(prev[idx]) ? prev.filter((_, i) => i !== idx) : prev));
   };
 
   // ── Scan to add ──
@@ -2713,6 +2783,15 @@ export default function QuickCheckoutScreen({ navigation, route }) {
         locationId={scanLocationId}
         onAdd={handleScanAdd}
         onFindByName={findByNameFromScan}
+      />
+
+      {/* ── Size / typed price for a picked product (same sheet as Scan) ── */}
+      <SizeOrPriceSheet
+        asModal
+        pending={pickSheet}
+        onPickOption={(o) => commitPickSheet({ option: o })}
+        onSubmitPrice={(price) => commitPickSheet({ price })}
+        onCancel={cancelPickSheet}
       />
 
       {/* ── Product Picker Modal ── */}

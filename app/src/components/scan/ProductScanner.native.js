@@ -9,6 +9,7 @@ import { View, StyleSheet, Linking } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { createScanCooldown, SCANNER_COPY } from './scanCooldown';
 import { playAcceptFeedback } from './scanFeedback';
+import { bumpActivity } from '../../hooks/useIdleLock';
 import ScannerMessage from './ScannerMessage';
 import ScannerFrame from './ScannerFrame';
 import { Colors } from '../../constants/theme';
@@ -48,6 +49,7 @@ export default function ProductScanner({ onCode, paused = false, children, style
     if (paused) return;
     if (cooldownRef.current.accept(typeof data === 'string' ? data : '')) {
       playAcceptFeedback();
+      bumpActivity(); // a scan is activity too: scanning a pile of items must not idle-lock
       if (onCodeRef.current) onCodeRef.current(data);
     }
   };
