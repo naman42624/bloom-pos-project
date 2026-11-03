@@ -1,4 +1,5 @@
 import React from 'react';
+import { TouchableOpacity, Text } from 'react-native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
@@ -117,7 +118,7 @@ import HeaderActions from '../components/HeaderActions';
 import usePushNotifications from '../hooks/usePushNotifications';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { Colors, FontSize } from '../constants/theme';
+import { Colors, FontSize, Spacing } from '../constants/theme';
 
 const Tab = createBottomTabNavigator();
 const Stack = createNativeStackNavigator();
@@ -603,6 +604,23 @@ const TAB_ICONS = {
 // delivery tracking, push-token registration) run for a helper: a helper
 // token reaches only server/utils/helper-routes.js, and those hooks call
 // other routes.
+// Header "Lock": a helper's phone is their own, but it still gets put down.
+// Locks to their personal PIN pad; the basket and screen stay as they were.
+function HelperLockButton() {
+  const { lock } = useAuth();
+  return (
+    <TouchableOpacity
+      onPress={lock}
+      style={{ flexDirection: 'row', alignItems: 'center', gap: 4, minHeight: 44, paddingHorizontal: Spacing.md, marginRight: Spacing.xs }}
+      accessibilityRole="button"
+      accessibilityLabel="Lock this phone"
+    >
+      <Ionicons name="lock-closed-outline" size={22} color={Colors.text} />
+      <Text style={{ fontSize: FontSize.md, fontWeight: '600', color: Colors.text }}>Lock</Text>
+    </TouchableOpacity>
+  );
+}
+
 function HelperTabs() {
   const insets = useSafeAreaInsets();
   return (
@@ -628,6 +646,7 @@ function HelperTabs() {
         headerStyle: { backgroundColor: Colors.surface },
         headerTintColor: Colors.text,
         headerTitleStyle: { fontWeight: '600' },
+        headerRight: () => <HelperLockButton />,
       })}
     >
       <Tab.Screen name="Sell" component={HelperSellScreen} options={{ title: 'Sell', tabBarLabel: 'Sell' }} />

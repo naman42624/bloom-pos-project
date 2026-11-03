@@ -645,6 +645,11 @@ class ApiService {
     return this.request(`/quick-sale/${saleId}/undo`, { method: 'POST' });
   }
 
+  // Helper's own sales today at one shop (count, cash/UPI totals, can_undo per sale)
+  getMySales(locationId) {
+    return this.request(`/quick-sale/my-sales?location_id=${encodeURIComponent(locationId)}`);
+  }
+
   getQuickRoll(locationId) {
     return this.request(`/quick-sale/roll?location_id=${encodeURIComponent(locationId)}`);
   }

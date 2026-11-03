@@ -373,6 +373,22 @@ export function AuthProvider({ children }) {
     dispatch({ type: 'PERSONAL_RELEASE', lockMessage: message });
   };
 
+  // A helper call answered 401 "Your access ended on ..." mid-session: drop
+  // the session and show the helper's PIN pad with that message, the same
+  // place an app start with an ended window lands (restore above).
+  const lockWithMessage = async (message) => {
+    api.clearToken();
+    try {
+      await AsyncStorage.multiRemove([STORAGE_KEY_TOKEN, STORAGE_KEY_USER, STORAGE_KEY_LOCATION]);
+    } catch { /* storage unavailable — the in-memory session is cleared below */ }
+    const personalDevice = state.personalDevice || await readPersonalDevice();
+    if (personalDevice) {
+      dispatch({ type: 'PERSONAL_LOCK', personalDevice, lockMessage: message || null });
+      return;
+    }
+    dispatch({ type: 'LOGOUT' });
+  };
+
   const lock = () => dispatch({ type: 'LOCK' });
   const unlock = () => dispatch({ type: 'UNLOCK' });
 
@@ -450,6 +466,7 @@ export function AuthProvider({ children }) {
     staffLogin,
     completeJoin,
     releasePersonalDevice,
+    lockWithMessage,
     register,
     ownerSetup,
     logout,
