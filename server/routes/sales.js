@@ -13,6 +13,7 @@ const { sumCollectionsByMethod } = require('../utils/settlement-math');
 const { buildTrackingUrl } = require('../utils/tracking-token');
 const { slipUrl } = require('../utils/slip-token');
 const { reverseSaleEffects } = require('../utils/sale-reversal');
+const { assertValidSeller } = require('../utils/seller');
 const QRCode = require('qrcode');
 const { getChecklistForSale, setCheck, loadSaleForChecks } = require('../utils/load-checks');
 
@@ -1678,6 +1679,7 @@ router.post(
     body('route_id').optional({ nullable: true }).isInt(),
     body('source_order_request_id').optional({ nullable: true }).isInt(),
     body('entry_mode').optional({ nullable: true }).isString(),
+    body('sold_by').optional({ nullable: true }).isInt(),
   ],
   (req, res, next) => {
     try {
@@ -1701,6 +1703,16 @@ router.post(
       } = req.body;
       // Only known values are kept; anything else is stored as NULL
       const entryMode = ['quick', 'close_topup'].includes(req.body.entry_mode) ? req.body.entry_mode : null;
+      // Seller: a validated sold_by, otherwise the caller. Checked before any write.
+      let soldBy = req.user.id;
+      if (req.body.sold_by != null && req.body.sold_by !== '') {
+        try {
+          assertValidSeller(db, req.body.sold_by, location_id);
+        } catch (e) {
+          return res.status(400).json({ success: false, message: e.message });
+        }
+        soldBy = Number(req.body.sold_by);
+      }
       // Mutable alias — may be set by auto-create logic below
       let customer_id = customer_id_from_body || null;
       // Owner-only field, but only owner/manager may set it at creation —
@@ -1971,8 +1983,8 @@ router.post(
             special_instructions, customer_notes,
             sender_customer_id, receiver_customer_id, sender_same_as_receiver,
             sender_name, sender_phone, receiver_name, receiver_phone, sender_message,
-            created_by, created_at, is_credit_sale, vendor_name, entry_mode)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            created_by, created_at, is_credit_sale, vendor_name, entry_mode, sold_by)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           saleNumber, location_id, customer_id || null, saleCustomerName || null, saleCustomerPhone || null,
           subtotal, taxTotal, discountAmount, discount_type || null, discountPercentage, discountApprovedBy,
@@ -1983,7 +1995,7 @@ router.post(
           notes || special_instructions || '', customer_notes || '',
           senderCustomerId || null, receiverCustomerId || null, senderReceiverSame ? 1 : 0,
           senderNameForSale || '', senderPhoneForSale || '', receiverNameForSale || '', receiverPhoneForSale || '', sender_message || '', req.user.id,
-          nowLocal(), is_credit_sale ? 1 : 0, vendorNameToStore, entryMode
+          nowLocal(), is_credit_sale ? 1 : 0, vendorNameToStore, entryMode, soldBy
         );
         const saleId = saleResult.lastInsertRowid;
 

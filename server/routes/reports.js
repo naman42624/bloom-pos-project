@@ -525,4 +525,112 @@ router.get('/dashboard', authenticate, authorize('owner', 'manager'), async (req
   } catch (err) { next(err); }
 });
 
+// ═══════════════════════════════════════════════════════════════
+// STAFF SALES (owner only): orders, amount, discounts, undos per seller
+// Seller = COALESCE(sold_by, created_by). Cancelled sales count nowhere.
+// ═══════════════════════════════════════════════════════════════
+function staffSalesRange(req) {
+  const today = localToday();
+  const from = /^\d{4}-\d{2}-\d{2}$/.test(req.query.from || '') ? req.query.from : today;
+  const to = /^\d{4}-\d{2}-\d{2}$/.test(req.query.to || '') ? req.query.to : today;
+  const locationId = req.query.location_id ? parseInt(req.query.location_id, 10) : null;
+  return { from, to, locationId: Number.isInteger(locationId) ? locationId : null };
+}
+
+router.get('/staff-sales', authenticate, authorize('owner'), async (req, res, next) => {
+  try {
+    const db = await getAsyncDb();
+    const { from, to, locationId } = staffSalesRange(req);
+    const locSql = locationId ? ' AND s.location_id = ?' : '';
+    const locParams = locationId ? [locationId] : [];
+    const inPeriod = (col) => `${col} >= ?::date AND ${col} < (?::date + 1)`;
+
+    const sold = await db.prepare(`
+      SELECT COALESCE(s.sold_by, s.created_by) AS user_id,
+        COUNT(*) AS orders,
+        COALESCE(SUM(s.grand_total), 0) AS amount,
+        COUNT(*) FILTER (WHERE COALESCE(s.discount_amount, 0) > 0) AS discount_count,
+        COALESCE(SUM(s.discount_amount) FILTER (WHERE COALESCE(s.discount_amount, 0) > 0), 0) AS discount_total,
+        COUNT(*) FILTER (WHERE s.discount_approved_by IS NOT NULL
+          AND s.discount_approved_by <> COALESCE(s.sold_by, s.created_by)) AS override_count
+      FROM sales s
+      WHERE ${inPeriod('s.created_at')} AND s.status != 'cancelled' AND COALESCE(s.entry_mode, '') <> 'close_topup'${locSql}
+      GROUP BY COALESCE(s.sold_by, s.created_by)
+    `).all(from, to, ...locParams);
+
+    const refunded = await db.prepare(`
+      SELECT COALESCE(s.sold_by, s.created_by) AS user_id, COALESCE(SUM(r.amount), 0) AS refunds
+      FROM refunds r JOIN sales s ON s.id = r.sale_id
+      WHERE COALESCE(r.status, 'processed') = 'processed'
+        AND ${inPeriod('s.created_at')} AND s.status != 'cancelled' AND COALESCE(s.entry_mode, '') <> 'close_topup'${locSql}
+      GROUP BY COALESCE(s.sold_by, s.created_by)
+    `).all(from, to, ...locParams);
+
+    const undone = await db.prepare(`
+      SELECT s.undone_by AS user_id, COUNT(*) AS undone_count, COALESCE(SUM(s.grand_total), 0) AS undone_total
+      FROM sales s
+      WHERE s.entry_mode = 'quick' AND s.undone_by IS NOT NULL
+        AND ${inPeriod('s.undone_at')}${locSql}
+      GROUP BY s.undone_by
+    `).all(from, to, ...locParams);
+
+    const topups = await db.prepare(`
+      SELECT s.created_by AS user_id, COUNT(*) AS topup_count, COALESCE(SUM(s.grand_total), 0) AS topup_total
+      FROM sales s
+      WHERE s.entry_mode = 'close_topup' AND s.status != 'cancelled'
+        AND ${inPeriod('s.created_at')}${locSql}
+      GROUP BY s.created_by
+    `).all(from, to, ...locParams);
+
+    const byUser = new Map();
+    const blank = (id) => ({
+      user_id: id, orders: 0, amount: 0, refunds: 0, net: 0, discount_count: 0, discount_total: 0,
+      override_count: 0, undone_count: 0, undone_total: 0, topup_count: 0, topup_total: 0,
+    });
+    const merge = (list) => {
+      for (const r of list) {
+        if (r.user_id == null) continue;
+        const row = byUser.get(r.user_id) || blank(r.user_id);
+        for (const k of Object.keys(r)) if (k !== 'user_id') row[k] = Number(r[k]);
+        byUser.set(r.user_id, row);
+      }
+    };
+    [sold, refunded, undone, topups].forEach(merge);
+
+    const ids = [...byUser.keys()];
+    const people = ids.length
+      ? await db.prepare(`SELECT id, name, role, is_active FROM users WHERE id IN (${ids.map(() => '?').join(',')})`).all(...ids)
+      : [];
+    const personById = new Map(people.map((u) => [u.id, u]));
+
+    const rows = [...byUser.values()].map((r) => {
+      const u = personById.get(r.user_id) || {};
+      const net = Math.round((r.amount - r.refunds) * 100) / 100;
+      return { ...r, name: u.name || `User #${r.user_id}`, role: u.role || null, is_active: u.is_active, net };
+    }).sort((a, b) => b.net - a.net);
+
+    res.json({ success: true, data: { from, to, rows } });
+  } catch (err) { next(err); }
+});
+
+router.get('/staff-sales/:userId/sales', authenticate, authorize('owner'), async (req, res, next) => {
+  try {
+    const db = await getAsyncDb();
+    const { from, to, locationId } = staffSalesRange(req);
+    const userId = parseInt(req.params.userId, 10);
+    if (!Number.isInteger(userId)) return res.status(400).json({ success: false, message: 'Pick a person from the list.' });
+    const params = [userId, from, to];
+    let locSql = '';
+    if (locationId) { locSql = ' AND s.location_id = ?'; params.push(locationId); }
+    const rows = await db.prepare(`
+      SELECT s.id, s.sale_number, s.created_at, s.grand_total, s.status, s.order_type, s.customer_name
+      FROM sales s
+      WHERE COALESCE(s.sold_by, s.created_by) = ? AND s.status != 'cancelled' AND COALESCE(s.entry_mode, '') <> 'close_topup'
+        AND s.created_at >= ?::date AND s.created_at < (?::date + 1)${locSql}
+      ORDER BY s.created_at DESC, s.id DESC
+    `).all(...params);
+    res.json({ success: true, data: rows });
+  } catch (err) { next(err); }
+});
+
 module.exports = router;

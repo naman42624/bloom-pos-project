@@ -1096,6 +1096,9 @@ function ensureCompatibilityColumns() {
     )
   `);
   runPsql('CREATE INDEX IF NOT EXISTS idx_product_options_product ON product_options(product_id)');
+  // Staff sales tracking: who sold the sale (NULL on old rows)
+  ensureColumn('sales', 'sold_by', 'INTEGER REFERENCES users(id) ON DELETE SET NULL');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_sales_sold_by_created ON sales(sold_by, created_at)');
   // Optional per-item attachment scoping: NULL = order-level (existing behavior
   // unchanged), set = this photo/voice note belongs to one specific line item.
   ensureColumn('sale_attachments', 'sale_item_id', 'INTEGER REFERENCES sale_items(id) ON DELETE CASCADE');
