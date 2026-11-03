@@ -145,11 +145,157 @@ check('schema pieces exist (client_ref, join tokens, helper threshold)', async (
   assert(s && s.value !== '', 'discount_helper_threshold not seeded');
 });
 
+// ─── Join links (Task 2) ─────────────────────────────────────
+// Public calls are limited to 20/min per IP; this file makes 15 of them, so
+// wait a minute between back-to-back runs.
+const JOIN_COPY = 'This link has been used or has expired. Ask the owner for a new code.';
+const UNKNOWN_TOKEN = 'A'.repeat(43);
+
+async function makeJoinLink(ownerToken, userId) {
+  const r = await api('POST', `/users/${userId}/join-link`, ownerToken);
+  assert(r.status === 200 && r.body?.data?.url, `join-link failed: ${r.status} ${JSON.stringify(r.body)}`);
+  return r.body.data;
+}
+const tokenOf = (url) => url.split('/join/')[1];
+
+check('join link for a non-helper refused', async () => {
+  const owner = await loginOwner();
+  const emp = await api('POST', '/users', owner.token, { name: 'Verify Emp', phone: testPhone(), password: PASSWORD, role: 'employee', location_ids: [TEST_LOCATION_ID] });
+  createdUserIds.push(emp.body.data.user.id);
+  const r = await api('POST', `/users/${emp.body.data.user.id}/join-link`, owner.token);
+  assert(r.status === 400 && r.body?.message === 'Join links are only for helpers.', `${r.status} ${JSON.stringify(r.body)}`);
+  const ownerSelf = await api('POST', `/users/${owner.id}/join-link`, owner.token);
+  assert(ownerSelf.status === 400, `owner target: ${ownerSelf.status}`);
+  // A switched-off helper gets no link either
+  const res = await makeHelper(owner.token, shopDate(2));
+  await api('PUT', `/users/${res.body.data.user.id}`, owner.token, { is_active: 0 });
+  const off = await api('POST', `/users/${res.body.data.user.id}/join-link`, owner.token);
+  assert(off.status === 400, `inactive helper: ${off.status}`);
+});
+
+check('join copy for an unknown token', async () => {
+  const g = await api('GET', `/auth/join/${UNKNOWN_TOKEN}`, null);
+  assert(g.status === 410 && g.body?.message === JOIN_COPY, `GET: ${g.status} ${JSON.stringify(g.body)}`);
+  const p = await api('POST', '/auth/join', null, { token: UNKNOWN_TOKEN, pin: '12a4' });
+  assert(p.status === 400 && p.body?.message === 'Enter a 4-digit PIN', `bad pin: ${p.status} ${JSON.stringify(p.body)}`);
+});
+
+check('join sets pin and returns a session', async () => {
+  const owner = await loginOwner();
+  const res = await makeHelper(owner.token, shopDate(2));
+  const helper = res.body.data.user;
+  const link = await makeJoinLink(owner.token, helper.id);
+  assert(/\/join\/[A-Za-z0-9_-]{43}$/.test(link.url), `url: ${link.url}`);
+  assert(String(link.qr_data_url || '').startsWith('data:image/png;base64,'), 'qr_data_url missing');
+  assert(link.expires_at, 'expires_at missing');
+  const token = tokenOf(link.url);
+  const db = await getDb();
+  const stored = await db.prepare(
+    "SELECT token_hash, EXTRACT(EPOCH FROM (expires_at - NOW())) AS secs FROM helper_join_tokens WHERE user_id = ? AND used_at IS NULL"
+  ).get(helper.id);
+  assert(stored && stored.token_hash !== token && /^[0-9a-f]{64}$/.test(stored.token_hash), 'token must be stored hashed');
+  assert(Number(stored.secs) > 23.9 * 3600 && Number(stored.secs) <= 24 * 3600, `expiry not ~24h: ${stored.secs}`);
+
+  const g = await api('GET', `/auth/join/${token}`, null);
+  assert(g.status === 200 && g.body?.data?.name === helper.name, `GET: ${g.status} ${JSON.stringify(g.body)}`);
+  const p = await api('POST', '/auth/join', null, { token, pin: '4821' });
+  assert(p.status === 200 && p.body?.data?.token, `POST: ${p.status} ${JSON.stringify(p.body)}`);
+  const u = p.body.data.user;
+  assert(u.id === helper.id && u.role === 'helper', `user: ${JSON.stringify(u)}`);
+  assert(!('pin_hash' in u) && !('password' in u), 'secrets leaked in user');
+  assert(Array.isArray(p.body.data.locations) && p.body.data.locations.some((l) => l.id === TEST_LOCATION_ID), 'locations missing');
+  const me = await api('GET', '/auth/me', p.body.data.token);
+  assert(me.status === 200 && me.body?.data?.user?.id === helper.id, `session: ${me.status}`);
+  const row = await db.prepare('SELECT pin_hash FROM users WHERE id = ?').get(helper.id);
+  assert(row.pin_hash, 'pin_hash not set');
+});
+
+check('join link is single use', async () => {
+  const owner = await loginOwner();
+  const res = await makeHelper(owner.token, shopDate(2));
+  const token = tokenOf((await makeJoinLink(owner.token, res.body.data.user.id)).url);
+  // Two simultaneous submits: exactly one wins
+  const [a, b] = await Promise.all([
+    api('POST', '/auth/join', null, { token, pin: '1111' }),
+    api('POST', '/auth/join', null, { token, pin: '2222' }),
+  ]);
+  const statuses = [a.status, b.status].sort();
+  assert(statuses[0] === 200 && statuses[1] === 410, `simultaneous: ${a.status} ${b.status}`);
+  const loser = a.status === 410 ? a : b;
+  assert(loser.body?.message === JOIN_COPY, `loser copy: ${loser.body?.message}`);
+  const again = await api('POST', '/auth/join', null, { token, pin: '3333' });
+  assert(again.status === 410 && again.body?.message === JOIN_COPY, `reuse: ${again.status} ${JSON.stringify(again.body)}`);
+  const g = await api('GET', `/auth/join/${token}`, null);
+  assert(g.status === 410 && g.body?.message === JOIN_COPY, `GET after use: ${g.status}`);
+});
+
+check('new link cancels the old', async () => {
+  const owner = await loginOwner();
+  const res = await makeHelper(owner.token, shopDate(2));
+  const oldToken = tokenOf((await makeJoinLink(owner.token, res.body.data.user.id)).url);
+  const newToken = tokenOf((await makeJoinLink(owner.token, res.body.data.user.id)).url);
+  assert(oldToken !== newToken, 'tokens should differ');
+  const o = await api('POST', '/auth/join', null, { token: oldToken, pin: '5678' });
+  assert(o.status === 410 && o.body?.message === JOIN_COPY, `old: ${o.status} ${JSON.stringify(o.body)}`);
+  const n = await api('POST', '/auth/join', null, { token: newToken, pin: '5678' });
+  assert(n.status === 200, `new: ${n.status} ${JSON.stringify(n.body)}`);
+});
+
+check('expired link refused', async () => {
+  const owner = await loginOwner();
+  const res = await makeHelper(owner.token, shopDate(2));
+  const token = tokenOf((await makeJoinLink(owner.token, res.body.data.user.id)).url);
+  const db = await getDb();
+  await db.prepare("UPDATE helper_join_tokens SET expires_at = NOW() - INTERVAL '1 minute' WHERE user_id = ?").run(res.body.data.user.id);
+  const g = await api('GET', `/auth/join/${token}`, null);
+  assert(g.status === 410 && g.body?.message === JOIN_COPY, `GET: ${g.status} ${JSON.stringify(g.body)}`);
+  const p = await api('POST', '/auth/join', null, { token, pin: '5678' });
+  assert(p.status === 410 && p.body?.message === JOIN_COPY, `POST: ${p.status} ${JSON.stringify(p.body)}`);
+});
+
+check('helper can staff-login with code and pin', async () => {
+  const owner = await loginOwner();
+  const res = await makeHelper(owner.token, shopDate(2));
+  const helper = res.body.data.user;
+  const token = tokenOf((await makeJoinLink(owner.token, helper.id)).url);
+  const j = await api('POST', '/auth/join', null, { token, pin: '9035' });
+  assert(j.status === 200, `join: ${j.status} ${JSON.stringify(j.body)}`);
+  const s = await api('POST', '/auth/staff-login', null, { employee_code: helper.employee_code, pin: '9035' });
+  assert(s.status === 200 && s.body?.data?.user?.id === helper.id && s.body?.data?.token, `staff-login: ${s.status} ${JSON.stringify(s.body)}`);
+  // Once access has ended, staff-login refuses with the plain copy
+  const yesterday = shopDate(-1);
+  const db = await getDb();
+  await db.prepare('UPDATE users SET access_until = ? WHERE id = ?').run(yesterday, helper.id);
+  const e = await api('POST', '/auth/staff-login', null, { employee_code: helper.employee_code, pin: '9035' });
+  assert(e.status === 401 && e.body?.message === `Your access ended on ${shortDate(yesterday)}. Ask the owner if you need more days.`, `expired staff-login: ${e.status} ${JSON.stringify(e.body)}`);
+  assert(!e.body?.data?.token, 'no token for expired helper');
+});
+
+check('expired helper cannot join', async () => {
+  const owner = await loginOwner();
+  const res = await makeHelper(owner.token, shopDate(2));
+  const helperId = res.body.data.user.id;
+  const token = tokenOf((await makeJoinLink(owner.token, helperId)).url);
+  const yesterday = shopDate(-1);
+  const want = `Your access ended on ${shortDate(yesterday)}. Ask the owner if you need more days.`;
+  const db = await getDb();
+  await db.prepare('UPDATE users SET access_until = ? WHERE id = ?').run(yesterday, helperId);
+  const g = await api('GET', `/auth/join/${token}`, null);
+  assert(g.status === 401 && g.body?.message === want && !g.body?.data, `GET: ${g.status} ${JSON.stringify(g.body)}`);
+  const p = await api('POST', '/auth/join', null, { token, pin: '5678' });
+  assert(p.status === 401 && p.body?.message === want && !p.body?.data, `POST: ${p.status} ${JSON.stringify(p.body)}`);
+  const row = await db.prepare('SELECT used_at FROM helper_join_tokens WHERE user_id = ? ORDER BY id DESC LIMIT 1').get(helperId);
+  assert(row && row.used_at === null, 'token must not be consumed for an expired helper');
+  const u = await db.prepare('SELECT pin_hash FROM users WHERE id = ?').get(helperId);
+  assert(!u.pin_hash, 'pin must not be set for an expired helper');
+});
+
 async function cleanup() {
   const db = await getDb();
   for (const id of createdUserIds) {
     try {
       await db.prepare('DELETE FROM audit_logs WHERE user_id = ?').run(id);
+      await db.prepare('DELETE FROM helper_join_tokens WHERE user_id = ? OR created_by = ?').run(id, id);
       await db.prepare('DELETE FROM user_locations WHERE user_id = ?').run(id);
       await db.prepare('DELETE FROM users WHERE id = ?').run(id);
     } catch (err) {

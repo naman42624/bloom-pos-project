@@ -3,9 +3,12 @@ const bcrypt = require('bcryptjs');
 const { body, param, query, validationResult } = require('express-validator');
 const { localToday } = require('../utils/helper-access');
 const { getDb } = require('../config/database');
-const { getDb: getAsyncDb } = require('../config/database-async');
+const { getDb: getAsyncDb, withTransaction } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
 const { hashPin } = require('../utils/pin');
+const QRCode = require('qrcode');
+const { createJoinToken, joinUrl } = require('../utils/join-token');
+const { publicUrlMissingInProduction } = require('../utils/public-url');
 
 const router = express.Router();
 router.use(authenticate);
@@ -581,6 +584,39 @@ router.put(
   }
 );
 
+
+// ─── POST /api/users/:id/join-link ───────────────────────────
+// One-time join link + QR for a helper to set their PIN on their own phone.
+// A new link cancels any older unused one for the same helper.
+router.post(
+  '/:id/join-link',
+  authorize('owner', 'manager'),
+  [param('id').isInt()],
+  async (req, res, next) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({ success: false, errors: errors.array() });
+      }
+      if (publicUrlMissingInProduction()) {
+        return res.status(409).json({ success: false, message: "Join links can't be made yet — the shop's web address isn't set up. Ask the owner." });
+      }
+      const db = await getAsyncDb();
+      const target = await db.prepare('SELECT id, role, is_active FROM users WHERE id = ?').get(req.params.id);
+      if (!target || target.role !== 'helper' || !target.is_active) {
+        return res.status(400).json({ success: false, message: 'Join links are only for helpers.' });
+      }
+      const { token, expires_at } = await withTransaction((tx) => createJoinToken(tx, target.id, req.user.id));
+      const url = joinUrl(token);
+      res.json({
+        success: true,
+        data: { url, expires_at, qr_data_url: await QRCode.toDataURL(url, { width: 300, margin: 1 }) },
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
 
 router.delete('/:id', authorize('owner'), (req, res, next) => {
   try {

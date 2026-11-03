@@ -231,7 +231,7 @@ router.post(
       const db = await getAsyncDb();
 
       const user = await db.prepare(
-        "SELECT * FROM users WHERE employee_code = ? AND role IN ('employee', 'counter_staff', 'florist_staff')"
+        "SELECT * FROM users WHERE employee_code = ? AND role IN ('employee', 'counter_staff', 'florist_staff', 'helper')"
       ).get(employee_code);
 
       if (!user) {
@@ -265,6 +265,11 @@ router.post(
         'UPDATE users SET pin_failed_attempts = 0, pin_locked_until = NULL WHERE id = ?'
       ).run(user.id);
 
+      const expiredMsg = refuseIfExpired(user);
+      if (expiredMsg) {
+        return res.status(401).json({ success: false, message: expiredMsg });
+      }
+
       const token = generateToken(user);
       const { password: _pw, pin_hash: _pin, ...userWithoutSecrets } = user;
 
@@ -282,6 +287,114 @@ router.post(
     }
   }
 );
+
+// ─── Helper join links (public) ──────────────────────────────
+// A helper opens a one-time link on their own phone, sets a 4-digit PIN and
+// gets a session. Public and unauthenticated, so it has its own per-IP
+// fixed-window limiter (same shape as routes/track.js, separate state).
+const {
+  consumeJoinToken,
+  findLiveJoinToken,
+  JOIN_LINK_COPY,
+} = require('../utils/join-token');
+const { withTransaction } = require('../config/database-async');
+
+const JOIN_RATE_LIMIT_WINDOW_MS = 60 * 1000;
+const JOIN_RATE_LIMIT_MAX = 20;
+const joinRateLimitBuckets = new Map(); // ip -> { count, windowStart }
+
+function isJoinRateLimited(ip) {
+  if (joinRateLimitBuckets.size > 10000) joinRateLimitBuckets.clear();
+  const now = Date.now();
+  const bucket = joinRateLimitBuckets.get(ip);
+  if (!bucket || now - bucket.windowStart >= JOIN_RATE_LIMIT_WINDOW_MS) {
+    joinRateLimitBuckets.set(ip, { count: 1, windowStart: now });
+    return false;
+  }
+  bucket.count += 1;
+  return bucket.count > JOIN_RATE_LIMIT_MAX;
+}
+
+function joinRateLimit(req, res, next) {
+  if (isJoinRateLimited(req.ip)) {
+    return res.status(429).json({ success: false, message: 'Too many requests — please try again in a minute.' });
+  }
+  next();
+}
+
+// Returns { status, message } when this live token row must not be used,
+// or null when it can. Unknown, used, expired, non-helper and switched-off
+// accounts all get the same join copy; only an ended access window says so.
+function joinRefusal(row) {
+  if (!row || row.role !== 'helper' || !row.is_active) {
+    return { status: 410, message: JOIN_LINK_COPY };
+  }
+  const expiredMsg = refuseIfExpired(row);
+  if (expiredMsg) return { status: 401, message: expiredMsg };
+  return null;
+}
+
+// ─── GET /api/auth/join/:token ───────────────────────────────
+router.get('/join/:token', joinRateLimit, async (req, res, next) => {
+  try {
+    const db = await getAsyncDb();
+    const row = await findLiveJoinToken(db, req.params.token);
+    const refusal = joinRefusal(row);
+    if (refusal) return res.status(refusal.status).json({ success: false, message: refusal.message });
+    res.json({ success: true, data: { name: row.name } });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ─── POST /api/auth/join ─────────────────────────────────────
+router.post('/join', joinRateLimit, async (req, res, next) => {
+  try {
+    const { token, pin } = req.body || {};
+    if (typeof pin !== 'string' || !/^\d{4}$/.test(pin)) {
+      return res.status(400).json({ success: false, message: 'Enter a 4-digit PIN' });
+    }
+
+    const db = await getAsyncDb();
+    const row = await findLiveJoinToken(db, token);
+    const refusal = joinRefusal(row);
+    if (refusal) return res.status(refusal.status).json({ success: false, message: refusal.message });
+
+    const pinHash = await hashPin(pin);
+    // Consume and set the PIN together: two simultaneous submits cannot both
+    // succeed, and a failed PIN write leaves the link unused.
+    const userId = await withTransaction(async (tx) => {
+      const id = await consumeJoinToken(tx, token);
+      if (!id) return null;
+      const updated = await tx.prepare(`
+        UPDATE users
+        SET pin_hash = ?, pin_failed_attempts = 0, pin_locked_until = NULL, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ? AND role = 'helper' AND is_active = 1
+      `).run(pinHash, id);
+      if (updated.changes !== 1) throw Object.assign(new Error('join target changed'), { joinRefused: true });
+      return id;
+    }).catch((err) => {
+      if (err.joinRefused) return null;
+      throw err;
+    });
+    if (!userId) return res.status(410).json({ success: false, message: JOIN_LINK_COPY });
+
+    const user = await db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
+    const sessionToken = generateToken(user);
+    const { password: _pw, pin_hash: _pin, ...userWithoutSecrets } = user;
+    const locations = await db.prepare(
+      'SELECT l.id, l.name, l.type, l.latitude, l.longitude, l.geofence_radius, ul.is_primary FROM locations l JOIN user_locations ul ON ul.location_id = l.id WHERE ul.user_id = ? AND l.is_active = 1'
+    ).all(user.id);
+
+    res.json({
+      success: true,
+      message: 'Login successful',
+      data: { user: userWithoutSecrets, token: sessionToken, locations },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
 
 // ─── GET /api/auth/staff-roster ──────────────────────────────
 // Unauthenticated by design — shown on the lock screen before anyone
