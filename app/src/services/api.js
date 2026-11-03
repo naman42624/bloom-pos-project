@@ -54,7 +54,7 @@ class ApiService {
       ...options.headers,
     };
 
-    if (this.token) {
+    if (this.token && !options.noAuth) {
       headers['Authorization'] = `Bearer ${this.token}`;
     }
 
@@ -511,12 +511,29 @@ class ApiService {
   }
 
   // ─── Product QR ─────────────────────────────────────────
+  getLabels(productIds) {
+    return this.request('/products/labels', { method: 'POST', body: JSON.stringify({ product_ids: productIds }) });
+  }
+
   getProductQR(productId, size = 300) {
     return this.request(`/products/${productId}/qr?size=${size}`);
   }
 
-  scanProductQR(payload) {
-    return this.request('/products/scan', { method: 'POST', body: JSON.stringify({ payload }) });
+  // locationId (optional): lets the server say whether a one-off tag is already sold here.
+  // purpose 'lookup' (Inventory scan): owner/manager may open a switched-off product.
+  scanProductQR(payload, locationId, purpose) {
+    const body = { payload };
+    if (locationId) body.location_id = locationId;
+    if (purpose) body.purpose = purpose;
+    return this.request('/products/scan', { method: 'POST', body: JSON.stringify(body) });
+  }
+
+  setProductOptions(productId, options) {
+    return this.request(`/products/${productId}/options`, { method: 'PUT', body: JSON.stringify({ options }) });
+  }
+
+  markProductOneOff(productId) {
+    return this.request(`/products/${productId}/one-off`, { method: 'PUT', body: JSON.stringify({}) });
   }
 
   // ═══════════════════════════════════════════════════════════
@@ -1143,6 +1160,11 @@ class ApiService {
   // ─── Public order tracking (no auth) ──────────────────────
   getTrackingInfo(token) {
     return this.request(`/track/${token}`);
+  }
+
+  // ─── Public price page (no auth, never sends the staff token) ──
+  getPublicPrice(code) {
+    return this.request(`/price/${encodeURIComponent(code)}`, { noAuth: true });
   }
 
   // ─── Public order request (no auth) ────────────────────────

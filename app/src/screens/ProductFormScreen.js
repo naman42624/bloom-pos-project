@@ -1,14 +1,43 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TextInput,
   TouchableOpacity, Alert, KeyboardAvoidingView, Platform,
-  Modal, Image,
+  Modal, Image, Switch,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
+import { showAlert } from '../utils/alert';
+import useSubmitGuard from '../hooks/useSubmitGuard';
+
+const MAX_SIZES = 6; // PUT /products/:id/options allows at most 6
+const MAX_HINT = 120;
+
+// Size rows as the server sends them -> editor rows.
+const toSizeRows = (options, nextKey) => (Array.isArray(options) ? options : []).map((o) => ({
+  key: nextKey(), label: String(o.label || ''), price: o.price != null ? String(Number(o.price)) : '',
+}));
+
+// Editor rows -> an error message, or null when every row is filled in correctly.
+const sizesError = (rows) => {
+  if (rows.length > MAX_SIZES) return `At most ${MAX_SIZES} sizes. Remove one, then save.`;
+  const seen = new Set();
+  for (let i = 0; i < rows.length; i += 1) {
+    const label = rows[i].label.trim();
+    if (label) {
+      const k = label.toLowerCase();
+      if (seen.has(k)) return 'Two sizes have the same name. Change one.';
+      seen.add(k);
+    }
+    const price = parseFloat(rows[i].price);
+    if (!label) return `Size ${i + 1} has no name. Type a name like "Medium", or remove the row.`;
+    if (label.length > 60) return `Size ${i + 1}'s name is too long. Keep it under 60 letters.`;
+    if (!Number.isFinite(price) || price <= 0) return `Type a price more than ₹0 for "${label}".`;
+  }
+  return null;
+};
 
 const PRODUCT_TYPES = [
   { key: 'standard', label: 'Standard', icon: 'cube' },
@@ -30,6 +59,7 @@ export default function ProductFormScreen({ route, navigation }) {
   const editProduct = route.params?.product;
   const isEdit = !!editProduct;
   const canManageStock = user?.role === 'owner' || user?.role === 'manager';
+  const guardSubmit = useSubmitGuard();
 
   const [name, setName] = useState(editProduct?.name || '');
   const [sku, setSku] = useState(editProduct?.sku || '');
@@ -54,6 +84,60 @@ export default function ProductFormScreen({ route, navigation }) {
   const [showMaterialPicker, setShowMaterialPicker] = useState(false);
   const [allMaterials, setAllMaterials] = useState([]);
   const [materialSearch, setMaterialSearch] = useState('');
+
+  // Selling: price type, sizes, one-off
+  const keySeq = useRef(0);
+  const nextKey = () => { keySeq.current += 1; return `s${keySeq.current}`; };
+  const canEditSizes = canManageStock; // PUT /products/:id/options is owner/manager only
+  const [priceMode, setPriceMode] = useState(editProduct?.price_mode === 'open' ? 'open' : 'fixed');
+  const [priceHint, setPriceHint] = useState(editProduct?.price_hint || '');
+  const [isOneOff, setIsOneOff] = useState(Number(editProduct?.is_one_off) === 1);
+  const [sizes, setSizes] = useState(() => toSizeRows(editProduct?.options, nextKey));
+  // Editing: only replace the sizes on save once the current list is known,
+  // so a failed load never wipes sizes that exist.
+  const [sizesLoaded, setSizesLoaded] = useState(!isEdit || Array.isArray(editProduct?.options));
+  const [sizesLoadFailed, setSizesLoadFailed] = useState(false);
+  const [sizesErr, setSizesErr] = useState('');
+
+  useEffect(() => {
+    if (!isEdit || sizesLoaded || !canEditSizes) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await api.getProduct(editProduct.id);
+        if (cancelled) return;
+        setSizes(toSizeRows(res?.data?.options, nextKey));
+        setSizesLoaded(true);
+      } catch {
+        if (!cancelled) setSizesLoadFailed(true);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [isEdit, sizesLoaded, canEditSizes, editProduct?.id]);
+
+  const addSize = () => {
+    if (sizes.length >= MAX_SIZES) { setSizesErr(`At most ${MAX_SIZES} sizes.`); return; }
+    setSizesErr('');
+    setSizes((prev) => [...prev, { key: nextKey(), label: '', price: '' }]);
+  };
+  const updateSize = (key, field, value) => {
+    setSizesErr('');
+    setSizes((prev) => prev.map((r) => (r.key === key ? { ...r, [field]: value } : r)));
+  };
+  const removeSize = (key) => {
+    setSizesErr('');
+    setSizes((prev) => prev.filter((r) => r.key !== key));
+  };
+  const moveSize = (key, dir) => {
+    setSizes((prev) => {
+      const i = prev.findIndex((r) => r.key === key);
+      const j = i + dir;
+      if (i < 0 || j < 0 || j >= prev.length) return prev;
+      const next = prev.slice();
+      [next[i], next[j]] = [next[j], next[i]];
+      return next;
+    });
+  };
 
   // Create flow extras
   const [draftImageUri, setDraftImageUri] = useState(null);
@@ -133,18 +217,30 @@ export default function ProductFormScreen({ route, navigation }) {
   };
 
   const handleSave = async () => {
-    if (!name.trim()) { Alert.alert('Required', 'Product name is required'); return; }
+    if (saving) return;
+    if (!name.trim()) { showAlert('Name needed', 'Type the product name at the top, then save.'); return; }
     const openingQty = parseFloat(openingStockQty) || 0;
     if (!isEdit && canManageStock && openingQty > 0 && !locationId) {
-      Alert.alert('Location Required', 'Select a location to set opening stock.');
+      showAlert('Location needed', 'Pick a location to set opening stock, then save.');
       return;
     }
 
     const customTaxValue = parseFloat(customTaxPercentage);
     if (taxMode === 'custom' && (!Number.isFinite(customTaxValue) || customTaxValue < 0)) {
-      Alert.alert('Required', 'Enter a valid custom tax percentage');
+      showAlert('Tax needed', 'Type the tax percentage (0 or more), then save.');
       return;
     }
+
+    if (priceHint.trim().length > MAX_HINT) {
+      showAlert('Price note too long', `Keep the price note under ${MAX_HINT} letters.`);
+      return;
+    }
+    const saveSizes = canEditSizes && sizesLoaded && (isEdit || sizes.length > 0);
+    if (saveSizes) {
+      const err = sizesError(sizes);
+      if (err) { setSizesErr(err); showAlert('Check the sizes', err); return; }
+    }
+    const cleanSizes = sizes.map((r) => ({ label: r.label.trim(), price: Math.round(parseFloat(r.price) * 100) / 100 }));
 
     setSaving(true);
     try {
@@ -157,6 +253,9 @@ export default function ProductFormScreen({ route, navigation }) {
         tax_rate_id: taxMode === 'preset' ? taxRateId : null,
         tax_percentage: taxMode === 'custom' ? Math.max(0, customTaxValue || 0) : undefined,
         location_id: locationId || undefined,
+        price_mode: priceMode,
+        price_hint: priceMode === 'open' && priceHint.trim() ? priceHint.trim() : null,
+        is_one_off: isOneOff ? 1 : 0,
       };
       if (sku.trim()) data.sku = sku.trim();
 
@@ -170,10 +269,33 @@ export default function ProductFormScreen({ route, navigation }) {
 
       if (isEdit) {
         await api.updateProduct(editProduct.id, data);
+        if (saveSizes) {
+          try {
+            await api.setProductOptions(editProduct.id, cleanSizes);
+          } catch (optErr) {
+            // The product itself is saved; stay here so the sizes can be saved again.
+            const msg = optErr && optErr.status
+              ? `The product is saved, but the sizes were not: ${optErr.message}. Fix the sizes and tap Update Product again.`
+              : 'The product is saved, but the sizes were not. Check the connection and tap Update Product again.';
+            setSizesErr(msg);
+            showAlert('Sizes not saved', msg);
+            return;
+          }
+        }
       } else {
         const created = await api.createProduct(data);
         const createdProductId = created?.data?.id;
         const warnings = [];
+
+        if (createdProductId && saveSizes) {
+          try {
+            await api.setProductOptions(createdProductId, cleanSizes);
+          } catch (optErr) {
+            warnings.push(optErr && optErr.status
+              ? `The sizes could not be saved: ${optErr.message}. Open the product, tap Edit and add them again.`
+              : 'The sizes could not be saved (connection problem). Open the product, tap Edit and add them again.');
+          }
+        }
 
         if (createdProductId && draftImageUri) {
           try {
@@ -197,12 +319,12 @@ export default function ProductFormScreen({ route, navigation }) {
         }
 
         if (warnings.length > 0) {
-          Alert.alert('Product Created With Warnings', warnings.join('\n'));
+          showAlert('Product created, with problems', warnings.join('\n'));
         }
       }
       navigation.goBack();
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to save product');
+      showAlert('Not saved', `${err.message || 'The product could not be saved.'} Check the details and tap save again.`);
     } finally {
       setSaving(false);
     }
@@ -317,6 +439,132 @@ export default function ProductFormScreen({ route, navigation }) {
           placeholderTextColor={Colors.textLight}
           keyboardType="decimal-pad"
         />
+
+        {/* Price type */}
+        <Text style={styles.label}>Price type</Text>
+        <View style={styles.chipRow}>
+          {[
+            { key: 'fixed', label: 'Fixed' },
+            { key: 'open', label: 'Type the price' },
+          ].map((m) => (
+            <TouchableOpacity
+              key={m.key}
+              style={[styles.modeChip, priceMode === m.key && styles.typeChipActive]}
+              onPress={() => setPriceMode(m.key)}
+              accessibilityRole="button"
+              accessibilityState={{ selected: priceMode === m.key }}
+            >
+              <Text style={[styles.modeChipText, priceMode === m.key && styles.typeChipTextActive]}>{m.label}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+        <Text style={styles.helpText}>
+          {priceMode === 'open'
+            ? 'Staff type the price each time this is scanned or sold.'
+            : 'Sells at the selling price above (or the size price, if it has sizes).'}
+        </Text>
+        {priceMode === 'open' && (
+          <>
+            <Text style={styles.label}>Price note (shown to staff and on labels)</Text>
+            <TextInput
+              style={styles.input}
+              value={priceHint}
+              onChangeText={(v) => setPriceHint(v.slice(0, MAX_HINT))}
+              placeholder="e.g. ₹40 a stem, ask for bunches"
+              placeholderTextColor={Colors.textLight}
+              maxLength={MAX_HINT}
+            />
+            <Text style={styles.counterText}>{priceHint.length}/{MAX_HINT}</Text>
+          </>
+        )}
+
+        {/* Sizes (owner/manager) */}
+        {canEditSizes && (
+          <>
+            <View style={styles.matSectionHeader}>
+              <Text style={styles.label}>Sizes</Text>
+              {sizesLoaded && sizes.length < MAX_SIZES && (
+                <TouchableOpacity onPress={addSize} style={styles.addSizeBtn} accessibilityRole="button" accessibilityLabel="Add a size">
+                  <Ionicons name="add-circle" size={22} color={Colors.primary} />
+                  <Text style={styles.addMatBtnText}>Add size</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+            {sizesLoadFailed ? (
+              <Text style={styles.errorText}>Sizes could not be loaded. Go back and open this product again to change them.</Text>
+            ) : !sizesLoaded ? (
+              <Text style={styles.helpText}>Loading sizes{'…'}</Text>
+            ) : sizes.length === 0 ? (
+              <Text style={styles.helpText}>One price only. Add sizes (like Small, Medium, Large) if this comes in sizes; scanning will ask which one.</Text>
+            ) : (
+              sizes.map((r, i) => (
+                <View key={r.key} style={styles.sizeRow}>
+                  <TextInput
+                    style={[styles.input, styles.sizeLabelInput]}
+                    value={r.label}
+                    onChangeText={(v) => updateSize(r.key, 'label', v)}
+                    placeholder="Size name, e.g. Medium"
+                    placeholderTextColor={Colors.textLight}
+                    maxLength={60}
+                    accessibilityLabel={`Size ${i + 1} name`}
+                  />
+                  <TextInput
+                    style={[styles.input, styles.sizePriceInput]}
+                    value={r.price}
+                    onChangeText={(v) => updateSize(r.key, 'price', v)}
+                    placeholder="₹ price"
+                    placeholderTextColor={Colors.textLight}
+                    keyboardType="decimal-pad"
+                    accessibilityLabel={`Size ${i + 1} price`}
+                  />
+                  <TouchableOpacity
+                    style={[styles.sizeIconBtn, i === 0 && styles.sizeIconBtnDisabled]}
+                    onPress={() => moveSize(r.key, -1)}
+                    disabled={i === 0}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Move size ${i + 1} up`}
+                    accessibilityState={{ disabled: i === 0 }}
+                  >
+                    <Ionicons name="arrow-up" size={20} color={Colors.textSecondary} />
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.sizeIconBtn, i === sizes.length - 1 && styles.sizeIconBtnDisabled]}
+                    onPress={() => moveSize(r.key, 1)}
+                    disabled={i === sizes.length - 1}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Move size ${i + 1} down`}
+                    accessibilityState={{ disabled: i === sizes.length - 1 }}
+                  >
+                    <Ionicons name="arrow-down" size={20} color={Colors.textSecondary} />
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.sizeIconBtn}
+                    onPress={() => removeSize(r.key)}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Remove size ${i + 1}`}
+                  >
+                    <Ionicons name="trash-outline" size={20} color={Colors.error} />
+                  </TouchableOpacity>
+                </View>
+              ))
+            )}
+            {!!sizesErr && <Text style={styles.errorText}>{sizesErr}</Text>}
+          </>
+        )}
+
+        {/* One-off */}
+        <View style={styles.switchRow}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.switchLabel}>One-off item</Text>
+            <Text style={styles.helpText}>Only one of this exists. Once it is sold, scanning its tag says it is sold.</Text>
+          </View>
+          <Switch
+            value={isOneOff}
+            onValueChange={setIsOneOff}
+            trackColor={{ true: Colors.primary, false: Colors.border }}
+            accessibilityLabel="One-off item"
+          />
+        </View>
 
         {/* Tax Rate */}
         <Text style={styles.label}>Tax Rate</Text>
@@ -467,7 +715,7 @@ export default function ProductFormScreen({ route, navigation }) {
         {/* Save button */}
         <TouchableOpacity
           style={[styles.saveBtn, saving && { opacity: 0.6 }]}
-          onPress={handleSave}
+          onPress={guardSubmit(handleSave)}
           disabled={saving}
           activeOpacity={0.8}
         >
@@ -642,6 +890,30 @@ const styles = StyleSheet.create({
   matIconCircle: { width: 32, height: 32, borderRadius: 16, justifyContent: 'center', alignItems: 'center' },
   modalItemText: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.text },
   modalItemSub: { fontSize: FontSize.xs, color: Colors.textSecondary, marginTop: 1 },
+
+  modeChip: {
+    paddingHorizontal: Spacing.md, minHeight: 44, justifyContent: 'center', borderRadius: BorderRadius.full,
+    backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.border,
+  },
+  modeChipText: { fontSize: FontSize.md, color: Colors.textSecondary, fontWeight: '600' },
+  helpText: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: Spacing.xs },
+  counterText: { fontSize: FontSize.xs, color: Colors.textSecondary, textAlign: 'right', marginTop: 2 },
+  errorText: { fontSize: FontSize.sm, color: Colors.error, fontWeight: '600', marginTop: Spacing.xs },
+  addSizeBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, minHeight: 44, marginTop: Spacing.sm },
+  sizeRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs, marginTop: Spacing.sm },
+  sizeLabelInput: { flex: 2, minHeight: 44, minWidth: 0 },
+  sizePriceInput: { flex: 1, minHeight: 44, minWidth: 0 },
+  sizeIconBtn: {
+    width: 44, height: 44, alignItems: 'center', justifyContent: 'center',
+    borderRadius: BorderRadius.sm, borderWidth: 1, borderColor: Colors.border, backgroundColor: Colors.surface,
+  },
+  sizeIconBtnDisabled: { opacity: 0.4 },
+  switchRow: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.md, marginTop: Spacing.md,
+    backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.border,
+    borderRadius: BorderRadius.md, padding: Spacing.md,
+  },
+  switchLabel: { fontSize: FontSize.md, fontWeight: '600', color: Colors.text },
 
   saveBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.sm,

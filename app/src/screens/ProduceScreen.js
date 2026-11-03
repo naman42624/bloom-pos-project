@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View, Text, StyleSheet, FlatList, TextInput,
   TouchableOpacity, Alert, ScrollView, ActivityIndicator, Modal,
@@ -10,6 +10,9 @@ import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import { formatTime } from '../utils/datetime';
+import { showAlert } from '../utils/alert';
+import { buildLabelSheetHtml } from '../utils/labelSheetHtml';
+import { printHtml } from '../utils/printHelpers';
 
 export default function ProduceScreen({ navigation }) {
   const { user } = useAuth();
@@ -38,6 +41,12 @@ export default function ProduceScreen({ navigation }) {
   const [customMaterials, setCustomMaterials] = useState([]);
   const [allMaterialsList, setAllMaterialsList] = useState([]);
   const [customSubmitting, setCustomSubmitting] = useState(false);
+
+  // Just-made custom item: offers "Print tag" (marks it one-off, prints one bucket label)
+  const [lastMade, setLastMade] = useState(null); // { id, name, qty }
+  const [tagStatus, setTagStatus] = useState(''); // '' | 'printing' | 'done'
+  const [tagError, setTagError] = useState('');
+  const tagBusyRef = useRef(false);
 
   useFocusEffect(
     useCallback(() => {
@@ -147,11 +156,12 @@ export default function ProduceScreen({ navigation }) {
   };
 
   const handleCustomProduce = async () => {
-    if (!customName.trim()) { Alert.alert('Required', 'Enter product name'); return; }
+    if (customSubmitting) return;
+    if (!customName.trim()) { showAlert('Name needed', 'Type a name for what you made, then tap Create & Produce.'); return; }
     const price = parseFloat(customPrice) || 0;
-    if (price <= 0) { Alert.alert('Required', 'Enter a valid selling price'); return; }
+    if (price <= 0) { showAlert('Price needed', 'Type the selling price (more than ₹0), then tap Create & Produce.'); return; }
     const qty = parseInt(customQty) || 0;
-    if (qty <= 0) { Alert.alert('Required', 'Enter quantity'); return; }
+    if (qty <= 0) { showAlert('How many?', 'Type how many you made (1 or more), then tap Create & Produce.'); return; }
 
     setCustomSubmitting(true);
     try {
@@ -170,15 +180,63 @@ export default function ProduceScreen({ navigation }) {
       });
 
       if (res.success) {
-        Alert.alert('Created!', `${qty}x ${customName.trim()} produced and added to display stock.`);
+        // Success card on the screen (with Print tag) instead of a popup.
+        const madeId = res.data?.product?.id;
+        setLastMade({ id: madeId || null, name: customName.trim(), qty });
+        setTagStatus('');
+        setTagError('');
         setShowCustom(false);
         fetchProducts();
         fetchRecentLogs();
       }
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to create custom product');
+      showAlert('Not made', `${err.message || 'The item could not be created.'} Check the details and tap Create & Produce again.`);
     } finally {
       setCustomSubmitting(false);
+    }
+  };
+
+  // Made exactly 1: "Print tag" marks it one-off (so its tag reads as sold once
+  // it is sold) and prints one bucket-size label. Made more than 1: "Print
+  // labels" prints one label per piece and leaves it a normal product.
+  const handlePrintTag = async () => {
+    if (tagBusyRef.current || !lastMade?.id) return;
+    tagBusyRef.current = true;
+    const single = lastMade.qty === 1;
+    setTagStatus('printing');
+    setTagError('');
+    try {
+      if (single) {
+        try {
+          await api.markProductOneOff(lastMade.id);
+        } catch (e) {
+          throw new Error(e?.status === 403
+            ? (e.message || 'You cannot tag this item. Ask the owner.')
+            : 'Could not set up the tag. Check the connection and tap Print tag again.');
+        }
+      }
+      let rows = [];
+      try {
+        const res = await api.getLabels([lastMade.id]);
+        rows = res?.data || [];
+      } catch (e) {
+        if (e && e.status === 409 && e.message) throw new Error(e.message);
+        throw new Error('Could not make the tag. Check the connection and tap Print tag again.');
+      }
+      if (!rows.length) throw new Error('This item could not be found. Refresh and tap Print tag again.');
+      const html = buildLabelSheetHtml({
+        layout: 'bucket',
+        items: rows.slice(0, 1).map((r) => ({ ...r, count: single ? 1 : lastMade.qty })),
+        showPrice: false,
+        date: new Date(),
+      });
+      await printHtml(html, single ? 'Tag' : 'Labels');
+      setTagStatus('done');
+    } catch (e) {
+      setTagStatus('');
+      setTagError(e.message || 'Could not print the tag. Tap Print tag again.');
+    } finally {
+      tagBusyRef.current = false;
     }
   };
 
@@ -235,6 +293,61 @@ export default function ProduceScreen({ navigation }) {
             </TouchableOpacity>
           ))}
         </ScrollView>
+      )}
+
+      {/* Just made a custom item: Print tag */}
+      {lastMade && (
+        <View style={styles.madeCard} accessibilityLiveRegion="polite">
+          <View style={styles.madeHeader}>
+            <Ionicons name="checkmark-circle" size={28} color={Colors.success} />
+            <Text style={styles.madeText}>
+              Made {lastMade.qty} × {lastMade.name}. It is in ready stock.
+            </Text>
+            <TouchableOpacity
+              onPress={() => setLastMade(null)}
+              style={styles.madeClose}
+              accessibilityRole="button"
+              accessibilityLabel="Close this message"
+            >
+              <Ionicons name="close" size={24} color={Colors.textSecondary} />
+            </TouchableOpacity>
+          </View>
+          {lastMade.id ? (
+            <>
+              <TouchableOpacity
+                style={[styles.tagBtn, tagStatus === 'printing' && { opacity: 0.6 }]}
+                onPress={handlePrintTag}
+                disabled={tagStatus === 'printing'}
+                accessibilityRole="button"
+                accessibilityLabel={lastMade.qty === 1 ? 'Print a tag for this item' : `Print ${lastMade.qty} labels`}
+                accessibilityState={{ disabled: tagStatus === 'printing' }}
+              >
+                {tagStatus === 'printing' ? (
+                  <ActivityIndicator color={Colors.white} />
+                ) : (
+                  <>
+                    <Ionicons name="pricetag" size={22} color={Colors.white} />
+                    <Text style={styles.tagBtnText}>
+                      {lastMade.qty === 1
+                        ? (tagStatus === 'done' ? 'Print tag again' : 'Print tag')
+                        : (tagStatus === 'done' ? 'Print labels again' : `Print ${lastMade.qty} labels`)}
+                    </Text>
+                  </>
+                )}
+              </TouchableOpacity>
+              <Text style={styles.madeHelp}>
+                {lastMade.qty === 1
+                  ? (tagStatus === 'done'
+                    ? 'Tag sent to the printer. Stick it on the item.'
+                    : 'One tag with a QR code. Once the item is sold, scanning the tag says it is sold.')
+                  : (tagStatus === 'done'
+                    ? 'Labels sent to the printer. Stick one on each piece.'
+                    : `${lastMade.qty} labels with a QR code, one for each piece.`)}
+              </Text>
+            </>
+          ) : null}
+          {!!tagError && <Text style={styles.tagError}>{tagError}</Text>}
+        </View>
       )}
 
       {/* Search */}
@@ -579,6 +692,22 @@ const styles = StyleSheet.create({
   recentProduct: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.text },
   recentQty: { fontSize: FontSize.lg, fontWeight: '700', color: Colors.success, marginTop: 2 },
   recentTime: { fontSize: 10, color: Colors.textLight, marginTop: 2 },
+
+  // Just-made card
+  madeCard: {
+    backgroundColor: Colors.successLight, borderBottomWidth: 1, borderBottomColor: Colors.border,
+    paddingHorizontal: Spacing.md, paddingVertical: Spacing.md,
+  },
+  madeHeader: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
+  madeText: { flex: 1, fontSize: FontSize.md, fontWeight: '600', color: Colors.text },
+  madeClose: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
+  tagBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.sm,
+    minHeight: 56, borderRadius: BorderRadius.md, backgroundColor: Colors.primary, marginTop: Spacing.sm,
+  },
+  tagBtnText: { color: Colors.white, fontSize: FontSize.lg, fontWeight: '700' },
+  madeHelp: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: Spacing.xs },
+  tagError: { fontSize: FontSize.md, color: Colors.error, fontWeight: '600', marginTop: Spacing.xs },
 
   // Custom make modal
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' },

@@ -6,8 +6,10 @@ const path = require('path');
 const fs = require('fs');
 
 const { getDb } = require('../config/database');
-const { getDb: getAsyncDb } = require('../config/database-async');
+const { getDb: getAsyncDb, withTransaction } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
+const { ensureLabelCode, labelUrl, ALPHABET, CODE_LENGTH } = require('../utils/label-code');
+const { publicUrlMissingInProduction, publicUrlHost, PUBLIC_APP_URL } = require('../utils/public-url');
 
 const router = express.Router();
 
@@ -247,11 +249,15 @@ router.get('/:id', authenticate, async (req, res, next) => {
       JOIN locations l ON ps.location_id = l.id
       WHERE ps.product_id = ?
     `).all(req.params.id);
-    product.total_ready_qty = product.stock.reduce((sum, s) => sum + s.quantity, 0);
+    product.total_ready_qty = product.stock.reduce((sum, s) => sum + (Number(s.quantity) || 0), 0);
 
     // Images
     product.images = await db.prepare(
       'SELECT * FROM product_images WHERE product_id = ? ORDER BY is_primary DESC, sort_order ASC'
+    ).all(req.params.id);
+
+    product.options = await db.prepare(
+      'SELECT id, label, price, sort_order FROM product_options WHERE product_id = ? AND is_active = 1 ORDER BY sort_order, id'
     ).all(req.params.id);
 
     res.json({ success: true, data: product });
@@ -277,6 +283,9 @@ router.post(
     body('materials.*.material_id').optional().isInt(),
     body('materials.*.quantity').optional().isFloat({ min: 0.01 }),
     body('materials.*.cost_per_unit').optional().isFloat({ min: 0 }),
+    body('price_mode').optional().isIn(['fixed', 'open']),
+    body('price_hint').optional({ nullable: true }).isString().isLength({ max: 120 }),
+    body('is_one_off').optional().isInt({ min: 0, max: 1 }),
   ],
   (req, res, next) => {
     try {
@@ -305,6 +314,11 @@ router.post(
       ).run(name, finalSku, description || '', type || 'standard', category || null, selling_price || 0, resolvedTaxRateId || null, location_id || null, req.user.id);
 
       const productId = result.lastInsertRowid;
+
+      if (req.body.price_mode !== undefined || req.body.price_hint !== undefined || req.body.is_one_off !== undefined) {
+        db.prepare('UPDATE products SET price_mode = COALESCE(?, price_mode), price_hint = ?, is_one_off = COALESCE(?, is_one_off) WHERE id = ?')
+          .run(req.body.price_mode ?? null, req.body.price_hint ?? null, req.body.is_one_off ?? null, productId);
+      }
 
       // Add materials (BOM recipe definition only — no stock deduction)
       if (materials && materials.length > 0) {
@@ -348,6 +362,9 @@ router.put(
     body('tax_percentage').optional({ nullable: true }).isFloat({ min: 0, max: 100 }),
     body('location_id').optional({ nullable: true }).isInt(),
     body('is_active').optional().isInt({ min: 0, max: 1 }),
+    body('price_mode').optional().isIn(['fixed', 'open']),
+    body('price_hint').optional({ nullable: true }).isString().isLength({ max: 120 }),
+    body('is_one_off').optional().isInt({ min: 0, max: 1 }),
   ],
   (req, res, next) => {
     try {
@@ -367,7 +384,7 @@ router.put(
         if (dupSku) return res.status(409).json({ success: false, message: 'SKU already exists' });
       }
 
-      const fields = ['name', 'sku', 'description', 'type', 'category', 'selling_price', 'tax_rate_id', 'location_id', 'image_url', 'is_active'];
+      const fields = ['name', 'sku', 'description', 'type', 'category', 'selling_price', 'tax_rate_id', 'location_id', 'image_url', 'is_active', 'price_mode', 'price_hint', 'is_one_off'];
       const updates = [];
       const values = [];
 
@@ -392,6 +409,111 @@ router.put(
       `).get(req.params.id);
 
       res.json({ success: true, data: product });
+    } catch (err) { next(err); }
+  }
+);
+
+// ─── PUT /api/products/:id/options (replace the size/price option list) ───
+router.put(
+  '/:id/options',
+  authenticate,
+  authorize('owner', 'manager'),
+  [
+    body('options').isArray({ max: 6 }).withMessage('At most 6 options'),
+    body('options.*.label').isString().trim().notEmpty().isLength({ max: 60 }),
+    body('options.*.price').isFloat({ gt: 0 }),
+  ],
+  async (req, res, next) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) return res.status(400).json({ success: false, message: 'Validation failed', errors: errors.array() });
+      const db = await getAsyncDb();
+      const product = await db.prepare('SELECT id FROM products WHERE id = ?').get(req.params.id);
+      if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
+      const options = req.body.options;
+      await withTransaction(async (tx) => {
+        // Row lock: two saves of the same list at once must not interleave
+        // their delete + insert and leave a doubled list.
+        await tx.prepare('SELECT id FROM products WHERE id = ? FOR UPDATE').get(req.params.id);
+        await tx.prepare('DELETE FROM product_options WHERE product_id = ?').run(req.params.id);
+        for (let i = 0; i < options.length; i++) {
+          await tx.prepare('INSERT INTO product_options (product_id, label, price, sort_order) VALUES (?, ?, ?, ?)')
+            .run(req.params.id, String(options[i].label).trim(), options[i].price, i);
+        }
+      });
+      const rows = await db.prepare(
+        'SELECT id, label, price, sort_order FROM product_options WHERE product_id = ? AND is_active = 1 ORDER BY sort_order, id'
+      ).all(req.params.id);
+      res.json({ success: true, data: rows });
+    } catch (err) { next(err); }
+  }
+);
+
+// ─── PUT /api/products/:id/one-off (Produce screen: Print tag) ───
+// Staff who make a custom item on the Produce screen mark it one-off so its tag
+// reads as sold once it is sold. PUT /:id is owner/manager only (it edits
+// prices), so this narrow route sets is_one_off = 1 and nothing else. Staff may
+// only do it for custom-made products (sku CUST-...), never a catalog product.
+router.put(
+  '/:id/one-off',
+  authenticate,
+  authorize('owner', 'manager', 'employee', 'counter_staff', 'florist_staff'),
+  async (req, res, next) => {
+    try {
+      const db = await getAsyncDb();
+      const product = await db.prepare('SELECT id, sku FROM products WHERE id = ?').get(req.params.id);
+      if (!product) return res.status(404).json({ success: false, message: 'This item could not be found. Refresh and try again.' });
+      const isCustom = String(product.sku || '').startsWith('CUST-');
+      if (!isCustom && !['owner', 'manager'].includes(req.user.role)) {
+        return res.status(403).json({ success: false, message: 'Only custom-made items can be tagged here. Ask the owner to change a catalog product.' });
+      }
+      await db.prepare('UPDATE products SET is_one_off = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(product.id);
+      res.json({ success: true, data: { id: product.id, is_one_off: 1 } });
+    } catch (err) { next(err); }
+  }
+);
+
+// ─── POST /api/products/labels (label data: code, url, QR image) ───
+router.post(
+  '/labels',
+  authenticate,
+  authorize('owner', 'manager', 'employee', 'counter_staff', 'florist_staff'),
+  [body('product_ids').isArray({ min: 1, max: 200 }), body('product_ids.*').isInt({ min: 1 })],
+  async (req, res, next) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) return res.status(400).json({ success: false, message: 'Validation failed', errors: errors.array() });
+      // A production server without PUBLIC_APP_URL would print localhost links
+      // that no phone can open once the labels are stuck on.
+      if (publicUrlMissingInProduction()) {
+        return res.status(409).json({ success: false, message: "Labels can't be printed yet — the shop's web address isn't set up. Ask the owner." });
+      }
+      const db = await getAsyncDb();
+      const ids = [...new Set(req.body.product_ids.map(Number))];
+      const host = publicUrlHost(PUBLIC_APP_URL);
+      const out = [];
+      for (const id of ids) {
+        const p = await db.prepare('SELECT id, name, selling_price, price_mode, price_hint FROM products WHERE id = ?').get(id);
+        if (!p) continue;
+        const code = await ensureLabelCode(db, id);
+        const url = labelUrl(code);
+        const options = await db.prepare(
+          'SELECT label, price FROM product_options WHERE product_id = ? AND is_active = 1 ORDER BY sort_order, id'
+        ).all(id);
+        out.push({
+          product_id: p.id,
+          name: p.name,
+          price: Number(p.selling_price) || 0,
+          price_mode: p.price_mode || 'fixed',
+          price_hint: p.price_hint || null,
+          label_code: code,
+          url,
+          url_host: host,
+          options: options.map((o) => ({ label: o.label, price: Number(o.price) })),
+          qr_data_url: await QRCode.toDataURL(url, { width: 300, margin: 1 }),
+        });
+      }
+      res.json({ success: true, data: out });
     } catch (err) { next(err); }
   }
 );
@@ -631,37 +753,87 @@ router.get('/:id/qr', authenticate, async (req, res, next) => {
 });
 
 // ─── POST /api/products/scan ─────────────────────────────────
-// Look up product by scanned QR payload
-router.post('/scan', authenticate, (req, res, next) => {
+// Selling-only lookup by scanned payload: legacy JSON, a /p/<code> URL, or a bare code.
+// Never returns cost, stock quantities, supplier or material data.
+const SCAN_UNKNOWN = 'This isn\'t one of our product codes. Try Find by name.';
+const SCAN_OFF = 'Not for sale right now — ask the counter.';
+const SCAN_SOLD = 'This one-off item is already sold. Check with the counter.';
+const SCAN_CODE_RE = new RegExp(`^[${ALPHABET}]{${CODE_LENGTH}}$`);
+
+// Returns { id } or { code } or null. Bare codes and URL codes are uppercased first.
+function parseScanPayload(raw) {
+  const text = String(raw || '').trim();
+  if (!text) return null;
+  if (text.startsWith('{')) {
+    try {
+      const j = JSON.parse(text);
+      const id = Number(j && j.id);
+      if (j && j.type === 'bloomcart_product' && Number.isInteger(id) && id > 0) return { id };
+    } catch { /* fall through */ }
+    return null;
+  }
+  if (/^https?:\/\//i.test(text)) {
+    let u;
+    try { u = new URL(text); } catch { return null; }
+    const m = u.pathname.match(/^\/p\/([^/]+)\/?$/);
+    if (!m) return null;
+    const code = m[1].toUpperCase();
+    return SCAN_CODE_RE.test(code) ? { code } : null;
+  }
+  const code = text.toUpperCase();
+  return SCAN_CODE_RE.test(code) ? { code } : null;
+}
+
+router.post('/scan', authenticate, async (req, res, next) => {
   try {
-    const { payload } = req.body;
-    if (!payload) return res.status(400).json({ success: false, message: 'No QR payload provided' });
+    const { payload } = req.body || {};
+    const unknown = (status) => res.status(status).json({ success: false, message: SCAN_UNKNOWN });
+    const parsed = parseScanPayload(payload);
+    if (!parsed) return unknown(400);
 
-    let parsed;
-    try { parsed = JSON.parse(payload); } catch { return res.status(400).json({ success: false, message: 'Invalid QR code' }); }
+    const db = await getAsyncDb();
+    const cols = 'id, name, image_url, selling_price, price_mode, price_hint, is_one_off, is_active';
+    const product = parsed.id
+      ? await db.prepare(`SELECT ${cols} FROM products WHERE id = ?`).get(parsed.id)
+      : await db.prepare(`SELECT ${cols} FROM products WHERE label_code = ?`).get(parsed.code);
+    if (!product) return unknown(404);
 
-    if (parsed.type !== 'bloomcart_product') {
-      return res.status(400).json({ success: false, message: 'Not a Flower point product QR code' });
+    // Inventory lookup (purpose 'lookup') by owner/manager may open a
+    // switched-off product so it can be found and switched back on. Every
+    // other scan (the counter) still refuses it.
+    const ownerLookup = req.body.purpose === 'lookup' && ['owner', 'manager'].includes(req.user.role);
+    const active = Number(product.is_active) ? 1 : 0;
+    if (!active && !ownerLookup) return res.status(409).json({ success: false, message: SCAN_OFF });
+
+    const locationId = Number(req.body.location_id) || null;
+    let inStock = false;
+    if (locationId) {
+      const st = await db.prepare('SELECT quantity FROM product_stock WHERE product_id = ? AND location_id = ?').get(product.id, locationId);
+      inStock = !!st && Number(st.quantity) > 0;
+    }
+    if (Number(product.is_one_off) === 1 && locationId && !inStock) {
+      return res.status(409).json({ success: false, message: SCAN_SOLD });
     }
 
-    const db = getDb();
-    const product = db.prepare(`
-      SELECT p.*, tr.name as tax_name, tr.percentage as tax_percentage
-      FROM products p LEFT JOIN tax_rates tr ON p.tax_rate_id = tr.id
-      WHERE p.id = ?
-    `).get(parsed.id);
+    const options = await db.prepare(
+      'SELECT id, label, price FROM product_options WHERE product_id = ? AND is_active = 1 ORDER BY sort_order, id'
+    ).all(product.id);
 
-    if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
-
-    product.materials = db.prepare(`
-      SELECT pm.*, m.name as material_name, mc.unit as unit
-      FROM product_materials pm
-      JOIN materials m ON pm.material_id = m.id
-      JOIN material_categories mc ON m.category_id = mc.id
-      WHERE pm.product_id = ?
-    `).all(product.id);
-
-    res.json({ success: true, data: product });
+    res.json({
+      success: true,
+      data: {
+        id: product.id,
+        name: product.name,
+        image_url: product.image_url || null,
+        selling_price: Number(product.selling_price) || 0,
+        price_mode: product.price_mode || 'fixed',
+        price_hint: product.price_hint || null,
+        is_one_off: Number(product.is_one_off) === 1 ? 1 : 0,
+        is_active: active,
+        in_stock: inStock,
+        options: options.map((o) => ({ id: o.id, label: o.label, price: Number(o.price) })),
+      },
+    });
   } catch (err) { next(err); }
 });
 

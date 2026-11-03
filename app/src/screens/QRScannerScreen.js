@@ -1,155 +1,115 @@
-import React, { useState, useEffect, useRef } from 'react';
-import {
-  View, Text, StyleSheet, TouchableOpacity, Alert, Platform,
-} from 'react-native';
+import React, { useRef, useState } from 'react';
+import { View, Text, StyleSheet, ActivityIndicator, TouchableOpacity } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { CameraView, useCameraPermissions } from 'expo-camera';
+import ProductScanner from '../components/scan/ProductScanner';
+import { SCANNER_COPY } from '../components/scan/scanCooldown';
 import api from '../services/api';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 
-export default function QRScannerScreen({ navigation, route }) {
-  const [permission, requestPermission] = useCameraPermissions();
-  const [scanned, setScanned] = useState(false);
-  const [processing, setProcessing] = useState(false);
-  const fromPOS = route.params?.fromPOS || false;
+// Works on web (browser camera) and in the native app. The scanner component
+// handles the camera, permission and the same-code cooldown; this screen only
+// decides what a scanned code means.
+const SIZED_ON_POS = 'This item has sizes or a typed price. Add it with Scan in Quick Checkout.';
 
-  const handleBarCodeScanned = async ({ data }) => {
-    if (scanned || processing) return;
-    setScanned(true);
+export default function QRScannerScreen({ navigation, route }) {
+  const fromPOS = route.params?.fromPOS || false;
+  const [processing, setProcessing] = useState(false);
+  const [error, setError] = useState('');
+  const busyRef = useRef(false);
+
+  const handleCode = async (data) => {
+    if (busyRef.current) return;
+    busyRef.current = true;
     setProcessing(true);
+    setError('');
 
     try {
-      const res = await api.scanProductQR(data);
+      // Inventory (not POS) is a lookup: owner/manager may open a switched-off
+      // product here so it can be switched back on.
+      const res = await api.scanProductQR(data, undefined, fromPOS ? undefined : 'lookup');
       if (res.success && res.data) {
         if (fromPOS) {
-          // Return product to POS cart
-          navigation.navigate('POSHome', { scannedProduct: res.data });
+          // The older POS cart has no size or typed-price question, so such an
+          // item is not added at its base price.
+          if ((Array.isArray(res.data.options) && res.data.options.length > 0) || res.data.price_mode === 'open') {
+            setError(SIZED_ON_POS);
+            return;
+          }
+          // Scan is selling-only; re-read the full product so tax, sku and stock match the cart
+          const full = await api.getProduct(res.data.id);
+          if (!full || !full.success || !full.data) throw new Error('Could not load this product. Please try again.');
+          navigation.navigate('POSHome', { scannedProduct: full.data });
         } else {
           navigation.replace('ProductDetail', { productId: res.data.id });
         }
       } else {
-        Alert.alert('Not Found', 'No product matched this QR code');
-        setScanned(false);
+        setError(res.message || 'No product matched this QR code');
       }
     } catch (err) {
-      Alert.alert('Error', err.message || 'Invalid QR code');
-      setScanned(false);
+      setError(err.message || 'Could not read this code. Please try again.');
     } finally {
+      busyRef.current = false;
       setProcessing(false);
     }
   };
 
-  if (!permission) {
-    return (
-      <View style={styles.center}>
-        <Text style={styles.infoText}>Requesting camera permission...</Text>
-      </View>
-    );
-  }
-
-  if (!permission.granted) {
-    return (
-      <View style={styles.center}>
-        <Ionicons name="camera-outline" size={64} color={Colors.textLight} />
-        <Text style={styles.infoTitle}>Camera Access Required</Text>
-        <Text style={styles.infoText}>Grant camera permission to scan QR codes</Text>
-        <TouchableOpacity style={styles.permBtn} onPress={requestPermission}>
-          <Text style={styles.permBtnText}>Grant Permission</Text>
-        </TouchableOpacity>
-      </View>
-    );
-  }
-
-  // Web fallback — camera scanning isn't reliable on web
-  if (Platform.OS === 'web') {
-    return (
-      <View style={styles.center}>
-        <Ionicons name="qr-code-outline" size={64} color={Colors.textLight} />
-        <Text style={styles.infoTitle}>QR Scanner</Text>
-        <Text style={styles.infoText}>Camera-based QR scanning is not available on web. Use a mobile device to scan QR codes.</Text>
-        <TouchableOpacity style={styles.permBtn} onPress={() => navigation.goBack()}>
-          <Text style={styles.permBtnText}>Go Back</Text>
-        </TouchableOpacity>
-      </View>
-    );
-  }
-
   return (
     <View style={styles.container}>
-      <CameraView
-        style={StyleSheet.absoluteFillObject}
-        barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
-        onBarcodeScanned={scanned ? undefined : handleBarCodeScanned}
-      />
-
-      {/* Overlay */}
-      <View style={styles.overlay}>
-        <View style={styles.overlayTop} />
-        <View style={styles.overlayMiddle}>
-          <View style={styles.overlaySide} />
-          <View style={styles.scanBox}>
-            {/* Corner markers */}
-            <View style={[styles.corner, styles.cornerTL]} />
-            <View style={[styles.corner, styles.cornerTR]} />
-            <View style={[styles.corner, styles.cornerBL]} />
-            <View style={[styles.corner, styles.cornerBR]} />
-          </View>
-          <View style={styles.overlaySide} />
-        </View>
-        <View style={styles.overlayBottom}>
-          <Text style={styles.scanText}>
-            {processing ? 'Looking up product...' : 'Point camera at a product QR code'}
-          </Text>
-          {scanned && !processing && (
-            <TouchableOpacity style={styles.rescanBtn} onPress={() => setScanned(false)}>
-              <Ionicons name="refresh" size={20} color={Colors.white} />
-              <Text style={styles.rescanText}>Scan Again</Text>
-            </TouchableOpacity>
+      <ProductScanner onCode={handleCode} paused={processing}>
+        <View style={styles.bottom} pointerEvents="none">
+          {processing ? (
+            <View style={styles.pill}>
+              <ActivityIndicator color={Colors.white} />
+              <Text style={styles.pillText}>Looking up product{'…'}</Text>
+            </View>
+          ) : error ? (
+            <View style={[styles.pill, styles.errorPill]} accessibilityLiveRegion="assertive">
+              <Ionicons name="alert-circle" size={24} color={Colors.warning} />
+              <Text style={styles.pillText}>{error}</Text>
+            </View>
+          ) : (
+            <View style={styles.pill}>
+              <Ionicons name="qr-code-outline" size={24} color={Colors.white} />
+              <Text style={styles.pillText}>{SCANNER_COPY.hint}</Text>
+            </View>
           )}
         </View>
-      </View>
+      </ProductScanner>
+      {error && !processing && !fromPOS ? (
+        <View style={styles.backWrap}>
+          <TouchableOpacity
+            style={styles.backBtn}
+            onPress={() => navigation.goBack()}
+            accessibilityRole="button"
+            accessibilityLabel="Back"
+          >
+            <Ionicons name="arrow-back" size={22} color={Colors.primary} />
+            <Text style={styles.backText}>Back</Text>
+          </TouchableOpacity>
+        </View>
+      ) : null}
     </View>
   );
 }
 
-const SCAN_SIZE = 250;
-
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#000' },
-  center: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: Colors.background, padding: Spacing.xl },
-  infoTitle: { fontSize: FontSize.lg, fontWeight: '700', color: Colors.text, marginTop: Spacing.md },
-  infoText: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: Spacing.xs, textAlign: 'center' },
-  permBtn: {
-    backgroundColor: Colors.primary, borderRadius: BorderRadius.md,
-    paddingHorizontal: Spacing.xl, paddingVertical: Spacing.md, marginTop: Spacing.lg,
+  container: { flex: 1, backgroundColor: Colors.black },
+  bottom: {
+    position: 'absolute', left: 0, right: 0, bottom: 0,
+    padding: Spacing.md, paddingBottom: Spacing.xl, alignItems: 'center',
   },
-  permBtnText: { color: Colors.white, fontSize: FontSize.md, fontWeight: '600' },
-
-  overlay: { ...StyleSheet.absoluteFillObject },
-  overlayTop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.55)' },
-  overlayMiddle: { flexDirection: 'row' },
-  overlaySide: { flex: 1, backgroundColor: 'rgba(0,0,0,0.55)' },
-  scanBox: {
-    width: SCAN_SIZE, height: SCAN_SIZE,
+  pill: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
+    backgroundColor: 'rgba(0,0,0,0.7)', borderRadius: BorderRadius.md,
+    paddingHorizontal: Spacing.md, paddingVertical: Spacing.md, maxWidth: 520,
   },
-  overlayBottom: {
-    flex: 1, backgroundColor: 'rgba(0,0,0,0.55)',
-    alignItems: 'center', paddingTop: Spacing.xl,
+  errorPill: { backgroundColor: 'rgba(0,0,0,0.85)', borderWidth: 2, borderColor: Colors.warning },
+  pillText: { color: Colors.white, fontSize: FontSize.md, fontWeight: '600', flexShrink: 1 },
+  backWrap: { backgroundColor: Colors.black, padding: Spacing.md, paddingBottom: Spacing.lg, alignItems: 'center' },
+  backBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.sm,
+    minHeight: 56, minWidth: 200, paddingHorizontal: Spacing.lg, borderRadius: BorderRadius.md,
+    backgroundColor: Colors.surface, borderWidth: 2, borderColor: Colors.primary,
   },
-  scanText: { color: Colors.white, fontSize: FontSize.sm, textAlign: 'center' },
-  rescanBtn: {
-    flexDirection: 'row', alignItems: 'center', gap: Spacing.xs,
-    backgroundColor: Colors.primary, borderRadius: BorderRadius.md,
-    paddingHorizontal: Spacing.lg, paddingVertical: Spacing.sm, marginTop: Spacing.md,
-  },
-  rescanText: { color: Colors.white, fontSize: FontSize.sm, fontWeight: '600' },
-
-  corner: {
-    position: 'absolute', width: 30, height: 30,
-    borderColor: Colors.primary, borderWidth: 3,
-  },
-  cornerTL: { top: 0, left: 0, borderRightWidth: 0, borderBottomWidth: 0 },
-  cornerTR: { top: 0, right: 0, borderLeftWidth: 0, borderBottomWidth: 0 },
-  cornerBL: { bottom: 0, left: 0, borderRightWidth: 0, borderTopWidth: 0 },
-  cornerBR: { bottom: 0, right: 0, borderLeftWidth: 0, borderTopWidth: 0 },
+  backText: { color: Colors.primary, fontSize: FontSize.md, fontWeight: '700' },
 });

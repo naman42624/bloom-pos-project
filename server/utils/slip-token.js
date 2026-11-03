@@ -9,7 +9,7 @@ const crypto = require('crypto');
 // PUBLIC_APP_URL.
 const { TRACKING_SECRET } = require('./tracking-token');
 
-const PUBLIC_APP_URL = process.env.PUBLIC_APP_URL || 'http://localhost:19006';
+const { PUBLIC_APP_URL } = require('./public-url');
 
 function sign(saleId) {
   return crypto.createHmac('sha256', TRACKING_SECRET).update('slip:' + String(saleId)).digest('hex').slice(0, 32);

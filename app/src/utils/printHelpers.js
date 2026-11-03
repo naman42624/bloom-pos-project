@@ -37,6 +37,15 @@ export const printHtmlOnWeb = (markup, title) => {
   }, 250);
 };
 
+// What is being printed, for the error copy: "Labels" -> labels, "Tag" -> tag,
+// anything else (Delivery Challan / Pickup Slip ...) -> slip.
+export const printNoun = (title) => {
+  const t = String(title || '').trim().toLowerCase();
+  if (t.startsWith('label')) return 'labels';
+  if (t.startsWith('tag')) return 'tag';
+  return 'slip';
+};
+
 export const printHtml = async (html, title) => {
   try {
     if (Platform.OS === 'web') {
@@ -46,7 +55,7 @@ export const printHtml = async (html, title) => {
     const { uri } = await Print.printToFileAsync({ html, width: 595 }); // A4 width approx for slips
     await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: title });
   } catch (err) {
-    showAlert('Could not print', 'The slip could not be printed. Check the printer is on and try again.');
+    showAlert('Could not print', `The ${printNoun(title)} could not be printed. Check the printer is on and try again.`);
   }
 };
 

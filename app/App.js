@@ -7,6 +7,7 @@ import RootNavigator from './src/navigation/RootNavigator';
 import TrackingScreen from './src/screens/TrackingScreen';
 import SlipScreen from './src/screens/SlipScreen';
 import OrderRequestScreen from './src/screens/OrderRequestScreen';
+import PricePageScreen from './src/screens/PricePageScreen';
 
 // Web-only: a customer opens this link from a WhatsApp message in their
 // phone's browser, never inside the staff app itself (which has no
@@ -47,7 +48,20 @@ function getSlipToken() {
   return match ? match[1] : null;
 }
 
+// Web-only: a customer scans the QR on a product label and lands here with no
+// login. Code alphabet excludes I, O, 0, 1.
+function getPriceCode() {
+  if (Platform.OS !== 'web' || typeof window === 'undefined') return null;
+  const match = /^\/p\/([A-Z0-9]{8})\/?$/.exec(window.location.pathname);
+  return match ? match[1] : null;
+}
+
 export default function App() {
+  const priceCode = getPriceCode();
+  if (priceCode) {
+    return <PricePageScreen code={priceCode} />;
+  }
+
   const slipToken = getSlipToken();
   if (slipToken) {
     return <SlipScreen token={slipToken} />;
