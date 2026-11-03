@@ -11,7 +11,7 @@ const FALLBACK = "We couldn't find this item — please ask at the counter.";
 function money(n) {
   const v = Number(n);
   if (!Number.isFinite(v)) return null;
-  return `₹${v.toLocaleString('en-IN', { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
+  return `₹${v.toLocaleString('en-IN', { minimumFractionDigits: Number.isInteger(v) ? 0 : 2, maximumFractionDigits: 2 })}`;
 }
 
 export default function PricePageScreen({ code }) {
