@@ -641,6 +641,9 @@ check('parallel PIN guesses cannot get past the lockout', async () => {
   const compared = out.filter((r) => r.status === 200 || (r.status === 401 && /tries left/.test(r.body?.message || ''))).length;
   assert(compared <= MAX, `${compared} requests were compared: ${JSON.stringify(out.map((r) => [r.status, r.body?.message]))}`);
   assert(out.every((r) => [200, 401, 423].includes(r.status)), `unexpected status: ${out.map((r) => r.status)}`);
+  // Every compared try is counted, so the stored count proves how many PINs were checked
+  const burstRow = await (await getDb()).prepare('SELECT pin_failed_attempts FROM users WHERE id = ?').get(cs.id);
+  assert(Number(burstRow.pin_failed_attempts) === MAX, `stored tries after burst: ${burstRow.pin_failed_attempts} (want ${MAX})`);
   const after = await api('POST', '/auth/staff-login', null, { employee_code: code, pin: '4321' });
   assert(after.status === 423 && after.body?.message === LOCKED_COPY, `after burst: ${after.status} ${JSON.stringify(after.body)}`);
   // An ended lock starts the count again from 0
