@@ -1078,6 +1078,24 @@ function ensureCompatibilityColumns() {
   ensureColumn('sales', 'undone_by', 'INTEGER REFERENCES users(id) ON DELETE SET NULL');
   ensureColumn('sales', 'undone_at', 'TIMESTAMP');
   runPsql('CREATE INDEX IF NOT EXISTS idx_sales_location_entry_mode_created ON sales(location_id, entry_mode, created_at)');
+  // Product labels: short scan code, open-price flag, hint text, one-off flag
+  ensureColumn('products', 'label_code', 'VARCHAR(8)');
+  ensureColumn('products', 'price_mode', "VARCHAR(10) DEFAULT 'fixed'");
+  ensureColumn('products', 'price_hint', 'VARCHAR(120)');
+  ensureColumn('products', 'is_one_off', 'INTEGER DEFAULT 0');
+  runPsql('CREATE UNIQUE INDEX IF NOT EXISTS idx_products_label_code ON products(label_code)');
+  runPsql(`
+    CREATE TABLE IF NOT EXISTS product_options (
+      id SERIAL PRIMARY KEY,
+      product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+      label VARCHAR(60) NOT NULL,
+      price DECIMAL(10,2) NOT NULL,
+      sort_order INTEGER DEFAULT 0,
+      is_active INTEGER DEFAULT 1,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  runPsql('CREATE INDEX IF NOT EXISTS idx_product_options_product ON product_options(product_id)');
   // Optional per-item attachment scoping: NULL = order-level (existing behavior
   // unchanged), set = this photo/voice note belongs to one specific line item.
   ensureColumn('sale_attachments', 'sale_item_id', 'INTEGER REFERENCES sale_items(id) ON DELETE CASCADE');

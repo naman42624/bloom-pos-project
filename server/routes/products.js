@@ -6,8 +6,9 @@ const path = require('path');
 const fs = require('fs');
 
 const { getDb } = require('../config/database');
-const { getDb: getAsyncDb } = require('../config/database-async');
+const { getDb: getAsyncDb, withTransaction } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
+const { ensureLabelCode, labelUrl } = require('../utils/label-code');
 
 const router = express.Router();
 
@@ -254,6 +255,10 @@ router.get('/:id', authenticate, async (req, res, next) => {
       'SELECT * FROM product_images WHERE product_id = ? ORDER BY is_primary DESC, sort_order ASC'
     ).all(req.params.id);
 
+    product.options = await db.prepare(
+      'SELECT id, label, price, sort_order FROM product_options WHERE product_id = ? AND is_active = 1 ORDER BY sort_order, id'
+    ).all(req.params.id);
+
     res.json({ success: true, data: product });
   } catch (err) { next(err); }
 });
@@ -277,6 +282,9 @@ router.post(
     body('materials.*.material_id').optional().isInt(),
     body('materials.*.quantity').optional().isFloat({ min: 0.01 }),
     body('materials.*.cost_per_unit').optional().isFloat({ min: 0 }),
+    body('price_mode').optional().isIn(['fixed', 'open']),
+    body('price_hint').optional({ nullable: true }).isString().isLength({ max: 120 }),
+    body('is_one_off').optional().isInt({ min: 0, max: 1 }),
   ],
   (req, res, next) => {
     try {
@@ -305,6 +313,11 @@ router.post(
       ).run(name, finalSku, description || '', type || 'standard', category || null, selling_price || 0, resolvedTaxRateId || null, location_id || null, req.user.id);
 
       const productId = result.lastInsertRowid;
+
+      if (req.body.price_mode !== undefined || req.body.price_hint !== undefined || req.body.is_one_off !== undefined) {
+        db.prepare('UPDATE products SET price_mode = COALESCE(?, price_mode), price_hint = ?, is_one_off = COALESCE(?, is_one_off) WHERE id = ?')
+          .run(req.body.price_mode ?? null, req.body.price_hint ?? null, req.body.is_one_off ?? null, productId);
+      }
 
       // Add materials (BOM recipe definition only — no stock deduction)
       if (materials && materials.length > 0) {
@@ -348,6 +361,9 @@ router.put(
     body('tax_percentage').optional({ nullable: true }).isFloat({ min: 0, max: 100 }),
     body('location_id').optional({ nullable: true }).isInt(),
     body('is_active').optional().isInt({ min: 0, max: 1 }),
+    body('price_mode').optional().isIn(['fixed', 'open']),
+    body('price_hint').optional({ nullable: true }).isString().isLength({ max: 120 }),
+    body('is_one_off').optional().isInt({ min: 0, max: 1 }),
   ],
   (req, res, next) => {
     try {
@@ -367,7 +383,7 @@ router.put(
         if (dupSku) return res.status(409).json({ success: false, message: 'SKU already exists' });
       }
 
-      const fields = ['name', 'sku', 'description', 'type', 'category', 'selling_price', 'tax_rate_id', 'location_id', 'image_url', 'is_active'];
+      const fields = ['name', 'sku', 'description', 'type', 'category', 'selling_price', 'tax_rate_id', 'location_id', 'image_url', 'is_active', 'price_mode', 'price_hint', 'is_one_off'];
       const updates = [];
       const values = [];
 
@@ -392,6 +408,73 @@ router.put(
       `).get(req.params.id);
 
       res.json({ success: true, data: product });
+    } catch (err) { next(err); }
+  }
+);
+
+// ─── PUT /api/products/:id/options (replace the size/price option list) ───
+router.put(
+  '/:id/options',
+  authenticate,
+  authorize('owner', 'manager'),
+  [
+    body('options').isArray({ max: 6 }).withMessage('At most 6 options'),
+    body('options.*.label').isString().trim().notEmpty().isLength({ max: 60 }),
+    body('options.*.price').isFloat({ gt: 0 }),
+  ],
+  async (req, res, next) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) return res.status(400).json({ success: false, message: 'Validation failed', errors: errors.array() });
+      const db = await getAsyncDb();
+      const product = await db.prepare('SELECT id FROM products WHERE id = ?').get(req.params.id);
+      if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
+      const options = req.body.options;
+      await withTransaction(async (tx) => {
+        await tx.prepare('DELETE FROM product_options WHERE product_id = ?').run(req.params.id);
+        for (let i = 0; i < options.length; i++) {
+          await tx.prepare('INSERT INTO product_options (product_id, label, price, sort_order) VALUES (?, ?, ?, ?)')
+            .run(req.params.id, String(options[i].label).trim(), options[i].price, i);
+        }
+      });
+      const rows = await db.prepare(
+        'SELECT id, label, price, sort_order FROM product_options WHERE product_id = ? AND is_active = 1 ORDER BY sort_order, id'
+      ).all(req.params.id);
+      res.json({ success: true, data: rows });
+    } catch (err) { next(err); }
+  }
+);
+
+// ─── POST /api/products/labels (label data: code, url, QR image) ───
+router.post(
+  '/labels',
+  authenticate,
+  authorize('owner', 'manager', 'employee', 'counter_staff', 'florist_staff'),
+  [body('product_ids').isArray({ min: 1, max: 200 }), body('product_ids.*').isInt({ min: 1 })],
+  async (req, res, next) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) return res.status(400).json({ success: false, message: 'Validation failed', errors: errors.array() });
+      const db = await getAsyncDb();
+      const ids = [...new Set(req.body.product_ids.map(Number))];
+      const out = [];
+      for (const id of ids) {
+        const p = await db.prepare('SELECT id, name, selling_price, price_mode, price_hint FROM products WHERE id = ?').get(id);
+        if (!p) continue;
+        const code = await ensureLabelCode(db, id);
+        const url = labelUrl(code);
+        out.push({
+          product_id: p.id,
+          name: p.name,
+          price: Number(p.selling_price) || 0,
+          price_mode: p.price_mode || 'fixed',
+          price_hint: p.price_hint || null,
+          label_code: code,
+          url,
+          qr_data_url: await QRCode.toDataURL(url, { width: 300, margin: 1 }),
+        });
+      }
+      res.json({ success: true, data: out });
     } catch (err) { next(err); }
   }
 );
