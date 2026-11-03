@@ -1084,6 +1084,115 @@ check('a repeat of an unfinished sale is not answered as saved', async () => {
   assert(Number(n.c) === 1, `sales with ref: ${n.c}`);
 });
 
+// ─── Helper undo and my sales (Task 5) ───────────────────────
+const NOT_YOURS = 'Ask the counter to undo this sale.';
+const TOO_OLD = "It's been more than 2 minutes. Ask the counter to undo this sale.";
+const undoSale = (token, id) => api('POST', `/quick-sale/${id}/undo`, token, {});
+const mySales = (token) => api('GET', `/quick-sale/my-sales?location_id=${TEST_LOCATION_ID}`, token);
+
+async function helperSaleOf(token, method, amount = 1000) {
+  const prod = amount === 1000 ? (await sellSetup()).fixed : await makeProduct({ name: `Verify P${amount}`, price: amount, stock: 0 });
+  const r = await sell(token, { items: [{ product_id: prod.id, quantity: 1, unit_price: amount }], payments: [{ method, amount }] });
+  assert(r.status === 201, `helper sale: ${r.status} ${JSON.stringify(r.body)}`);
+  return r.body.data.id;
+}
+
+check('helper can undo own sale within 2 minutes', async () => {
+  const { owner, helper } = await sellSetup();
+  const reg = await openRegister(owner.token, TEST_LOCATION_ID, 100);
+  const db = await getDb();
+  const regRow = () => db.prepare('SELECT expected_cash, total_cash_sales, total_upi_sales FROM cash_registers WHERE id = ?').get(reg.id);
+  const before = await regRow();
+  const cashId = await helperSaleOf(helper.token, 'cash');
+  const upiId = await helperSaleOf(helper.token, 'upi', 500);
+  const mid = await regRow();
+  assert(Number(mid.expected_cash) - Number(before.expected_cash) === 1000, 'cash sale reached the register');
+  const a = await undoSale(helper.token, cashId);
+  assert(a.status === 200, `undo cash: ${a.status} ${JSON.stringify(a.body)}`);
+  const b = await undoSale(helper.token, upiId);
+  assert(b.status === 200, `undo upi: ${b.status} ${JSON.stringify(b.body)}`);
+  const after = await regRow();
+  assert(Number(after.expected_cash) === Number(before.expected_cash) && Number(after.total_cash_sales) === Number(before.total_cash_sales) && Number(after.total_upi_sales) === Number(before.total_upi_sales), `register not restored: ${JSON.stringify(before)} -> ${JSON.stringify(after)}`);
+  assert((await saleRow(cashId)).status === 'cancelled', 'sale cancelled');
+  const again = await undoSale(helper.token, cashId);
+  assert(again.status === 400, `second undo: ${again.status}`);
+});
+
+check('helper cannot undo after 2 minutes', async () => {
+  const { helper } = await sellSetup();
+  const id = await helperSaleOf(helper.token, 'upi');
+  const db = await getDb();
+  await db.prepare("UPDATE sales SET created_at = NOW() - INTERVAL '3 minutes' WHERE id = ?").run(id);
+  const r = await undoSale(helper.token, id);
+  assert(r.status === 403 && r.body?.message === TOO_OLD, `${r.status} ${JSON.stringify(r.body)}`);
+  assert((await saleRow(id)).status !== 'cancelled', 'sale must stay');
+});
+
+check('helper cannot undo someone else\'s sale', async () => {
+  const { owner, helper } = await sellSetup();
+  const other = await helperSession(owner.token);
+  const id = await helperSaleOf(other.token, 'upi');
+  const r = await undoSale(helper.token, id);
+  assert(r.status === 403 && r.body?.message === NOT_YOURS, `${r.status} ${JSON.stringify(r.body)}`);
+  assert((await saleRow(id)).status !== 'cancelled', 'sale must stay');
+  const staffSale = await api('POST', '/sales', owner.token, { location_id: TEST_LOCATION_ID, order_type: 'walk_in', items: [{ product_id: (await sellSetup()).fixed.id, quantity: 1, unit_price: 1000 }], payments: [{ method: 'upi', amount: 1000 }] });
+  if (staffSale.status === 201) {
+    const r2 = await undoSale(helper.token, staffSale.body.data.id);
+    assert(r2.status === 403 && r2.body?.message === NOT_YOURS, `counter sale: ${r2.status} ${JSON.stringify(r2.body)}`);
+  }
+});
+
+check('my-sales lists only the caller\'s sales today', async () => {
+  const { owner } = await sellSetup();
+  const me = await helperSession(owner.token);
+  const other = await helperSession(owner.token);
+  const mine = await helperSaleOf(me.token, 'upi', 700);
+  const theirs = await helperSaleOf(other.token, 'upi', 300);
+  const r = await mySales(me.token);
+  assert(r.status === 200, `${r.status} ${JSON.stringify(r.body)}`);
+  const ids = r.body.data.sales.map((x) => x.id);
+  assert(ids.length === 1 && ids[0] === mine && !ids.includes(theirs), `ids ${ids}`);
+  const row = r.body.data.sales[0];
+  assert(row.can_undo === true && row.undone === false && row.grand_total === 700 && row.items.length === 1 && /\u00d7 1$/.test(row.items[0]), JSON.stringify(row));
+  assert(!JSON.stringify(r.body).match(/cost/i), 'no cost fields');
+  const noLoc = await api('GET', '/quick-sale/my-sales', me.token);
+  assert(noLoc.status === 400, `no location: ${noLoc.status}`);
+});
+
+check('my-sales totals exclude undone sales', async () => {
+  const { owner } = await sellSetup();
+  await openRegister(owner.token, TEST_LOCATION_ID, 100);
+  const me = await helperSession(owner.token);
+  const c = await helperSaleOf(me.token, 'cash', 400);
+  const u = await helperSaleOf(me.token, 'upi', 600);
+  const gone = await helperSaleOf(me.token, 'cash', 250);
+  assert((await undoSale(me.token, gone)).status === 200, 'undo');
+  const r = await mySales(me.token);
+  const d = r.body.data;
+  assert(d.count === 2 && d.totals.cash === 400 && d.totals.upi === 600, JSON.stringify(d.totals) + ' count ' + d.count);
+  const goneRow = d.sales.find((x) => x.id === gone);
+  assert(goneRow && goneRow.undone === true && goneRow.can_undo === false && d.sales.length === 3, 'undone row flagged');
+  assert(d.sales[0].id === gone, 'newest first');
+  assert(c && u, 'sales made');
+});
+
+check('non-helper undo unchanged (counter staff quick sale undo still works)', async () => {
+  const { owner } = await sellSetup();
+  await openRegister(owner.token, TEST_LOCATION_ID, 100);
+  const staff = await makeStaffAt(owner.token, 'counter_staff', TEST_LOCATION_ID);
+  const token = await helperToken(staff.phone);
+  const s = await api('POST', '/sales', token, { location_id: TEST_LOCATION_ID, order_type: 'walk_in', entry_mode: 'quick', items: [{ product_id: (await sellSetup()).fixed.id, quantity: 1, unit_price: 100 }], payments: [{ method: 'upi', amount: 100 }] });
+  assert(s.status === 201, `staff quick sale: ${s.status} ${JSON.stringify(s.body)}`);
+  const u = await undoSale(token, s.body.data.id);
+  assert(u.status === 200, `undo: ${u.status} ${JSON.stringify(u.body)}`);
+  // a normal (non quick) sale is still not undoable through this route
+  const full = await api('POST', '/sales', token, { location_id: TEST_LOCATION_ID, order_type: 'walk_in', items: [{ product_id: (await sellSetup()).fixed.id, quantity: 1, unit_price: 100 }], payments: [{ method: 'upi', amount: 100 }] });
+  if (full.status === 201) {
+    const n = await undoSale(token, full.body.data.id);
+    assert(n.status === 400, `non-quick: ${n.status}`);
+  }
+});
+
 async function cleanupHelperSales() {
   const db = await getDb();
   if (helperThresholdBackup !== undefined) {

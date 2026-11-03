@@ -8,6 +8,8 @@ const router = express.Router();
 
 const REFUNDED_MESSAGE = 'This sale already has a refund. Use Refund on the sale instead.';
 
+const HELPER_NOT_YOURS_MESSAGE = 'Ask the counter to undo this sale.';
+const HELPER_TOO_OLD_MESSAGE = "It's been more than 2 minutes. Ask the counter to undo this sale.";
 const NOT_QUICK_MESSAGE = "This sale isn't a quick sale entry";
 const CLOSED_SESSION_MESSAGE = "This sale is from a register that's already closed. Use Refund on the sale instead.";
 
@@ -18,14 +20,6 @@ router.post(
   '/:saleId(\\d+)/undo',
   authenticate,
   authorize('owner', 'manager', 'employee', 'counter_staff', 'helper'),
-  // Helper undo of their own sale comes with the helper sale rules; until
-  // then a helper cannot undo anything.
-  (req, res, next) => {
-    if (req.user.role === 'helper') {
-      return res.status(403).json({ success: false, message: 'Ask the counter to undo this sale.' });
-    }
-    next();
-  },
   async (req, res, next) => {
     try {
       // Every read and write below runs on one pooled client inside a real
@@ -33,8 +27,21 @@ router.post(
       // reverse the register.
       const outcome = await withTransaction(async (tx) => {
         const sale = await tx.prepare('SELECT * FROM sales WHERE id = ? FOR UPDATE').get(req.params.saleId);
-        if (!sale) return { code: 404, message: 'Sale not found' };
-        if (sale.entry_mode !== 'quick' && sale.entry_mode !== 'close_topup') return { code: 400, message: NOT_QUICK_MESSAGE };
+        // A helper gets the same answer for a missing sale as for someone else's
+        if (!sale) return req.user.role === 'helper' ? { code: 403, message: HELPER_NOT_YOURS_MESSAGE } : { code: 404, message: 'Sale not found' };
+        if (req.user.role === 'helper') {
+          // A helper may undo only their own sale, made within the last 2 minutes
+          // (database clock, checked here under the row lock).
+          // Part 4 hook: also refuse when a handover_in exists for this helper since the sale.
+          if (Number(sale.sold_by) !== Number(req.user.id) || Number(sale.created_by) !== Number(req.user.id)) {
+            return { code: 403, message: HELPER_NOT_YOURS_MESSAGE };
+          }
+          if (sale.status === 'cancelled') return { code: 400, message: 'Already undone' };
+          const fresh = await tx.prepare("SELECT 1 AS ok FROM sales WHERE id = ? AND created_at > NOW() - INTERVAL '2 minutes'").get(sale.id);
+          if (!fresh) return { code: 403, message: HELPER_TOO_OLD_MESSAGE };
+        } else if (sale.entry_mode !== 'quick' && sale.entry_mode !== 'close_topup') {
+          return { code: 400, message: NOT_QUICK_MESSAGE };
+        }
         if (sale.status === 'cancelled') return { code: 400, message: 'Already undone' };
 
         const refunded = Number((await tx.prepare('SELECT COALESCE(SUM(amount), 0) AS total FROM refunds WHERE sale_id = ?').get(sale.id)).total);
@@ -263,6 +270,75 @@ router.get('/tiles', authenticate, authorize(...ROLES), async (req, res, next) =
         tiles: top.map((p) => ({ key: `p${p.id}`, type: 'product', product_id: p.id, label: p.name, price: Number(p.selling_price) })),
       },
     });
+  } catch (err) { next(err); }
+});
+
+// GET /api/quick-sale/my-sales?location_id=
+// The caller's own sales for today (shop-local day) at one location, newest
+// first, undone ones flagged. Never returns cost or anyone else's sales.
+router.get('/my-sales', authenticate, authorize(...ROLES, 'helper'), async (req, res, next) => {
+  try {
+    const locationId = locationIdFrom(req);
+    if (!locationId) return res.status(400).json({ success: false, message: 'Pick a shop location first' });
+    const db = await getDb();
+    if (req.user.role !== 'owner') {
+      const link = await db.prepare('SELECT 1 AS ok FROM user_locations WHERE user_id = ? AND location_id = ?').get(req.user.id, locationId);
+      if (!link) return res.status(403).json({ success: false, message: "You don't work at this shop." });
+    }
+    const dayStart = `${todayStr()} 00:00:00`;
+    const isHelper = req.user.role === 'helper';
+
+    const rows = await db.prepare(`
+      SELECT s.id, s.sale_number, s.created_at, s.grand_total, s.status, s.undone_at, s.sold_by, s.created_by,
+             (s.created_at > NOW() - INTERVAL '2 minutes') AS fresh
+      FROM sales s
+      WHERE s.location_id = ? AND COALESCE(s.sold_by, s.created_by) = ? AND s.created_at >= ?
+      ORDER BY s.created_at DESC, s.id DESC
+      LIMIT ${ROLL_LIMIT}
+    `).all(locationId, req.user.id, dayStart);
+
+    const ids = rows.map((r) => r.id);
+    const ph = ids.map(() => '?').join(',');
+    const payRows = ids.length ? await db.prepare(`SELECT sale_id, method, amount FROM payments WHERE sale_id IN (${ph}) ORDER BY id`).all(...ids) : [];
+    const itemRows = ids.length ? await db.prepare(`SELECT sale_id, COALESCE(product_name, 'Item') AS name, quantity FROM sale_items WHERE sale_id IN (${ph}) ORDER BY id`).all(...ids) : [];
+    const paysBySale = new Map();
+    for (const p of payRows) {
+      if (!paysBySale.has(p.sale_id)) paysBySale.set(p.sale_id, []);
+      paysBySale.get(p.sale_id).push(p);
+    }
+    const itemsBySale = new Map();
+    for (const i of itemRows) {
+      if (!itemsBySale.has(i.sale_id)) itemsBySale.set(i.sale_id, []);
+      itemsBySale.get(i.sale_id).push(`${i.name} \u00d7 ${Number(i.quantity)}`);
+    }
+
+    let cash = 0;
+    let upi = 0;
+    let count = 0;
+    const sales = rows.map((r) => {
+      const undone = r.status === 'cancelled' || r.undone_at != null;
+      const pays = paysBySale.get(r.id) || [];
+      if (!undone) {
+        count += 1;
+        for (const p of pays) {
+          if (p.method === 'cash') cash += Number(p.amount || 0);
+          else if (p.method === 'upi') upi += Number(p.amount || 0);
+        }
+      }
+      return {
+        id: r.id,
+        sale_number: r.sale_number,
+        created_at: r.created_at,
+        grand_total: Number(r.grand_total),
+        payment_methods: [...new Set(pays.map((p) => p.method))],
+        items: itemsBySale.get(r.id) || [],
+        status: r.status,
+        undone,
+        can_undo: isHelper && !undone && r.fresh === true && Number(r.sold_by) === req.user.id && Number(r.created_by) === req.user.id,
+      };
+    });
+
+    res.json({ success: true, data: { sales, count, totals: { cash, upi } } });
   } catch (err) { next(err); }
 });
 
