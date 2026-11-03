@@ -52,6 +52,25 @@ test('names are HTML-escaped', () => {
   assert.ok(h.includes('&lt;b&gt;&amp;'));
   assert.ok(!h.includes('<b>&<'));
 });
+test('price_card always shows prices, one row per product, ignores count', () => {
+  const h = buildLabelSheetHtml({ layout: 'price_card', items: [item({ count: 5 }), item({ name: 'Open', price_mode: 'open' })], showPrice: false, date });
+  assert.ok(h.includes('\u20B9120.00'));
+  assert.ok(h.includes('Ask at the counter'));
+  assert.strictEqual(count(h, /<div class="cell">/g), 2);
+});
+test('15 price card products make 2 pages', () => {
+  const items = Array.from({ length: 15 }, (_, i) => item({ name: 'P' + i }));
+  const h = buildLabelSheetHtml({ layout: 'price_card', items, date });
+  assert.strictEqual(count(h, /<div class="page">/g), 2);
+});
+test('price_hint is HTML-escaped', () => {
+  const h = buildLabelSheetHtml({ layout: 'stickers', items: [item({ price_mode: 'open', price_hint: '<i>&' })], showPrice: true, date });
+  assert.ok(h.includes('&lt;i&gt;&amp;'));
+});
+test('fixed price 0 is treated as no price', () => {
+  const h = buildLabelSheetHtml({ layout: 'stickers', items: [item({ price: 0 })], showPrice: true, date });
+  assert.ok(!h.includes('0.00') && !h.includes('price on'));
+});
 
 let failed = 0;
 for (const t of tests) {

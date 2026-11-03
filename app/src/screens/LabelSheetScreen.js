@@ -15,6 +15,11 @@ const LAYOUT_CHIPS = [
 ];
 
 const MAX_COUNT = 48;
+const MAX_PRODUCTS = 200;
+const MAX_LABELS = 960;
+const MSG_PRODUCTS = 'You can print up to 200 products at once.';
+const MSG_LABELS = 'That is too many labels for one print. Print in smaller batches.';
+const numOf = (v) => Math.max(1, Math.min(MAX_COUNT, parseInt(v, 10) || 1));
 
 export default function LabelSheetScreen({ route }) {
   const preselect = route?.params?.productId;
@@ -62,33 +67,57 @@ export default function LabelSheetScreen({ route }) {
   }, [products, search, category]);
 
   const selectedIds = Object.keys(counts).map(Number);
-  const totalLabels = selectedIds.reduce((s, id) => s + counts[id], 0);
+  const isCard = layout === 'price_card';
+  const sumLabels = (c) => Object.keys(c).reduce((s, id) => s + numOf(c[id]), 0);
+  const totalLabels = isCard ? selectedIds.length : sumLabels(counts);
 
-  const toggle = (id) => setCounts((c) => {
-    const n = { ...c };
-    if (n[id]) delete n[id]; else n[id] = 1;
-    return n;
-  });
-  const step = (id, d) => setCounts((c) => ({ ...c, [id]: Math.max(1, Math.min(MAX_COUNT, (c[id] || 1) + d)) }));
-  const tickAllInCategory = () => setCounts((c) => {
-    const n = { ...c };
-    visible.forEach((p) => { if (!n[p.id]) n[p.id] = 1; });
-    return n;
-  });
+  const toggle = (id) => {
+    const n = { ...counts };
+    if (n[id]) { delete n[id]; setCounts(n); setError(''); return; }
+    if (Object.keys(n).length >= MAX_PRODUCTS) { setError(MSG_PRODUCTS); return; }
+    n[id] = 1;
+    if (sumLabels(n) > MAX_LABELS) { setError(MSG_LABELS); return; }
+    setCounts(n); setError('');
+  };
+  const setCount = (id, v) => {
+    const n = { ...counts, [id]: v };
+    if (sumLabels(n) > MAX_LABELS) { setError(MSG_LABELS); return; }
+    setCounts(n); setError('');
+  };
+  const step = (id, d) => setCount(id, numOf(counts[id]) + d < 1 ? 1 : Math.min(MAX_COUNT, numOf(counts[id]) + d));
+  const typeCount = (id, text) => setCount(id, text.replace(/[^0-9]/g, '').slice(0, 2));
+  const fixCount = (id) => setCounts((c) => (c[id] === undefined ? c : { ...c, [id]: numOf(c[id]) }));
+  const tickAllInCategory = () => {
+    const n = { ...counts };
+    let hitCap = false;
+    products.filter((p) => p.category === category).forEach((p) => {
+      if (n[p.id]) return;
+      if (Object.keys(n).length >= MAX_PRODUCTS) { hitCap = true; return; }
+      n[p.id] = 1;
+    });
+    if (!isCard && sumLabels(n) > MAX_LABELS) { setError(MSG_LABELS); return; }
+    setCounts(n);
+    setError(hitCap ? MSG_PRODUCTS : '');
+  };
+  const clearAll = () => { setCounts({}); setError(''); };
 
   const handlePrint = async () => {
     if (printing) return;
     if (!selectedIds.length) { setError('Tick at least one product first.'); return; }
+    if (!isCard && sumLabels(counts) > MAX_LABELS) { setError(MSG_LABELS); return; }
     setPrinting(true);
     setError('');
     try {
       const res = await api.getLabels(selectedIds);
       const rows = res.data || [];
-      const items = rows.map((r) => ({ ...r, count: counts[r.product_id] || 1 }));
+      if (!rows.length) { setError('None of these products could be found. Refresh and try again.'); return; }
+      const items = rows.map((r) => ({ ...r, count: numOf(counts[r.product_id]) }));
       const html = buildLabelSheetHtml({ layout, items, showPrice, date: new Date() });
       await printHtml(html, 'Labels');
     } catch (e) {
-      setError('Could not make the labels. Check the connection and tap Print again.');
+      setError(e && e.status === 400
+        ? 'Some of these products can\'t be printed. Untick a few and tap Print again.'
+        : 'Could not make the labels. Check the connection and tap Print again.');
     } finally {
       setPrinting(false);
     }
@@ -129,6 +158,9 @@ export default function LabelSheetScreen({ route }) {
               <Text style={styles.secondaryText}>Tick all in {category.replace(/_/g, ' ')}</Text>
             </TouchableOpacity>
           )}
+          {selectedIds.length > 0 && (
+            <TouchableOpacity style={styles.clearBtn} onPress={clearAll}><Text style={styles.clearText}>Clear all ({selectedIds.length} ticked)</Text></TouchableOpacity>
+          )}
 
           {visible.length === 0 && <Text style={styles.msg}>No products match.</Text>}
           {visible.map((p) => {
@@ -140,9 +172,18 @@ export default function LabelSheetScreen({ route }) {
                   <Text style={styles.rowName} numberOfLines={2}>{p.name}</Text>
                 </TouchableOpacity>
                 {on && (
-                  <View style={styles.stepper}>
+                  !isCard && <View style={styles.stepper}>
                     <TouchableOpacity style={styles.stepBtn} onPress={() => step(p.id, -1)} accessibilityLabel="Fewer labels"><Text style={styles.stepText}>-</Text></TouchableOpacity>
-                    <Text style={styles.count}>{counts[p.id]}</Text>
+                    <TextInput
+                      style={styles.countInput}
+                      value={String(counts[p.id])}
+                      onChangeText={(t) => typeCount(p.id, t)}
+                      onBlur={() => fixCount(p.id)}
+                      keyboardType="number-pad"
+                      maxLength={2}
+                      selectTextOnFocus
+                      accessibilityLabel="Number of labels"
+                    />
                     <TouchableOpacity style={styles.stepBtn} onPress={() => step(p.id, 1)} accessibilityLabel="More labels"><Text style={styles.stepText}>+</Text></TouchableOpacity>
                   </View>
                 )}
@@ -154,10 +195,14 @@ export default function LabelSheetScreen({ route }) {
           <View style={styles.chipWrap}>
             {LAYOUT_CHIPS.map((l) => <Chip key={l.key} label={l.label} active={layout === l.key} onPress={() => setLayout(l.key)} />)}
           </View>
-          <View style={styles.switchRow}>
-            <Text style={styles.switchLabel}>Show price on the label</Text>
-            <Switch value={showPrice} onValueChange={setShowPrice} trackColor={{ true: Colors.primary }} />
-          </View>
+          {isCard ? (
+            <Text style={styles.note}>Prices are always shown on a price card.</Text>
+          ) : (
+            <View style={styles.switchRow}>
+              <Text style={styles.switchLabel}>Show price on the label</Text>
+              <Switch value={showPrice} onValueChange={setShowPrice} trackColor={{ true: Colors.primary }} />
+            </View>
+          )}
         </View>
       </ScrollView>
 
@@ -165,7 +210,7 @@ export default function LabelSheetScreen({ route }) {
         {!!error && <Text style={styles.error}>{error}</Text>}
         <TouchableOpacity style={[styles.primaryBtn, (printing || !selectedIds.length) && styles.disabled]} onPress={handlePrint} disabled={printing}>
           {printing ? <ActivityIndicator color={Colors.white} /> : (
-            <Text style={styles.primaryText}>{totalLabels ? `Print ${totalLabels} label${totalLabels === 1 ? '' : 's'}` : 'Print'}</Text>
+            <Text style={styles.primaryText}>{totalLabels ? (isCard ? 'Print price card' : `Print ${totalLabels} label${totalLabels === 1 ? '' : 's'}`) : 'Print'}</Text>
           )}
         </TouchableOpacity>
       </View>
@@ -207,7 +252,10 @@ const styles = StyleSheet.create({
   stepper: { flexDirection: 'row', alignItems: 'center' },
   stepBtn: { width: 48, height: 48, alignItems: 'center', justifyContent: 'center', borderRadius: BorderRadius.md, backgroundColor: Colors.surfaceAlt, borderWidth: 1, borderColor: Colors.border },
   stepText: { fontSize: FontSize.xl, color: Colors.text, fontWeight: '600' },
-  count: { minWidth: 36, textAlign: 'center', fontSize: FontSize.lg, fontWeight: '700', color: Colors.text },
+  countInput: { width: 52, height: 48, textAlign: 'center', fontSize: FontSize.lg, fontWeight: '700', color: Colors.text, borderWidth: 1, borderColor: Colors.border, borderRadius: BorderRadius.md, marginHorizontal: Spacing.xs, backgroundColor: Colors.surface },
+  note: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: Spacing.xs },
+  clearBtn: { minHeight: 48, justifyContent: 'center', alignSelf: 'flex-start', marginBottom: Spacing.xs },
+  clearText: { color: Colors.textSecondary, fontSize: FontSize.md, textDecorationLine: 'underline' },
   switchRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', minHeight: 56 },
   switchLabel: { fontSize: FontSize.md, color: Colors.text },
   footer: { padding: Spacing.md, backgroundColor: Colors.surface, borderTopWidth: 1, borderTopColor: Colors.border, alignItems: 'center' },

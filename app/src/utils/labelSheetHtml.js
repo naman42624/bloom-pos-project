@@ -3,7 +3,7 @@
 export const LAYOUTS = {
   stickers: { cols: 3, rows: 8 },
   bucket: { cols: 2, rows: 3 },
-  price_card: { cols: 1, rows: 4 },
+  price_card: { cols: 1, rows: 11 },
 };
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -26,7 +26,7 @@ const priceText = (item) => {
   if (item.price_mode === 'open') return item.price_hint ? esc(item.price_hint) : '';
   if (item.price == null || item.price === '') return '';
   const n = Number(item.price);
-  if (!isFinite(n)) return '';
+  if (!isFinite(n) || n === 0) return '';
   return `₹${n.toFixed(2)}`;
 };
 
@@ -36,7 +36,14 @@ const cellHtml = (item, showPrice, dateLine) => {
     ? `<div class="price">${p}</div><div class="asof">${esc(dateLine)}</div>`
     : '';
   const img = item.qr_data_url ? `<img class="qr" src="${esc(item.qr_data_url)}" />` : '';
-  return `<div class="cell"><div class="name">${esc(item.name)}</div>${img}${priceBlock}</div>`;
+  return `<div class="cell${p ? ' withprice' : ''}"><div class="name">${esc(item.name)}</div>${img}${priceBlock}</div>`;
+};
+
+// One row of the price card: name, price (always shown), small QR.
+const rowHtml = (item, dateLine) => {
+  const p = priceText(item) || 'Ask at the counter';
+  const img = item.qr_data_url ? `<img class="qr" src="${esc(item.qr_data_url)}" />` : '';
+  return `<div class="cell"><div class="name">${esc(item.name)}</div><div class="priceblock"><div class="price">${p}</div><div class="asof">${esc(dateLine)}</div></div>${img}</div>`;
 };
 
 export const buildLabelSheetHtml = ({ layout = 'stickers', items = [], showPrice = false, date = new Date() } = {}) => {
@@ -45,32 +52,43 @@ export const buildLabelSheetHtml = ({ layout = 'stickers', items = [], showPrice
   const size = cols * rows;
   const dateLine = `price on ${formatLabelDate(date)}`;
 
-  const cells = [];
-  for (const it of items) {
-    const n = Math.max(1, Math.min(48, parseInt(it.count, 10) || 1));
-    for (let i = 0; i < n; i += 1) cells.push(it);
+  let cells = [];
+  if (key === 'price_card') {
+    cells = items.slice();
+  } else {
+    for (const it of items) {
+      const n = Math.max(1, Math.min(48, parseInt(it.count, 10) || 1));
+      for (let i = 0; i < n; i += 1) cells.push(it);
+    }
   }
 
   const pages = [];
   for (let i = 0; i < cells.length; i += size) {
-    const chunk = cells.slice(i, i + size).map((c) => cellHtml(c, showPrice, dateLine)).join('');
+    const chunk = cells.slice(i, i + size)
+      .map((c) => (key === 'price_card' ? rowHtml(c, dateLine) : cellHtml(c, showPrice, dateLine))).join('');
     pages.push(`<div class="page">${chunk}</div>`);
   }
 
+  // Size budget (mm). Page area 194 x 280 (A4 minus 8mm margins, 1.0mm spare for rounding).
+  // Sticker cell 64.7 x 35, padding 1 -> 33 tall: name 2 lines 8pt ~7 + 1 gap + QR 20 (no price) = 28;
+  //   with price: 7 + 1 + QR 16 + 1 + price 10pt ~4.2 + date 6.5pt ~2.8 = 32.
+  // Bucket cell 97 x 93, padding 2 -> 89 tall: name 2 lines 22pt ~18.6 + 1.5 + QR 60 (no price) = 80;
+  //   with price: 18.6 + 1.5 + QR 48 + 1.5 + price 30pt ~12.7 + date 11pt ~4.7 = 87.
+  // Price card row 194 x 25.4: QR 18, text beside it.
   const css = `
     @page { size: A4; margin: 8mm; }
     * { box-sizing: border-box; }
     body { margin: 0; font-family: Arial, Helvetica, sans-serif; color: #000; }
-    .page { width: 194mm; height: 281mm; display: grid; grid-template-columns: repeat(${cols}, 1fr); grid-template-rows: repeat(${rows}, 1fr); page-break-after: always; break-after: page; overflow: hidden; }
+    .page { width: 194mm; height: 280mm; display: grid; grid-template-columns: repeat(${cols}, 1fr); grid-template-rows: repeat(${rows}, 1fr); page-break-after: always; break-after: page; overflow: hidden; }
     .page:last-child { page-break-after: auto; break-after: auto; }
-    .cell { display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 2mm; border: 0.2mm dashed #bbb; overflow: hidden; }
-    .name { font-weight: bold; line-height: 1.15; margin-bottom: 1.5mm; max-width: 100%; word-break: break-word; }
+    .cell { display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 1mm; border: 0.2mm dashed #bbb; overflow: hidden; }
+    .name { font-weight: bold; line-height: 1.15; margin-bottom: 1mm; max-width: 100%; word-break: break-word; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
     .qr { image-rendering: pixelated; }
-    .price { font-weight: bold; margin-top: 1.5mm; }
+    .price { font-weight: bold; margin-top: 1mm; }
     .asof { color: #444; }
-    ${key === 'stickers' ? '.name{font-size:9pt}.qr{width:20mm;height:20mm}.price{font-size:10pt}.asof{font-size:6.5pt}' : ''}
-    ${key === 'bucket' ? '.name{font-size:26pt}.qr{width:60mm;height:60mm}.price{font-size:30pt}.asof{font-size:11pt}' : ''}
-    ${key === 'price_card' ? '.cell{flex-direction:row;justify-content:space-between;gap:8mm;padding:6mm 10mm;text-align:left}.name{font-size:22pt;margin:0;flex:1}.qr{width:45mm;height:45mm}.price{font-size:24pt;margin:0 4mm}.asof{font-size:9pt}' : ''}
+    ${key === 'stickers' ? '.name{font-size:8pt}.qr{width:20mm;height:20mm}.withprice .qr{width:16mm;height:16mm}.price{font-size:10pt}.asof{font-size:6.5pt}' : ''}
+    ${key === 'bucket' ? '.cell{padding:2mm}.name{font-size:22pt;margin-bottom:1.5mm}.qr{width:60mm;height:60mm}.withprice .qr{width:48mm;height:48mm}.price{font-size:30pt;margin-top:1.5mm}.asof{font-size:11pt}' : ''}
+    ${key === 'price_card' ? '.cell{flex-direction:row;justify-content:space-between;gap:6mm;padding:2mm 8mm;text-align:left;border-style:solid}.name{font-size:16pt;margin:0;flex:1}.priceblock{text-align:right}.price{font-size:18pt;margin:0}.asof{font-size:8pt}.qr{width:18mm;height:18mm}' : ''}
   `;
 
   return `<!doctype html><html><head><meta charset="utf-8"><title>Labels</title><style>${css}</style></head><body>${pages.join('')}</body></html>`;
