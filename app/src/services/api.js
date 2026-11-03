@@ -519,8 +519,19 @@ class ApiService {
     return this.request(`/products/${productId}/qr?size=${size}`);
   }
 
-  scanProductQR(payload) {
-    return this.request('/products/scan', { method: 'POST', body: JSON.stringify({ payload }) });
+  // locationId (optional): lets the server say whether a one-off tag is already sold here.
+  scanProductQR(payload, locationId) {
+    const body = { payload };
+    if (locationId) body.location_id = locationId;
+    return this.request('/products/scan', { method: 'POST', body: JSON.stringify(body) });
+  }
+
+  setProductOptions(productId, options) {
+    return this.request(`/products/${productId}/options`, { method: 'PUT', body: JSON.stringify({ options }) });
+  }
+
+  markProductOneOff(productId) {
+    return this.request(`/products/${productId}/one-off`, { method: 'PUT', body: JSON.stringify({}) });
   }
 
   // ═══════════════════════════════════════════════════════════

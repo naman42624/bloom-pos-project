@@ -445,6 +445,30 @@ router.put(
   }
 );
 
+// ─── PUT /api/products/:id/one-off (Produce screen: Print tag) ───
+// Staff who make a custom item on the Produce screen mark it one-off so its tag
+// reads as sold once it is sold. PUT /:id is owner/manager only (it edits
+// prices), so this narrow route sets is_one_off = 1 and nothing else. Staff may
+// only do it for custom-made products (sku CUST-...), never a catalog product.
+router.put(
+  '/:id/one-off',
+  authenticate,
+  authorize('owner', 'manager', 'employee', 'counter_staff', 'florist_staff'),
+  async (req, res, next) => {
+    try {
+      const db = await getAsyncDb();
+      const product = await db.prepare('SELECT id, sku FROM products WHERE id = ?').get(req.params.id);
+      if (!product) return res.status(404).json({ success: false, message: 'This item could not be found. Refresh and try again.' });
+      const isCustom = String(product.sku || '').startsWith('CUST-');
+      if (!isCustom && !['owner', 'manager'].includes(req.user.role)) {
+        return res.status(403).json({ success: false, message: 'Only custom-made items can be tagged here. Ask the owner to change a catalog product.' });
+      }
+      await db.prepare('UPDATE products SET is_one_off = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(product.id);
+      res.json({ success: true, data: { id: product.id, is_one_off: 1 } });
+    } catch (err) { next(err); }
+  }
+);
+
 // ─── POST /api/products/labels (label data: code, url, QR image) ───
 router.post(
   '/labels',

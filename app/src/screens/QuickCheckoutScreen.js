@@ -25,6 +25,11 @@ import { bumpActivity } from '../hooks/useIdleLock';
 import useSubmitGuard from '../hooks/useSubmitGuard';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import QuickSalePanel from '../components/quickSale/QuickSalePanel';
+import ScanAddModal from '../components/scan/ScanAddModal';
+import { unlockAudio } from '../components/scan/scanFeedback';
+import {
+  blankLine, bomToLineMaterials, productLineFields, buildScannedLine, mergeScannedLine, isBlankLine, formatRupees,
+} from '../utils/scanAddLine';
 
 // Quick sale | Full order switch, remembered on this device. Missing or
 // unreadable storage means Full order. Opening a specific order (a draft, a
@@ -110,6 +115,10 @@ export default function QuickCheckoutScreen({ navigation, route }) {
 
   // Items
   const [items, setItems] = useState([]);
+  // Latest items for scan feedback text (the add itself uses a functional setItems).
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
+  const [showScan, setShowScan] = useState(false);
 
   // Scheduled date/time
   const [scheduledDate, setScheduledDate] = useState('');
@@ -550,58 +559,80 @@ export default function QuickCheckoutScreen({ navigation, route }) {
 
   // Add a blank custom item
   const addItem = () => {
-    setItems([...items, {
-      name: '',
-      baseProduct: null, // optional: link to existing product
-      tax_rate: null,
-      tax_percentage: null,
-      baseMaterial: null,
-      materials: [],
-      price: '',
-      quantity: '1',
-      special_instructions: '',
-      image_url: '',
-      fulfill_from_stock: false,
-    }]);
+    setItems((prev) => [...prev, blankLine()]);
   };
 
-  // Add from existing product
+  // Add from existing product (product picker). Same line fields as Scan
+  // (utils/scanAddLine.productLineFields); a BOM that fails to load keeps the
+  // line's existing materials.
   const addFromProduct = async (product, idx) => {
+    let materials = null;
     try {
       const bomRes = await api.getProductMaterials(product.id);
-      const bom = (bomRes.data || []).map(m => ({
-        material_id: m.material_id,
-        name: m.material_name || m.name,
-        qty: String(m.quantity || 1),
-      }));
-      const updated = [...items];
-      updated[idx] = {
-        ...updated[idx],
-        name: product.name,
-        baseProduct: product,
-        tax_rate: product.tax_percentage ?? null,
-        tax_percentage: product.tax_percentage ?? null,
-        baseMaterial: null,
-        materials: bom,
-        price: String(product.selling_price || 0),
-        fulfill_from_stock: (product.ready_qty || product.stock_quantity || 0) > 0,
-      };
-      setItems(updated);
-    } catch {
-      const updated = [...items];
-      updated[idx] = {
-        ...updated[idx],
-        name: product.name,
-        baseProduct: product,
-        tax_rate: product.tax_percentage ?? null,
-        tax_percentage: product.tax_percentage ?? null,
-        baseMaterial: null,
-        price: String(product.selling_price || 0),
-        fulfill_from_stock: (product.ready_qty || product.stock_quantity || 0) > 0,
-      };
-      setItems(updated);
-    }
+      materials = bomToLineMaterials(bomRes.data);
+    } catch { materials = null; }
+    const fields = productLineFields(product, { materials, locationId: selectedLocation });
+    setItems((prev) => {
+      const updated = [...prev];
+      updated[idx] = { ...(updated[idx] || blankLine()), ...fields };
+      return updated;
+    });
     setShowProductPicker(false);
+  };
+
+  // ── Scan to add ──
+  const openScan = () => {
+    unlockAudio(); // iPhone: the accept beep needs this tap to be allowed
+    setShowScan(true);
+  };
+
+  // Called by ScanAddModal for each accepted item. The scan answer is
+  // selling-only, so the full product is loaded for tax and stock, exactly as
+  // the picker path has it.
+  const handleScanAdd = async ({ product, option, price }) => {
+    let full;
+    try {
+      const res = await api.getProduct(product.id);
+      full = res && res.data;
+    } catch (e) {
+      full = null;
+    }
+    if (!full) throw new Error('Could not load this item. Check the connection and scan it again.');
+    let materials = [];
+    try {
+      const bomRes = await api.getProductMaterials(full.id);
+      materials = bomToLineMaterials(bomRes.data);
+    } catch { materials = []; }
+    const line = buildScannedLine(full, { option, price, materials, locationId: selectedLocation });
+    const preview = mergeScannedLine(itemsRef.current, line);
+    if (preview.result === 'already_in_order') {
+      throw new Error(`${full.name} is already in this order. There is only one of it.`);
+    }
+    setItems((prev) => mergeScannedLine(prev, line).items);
+    if (preview.result === 'merged') {
+      return `${line.name}: now ${preview.items[preview.index].quantity}`;
+    }
+    return `Added ${line.name}, ${formatRupees(line.price)}`;
+  };
+
+  // "Find by name" in the scanner: close the camera, open the product picker
+  // for a fresh line (re-using an empty last line if there is one).
+  const findByNameFromScan = () => {
+    setShowScan(false);
+    const list = itemsRef.current;
+    const last = list.length ? list[list.length - 1] : null;
+    let idx;
+    if (last && isBlankLine(last)) {
+      idx = list.length - 1;
+    } else {
+      idx = list.length;
+      setItems((prev) => [...prev, blankLine()]);
+    }
+    setEditingItemIdx(idx);
+    setProductSearch('');
+    fetchProducts('');
+    // iOS cannot open a Modal while another one is still closing.
+    setTimeout(() => setShowProductPicker(true), Platform.OS === 'ios' ? 450 : 0);
   };
 
   const updateItem = (idx, field, value) => {
@@ -2039,6 +2070,15 @@ export default function QuickCheckoutScreen({ navigation, route }) {
               <Ionicons name="gift" size={20} color={Colors.primary} />
             </View>
             <Text style={styles.sectionTitle}>Items ({items.length})</Text>
+            <TouchableOpacity
+              style={styles.scanBtn}
+              onPress={openScan}
+              accessibilityRole="button"
+              accessibilityLabel="Scan an item's QR code"
+            >
+              <Ionicons name="qr-code-outline" size={20} color={Colors.primary} />
+              <Text style={styles.scanBtnText}>Scan</Text>
+            </TouchableOpacity>
             <TouchableOpacity style={styles.addItemBtn} onPress={addItem}>
               <Ionicons name="add-circle" size={20} color={Colors.white} />
               <Text style={styles.addItemBtnText}>Add Item</Text>
@@ -2048,7 +2088,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
           {items.length === 0 && (
             <View style={styles.emptyItems}>
               <Ionicons name="gift-outline" size={48} color={Colors.textLight} />
-              <Text style={styles.emptyText}>No items yet — tap "Add Item" to start</Text>
+              <Text style={styles.emptyText}>No items yet — tap "Scan" or "Add Item" to start</Text>
             </View>
           )}
 
@@ -2660,6 +2700,15 @@ export default function QuickCheckoutScreen({ navigation, route }) {
         </View>
       </Modal>
 
+      {/* ── Scan to add ── */}
+      <ScanAddModal
+        visible={showScan}
+        onClose={() => setShowScan(false)}
+        locationId={selectedLocation || activeLocation?.id || null}
+        onAdd={handleScanAdd}
+        onFindByName={findByNameFromScan}
+      />
+
       {/* ── Product Picker Modal ── */}
       <Modal visible={showProductPicker} transparent animationType="slide">
         {/* onTouchStart: RN Modal mounts into its own native root, so touches
@@ -2975,11 +3024,17 @@ const styles = StyleSheet.create({
   checkLabel: { fontSize: FontSize.sm, color: Colors.text, fontWeight: '600' },
 
   addItemBtn: {
-    flexDirection: 'row', alignItems: 'center', gap: 4,
+    flexDirection: 'row', alignItems: 'center', gap: 4, minHeight: 44,
     backgroundColor: Colors.primary, paddingHorizontal: Spacing.md,
     paddingVertical: Spacing.sm, borderRadius: BorderRadius.md,
   },
   addItemBtnText: { color: Colors.white, fontWeight: '700', fontSize: FontSize.sm },
+  scanBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 4, minHeight: 44,
+    backgroundColor: Colors.surface, borderWidth: 2, borderColor: Colors.primary,
+    paddingHorizontal: Spacing.md, borderRadius: BorderRadius.md, marginRight: Spacing.sm,
+  },
+  scanBtnText: { color: Colors.primary, fontWeight: '700', fontSize: FontSize.sm },
 
   emptyItems: { alignItems: 'center', paddingVertical: Spacing.xl },
   emptyText: { color: Colors.textLight, marginTop: Spacing.sm, fontSize: FontSize.sm, textAlign: 'center', padding: Spacing.md },
