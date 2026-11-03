@@ -54,7 +54,7 @@ class ApiService {
       ...options.headers,
     };
 
-    if (this.token) {
+    if (this.token && !options.noAuth) {
       headers['Authorization'] = `Bearer ${this.token}`;
     }
 
@@ -1143,6 +1143,11 @@ class ApiService {
   // ─── Public order tracking (no auth) ──────────────────────
   getTrackingInfo(token) {
     return this.request(`/track/${token}`);
+  }
+
+  // ─── Public price page (no auth, never sends the staff token) ──
+  getPublicPrice(code) {
+    return this.request(`/price/${encodeURIComponent(code)}`, { noAuth: true });
   }
 
   // ─── Public order request (no auth) ────────────────────────
