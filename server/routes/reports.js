@@ -554,7 +554,7 @@ router.get('/staff-sales', authenticate, authorize('owner'), async (req, res, ne
         COUNT(*) FILTER (WHERE s.discount_approved_by IS NOT NULL
           AND s.discount_approved_by <> COALESCE(s.sold_by, s.created_by)) AS override_count
       FROM sales s
-      WHERE ${inPeriod('s.created_at')} AND s.status != 'cancelled'${locSql}
+      WHERE ${inPeriod('s.created_at')} AND s.status != 'cancelled' AND COALESCE(s.entry_mode, '') <> 'close_topup'${locSql}
       GROUP BY COALESCE(s.sold_by, s.created_by)
     `).all(from, to, ...locParams);
 
@@ -562,7 +562,7 @@ router.get('/staff-sales', authenticate, authorize('owner'), async (req, res, ne
       SELECT COALESCE(s.sold_by, s.created_by) AS user_id, COALESCE(SUM(r.amount), 0) AS refunds
       FROM refunds r JOIN sales s ON s.id = r.sale_id
       WHERE COALESCE(r.status, 'processed') = 'processed'
-        AND ${inPeriod('s.created_at')} AND s.status != 'cancelled'${locSql}
+        AND ${inPeriod('s.created_at')} AND s.status != 'cancelled' AND COALESCE(s.entry_mode, '') <> 'close_topup'${locSql}
       GROUP BY COALESCE(s.sold_by, s.created_by)
     `).all(from, to, ...locParams);
 
@@ -625,7 +625,7 @@ router.get('/staff-sales/:userId/sales', authenticate, authorize('owner'), async
     const rows = await db.prepare(`
       SELECT s.id, s.sale_number, s.created_at, s.grand_total, s.status, s.order_type, s.customer_name
       FROM sales s
-      WHERE COALESCE(s.sold_by, s.created_by) = ? AND s.status != 'cancelled'
+      WHERE COALESCE(s.sold_by, s.created_by) = ? AND s.status != 'cancelled' AND COALESCE(s.entry_mode, '') <> 'close_topup'
         AND s.created_at >= ?::date AND s.created_at < (?::date + 1)${locSql}
       ORDER BY s.created_at DESC, s.id DESC
     `).all(...params);

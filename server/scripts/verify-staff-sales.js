@@ -170,7 +170,8 @@ check('orders and amount per seller', async () => {
   const aAmount = 100 + 250 + await grand(f.a3);
   assert(a && a.orders === 3, `A orders ${a && a.orders}`);
   assert(Math.abs(a.amount - aAmount) < 0.01, `A amount ${a.amount} vs ${aAmount}`);
-  assert(b && b.orders === 2 && Math.abs(b.amount - 160) < 0.01, `B ${JSON.stringify(b)}`);
+  assert(b && b.orders === 1 && Math.abs(b.amount - 100) < 0.01 && Math.abs(b.net - 100) < 0.01, `B ${JSON.stringify(b)}`);
+  assert(b.topup_count === 1 && Math.abs(b.topup_total - 60) < 0.01, `B top-up ${b.topup_count}/${b.topup_total}`);
   assert(a.discount_count === 1 && Math.abs(a.discount_total - 10) < 0.01, `A discount ${a.discount_count}/${a.discount_total}`);
   assert(a.override_count === 1 && b.override_count === 0, `override ${a.override_count}/${b.override_count}`);
   const idx = (id) => r.body.data.rows.findIndex((x) => x.user_id === id);
@@ -225,6 +226,9 @@ check('per-person sales list', async () => {
   assert(r.status === 200 && Array.isArray(r.body.data), `status ${r.status}`);
   const ids = r.body.data.map((x) => x.id).sort((x, y) => x - y);
   assert(JSON.stringify(ids) === JSON.stringify([f.a1, f.a2, f.a3].sort((x, y) => x - y)), `ids ${ids}`);
+  const bl = await api('GET', `/reports/staff-sales/${f.B}/sales?location_id=${TEST_LOCATION_ID}`, f.owner.token);
+  const bids = bl.body.data.map((x) => x.id);
+  assert(bids.includes(f.b1) && !bids.includes(f.b2), `B list ${bids}`);
   const row = r.body.data[0];
   for (const k of ['sale_number', 'created_at', 'grand_total', 'status', 'order_type', 'customer_name']) assert(k in row, `missing ${k}`);
 });
