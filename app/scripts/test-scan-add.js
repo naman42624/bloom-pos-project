@@ -14,7 +14,7 @@ function loadModule(file) {
 }
 
 const {
-  blankLine, buildScannedLine, mergeScannedLine, parseTypedPrice, productLineFields, readyQtyFor,
+  blankLine, isBlankLine, buildScannedLine, mergeScannedLine, parseTypedPrice, productLineFields, readyQtyFor,
 } = loadModule(path.join(__dirname, '../src/utils/scanAddLine.js'));
 
 const rose = { id: 7, name: 'Rose', selling_price: 120, tax_percentage: 5, stock: [{ location_id: 4, quantity: 3 }], total_ready_qty: 3 };
@@ -85,6 +85,23 @@ test('a blank line the person started typing in is kept', () => {
   assert.strictEqual(r.items.length, 2);
   assert.strictEqual(r.items[0].name, 'Custom wrap');
 });
+test('same option id matches even if the label was renamed; different id with same label does not', () => {
+  const items = mergeScannedLine([], buildScannedLine(bouquet, { option: medium })).items;
+  const renamed = mergeScannedLine(items, buildScannedLine(bouquet, { option: { ...medium, label: 'Med' } }));
+  assert.strictEqual(renamed.result, 'merged');
+  const otherId = mergeScannedLine(items, buildScannedLine(bouquet, { option: { id: 99, label: 'Medium', price: 650 } }));
+  assert.strictEqual(otherId.result, 'added');
+  assert.strictEqual(otherId.items.length, 2);
+});
+test('a blank-looking line with a typed price or quantity is not blank', () => {
+  assert.strictEqual(isBlankLine(blankLine()), true);
+  assert.strictEqual(isBlankLine({ ...blankLine(), quantity: '' }), true);
+  assert.strictEqual(isBlankLine({ ...blankLine(), price: '200' }), false);
+  assert.strictEqual(isBlankLine({ ...blankLine(), quantity: '3' }), false);
+  const r = mergeScannedLine([{ ...blankLine(), price: '200' }], buildScannedLine(rose));
+  assert.strictEqual(r.items.length, 2);
+  assert.strictEqual(r.items[0].price, '200');
+});
 test('open price: same typed price stacks, different price is a new line', () => {
   const open = { id: 30, name: 'Loose flowers', selling_price: 0, price_mode: 'open' };
   let items = mergeScannedLine([], buildScannedLine(open, { price: 80 })).items;
@@ -115,6 +132,8 @@ test('ready qty: list row, full row by location, full row without location', () 
   assert.strictEqual(readyQtyFor(rose, 4), 3);
   assert.strictEqual(readyQtyFor(rose, 5), 0);
   assert.strictEqual(readyQtyFor(rose, null), 3);
+  assert.strictEqual(readyQtyFor({ stock: [{ location_id: 1, quantity: '2' }, { location_id: 2, quantity: '3' }], total_ready_qty: '5' }, null), 5);
+  assert.strictEqual(readyQtyFor({ stock: [{ location_id: 1, quantity: '2' }, { location_id: 2, quantity: '3' }] }, null), 5);
 });
 test('typed price must be more than 0', () => {
   assert.strictEqual(parseTypedPrice('250'), 250);

@@ -581,6 +581,8 @@ export default function QuickCheckoutScreen({ navigation, route }) {
   };
 
   // ── Scan to add ──
+  // One location for the scan call (one-off sold check) and the line's stock check.
+  const scanLocationId = selectedLocation || activeLocation?.id || null;
   const openScan = () => {
     unlockAudio(); // iPhone: the accept beep needs this tap to be allowed
     setShowScan(true);
@@ -599,11 +601,15 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     }
     if (!full) throw new Error('Could not load this item. Check the connection and scan it again.');
     let materials = [];
-    try {
-      const bomRes = await api.getProductMaterials(full.id);
-      materials = bomToLineMaterials(bomRes.data);
-    } catch { materials = []; }
-    const line = buildScannedLine(full, { option, price, materials, locationId: selectedLocation });
+    if (Array.isArray(full.materials)) {
+      materials = bomToLineMaterials(full.materials); // GET /products/:id already carries the BOM
+    } else {
+      try {
+        const bomRes = await api.getProductMaterials(full.id);
+        materials = bomToLineMaterials(bomRes.data);
+      } catch { materials = []; }
+    }
+    const line = buildScannedLine(full, { option, price, materials, locationId: scanLocationId });
     const preview = mergeScannedLine(itemsRef.current, line);
     if (preview.result === 'already_in_order') {
       throw new Error(`${full.name} is already in this order. There is only one of it.`);
@@ -2704,7 +2710,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
       <ScanAddModal
         visible={showScan}
         onClose={() => setShowScan(false)}
-        locationId={selectedLocation || activeLocation?.id || null}
+        locationId={scanLocationId}
         onAdd={handleScanAdd}
         onFindByName={findByNameFromScan}
       />

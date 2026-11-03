@@ -34,6 +34,9 @@ export default function ScanAddModal({ visible, onClose, locationId, onAdd, onFi
   const [priceText, setPriceText] = useState('');
   const [priceError, setPriceError] = useState('');
   const busyRef = useRef(false);
+  // A second tap on a size / "Add to order" before the sheet re-renders away
+  // must not add the item twice.
+  const committingRef = useRef(false);
 
   useEffect(() => {
     if (visible) {
@@ -45,6 +48,8 @@ export default function ScanAddModal({ visible, onClose, locationId, onAdd, onFi
   }, [visible]);
 
   const commit = async (product, { option = null, price = null } = {}) => {
+    if (committingRef.current) return;
+    committingRef.current = true;
     busyRef.current = true;
     setBusy(true);
     setPending(null);
@@ -55,6 +60,7 @@ export default function ScanAddModal({ visible, onClose, locationId, onAdd, onFi
       setMessage({ kind: 'error', text: (err && err.message) || LOOKUP_FAILED });
     } finally {
       busyRef.current = false;
+      committingRef.current = false;
       setBusy(false);
     }
   };
@@ -99,6 +105,7 @@ export default function ScanAddModal({ visible, onClose, locationId, onAdd, onFi
   };
 
   const submitPrice = () => {
+    if (committingRef.current || !pending) return;
     const price = parseTypedPrice(priceText);
     if (price == null) { setPriceError(PRICE_ERROR); return; }
     commit(pending.product, { price });

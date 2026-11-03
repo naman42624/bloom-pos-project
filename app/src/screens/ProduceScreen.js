@@ -196,20 +196,24 @@ export default function ProduceScreen({ navigation }) {
     }
   };
 
-  // Print tag: mark the just-made item one-off (so its tag reads as sold once
-  // it is sold), then print one bucket-size label with its QR code.
+  // Made exactly 1: "Print tag" marks it one-off (so its tag reads as sold once
+  // it is sold) and prints one bucket-size label. Made more than 1: "Print
+  // labels" prints one label per piece and leaves it a normal product.
   const handlePrintTag = async () => {
     if (tagBusyRef.current || !lastMade?.id) return;
     tagBusyRef.current = true;
+    const single = lastMade.qty === 1;
     setTagStatus('printing');
     setTagError('');
     try {
-      try {
-        await api.markProductOneOff(lastMade.id);
-      } catch (e) {
-        throw new Error(e?.status === 403
-          ? (e.message || 'You cannot tag this item. Ask the owner.')
-          : 'Could not set up the tag. Check the connection and tap Print tag again.');
+      if (single) {
+        try {
+          await api.markProductOneOff(lastMade.id);
+        } catch (e) {
+          throw new Error(e?.status === 403
+            ? (e.message || 'You cannot tag this item. Ask the owner.')
+            : 'Could not set up the tag. Check the connection and tap Print tag again.');
+        }
       }
       let rows = [];
       try {
@@ -221,11 +225,11 @@ export default function ProduceScreen({ navigation }) {
       if (!rows.length) throw new Error('This item could not be found. Refresh and tap Print tag again.');
       const html = buildLabelSheetHtml({
         layout: 'bucket',
-        items: rows.slice(0, 1).map((r) => ({ ...r, count: 1 })),
+        items: rows.slice(0, 1).map((r) => ({ ...r, count: single ? 1 : lastMade.qty })),
         showPrice: false,
         date: new Date(),
       });
-      await printHtml(html, 'Tag');
+      await printHtml(html, single ? 'Tag' : 'Labels');
       setTagStatus('done');
     } catch (e) {
       setTagStatus('');
@@ -314,7 +318,7 @@ export default function ProduceScreen({ navigation }) {
                 onPress={handlePrintTag}
                 disabled={tagStatus === 'printing'}
                 accessibilityRole="button"
-                accessibilityLabel="Print a tag for this item"
+                accessibilityLabel={lastMade.qty === 1 ? 'Print a tag for this item' : `Print ${lastMade.qty} labels`}
                 accessibilityState={{ disabled: tagStatus === 'printing' }}
               >
                 {tagStatus === 'printing' ? (
@@ -322,14 +326,22 @@ export default function ProduceScreen({ navigation }) {
                 ) : (
                   <>
                     <Ionicons name="pricetag" size={22} color={Colors.white} />
-                    <Text style={styles.tagBtnText}>{tagStatus === 'done' ? 'Print tag again' : 'Print tag'}</Text>
+                    <Text style={styles.tagBtnText}>
+                      {lastMade.qty === 1
+                        ? (tagStatus === 'done' ? 'Print tag again' : 'Print tag')
+                        : (tagStatus === 'done' ? 'Print labels again' : `Print ${lastMade.qty} labels`)}
+                    </Text>
                   </>
                 )}
               </TouchableOpacity>
               <Text style={styles.madeHelp}>
-                {tagStatus === 'done'
-                  ? 'Tag sent to the printer. Stick it on the item.'
-                  : 'One tag with a QR code. Once the item is sold, scanning the tag says it is sold.'}
+                {lastMade.qty === 1
+                  ? (tagStatus === 'done'
+                    ? 'Tag sent to the printer. Stick it on the item.'
+                    : 'One tag with a QR code. Once the item is sold, scanning the tag says it is sold.')
+                  : (tagStatus === 'done'
+                    ? 'Labels sent to the printer. Stick one on each piece.'
+                    : `${lastMade.qty} labels with a QR code, one for each piece.`)}
               </Text>
             </>
           ) : null}

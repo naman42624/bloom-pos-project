@@ -23,8 +23,14 @@ const toSizeRows = (options, nextKey) => (Array.isArray(options) ? options : [])
 // Editor rows -> an error message, or null when every row is filled in correctly.
 const sizesError = (rows) => {
   if (rows.length > MAX_SIZES) return `At most ${MAX_SIZES} sizes. Remove one, then save.`;
+  const seen = new Set();
   for (let i = 0; i < rows.length; i += 1) {
     const label = rows[i].label.trim();
+    if (label) {
+      const k = label.toLowerCase();
+      if (seen.has(k)) return 'Two sizes have the same name. Change one.';
+      seen.add(k);
+    }
     const price = parseFloat(rows[i].price);
     if (!label) return `Size ${i + 1} has no name. Type a name like "Medium", or remove the row.`;
     if (label.length > 60) return `Size ${i + 1}'s name is too long. Keep it under 60 letters.`;
@@ -268,7 +274,9 @@ export default function ProductFormScreen({ route, navigation }) {
             await api.setProductOptions(editProduct.id, cleanSizes);
           } catch (optErr) {
             // The product itself is saved; stay here so the sizes can be saved again.
-            const msg = 'The product is saved, but the sizes were not. Check the connection and tap Update Product again.';
+            const msg = optErr && optErr.status
+              ? `The product is saved, but the sizes were not: ${optErr.message}. Fix the sizes and tap Update Product again.`
+              : 'The product is saved, but the sizes were not. Check the connection and tap Update Product again.';
             setSizesErr(msg);
             showAlert('Sizes not saved', msg);
             return;
@@ -283,7 +291,9 @@ export default function ProductFormScreen({ route, navigation }) {
           try {
             await api.setProductOptions(createdProductId, cleanSizes);
           } catch (optErr) {
-            warnings.push('The sizes could not be saved. Open the product, tap Edit and add them again.');
+            warnings.push(optErr && optErr.status
+              ? `The sizes could not be saved: ${optErr.message}. Open the product, tap Edit and add them again.`
+              : 'The sizes could not be saved (connection problem). Open the product, tap Edit and add them again.');
           }
         }
 

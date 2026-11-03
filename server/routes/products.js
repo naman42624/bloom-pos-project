@@ -248,7 +248,7 @@ router.get('/:id', authenticate, async (req, res, next) => {
       JOIN locations l ON ps.location_id = l.id
       WHERE ps.product_id = ?
     `).all(req.params.id);
-    product.total_ready_qty = product.stock.reduce((sum, s) => sum + s.quantity, 0);
+    product.total_ready_qty = product.stock.reduce((sum, s) => sum + (Number(s.quantity) || 0), 0);
 
     // Images
     product.images = await db.prepare(

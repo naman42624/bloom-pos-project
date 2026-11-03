@@ -17,7 +17,13 @@ export const blankLine = () => ({
   fulfill_from_stock: false,
 });
 
-export const isBlankLine = (line) => !!line && !String(line.name || '').trim() && !line.baseProduct;
+// Blank = nothing typed or picked yet: no name, no product, no price, quantity
+// still the default.
+export const isBlankLine = (line) => !!line
+  && !String(line.name || '').trim()
+  && !line.baseProduct
+  && !String(line.price ?? '').trim()
+  && ['', '1'].includes(String(line.quantity ?? '').trim());
 
 // BOM rows from GET /products/:id/materials into the line's materials shape.
 export const bomToLineMaterials = (rows) => (Array.isArray(rows) ? rows : []).map((m) => ({
@@ -39,7 +45,8 @@ export const readyQtyFor = (product, locationId) => {
       const row = product.stock.find((s) => Number(s.location_id) === Number(locationId));
       return row ? Number(row.quantity || 0) : 0;
     }
-    return Number(product.total_ready_qty || 0);
+    if (product.total_ready_qty != null) return Number(product.total_ready_qty) || 0;
+    return product.stock.reduce((sum, s) => sum + (Number(s.quantity) || 0), 0);
   }
   return 0;
 };
@@ -83,7 +90,13 @@ export const buildScannedLine = (product, { option = null, price = null, materia
 const sameScannedThing = (a, b) => {
   if (!a || !b || !a.baseProduct || !b.baseProduct) return false;
   if (Number(a.baseProduct.id) !== Number(b.baseProduct.id)) return false;
-  if ((a.option_label || null) !== (b.option_label || null)) return false;
+  const aOpt = a.option_id ?? null;
+  const bOpt = b.option_id ?? null;
+  if (aOpt != null || bOpt != null) {
+    if (aOpt == null || bOpt == null || Number(aOpt) !== Number(bOpt)) return false;
+  } else if ((a.option_label || null) !== (b.option_label || null)) {
+    return false;
+  }
   // A typed (open) price only stacks onto a line at the same price.
   if (b.scan_price_mode === 'open' && Number(a.price) !== Number(b.price)) return false;
   return true;
