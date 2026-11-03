@@ -44,7 +44,7 @@ import ProductDetailScreen from '../screens/ProductDetailScreen';
 import ProductFormScreen from '../screens/ProductFormScreen';
 import ProductStockScreen from '../screens/ProductStockScreen';
 import QRScannerScreen from '../screens/QRScannerScreen';
-import QRLabelScreen from '../screens/QRLabelScreen';
+import LabelSheetScreen from '../screens/LabelSheetScreen';
 
 // Phase 4 — POS & Sales
 import POSScreen from '../screens/POSScreen';
@@ -263,7 +263,7 @@ function InventoryStack() {
       />
       {/* QR */}
       <Stack.Screen name="QRScanner" component={QRScannerScreen} options={{ title: 'Scan QR Code' }} />
-      <Stack.Screen name="QRLabel" component={QRLabelScreen} options={{ title: 'QR Label' }} />
+      <Stack.Screen name="QRLabel" component={LabelSheetScreen} options={{ title: 'Print Labels' }} />
     </Stack.Navigator>
   );
 }

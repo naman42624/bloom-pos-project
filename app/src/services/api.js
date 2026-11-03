@@ -511,6 +511,10 @@ class ApiService {
   }
 
   // ─── Product QR ─────────────────────────────────────────
+  getLabels(productIds) {
+    return this.request('/products/labels', { method: 'POST', body: JSON.stringify({ product_ids: productIds }) });
+  }
+
   getProductQR(productId, size = 300) {
     return this.request(`/products/${productId}/qr?size=${size}`);
   }
