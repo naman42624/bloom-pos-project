@@ -1,5 +1,6 @@
 const jwt = require('jsonwebtoken');
 const { getDb } = require('../config/database');
+const { isAccessExpired, expiredMessage } = require('../utils/helper-access');
 
 /**
  * Authentication middleware - verifies JWT token and attaches user to request
@@ -21,7 +22,7 @@ function authenticate(req, res, next) {
     // Fetch full user to ensure they still exist and are active
     const db = getDb();
     const user = db
-      .prepare('SELECT id, phone, email, name, role, is_active FROM users WHERE id = ?')
+      .prepare('SELECT id, phone, email, name, role, is_active, access_until FROM users WHERE id = ?')
       .get(decoded.id);
 
     if (!user) {
@@ -35,6 +36,13 @@ function authenticate(req, res, next) {
       return res.status(403).json({
         success: false,
         message: 'Account has been deactivated. Contact your manager.',
+      });
+    }
+
+    if (user.role === 'helper' && isAccessExpired(user.access_until)) {
+      return res.status(401).json({
+        success: false,
+        message: expiredMessage(user.access_until),
       });
     }
 
@@ -95,10 +103,10 @@ function optionalAuth(req, res, next) {
 
     const db = getDb();
     const user = db
-      .prepare('SELECT id, phone, email, name, role, is_active FROM users WHERE id = ?')
+      .prepare('SELECT id, phone, email, name, role, is_active, access_until FROM users WHERE id = ?')
       .get(decoded.id);
 
-    if (user && user.is_active) {
+    if (user && user.is_active && !(user.role === 'helper' && isAccessExpired(user.access_until))) {
       req.user = user;
     }
     next();

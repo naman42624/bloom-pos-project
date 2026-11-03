@@ -10,9 +10,9 @@ const router = express.Router();
 router.use(authenticate);
 
 const USER_SELECT_FIELDS =
-  'id, phone, email, name, role, avatar, bio, employee_code, job_title, is_active, created_by, created_at, updated_at';
+  'id, phone, email, name, role, avatar, bio, employee_code, job_title, is_active, access_until, created_by, created_at, updated_at';
 
-const VALID_ROLES = ['manager', 'employee', 'counter_staff', 'florist_staff', 'delivery_partner', 'customer'];
+const VALID_ROLES = ['manager', 'employee', 'counter_staff', 'florist_staff', 'delivery_partner', 'customer', 'helper'];
 
 // ─── GET /api/users ──────────────────────────────────────────
 // List users (Owner: all, Manager: employees & delivery partners at their locations)
@@ -169,11 +169,15 @@ router.post(
       .withMessage('Password must be at least 6 characters'),
     body('role')
       .isIn([...VALID_ROLES, 'owner'])
-      .withMessage('Role must be owner, manager, employee, counter_staff, florist_staff, delivery_partner, or customer'),
+      .withMessage('Role must be owner, manager, employee, counter_staff, florist_staff, delivery_partner, customer, or helper'),
     body('location_ids')
       .optional()
       .isArray()
       .withMessage('location_ids must be an array'),
+    body('access_until')
+      .optional({ nullable: true, checkFalsy: true })
+      .matches(/^\d{4}-\d{2}-\d{2}$/)
+      .withMessage('Works until must be a date'),
   ],
   async (req, res, next) => {
     try {
@@ -186,7 +190,14 @@ router.post(
         });
       }
 
-      const { name, phone, email, password, role, location_ids } = req.body;
+      const { name, phone, email, password, role, location_ids, access_until } = req.body;
+
+      if (role === 'helper' && !access_until) {
+        return res.status(400).json({
+          success: false,
+          message: 'Pick the last day this helper can work.',
+        });
+      }
 
       // Only Owner can create managers and owners
       if ((role === 'manager' || role === 'owner') && req.user.role !== 'owner') {
@@ -197,7 +208,7 @@ router.post(
       }
 
       // Managers can only create employees and delivery partners
-      if (req.user.role === 'manager' && !['employee', 'counter_staff', 'florist_staff', 'delivery_partner', 'customer'].includes(role)) {
+      if (req.user.role === 'manager' && !['employee', 'counter_staff', 'florist_staff', 'delivery_partner', 'customer', 'helper'].includes(role)) {
         return res.status(403).json({
           success: false,
           message: 'You can only create employee, delivery partner, or customer accounts',
@@ -230,7 +241,7 @@ router.post(
 
       const createUser = db.transaction(() => {
         let employeeCode = null;
-        if (role === 'counter_staff' || role === 'florist_staff') {
+        if (role === 'counter_staff' || role === 'florist_staff' || role === 'helper') {
           const maxRow = db.prepare(
             "SELECT COALESCE(MAX(CAST(employee_code AS INTEGER)), 1000) as max_code FROM users WHERE employee_code ~ '^[0-9]+$'"
           ).get();
@@ -239,9 +250,9 @@ router.post(
 
         const result = db
           .prepare(
-            'INSERT INTO users (name, phone, email, password, role, created_by, employee_code) VALUES (?, ?, ?, ?, ?, ?, ?)'
+            'INSERT INTO users (name, phone, email, password, role, created_by, employee_code, access_until) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
           )
-          .run(name, phone, email || null, hashedPassword, role, req.user.id, employeeCode);
+          .run(name, phone, email || null, hashedPassword, role, req.user.id, employeeCode, role === 'helper' ? access_until : null);
 
         const userId = result.lastInsertRowid;
 
@@ -295,6 +306,7 @@ router.put(
     body('email').optional({ nullable: true, checkFalsy: true }).isEmail().normalizeEmail(),
     body('is_active').optional().isIn([0, 1, true, false]),
     body('location_ids').optional().isArray(),
+    body('access_until').optional({ nullable: true, checkFalsy: true }).matches(/^\d{4}-\d{2}-\d{2}$/).withMessage('Works until must be a date'),
   ],
   (req, res, next) => {
     try {
@@ -317,7 +329,7 @@ router.put(
         return res.status(403).json({ success: false, message: 'Access denied' });
       }
 
-      const { name, email, is_active, location_ids } = req.body;
+      const { name, email, is_active, location_ids, access_until } = req.body;
 
       const updateUser = db.transaction(() => {
         const updates = [];
@@ -339,6 +351,11 @@ router.put(
           }
           updates.push('email = ?');
           values.push(email || null);
+        }
+        if (access_until !== undefined && targetUser.role === 'helper') {
+          if (!access_until) throw { status: 400, message: 'Pick the last day this helper can work.' };
+          updates.push('access_until = ?');
+          values.push(access_until);
         }
         if (is_active !== undefined) {
           updates.push('is_active = ?');
@@ -496,7 +513,7 @@ router.put(
     param('id').isInt(),
     body('role')
       .isIn([...VALID_ROLES, 'owner'])
-      .withMessage('Role must be owner, manager, employee, counter_staff, florist_staff, delivery_partner, or customer'),
+      .withMessage('Role must be owner, manager, employee, counter_staff, florist_staff, delivery_partner, customer, or helper'),
   ],
   (req, res, next) => {
     try {
