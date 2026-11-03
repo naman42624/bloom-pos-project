@@ -45,7 +45,7 @@ router.post(
         if (sale.status === 'cancelled') return { code: 400, message: 'Already undone' };
 
         const refunded = Number((await tx.prepare('SELECT COALESCE(SUM(amount), 0) AS total FROM refunds WHERE sale_id = ?').get(sale.id)).total);
-        if (refunded > 0) return { code: 409, message: REFUNDED_MESSAGE };
+        if (refunded > 0) return { code: 409, message: req.user.role === 'helper' ? HELPER_NOT_YOURS_MESSAGE : REFUNDED_MESSAGE };
 
         const register = await tx
           .prepare('SELECT * FROM cash_registers WHERE location_id = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1')
@@ -61,7 +61,7 @@ router.post(
           rows.forEach((r) => inSessionIds.add(r.id));
         }
         if (payments.some((p) => p.method === 'cash' && !inSessionIds.has(p.id))) {
-          return { code: 409, message: CLOSED_SESSION_MESSAGE };
+          return { code: 409, message: req.user.role === 'helper' ? HELPER_NOT_YOURS_MESSAGE : CLOSED_SESSION_MESSAGE };
         }
 
         const paymentTotal = payments.reduce((sum, p) => sum + Number(p.amount || 0), 0);
@@ -109,7 +109,8 @@ router.post(
       res.json({ success: true, data: outcome.data });
     } catch (err) {
       if (err && err.registerClosed) {
-        return res.status(409).json({ success: false, message: 'The register was just closed. Open it again, then undo.' });
+        const msg = req.user.role === 'helper' ? HELPER_NOT_YOURS_MESSAGE : 'The register was just closed. Open it again, then undo.';
+        return res.status(409).json({ success: false, message: msg });
       }
       next(err);
     }
@@ -312,19 +313,22 @@ router.get('/my-sales', authenticate, authorize(...ROLES, 'helper'), async (req,
       itemsBySale.get(i.sale_id).push(`${i.name} \u00d7 ${Number(i.quantity)}`);
     }
 
-    let cash = 0;
-    let upi = 0;
-    let count = 0;
+    // Whole-day figures come from their own uncapped query (the list is capped)
+    const agg = await db.prepare(`
+      SELECT COUNT(DISTINCT s.id) AS count,
+             COALESCE(SUM(CASE WHEN p.method = 'cash' THEN p.amount ELSE 0 END), 0) AS cash,
+             COALESCE(SUM(CASE WHEN p.method = 'upi' THEN p.amount ELSE 0 END), 0) AS upi
+      FROM sales s
+      LEFT JOIN payments p ON p.sale_id = s.id
+      WHERE s.location_id = ? AND COALESCE(s.sold_by, s.created_by) = ? AND s.created_at >= ?
+        AND s.undone_at IS NULL AND s.status != 'cancelled'
+    `).get(locationId, req.user.id, dayStart);
+    const count = Number(agg.count);
+    const cash = Number(agg.cash);
+    const upi = Number(agg.upi);
     const sales = rows.map((r) => {
-      const undone = r.status === 'cancelled' || r.undone_at != null;
+      const undone = r.undone_at != null;
       const pays = paysBySale.get(r.id) || [];
-      if (!undone) {
-        count += 1;
-        for (const p of pays) {
-          if (p.method === 'cash') cash += Number(p.amount || 0);
-          else if (p.method === 'upi') upi += Number(p.amount || 0);
-        }
-      }
       return {
         id: r.id,
         sale_number: r.sale_number,
@@ -334,7 +338,7 @@ router.get('/my-sales', authenticate, authorize(...ROLES, 'helper'), async (req,
         items: itemsBySale.get(r.id) || [],
         status: r.status,
         undone,
-        can_undo: isHelper && !undone && r.fresh === true && Number(r.sold_by) === req.user.id && Number(r.created_by) === req.user.id,
+        can_undo: isHelper && !undone && r.status !== 'cancelled' && r.fresh === true && Number(r.sold_by) === req.user.id && Number(r.created_by) === req.user.id,
       };
     });
 

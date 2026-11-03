@@ -1193,6 +1193,33 @@ check('non-helper undo unchanged (counter staff quick sale undo still works)', a
   }
 });
 
+check('undoing a mixed cash and upi helper sale reverses both', async () => {
+  const { owner, helper, fixed } = await sellSetup();
+  const reg = await openRegister(owner.token, TEST_LOCATION_ID, 100);
+  const db = await getDb();
+  const regRow = () => db.prepare('SELECT expected_cash, total_cash_sales, total_upi_sales FROM cash_registers WHERE id = ?').get(reg.id);
+  const before = await regRow();
+  const r = await sell(helper.token, { items: [{ product_id: fixed.id, quantity: 1, unit_price: 1000 }], payments: [{ method: 'cash', amount: 400 }, { method: 'upi', amount: 600 }] });
+  assert(r.status === 201, `mixed sale: ${r.status} ${JSON.stringify(r.body)}`);
+  const mid = await regRow();
+  assert(Number(mid.total_cash_sales) - Number(before.total_cash_sales) === 400 && Number(mid.total_upi_sales) - Number(before.total_upi_sales) === 600, 'both reached the register');
+  const u = await undoSale(helper.token, r.body.data.id);
+  assert(u.status === 200, `undo: ${u.status} ${JSON.stringify(u.body)}`);
+  const after = await regRow();
+  assert(Number(after.expected_cash) === Number(before.expected_cash) && Number(after.total_cash_sales) === Number(before.total_cash_sales) && Number(after.total_upi_sales) === Number(before.total_upi_sales), `${JSON.stringify(before)} -> ${JSON.stringify(after)}`);
+});
+
+check('helper undo copy hides refund and register wording', async () => {
+  const { owner, helper } = await sellSetup();
+  await openRegister(owner.token, TEST_LOCATION_ID, 100);
+  const id = await helperSaleOf(helper.token, 'upi', 800);
+  const db = await getDb();
+  await db.prepare("INSERT INTO refunds (sale_id, amount, reason, refund_method, status, requested_by, approved_by) VALUES (?, 1, 'verify', 'upi', 'processed', ?, ?)").run(id, owner.id, owner.id);
+  const r = await undoSale(helper.token, id);
+  await db.prepare('DELETE FROM refunds WHERE sale_id = ?').run(id);
+  assert(r.status === 409 && r.body?.message === NOT_YOURS, `${r.status} ${JSON.stringify(r.body)}`);
+});
+
 async function cleanupHelperSales() {
   const db = await getDb();
   if (helperThresholdBackup !== undefined) {
