@@ -1009,6 +1009,81 @@ check('sold_by is the helper', async () => {
   assert(Number(del.c) === 0 && Number(open.c) === 0, `deliveries ${del.c} open tasks ${open.c}`);
 });
 
+// ─── Fix round 1 ─────────────────────────────────────────────
+const APPROVER_WRONG_SHOP = "That person doesn't work at this shop. Ask someone at the counter here.";
+const UNFINISHED = "This sale didn't finish saving. Ask the counter to check it before you take payment again.";
+
+async function makeStaffAt(ownerToken, role, locationId) {
+  const phone = testPhone();
+  const r = await api('POST', '/users', ownerToken, { name: `Verify ${role}`, phone, password: PASSWORD, role, location_ids: [locationId] });
+  assert(r.status === 201, `create ${role}: ${r.status} ${JSON.stringify(r.body)}`);
+  createdUserIds.push(r.body.data.user.id);
+  return r.body.data.user;
+}
+
+check('override approver must work at this shop', async () => {
+  const { owner, helper, fixed } = await sellSetup();
+  await setHelperLimit(10);
+  const db = await getDb();
+  const other = await db.prepare('SELECT id FROM locations WHERE id <> ? ORDER BY id LIMIT 1').get(TEST_LOCATION_ID);
+  assert(other, 'need a second location');
+  const cs = await makeStaffAt(owner.token, 'counter_staff', other.id);
+  await api('PUT', `/users/${cs.id}/pin`, owner.token, { pin: '2468' });
+  const body = { items: [{ product_id: fixed.id, quantity: 1, unit_price: 1000 }], discount_type: 'percentage', discount_value: 15, payments: [{ method: 'upi', amount: 850 }] };
+  for (const pin of ['2468', '0000']) {
+    const r = await sell(helper.token, { ...body, discount_override: { employee_code: cs.employee_code, pin } });
+    assert(r.status === 403 && r.body?.message === APPROVER_WRONG_SHOP, `other shop pin ${pin}: ${r.status} ${JSON.stringify(r.body)}`);
+  }
+  const row = await db.prepare('SELECT pin_failed_attempts FROM users WHERE id = ?').get(cs.id);
+  assert(!Number(row.pin_failed_attempts), `wrong-shop approver lost a try: ${row.pin_failed_attempts}`);
+  // An owner can approve from anywhere (throwaway owner linked to the other shop only)
+  const emp = await makeStaffAt(owner.token, 'employee', other.id);
+  const made = await api('PUT', `/users/${emp.id}/change-role`, owner.token, { role: 'owner' });
+  assert(made.status === 200, `make owner: ${made.status}`);
+  const pinRes = await api('PUT', `/users/${emp.id}/pin`, owner.token, { pin: '8642' });
+  const ok = await sell(helper.token, { ...body, discount_override: { employee_code: pinRes.body.data.employee_code, pin: '8642' } });
+  assert(ok.status === 201 && ok.body.data.discount_approved_by === emp.id, `owner from another shop: ${ok.status} ${JSON.stringify(ok.body)}`);
+  // An unknown code still gets the usual answer
+  const unknown = await sell(helper.token, { ...body, discount_override: { employee_code: '99999999', pin: '1234' } });
+  assert(unknown.status === 401 && unknown.body?.message === 'Employee code not recognized.', `unknown: ${unknown.status} ${JSON.stringify(unknown.body)}`);
+});
+
+check('one-off lines are summed against stock', async () => {
+  const { helper } = await sellSetup();
+  const one = await makeProduct({ name: 'Verify OneOff3', price: 100, oneOff: 1, stock: 1 });
+  const line = { product_id: one.id, quantity: 1, unit_price: 100 };
+  const r = await sell(helper.token, { items: [line, line], payments: [{ method: 'upi', amount: 200 }] });
+  assert(r.status === 409 && r.body?.message === SOLD_COPY, `two lines: ${r.status} ${JSON.stringify(r.body)}`);
+});
+
+check('helper limit is never above the counter limit', async () => {
+  const { helper, fixed } = await sellSetup();
+  const { manager } = await counterLimits();
+  await setHelperLimit(manager + 20);
+  const pct = manager + 1;
+  const r = await sell(helper.token, { items: [{ product_id: fixed.id, quantity: 1, unit_price: 1000 }], discount_type: 'percentage', discount_value: pct, payments: [{ method: 'upi', amount: 1000 - pct * 10 }] });
+  assert(r.status === 403 && r.body?.message === NEEDS_OK, `above counter limit: ${r.status} ${JSON.stringify(r.body)}`);
+  await setHelperLimit(10);
+});
+
+check('a repeat of an unfinished sale is not answered as saved', async () => {
+  const { helper, fixed } = await sellSetup();
+  const db = await getDb();
+  const ref = newRef();
+  const body = { location_id: TEST_LOCATION_ID, client_ref: ref, items: [{ product_id: fixed.id, quantity: 1, unit_price: 1000 }], payments: [{ method: 'upi', amount: 1000 }] };
+  const first = await api('POST', '/sales', helper.token, body);
+  assert(first.status === 201, `first: ${first.status}`);
+  // Saved row with no payments (as if the save stopped half way)
+  await db.prepare('DELETE FROM payments WHERE sale_id = ?').run(first.body.data.id);
+  const r1 = await api('POST', '/sales', helper.token, body);
+  assert(r1.status === 409 && r1.body?.message === UNFINISHED, `paid status, no payments: ${r1.status} ${JSON.stringify(r1.body)}`);
+  await db.prepare("UPDATE sales SET payment_status = 'pending' WHERE id = ?").run(first.body.data.id);
+  const r2 = await api('POST', '/sales', helper.token, body);
+  assert(r2.status === 409 && r2.body?.message === UNFINISHED, `pending: ${r2.status} ${JSON.stringify(r2.body)}`);
+  const n = await db.prepare('SELECT COUNT(*) AS c FROM sales WHERE created_by = ? AND client_ref = ?').get(helper.id, ref);
+  assert(Number(n.c) === 1, `sales with ref: ${n.c}`);
+});
+
 async function cleanupHelperSales() {
   const db = await getDb();
   if (helperThresholdBackup !== undefined) {

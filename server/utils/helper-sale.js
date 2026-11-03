@@ -7,7 +7,7 @@
 // by a counter/manager/owner code + PIN. Everything the client sends beyond
 // that is dropped.
 const { getDb: getSyncDb } = require('../config/database');
-const { verifyApprovalPin, approverMaxDiscountPct } = require('./approval-pin');
+const { verifyApprovalPin, approverMaxDiscountPct, APPROVER_ROLES } = require('./approval-pin');
 const { normalizeDateFields } = require('./normalizeDates');
 
 const MSG = {
@@ -25,6 +25,8 @@ const MSG = {
   BAD_ITEMS: 'Add at least one item to the basket.',
   BAD_DISCOUNT: "The discount can't be more than the price.",
   WRONG_SHOP: "You can't sell for this shop. Ask the owner.",
+  APPROVER_WRONG_SHOP: "That person doesn't work at this shop. Ask someone at the counter here.",
+  UNFINISHED: "This sale didn't finish saving. Ask the counter to check it before you take payment again.",
 };
 
 const CLIENT_REF_RE = /^[A-Za-z0-9_-]{1,64}$/;
@@ -79,6 +81,14 @@ function saleResponse(saleId) {
   return sale;
 }
 
+// A repeat is only answered with the saved sale when that sale was paid in
+// full; anything else needs a person to look at it before taking money again.
+function isFullyPaid(sale) {
+  if (!sale || sale.payment_status !== 'paid') return false;
+  const paid = (sale.payments || []).reduce((s, p) => s + toPaise(p.amount), 0);
+  return paid === toPaise(sale.grand_total);
+}
+
 function isClientRefConflict(err) {
   if (!err) return false;
   if (err.code === '23505' && err.constraint === CLIENT_REF_INDEX) return true;
@@ -98,6 +108,14 @@ async function normalizeHelperSale(db, body, user) {
   const items = Array.isArray(body.items) ? body.items : [];
   if (items.length === 0) fail(400, MSG.BAD_ITEMS);
 
+  // One-off stock is compared with the whole basket's quantity of that product
+  const qtyByProduct = new Map();
+  for (const item of items) {
+    const pid = Number(item && item.product_id);
+    const q = Number(item && item.quantity);
+    if (Number.isInteger(pid) && Number.isFinite(q)) qtyByProduct.set(pid, (qtyByProduct.get(pid) || 0) + q);
+  }
+
   const lines = [];
   let subtotal = 0;
   let taxTotal = 0;
@@ -116,7 +134,7 @@ async function normalizeHelperSale(db, body, user) {
     if (Number(product.is_one_off) === 1) {
       const st = await db.prepare('SELECT quantity FROM product_stock WHERE product_id = ? AND location_id = ?').get(product.id, locationId);
       const have = st ? Number(st.quantity) : 0;
-      if (have <= 0 || qty > have) fail(409, MSG.SOLD);
+      if (have <= 0 || qtyByProduct.get(product.id) > have) fail(409, MSG.SOLD);
     }
 
     const options = await db.prepare(
@@ -231,16 +249,30 @@ async function normalizeHelperSale(db, body, user) {
 // Within the helper limit: no approver. Over it: a counter/manager/owner
 // code + PIN whose own limit covers the discount. The PIN check reserves its
 // try with its own committed write, so this runs before any sale transaction.
-async function checkHelperDiscount(db, { pct, override }) {
+async function checkHelperDiscount(db, { pct, override, locationId }) {
   if (!(pct > 0)) return { approvedBy: null };
   const settings = await readSettings(db, ['discount_helper_threshold', 'discount_manager_threshold', 'discount_owner_threshold']);
-  const rawLimit = settings.discount_helper_threshold ?? settings.discount_manager_threshold ?? '20';
-  const limit = Number.isFinite(parseFloat(rawLimit)) ? parseFloat(rawLimit) : 20;
+  // A helper never gets more than counter staff, whatever the setting says
+  const num = (v, d) => (Number.isFinite(parseFloat(v)) ? parseFloat(v) : d);
+  const counterLimit = num(settings.discount_manager_threshold, 20);
+  const limit = Math.min(num(settings.discount_helper_threshold, counterLimit), counterLimit);
   if (pct <= limit + 1e-9) return { approvedBy: null };
 
   const code = override && typeof override === 'object' ? override.employee_code : null;
   const pin = override && typeof override === 'object' ? override.pin : null;
   if (!code || !pin) fail(403, MSG.NEEDS_OK);
+
+  // The approver must work at this shop (the owner anywhere). Checked before
+  // the PIN so a wrong-shop approver does not use up a try. An unknown or
+  // non-approver code falls through to verifyApprovalPin, which answers as usual.
+  const placeholders = APPROVER_ROLES.map(() => '?').join(', ');
+  const who = await db.prepare(
+    `SELECT id, role, is_active FROM users WHERE employee_code = ? AND role IN (${placeholders})`
+  ).get(String(code).trim(), ...APPROVER_ROLES);
+  if (who && Number(who.is_active) && who.role !== 'owner') {
+    const link = await db.prepare('SELECT 1 AS ok FROM user_locations WHERE user_id = ? AND location_id = ?').get(who.id, locationId);
+    if (!link) fail(403, MSG.APPROVER_WRONG_SHOP);
+  }
 
   const approver = await verifyApprovalPin(db, String(code), String(pin));
   if (approverMaxDiscountPct(approver.role, settings) + 1e-9 < pct) fail(403, MSG.NEEDS_MANAGER);
@@ -261,13 +293,16 @@ function helperSaleGate(getAsyncDb) {
       const db = await getAsyncDb();
       const existingId = await findByClientRef(db, req.user.id, clientRef);
       if (existingId) {
-        return res.status(200).json({ success: true, duplicate: true, data: saleResponse(existingId) });
+        const saved = saleResponse(existingId);
+        if (!isFullyPaid(saved)) return res.status(409).json({ success: false, message: MSG.UNFINISHED });
+        return res.status(200).json({ success: true, duplicate: true, data: saved });
       }
 
       const normalized = await normalizeHelperSale(db, req.body || {}, req.user);
       const { approvedBy } = await checkHelperDiscount(db, {
         pct: normalized.discountPct,
         override: req.body && req.body.discount_override,
+        locationId: normalized.body.location_id,
       });
 
       req.body = normalized.body;
@@ -295,7 +330,12 @@ function answerClientRefConflict(req, res, err) {
   const row = db.prepare('SELECT id FROM sales WHERE created_by = ? AND client_ref = ?').get(req.user.id, req.helperSale.clientRef);
   if (!row) return false;
   console.log(`Helper sale: two first tries of one basket; answered with sale ${row.id}`);
-  res.status(200).json({ success: true, duplicate: true, data: saleResponse(row.id) });
+  const saved = saleResponse(row.id);
+  if (!isFullyPaid(saved)) {
+    res.status(409).json({ success: false, message: MSG.UNFINISHED });
+    return true;
+  }
+  res.status(200).json({ success: true, duplicate: true, data: saved });
   return true;
 }
 
