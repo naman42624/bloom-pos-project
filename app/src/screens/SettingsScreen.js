@@ -10,8 +10,9 @@ import {
   Switch,
   Image,
   Platform,
+  TouchableOpacity,
 } from 'react-native';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import api from '../services/api';
@@ -101,6 +102,7 @@ const PREFERENCE_SETTINGS = [
 
 export default function SettingsScreen() {
   const { user, refreshSettings } = useAuth();
+  const navigation = useNavigation();
   const [settings, setSettings] = useState({});
   const [editedValues, setEditedValues] = useState({});
   const [loading, setLoading] = useState(true);
@@ -278,6 +280,25 @@ export default function SettingsScreen() {
                     </View>
                   ))}
                 </View>
+              );
+            }
+
+            if (key === 'quick_sale_tiles') {
+              if (!isOwner) return null;
+              return (
+                <TouchableOpacity
+                  key={key}
+                  style={[styles.settingRow, { flexDirection: 'row', alignItems: 'center', minHeight: 56 }]}
+                  onPress={() => navigation.navigate('QuickSaleTiles')}
+                  accessibilityRole="button"
+                  accessibilityLabel="Quick sale buttons"
+                >
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.settingLabel}>Quick sale buttons</Text>
+                    <Text style={styles.settingDesc}>Choose the one-tap buttons counter staff see on Quick sale</Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={22} color={Colors.textSecondary} />
+                </TouchableOpacity>
               );
             }
 

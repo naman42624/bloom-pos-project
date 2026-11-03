@@ -12,6 +12,7 @@ const { computeOrderStage, getStageFlags } = require('../utils/order-stage');
 const { sumCollectionsByMethod } = require('../utils/settlement-math');
 const { buildTrackingUrl } = require('../utils/tracking-token');
 const { slipUrl } = require('../utils/slip-token');
+const { reverseSaleEffects } = require('../utils/sale-reversal');
 const QRCode = require('qrcode');
 const { getChecklistForSale, setCheck, loadSaleForChecks } = require('../utils/load-checks');
 
@@ -726,6 +727,7 @@ router.put(
     body('location_id').isInt(),
     body('actual_cash').isFloat({ min: 0 }),
     body('closing_notes').optional().trim(),
+    body('preview').optional().isBoolean({ strict: true }),
   ],
   (req, res, next) => {
     try {
@@ -830,6 +832,57 @@ router.put(
 
       const expectedCash = register.opening_balance + paymentTotals.cash_total - refundTotal - expenseTotal;
       const discrepancy = expectedCash - actual_cash;
+
+      // Blind count: once a close has offered to book extra cash, the count is
+      // fixed for staff, so trying other numbers cannot reveal the expected
+      // amount. Owner and manager may close with a corrected count.
+      const isPreview = req.body.preview === true || req.body.preview === 'true';
+      const lockedCount = register.close_count_locked == null ? null : Number(register.close_count_locked);
+      const canOverrideCount = req.user.role === 'owner' || req.user.role === 'manager';
+      if (lockedCount != null && !canOverrideCount && Math.abs(lockedCount - Number(actual_cash)) >= 0.005) {
+        return res.status(409).json({
+          success: false,
+          code: 'COUNT_LOCKED',
+          locked_cash: lockedCount,
+          message: 'You already counted ₹' + lockedCount.toLocaleString('en-IN', { maximumFractionDigits: 2 }) + ' in the drawer. Close with that amount, or ask a manager to close the register.',
+        });
+      }
+      if (isPreview && lockedCount == null && -discrepancy >= 1) {
+        db.prepare('UPDATE cash_registers SET close_count_locked = ? WHERE id = ? AND close_count_locked IS NULL').run(Number(actual_cash), register.id);
+      }
+
+      // Preview: report what a close would record, without closing anything.
+      if (isPreview) {
+        // Same unsettled delivery cash the register status banner shows.
+        let pendingCod = 0;
+        try {
+          const codRow = db.prepare(`
+            SELECT COALESCE(SUM(d.cod_collected), 0) as total
+            FROM deliveries d
+            WHERE d.location_id = ?
+              AND d.status = 'delivered'
+              AND d.cod_collected > 0
+              AND d.cod_status IN ('collected', 'partial')
+              AND d.id NOT IN (SELECT delivery_id FROM delivery_settlement_items)
+          `).get(location_id);
+          pendingCod = Math.round(Number(codRow?.total || 0) * 100) / 100;
+        } catch (_) { /* non-critical, preview still answers */ }
+
+        // Every preview leaves a trail; apart from the count lock above it never changes the register.
+        try {
+          db.prepare(`
+            INSERT INTO audit_logs (entity_type, entity_id, user_id, action, previous_state, new_state, created_at)
+            VALUES ('cash_register', ?, ?, 'register_close_preview', ?, ?, CURRENT_TIMESTAMP)
+          `).run(
+            register.id,
+            req.user.id,
+            JSON.stringify({ register_id: register.id }),
+            JSON.stringify({ actual_cash: Number(actual_cash), expected_cash: expectedCash, discrepancy })
+          );
+        } catch (auditErr) { console.error('register close preview audit failed:', auditErr.message); }
+
+        return res.json({ success: true, data: { preview: true, expected_cash: expectedCash, actual_cash: Number(actual_cash), discrepancy, pending_cod: pendingCod } });
+      }
 
       db.prepare(`
         UPDATE cash_registers SET
@@ -1102,6 +1155,9 @@ router.put('/:id', authenticate, authorize('owner', 'manager', 'employee', 'coun
     // Fetch existing sale state for the audit log
     const oldSale = await db.prepare('SELECT * FROM sales WHERE id = ?').get(saleId);
     if (!oldSale) return res.status(404).json({ success: false, message: 'Sale not found' });
+    if (oldSale.status === 'cancelled') {
+      return res.status(400).json({ success: false, message: "This sale was undone or cancelled — it can't be changed." });
+    }
 
     // 1. Permission Check
     if (['employee', 'counter_staff'].includes(req.user.role) && oldSale.created_by !== req.user.id) {
@@ -1621,6 +1677,7 @@ router.post(
     body('vendor_name').optional({ nullable: true }).trim(),
     body('route_id').optional({ nullable: true }).isInt(),
     body('source_order_request_id').optional({ nullable: true }).isInt(),
+    body('entry_mode').optional({ nullable: true }).isString(),
   ],
   (req, res, next) => {
     try {
@@ -1642,6 +1699,8 @@ router.post(
         is_credit_sale, skip_assignment,
         vendor_name, route_id, source_order_request_id,
       } = req.body;
+      // Only known values are kept; anything else is stored as NULL
+      const entryMode = ['quick', 'close_topup'].includes(req.body.entry_mode) ? req.body.entry_mode : null;
       // Mutable alias — may be set by auto-create logic below
       let customer_id = customer_id_from_body || null;
       // Owner-only field, but only owner/manager may set it at creation —
@@ -1672,6 +1731,11 @@ router.post(
           } else if (item.product_id) {
             // Product sale
             const product = db.prepare('SELECT id, name, tax_rate_id, selling_price FROM products WHERE id = ? AND is_active = 1').get(item.product_id);
+            if (!product && entryMode) {
+              const inactiveErr = new Error("This item isn't sold any more — the buttons have been refreshed");
+              inactiveErr.statusCode = 400;
+              throw inactiveErr;
+            }
             if (!product) throw new Error(`Product ID ${item.product_id} not found or inactive`);
             unitPrice = item.unit_price != null ? item.unit_price : product.selling_price;
             taxRate = 0;
@@ -1907,8 +1971,8 @@ router.post(
             special_instructions, customer_notes,
             sender_customer_id, receiver_customer_id, sender_same_as_receiver,
             sender_name, sender_phone, receiver_name, receiver_phone, sender_message,
-            created_by, created_at, is_credit_sale, vendor_name)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            created_by, created_at, is_credit_sale, vendor_name, entry_mode)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           saleNumber, location_id, customer_id || null, saleCustomerName || null, saleCustomerPhone || null,
           subtotal, taxTotal, discountAmount, discount_type || null, discountPercentage, discountApprovedBy,
@@ -1919,7 +1983,7 @@ router.post(
           notes || special_instructions || '', customer_notes || '',
           senderCustomerId || null, receiverCustomerId || null, senderReceiverSame ? 1 : 0,
           senderNameForSale || '', senderPhoneForSale || '', receiverNameForSale || '', receiverPhoneForSale || '', sender_message || '', req.user.id,
-          nowLocal(), is_credit_sale ? 1 : 0, vendorNameToStore
+          nowLocal(), is_credit_sale ? 1 : 0, vendorNameToStore, entryMode
         );
         const saleId = saleResult.lastInsertRowid;
 
@@ -1957,6 +2021,8 @@ router.post(
         let assignedTaskIds = [];
 
         const insertTaskToDb = (saleId, saleItemId, productId, locId, qty, priority, notes, createdAt) => {
+          // Quick entries are goods already handed over: no production work
+          if (entryMode) return;
           if (skip_assignment) {
             db.prepare(
               `INSERT INTO production_tasks (sale_id, sale_item_id, product_id, location_id, quantity, priority, notes, status, assigned_to, picked_by, completed_at, created_at, updated_at)
@@ -2336,7 +2402,7 @@ router.put(
   '/:id/cancel',
   authenticate,
   authorize('owner', 'manager', 'counter_staff'),
-  (req, res, next) => {
+  async (req, res, next) => {
     try {
       const db = getDb();
       const sale = db.prepare('SELECT * FROM sales WHERE id = ?').get(req.params.id);
@@ -2386,57 +2452,10 @@ router.put(
         });
       }
 
-      const cancelTx = db.transaction(() => {
+      const cancelTx = db.transaction(async () => {
         db.prepare("UPDATE sales SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(req.params.id);
 
-        // Revert customer total_spent/credit_balance. total_spent was bumped
-        // by the full grand_total at creation regardless of payment status,
-        // so it always reverses by grand_total. credit_balance is different:
-        // it was only ever bumped by the UNPAID portion at creation (and
-        // reduced as payments came in) — refunds never touch it (see
-        // POST /:id/refund). So a sale that was paid in full then refunded
-        // has $0 sitting in credit_balance for it; reversing by the full
-        // grand_total there would wrongly wipe out real dues from other
-        // orders. Reverse by grand_total minus whatever was actually paid.
-        const duesCustomerId = (sale.order_type === 'delivery' && sale.sender_customer_id) ? sale.sender_customer_id : sale.customer_id;
-        if (duesCustomerId) {
-          const unpaidRemaining = Math.max(0, Number(sale.grand_total) - paymentTotal);
-          db.prepare('UPDATE users SET total_spent = GREATEST(0, total_spent - ?), credit_balance = GREATEST(0, credit_balance - ?), updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(sale.grand_total, unpaidRemaining, duesCustomerId);
-        }
-
-        // Cancel any pending/in-progress production tasks
-        db.prepare("UPDATE production_tasks SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP WHERE sale_id = ? AND status NOT IN ('completed', 'cancelled')").run(req.params.id);
-
-        const items = db.prepare('SELECT * FROM sale_items WHERE sale_id = ?').all(req.params.id);
-
-        for (const item of items) {
-          if (item.from_product_stock && item.product_id) {
-            // Was fulfilled from product_stock → return to product_stock
-            const existing = db.prepare('SELECT id FROM product_stock WHERE product_id = ? AND location_id = ?').get(item.product_id, sale.location_id);
-            if (existing) {
-              db.prepare('UPDATE product_stock SET quantity = quantity + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(item.quantity, existing.id);
-            } else {
-              db.prepare('INSERT INTO product_stock (product_id, location_id, quantity) VALUES (?, ?, ?)').run(item.product_id, sale.location_id, item.quantity);
-            }
-          } else if (item.materials_deducted && item.product_id) {
-            // Materials already consumed (production done) → add finished product to product_stock
-            // Cannot restore raw materials — they're already used up
-            const existing = db.prepare('SELECT id FROM product_stock WHERE product_id = ? AND location_id = ?').get(item.product_id, sale.location_id);
-            if (existing) {
-              db.prepare('UPDATE product_stock SET quantity = quantity + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(item.quantity, existing.id);
-            } else {
-              db.prepare('INSERT INTO product_stock (product_id, location_id, quantity) VALUES (?, ?, ?)').run(item.product_id, sale.location_id, item.quantity);
-            }
-          } else if (item.materials_deducted && item.material_id) {
-            // Raw material sale — restore material stock
-            db.prepare('UPDATE material_stock SET quantity = quantity + ?, updated_at = CURRENT_TIMESTAMP WHERE material_id = ? AND location_id = ?').run(item.quantity, item.material_id, sale.location_id);
-            db.prepare(`INSERT INTO material_transactions (material_id, location_id, type, quantity, reference_type, reference_id, notes, created_by) VALUES (?, ?, 'return', ?, 'sale_cancel', ?, ?, ?)`)
-              .run(item.material_id, sale.location_id, item.quantity, sale.id, `Cancel ${sale.sale_number}`, req.user.id);
-          }
-          // If nothing was deducted yet (pending production), nothing to restore
-        }
-
-        db.prepare('UPDATE sales SET stock_deducted = 0 WHERE id = ?').run(req.params.id);
+        await reverseSaleEffects(db, sale, { paymentTotal, userId: req.user.id });
 
         // Cascade to any deliveries row still sitting 'pending' or 'failed'
         // for this sale — the guard above already blocked cancel outright
@@ -2459,7 +2478,7 @@ router.put(
           WHERE sale_id = ? AND status IN ('pending', 'failed')
         `).run(req.params.id);
       });
-      cancelTx();
+      await cancelTx();
 
       res.json({ success: true, message: 'Sale cancelled and stock handled' });
     } catch (err) { next(err); }

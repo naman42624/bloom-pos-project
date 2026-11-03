@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TextInput,
   TouchableOpacity, Alert, ActivityIndicator, Platform,
@@ -10,6 +10,10 @@ import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius, Shadows, TouchTarget } from '../constants/theme';
 import { isRegisterStale } from '../hooks/useRegisterStatus';
 import { formatDateLabel } from '../utils/datetime';
+import { showAlert, showConfirm } from '../utils/alert';
+import { buildQuickSalePayload, amountError, TOPUP_LABEL } from '../utils/quickSale';
+import { METHOD_COLOR } from '../components/quickSale/QuickSaleRoll';
+import useSubmitGuard from '../hooks/useSubmitGuard';
 
 const formatTime = (timeStr) => {
   if (!timeStr) return '-';
@@ -184,6 +188,15 @@ export default function CashRegisterScreen({ navigation, route }) {
   const [todaySessions, setTodaySessions] = useState([]);
 
   const [submitting, setSubmitting] = useState(false);
+  // Close top-up: { excess, cash } while the panel is showing. The created
+  // sale id is remembered so a failed close never books the extra cash twice.
+  const [topup, setTopup] = useState(null);
+  const topupSaleRef = useRef(null);
+  const closingRef = useRef(false);
+  const dropTopup = () => { topupSaleRef.current = null; setTopup(null); };
+  // A top-up belongs to one location and one count; leaving either drops it.
+  useEffect(() => { dropTopup(); }, [selectedLocation]);
+  const guardSubmit = useSubmitGuard();
   const [pendingCodTotal, setPendingCodTotal] = useState(0);
   const [pendingCodDeliveries, setPendingCodDeliveries] = useState(0);
 
@@ -222,6 +235,7 @@ export default function CashRegisterScreen({ navigation, route }) {
   };
 
   const handleLocationChange = (locId) => {
+    dropTopup();
     setSelectedLocation(locId);
     fetchStatus(locId);
   };
@@ -249,44 +263,135 @@ export default function CashRegisterScreen({ navigation, route }) {
     } finally { setSubmitting(false); }
   };
 
+  // Close flow. Tap Close -> preview (no writes). If the drawer holds at least
+  // Rs 1 more than expected, show the top-up panel; otherwise the usual confirm.
+  const rupees = (n) => '₹' + Number(n).toLocaleString('en-IN', { maximumFractionDigits: 2 });
+
+  // Server refused because the count was already fixed by an earlier offer.
+  const handleCountLocked = (err) => {
+    if (!(err && err.status === 409 && err.code === 'COUNT_LOCKED')) return false;
+    const locked = err.body && err.body.locked_cash;
+    dropTopup();
+    if (locked != null) setActualCash(String(locked));
+    showAlert('Count already entered', err.message || 'The cash count was already entered. Close with that amount.');
+    return true;
+  };
+
+  const doClose = async (cash, locationId = selectedLocation) => {
+    if (closingRef.current) return;
+    closingRef.current = true;
+    setSubmitting(true);
+    try {
+      const res = await api.closeRegister({
+        location_id: locationId,
+        actual_cash: cash,
+        closing_notes: closingNotes,
+      });
+      if (res.success) {
+        topupSaleRef.current = null;
+        setTopup(null);
+        setRegister(res.data);
+        setIsOpen(false);
+        setActualCash('');
+        setClosingNotes('');
+        fetchStatus(selectedLocation);
+        showAlert('Closed', 'Register closed. Discrepancy: ₹' + Number(res.data.discrepancy || 0).toFixed(2));
+      } else {
+        showAlert('Could not close', res.message || 'The register did not close. Please tap Close Register again.');
+      }
+    } catch (err) {
+      if (handleCountLocked(err)) {
+        // message shown, count put back
+      } else if (err && (err.status === 404 || /not open|no open|open register/i.test(err.message || ''))) {
+        dropTopup();
+        fetchStatus(locationId);
+        showAlert('Could not close', err.message || 'This register is no longer open.');
+      } else
+      showAlert('Could not close', 'The register did not close. Check your connection and tap Close Register again.');
+    } finally { closingRef.current = false; setSubmitting(false); }
+  };
+
   const handleClose = async () => {
     const cash = parseFloat(actualCash);
     if (isNaN(cash) || cash < 0) {
-      Alert.alert('Invalid', 'Enter actual cash in drawer');
+      showAlert('Invalid', 'Enter actual cash in drawer');
       return;
     }
-
-    const doClose = async () => {
-      setSubmitting(true);
-      try {
-        const res = await api.closeRegister({
-          location_id: selectedLocation,
-          actual_cash: cash,
-          closing_notes: closingNotes,
-        });
-        if (res.success) {
-          setRegister(res.data);
-          setIsOpen(false);
-          setActualCash('');
-          setClosingNotes('');
-          fetchStatus(selectedLocation);
-          Alert.alert('Closed', 'Register closed. Discrepancy: ₹' + Number(res.data.discrepancy || 0).toFixed(2));
-        } else {
-          Alert.alert('Error', res.message);
-        }
-      } catch (err) {
-        Alert.alert('Error', err.message || 'Failed to close register');
-      } finally { setSubmitting(false); }
-    };
-
-    if (Platform.OS === 'web') {
-      if (window.confirm(`Close register with ₹${cash} actual cash?`)) doClose();
-    } else {
-      Alert.alert('Close Register', `Actual cash: ₹${cash}. Proceed?`, [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Close', onPress: doClose },
-      ]);
+    setSubmitting(true);
+    let preview = null;
+    try {
+      const res = await api.previewRegisterClose({ location_id: selectedLocation, actual_cash: cash });
+      if (res && res.success && res.data) preview = res.data;
+    } catch (e) {
+      // preview is a nicety, closing must never wait on it, except a locked count
+      if (handleCountLocked(e)) { setSubmitting(false); return; }
     }
+    setSubmitting(false);
+
+    const excess = preview ? Math.round(-Number(preview.discrepancy) * 100) / 100 : 0;
+    if (preview && Number.isFinite(excess) && excess >= 1) {
+      const pendingCod = Math.round(Number(preview.pending_cod || 0) * 100) / 100;
+      const bookable = Math.round((excess - pendingCod) * 100) / 100;
+      setTopup({ excess, pendingCod, bookable, cash, locationId: selectedLocation, registerId: (register && register.id) || null });
+      return;
+    }
+    setTopup(null);
+    showConfirm('Close Register', `Close register with ${rupees(cash)} actual cash?`, () => doClose(cash), { confirmLabel: 'Close' });
+  };
+
+  const handleBookTopup = async () => {
+    if (!topup) return;
+    const { bookable, cash, locationId } = topup;
+    if (selectedLocation !== locationId) { dropTopup(); return; }
+    const prev = topupSaleRef.current;
+    if (!(prev && prev.cash === cash && prev.locationId === locationId)) {
+      setSubmitting(true);
+      // Look again right before booking: if the amount moved, show the new one
+      // and let staff tap Book again instead of booking a stale figure.
+      try {
+        const fresh = await api.previewRegisterClose({ location_id: locationId, actual_cash: cash });
+        if (fresh && fresh.success && fresh.data) {
+          const freshExcess = Math.round(-Number(fresh.data.discrepancy) * 100) / 100;
+          const freshCod = Math.round(Number(fresh.data.pending_cod || 0) * 100) / 100;
+          const freshBookable = Math.round((freshExcess - freshCod) * 100) / 100;
+          if (freshBookable !== bookable) {
+            setSubmitting(false);
+            if (freshExcess >= 1) {
+              setTopup({ ...topup, excess: freshExcess, pendingCod: freshCod, bookable: freshBookable });
+            } else {
+              dropTopup();
+            }
+            showAlert('Amount changed', 'The amount changed since you counted. Please check the new amount and tap again.');
+            return;
+          }
+        }
+      } catch (e) { /* if the look-again fails, the booking below reports its own error */ }
+      try {
+        const payload = buildQuickSalePayload({
+          locationId, method: 'cash', amount: bookable, label: TOPUP_LABEL, entryMode: 'close_topup',
+        });
+        const res = await api.createSale(payload);
+        const id = res && (res.id != null ? res.id : res.data && res.data.id);
+        if (!res || res.success === false || id == null) {
+          setSubmitting(false);
+          showAlert('Not booked', (res && res.message) || 'The extra cash was not booked. Please tap Book again.');
+          return;
+        }
+        topupSaleRef.current = { saleId: id, cash, locationId };
+      } catch (err) {
+        setSubmitting(false);
+        showAlert('Not booked', 'The extra cash was not booked. Check your connection and tap Book again.');
+        return;
+      }
+      setSubmitting(false);
+    }
+    await doClose(cash, locationId);
+  };
+
+  const handleCloseAsIs = async () => {
+    if (!topup) return;
+    if (selectedLocation !== topup.locationId) { dropTopup(); return; }
+    await doClose(topup.cash, topup.locationId);
   };
 
   const fetchHistory = async () => {
@@ -480,7 +585,8 @@ export default function CashRegisterScreen({ navigation, route }) {
               <TextInput
                 style={styles.inputLarge}
                 value={actualCash}
-                onChangeText={setActualCash}
+                onChangeText={(t) => { setActualCash(t); dropTopup(); }}
+                editable={!(topup && !canManage)}
                 placeholder="0.00"
                 placeholderTextColor={Colors.textLight}
                 keyboardType="numeric"
@@ -497,11 +603,54 @@ export default function CashRegisterScreen({ navigation, route }) {
               multiline
             />
             
-            <TouchableOpacity style={[styles.btnClose, submitting && { opacity: 0.6 }]} onPress={handleClose} disabled={submitting}>
+            {topup ? (
+              <View style={styles.topupPanel}>
+                {!canManage ? (
+                  <Text style={styles.topupNote}>Your count of {rupees(topup.cash)} is saved and cannot be changed now.</Text>
+                ) : null}
+                <Text style={styles.topupText}>{rupees(topup.excess)} more than recorded.{topup.bookable >= 1 ? (topup.pendingCod > 0 ? ` Book the other ${rupees(topup.bookable)} as unrecorded sales?` : ' Book it as unrecorded sales?') : ''}</Text>
+                {topup.pendingCod > 0 ? (
+                  <View>
+                    <Text style={styles.topupNote}>{rupees(topup.pendingCod)} of delivery cash is not settled yet and may be in the drawer. Settle it first.</Text>
+                    <TouchableOpacity
+                      style={styles.topupNo}
+                      onPress={() => { dropTopup(); navigation.navigate('Settlements', { locationId: selectedLocation }); }}
+                      accessibilityRole="button"
+                    >
+                      <Text style={styles.topupNoText}>Settle</Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : null}
+                {topup.bookable < 1 ? null : amountError(topup.bookable) ? (
+                  <Text style={styles.topupNote}>That is too big to book here. Close as it is, or count the cash again.</Text>
+                ) : (
+                  <TouchableOpacity
+                    style={[styles.topupBook, submitting && { opacity: 0.6 }]}
+                    onPress={guardSubmit(handleBookTopup)}
+                    disabled={submitting}
+                    accessibilityRole="button"
+                  >
+                    {submitting ? <ActivityIndicator color={Colors.white} /> : (
+                      <Text style={styles.btnCloseText}>Book {rupees(topup.bookable)} as sales</Text>
+                    )}
+                  </TouchableOpacity>
+                )}
+                <TouchableOpacity
+                  style={[styles.topupNo, submitting && { opacity: 0.6 }]}
+                  onPress={guardSubmit(handleCloseAsIs)}
+                  disabled={submitting}
+                  accessibilityRole="button"
+                >
+                  <Text style={styles.topupNoText}>No, close as it is</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+            <TouchableOpacity style={[styles.btnClose, submitting && { opacity: 0.6 }]} onPress={guardSubmit(handleClose)} disabled={submitting}>
               {submitting ? <ActivityIndicator color={Colors.white} /> : (
                 <Text style={styles.btnCloseText}>Close Register</Text>
               )}
             </TouchableOpacity>
+            )}
           </View>
         </View>
       )}
@@ -641,6 +790,12 @@ const styles = StyleSheet.create({
   btnOpen: { backgroundColor: Colors.text, borderRadius: BorderRadius.md, padding: Spacing.md, alignItems: 'center', marginTop: Spacing.lg },
   btnOpenText: { color: Colors.white, fontSize: FontSize.md, fontWeight: '700' },
   btnClose: { backgroundColor: Colors.error, borderRadius: BorderRadius.md, padding: Spacing.md, alignItems: 'center', marginTop: Spacing.lg },
+  topupPanel: { marginTop: Spacing.lg, backgroundColor: Colors.surfaceAlt, borderRadius: BorderRadius.md, padding: Spacing.md },
+  topupText: { fontSize: FontSize.lg, fontWeight: '700', color: Colors.text, marginBottom: Spacing.md },
+  topupNote: { fontSize: FontSize.md, color: Colors.textSecondary, marginBottom: Spacing.md },
+  topupBook: { backgroundColor: METHOD_COLOR.cash, borderRadius: BorderRadius.md, minHeight: TouchTarget.min || 48, padding: Spacing.md, alignItems: 'center', justifyContent: 'center' },
+  topupNo: { borderRadius: BorderRadius.md, borderWidth: 1, borderColor: Colors.border, minHeight: TouchTarget.min || 48, padding: Spacing.md, alignItems: 'center', justifyContent: 'center', marginTop: Spacing.sm },
+  topupNoText: { color: Colors.text, fontSize: FontSize.md, fontWeight: '600' },
   btnCloseText: { color: Colors.white, fontSize: FontSize.md, fontWeight: '700' },
 
   actionRow: { flexDirection: 'row', gap: Spacing.md, marginBottom: Spacing.xl },

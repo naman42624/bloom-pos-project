@@ -16,6 +16,7 @@ import UsersScreen from '../screens/UsersScreen';
 import UserFormScreen from '../screens/UserFormScreen';
 import ProfileScreen from '../screens/ProfileScreen';
 import SettingsScreen from '../screens/SettingsScreen';
+import QuickSaleTilesScreen from '../screens/QuickSaleTilesScreen';
 import DataManagementScreen from '../screens/DataManagementScreen';
 
 // Phase 2 — Inventory
@@ -299,6 +300,7 @@ function ProfileStack() {
         })}
       />
       <Stack.Screen name="Settings" component={SettingsScreen} options={{ title: 'Settings' }} />
+      <Stack.Screen name="QuickSaleTiles" component={QuickSaleTilesScreen} options={{ title: 'Quick sale buttons' }} />
       <Stack.Screen name="Notifications" component={NotificationCenterScreen} options={{ title: 'Notifications' }} />
       {/* employee/counter_staff's own path to Customers (2026-09-13, staff-
           ux fix) — owner/manager already have it via the More tab; these
@@ -487,6 +489,7 @@ function MoreStack() {
       <Stack.Screen name="CashRegister" component={CashRegisterScreen} options={{ title: 'Cash Register' }} />
       <Stack.Screen name="Expenses" component={ExpensesScreen} options={{ title: 'Expenses' }} />
       <Stack.Screen name="Settings" component={SettingsScreen} options={{ title: 'Settings' }} />
+      <Stack.Screen name="QuickSaleTiles" component={QuickSaleTilesScreen} options={{ title: 'Quick sale buttons' }} />
       <Stack.Screen name="DataManagement" component={DataManagementScreen} options={{ title: 'Data Management' }} />
       <Stack.Screen name="SaleDetail" component={SaleDetailScreen} options={{ title: 'Sale Details' }} />
       <Stack.Screen name="RefundSale" component={RefundSaleScreen} options={{ title: 'Refund' }} />

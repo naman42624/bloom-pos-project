@@ -23,6 +23,15 @@ import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import { getShopNow } from '../utils/datetime';
 import { bumpActivity } from '../hooks/useIdleLock';
 import useSubmitGuard from '../hooks/useSubmitGuard';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import QuickSalePanel from '../components/quickSale/QuickSalePanel';
+
+// Quick sale | Full order switch, remembered on this device. Missing or
+// unreadable storage means Full order. Opening a specific order (a draft, a
+// POS cart, a customer) always lands on Full order.
+const CHECKOUT_MODE_KEY = '@petal_checkout_mode';
+const FORCE_FULL_PARAMS = ['draftId', 'prefillCart', 'prefillToken', 'prefillCustomer'];
+const opensSpecificOrder = (params) => !!params && FORCE_FULL_PARAMS.some((k) => params[k] != null);
 
 
 // Where the order came from. Starts on Walk-in for every new sale.
@@ -56,6 +65,42 @@ export default function QuickCheckoutScreen({ navigation, route }) {
   const timezone = settings?.timezone?.value || 'Asia/Kolkata';
   const { width } = useWindowDimensions();
   const isNarrowMobile = width < 380;
+
+  // ── Quick sale | Full order ──
+  const [checkoutMode, setCheckoutMode] = useState(() => (opensSpecificOrder(route.params) ? 'full' : null));
+  const [quickHelpSignal, setQuickHelpSignal] = useState(0);
+  const forcedFullRef = useRef(opensSpecificOrder(route.params));
+  useEffect(() => {
+    if (forcedFullRef.current) return;
+    let cancelled = false;
+    (async () => {
+      let stored = null;
+      try { stored = await AsyncStorage.getItem(CHECKOUT_MODE_KEY); } catch { stored = null; }
+      if (cancelled || forcedFullRef.current) return;
+      setCheckoutMode(stored === 'quick' ? 'quick' : 'full');
+    })();
+    return () => { cancelled = true; };
+  }, []);
+  useEffect(() => {
+    if (opensSpecificOrder(route.params)) {
+      forcedFullRef.current = true;
+      setCheckoutMode('full');
+    }
+  }, [route.params?.draftId, route.params?.prefillCart, route.params?.prefillToken, route.params?.prefillCustomer]);
+  // 'saving' | 'failed' | null, reported by the quick sale panel. Leaving Quick
+  // sale is blocked until every line has saved, so nothing fails out of sight.
+  const [quickBusy, setQuickBusy] = useState(null);
+  const [modeBlockMsg, setModeBlockMsg] = useState('');
+  useEffect(() => { if (!quickBusy) setModeBlockMsg(''); }, [quickBusy]);
+  const chooseCheckoutMode = useCallback((m) => {
+    if (m === 'full' && checkoutMode === 'quick' && quickBusy) {
+      setModeBlockMsg(quickBusy === 'saving' ? 'Wait — a sale is still saving' : 'A sale did not save — tap it to try again first');
+      return;
+    }
+    setModeBlockMsg('');
+    setCheckoutMode(m);
+    AsyncStorage.setItem(CHECKOUT_MODE_KEY, m).catch(() => {});
+  }, [checkoutMode, quickBusy]);
 
 
   // Customer
@@ -140,8 +185,12 @@ export default function QuickCheckoutScreen({ navigation, route }) {
   const [submitting, setSubmitting] = useState(false);
   const guardSubmit = useSubmitGuard();
   const [duesCollect, setDuesCollect] = useState(EMPTY_DUES);
-  // A different customer means a different dues balance, so added dues are dropped.
-  useEffect(() => { setDuesCollect(EMPTY_DUES); }, [customerId]);
+  // A different customer means a different dues balance, so added dues are
+  // dropped. Dues carry the customer they were added for, so resuming a draft
+  // (which sets the same customer back) keeps them.
+  useEffect(() => {
+    setDuesCollect((d) => (d.enabled && d.customerId === customerId ? d : EMPTY_DUES));
+  }, [customerId]);
   // Dues ride along with an order; with the cart emptied there is no order to add them to.
   useEffect(() => { if (items.length === 0) setDuesCollect(EMPTY_DUES); }, [items.length]);
   const [skipAssignment, setSkipAssignment] = useState(true);
@@ -693,6 +742,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     advanceAmount,
     skipAssignment,
     assignedTo,
+    duesCollect,
   }), [
     routeId,
     uploadedVoiceNotes,
@@ -728,6 +778,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     advanceAmount,
     skipAssignment,
     assignedTo,
+    duesCollect,
   ]);
 
   const applyDraftPayload = useCallback((payload, draftId = null) => {
@@ -765,6 +816,13 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     setAdvanceAmount(p.advanceAmount || '');
     setSkipAssignment(p.skipAssignment !== false);
     setAssignedTo(p.assignedTo || null);
+    // Old dues added before the draft was saved come back with it. They only
+    // count for the customer they were added for, and are checked against the
+    // customer's current balance again when the order is placed.
+    const d = p.duesCollect;
+    setDuesCollect(d && d.enabled && p.customerId && d.customerId === p.customerId && Array.isArray(p.items) && p.items.length > 0
+      ? { enabled: true, amount: String(d.amount || ''), method: d.method === 'upi' ? 'upi' : 'cash', customerId: p.customerId }
+      : EMPTY_DUES);
     setActiveDraftId(draftId);
     // Local voice-note files are uploaded when the draft is saved; what comes
     // back here are the uploaded copies, shown as already attached.
@@ -1472,8 +1530,46 @@ export default function QuickCheckoutScreen({ navigation, route }) {
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
     >
+      <View style={styles.modeBar}>
+        <View style={styles.modeSwitch} accessibilityRole="tablist">
+          {[['quick', 'Quick sale'], ['full', 'Full order']].map(([m, label]) => {
+            const on = checkoutMode === m;
+            return (
+              <TouchableOpacity
+                key={m}
+                onPress={() => chooseCheckoutMode(m)}
+                accessibilityRole="tab"
+                accessibilityState={{ selected: on }}
+                style={[styles.modeBtn, on && styles.modeBtnOn]}
+              >
+                <Text style={[styles.modeText, on && styles.modeTextOn]}>{label}</Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+        {checkoutMode === 'quick' && (
+          <TouchableOpacity onPress={() => setQuickHelpSignal((n) => n + 1)} style={styles.modeHelp} accessibilityRole="button">
+            <Ionicons name="information-circle-outline" size={20} color={Colors.primary} />
+            <Text style={styles.modeHelpText}>How this works</Text>
+          </TouchableOpacity>
+        )}
+        {!!modeBlockMsg && checkoutMode === 'quick' && (
+          <Text style={styles.modeBlockText} accessibilityLiveRegion="polite">{modeBlockMsg}</Text>
+        )}
+      </View>
+
+      {checkoutMode === 'quick' && (
+        <QuickSalePanel
+          locationId={selectedLocation || activeLocation?.id || null}
+          navigation={navigation}
+          helpSignal={quickHelpSignal}
+          onBusyChange={setQuickBusy}
+        />
+      )}
+
+      {/* Full order stays mounted while hidden, so switching back keeps the cart. */}
       <ScrollView
-        style={styles.container}
+        style={[styles.container, checkoutMode !== 'full' && { display: 'none' }]}
         contentContainerStyle={[styles.content, { alignSelf: 'center', maxWidth: 800, width: '100%' }]}
         keyboardShouldPersistTaps="handled"
       >
@@ -1956,7 +2052,10 @@ export default function QuickCheckoutScreen({ navigation, route }) {
             </View>
           )}
 
-          {items.map((item, idx) => (
+          {/* Newest item first, so a tap on "Add Item" shows the blank item right
+              here instead of below the others. The cart itself keeps the order
+              items were added in (bill, slip), and idx stays the cart index. */}
+          {items.map((item, idx) => ({ item, idx })).reverse().map(({ item, idx }) => (
             <View key={idx} style={styles.itemCard}>
               <View style={styles.itemCardHeader}>
                 <Text style={styles.itemNum}>#{idx + 1}</Text>
@@ -1973,6 +2072,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
                     style={styles.input}
                     value={item.name}
                     onChangeText={(v) => updateItem(idx, 'name', v)}
+                    autoFocus={idx === items.length - 1 && !item.name && !item.baseProduct}
                     placeholder="e.g. Custom Bouquet"
                     placeholderTextColor={Colors.textLight}
                   />
@@ -2772,7 +2872,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
         }}
         onAddToOrder={items.length > 0 ? ({ amount, method }) => {
           setShowDuesSheet(false);
-          setDuesCollect({ enabled: true, amount: String(amount), method });
+          setDuesCollect({ enabled: true, amount: String(amount), method, customerId });
         } : undefined}
         initial={duesCollect.enabled ? duesCollect : undefined}
       />
@@ -2788,7 +2888,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
         onSaveDraft={async () => {
           setShowOpenRegister(false);
           const saved = await handleSaveDraft();
-          if (saved) showAlert('Saved as a draft', 'Open the register when you are ready, then pick this order from Drafts to finish it.');
+          if (saved) showAlert('Saved as a draft', 'Open the register when you are ready, then tap this order at the top of Quick Checkout to finish it.');
         }}
       />
     </KeyboardAvoidingView>
@@ -2797,6 +2897,21 @@ export default function QuickCheckoutScreen({ navigation, route }) {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
+  modeBar: {
+    flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: Spacing.sm,
+    width: '100%', maxWidth: 800, alignSelf: 'center', paddingHorizontal: Spacing.md, paddingTop: Spacing.sm, paddingBottom: Spacing.sm,
+  },
+  modeSwitch: {
+    flexDirection: 'row', flex: 1, minWidth: 240, backgroundColor: Colors.surfaceAlt,
+    borderRadius: BorderRadius.md, borderWidth: 1, borderColor: Colors.border, padding: 4, gap: 4,
+  },
+  modeBtn: { flex: 1, minHeight: 48, borderRadius: BorderRadius.sm, alignItems: 'center', justifyContent: 'center' },
+  modeBtnOn: { backgroundColor: Colors.primary },
+  modeText: { fontSize: FontSize.md, fontWeight: '700', color: Colors.textSecondary },
+  modeTextOn: { color: Colors.white },
+  modeHelp: { flexDirection: 'row', alignItems: 'center', gap: 4, minHeight: 48, paddingHorizontal: Spacing.xs },
+  modeHelpText: { fontSize: FontSize.md, color: Colors.primary, fontWeight: '700' },
+  modeBlockText: { width: '100%', fontSize: FontSize.md, color: Colors.error, fontWeight: '700' },
   content: { padding: Spacing.md, paddingBottom: 100 },
 
   section: {

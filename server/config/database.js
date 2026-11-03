@@ -948,6 +948,8 @@ function ensureCompatibilityColumns() {
   ensureColumn('cash_registers', 'total_card_sales', 'DECIMAL(10,2) DEFAULT 0');
   ensureColumn('cash_registers', 'total_upi_sales', 'DECIMAL(10,2) DEFAULT 0');
   ensureColumn('cash_registers', 'total_refunds_cash', 'DECIMAL(10,2) DEFAULT 0');
+  // Counted cash fixed once the close offers to book extra cash (blind count).
+  ensureColumn('cash_registers', 'close_count_locked', 'DECIMAL(10,2)');
   runPsql('CREATE INDEX IF NOT EXISTS idx_cash_registers_location_date ON cash_registers(location_id, date)');
 
   ensureColumn('salary_advances', 'repaid_amount', 'DECIMAL(10,2) DEFAULT 0');
@@ -1071,6 +1073,11 @@ function ensureCompatibilityColumns() {
   ensureColumn('sales', 'channel', "TEXT");
   ensureColumn('sales', 'priority', "TEXT DEFAULT 'normal'");
   ensureColumn('sales', 'vendor_name', 'VARCHAR(150)');
+  // Quick sale: how a sale was entered (quick, close_topup) and who undid it
+  ensureColumn('sales', 'entry_mode', 'VARCHAR(20)');
+  ensureColumn('sales', 'undone_by', 'INTEGER REFERENCES users(id) ON DELETE SET NULL');
+  ensureColumn('sales', 'undone_at', 'TIMESTAMP');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_sales_location_entry_mode_created ON sales(location_id, entry_mode, created_at)');
   // Optional per-item attachment scoping: NULL = order-level (existing behavior
   // unchanged), set = this photo/voice note belongs to one specific line item.
   ensureColumn('sale_attachments', 'sale_item_id', 'INTEGER REFERENCES sale_items(id) ON DELETE CASCADE');
@@ -1381,6 +1388,7 @@ function getDb() {
     runPsql(`INSERT INTO settings (key, value, description) VALUES ('pref_counter_marks_pickup', '0', 'Let counter staff mark a delivery picked up from the shop on behalf of the delivery partner') ON CONFLICT (key) DO NOTHING`);
     runPsql(`INSERT INTO settings (key, value, description) VALUES ('pref_counter_marks_delivered', '0', 'Let counter staff mark a delivery as delivered (and record COD collected) on behalf of the delivery partner') ON CONFLICT (key) DO NOTHING`);
     runPsql(`INSERT INTO settings (key, value, description) VALUES ('upi_qr_image_url', '', 'UPI QR code image shown to customers on the order-request page for self-service payment') ON CONFLICT (key) DO NOTHING`);
+    runPsql(`INSERT INTO settings (key, value, description) VALUES ('quick_sale_tiles', '', 'Quick sale buttons chosen by the owner (JSON list). Empty means suggest top sellers') ON CONFLICT (key) DO NOTHING`);
 
     initialized = true;
     console.log('✅ Connected to PostgreSQL');
