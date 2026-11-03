@@ -587,6 +587,10 @@ router.put(
 
       // Cannot reassign another owner's role (removed to allow multiple owners managing each other)
 
+      // An owner/manager approval PIN must not carry over into a new role
+      // (as counter staff it would become a counter login). They set a new one.
+      const clearApprovalPin = ['owner', 'manager'].includes(targetUser.role) && targetUser.role !== role ? 1 : 0;
+
       // Promoting into counter_staff/florist_staff auto-assigns an employee_code if the
       // account doesn't already have one (e.g. a live `employee` account being promoted,
       // per the rollout plan). Done as a single UPDATE statement (not a SELECT-then-write)
@@ -603,9 +607,12 @@ router.put(
               )::text
               ELSE NULL
             END,
+            pin_hash = CASE WHEN ? = 1 THEN NULL ELSE pin_hash END,
+            pin_failed_attempts = CASE WHEN ? = 1 THEN 0 ELSE pin_failed_attempts END,
+            pin_locked_until = CASE WHEN ? = 1 THEN NULL ELSE pin_locked_until END,
             updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
-      `).run(role, role, targetId);
+      `).run(role, role, clearApprovalPin, clearApprovalPin, clearApprovalPin, targetId);
 
       const updatedUser = db.prepare(`SELECT ${USER_SELECT_FIELDS} FROM users WHERE id = ?`).get(targetId);
 

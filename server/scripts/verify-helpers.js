@@ -529,6 +529,99 @@ check('helper gets shop-info with upi_qr_image_url', async () => {
   assert(r.body.data.upi_qr_image_url === ((qr && qr.value) || null), 'upi_qr_image_url does not match the setting');
 });
 
+// ─── Helpers reach only their own routes (Task 3, rulings 6-8) ─
+const HELPER_DENIED = "Helpers can't open this. Ask the counter.";
+
+check('helpers are refused outside their own routes', async () => {
+  const owner = await loginOwner();
+  const helper = await helperSession(owner.token);
+  const denied = [
+    ['GET', '/sales'],
+    ['GET', '/SALES'],
+    ['GET', '/sales/1'],
+    ['GET', '/sales/today-summary'],
+    ['GET', '/customers'],
+    ['GET', '/customers/search?q=a'],
+    ['DELETE', '/customers/1/addresses/1'],
+    ['GET', '/materials'],
+    ['GET', '/stock'],
+    ['GET', '/suppliers'],
+    ['GET', '/notifications'],
+    ['GET', '/settings'],
+    ['PUT', '/auth/profile'],
+  ];
+  for (const [m, p] of denied) {
+    const r = await api(m, p, helper.token, m === 'GET' ? undefined : {});
+    assert(r.status === 403 && r.body?.message === HELPER_DENIED, `${m} ${p}: ${r.status} ${JSON.stringify(r.body)}`);
+  }
+  // The allowed list still works
+  const me = await api('GET', '/auth/me', helper.token);
+  assert(me.status === 200, `me: ${me.status}`);
+  const list = await api('GET', `/products?limit=3&location_id=${TEST_LOCATION_ID}`, helper.token);
+  assert(list.status === 200 && list.body.data.length > 0, `products: ${list.status}`);
+  const one = await api('GET', `/products/${list.body.data[0].id}`, helper.token);
+  assert(one.status === 200, `product detail: ${one.status}`);
+  const scan = await api('POST', '/products/scan', helper.token, { payload: `P${list.body.data[0].id}` });
+  assert(scan.status !== 403, `scan: ${scan.status}`);
+  const info = await api('GET', '/settings/shop-info', helper.token);
+  assert(info.status === 200, `shop-info: ${info.status}`);
+  const reg = await api('GET', `/sales/register/status?location_id=${TEST_LOCATION_ID}`, helper.token);
+  assert(reg.status === 200, `register status: ${reg.status}`);
+  const mine = await api('GET', '/quick-sale/my-sales', helper.token);
+  assert(mine.status !== 403, `my-sales must not be refused: ${mine.status}`);
+  // Other roles are unaffected
+  const ownerSales = await api('GET', '/sales?limit=1', owner.token);
+  assert(ownerSales.status === 200, `owner GET /sales: ${ownerSales.status}`);
+});
+
+check('helper product list has available and no stock numbers', async () => {
+  const owner = await loginOwner();
+  const helper = await helperSession(owner.token);
+  const QTY_KEYS = ['ready_qty', 'available_qty', 'total_ready_qty', 'quantity', 'stock', 'sale_count', 'materials'];
+  const db = await getDb();
+  for (const path of [`/products?limit=50&location_id=${TEST_LOCATION_ID}`, '/products?limit=50']) {
+    const r = await api('GET', path, helper.token);
+    assert(r.status === 200 && r.body.data.length > 0, `${path}: ${r.status}`);
+    for (const p of r.body.data) {
+      const leaked = QTY_KEYS.filter((k) => k in p);
+      assert(leaked.length === 0, `${path} product ${p.id} carries ${leaked}`);
+      assert(typeof p.available === 'boolean', `${path} product ${p.id} available=${p.available}`);
+      const st = path.includes('location_id')
+        ? await db.prepare('SELECT COALESCE(SUM(quantity), 0) AS q FROM product_stock WHERE product_id = ? AND location_id = ?').get(p.id, TEST_LOCATION_ID)
+        : await db.prepare('SELECT COALESCE(SUM(quantity), 0) AS q FROM product_stock WHERE product_id = ?').get(p.id);
+      const want = Number(p.is_one_off) === 1 ? Number(st.q) > 0 : true;
+      assert(p.available === want, `${path} product ${p.id} available=${p.available} want ${want}`);
+    }
+  }
+  const ownerList = await api('GET', `/products?limit=1&location_id=${TEST_LOCATION_ID}`, owner.token);
+  assert('ready_qty' in ownerList.body.data[0], 'owner should still see ready_qty');
+  const first = (await api('GET', '/products?limit=1', helper.token)).body.data[0];
+  const one = await api('GET', `/products/${first.id}?location_id=${TEST_LOCATION_ID}`, helper.token);
+  const leaked = QTY_KEYS.filter((k) => k in one.body.data);
+  assert(one.status === 200 && leaked.length === 0 && typeof one.body.data.available === 'boolean', `detail: ${one.status} leaked ${leaked}`);
+});
+
+check('changing a manager role clears their approval PIN', async () => {
+  const owner = await loginOwner();
+  const mgr = await makeStaff(owner.token, 'manager');
+  const set = await api('PUT', `/users/${mgr.id}/pin`, owner.token, { pin: '2468' });
+  const code = set.body.data.employee_code;
+  const db = await getDb();
+  await db.prepare('UPDATE users SET pin_failed_attempts = 2 WHERE id = ?').run(mgr.id);
+  const r = await api('PUT', `/users/${mgr.id}/change-role`, owner.token, { role: 'counter_staff' });
+  assert(r.status === 200, `change-role: ${r.status} ${JSON.stringify(r.body)}`);
+  const row = await db.prepare('SELECT pin_hash, pin_failed_attempts, pin_locked_until, employee_code FROM users WHERE id = ?').get(mgr.id);
+  assert(!row.pin_hash && Number(row.pin_failed_attempts) === 0 && !row.pin_locked_until, `pin not cleared: ${JSON.stringify(row)}`);
+  const s = await api('POST', '/auth/staff-login', null, { employee_code: code, pin: '2468' });
+  assert(s.status !== 200 && !s.body?.data?.token, `old approval PIN logged in: ${s.status}`);
+  // A staff PIN is untouched by a staff-to-staff change
+  const cs = await makeStaff(owner.token, 'counter_staff');
+  await api('PUT', `/users/${cs.id}/pin`, owner.token, { pin: '1357' });
+  await api('PUT', `/users/${cs.id}/change-role`, owner.token, { role: 'florist_staff' });
+  const csRow = await db.prepare('SELECT pin_hash FROM users WHERE id = ?').get(cs.id);
+  assert(csRow.pin_hash, 'staff PIN should be kept on a staff role change');
+});
+
 async function cleanup() {
   const db = await getDb();
   for (const id of createdUserIds) {

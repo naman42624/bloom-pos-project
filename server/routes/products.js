@@ -115,13 +115,39 @@ function resolveTaxRateId(db, taxRateId, taxPercentage, createdBy) {
 // PRODUCT CRUD
 // ═══════════════════════════════════════════════════════════════
 
-// Helpers never see cost or margin (spec 8.2).
-const COST_FIELDS = ['estimated_cost', 'cost_price', 'avg_cost', 'avg_purchase_cost', 'margin', 'margin_pct', 'supplier_avg_cost', 'cost_per_unit'];
-function stripCostFields(row) {
+// Helpers never see cost, margin, stock numbers or sales counts (spec 8.2).
+// Instead of stock numbers they get a yes/no `available`, decided the way
+// scan and the public price page decide it: a one-off item is available only
+// while it has stock; anything else is made or sold to order, so available.
+const HELPER_HIDDEN_FIELDS = [
+  'estimated_cost', 'cost_price', 'avg_cost', 'avg_purchase_cost', 'margin', 'margin_pct',
+  'ready_qty', 'available_qty', 'total_ready_qty', 'quantity', 'stock_qty', 'stock_quantity',
+  'sale_count', 'stock', 'materials',
+];
+function helperProductView(row, stockQty) {
   if (!row) return row;
-  for (const key of COST_FIELDS) delete row[key];
-  if (Array.isArray(row.materials)) row.materials.forEach(stripCostFields);
+  for (const key of HELPER_HIDDEN_FIELDS) delete row[key];
+  row.available = Number(row.is_one_off) === 1 ? Number(stockQty) > 0 : true;
   return row;
+}
+
+// Stock per product for the helper view: at the given location, or across
+// all locations when none is given.
+async function helperStockByProduct(db, productIds, locationId) {
+  const out = new Map();
+  if (productIds.length === 0) return out;
+  const placeholders = productIds.map(() => '?').join(',');
+  const rows = locationId
+    ? await db.prepare(
+      `SELECT product_id, COALESCE(SUM(quantity), 0) AS qty FROM product_stock
+       WHERE location_id = ? AND product_id IN (${placeholders}) GROUP BY product_id`
+    ).all(locationId, ...productIds)
+    : await db.prepare(
+      `SELECT product_id, COALESCE(SUM(quantity), 0) AS qty FROM product_stock
+       WHERE product_id IN (${placeholders}) GROUP BY product_id`
+    ).all(...productIds);
+  for (const r of rows) out.set(Number(r.product_id), Number(r.qty) || 0);
+  return out;
 }
 
 // ─── GET /api/products ───────────────────────────────────────
@@ -217,7 +243,10 @@ router.get('/', authenticate, async (req, res, next) => {
       }
     }
 
-    if (req.user.role === 'helper') products.forEach(stripCostFields);
+    if (req.user.role === 'helper') {
+      const stockById = await helperStockByProduct(db, products.map((p) => p.id), locId);
+      products.forEach((p) => helperProductView(p, stockById.get(Number(p.id)) || 0));
+    }
 
     res.json({ success: true, data: products });
   } catch (err) { next(err); }
@@ -271,7 +300,11 @@ router.get('/:id', authenticate, async (req, res, next) => {
       'SELECT id, label, price, sort_order FROM product_options WHERE product_id = ? AND is_active = 1 ORDER BY sort_order, id'
     ).all(req.params.id);
 
-    if (req.user.role === 'helper') stripCostFields(product);
+    if (req.user.role === 'helper') {
+      const locId = Number(req.query.location_id) || null;
+      const stockById = await helperStockByProduct(db, [product.id], locId);
+      helperProductView(product, stockById.get(Number(product.id)) || 0);
+    }
 
     res.json({ success: true, data: product });
   } catch (err) { next(err); }

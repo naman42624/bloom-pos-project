@@ -1,6 +1,7 @@
 const jwt = require('jsonwebtoken');
 const { getDb } = require('../config/database');
 const { refuseIfExpired } = require('../utils/helper-access');
+const { isHelperRouteAllowed, HELPER_DENIED_MESSAGE } = require('../utils/helper-routes');
 
 /**
  * Authentication middleware - verifies JWT token and attaches user to request
@@ -42,6 +43,11 @@ function authenticate(req, res, next) {
     const expiredMsg = refuseIfExpired(user);
     if (expiredMsg) {
       return res.status(401).json({ success: false, message: expiredMsg });
+    }
+
+    // Helpers are refused everywhere except their own short list of routes.
+    if (user.role === 'helper' && !isHelperRouteAllowed(req.method, `${req.baseUrl || ''}${req.path || ''}`)) {
+      return res.status(403).json({ success: false, message: HELPER_DENIED_MESSAGE });
     }
 
     req.user = user;
@@ -104,7 +110,9 @@ function optionalAuth(req, res, next) {
       .prepare('SELECT id, phone, email, name, role, is_active, access_until FROM users WHERE id = ?')
       .get(decoded.id);
 
-    if (user && user.is_active && !refuseIfExpired(user)) {
+    const helperBlocked = user && user.role === 'helper'
+      && !isHelperRouteAllowed(req.method, `${req.baseUrl || ''}${req.path || ''}`);
+    if (user && user.is_active && !refuseIfExpired(user) && !helperBlocked) {
       req.user = user;
     }
     next();

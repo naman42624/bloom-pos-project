@@ -183,6 +183,8 @@ io.on('connection', (socket) => {
 
   // Customer tracks their delivery
   socket.on('track:delivery', (deliveryId) => {
+    // Helpers join no rooms (spec 8.2: no deliveries).
+    if (user.role === 'helper') return;
     socket.join(`delivery:${deliveryId}`);
   });
 
