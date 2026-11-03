@@ -17,7 +17,15 @@ const CLOSED_SESSION_MESSAGE = "This sale is from a register that's already clos
 router.post(
   '/:saleId(\\d+)/undo',
   authenticate,
-  authorize('owner', 'manager', 'employee', 'counter_staff'),
+  authorize('owner', 'manager', 'employee', 'counter_staff', 'helper'),
+  // Helper undo of their own sale comes with the helper sale rules; until
+  // then a helper cannot undo anything.
+  (req, res, next) => {
+    if (req.user.role === 'helper') {
+      return res.status(403).json({ success: false, message: 'Ask the counter to undo this sale.' });
+    }
+    next();
+  },
   async (req, res, next) => {
     try {
       // Every read and write below runs on one pooled client inside a real

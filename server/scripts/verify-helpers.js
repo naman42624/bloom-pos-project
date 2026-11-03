@@ -326,6 +326,209 @@ check('join tokens never reach the server log', async () => {
   assert(log.includes('/api/auth/join/[redacted]'), 'expected redacted join lines in the log');
 });
 
+// ─── Approval PIN and helper route access (Task 3) ───────────
+const { verifyApprovalPin, approverMaxDiscountPct } = require('../utils/approval-pin');
+const LOCKED_COPY = 'Too many wrong tries — ask your manager to unlock this in 5 minutes.';
+
+async function makeStaff(ownerToken, role) {
+  const phone = testPhone();
+  const r = await api('POST', '/users', ownerToken, { name: `Verify ${role}`, phone, password: PASSWORD, role, location_ids: [TEST_LOCATION_ID] });
+  assert(r.status === 201, `create ${role}: ${r.status} ${JSON.stringify(r.body)}`);
+  createdUserIds.push(r.body.data.user.id);
+  return { ...r.body.data.user, phone };
+}
+
+// Throwaway owner: created as an employee, then made owner by the real owner.
+async function makeThrowawayOwner(ownerToken) {
+  const u = await makeStaff(ownerToken, 'employee');
+  const r = await api('PUT', `/users/${u.id}/change-role`, ownerToken, { role: 'owner' });
+  assert(r.status === 200 && r.body.data.user.role === 'owner', `make owner: ${r.status} ${JSON.stringify(r.body)}`);
+  return u;
+}
+
+async function overrideOutcome(code, pin) {
+  const db = await getDb();
+  try {
+    const u = await verifyApprovalPin(db, code, pin);
+    return { status: 200, user: u };
+  } catch (err) {
+    if (!err.pinCheck) throw err;
+    return { status: err.status, message: err.message };
+  }
+}
+
+check('manager can be given an approval PIN', async () => {
+  const owner = await loginOwner();
+  const mgr = await makeStaff(owner.token, 'manager');
+  assert(!mgr.employee_code, `manager should start with no code, got ${mgr.employee_code}`);
+  const r = await api('PUT', `/users/${mgr.id}/pin`, owner.token, { pin: '2468' });
+  assert(r.status === 200 && /^\d+$/.test(r.body?.data?.employee_code || ''), `set pin: ${r.status} ${JSON.stringify(r.body)}`);
+  const code = r.body.data.employee_code;
+  // Setting it again keeps the same code
+  const again = await api('PUT', `/users/${mgr.id}/pin`, owner.token, { pin: '1357' });
+  assert(again.status === 200 && again.body.data.employee_code === code, `reset changed code: ${JSON.stringify(again.body)}`);
+  const ok = await overrideOutcome(code, '1357');
+  assert(ok.status === 200 && ok.user.id === mgr.id && ok.user.role === 'manager', `override: ${JSON.stringify(ok)}`);
+  assert(approverMaxDiscountPct('manager', { discount_owner_threshold: '30' }) === 30, 'manager limit');
+  assert(approverMaxDiscountPct('counter_staff', {}) === 20, 'counter default limit');
+  assert(approverMaxDiscountPct('employee', { discount_manager_threshold: '15' }) === 15, 'employee limit');
+  assert(approverMaxDiscountPct('owner', {}) === Infinity, 'owner limit');
+  assert(approverMaxDiscountPct('helper', {}) === 0, 'helper is no approver');
+  // The owner can also give an owner an approval PIN (throwaway owner here)
+  const o2 = await makeThrowawayOwner(owner.token);
+  const r2 = await api('PUT', `/users/${o2.id}/pin`, owner.token, { pin: '8642' });
+  assert(r2.status === 200 && /^\d+$/.test(r2.body?.data?.employee_code || ''), `owner target: ${r2.status} ${JSON.stringify(r2.body)}`);
+  const ok2 = await overrideOutcome(r2.body.data.employee_code, '8642');
+  assert(ok2.status === 200 && ok2.user.role === 'owner', `owner override: ${JSON.stringify(ok2)}`);
+});
+
+check('manager approval PIN cannot log in at the counter', async () => {
+  const owner = await loginOwner();
+  const mgr = await makeStaff(owner.token, 'manager');
+  const r = await api('PUT', `/users/${mgr.id}/pin`, owner.token, { pin: '2468' });
+  const code = r.body.data.employee_code;
+  const s = await api('POST', '/auth/staff-login', null, { employee_code: code, pin: '2468' });
+  assert(s.status === 401 && s.body?.message === 'Employee code not recognized.' && !s.body?.data, `staff-login: ${s.status} ${JSON.stringify(s.body)}`);
+});
+
+check('manager cannot set the owner\'s PIN', async () => {
+  const owner = await loginOwner();
+  const mgr = await makeStaff(owner.token, 'manager');
+  const login = await api('POST', '/auth/login', null, { phone: mgr.phone, password: PASSWORD });
+  assert(login.status === 200, `manager login: ${login.status}`);
+  const o2 = await makeThrowawayOwner(owner.token);
+  const r = await api('PUT', `/users/${o2.id}/pin`, login.body.data.token, { pin: '1111' });
+  assert(r.status === 403, `manager -> owner pin: ${r.status} ${JSON.stringify(r.body)}`);
+  const other = await makeStaff(owner.token, 'manager');
+  const r2 = await api('PUT', `/users/${other.id}/pin`, login.body.data.token, { pin: '1111' });
+  assert(r2.status === 403, `manager -> manager pin: ${r2.status}`);
+  const db = await getDb();
+  const rows = await db.prepare('SELECT pin_hash, employee_code FROM users WHERE id IN (?, ?)').all(o2.id, other.id);
+  assert(rows.every((x) => !x.pin_hash), 'refused PIN must not be stored');
+  // Manager can still set a counter staff PIN (unchanged)
+  const cs = await makeStaff(owner.token, 'counter_staff');
+  const r3 = await api('PUT', `/users/${cs.id}/pin`, login.body.data.token, { pin: '1111' });
+  assert(r3.status === 200 && r3.body?.message === 'PIN set successfully', `manager -> counter_staff: ${r3.status} ${JSON.stringify(r3.body)}`);
+});
+
+check('override failures lock the approver', async () => {
+  const owner = await loginOwner();
+  const cs = await makeStaff(owner.token, 'counter_staff');
+  await api('PUT', `/users/${cs.id}/pin`, owner.token, { pin: '4321' });
+  const code = cs.employee_code;
+  // Two wrong tries at login, then wrong tries on overrides share the count
+  const l1 = await api('POST', '/auth/staff-login', null, { employee_code: code, pin: '0000' });
+  assert(l1.status === 401 && l1.body?.message === 'Wrong PIN — 4 tries left.', `login 1: ${JSON.stringify(l1.body)}`);
+  const l2 = await api('POST', '/auth/staff-login', null, { employee_code: code, pin: '0000' });
+  assert(l2.status === 401 && l2.body?.message === 'Wrong PIN — 3 tries left.', `login 2: ${JSON.stringify(l2.body)}`);
+  const o1 = await overrideOutcome(code, '0000');
+  assert(o1.status === 401 && o1.message === "That PIN didn't match. 2 tries left.", `override 1: ${JSON.stringify(o1)}`);
+  const o2 = await overrideOutcome(code, '0000');
+  assert(o2.status === 401 && o2.message === "That PIN didn't match. 1 tries left.", `override 2: ${JSON.stringify(o2)}`);
+  const o3 = await overrideOutcome(code, '0000');
+  assert(o3.status === 423 && o3.message === LOCKED_COPY, `override 3: ${JSON.stringify(o3)}`);
+  // Locked for both paths, even with the right PIN
+  const o4 = await overrideOutcome(code, '4321');
+  assert(o4.status === 423 && o4.message === LOCKED_COPY, `override right PIN while locked: ${JSON.stringify(o4)}`);
+  const l3 = await api('POST', '/auth/staff-login', null, { employee_code: code, pin: '4321' });
+  assert(l3.status === 423 && l3.body?.message === LOCKED_COPY, `login while locked: ${l3.status} ${JSON.stringify(l3.body)}`);
+  // Parallel wrong tries cannot slip past the limit
+  const cs2 = await makeStaff(owner.token, 'counter_staff');
+  await api('PUT', `/users/${cs2.id}/pin`, owner.token, { pin: '4321' });
+  const burst = await Promise.all(Array.from({ length: 8 }, () => overrideOutcome(cs2.employee_code, '0000')));
+  const db = await getDb();
+  const row = await db.prepare('SELECT pin_failed_attempts, pin_locked_until FROM users WHERE id = ?').get(cs2.id);
+  const answered401 = burst.filter((b) => b.status === 401).length;
+  assert(answered401 <= 4 && Number(row.pin_failed_attempts) >= 5 && row.pin_locked_until, `burst: ${JSON.stringify(row)} ${JSON.stringify(burst.map((b) => b.status))}`);
+  // A right PIN resets the count
+  const cs3 = await makeStaff(owner.token, 'counter_staff');
+  await api('PUT', `/users/${cs3.id}/pin`, owner.token, { pin: '4321' });
+  await overrideOutcome(cs3.employee_code, '0000');
+  const good = await overrideOutcome(cs3.employee_code, '4321');
+  assert(good.status === 200, `right pin: ${JSON.stringify(good)}`);
+  const row3 = await db.prepare('SELECT pin_failed_attempts FROM users WHERE id = ?').get(cs3.id);
+  assert(Number(row3.pin_failed_attempts) === 0, `count not reset: ${row3.pin_failed_attempts}`);
+});
+
+check('override from a non-approver role acts like an unknown code', async () => {
+  const owner = await loginOwner();
+  const unknown = await overrideOutcome('99999999', '1234');
+  assert(unknown.status === 401 && unknown.message === 'Employee code not recognized.', `unknown: ${JSON.stringify(unknown)}`);
+  const fl = await makeStaff(owner.token, 'florist_staff');
+  await api('PUT', `/users/${fl.id}/pin`, owner.token, { pin: '5555' });
+  const h = await makeHelper(owner.token, shopDate(2));
+  const db = await getDb();
+  await db.prepare("UPDATE users SET pin_hash = (SELECT pin_hash FROM users WHERE id = ?) WHERE id = ?").run(fl.id, h.body.data.user.id);
+  for (const [who, code] of [['florist', fl.employee_code], ['helper', h.body.data.user.employee_code]]) {
+    for (const pin of ['5555', '0000']) {
+      const r = await overrideOutcome(code, pin);
+      assert(r.status === unknown.status && r.message === unknown.message, `${who} pin ${pin}: ${JSON.stringify(r)}`);
+    }
+  }
+  const rows = await db.prepare('SELECT pin_failed_attempts FROM users WHERE id IN (?, ?)').all(fl.id, h.body.data.user.id);
+  assert(rows.every((x) => !Number(x.pin_failed_attempts)), 'non-approver attempts must not be counted');
+  // A switched-off approver also reads as unknown
+  const cs = await makeStaff(owner.token, 'counter_staff');
+  await api('PUT', `/users/${cs.id}/pin`, owner.token, { pin: '5555' });
+  await api('PUT', `/users/${cs.id}`, owner.token, { is_active: 0 });
+  const off = await overrideOutcome(cs.employee_code, '5555');
+  assert(off.status === 401 && off.message === 'Employee code not recognized.', `inactive: ${JSON.stringify(off)}`);
+});
+
+async function helperSession(ownerToken) {
+  const res = await makeHelper(ownerToken, shopDate(2));
+  return { id: res.body.data.user.id, token: await helperToken(res.body.data.user.phone) };
+}
+
+check('helper cannot read estimated_cost from product list', async () => {
+  const owner = await loginOwner();
+  const helper = await helperSession(owner.token);
+  const ownerList = await api('GET', '/products?limit=5', owner.token);
+  assert(ownerList.status === 200 && ownerList.body.data.length > 0, 'owner list empty');
+  assert('estimated_cost' in ownerList.body.data[0], 'owner should still see estimated_cost');
+  const list = await api('GET', '/products?limit=5', helper.token);
+  assert(list.status === 200 && list.body.data.length > 0, `helper list: ${list.status}`);
+  assert(list.body.data.every((p) => !('estimated_cost' in p)), 'helper list carries estimated_cost');
+  const one = await api('GET', `/products/${list.body.data[0].id}`, helper.token);
+  assert(one.status === 200 && !('estimated_cost' in one.body.data), `helper detail: ${one.status} carries estimated_cost`);
+  assert((one.body.data.materials || []).every((m) => !('supplier_avg_cost' in m) && !('cost_per_unit' in m)), 'helper detail carries material cost');
+  const scan = await api('POST', '/products/scan', helper.token, { payload: `P${list.body.data[0].id}` });
+  assert(scan.status !== 401 && scan.status !== 403, `helper scan blocked: ${scan.status}`);
+  const reg = await api('GET', `/sales/register/status?location_id=${TEST_LOCATION_ID}`, helper.token);
+  assert(reg.status === 200, `helper register status: ${reg.status}`);
+});
+
+check('helper cannot call counter routes', async () => {
+  const owner = await loginOwner();
+  const helper = await helperSession(owner.token);
+  const calls = [
+    ['PUT', '/sales/1/cancel', {}],
+    ['GET', '/customers', undefined],
+    ['POST', '/expenses', { location_id: TEST_LOCATION_ID, amount: 1, category: 'other', description: 'x' }],
+    ['GET', '/expenses', undefined],
+    ['GET', '/users', undefined],
+    ['POST', '/sales/1/refund', { amount: 1 }],
+  ];
+  for (const [m, p, b] of calls) {
+    const r = await api(m, p, helper.token, b);
+    assert(r.status === 403, `${m} ${p}: expected 403, got ${r.status}`);
+  }
+  const sale = await api('POST', '/sales', helper.token, { location_id: TEST_LOCATION_ID, order_type: 'walk_in', items: [{ product_id: 1, quantity: 1, unit_price: 1 }] });
+  assert(sale.status === 403 && sale.body?.message === 'Helpers can only sell from the Sell screen.', `POST /sales: ${sale.status} ${JSON.stringify(sale.body)}`);
+  const undo = await api('POST', '/quick-sale/1/undo', helper.token);
+  assert(undo.status === 403, `undo: ${undo.status}`);
+});
+
+check('helper gets shop-info with upi_qr_image_url', async () => {
+  const owner = await loginOwner();
+  const helper = await helperSession(owner.token);
+  const r = await api('GET', '/settings/shop-info', helper.token);
+  assert(r.status === 200 && 'shop_name' in r.body.data && 'upi_qr_image_url' in r.body.data, `shop-info: ${r.status} ${JSON.stringify(r.body)}`);
+  const db = await getDb();
+  const qr = await db.prepare("SELECT value FROM settings WHERE key = 'upi_qr_image_url'").get();
+  assert(r.body.data.upi_qr_image_url === ((qr && qr.value) || null), 'upi_qr_image_url does not match the setting');
+});
+
 async function cleanup() {
   const db = await getDb();
   for (const id of createdUserIds) {

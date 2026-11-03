@@ -212,7 +212,11 @@ router.post(
 
 // ─── POST /api/auth/staff-login ──────────────────────────────
 // Employee code + PIN login for the shared counter device.
-const { hashPin, verifyPin, PIN_MAX_ATTEMPTS, PIN_LOCKOUT_MINUTES } = require('../utils/pin');
+const { hashPin } = require('../utils/pin');
+const { checkCodeAndPin } = require('../utils/approval-pin');
+// Owner and manager are left out on purpose: their approval PIN approves
+// helper discounts only and never signs anyone in on a counter device.
+const STAFF_LOGIN_ROLES = ['employee', 'counter_staff', 'florist_staff', 'helper'];
 
 router.post(
   '/staff-login',
@@ -230,40 +234,16 @@ router.post(
       const { employee_code, pin } = req.body;
       const db = await getAsyncDb();
 
-      const user = await db.prepare(
-        "SELECT * FROM users WHERE employee_code = ? AND role IN ('employee', 'counter_staff', 'florist_staff', 'helper')"
-      ).get(employee_code);
-
-      if (!user) {
-        return res.status(401).json({ success: false, message: 'Employee code not recognized.' });
+      let user;
+      try {
+        user = await checkCodeAndPin(db, employee_code, pin, {
+          roles: STAFF_LOGIN_ROLES,
+          wrongPinMessage: (left) => `Wrong PIN — ${left} tries left.`,
+        });
+      } catch (err) {
+        if (err.pinCheck) return res.status(err.status).json({ success: false, message: err.message });
+        throw err;
       }
-
-      if (!user.is_active) {
-        return res.status(403).json({ success: false, message: 'Your account has been deactivated. Contact your manager.' });
-      }
-
-      if (user.pin_locked_until && new Date(user.pin_locked_until) > new Date()) {
-        return res.status(423).json({ success: false, message: `Too many wrong tries — ask your manager to unlock this in ${PIN_LOCKOUT_MINUTES} minutes.` });
-      }
-
-      const isValidPin = await verifyPin(pin, user.pin_hash);
-
-      if (!isValidPin) {
-        const attempts = (user.pin_failed_attempts || 0) + 1;
-        const locked = attempts >= PIN_MAX_ATTEMPTS;
-        await db.prepare(
-          'UPDATE users SET pin_failed_attempts = ?, pin_locked_until = ? WHERE id = ?'
-        ).run(attempts, locked ? new Date(Date.now() + PIN_LOCKOUT_MINUTES * 60000) : null, user.id);
-
-        if (locked) {
-          return res.status(423).json({ success: false, message: `Too many wrong tries — ask your manager to unlock this in ${PIN_LOCKOUT_MINUTES} minutes.` });
-        }
-        return res.status(401).json({ success: false, message: `Wrong PIN — ${PIN_MAX_ATTEMPTS - attempts} tries left.` });
-      }
-
-      await db.prepare(
-        'UPDATE users SET pin_failed_attempts = 0, pin_locked_until = NULL WHERE id = ?'
-      ).run(user.id);
 
       const expiredMsg = refuseIfExpired(user);
       if (expiredMsg) {

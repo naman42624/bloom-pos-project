@@ -1630,10 +1630,20 @@ router.put('/:id(\\d+)/pickup-checks/:saleItemId(\\d+)', authenticate, authorize
 
 // ─── POST /api/sales ─────────────────────────────────────────
 // Creates a completed sale with items and payments in one transaction
+// Helpers are let through authorize() for the Sell screen, but until the
+// helper sale rules are in place every helper sale is refused here.
+function refuseHelperSaleForNow(req, res, next) {
+  if (req.user && req.user.role === 'helper') {
+    return res.status(403).json({ success: false, message: 'Helpers can only sell from the Sell screen.' });
+  }
+  next();
+}
+
 router.post(
   '/',
   authenticate,
-  authorize('owner', 'manager', 'employee', 'counter_staff'),
+  authorize('owner', 'manager', 'employee', 'counter_staff', 'helper'),
+  refuseHelperSaleForNow,
   [
     body('location_id').isInt().withMessage('Location is required'),
     body('order_type').isIn(['walk_in', 'pickup', 'delivery', 'pre_order']),

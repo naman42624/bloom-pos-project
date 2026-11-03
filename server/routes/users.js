@@ -474,6 +474,13 @@ router.put(
 
 // ─── PUT /api/users/:id/pin ──────────────────────────────────
 // Owner/Manager sets or resets a staff member's PIN. Clears any lockout.
+// The owner can also give a manager or an owner (themself included) an
+// approval PIN: it approves helper discounts only and never signs anyone in
+// (staff-login leaves owner/manager out). Such an account gets an
+// employee_code the first time, from the same counter used for counter staff.
+const STAFF_PIN_ROLES = ['employee', 'counter_staff', 'florist_staff'];
+const APPROVAL_PIN_ROLES = ['manager', 'owner'];
+
 router.put(
   '/:id/pin',
   authorize('owner', 'manager'),
@@ -488,24 +495,52 @@ router.put(
         return res.status(400).json({ success: false, errors: errors.array() });
       }
 
-      const db = getDb();
-      const targetUser = db.prepare('SELECT id, role, employee_code FROM users WHERE id = ?').get(req.params.id);
+      const db = await getAsyncDb();
+      const targetUser = await db.prepare('SELECT id, role, employee_code FROM users WHERE id = ?').get(req.params.id);
 
       if (!targetUser) {
         return res.status(404).json({ success: false, message: 'User not found' });
       }
-      if (!['employee', 'counter_staff', 'florist_staff'].includes(targetUser.role)) {
+
+      const isApprovalPin = APPROVAL_PIN_ROLES.includes(targetUser.role);
+      if (isApprovalPin && req.user.role !== 'owner') {
+        return res.status(403).json({ success: false, message: 'Only the owner can set a PIN for a manager or the owner.' });
+      }
+      if (!isApprovalPin && !STAFF_PIN_ROLES.includes(targetUser.role)) {
         return res.status(400).json({ success: false, message: 'PIN login is only available for staff accounts' });
       }
-      if (!targetUser.employee_code) {
+      if (!isApprovalPin && !targetUser.employee_code) {
         return res.status(400).json({ success: false, message: 'This account has no employee code yet — recreate it as Counter Staff or Florist/Prep Staff, or contact support to backfill one' });
       }
 
       const hashedPin = await hashPin(req.body.pin);
 
-      db.prepare(
+      if (isApprovalPin) {
+        // One statement: keeps an existing code, otherwise takes the next
+        // number. The employee_code UNIQUE constraint still catches a race.
+        const row = await db.prepare(`
+          UPDATE users
+          SET pin_hash = ?,
+              pin_failed_attempts = 0,
+              pin_locked_until = NULL,
+              employee_code = COALESCE(employee_code, (
+                SELECT COALESCE(MAX(CAST(employee_code AS INTEGER)), 1000) + 1
+                FROM users WHERE employee_code ~ '^[0-9]+$'
+              )::text),
+              updated_at = CURRENT_TIMESTAMP
+          WHERE id = ?
+          RETURNING employee_code
+        `).get(hashedPin, targetUser.id);
+        return res.json({
+          success: true,
+          message: 'Approval PIN set',
+          data: { employee_code: row.employee_code },
+        });
+      }
+
+      await db.prepare(
         'UPDATE users SET pin_hash = ?, pin_failed_attempts = 0, pin_locked_until = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?'
-      ).run(hashedPin, req.params.id);
+      ).run(hashedPin, targetUser.id);
 
       res.json({ success: true, message: 'PIN set successfully' });
     } catch (error) {

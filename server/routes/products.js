@@ -115,6 +115,15 @@ function resolveTaxRateId(db, taxRateId, taxPercentage, createdBy) {
 // PRODUCT CRUD
 // ═══════════════════════════════════════════════════════════════
 
+// Helpers never see cost or margin (spec 8.2).
+const COST_FIELDS = ['estimated_cost', 'cost_price', 'avg_cost', 'avg_purchase_cost', 'margin', 'margin_pct', 'supplier_avg_cost', 'cost_per_unit'];
+function stripCostFields(row) {
+  if (!row) return row;
+  for (const key of COST_FIELDS) delete row[key];
+  if (Array.isArray(row.materials)) row.materials.forEach(stripCostFields);
+  return row;
+}
+
 // ─── GET /api/products ───────────────────────────────────────
 router.get('/', authenticate, async (req, res, next) => {
   try {
@@ -208,6 +217,8 @@ router.get('/', authenticate, async (req, res, next) => {
       }
     }
 
+    if (req.user.role === 'helper') products.forEach(stripCostFields);
+
     res.json({ success: true, data: products });
   } catch (err) { next(err); }
 });
@@ -259,6 +270,8 @@ router.get('/:id', authenticate, async (req, res, next) => {
     product.options = await db.prepare(
       'SELECT id, label, price, sort_order FROM product_options WHERE product_id = ? AND is_active = 1 ORDER BY sort_order, id'
     ).all(req.params.id);
+
+    if (req.user.role === 'helper') stripCostFields(product);
 
     res.json({ success: true, data: product });
   } catch (err) { next(err); }
