@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Platform } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -8,6 +8,7 @@ import TrackingScreen from './src/screens/TrackingScreen';
 import SlipScreen from './src/screens/SlipScreen';
 import OrderRequestScreen from './src/screens/OrderRequestScreen';
 import PricePageScreen from './src/screens/PricePageScreen';
+import JoinScreen from './src/screens/JoinScreen';
 
 // Web-only: a customer opens this link from a WhatsApp message in their
 // phone's browser, never inside the staff app itself (which has no
@@ -56,7 +57,18 @@ function getPriceCode() {
   return match ? match[1] : null;
 }
 
+// Web-only: a helper opens the owner's one-time join link on their own phone
+// (spec §8.3). Unlike the pages above it needs AuthProvider (setting the PIN
+// signs them in), but not RootNavigator.
+function getJoinToken() {
+  if (Platform.OS !== 'web' || typeof window === 'undefined') return null;
+  const match = /^\/join\/([A-Za-z0-9_-]+)\/?$/.exec(window.location.pathname);
+  return match ? match[1] : null;
+}
+
 export default function App() {
+  const [joinToken, setJoinToken] = useState(getJoinToken);
+
   const priceCode = getPriceCode();
   if (priceCode) {
     return <PricePageScreen code={priceCode} />;
@@ -84,10 +96,17 @@ export default function App() {
     return <OrderRequestScreen token={orderRequestToken} />;
   }
 
+  // After the PIN is set, leave the join URL so a reload opens the app (the
+  // helper's lock screen), not a used link.
+  const onJoined = () => {
+    try { window.history.replaceState(null, '', '/'); } catch { /* not a browser */ }
+    setJoinToken(null);
+  };
+
   return (
     <SafeAreaProvider>
       <AuthProvider>
-        <RootNavigator />
+        {joinToken ? <JoinScreen token={joinToken} onJoined={onJoined} /> : <RootNavigator />}
         <StatusBar style="auto" />
       </AuthProvider>
     </SafeAreaProvider>

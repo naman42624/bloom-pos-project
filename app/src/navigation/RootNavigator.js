@@ -21,7 +21,7 @@ function LockedNavigator() {
 }
 
 export default function RootNavigator() {
-  const { isAuthenticated, isLoading, isSetupComplete, locked, lock, user } = useAuth();
+  const { isAuthenticated, isLoading, isSetupComplete, locked, lock, user, personalDevice } = useAuth();
   // Idle-lock only applies to shared-device staff roles (employee/
   // counter_staff/florist_staff). Owner/manager/delivery_partner/customer
   // use their own personal device and must never be auto-locked into the
@@ -62,7 +62,13 @@ export default function RootNavigator() {
     // responder, so it doesn't interfere with children's own gesture
     // handling (scroll, swipe, buttons all still work as before).
     <View style={{ flex: 1 }} onTouchStart={bump}>
-      {!isAuthenticated ? (
+      {!isAuthenticated && personalDevice ? (
+        // A helper's own phone with no live session (logged out, or access
+        // ended): only their PIN pad, never the owner login page.
+        <NavigationContainer>
+          <LockedNavigator />
+        </NavigationContainer>
+      ) : !isAuthenticated ? (
         <NavigationContainer onStateChange={bump}>
           <AuthNavigator showSetup={isSetupComplete === false} />
         </NavigationContainer>

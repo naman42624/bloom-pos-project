@@ -107,6 +107,10 @@ import ShiftManagementScreen from '../screens/ShiftManagementScreen';
 import SalaryManagementScreen from '../screens/SalaryManagementScreen';
 import LiveDeliveryMapScreen from '../screens/LiveDeliveryMapScreen';
 import NotificationCenterScreen from '../screens/NotificationCenterScreen';
+
+// Helpers (temporary staff on their own phone)
+import HelperSellScreen from '../screens/helper/SellScreen';
+import HelperMySalesScreen from '../screens/helper/MySalesScreen';
 import NotificationBell from '../components/NotificationBell';
 import SwitchUserButton from '../components/SwitchUserButton';
 import HeaderActions from '../components/HeaderActions';
@@ -590,9 +594,55 @@ const TAB_ICONS = {
   Attendance: { active: 'time', inactive: 'time-outline' },
   More: { active: 'apps', inactive: 'apps-outline' },
   Profile: { active: 'person-circle', inactive: 'person-circle-outline' },
+  Sell: { active: 'cart', inactive: 'cart-outline' },
+  MySales: { active: 'receipt', inactive: 'receipt-outline' },
 };
 
+// ─── Helper app: two tabs only (spec §9) ────────────────────
+// Kept apart from StaffTabs so none of the staff-wide hooks (geofence,
+// delivery tracking, push-token registration) run for a helper: a helper
+// token reaches only server/utils/helper-routes.js, and those hooks call
+// other routes.
+function HelperTabs() {
+  const insets = useSafeAreaInsets();
+  return (
+    <Tab.Navigator
+      screenOptions={({ route }) => ({
+        tabBarIcon: ({ focused, color, size }) => {
+          const icons = TAB_ICONS[route.name] || TAB_ICONS.Sell;
+          return <Ionicons name={focused ? icons.active : icons.inactive} size={size} color={color} />;
+        },
+        tabBarActiveTintColor: Colors.primary,
+        tabBarInactiveTintColor: Colors.textSecondary,
+        tabBarLabelStyle: { fontSize: FontSize.sm, fontWeight: '700' },
+        tabBarStyle: {
+          backgroundColor: Colors.surface,
+          borderTopColor: Colors.border,
+          borderTopWidth: 1,
+          paddingBottom: insets.bottom > 0 ? insets.bottom + 4 : 8,
+          paddingTop: 8,
+          height: insets.bottom > 0 ? 60 + insets.bottom : 70,
+          elevation: 0,
+          shadowOpacity: 0,
+        },
+        headerStyle: { backgroundColor: Colors.surface },
+        headerTintColor: Colors.text,
+        headerTitleStyle: { fontWeight: '600' },
+      })}
+    >
+      <Tab.Screen name="Sell" component={HelperSellScreen} options={{ title: 'Sell', tabBarLabel: 'Sell' }} />
+      <Tab.Screen name="MySales" component={HelperMySalesScreen} options={{ title: 'My sales', tabBarLabel: 'My sales' }} />
+    </Tab.Navigator>
+  );
+}
+
 export default function MainNavigator() {
+  const { user } = useAuth();
+  if (user?.role === 'helper') return <HelperTabs />;
+  return <StaffTabs />;
+}
+
+function StaffTabs() {
   const { user, locations } = useAuth();
   const role = user?.role;
   const isExpoGo = Constants.appOwnership === 'expo';

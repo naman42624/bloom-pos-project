@@ -6,16 +6,24 @@ import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 
 export default function LockScreen({ navigation }) {
-  const { staffLogin, getDeviceLocationId, user } = useAuth();
+  const { staffLogin, getDeviceLocationId, user, personalDevice, lockMessage } = useAuth();
   const [staff, setStaff] = useState([]);
   const [loading, setLoading] = useState(true);
   const [locationId, setLocationId] = useState(null);
-  const [selectedStaff, setSelectedStaff] = useState(null);
+  const [rosterPick, setRosterPick] = useState(null);
   const [pin, setPin] = useState('');
-  const [error, setError] = useState('');
+  const [error, setError] = useState(lockMessage || '');
   const [submitting, setSubmitting] = useState(false);
 
+  // A helper's own phone (set up from a join link) shows only their PIN pad:
+  // no shop roster, no "Not you?", no owner login link.
+  const selectedStaff = personalDevice || rosterPick;
+  const setSelectedStaff = setRosterPick;
+
+  useEffect(() => { if (lockMessage) setError(lockMessage); }, [lockMessage]);
+
   const loadRoster = useCallback(async () => {
+    if (personalDevice) { setLoading(false); return; }
     setLoading(true);
     try {
       // Prefer the currently-locked user's own location if we have one
@@ -35,7 +43,7 @@ export default function LockScreen({ navigation }) {
     } finally {
       setLoading(false);
     }
-  }, [user, getDeviceLocationId]);
+  }, [user, getDeviceLocationId, personalDevice]);
 
   useEffect(() => { loadRoster(); }, [loadRoster]);
 
@@ -82,7 +90,7 @@ export default function LockScreen({ navigation }) {
   keyHandlerRef.current = (e) => {
     if (/^[0-9]$/.test(e.key)) { e.preventDefault(); handleDigit(e.key); }
     else if (e.key === 'Backspace') { e.preventDefault(); handleBackspace(); }
-    else if (e.key === 'Escape') { leavePin(); }
+    else if (e.key === 'Escape' && !personalDevice) { leavePin(); }
   };
   useEffect(() => {
     if (Platform.OS !== 'web' || !selectedStaff || typeof window === 'undefined') return undefined;
@@ -94,10 +102,12 @@ export default function LockScreen({ navigation }) {
   if (selectedStaff) {
     return (
       <View style={styles.container}>
-        <TouchableOpacity style={styles.backLink} onPress={leavePin} accessibilityRole="button">
-          <Ionicons name="chevron-back" size={20} color={Colors.textSecondary} />
-          <Text style={styles.backLinkText}>Not {selectedStaff.name}?</Text>
-        </TouchableOpacity>
+        {personalDevice ? null : (
+          <TouchableOpacity style={styles.backLink} onPress={leavePin} accessibilityRole="button">
+            <Ionicons name="chevron-back" size={20} color={Colors.textSecondary} />
+            <Text style={styles.backLinkText}>Not {selectedStaff.name}?</Text>
+          </TouchableOpacity>
+        )}
         <Text style={styles.pinTitle}>{selectedStaff.name} — enter PIN</Text>
         <View style={styles.pinDots}>
           {[0, 1, 2, 3].map((i) => (
@@ -191,7 +201,7 @@ const styles = StyleSheet.create({
   pinDot: { width: 16, height: 16, borderRadius: 8, borderWidth: 2, borderColor: Colors.border },
   pinDotFilled: { backgroundColor: Colors.primary, borderColor: Colors.primary },
   statusLine: { minHeight: 28, justifyContent: 'center', alignItems: 'center', marginBottom: Spacing.sm },
-  errorText: { color: Colors.error, textAlign: 'center', fontSize: FontSize.md },
+  errorText: { color: Colors.error, textAlign: 'center', fontSize: FontSize.md, maxWidth: 360 },
   keyboardHint: { color: Colors.textSecondary, fontSize: FontSize.sm, textAlign: 'center', marginTop: Spacing.md },
   keypad: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', marginTop: Spacing.lg, maxWidth: 320, alignSelf: 'center' },
   keypadKey: { width: 90, height: 70, justifyContent: 'center', alignItems: 'center' },

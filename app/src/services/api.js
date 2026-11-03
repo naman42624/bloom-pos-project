@@ -115,6 +115,19 @@ class ApiService {
     });
   }
 
+  // Helper join link (public): who the link is for, then set the PIN.
+  getJoinInfo(token) {
+    return this.request(`/auth/join/${encodeURIComponent(token)}`, { noAuth: true });
+  }
+
+  joinWithPin(token, pin) {
+    return this.request('/auth/join', {
+      method: 'POST',
+      body: JSON.stringify({ token, pin }),
+      noAuth: true,
+    });
+  }
+
   getStaffRoster(locationId) {
     return this.request(`/auth/staff-roster?location_id=${locationId}`);
   }
