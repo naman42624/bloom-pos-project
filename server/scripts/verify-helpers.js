@@ -9,7 +9,7 @@ const { isAccessExpired } = require('../utils/helper-access');
 const { redactSecrets } = require('../utils/redact');
 const fs = require('fs');
 
-const { check, api, loginOwner, assert, getDb, TEST_LOCATION_ID } = h;
+const { check, api, loginOwner, ensureClosed, openRegister, assert, getDb, TEST_LOCATION_ID } = h;
 
 const createdUserIds = [];
 const PASSWORD = 'helper123';
@@ -513,8 +513,9 @@ check('helper cannot call counter routes', async () => {
     const r = await api(m, p, helper.token, b);
     assert(r.status === 403, `${m} ${p}: expected 403, got ${r.status}`);
   }
-  const sale = await api('POST', '/sales', helper.token, { location_id: TEST_LOCATION_ID, order_type: 'walk_in', items: [{ product_id: 999999999, quantity: 1, unit_price: 1 }] });
-  assert(sale.status === 403 && sale.body?.message === 'Helpers can only sell from the Sell screen.', `POST /sales: ${sale.status} ${JSON.stringify(sale.body)}`);
+  // POST /sales is a helper route, but only under the helper sale rules (Task 4)
+  const sale = await api('POST', '/sales', helper.token, { location_id: TEST_LOCATION_ID, client_ref: 'unknown-product-check', order_type: 'walk_in', items: [{ product_id: 999999999, quantity: 1, unit_price: 1 }], payments: [{ method: 'upi', amount: 1 }] });
+  assert(sale.status === 409 && sale.body?.message === 'Not for sale right now — ask the counter.', `POST /sales: ${sale.status} ${JSON.stringify(sale.body)}`);
   const undo = await api('POST', '/quick-sale/999999999/undo', helper.token);
   assert(undo.status === 403, `undo: ${undo.status}`);
 });
@@ -696,7 +697,355 @@ check('helper product view is built from an allowlist, active only', async () =>
   }
 });
 
+// ─── Helper selling rules in POST /api/sales (Task 4) ────────
+const crypto = require('crypto');
+const createdProductIds = [];
+let helperThresholdBackup; // undefined = not changed
+const NEEDS_OK = "This discount needs the counter's OK.";
+const NEEDS_MANAGER = 'This discount needs a manager or the owner.';
+const REGISTER_COPY = "The counter hasn't opened the register yet. Ask them to open it, then try again.";
+const CUSTOM_COPY = 'Helpers can only sell items from the catalog.';
+const OFF_COPY = 'Not for sale right now — ask the counter.';
+const SOLD_COPY = 'This one-off item is already sold. Check with the counter.';
+const CASH_OR_UPI = 'Take the full amount in cash or UPI.';
+const MISMATCH = "The payment doesn't match the total. Check the amounts and try again.";
+
+async function makeProduct({ name, price, mode = 'fixed', oneOff = 0, active = 1, stock = null }) {
+  const db = await getDb();
+  const r = await db.prepare('INSERT INTO products (name, selling_price, is_active, price_mode, is_one_off) VALUES (?, ?, ?, ?, ?)')
+    .run(`${name} ${Date.now()}`, price, active, mode, oneOff);
+  const id = r.lastInsertRowid;
+  createdProductIds.push(id);
+  if (stock !== null) {
+    await db.prepare('INSERT INTO product_stock (product_id, location_id, quantity) VALUES (?, ?, ?)').run(id, TEST_LOCATION_ID, stock);
+  }
+  return (await db.prepare('SELECT id, name FROM products WHERE id = ?').get(id));
+}
+
+async function addOption(productId, label, price) {
+  const db = await getDb();
+  const r = await db.prepare('INSERT INTO product_options (product_id, label, price, is_active) VALUES (?, ?, ?, 1)').run(productId, label, price);
+  return r.lastInsertRowid;
+}
+
+const newRef = () => crypto.randomBytes(12).toString('base64url');
+
+function sell(token, body) {
+  return api('POST', '/sales', token, { location_id: TEST_LOCATION_ID, client_ref: newRef(), ...body });
+}
+
+// Helper limit is set to 10% for these checks (restored in cleanup), below the counter limit
+async function setHelperLimit(pct) {
+  const db = await getDb();
+  if (helperThresholdBackup === undefined) {
+    const row = await db.prepare("SELECT value FROM settings WHERE key = 'discount_helper_threshold'").get();
+    helperThresholdBackup = row ? row.value : null;
+  }
+  await db.prepare("UPDATE settings SET value = ? WHERE key = 'discount_helper_threshold'").run(String(pct));
+}
+
+async function counterLimits() {
+  const db = await getDb();
+  const rows = await db.prepare("SELECT key, value FROM settings WHERE key IN ('discount_manager_threshold', 'discount_owner_threshold')").all();
+  const m = Object.fromEntries(rows.map((r) => [r.key, parseFloat(r.value)]));
+  return { manager: m.discount_manager_threshold || 20, owner: m.discount_owner_threshold || 30 };
+}
+
+let sellCtx = null;
+async function sellSetup() {
+  if (sellCtx) return sellCtx;
+  const owner = await loginOwner();
+  const helper = await helperSession(owner.token);
+  const fixed = await makeProduct({ name: 'Verify Fixed', price: 1000, stock: 0 });
+  sellCtx = { owner, helper, fixed };
+  return sellCtx;
+}
+
+async function saleRow(id) {
+  const db = await getDb();
+  return db.prepare('SELECT * FROM sales WHERE id = ?').get(id);
+}
+
+check('helper sale needs a valid client_ref', async () => {
+  const { helper, fixed } = await sellSetup();
+  const base = { items: [{ product_id: fixed.id, quantity: 1, unit_price: 1000 }], payments: [{ method: 'upi', amount: 1000 }] };
+  for (const client_ref of [undefined, '', 'has space', 'x'.repeat(65)]) {
+    const r = await api('POST', '/sales', helper.token, { location_id: TEST_LOCATION_ID, ...base, client_ref });
+    assert(r.status === 400 && /basket number/.test(r.body?.message || ''), `client_ref ${client_ref}: ${r.status} ${JSON.stringify(r.body)}`);
+  }
+});
+
+check('helper prices come from the catalog', async () => {
+  const { helper, fixed } = await sellSetup();
+  const cheap = await sell(helper.token, { items: [{ product_id: fixed.id, quantity: 1, unit_price: 1 }], payments: [{ method: 'upi', amount: 1 }] });
+  assert(cheap.status === 400 && cheap.body?.message === MISMATCH, `paid 1 for 1000: ${cheap.status} ${JSON.stringify(cheap.body)}`);
+  const r = await sell(helper.token, { items: [{ product_id: fixed.id, quantity: 2, unit_price: 1, product_name: 'Cheap' }], payments: [{ method: 'upi', amount: 2000 }] });
+  assert(r.status === 201, `sale: ${r.status} ${JSON.stringify(r.body)}`);
+  assert(Number(r.body.data.grand_total) === 2000, `grand_total ${r.body.data.grand_total}`);
+  const it = r.body.data.items[0];
+  assert(Number(it.unit_price) === 1000 && it.product_name === fixed.name, `item: ${JSON.stringify(it)}`);
+});
+
+check('helper option price and name', async () => {
+  const { helper } = await sellSetup();
+  const p = await makeProduct({ name: 'Verify Sized', price: 100 });
+  await addOption(p.id, 'Small', 300);
+  const large = await addOption(p.id, 'Large', 800);
+  const noSize = await sell(helper.token, { items: [{ product_id: p.id, quantity: 1, unit_price: 100 }], payments: [{ method: 'upi', amount: 100 }] });
+  assert(noSize.status === 400 && noSize.body?.message === `Pick a size for ${p.name}.`, `no size: ${noSize.status} ${JSON.stringify(noSize.body)}`);
+  const r = await sell(helper.token, { items: [{ product_id: p.id, option_id: large, quantity: 1, unit_price: 5 }], payments: [{ method: 'upi', amount: 800 }] });
+  assert(r.status === 201, `sale: ${r.status} ${JSON.stringify(r.body)}`);
+  const it = r.body.data.items[0];
+  assert(Number(it.unit_price) === 800 && it.product_name === `${p.name} (Large)`, `item: ${JSON.stringify(it)}`);
+});
+
+check('helper open price uses typed price', async () => {
+  const { helper } = await sellSetup();
+  const p = await makeProduct({ name: 'Verify Open', price: 0, mode: 'open' });
+  const zero = await sell(helper.token, { items: [{ product_id: p.id, quantity: 1, unit_price: 0 }], payments: [{ method: 'upi', amount: 1 }] });
+  assert(zero.status === 400 && zero.body?.message === `Type a price for ${p.name}.`, `zero: ${zero.status} ${JSON.stringify(zero.body)}`);
+  const r = await sell(helper.token, { items: [{ product_id: p.id, quantity: 2, unit_price: 250.5 }], payments: [{ method: 'upi', amount: 501 }] });
+  assert(r.status === 201 && Number(r.body.data.grand_total) === 501, `sale: ${r.status} ${JSON.stringify(r.body)}`);
+  assert(Number(r.body.data.items[0].unit_price) === 250.5, `unit ${r.body.data.items[0].unit_price}`);
+});
+
+check('helper custom item refused', async () => {
+  const { helper } = await sellSetup();
+  const r = await sell(helper.token, { items: [{ product_name: 'Rose bunch', quantity: 1, unit_price: 100 }], payments: [{ method: 'upi', amount: 100 }] });
+  assert(r.status === 400 && r.body?.message === CUSTOM_COPY, `custom: ${r.status} ${JSON.stringify(r.body)}`);
+  const db = await getDb();
+  const mat = await db.prepare('SELECT id FROM materials LIMIT 1').get();
+  if (mat) {
+    const m = await sell(helper.token, { items: [{ material_id: mat.id, quantity: 1, unit_price: 100 }], payments: [{ method: 'upi', amount: 100 }] });
+    assert(m.status === 400 && m.body?.message === CUSTOM_COPY, `material: ${m.status} ${JSON.stringify(m.body)}`);
+  }
+});
+
+check('helper switched-off and sold one-off items refused', async () => {
+  const { helper } = await sellSetup();
+  const off = await makeProduct({ name: 'Verify Off', price: 100, active: 0 });
+  const r1 = await sell(helper.token, { items: [{ product_id: off.id, quantity: 1, unit_price: 100 }], payments: [{ method: 'upi', amount: 100 }] });
+  assert(r1.status === 409 && r1.body?.message === OFF_COPY, `off: ${r1.status} ${JSON.stringify(r1.body)}`);
+  const sold = await makeProduct({ name: 'Verify OneOff', price: 100, oneOff: 1, stock: 0 });
+  const r2 = await sell(helper.token, { items: [{ product_id: sold.id, quantity: 1, unit_price: 100 }], payments: [{ method: 'upi', amount: 100 }] });
+  assert(r2.status === 409 && r2.body?.message === SOLD_COPY, `sold: ${r2.status} ${JSON.stringify(r2.body)}`);
+  // A one-off still in stock sells once, then is sold
+  const one = await makeProduct({ name: 'Verify OneOff2', price: 100, oneOff: 1, stock: 1 });
+  const ok = await sell(helper.token, { items: [{ product_id: one.id, quantity: 1, unit_price: 100 }], payments: [{ method: 'upi', amount: 100 }] });
+  assert(ok.status === 201 && ok.body.data.status === 'completed', `one-off sale: ${ok.status} ${JSON.stringify(ok.body)}`);
+  const again = await sell(helper.token, { items: [{ product_id: one.id, quantity: 1, unit_price: 100 }], payments: [{ method: 'upi', amount: 100 }] });
+  assert(again.status === 409 && again.body?.message === SOLD_COPY, `one-off again: ${again.status} ${JSON.stringify(again.body)}`);
+});
+
+check('helper credit refused', async () => {
+  const { helper, fixed } = await sellSetup();
+  const items = [{ product_id: fixed.id, quantity: 1, unit_price: 1000 }];
+  const cases = [
+    [{ is_credit_sale: true, payments: [{ method: 'upi', amount: 1000 }] }, CASH_OR_UPI],
+    [{ payments: [] }, CASH_OR_UPI],
+    [{ payments: [{ method: 'card', amount: 1000 }] }, CASH_OR_UPI],
+    [{ payments: [{ method: 'upi', amount: 400 }] }, MISMATCH],
+    [{ payments: [{ method: 'upi', amount: 1000.01 }] }, MISMATCH],
+  ];
+  for (const [extra, copy] of cases) {
+    const r = await sell(helper.token, { items, ...extra });
+    assert(r.status === 400 && r.body?.message === copy, `${JSON.stringify(extra)}: ${r.status} ${JSON.stringify(r.body)}`);
+  }
+  // Split cash + UPI to the paisa is fine (register open for the cash part)
+  const owner = await loginOwner();
+  await openRegister(owner.token, TEST_LOCATION_ID, 100);
+  const split = await sell(helper.token, { items, payments: [{ method: 'cash', amount: 399.99 }, { method: 'upi', amount: 600.01 }] });
+  assert(split.status === 201 && split.body.data.payment_status === 'paid', `split: ${split.status} ${JSON.stringify(split.body)}`);
+});
+
+check('helper discount within limit ok', async () => {
+  const { helper, fixed } = await sellSetup();
+  await setHelperLimit(10);
+  const pct = await sell(helper.token, { items: [{ product_id: fixed.id, quantity: 1 , unit_price: 1000 }], discount_type: 'percentage', discount_value: 10, payments: [{ method: 'upi', amount: 900 }] });
+  assert(pct.status === 201 && Number(pct.body.data.grand_total) === 900, `10%: ${pct.status} ${JSON.stringify(pct.body)}`);
+  assert(pct.body.data.discount_approved_by === null, `approved_by ${pct.body.data.discount_approved_by}`);
+  const amt = await sell(helper.token, { items: [{ product_id: fixed.id, quantity: 1, unit_price: 1000 }], discount_type: 'fixed', discount_value: 50, payments: [{ method: 'upi', amount: 950 }] });
+  assert(amt.status === 201 && Number(amt.body.data.grand_total) === 950 && amt.body.data.discount_approved_by === null, `₹50: ${amt.status} ${JSON.stringify(amt.body)}`);
+});
+
+check('helper discount over limit needs override', async () => {
+  const { helper, fixed } = await sellSetup();
+  await setHelperLimit(10);
+  const r = await sell(helper.token, { items: [{ product_id: fixed.id, quantity: 1, unit_price: 1000 }], discount_type: 'fixed', discount_value: 150, payments: [{ method: 'upi', amount: 850 }] });
+  assert(r.status === 403 && r.body?.message === NEEDS_OK, `15% no override: ${r.status} ${JSON.stringify(r.body)}`);
+});
+
+check('override by counter staff above manager threshold refused', async () => {
+  const { owner, helper, fixed } = await sellSetup();
+  await setHelperLimit(10);
+  const { manager } = await counterLimits();
+  const cs = await makeStaff(owner.token, 'counter_staff');
+  await api('PUT', `/users/${cs.id}/pin`, owner.token, { pin: '2580' });
+  const pct = manager + 5;
+  const pay = 1000 - pct * 10;
+  const r = await sell(helper.token, { items: [{ product_id: fixed.id, quantity: 1, unit_price: 1000 }], discount_type: 'percentage', discount_value: pct, payments: [{ method: 'upi', amount: pay }], discount_override: { employee_code: cs.employee_code, pin: '2580' } });
+  assert(r.status === 403 && r.body?.message === NEEDS_MANAGER, `counter OK above its limit: ${r.status} ${JSON.stringify(r.body)}`);
+  // Within the counter limit, the same counter staff can OK it
+  const within = await sell(helper.token, { items: [{ product_id: fixed.id, quantity: 1, unit_price: 1000 }], discount_type: 'percentage', discount_value: manager, payments: [{ method: 'upi', amount: 1000 - manager * 10 }], discount_override: { employee_code: cs.employee_code, pin: '2580' } });
+  assert(within.status === 201 && within.body.data.discount_approved_by === cs.id, `counter OK within limit: ${within.status} ${JSON.stringify(within.body)}`);
+});
+
+check('override by manager ok and recorded in discount_approved_by', async () => {
+  const { owner, helper, fixed } = await sellSetup();
+  await setHelperLimit(10);
+  const { manager, owner: ownerLimit } = await counterLimits();
+  const mgr = await makeStaff(owner.token, 'manager');
+  const pinRes = await api('PUT', `/users/${mgr.id}/pin`, owner.token, { pin: '1470' });
+  const code = pinRes.body.data.employee_code;
+  const pct = Math.min(manager + 5, ownerLimit);
+  const r = await sell(helper.token, { items: [{ product_id: fixed.id, quantity: 1, unit_price: 1000 }], discount_type: 'percentage', discount_value: pct, payments: [{ method: 'upi', amount: 1000 - pct * 10 }], discount_override: { employee_code: code, pin: '1470' } });
+  assert(r.status === 201, `manager OK: ${r.status} ${JSON.stringify(r.body)}`);
+  const row = await saleRow(r.body.data.id);
+  assert(row.discount_approved_by === mgr.id && Number(row.discount_percentage) === pct, `row: approved_by ${row.discount_approved_by} pct ${row.discount_percentage}`);
+  // Wrong PIN passes the PIN check copy through
+  const w = await sell(helper.token, { items: [{ product_id: fixed.id, quantity: 1, unit_price: 1000 }], discount_type: 'percentage', discount_value: pct, payments: [{ method: 'upi', amount: 1000 - pct * 10 }], discount_override: { employee_code: code, pin: '0000' } });
+  assert(w.status === 401 && w.body?.message === "That PIN didn't match. 4 tries left.", `wrong pin: ${w.status} ${JSON.stringify(w.body)}`);
+  // Nothing in the response carries PIN data
+  assert(!JSON.stringify(r.body).includes('pin_hash'), 'pin_hash in response');
+});
+
+check('override wrong PIN 5 times locks the approver', async () => {
+  const { owner, helper, fixed } = await sellSetup();
+  await setHelperLimit(10);
+  const cs = await makeStaff(owner.token, 'counter_staff');
+  await api('PUT', `/users/${cs.id}/pin`, owner.token, { pin: '3690' });
+  const db = await getDb();
+  const before = Number((await db.prepare('SELECT COUNT(*) AS c FROM sales WHERE created_by = ?').get(helper.id)).c);
+  const body = { items: [{ product_id: fixed.id, quantity: 1, unit_price: 1000 }], discount_type: 'percentage', discount_value: 15, payments: [{ method: 'upi', amount: 850 }] };
+  for (let i = 1; i <= 4; i++) {
+    const r = await sell(helper.token, { ...body, discount_override: { employee_code: cs.employee_code, pin: '0000' } });
+    assert(r.status === 401 && r.body?.message === `That PIN didn't match. ${5 - i} tries left.`, `try ${i}: ${r.status} ${JSON.stringify(r.body)}`);
+  }
+  const fifth = await sell(helper.token, { ...body, discount_override: { employee_code: cs.employee_code, pin: '0000' } });
+  assert(fifth.status === 423 && fifth.body?.message === LOCKED_COPY, `try 5: ${fifth.status} ${JSON.stringify(fifth.body)}`);
+  const right = await sell(helper.token, { ...body, discount_override: { employee_code: cs.employee_code, pin: '3690' } });
+  assert(right.status === 423, `right PIN while locked: ${right.status} ${JSON.stringify(right.body)}`);
+  const login = await api('POST', '/auth/staff-login', null, { employee_code: cs.employee_code, pin: '3690' });
+  assert(login.status === 423, `staff-login after override lock: ${login.status} ${JSON.stringify(login.body)}`);
+  const after = Number((await db.prepare('SELECT COUNT(*) AS c FROM sales WHERE created_by = ?').get(helper.id)).c);
+  assert(after === before, `refused overrides created ${after - before} sale(s)`);
+  // A malformed basket never reaches the PIN check (no try is burned)
+  const cs2 = await makeStaff(owner.token, 'counter_staff');
+  await api('PUT', `/users/${cs2.id}/pin`, owner.token, { pin: '3690' });
+  const bad = await sell(helper.token, { ...body, payments: [{ method: 'upi', amount: 1 }], discount_override: { employee_code: cs2.employee_code, pin: '0000' } });
+  assert(bad.status === 400 && bad.body?.message === MISMATCH, `bad basket: ${bad.status} ${JSON.stringify(bad.body)}`);
+  const row = await db.prepare('SELECT pin_failed_attempts FROM users WHERE id = ?').get(cs2.id);
+  assert(!Number(row.pin_failed_attempts), `try burned on a bad basket: ${row.pin_failed_attempts}`);
+});
+
+check('client_ref makes retries safe', async () => {
+  const { helper, fixed } = await sellSetup();
+  const ref = newRef();
+  const body = { location_id: TEST_LOCATION_ID, client_ref: ref, items: [{ product_id: fixed.id, quantity: 1, unit_price: 1000 }], payments: [{ method: 'upi', amount: 1000 }] };
+  const first = await api('POST', '/sales', helper.token, body);
+  assert(first.status === 201 && !first.body.duplicate, `first: ${first.status} ${JSON.stringify(first.body)}`);
+  const second = await api('POST', '/sales', helper.token, body);
+  assert(second.status === 200 && second.body.duplicate === true && second.body.data.id === first.body.data.id, `retry: ${second.status} ${JSON.stringify(second.body)}`);
+  const keys = (o) => JSON.stringify(Object.keys(o).sort());
+  assert(keys(second.body.data) === keys(first.body.data), `shape differs: ${keys(second.body.data)} vs ${keys(first.body.data)}`);
+  assert(second.body.data.items.length === 1 && second.body.data.payments.length === 1, 'retry items/payments');
+  // A retry with a changed basket still answers with the saved sale, writing nothing
+  const third = await api('POST', '/sales', helper.token, { ...body, payments: [{ method: 'upi', amount: 5 }] });
+  assert(third.status === 200 && third.body.data.id === first.body.data.id, `changed retry: ${third.status}`);
+  const db = await getDb();
+  const n = await db.prepare('SELECT COUNT(*) AS c FROM sales WHERE created_by = ? AND client_ref = ?').get(helper.id, ref);
+  assert(Number(n.c) === 1, `sales with ref: ${n.c}`);
+  const pays = await db.prepare('SELECT COUNT(*) AS c FROM payments WHERE sale_id = ?').get(first.body.data.id);
+  assert(Number(pays.c) === 1, `payments: ${pays.c}`);
+});
+
+check('concurrent same client_ref creates one sale', async () => {
+  const { helper, fixed } = await sellSetup();
+  const ref = newRef();
+  const body = { location_id: TEST_LOCATION_ID, client_ref: ref, items: [{ product_id: fixed.id, quantity: 1, unit_price: 1000 }], payments: [{ method: 'upi', amount: 1000 }] };
+  const out = await Promise.all(Array.from({ length: 5 }, () => api('POST', '/sales', helper.token, body)));
+  assert(out.every((r) => r.status === 200 || r.status === 201), `statuses: ${out.map((r) => `${r.status} ${r.body?.message || ''}`)}`);
+  const ids = new Set(out.map((r) => r.body.data.id));
+  assert(ids.size === 1 && out.filter((r) => r.status === 201).length === 1, `ids ${[...ids]} statuses ${out.map((r) => r.status)}`);
+  const db = await getDb();
+  const n = await db.prepare('SELECT COUNT(*) AS c FROM sales WHERE created_by = ? AND client_ref = ?').get(helper.id, ref);
+  assert(Number(n.c) === 1, `sales with ref: ${n.c}`);
+});
+
+check('cash with closed register refused with helper copy', async () => {
+  const { owner, helper, fixed } = await sellSetup();
+  await ensureClosed(owner.token, TEST_LOCATION_ID);
+  const items = [{ product_id: fixed.id, quantity: 1, unit_price: 1000 }];
+  const cash = await sell(helper.token, { items, payments: [{ method: 'cash', amount: 1000 }] });
+  assert(cash.status === 400 && cash.body?.message === REGISTER_COPY, `cash: ${cash.status} ${JSON.stringify(cash.body)}`);
+  const upi = await sell(helper.token, { items, payments: [{ method: 'upi', amount: 1000 }] });
+  assert(upi.status === 201, `upi without register: ${upi.status} ${JSON.stringify(upi.body)}`);
+  // With the register open, cash lands in it
+  const reg = await openRegister(owner.token, TEST_LOCATION_ID, 100);
+  const db = await getDb();
+  const before = await db.prepare('SELECT expected_cash, total_cash_sales FROM cash_registers WHERE id = ?').get(reg.id);
+  const ok = await sell(helper.token, { items, payments: [{ method: 'cash', amount: 1000 }] });
+  assert(ok.status === 201, `cash with register: ${ok.status} ${JSON.stringify(ok.body)}`);
+  const after = await db.prepare('SELECT expected_cash, total_cash_sales FROM cash_registers WHERE id = ?').get(reg.id);
+  assert(Number(after.expected_cash) - Number(before.expected_cash) === 1000 && Number(after.total_cash_sales) - Number(before.total_cash_sales) === 1000, `register: ${JSON.stringify(before)} -> ${JSON.stringify(after)}`);
+});
+
+check('sold_by is the helper', async () => {
+  const { owner, helper, fixed } = await sellSetup();
+  const r = await sell(helper.token, {
+    order_type: 'delivery', channel: 'whatsapp', sold_by: owner.id, skip_assignment: false, entry_mode: 'quick',
+    delivery_address: 'Somewhere', delivery_charges: 100, customer_id: owner.id,
+    items: [{ product_id: fixed.id, quantity: 1, unit_price: 1000, special_instructions: 'x' }],
+    payments: [{ method: 'upi', amount: 1000 }],
+  });
+  assert(r.status === 201, `sale: ${r.status} ${JSON.stringify(r.body)}`);
+  const row = await saleRow(r.body.data.id);
+  assert(row.sold_by === helper.id && row.created_by === helper.id, `sold_by ${row.sold_by} created_by ${row.created_by}`);
+  assert(row.order_type === 'walk_in' && row.channel === 'walk_in' && row.status === 'completed' && row.payment_status === 'paid', `shape: ${row.order_type}/${row.channel}/${row.status}/${row.payment_status}`);
+  assert(row.entry_mode === null && row.customer_id === null && Number(row.delivery_charges) === 0, `extras kept: ${row.entry_mode} ${row.customer_id} ${row.delivery_charges}`);
+  const db = await getDb();
+  const del = await db.prepare('SELECT COUNT(*) AS c FROM deliveries WHERE sale_id = ?').get(row.id);
+  const open = await db.prepare("SELECT COUNT(*) AS c FROM production_tasks WHERE sale_id = ? AND status <> 'completed'").get(row.id);
+  assert(Number(del.c) === 0 && Number(open.c) === 0, `deliveries ${del.c} open tasks ${open.c}`);
+});
+
+async function cleanupHelperSales() {
+  const db = await getDb();
+  if (helperThresholdBackup !== undefined) {
+    await db.prepare("UPDATE settings SET value = ? WHERE key = 'discount_helper_threshold'").run(helperThresholdBackup);
+  }
+  let saleCount = 0;
+  if (createdUserIds.length) {
+    const ph = createdUserIds.map(() => '?').join(', ');
+    const sales = await db.prepare(`SELECT id FROM sales WHERE created_by IN (${ph})`).all(...createdUserIds);
+    for (const { id } of sales) {
+      try {
+        await db.prepare('DELETE FROM production_tasks WHERE sale_id = ?').run(id);
+        await db.prepare('DELETE FROM deliveries WHERE sale_id = ?').run(id);
+        await db.prepare('DELETE FROM payments WHERE sale_id = ?').run(id);
+        await db.prepare('DELETE FROM sale_items WHERE sale_id = ?').run(id);
+        await db.prepare("DELETE FROM audit_logs WHERE entity_type = 'sale' AND entity_id = ?").run(id);
+        await db.prepare('DELETE FROM sales WHERE id = ?').run(id);
+        saleCount += 1;
+      } catch (err) {
+        console.error(`   (cleanup warning: sale ${id}: ${err.message})`);
+      }
+    }
+  }
+  for (const id of createdProductIds) {
+    try {
+      await db.prepare('DELETE FROM product_options WHERE product_id = ?').run(id);
+      await db.prepare('DELETE FROM product_stock WHERE product_id = ?').run(id);
+      await db.prepare('DELETE FROM products WHERE id = ?').run(id);
+    } catch (err) {
+      console.error(`   (cleanup warning: product ${id}: ${err.message})`);
+    }
+  }
+  console.log(`Cleaned up ${saleCount} helper sale(s) and ${createdProductIds.length} test product(s)`);
+}
+
 async function cleanup() {
+  await cleanupHelperSales();
   const db = await getDb();
   for (const id of createdUserIds) {
     try {

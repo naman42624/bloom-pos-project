@@ -14,6 +14,7 @@ const { buildTrackingUrl } = require('../utils/tracking-token');
 const { slipUrl } = require('../utils/slip-token');
 const { reverseSaleEffects } = require('../utils/sale-reversal');
 const { assertValidSeller } = require('../utils/seller');
+const { helperSaleGate, answerClientRefConflict } = require('../utils/helper-sale');
 const QRCode = require('qrcode');
 const { getChecklistForSale, setCheck, loadSaleForChecks } = require('../utils/load-checks');
 
@@ -1639,21 +1640,15 @@ router.put('/:id(\\d+)/pickup-checks/:saleItemId(\\d+)', authenticate, authorize
 });
 
 // ─── POST /api/sales ─────────────────────────────────────────
-// Creates a completed sale with items and payments in one transaction
-// Helpers are let through authorize() for the Sell screen, but until the
-// helper sale rules are in place every helper sale is refused here.
-function refuseHelperSaleForNow(req, res, next) {
-  if (req.user && req.user.role === 'helper') {
-    return res.status(403).json({ success: false, message: 'Helpers can only sell from the Sell screen.' });
-  }
-  next();
-}
+// Creates a completed sale with items and payments in one transaction.
+// A helper's request is first rebuilt by helperSaleGate (utils/helper-sale.js):
+// catalog prices, cash/UPI in full, discount limit or PIN OK, client_ref.
 
 router.post(
   '/',
   authenticate,
   authorize('owner', 'manager', 'employee', 'counter_staff', 'helper'),
-  refuseHelperSaleForNow,
+  helperSaleGate(getAsyncDb),
   [
     body('location_id').isInt().withMessage('Location is required'),
     body('order_type').isIn(['walk_in', 'pickup', 'delivery', 'pre_order']),
@@ -1833,7 +1828,15 @@ router.post(
           );
           const effectivePct = discountPercentage || 0;
 
-          if (effectivePct > ownerThreshold) {
+          if (req.helperSale) {
+            // Limit and approver already checked by helperSaleGate
+            if (effectivePct > req.helperSale.discountPct + 1e-9) {
+              const e = new Error("This discount needs the counter's OK.");
+              e.statusCode = 403;
+              throw e;
+            }
+            discountApprovedBy = req.helperSale.approvedBy;
+          } else if (effectivePct > ownerThreshold) {
             // Only owner can approve
             if (req.user.role !== 'owner') {
               throw new Error(`Discount of ${effectivePct.toFixed(1)}% exceeds owner threshold (${ownerThreshold}%). Only an owner can apply this discount.`);
@@ -1853,6 +1856,12 @@ router.post(
         // Determine payment status
         const totalPaid = (payments || []).reduce((s, p) => s + (Number(p.amount) || 0), 0);
         const roundedTotalPaid = Math.round(Number(totalPaid || 0) * 100) / 100;
+        // A helper sale is paid in full, to the paisa (checked before any write)
+        if (req.helperSale && Math.round(totalPaid * 100) !== Math.round(grandTotal * 100)) {
+          const e = new Error("The payment doesn't match the total. Check the amounts and try again.");
+          e.statusCode = 400;
+          throw e;
+        }
         let paymentStatus = 'pending';
         if (roundedTotalPaid >= grandTotal - 0.01) paymentStatus = 'paid';
         else if (roundedTotalPaid > 0) paymentStatus = 'partial';
@@ -2003,8 +2012,8 @@ router.post(
             special_instructions, customer_notes,
             sender_customer_id, receiver_customer_id, sender_same_as_receiver,
             sender_name, sender_phone, receiver_name, receiver_phone, sender_message,
-            created_by, created_at, is_credit_sale, vendor_name, entry_mode, sold_by)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            created_by, created_at, is_credit_sale, vendor_name, entry_mode, sold_by, client_ref)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           saleNumber, location_id, customer_id || null, saleCustomerName || null, saleCustomerPhone || null,
           subtotal, taxTotal, discountAmount, discount_type || null, discountPercentage, discountApprovedBy,
@@ -2015,7 +2024,8 @@ router.post(
           notes || special_instructions || '', customer_notes || '',
           senderCustomerId || null, receiverCustomerId || null, senderReceiverSame ? 1 : 0,
           senderNameForSale || '', senderPhoneForSale || '', receiverNameForSale || '', receiverPhoneForSale || '', sender_message || '', req.user.id,
-          nowLocal(), is_credit_sale ? 1 : 0, vendorNameToStore, entryMode, soldBy
+          nowLocal(), is_credit_sale ? 1 : 0, vendorNameToStore, entryMode, soldBy,
+          req.helperSale ? req.helperSale.clientRef : null
         );
         const saleId = saleResult.lastInsertRowid;
 
@@ -2265,7 +2275,15 @@ router.post(
         return { sale: newSale, assignedTaskIds };
       });
 
-      const { sale, assignedTaskIds: createdTaskIds } = createSale();
+      let created;
+      try {
+        created = createSale();
+      } catch (e) {
+        // Two first tries of one helper basket: the loser answers with the winner
+        if (answerClientRefConflict(req, res, e)) return;
+        throw e;
+      }
+      const { sale, assignedTaskIds: createdTaskIds } = created;
       
       if (createdTaskIds && createdTaskIds.length > 0 && req.body.assigned_to) {
         createNotification({
