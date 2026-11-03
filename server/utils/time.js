@@ -80,4 +80,38 @@ function parseServerDate(value) {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
-module.exports = { getTimezone, todayStr, nowUtc, nowLocal, nowTimeStr, clearTimezoneCache, parseServerDate };
+// Offset (ms) of the shop timezone from UTC at a given instant.
+function tzOffsetMs(tz, date) {
+  const parts = {};
+  for (const p of new Intl.DateTimeFormat('en-US', {
+    timeZone: tz, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  }).formatToParts(date)) parts[p.type] = p.value;
+  const wall = Date.UTC(+parts.year, +parts.month - 1, +parts.day, +parts.hour, +parts.minute, +parts.second);
+  return wall - Math.floor(date.getTime() / 1000) * 1000;
+}
+
+// The UTC instant of local midnight at the start of `dateStr` (YYYY-MM-DD).
+function localMidnightUtc(dateStr, tz) {
+  const [y, m, d] = String(dateStr).split('-').map(Number);
+  const guess = Date.UTC(y, m - 1, d);
+  let t = guess - tzOffsetMs(tz, new Date(guess));
+  t = guess - tzOffsetMs(tz, new Date(t)); // second pass settles a DST edge
+  return new Date(t);
+}
+
+const toSqlUtc = (d) => d.toISOString().replace('T', ' ').slice(0, 19);
+
+/**
+ * One shop-local day as a UTC range for TIMESTAMP columns (stored as UTC):
+ * { start, end } as 'YYYY-MM-DD HH:MM:SS', filter created_at >= start AND < end.
+ */
+function shopDayRangeUtc(dateStr) {
+  const tz = getTimezone();
+  const day = dateStr || todayStr();
+  const [y, m, d] = day.split('-').map(Number);
+  const next = new Date(Date.UTC(y, m - 1, d + 1)).toISOString().slice(0, 10);
+  return { start: toSqlUtc(localMidnightUtc(day, tz)), end: toSqlUtc(localMidnightUtc(next, tz)) };
+}
+
+module.exports = { getTimezone, todayStr, nowUtc, nowLocal, nowTimeStr, clearTimezoneCache, parseServerDate, shopDayRangeUtc };

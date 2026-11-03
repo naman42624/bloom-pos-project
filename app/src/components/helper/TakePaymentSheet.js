@@ -11,8 +11,13 @@
 // spec's "Couldn't save — ... tap Take payment again" with that button.
 //
 // <TakePaymentSheet visible basket clientRef locationId shopInfo taxReady
+//    priceNotes onRefreshPrices={async () => ({ basket, changes, blocked })}
 //    onRetryTaxes onClose onSaved={(sale) => …} onNextCustomer
-//    onAccessEnded={(err) => bool} />
+//    onKeepLeftover={(lines) => …} onAccessEnded={(err) => bool} />
+//
+// A repeat of the basket's client_ref is answered with the sale saved
+// earlier. When that sale's items differ from this basket, nothing is shown
+// as paid: an amber warning offers to keep the other items as a new sale.
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   View, Text, StyleSheet, Modal, TouchableOpacity, ScrollView, TextInput, Image,
@@ -23,9 +28,10 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import api from '../../services/api';
 import useSubmitGuard from '../../hooks/useSubmitGuard';
 import { printHtml } from '../../utils/printHelpers';
+import { unlockAudio } from '../scan/scanFeedback';
 import { formatRupees } from '../../utils/scanAddLine';
 import {
-  basketTotal, toSalePayload, changeDue, splitPayments, parseAmount,
+  basketTotal, toSalePayload, changeDue, splitPayments, parseAmount, compareSaved,
 } from '../../utils/helperBasket';
 import OverridePad from './OverridePad';
 import { Colors, FontSize, Spacing, BorderRadius, Shadows } from '../../constants/theme';
@@ -34,6 +40,9 @@ export const SAVE_FAILED = "Couldn't save — check the internet and tap Take pa
 const NEEDS_OK = "This discount needs the counter's OK.";
 const REGISTER_CLOSED = "The counter hasn't opened the register yet. Ask them to open it, then try again.";
 const NO_QR = "Ask the customer to pay to the shop's UPI at the counter.";
+const MISMATCH = "The payment doesn't match the total. Check the amounts and try again.";
+const UNFINISHED_START = "This sale didn't finish saving";
+const OVERRIDE_NET = "Couldn't reach the shop — check the internet and tap Approve again. Type the PIN again.";
 const AUTO_NEXT_SECONDS = 4;
 
 const DISCOUNT_CHIPS = [
@@ -113,12 +122,12 @@ function waNumber(phone) {
 
 export default function TakePaymentSheet({
   visible, basket, clientRef, locationId, shopInfo, taxReady = true, onRetryTaxes,
-  onClose, onSaved, onNextCustomer, onAccessEnded,
+  priceNotes, onRefreshPrices, onClose, onSaved, onNextCustomer, onKeepLeftover, onAccessEnded,
 }) {
   const insets = useSafeAreaInsets();
   const guard = useSubmitGuard();
 
-  const [step, setStep] = useState('choose'); // choose | cash | upi | split | override | success
+  const [step, setStep] = useState('choose'); // choose | cash | upi | split | override | success | duplicate
   const [discount, setDiscount] = useState(null);
   const [discountOpen, setDiscountOpen] = useState(false);
   const [otherText, setOtherText] = useState('');
@@ -130,13 +139,14 @@ export default function TakePaymentSheet({
   const [splitCash, setSplitCash] = useState('');
   const [registerOpen, setRegisterOpen] = useState(null);
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState(null); // { text, kind: 'network' | 'needsOk' | 'other' }
+  const [error, setError] = useState(null); // { text, kind: 'network' | 'needsOk' | 'unfinished' | 'other' }
   const [overrideError, setOverrideError] = useState('');
-  const [returnStep, setReturnStep] = useState('cash');
   const [sale, setSale] = useState(null);
   const [duplicate, setDuplicate] = useState(false);
   const [autoLeft, setAutoLeft] = useState(null);
+  const [dupInfo, setDupInfo] = useState(null); // { sale, leftover }
   const lastPayments = useRef(null);
+  const payStepRef = useRef('cash'); // the payment step the override pad came from
   const basketAtSave = useRef(null);
 
   // Fresh sheet every time it opens (the basket and its client_ref stay).
@@ -158,6 +168,7 @@ export default function TakePaymentSheet({
     setSale(null);
     setDuplicate(false);
     setAutoLeft(null);
+    setDupInfo(null);
     lastPayments.current = null;
     setRegisterOpen(null);
     let alive = true;
@@ -173,6 +184,15 @@ export default function TakePaymentSheet({
 
   const totals = useMemo(() => basketTotal(basket, discount), [basket, discount]);
   const total = totals.total;
+
+  // A hidden sheet never moves on by itself.
+  useEffect(() => { if (!visible) setAutoLeft(null); }, [visible]);
+
+  const nextByHand = () => {
+    setAutoLeft(null);
+    unlockAudio();
+    onNextCustomer();
+  };
 
   // Next customer by itself after a few seconds, unless the helper is
   // sharing or printing the bill (or typed a phone to share it to).
@@ -217,6 +237,16 @@ export default function TakePaymentSheet({
       const saved = res?.data || null;
       setSale(saved);
       setDuplicate(!!res?.duplicate);
+      if (res?.duplicate) {
+        // The earlier save of this basket number: only "paid" when it holds
+        // exactly what is in the basket now.
+        const cmp = compareSaved(basketAtSave.current || [], saved?.items || []);
+        if (!cmp.same) {
+          setDupInfo({ sale: saved, leftover: cmp.leftover });
+          setStep('duplicate');
+          return;
+        }
+      }
       setStep('success');
       setAutoLeft(phone.trim() ? null : AUTO_NEXT_SECONDS);
       if (onSaved) onSaved(saved);
@@ -225,10 +255,21 @@ export default function TakePaymentSheet({
       const status = err?.status || 0;
       const message = err?.message || '';
       if (status === 0 || status >= 500) {
-        const e = { kind: 'network', text: SAVE_FAILED };
-        if (override) { setOverrideError(SAVE_FAILED); } else setError(e);
+        if (override) setOverrideError(OVERRIDE_NET);
+        else setError({ kind: 'network', text: SAVE_FAILED });
       } else if (status === 403 && message === NEEDS_OK && !override) {
         setError({ kind: 'needsOk', text: message });
+      } else if (status === 409 && message.startsWith(UNFINISHED_START)) {
+        if (override) setStep(payStepRef.current);
+        setError({ kind: 'unfinished', text: message });
+      } else if (status === 400 && message === MISMATCH && onRefreshPrices) {
+        // The shop changed a price while this basket was open: reload them.
+        const r = await onRefreshPrices();
+        if (r && r.blocked && r.blocked.length) { onClose(); return; }
+        const newTotal = r && r.basket ? basketTotal(r.basket, discount).total : total;
+        const text = `Prices changed. The total is now ${formatRupees(newTotal)}. Check it and take payment again.`;
+        if (override) { setOverrideError(''); setStep(payStepRef.current); }
+        setError({ kind: 'prices', text });
       } else if (override) {
         // Wrong PIN, locked, wrong shop, needs a manager: on the pad.
         setOverrideError(message);
@@ -255,7 +296,7 @@ export default function TakePaymentSheet({
   });
 
   const askCounter = () => {
-    setReturnStep(step);
+    payStepRef.current = step;
     setOverrideError('');
     setStep('override');
   };
@@ -278,8 +319,12 @@ export default function TakePaymentSheet({
 
   // ── Pieces ──
   const errorBox = error ? (
-    <View style={[styles.errorBox, error.kind === 'needsOk' && styles.warnBox]} accessibilityLiveRegion="assertive">
-      <Ionicons name={error.kind === 'needsOk' ? 'shield-outline' : 'alert-circle'} size={24} color={error.kind === 'needsOk' ? Colors.warning : Colors.error} />
+    <View style={[styles.errorBox, (error.kind === 'needsOk' || error.kind === 'prices') && styles.warnBox]} accessibilityLiveRegion="assertive">
+      <Ionicons
+        name={error.kind === 'needsOk' ? 'shield-outline' : error.kind === 'prices' ? 'pricetag' : 'alert-circle'}
+        size={24}
+        color={error.kind === 'needsOk' || error.kind === 'prices' ? Colors.warning : Colors.error}
+      />
       <Text style={styles.errorText}>{error.text}</Text>
     </View>
   ) : null;
@@ -292,6 +337,7 @@ export default function TakePaymentSheet({
     let ic = icon;
     if (error?.kind === 'network') { text = `Take payment ${formatRupees(total)}`; handler = retry; ic = 'refresh'; }
     if (error?.kind === 'needsOk') { text = 'Ask counter to approve'; handler = askCounter; ic = 'shield-checkmark'; }
+    if (error?.kind === 'unfinished') { text = 'Back to basket'; handler = onClose; ic = 'arrow-back'; }
     return (
       <TouchableOpacity
         style={[styles.primary, saving && styles.disabled]}
@@ -327,10 +373,22 @@ export default function TakePaymentSheet({
     </Text>
   ) : null;
 
+  const notes = Array.isArray(priceNotes) && priceNotes.length ? (
+    <View style={styles.warnBox} accessibilityLiveRegion="polite">
+      <Ionicons name="pricetag" size={22} color={Colors.warning} />
+      <View style={{ flex: 1 }}>
+        {priceNotes.map((n) => (
+          <Text key={n.name} style={styles.errorText}>{`Price updated: ${n.name} is now ${formatRupees(n.price)}`}</Text>
+        ))}
+      </View>
+    </View>
+  ) : null;
+
   let content;
   if (step === 'choose') {
     content = (
       <>
+        {notes}
         <Text style={styles.label}>Total</Text>
         <Text style={styles.hero}>{formatRupees(total)}</Text>
         {discountLine}
@@ -516,6 +574,7 @@ export default function TakePaymentSheet({
             <Text style={styles.errorText}>{`That's ${formatRupees(-due)} short. Take ${formatRupees(total)}.`}</Text>
           </View>
         ) : null}
+        {error?.kind === 'prices' ? notes : null}
         {errorBox}
         {primary('Done', payCash)}
         {backBtn()}
@@ -576,6 +635,7 @@ export default function TakePaymentSheet({
           maxLength={64}
           accessibilityLabel="UPI reference, optional"
         />
+        {error?.kind === 'prices' ? notes : null}
         {errorBox}
         {primary('Customer has paid', step === 'split' ? paySplit : payUpi)}
         {backBtn()}
@@ -593,20 +653,12 @@ export default function TakePaymentSheet({
     );
   } else if (step === 'success') {
     const savedTotal = Number(sale?.grand_total) || 0;
-    const askedTotal = basketTotal(basketAtSave.current || [], discount).total;
     content = (
       <>
         <View style={styles.tick}><Ionicons name="checkmark" size={72} color={Colors.white} /></View>
         <Text style={styles.successTitle}>{`${formatRupees(savedTotal)} collected · ${methodsText(sale) || 'Cash'}`}</Text>
         {sale?.sale_number ? <Text style={styles.successSub}>{`Bill ${sale.sale_number}`}</Text> : null}
-        {duplicate && Math.round(savedTotal * 100) !== Math.round(askedTotal * 100) ? (
-          <View style={styles.warnBox}>
-            <Ionicons name="information-circle" size={22} color={Colors.warning} />
-            <Text style={styles.errorText}>
-              {`This basket was already saved earlier for ${formatRupees(savedTotal)}. Ask the counter to check it.`}
-            </Text>
-          </View>
-        ) : null}
+        {duplicate ? <Text style={styles.successSub}>Saved earlier — not charged twice.</Text> : null}
         <View style={styles.shareRow}>
           <TouchableOpacity style={styles.shareBtn} onPress={shareBill} accessibilityRole="button" accessibilityLabel="Share bill on WhatsApp">
             <Ionicons name="logo-whatsapp" size={22} color={Colors.primary} />
@@ -619,7 +671,7 @@ export default function TakePaymentSheet({
         </View>
         <TouchableOpacity
           style={styles.primary}
-          onPress={onNextCustomer}
+          onPress={nextByHand}
           activeOpacity={0.8}
           accessibilityRole="button"
           accessibilityLabel="Next customer"
@@ -634,13 +686,46 @@ export default function TakePaymentSheet({
     );
   }
 
+  if (step === 'duplicate' && dupInfo) {
+    const savedTotal = Number(dupInfo.sale?.grand_total) || 0;
+    const savedItems = (dupInfo.sale?.items || []).map((i) => `${i.product_name} × ${Number(i.quantity)}`).join(', ');
+    const hasLeftover = dupInfo.leftover.length > 0;
+    content = (
+      <>
+        <View style={[styles.warnBox, styles.dupBox]} accessibilityLiveRegion="assertive">
+          <Ionicons name="warning" size={28} color={Colors.warning} />
+          <View style={{ flex: 1 }}>
+            <Text style={styles.dupText}>
+              {`This basket was already saved earlier for ${formatRupees(savedTotal)} with different items. Ask the counter to check it.`}
+            </Text>
+            {savedItems ? <Text style={styles.errorText}>{`Saved: ${savedItems}`}</Text> : null}
+          </View>
+        </View>
+        {hasLeftover ? (
+          <TouchableOpacity
+            style={styles.primary}
+            onPress={() => onKeepLeftover && onKeepLeftover(dupInfo.leftover)}
+            activeOpacity={0.8}
+            accessibilityRole="button"
+            accessibilityLabel="Keep the other items as a new sale"
+          >
+            <Ionicons name="basket" size={26} color={Colors.white} />
+            <Text style={styles.primaryText}>Keep the other items as a new sale</Text>
+          </TouchableOpacity>
+        ) : null}
+        {backBtn('Back to basket', onClose)}
+      </>
+    );
+  }
+
   const titles = {
     choose: 'Take payment', cash: 'Cash', upi: 'UPI', split: 'Part cash, part UPI', override: 'Discount OK', success: 'Done',
+    duplicate: 'Check with the counter',
   };
   const canClose = !saving && step !== 'success';
 
   return (
-    <Modal visible={visible} animationType="slide" onRequestClose={() => { if (step === 'success') onNextCustomer(); else if (canClose) onClose(); }}>
+    <Modal visible={visible} animationType="slide" onRequestClose={() => { if (step === 'success') nextByHand(); else if (canClose) onClose(); }}>
       <KeyboardAvoidingView style={styles.root} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <View style={[styles.header, { paddingTop: Math.max(insets.top, Spacing.sm) }]}>
           <Text style={styles.title}>{titles[step]}</Text>
@@ -743,6 +828,8 @@ const styles = StyleSheet.create({
     borderRadius: BorderRadius.md, padding: Spacing.md, marginTop: Spacing.md,
   },
   errorText: { flex: 1, fontSize: FontSize.md, fontWeight: '600', color: Colors.text, lineHeight: 22 },
+  dupBox: { borderWidth: 2, borderColor: Colors.warning },
+  dupText: { fontSize: FontSize.lg, fontWeight: '700', color: Colors.text, lineHeight: 26, marginBottom: Spacing.xs },
   primary: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.sm,
     minHeight: 64, borderRadius: BorderRadius.md, backgroundColor: Colors.primary, marginTop: Spacing.lg, ...Shadows.sm,

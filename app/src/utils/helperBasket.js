@@ -141,6 +141,67 @@ export function toSalePayload(basket, { locationId, payments, discount, override
   return body;
 }
 
+// A repeat of this basket's client_ref came back as an earlier saved sale.
+// Compare by product + size (the saved line name) + quantity.
+//   same     -> the saved sale is exactly this basket
+//   leftover -> basket lines (or extra pieces) the saved sale does not have
+export function compareSaved(basket, saleItems) {
+  const keyOf = (productId, name) => `${Number(productId)}|${String(name || '').trim()}`;
+  const remaining = new Map();
+  for (const i of saleItems || []) {
+    const k = keyOf(i.product_id, i.product_name);
+    remaining.set(k, (remaining.get(k) || 0) + (Number(i.quantity) || 0));
+  }
+  const leftover = [];
+  for (const l of basket || []) {
+    const k = keyOf(l.product_id, l.name);
+    const have = remaining.get(k) || 0;
+    const take = Math.min(l.qty, have);
+    if (have) remaining.set(k, have - take);
+    if (l.qty - take > 0) leftover.push({ ...l, qty: l.qty - take });
+  }
+  const savedExtra = [...remaining.values()].some((q) => q > 0);
+  return { same: leftover.length === 0 && !savedExtra, leftover };
+}
+
+const taxPct = (p) => (p && p.tax_percentage != null && p.tax_percentage !== '' ? Number(p.tax_percentage) || 0 : 0);
+
+// Brings basket prices up to date from freshly loaded products.
+// productsById[id]: the product, null when it is gone / not for sale,
+// undefined when it could not be loaded (the line is left as it was).
+// Typed (open) prices are kept. -> { basket, changes: [{ name, price }], blocked: [key] }
+export function refreshPrices(basket, productsById) {
+  const changes = [];
+  const updated = (basket || []).map((l) => {
+    const p = productsById ? productsById[l.product_id] : undefined;
+    if (p === undefined) return l;
+    if (p === null) return { ...l, unavailable: true };
+    let price;
+    if (l.option_id != null) {
+      const opt = (p.options || []).find((o) => Number(o.id) === Number(l.option_id));
+      if (!opt) return { ...l, unavailable: true };
+      price = Number(opt.price) || 0;
+    } else if ((p.price_mode || 'fixed') === 'open' || l.price_mode === 'open') {
+      price = l.unit_price;
+    } else {
+      price = Number(p.selling_price) || 0;
+    }
+    price = round2(price);
+    const { unavailable, ...rest } = l;
+    if (price !== l.unit_price && !changes.some((c) => c.name === l.name)) changes.push({ name: l.name, price });
+    return { ...rest, unit_price: price, tax_rate: taxPct(p) };
+  });
+  // Re-key, and merge lines that now have the same product + size + price
+  const merged = [];
+  for (const l of updated) {
+    const key = l.unavailable ? l.key : lineKey(l);
+    const same = !l.unavailable && merged.find((m) => !m.unavailable && m.key === key);
+    if (same) same.qty = Math.min(MAX_QTY, same.qty + l.qty);
+    else merged.push({ ...l, key });
+  }
+  return { basket: merged, changes, blocked: merged.filter((l) => l.unavailable).map((l) => l.key) };
+}
+
 // "Customer gave ₹1000" on ₹800 -> 200 to give back. Negative = they gave too
 // little. null when nothing (or not a number) was typed.
 export function changeDue(total, given) {

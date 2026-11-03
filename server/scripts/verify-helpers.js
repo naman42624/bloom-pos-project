@@ -1176,6 +1176,25 @@ check('my-sales totals exclude undone sales', async () => {
   assert(c && u, 'sales made');
 });
 
+check('my-sales uses the shop-local day (a sale at local 01:00 today shows, one before local midnight does not)', async () => {
+  const { shopDayRangeUtc } = require('../utils/time');
+  const { owner } = await sellSetup();
+  const me = await helperSession(owner.token);
+  const early = await helperSaleOf(me.token, 'upi', 450);
+  const late = await helperSaleOf(me.token, 'upi', 300);
+  const startMs = new Date(`${shopDayRangeUtc().start.replace(' ', 'T')}Z`).getTime();
+  const sqlUtc = (ms) => new Date(ms).toISOString().replace('T', ' ').slice(0, 19);
+  const db = await getDb();
+  await db.prepare('UPDATE sales SET created_at = ? WHERE id = ?').run(sqlUtc(startMs + 3600e3), early); // local 01:00 today
+  await db.prepare('UPDATE sales SET created_at = ? WHERE id = ?').run(sqlUtc(startMs - 60e3), late); // local 23:59 yesterday
+  const r = await mySales(me.token);
+  assert(r.status === 200, `${r.status} ${JSON.stringify(r.body)}`);
+  const ids = r.body.data.sales.map((x) => x.id);
+  assert(ids.includes(early), `01:00 sale missing: ${ids}`);
+  assert(!ids.includes(late), `yesterday's sale shown: ${ids}`);
+  assert(r.body.data.count === 1 && r.body.data.totals.upi === 450, JSON.stringify(r.body.data.totals) + ' count ' + r.body.data.count);
+});
+
 check('non-helper undo unchanged (counter staff quick sale undo still works)', async () => {
   const { owner } = await sellSetup();
   await openRegister(owner.token, TEST_LOCATION_ID, 100);

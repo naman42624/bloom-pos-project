@@ -4,8 +4,11 @@ const path = require('path');
 const Module = require('module');
 const babel = require('@babel/core');
 
+// Resolved from app/, so the script runs from the repo root too.
+const PRESET = require.resolve('babel-preset-expo', { paths: [path.join(__dirname, '..')] });
+
 function loadModule(file) {
-  const { code } = babel.transformFileSync(file, { presets: ['babel-preset-expo'], babelrc: false, configFile: false });
+  const { code } = babel.transformFileSync(file, { presets: [PRESET], babelrc: false, configFile: false });
   const m = new Module(file, module);
   m.filename = file;
   m.paths = Module._nodeModulePaths(path.dirname(file));
@@ -205,6 +208,109 @@ test('newClientRef is server-safe and different each time', () => {
   const c = b.newClientRef();
   assert.ok(/^[A-Za-z0-9_-]{1,64}$/.test(a), a);
   assert.notStrictEqual(a, c);
+});
+
+// ─── Fix round 1: duplicate answer vs basket, stale prices ───
+const saleItem = (product_id, product_name, quantity) => ({ product_id, product_name, quantity });
+
+test('compareSaved: same items and quantities is the same sale', () => {
+  let basket = b.addLine([], rose);
+  basket = b.addLine(basket, bouquetM);
+  basket = b.changeQty(basket, basket[1].key, 2); // 3 roses
+  const r = b.compareSaved(basket, [saleItem(1, 'Rose (stem)', 3), saleItem(2, 'Bouquet (Medium)', 1)]);
+  assert.strictEqual(r.same, true);
+  assert.deepStrictEqual(r.leftover, []);
+});
+
+test('compareSaved: extra items in the basket are left over, with a fresh line each', () => {
+  let basket = b.addLine([], rose);
+  basket = b.changeQty(basket, basket[0].key, 4); // 5 roses
+  basket = b.addLine(basket, bouquetL);
+  const r = b.compareSaved(basket, [saleItem(1, 'Rose (stem)', 2)]);
+  assert.strictEqual(r.same, false);
+  assert.deepStrictEqual(r.leftover.map((l) => [l.name, l.qty]), [['Bouquet (Large)', 1], ['Rose (stem)', 3]]);
+});
+
+test('compareSaved: a different size counts as a different item', () => {
+  const basket = b.addLine([], bouquetL);
+  const r = b.compareSaved(basket, [saleItem(2, 'Bouquet (Medium)', 1)]);
+  assert.strictEqual(r.same, false);
+  assert.deepStrictEqual(r.leftover.map((l) => l.name), ['Bouquet (Large)']);
+});
+
+test('compareSaved: saved sale had more than the basket -> different, nothing left over', () => {
+  const basket = b.addLine([], rose);
+  const r = b.compareSaved(basket, [saleItem(1, 'Rose (stem)', 2)]);
+  assert.strictEqual(r.same, false);
+  assert.deepStrictEqual(r.leftover, []);
+});
+
+test('compareSaved: two typed prices of one product share the saved quantity in order', () => {
+  let basket = b.addLine([], custom(500));
+  basket = b.addLine(basket, custom(700));
+  const r = b.compareSaved(basket, [saleItem(3, 'Arrangement', 1)]);
+  assert.strictEqual(r.same, false);
+  assert.strictEqual(r.leftover.length, 1);
+});
+
+const product = (over) => ({ id: 1, name: 'Rose (stem)', selling_price: 30, price_mode: 'fixed', tax_percentage: '0.00', options: [], ...over });
+
+test('refreshPrices: a changed fixed price is updated and reported', () => {
+  let basket = b.addLine([], rose);
+  basket = b.changeQty(basket, basket[0].key, 1);
+  const r = b.refreshPrices(basket, { 1: product({ selling_price: 35 }) });
+  assert.strictEqual(r.basket[0].unit_price, 35);
+  assert.strictEqual(r.basket[0].qty, 2);
+  assert.deepStrictEqual(r.changes, [{ name: 'Rose (stem)', price: 35 }]);
+  assert.deepStrictEqual(r.blocked, []);
+  assert.strictEqual(b.basketTotal(r.basket, null).total, 70);
+});
+
+test('refreshPrices: option price, tax rate, typed price kept', () => {
+  let basket = b.addLine([], bouquetM);
+  basket = b.addLine(basket, custom(500));
+  const r = b.refreshPrices(basket, {
+    2: product({ id: 2, name: 'Bouquet', selling_price: 400, tax_percentage: '5.00', options: [{ id: 21, label: 'Medium', price: '700.00' }] }),
+    3: product({ id: 3, name: 'Arrangement', selling_price: 0, price_mode: 'open' }),
+  });
+  const m = r.basket.find((l) => l.product_id === 2);
+  assert.strictEqual(m.unit_price, 700);
+  assert.strictEqual(m.tax_rate, 5);
+  assert.strictEqual(r.basket.find((l) => l.product_id === 3).unit_price, 500);
+  assert.deepStrictEqual(r.changes, [{ name: 'Bouquet (Medium)', price: 700 }]);
+});
+
+test('refreshPrices: unchanged prices report nothing', () => {
+  const basket = b.addLine([], rose);
+  const r = b.refreshPrices(basket, { 1: product({}) });
+  assert.deepStrictEqual(r.changes, []);
+  assert.strictEqual(r.basket[0].tax_rate, 0);
+});
+
+test('refreshPrices: gone product or removed size blocks that line; unknown keeps it', () => {
+  let basket = b.addLine([], rose);
+  basket = b.addLine(basket, bouquetM);
+  basket = b.addLine(basket, { product_id: 7, option_id: null, name: 'Card', unit_price: 50, price_mode: 'fixed', tax_rate: 0 });
+  const r = b.refreshPrices(basket, {
+    1: null, // 404 / switched off
+    2: product({ id: 2, name: 'Bouquet', options: [{ id: 22, label: 'Large', price: 900 }] }), // Medium gone
+    // 7: not loaded (network) -> left as it was
+  });
+  assert.strictEqual(r.basket.find((l) => l.product_id === 1).unavailable, true);
+  assert.strictEqual(r.basket.find((l) => l.product_id === 2).unavailable, true);
+  assert.ok(!r.basket.find((l) => l.product_id === 7).unavailable);
+  assert.strictEqual(r.blocked.length, 2);
+  // fixed again later -> the mark goes
+  const again = b.refreshPrices(r.basket, { 1: product({}) });
+  assert.ok(!again.basket.find((l) => l.product_id === 1).unavailable);
+});
+
+test('refreshPrices: a new price that equals another line merges them', () => {
+  let basket = b.addLine([], { ...rose, unit_price: 30 });
+  basket = b.addLine(basket, { ...rose, unit_price: 35 }); // an older line at 35 (e.g. restored)
+  const r = b.refreshPrices(basket, { 1: product({ selling_price: 35 }) });
+  assert.strictEqual(r.basket.length, 1);
+  assert.strictEqual(r.basket[0].qty, 2);
 });
 
 (async () => {

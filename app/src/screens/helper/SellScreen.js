@@ -7,9 +7,13 @@
 // - Find by name (photo grid) and Price cards (big buttons for the products in
 //   the "Price cards" category) for things without a label.
 // - The basket and its client_ref are kept on the phone
-//   (@petal_helper_basket) so a lock or reload does not lose it. The
+//   (@petal_helper_basket, with the helper's user id: a basket saved for
+//   someone else is ignored) so a lock or reload does not lose it. The
 //   client_ref is new for every basket and kept across retries until the sale
 //   is saved, so a retry never makes a second sale.
+// - Take payment first reloads every product in the basket: new prices are
+//   used and named ("Price updated: …"), and an item no longer for sale is
+//   marked on its line and must be removed before taking payment.
 // - Clear basket sits small at the bottom, with Undo.
 // - First use shows a 3-step card (@petal_helper_help_seen), re-opened by Help.
 import React, { useCallback, useEffect, useRef, useState } from 'react';
@@ -28,7 +32,7 @@ import { SCANNER_COPY } from '../../components/scan/scanCooldown';
 import { unlockAudio } from '../../components/scan/scanFeedback';
 import { sheetModeFor, formatRupees } from '../../utils/scanAddLine';
 import {
-  addLine, changeQty, basketTotal, basketCount, setTaxRate, taxesKnown, newClientRef,
+  addLine, changeQty, basketTotal, basketCount, setTaxRate, taxesKnown, newClientRef, refreshPrices,
 } from '../../utils/helperBasket';
 import TakePaymentSheet from '../../components/helper/TakePaymentSheet';
 import PriceCardsSheet from '../../components/helper/PriceCardsSheet';
@@ -43,11 +47,13 @@ const LOOKUP_FAILED = 'Could not look up this item. Check the connection and sca
 const SOLD = 'This one-off item is already sold. Check with the counter.';
 const CARDS_FAILED = "Couldn't load the price cards. Check the internet and tap Try again.";
 const UNDO_CLEAR_MS = 6000;
+const NOT_FOR_SALE = 'Not for sale right now — ask the counter.';
 
 const taxOf = (p) => (p && p.tax_percentage != null && p.tax_percentage !== '' ? Number(p.tax_percentage) || 0 : null);
 
 export default function SellScreen() {
-  const { locked } = useAuth();
+  const { locked, user } = useAuth();
+  const userId = user?.id ?? null;
   const isFocused = useIsFocused();
   const { height } = useWindowDimensions();
   const { locationId, handleAccessEnded } = useHelperSession();
@@ -70,6 +76,7 @@ export default function SellScreen() {
   const [showPay, setShowPay] = useState(false);
   const [opening, setOpening] = useState(false);
   const [taxReady, setTaxReady] = useState(true);
+  const [priceNotes, setPriceNotes] = useState([]);
   const [shopInfo, setShopInfo] = useState(null);
   const [cleared, setCleared] = useState(null); // { basket, clientRef } for Undo
 
@@ -90,8 +97,11 @@ export default function SellScreen() {
       try {
         const raw = await AsyncStorage.getItem(BASKET_KEY);
         const saved = raw ? JSON.parse(raw) : null;
-        if (saved && Array.isArray(saved.lines)) lines = saved.lines;
-        if (saved && typeof saved.clientRef === 'string') ref = saved.clientRef;
+        // Only this helper's own basket (a phone can change hands)
+        if (saved && saved.userId === userId && Array.isArray(saved.lines)) {
+          lines = saved.lines;
+          if (typeof saved.clientRef === 'string') ref = saved.clientRef;
+        }
       } catch { /* storage unavailable — start empty */ }
       let seen = false;
       try { seen = (await AsyncStorage.getItem(HELP_KEY)) === '1'; } catch { /* show it */ }
@@ -102,6 +112,8 @@ export default function SellScreen() {
       setLoaded(true);
     })();
     return () => { alive = false; };
+    // Once: MainNavigator remounts for a different user (keyed by user id).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ── Keep the basket on the phone ──
@@ -110,10 +122,10 @@ export default function SellScreen() {
     (async () => {
       try {
         if (basket.length === 0) await AsyncStorage.removeItem(BASKET_KEY);
-        else await AsyncStorage.setItem(BASKET_KEY, JSON.stringify({ lines: basket, clientRef }));
+        else await AsyncStorage.setItem(BASKET_KEY, JSON.stringify({ userId, lines: basket, clientRef }));
       } catch { /* storage unavailable — the basket lives in memory only */ }
     })();
-  }, [basket, clientRef, loaded]);
+  }, [basket, clientRef, loaded, userId]);
 
   // ── Shop name + UPI QR ──
   useEffect(() => {
@@ -293,28 +305,57 @@ export default function SellScreen() {
   };
 
   // ── Take payment ──
-  const resolveTaxes = async () => {
-    let current = basketRef.current;
-    const missing = [...new Set(current.filter((l) => l.tax_rate == null).map((l) => l.product_id))];
-    if (missing.length === 0) { setTaxReady(true); return; }
-    const answers = await Promise.all(missing.map((id) => api.getProduct(id)
-      .then((r) => ({ id, rate: taxOf(r?.data) ?? 0 }))
-      .catch((err) => { handleAccessEnded(err); return null; })));
-    for (const a of answers) {
-      if (!a) continue;
-      taxCache.current.set(a.id, a.rate);
-      current = setTaxRate(current, a.id, a.rate);
+  // Reloads every product in the basket (in parallel): current prices, sizes
+  // and tax, and whether each is still for sale. -> refreshPrices result.
+  const refreshBasket = useCallback(async () => {
+    const current = basketRef.current;
+    const ids = [...new Set(current.map((l) => l.product_id))];
+    const byId = {};
+    let ended = false;
+    await Promise.all(ids.map((id) => api.getProduct(id)
+      .then((r) => { byId[id] = r?.data || null; })
+      .catch((err) => {
+        if (handleAccessEnded(err)) { ended = true; return; }
+        // 404: switched off or gone. Anything else (network): leave the line.
+        if (err && err.status === 404) byId[id] = null;
+      })));
+    if (ended) return null;
+    for (const [id, p] of Object.entries(byId)) {
+      const rate = taxOf(p);
+      if (p && rate != null) taxCache.current.set(Number(id), rate);
     }
-    setBasket(current);
-    setTaxReady(taxesKnown(current));
-  };
+    // Lines added while loading are kept as they are.
+    const r = refreshPrices(basketRef.current, byId);
+    setBasket(r.basket);
+    basketRef.current = r.basket;
+    setTaxReady(taxesKnown(r.basket));
+    setPriceNotes(r.changes);
+    return r;
+  }, [handleAccessEnded]);
 
   const openPay = guard(async () => {
+    unlockAudio();
     if (basketRef.current.length === 0) return;
     setOpening(true);
-    try { await resolveTaxes(); } finally { setOpening(false); }
+    let r = null;
+    try { r = await refreshBasket(); } finally { setOpening(false); }
+    if (!r) return; // access ended: the PIN pad is showing
+    if (r.blocked.length > 0) {
+      setMessage({ kind: 'error', text: `${NOT_FOR_SALE} Remove it from the basket first.` });
+      return;
+    }
     setShowPay(true);
   });
+
+  // The saved sale (an earlier try of this basket) held other items: keep
+  // what it did not include as a new basket with a new basket number.
+  const onKeepLeftover = useCallback((lines) => {
+    setBasket(lines);
+    setClientRef(newClientRef());
+    setShowPay(false);
+    setPriceNotes([]);
+    setMessage({ kind: 'ok', text: 'The other items are in the basket. Take payment for them.' });
+  }, []);
 
   const onSaved = useCallback(() => {
     // Saved: this basket is done. A new one gets a new client_ref.
@@ -324,13 +365,18 @@ export default function SellScreen() {
   }, []);
 
   const onNextCustomer = useCallback(() => {
+    unlockAudio();
     setShowPay(false);
     setMessage(null);
+    setPriceNotes([]);
   }, []);
 
   // ── Render ──
-  const { total } = basketTotal(basket, null);
-  const count = basketCount(basket);
+  // A line that is not for sale is never counted in the total.
+  const sellable = basket.filter((l) => !l.unavailable);
+  const { total } = basketTotal(sellable, null);
+  const count = basketCount(sellable);
+  const blocked = sellable.length !== basket.length;
   const cameraHeight = Math.round(Math.min(Math.max(height * 0.34, 200), 340));
   const paused = !isFocused || locked || showPay || showFind || showCards || showHelp || !!pending || !loaded;
 
@@ -368,7 +414,27 @@ export default function SellScreen() {
     />
   );
 
-  const renderLine = ({ item }) => (
+  const renderLine = ({ item }) => (item.unavailable ? (
+    <View style={[styles.line, styles.lineBlocked]}>
+      <View style={styles.lineTop}>
+        <Text style={[styles.lineName, styles.lineNameBlocked]}>{item.name}</Text>
+        <Text style={styles.lineAmount}>{`× ${item.qty}`}</Text>
+      </View>
+      <View style={styles.blockedRow}>
+        <Ionicons name="alert-circle" size={22} color={Colors.error} />
+        <Text style={styles.blockedText}>{NOT_FOR_SALE}</Text>
+      </View>
+      <TouchableOpacity
+        style={styles.removeBtn}
+        onPress={() => setBasket((b) => changeQty(b, item.key, -item.qty))}
+        accessibilityRole="button"
+        accessibilityLabel={`Remove ${item.name} from the basket`}
+      >
+        <Ionicons name="trash-outline" size={20} color={Colors.white} />
+        <Text style={styles.removeText}>Remove</Text>
+      </TouchableOpacity>
+    </View>
+  ) : (
     <View style={styles.line}>
       <View style={styles.lineTop}>
         <Text style={styles.lineName}>{item.name}</Text>
@@ -405,7 +471,7 @@ export default function SellScreen() {
         </View>
       </View>
     </View>
-  );
+  ));
 
   return (
     <View style={styles.root}>
@@ -462,16 +528,18 @@ export default function SellScreen() {
 
       <View style={styles.bar}>
         <Text style={styles.barSummary}>
-          {count > 0 ? `${count} ${count === 1 ? 'item' : 'items'} · ${formatRupees(total)}` : 'Scan an item to start'}
+          {blocked
+            ? 'Remove the item that is not for sale, then take payment.'
+            : count > 0 ? `${count} ${count === 1 ? 'item' : 'items'} · ${formatRupees(total)}` : 'Scan an item to start'}
         </Text>
         <TouchableOpacity
-          style={[styles.payBtn, (count === 0 || opening) && styles.payBtnOff]}
+          style={[styles.payBtn, (count === 0 || opening || blocked) && styles.payBtnOff]}
           onPress={openPay}
-          disabled={count === 0 || opening}
+          disabled={count === 0 || opening || blocked}
           activeOpacity={0.8}
           accessibilityRole="button"
           accessibilityLabel={count > 0 ? `Take payment ${formatRupees(total)}` : 'Take payment, basket is empty'}
-          accessibilityState={{ disabled: count === 0 || opening }}
+          accessibilityState={{ disabled: count === 0 || opening || blocked }}
         >
           {opening ? <ActivityIndicator color={Colors.white} /> : null}
           <Text style={styles.payText}>{count > 0 ? `Take payment ${formatRupees(total)}` : 'Take payment'}</Text>
@@ -532,10 +600,13 @@ export default function SellScreen() {
         locationId={locationId}
         shopInfo={shopInfo}
         taxReady={taxReady}
-        onRetryTaxes={resolveTaxes}
+        onRetryTaxes={refreshBasket}
+        priceNotes={priceNotes}
+        onRefreshPrices={refreshBasket}
         onClose={() => setShowPay(false)}
         onSaved={onSaved}
         onNextCustomer={onNextCustomer}
+        onKeepLeftover={onKeepLeftover}
         onAccessEnded={handleAccessEnded}
       />
     </View>
@@ -574,6 +645,15 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: Colors.border,
   },
   lineTop: { flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.sm },
+  lineBlocked: { borderWidth: 2, borderColor: Colors.error, backgroundColor: Colors.errorLight },
+  lineNameBlocked: { textDecorationLine: 'line-through' },
+  blockedRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, marginTop: Spacing.sm },
+  blockedText: { flex: 1, fontSize: FontSize.md, fontWeight: '700', color: Colors.text },
+  removeBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.xs, alignSelf: 'flex-start',
+    minHeight: 48, paddingHorizontal: Spacing.lg, borderRadius: BorderRadius.md, backgroundColor: Colors.error, marginTop: Spacing.sm,
+  },
+  removeText: { color: Colors.white, fontSize: FontSize.md, fontWeight: '700' },
   lineName: { flex: 1, fontSize: FontSize.lg, fontWeight: '700', color: Colors.text },
   lineAmount: { fontSize: FontSize.lg, fontWeight: '800', color: Colors.text, fontVariant: ['tabular-nums'] },
   lineBottom: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: Spacing.sm, flexWrap: 'wrap', gap: Spacing.sm },

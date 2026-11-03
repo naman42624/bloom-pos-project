@@ -19,6 +19,8 @@ import useHelperSession from '../../components/helper/useHelperSession';
 import { Colors, FontSize, Spacing, BorderRadius } from '../../constants/theme';
 
 const REVEAL_MS = 15000;
+const UNDO_WINDOW_MS = 2 * 60 * 1000;
+const TICK_MS = 15000;
 const LOAD_FAILED = "Couldn't load your sales. Check the internet and tap Try again.";
 const METHOD_LABEL = { cash: 'Cash', upi: 'UPI' };
 
@@ -38,6 +40,7 @@ export default function MySalesScreen() {
   const [error, setError] = useState('');
   const [revealed, setRevealed] = useState(false);
   const [undoingId, setUndoingId] = useState(null);
+  const [now, setNow] = useState(Date.now());
   const revealTimer = useRef(null);
 
   const load = useCallback(async (pull = false) => {
@@ -65,6 +68,18 @@ export default function MySalesScreen() {
   }, [locked, load]);
 
   useEffect(() => () => { if (revealTimer.current) clearTimeout(revealTimer.current); }, []);
+
+  // Undo hides once a sale is over 2 minutes old (the server decides too).
+  useFocusEffect(useCallback(() => {
+    setNow(Date.now());
+    const t = setInterval(() => setNow(Date.now()), TICK_MS);
+    return () => clearInterval(t);
+  }, []));
+  const undoOpen = (sale) => {
+    if (!sale.can_undo) return false;
+    const made = Date.parse(sale.created_at);
+    return Number.isNaN(made) || now - made < UNDO_WINDOW_MS;
+  };
 
   const reveal = () => {
     setRevealed(true);
@@ -147,7 +162,7 @@ export default function MySalesScreen() {
               <Text style={styles.chipText}>{methods || '—'}</Text>
             </View>
           )}
-          {item.can_undo ? (
+          {undoOpen(item) ? (
             <TouchableOpacity
               style={styles.undoBtn}
               onPress={() => askUndo(item)}

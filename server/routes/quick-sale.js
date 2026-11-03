@@ -1,6 +1,6 @@
 const express = require('express');
 const { withTransaction, getDb } = require('../config/database-async');
-const { todayStr } = require('../utils/time');
+const { todayStr, shopDayRangeUtc } = require('../utils/time');
 const { authenticate, authorize } = require('../middleware/auth');
 const { reverseSaleEffects } = require('../utils/sale-reversal');
 
@@ -286,17 +286,18 @@ router.get('/my-sales', authenticate, authorize(...ROLES, 'helper'), async (req,
       const link = await db.prepare('SELECT 1 AS ok FROM user_locations WHERE user_id = ? AND location_id = ?').get(req.user.id, locationId);
       if (!link) return res.status(403).json({ success: false, message: "You don't work at this shop." });
     }
-    const dayStart = `${todayStr()} 00:00:00`;
+    // created_at is stored in UTC: the shop's local day, as a UTC range
+    const { start: dayStart, end: dayEnd } = shopDayRangeUtc();
     const isHelper = req.user.role === 'helper';
 
     const rows = await db.prepare(`
       SELECT s.id, s.sale_number, s.created_at, s.grand_total, s.status, s.undone_at, s.sold_by, s.created_by,
              (s.created_at > NOW() - INTERVAL '2 minutes') AS fresh
       FROM sales s
-      WHERE s.location_id = ? AND COALESCE(s.sold_by, s.created_by) = ? AND s.created_at >= ?
+      WHERE s.location_id = ? AND COALESCE(s.sold_by, s.created_by) = ? AND s.created_at >= ? AND s.created_at < ?
       ORDER BY s.created_at DESC, s.id DESC
       LIMIT ${ROLL_LIMIT}
-    `).all(locationId, req.user.id, dayStart);
+    `).all(locationId, req.user.id, dayStart, dayEnd);
 
     const ids = rows.map((r) => r.id);
     const ph = ids.map(() => '?').join(',');
@@ -320,9 +321,9 @@ router.get('/my-sales', authenticate, authorize(...ROLES, 'helper'), async (req,
              COALESCE(SUM(CASE WHEN p.method = 'upi' THEN p.amount ELSE 0 END), 0) AS upi
       FROM sales s
       LEFT JOIN payments p ON p.sale_id = s.id
-      WHERE s.location_id = ? AND COALESCE(s.sold_by, s.created_by) = ? AND s.created_at >= ?
+      WHERE s.location_id = ? AND COALESCE(s.sold_by, s.created_by) = ? AND s.created_at >= ? AND s.created_at < ?
         AND s.undone_at IS NULL AND s.status != 'cancelled'
-    `).get(locationId, req.user.id, dayStart);
+    `).get(locationId, req.user.id, dayStart, dayEnd);
     const count = Number(agg.count);
     const cash = Number(agg.cash);
     const upi = Number(agg.upi);

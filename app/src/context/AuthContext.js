@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useReducer, useRef } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useReducer, useRef } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import api from '../services/api';
 
@@ -376,7 +376,7 @@ export function AuthProvider({ children }) {
   // A helper call answered 401 "Your access ended on ..." mid-session: drop
   // the session and show the helper's PIN pad with that message, the same
   // place an app start with an ended window lands (restore above).
-  const lockWithMessage = async (message) => {
+  const lockWithMessage = useCallback(async (message) => {
     api.clearToken();
     try {
       await AsyncStorage.multiRemove([STORAGE_KEY_TOKEN, STORAGE_KEY_USER, STORAGE_KEY_LOCATION]);
@@ -387,7 +387,7 @@ export function AuthProvider({ children }) {
       return;
     }
     dispatch({ type: 'LOGOUT' });
-  };
+  }, [state.personalDevice]);
 
   const lock = () => dispatch({ type: 'LOCK' });
   const unlock = () => dispatch({ type: 'UNLOCK' });
