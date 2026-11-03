@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useReducer } from 'react';
+import React, { createContext, useContext, useEffect, useReducer, useRef } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import api from '../services/api';
 
@@ -36,6 +36,12 @@ function locksOnRestore(role) {
   return isSharedDeviceStaffRole(role) || role === 'helper';
 }
 
+async function clearPersonalDeviceKeys() {
+  try {
+    await AsyncStorage.multiRemove([STORAGE_KEY_PERSONAL_DEVICE, STORAGE_KEY_PERSONAL_DEVICE_USER]);
+  } catch { /* storage unavailable — nothing stored to clear */ }
+}
+
 async function readPersonalDevice() {
   try {
     const id = await AsyncStorage.getItem(STORAGE_KEY_PERSONAL_DEVICE);
@@ -62,9 +68,17 @@ const initialState = {
   locked: true,
   // { id, name, employee_code } when this is a helper's own phone, else null.
   personalDevice: null,
-  // Plain-language reason shown on the personal lock screen (e.g. access ended).
+  // Plain-language reason shown on the lock screen (e.g. access ended).
   lockMessage: null,
+  // True when this phone was a helper's and has just been released: show the
+  // shared lock screen (staff roster) even though nobody is signed in.
+  deviceLock: false,
 };
+
+// The server's access-ended copy ("Your access ended on 15 Nov. ...").
+export function isAccessEndedMessage(message) {
+  return typeof message === 'string' && /^Your access ended on /.test(message);
+}
 
 function authReducer(state, action) {
   switch (action.type) {
@@ -90,6 +104,7 @@ function authReducer(state, action) {
         locked: locksOnRestore(action.user?.role),
         personalDevice: action.personalDevice || null,
         lockMessage: null,
+        deviceLock: false,
       };
     case 'PERSONAL_LOCK':
       // A helper's own phone with no live session (logged out, or access
@@ -106,6 +121,24 @@ function authReducer(state, action) {
         locked: true,
         personalDevice: action.personalDevice,
         lockMessage: action.lockMessage || null,
+        deviceLock: false,
+      };
+    case 'PERSONAL_RELEASE':
+      // The helper this phone belonged to is gone (unknown code or switched
+      // off): back to the shop's shared lock screen, saying why.
+      return {
+        ...state,
+        user: null,
+        token: null,
+        locations: [],
+        activeLocation: null,
+        isLoading: false,
+        isAuthenticated: false,
+        isSetupComplete: true,
+        locked: true,
+        personalDevice: null,
+        lockMessage: action.lockMessage || null,
+        deviceLock: true,
       };
     case 'LOGIN':
       return {
@@ -120,6 +153,7 @@ function authReducer(state, action) {
         locked: false,
         personalDevice: action.personalDevice !== undefined ? action.personalDevice : state.personalDevice,
         lockMessage: null,
+        deviceLock: false,
       };
     case 'LOCK':
       return { ...state, locked: true };
@@ -134,6 +168,7 @@ function authReducer(state, action) {
         activeLocation: null,
         isLoading: false,
         isAuthenticated: false,
+        deviceLock: false,
       };
     case 'UPDATE_USER':
       return { ...state, user: { ...state.user, ...action.user } };
@@ -150,11 +185,19 @@ function authReducer(state, action) {
 
 // ─── Provider ─────────────────────────────────────────────────
 export function AuthProvider({ children }) {
-  const [state, dispatch] = useReducer(authReducer, initialState);
+  const [state, rawDispatch] = useReducer(authReducer, initialState);
+  const dispatch = rawDispatch;
+  // Set the moment completeJoin runs. A session restore still in flight
+  // (started when the join page opened) must not overwrite the new helper
+  // session afterwards, so every restore step checks this and stops.
+  const joinedRef = useRef(false);
 
   // Restore saved session on app start
   useEffect(() => {
+    const restoreDispatch = (action) => { if (!joinedRef.current) rawDispatch(action); };
     async function restoreSession() {
+      const dispatch = restoreDispatch;
+      const checkSetupStatus = () => checkSetupStatusWith(restoreDispatch);
       const personalDevice = await readPersonalDevice();
       try {
         const token = await AsyncStorage.getItem(STORAGE_KEY_TOKEN);
@@ -163,6 +206,7 @@ export function AuthProvider({ children }) {
 
         if (token && userJson) {
           const user = JSON.parse(userJson);
+          if (joinedRef.current) return;
           api.setToken(token);
 
           try {
@@ -184,11 +228,14 @@ export function AuthProvider({ children }) {
             try {
               await AsyncStorage.multiRemove([STORAGE_KEY_TOKEN, STORAGE_KEY_USER, STORAGE_KEY_LOCATION]);
             } catch { /* storage unavailable — the session is dropped in memory anyway */ }
+            if (joinedRef.current) return;
             api.clearToken();
             if (personalDevice) {
               // e.g. 401 "Your access ended on 15 Nov. ..." — say it on the
               // lock screen instead of dropping to the owner login page.
-              const message = err && (err.status === 401 || err.status === 403) ? err.message : null;
+              // Other refusals (user gone, switched off) are sorted out by
+              // the PIN pad's staff-login answer, so show nothing yet.
+              const message = err && isAccessEndedMessage(err.message) ? err.message : null;
               dispatch({ type: 'PERSONAL_LOCK', personalDevice, lockMessage: message });
               return;
             }
@@ -212,7 +259,7 @@ export function AuthProvider({ children }) {
     restoreSession();
   }, []);
 
-  async function checkSetupStatus() {
+  async function checkSetupStatusWith(dispatch) {
     try {
       const response = await api.getSetupStatus();
       dispatch({
@@ -229,6 +276,10 @@ export function AuthProvider({ children }) {
     const response = await api.login(phone, password);
     const { user, token, locations } = response.data;
 
+    // An owner/manager signing in with phone + password takes the phone
+    // back: it is no longer a helper's personal device.
+    await clearPersonalDeviceKeys();
+
     api.setToken(token);
     await AsyncStorage.setItem(STORAGE_KEY_TOKEN, token);
     await AsyncStorage.setItem(STORAGE_KEY_USER, JSON.stringify(user));
@@ -243,7 +294,7 @@ export function AuthProvider({ children }) {
       await setDeviceLocationId(activeLocation.id);
     }
 
-    dispatch({ type: 'LOGIN', user, token, locations, activeLocation });
+    dispatch({ type: 'LOGIN', user, token, locations, activeLocation, personalDevice: null });
 
     try {
       const settingsRes = await api.getSettings();
@@ -287,25 +338,39 @@ export function AuthProvider({ children }) {
   // exactly like staff-login). Store the session the same way, and mark this
   // phone as theirs so the lock screen shows only their PIN pad from now on.
   const completeJoin = async (session) => {
+    joinedRef.current = true;
     const { user, token, locations } = session;
     api.setToken(token);
     const activeLocation = locations && locations.length > 0 ? locations[0] : null;
     const personalDevice = { id: user.id, name: user.name, employee_code: user.employee_code };
     try {
+      // Marker first: if a later write fails, a reload still shows this
+      // helper's PIN pad (their PIN works) rather than someone else's session.
+      await AsyncStorage.setItem(STORAGE_KEY_PERSONAL_DEVICE_USER, JSON.stringify(personalDevice));
+      await AsyncStorage.setItem(STORAGE_KEY_PERSONAL_DEVICE, String(user.id));
       await AsyncStorage.setItem(STORAGE_KEY_TOKEN, token);
       await AsyncStorage.setItem(STORAGE_KEY_USER, JSON.stringify(user));
       if (activeLocation) {
         await AsyncStorage.setItem(STORAGE_KEY_LOCATION, JSON.stringify(activeLocation));
         await setDeviceLocationId(activeLocation.id);
       }
-      await AsyncStorage.setItem(STORAGE_KEY_PERSONAL_DEVICE, String(user.id));
-      await AsyncStorage.setItem(STORAGE_KEY_PERSONAL_DEVICE_USER, JSON.stringify(personalDevice));
     } catch (e) {
       // Storage blocked (private mode): this visit still works, but a reload
       // will need the join link again.
       console.log('Could not save the helper session on this device:', e);
     }
     dispatch({ type: 'LOGIN', user, token, locations, activeLocation, personalDevice });
+  };
+
+  // The PIN pad's staff-login said this phone's helper is unknown or switched
+  // off: forget them and show the shop's shared lock screen with `message`.
+  const releasePersonalDevice = async (message) => {
+    api.clearToken();
+    await clearPersonalDeviceKeys();
+    try {
+      await AsyncStorage.multiRemove([STORAGE_KEY_TOKEN, STORAGE_KEY_USER, STORAGE_KEY_LOCATION]);
+    } catch { /* storage unavailable — the in-memory session is cleared below */ }
+    dispatch({ type: 'PERSONAL_RELEASE', lockMessage: message });
   };
 
   const lock = () => dispatch({ type: 'LOCK' });
@@ -384,6 +449,7 @@ export function AuthProvider({ children }) {
     login,
     staffLogin,
     completeJoin,
+    releasePersonalDevice,
     register,
     ownerSetup,
     logout,

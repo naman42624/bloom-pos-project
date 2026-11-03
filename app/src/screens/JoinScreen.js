@@ -21,7 +21,8 @@ const NEED_FOUR = 'Type 4 numbers for your PIN.';
 const digitsOnly = (v) => String(v || '').replace(/\D/g, '').slice(0, 4);
 
 export default function JoinScreen({ token, onJoined }) {
-  const { completeJoin, personalDevice } = useAuth();
+  const { completeJoin, personalDevice, user, isLoading: authLoading } = useAuth();
+  const [setUpAnyway, setSetUpAnyway] = useState(false);
   const guardSubmit = useSubmitGuard();
   // loading | form | refused | retry
   const [phase, setPhase] = useState('loading');
@@ -101,8 +102,16 @@ export default function JoinScreen({ token, onJoined }) {
     }
   };
 
+  // Someone else already uses this phone (a counter session, an owner, or a
+  // different helper). Ask before the form, so a shared or owner device is
+  // never turned into this helper's phone by accident.
+  const sameHelper = (p) => p && p.name === name;
+  const current = personalDevice || user;
+  const conflict = !!current
+    && !(personalDevice ? sameHelper(personalDevice) : (user.role === 'helper' && sameHelper(user)));
+
   let body;
-  if (phase === 'loading') {
+  if (phase === 'loading' || (phase === 'form' && authLoading)) {
     body = <ActivityIndicator size="large" color={Colors.primary} />;
   } else if (phase === 'refused') {
     body = (
@@ -123,6 +132,20 @@ export default function JoinScreen({ token, onJoined }) {
         <Text style={styles.message}>{message}</Text>
         <TouchableOpacity style={styles.primaryBtn} onPress={load} accessibilityRole="button">
           <Text style={styles.primaryBtnText}>Try again</Text>
+        </TouchableOpacity>
+      </>
+    );
+  } else if (conflict && !setUpAnyway) {
+    body = (
+      <>
+        <Text style={styles.message}>
+          This phone is signed in as {current.name}. This link is for {name}'s own phone.
+        </Text>
+        <TouchableOpacity style={styles.primaryBtn} onPress={onJoined} accessibilityRole="button">
+          <Text style={styles.primaryBtnText}>Not this phone</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.secondaryLink} onPress={() => setSetUpAnyway(true)} accessibilityRole="button">
+          <Text style={styles.secondaryLinkText}>Set up for {name} anyway</Text>
         </TouchableOpacity>
       </>
     );
@@ -215,6 +238,8 @@ const styles = StyleSheet.create({
     minHeight: 56, borderRadius: BorderRadius.md, backgroundColor: Colors.primary,
     justifyContent: 'center', alignItems: 'center', marginTop: Spacing.md, paddingHorizontal: Spacing.lg,
   },
+  secondaryLink: { minHeight: 48, justifyContent: 'center', alignItems: 'center', marginTop: Spacing.sm },
+  secondaryLinkText: { color: Colors.textSecondary, fontSize: FontSize.md, textDecorationLine: 'underline' },
   primaryBtnBusy: { opacity: 0.6 },
   primaryBtnText: { color: Colors.textOnPrimary, fontSize: FontSize.lg, fontWeight: '700' },
 });
