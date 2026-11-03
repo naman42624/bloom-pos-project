@@ -8,7 +8,7 @@ const h = require('./lib/verify-harness');
 
 const { check, api, loginOwner, openRegister, assert, getDb, TEST_LOCATION_ID } = h;
 
-const SELLER_MESSAGE = "That person can't be picked as the seller.";
+const SELLER_MESSAGE = "That person can't be picked as the seller here. Tap Sold by and pick someone else, or pick Me.";
 const createdSaleIds = [];
 const createdUserIds = [];
 let counter = 0;

@@ -1,6 +1,6 @@
 // Who can be recorded as the seller of a sale.
 const SELLER_ROLES = ['owner', 'manager', 'employee', 'counter_staff', 'florist_staff', 'helper'];
-const SELLER_INVALID_MESSAGE = "That person can't be picked as the seller.";
+const SELLER_INVALID_MESSAGE = "That person can't be picked as the seller here. Tap Sold by and pick someone else, or pick Me.";
 
 // db is the sync db object (db.prepare(sql).get(...)). Throws a 400 error when
 // the person cannot be the seller; returns nothing when fine.

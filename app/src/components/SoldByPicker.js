@@ -3,7 +3,7 @@
  * value: null (= You, the logged-in user) or a user id. Default needs zero taps.
  * Roster failure never blocks an order: the row simply stays on "You".
  */
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
@@ -13,6 +13,16 @@ export default function SoldByPicker({ locationId, value, onChange }) {
   const { user } = useAuth();
   const [staff, setStaff] = useState([]);
   const [open, setOpen] = useState(false);
+
+  // A new location starts on You straight away, before its list arrives.
+  const lastLocation = useRef(locationId);
+  useEffect(() => {
+    if (lastLocation.current !== locationId) {
+      lastLocation.current = locationId;
+      setStaff([]);
+      if (value != null) onChange(null);
+    }
+  }, [locationId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     let alive = true;
