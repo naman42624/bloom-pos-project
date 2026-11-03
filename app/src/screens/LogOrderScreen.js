@@ -4,6 +4,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import api from '../services/api';
 import VoiceNoteRecorder from '../components/VoiceNoteRecorder';
+import SoldByPicker from '../components/SoldByPicker';
 import RoutePicker from '../components/RoutePicker';
 import SavedAddressChips from '../components/SavedAddressChips';
 import DateTimePickerModal from '../components/DateTimePickerModal';
@@ -108,6 +109,7 @@ export default function LogOrderScreen({ navigation, route }) {
   const [itemVoiceModalIdx, setItemVoiceModalIdx] = useState(null);
   const [saving, setSaving] = useState(false);
   const guardSubmit = useSubmitGuard();
+  const [soldBy, setSoldBy] = useState(null);
 
   const [vendorName, setVendorName] = useState('');
 
@@ -473,8 +475,10 @@ export default function LogOrderScreen({ navigation, route }) {
         ...(skipAssignment ? { skip_assignment: true } : {}),
         ...(user?.role === 'owner' || user?.role === 'manager' ? { vendor_name: vendorName || null } : {}),
         ...(sourceOrderRequestId ? { source_order_request_id: sourceOrderRequestId } : {}),
+        ...(soldBy != null ? { sold_by: soldBy } : {}),
       };
       const res = await api.createSale(payload);
+      setSoldBy(null);
       saleId = res.data?.id;
       savedItems = res.data?.items || [];
     } catch (err) {
@@ -832,6 +836,8 @@ export default function LogOrderScreen({ navigation, route }) {
             </View>
           );
         })()}
+
+        <SoldByPicker locationId={activeLocation?.id} value={soldBy} onChange={setSoldBy} />
 
         <TouchableOpacity
           style={[styles.saveButton, !canSave && styles.saveButtonDisabled]}

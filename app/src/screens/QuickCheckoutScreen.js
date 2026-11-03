@@ -24,6 +24,7 @@ import { getShopNow } from '../utils/datetime';
 import { bumpActivity } from '../hooks/useIdleLock';
 import useSubmitGuard from '../hooks/useSubmitGuard';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import SoldByPicker from '../components/SoldByPicker';
 import QuickSalePanel from '../components/quickSale/QuickSalePanel';
 
 // Quick sale | Full order switch, remembered on this device. Missing or
@@ -184,6 +185,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
   // Submitting
   const [submitting, setSubmitting] = useState(false);
   const guardSubmit = useSubmitGuard();
+  const [soldBy, setSoldBy] = useState(null);
   const [duesCollect, setDuesCollect] = useState(EMPTY_DUES);
   // A different customer means a different dues balance, so added dues are
   // dropped. Dues carry the customer they were added for, so resuming a draft
@@ -1355,6 +1357,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
         skip_assignment: skipAssignment,
         assigned_to: !skipAssignment ? assignedTo : null,
         route_id: needsDelivery ? (routeId || null) : null,
+        ...(soldBy != null ? { sold_by: soldBy } : {}),
       };
 
       if (orderType === 'pre_order') {
@@ -1371,6 +1374,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
 
       const res = await api.createSale(saleData);
       if (res.success) {
+        setSoldBy(null);
         setSubmitErrors([]);
         if (activeDraftId) {
           try {
@@ -2603,6 +2607,8 @@ export default function QuickCheckoutScreen({ navigation, route }) {
               ))}
             </View>
           )}
+
+          <SoldByPicker locationId={selectedLocation} value={soldBy} onChange={setSoldBy} />
 
           <TouchableOpacity
             style={[styles.placeOrderBtn, submitting && { opacity: 0.6 }]}
