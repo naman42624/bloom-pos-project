@@ -42,27 +42,49 @@ async function checkCodeAndPin(db, employeeCode, pin, { roles, wrongPinMessage, 
     throw pinError(423, LOCKED_MESSAGE);
   }
 
+  // Reserve this try BEFORE comparing, in one conditional UPDATE: the row
+  // lock makes parallel requests queue, and each re-checks the count, so no
+  // more than PIN_MAX_ATTEMPTS compares can ever run per lockout window. The
+  // try that reaches the limit sets the lock. A count left over from a lock
+  // that has since ended starts again from 0.
+  const now = new Date();
+  const lockUntil = new Date(now.getTime() + PIN_LOCKOUT_MINUTES * 60000);
+  const effective = `(CASE
+      WHEN pin_locked_until IS NOT NULL AND pin_locked_until <= CAST(? AS timestamp) THEN 0
+      WHEN pin_locked_until IS NULL AND COALESCE(pin_failed_attempts, 0) >= ? THEN 0
+      ELSE COALESCE(pin_failed_attempts, 0) END)`;
+  const reserved = await db.prepare(
+    `UPDATE users
+        SET pin_failed_attempts = ${effective} + 1,
+            pin_locked_until = CASE WHEN ${effective} + 1 >= ? THEN CAST(? AS timestamp) ELSE NULL END
+      WHERE id = ?
+        AND (pin_locked_until IS NULL OR pin_locked_until <= CAST(? AS timestamp))
+        AND ${effective} < ?
+      RETURNING pin_failed_attempts`
+  ).get(
+    now, PIN_MAX_ATTEMPTS,
+    now, PIN_MAX_ATTEMPTS, PIN_MAX_ATTEMPTS, lockUntil,
+    user.id,
+    now,
+    now, PIN_MAX_ATTEMPTS, PIN_MAX_ATTEMPTS
+  );
+  if (!reserved) throw pinError(423, LOCKED_MESSAGE);
+  const attempts = Number(reserved.pin_failed_attempts);
+
   const isValidPin = await verifyPin(String(pin || ''), user.pin_hash);
 
   if (!isValidPin) {
-    // Counted in one statement so parallel wrong tries cannot overwrite each
-    // other and slip past the limit.
-    const lockUntil = new Date(Date.now() + PIN_LOCKOUT_MINUTES * 60000);
-    const row = await db.prepare(
-      `UPDATE users
-          SET pin_failed_attempts = COALESCE(pin_failed_attempts, 0) + 1,
-              pin_locked_until = CASE WHEN COALESCE(pin_failed_attempts, 0) + 1 >= ? THEN CAST(? AS timestamp) ELSE NULL END
-        WHERE id = ?
-        RETURNING pin_failed_attempts`
-    ).get(PIN_MAX_ATTEMPTS, lockUntil, user.id);
-    const attempts = Number(row && row.pin_failed_attempts) || PIN_MAX_ATTEMPTS;
     if (attempts >= PIN_MAX_ATTEMPTS) throw pinError(423, LOCKED_MESSAGE);
     throw pinError(401, wrongPinMessage(PIN_MAX_ATTEMPTS - attempts));
   }
 
+  // A right PIN clears the count and any lock only when no other try was
+  // reserved after this one. If later tries came in meanwhile, their outcome
+  // (including a lock) stands; this request still succeeds, since it was
+  // within the budget.
   await db.prepare(
-    'UPDATE users SET pin_failed_attempts = 0, pin_locked_until = NULL WHERE id = ?'
-  ).run(user.id);
+    'UPDATE users SET pin_failed_attempts = 0, pin_locked_until = NULL WHERE id = ? AND pin_failed_attempts = ?'
+  ).run(user.id, attempts);
 
   return user;
 }

@@ -119,16 +119,25 @@ function resolveTaxRateId(db, taxRateId, taxPercentage, createdBy) {
 // Instead of stock numbers they get a yes/no `available`, decided the way
 // scan and the public price page decide it: a one-off item is available only
 // while it has stock; anything else is made or sold to order, so available.
-const HELPER_HIDDEN_FIELDS = [
-  'estimated_cost', 'cost_price', 'avg_cost', 'avg_purchase_cost', 'margin', 'margin_pct',
-  'ready_qty', 'available_qty', 'total_ready_qty', 'quantity', 'stock_qty', 'stock_quantity',
-  'sale_count', 'stock', 'materials',
+const HELPER_PRODUCT_FIELDS = [
+  'id', 'name', 'sku', 'description', 'type', 'category', 'category_name', 'selling_price',
+  'tax_rate_id', 'tax_name', 'tax_percentage', 'image_url', 'label_code', 'price_mode',
+  'price_hint', 'is_one_off',
 ];
+// Builds the helper's copy of a product from an allowlist, so a column added
+// to products later is never shown to helpers by accident.
 function helperProductView(row, stockQty) {
   if (!row) return row;
-  for (const key of HELPER_HIDDEN_FIELDS) delete row[key];
-  row.available = Number(row.is_one_off) === 1 ? Number(stockQty) > 0 : true;
-  return row;
+  const out = {};
+  for (const key of HELPER_PRODUCT_FIELDS) if (key in row) out[key] = row[key];
+  if (Array.isArray(row.images)) {
+    out.images = row.images.map((img) => ({ id: img.id, image_url: img.image_url, is_primary: img.is_primary, sort_order: img.sort_order }));
+  }
+  if (Array.isArray(row.options)) {
+    out.options = row.options.map((o) => ({ id: o.id, label: o.label, price: o.price }));
+  }
+  out.available = Number(row.is_one_off) === 1 ? Number(stockQty) > 0 : true;
+  return out;
 }
 
 // Stock per product for the helper view: at the given location, or across
@@ -171,7 +180,8 @@ router.get('/', authenticate, async (req, res, next) => {
 
     if (type) { sql += ' AND p.type = ?'; params.push(type); }
     if (category) { sql += ' AND p.category = ?'; params.push(category); }
-    if (is_active !== undefined) { sql += ' AND p.is_active = ?'; params.push(Number(is_active)); }
+    // Helpers always get active products only.
+    if (is_active !== undefined && req.user.role !== 'helper') { sql += ' AND p.is_active = ?'; params.push(Number(is_active)); }
     else { sql += ' AND p.is_active = 1'; }
     if (search) { 
       const terms = search.toLowerCase().split(/\\s+/).filter(Boolean);
@@ -245,7 +255,7 @@ router.get('/', authenticate, async (req, res, next) => {
 
     if (req.user.role === 'helper') {
       const stockById = await helperStockByProduct(db, products.map((p) => p.id), locId);
-      products.forEach((p) => helperProductView(p, stockById.get(Number(p.id)) || 0));
+      return res.json({ success: true, data: products.map((p) => helperProductView(p, stockById.get(Number(p.id)) || 0)) });
     }
 
     res.json({ success: true, data: products });
@@ -266,6 +276,9 @@ router.get('/:id', authenticate, async (req, res, next) => {
     `).get(req.params.id);
 
     if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
+    if (req.user.role === 'helper' && !Number(product.is_active)) {
+      return res.status(404).json({ success: false, message: 'Product not found' });
+    }
 
     // Materials (bill of materials)
     product.materials = await db.prepare(`
@@ -303,7 +316,7 @@ router.get('/:id', authenticate, async (req, res, next) => {
     if (req.user.role === 'helper') {
       const locId = Number(req.query.location_id) || null;
       const stockById = await helperStockByProduct(db, [product.id], locId);
-      helperProductView(product, stockById.get(Number(product.id)) || 0);
+      return res.json({ success: true, data: helperProductView(product, stockById.get(Number(product.id)) || 0) });
     }
 
     res.json({ success: true, data: product });

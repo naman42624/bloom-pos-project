@@ -502,20 +502,20 @@ check('helper cannot call counter routes', async () => {
   const owner = await loginOwner();
   const helper = await helperSession(owner.token);
   const calls = [
-    ['PUT', '/sales/1/cancel', {}],
+    ['PUT', '/sales/999999999/cancel', {}],
     ['GET', '/customers', undefined],
     ['POST', '/expenses', { location_id: TEST_LOCATION_ID, amount: 1, category: 'other', description: 'x' }],
     ['GET', '/expenses', undefined],
     ['GET', '/users', undefined],
-    ['POST', '/sales/1/refund', { amount: 1 }],
+    ['POST', '/sales/999999999/refund', { amount: 1 }],
   ];
   for (const [m, p, b] of calls) {
     const r = await api(m, p, helper.token, b);
     assert(r.status === 403, `${m} ${p}: expected 403, got ${r.status}`);
   }
-  const sale = await api('POST', '/sales', helper.token, { location_id: TEST_LOCATION_ID, order_type: 'walk_in', items: [{ product_id: 1, quantity: 1, unit_price: 1 }] });
+  const sale = await api('POST', '/sales', helper.token, { location_id: TEST_LOCATION_ID, order_type: 'walk_in', items: [{ product_id: 999999999, quantity: 1, unit_price: 1 }] });
   assert(sale.status === 403 && sale.body?.message === 'Helpers can only sell from the Sell screen.', `POST /sales: ${sale.status} ${JSON.stringify(sale.body)}`);
-  const undo = await api('POST', '/quick-sale/1/undo', helper.token);
+  const undo = await api('POST', '/quick-sale/999999999/undo', helper.token);
   assert(undo.status === 403, `undo: ${undo.status}`);
 });
 
@@ -538,11 +538,11 @@ check('helpers are refused outside their own routes', async () => {
   const denied = [
     ['GET', '/sales'],
     ['GET', '/SALES'],
-    ['GET', '/sales/1'],
+    ['GET', '/sales/999999999'],
     ['GET', '/sales/today-summary'],
     ['GET', '/customers'],
     ['GET', '/customers/search?q=a'],
-    ['DELETE', '/customers/1/addresses/1'],
+    ['DELETE', '/customers/999999999/addresses/999999999'],
     ['GET', '/materials'],
     ['GET', '/stock'],
     ['GET', '/suppliers'],
@@ -620,6 +620,77 @@ check('changing a manager role clears their approval PIN', async () => {
   await api('PUT', `/users/${cs.id}/change-role`, owner.token, { role: 'florist_staff' });
   const csRow = await db.prepare('SELECT pin_hash FROM users WHERE id = ?').get(cs.id);
   assert(csRow.pin_hash, 'staff PIN should be kept on a staff role change');
+  // Promoting staff to manager clears the counter PIN too
+  const up = await api('PUT', `/users/${cs.id}/change-role`, owner.token, { role: 'manager' });
+  assert(up.status === 200, `promote: ${up.status}`);
+  const upRow = await db.prepare('SELECT pin_hash FROM users WHERE id = ?').get(cs.id);
+  assert(!upRow.pin_hash, 'counter PIN must not carry over into manager');
+});
+
+
+check('parallel PIN guesses cannot get past the lockout', async () => {
+  const owner = await loginOwner();
+  const cs = await makeStaff(owner.token, 'counter_staff');
+  await api('PUT', `/users/${cs.id}/pin`, owner.token, { pin: '4321' });
+  const MAX = 5;
+  const code = cs.employee_code;
+  // Right PIN first in the batch, then MAX + 3 wrong ones, all at once
+  const reqs = [api('POST', '/auth/staff-login', null, { employee_code: code, pin: '4321' })];
+  for (let i = 0; i < MAX + 3; i++) reqs.push(api('POST', '/auth/staff-login', null, { employee_code: code, pin: '0000' }));
+  const out = await Promise.all(reqs);
+  const compared = out.filter((r) => r.status === 200 || (r.status === 401 && /tries left/.test(r.body?.message || ''))).length;
+  assert(compared <= MAX, `${compared} requests were compared: ${JSON.stringify(out.map((r) => [r.status, r.body?.message]))}`);
+  assert(out.every((r) => [200, 401, 423].includes(r.status)), `unexpected status: ${out.map((r) => r.status)}`);
+  const after = await api('POST', '/auth/staff-login', null, { employee_code: code, pin: '4321' });
+  assert(after.status === 423 && after.body?.message === LOCKED_COPY, `after burst: ${after.status} ${JSON.stringify(after.body)}`);
+  // An ended lock starts the count again from 0
+  const db = await getDb();
+  await db.prepare("UPDATE users SET pin_locked_until = NOW() - INTERVAL '1 minute' WHERE id = ?").run(cs.id);
+  const w = await api('POST', '/auth/staff-login', null, { employee_code: code, pin: '0000' });
+  assert(w.status === 401 && w.body?.message === 'Wrong PIN — 4 tries left.', `after lock ended: ${w.status} ${JSON.stringify(w.body)}`);
+  const ok = await api('POST', '/auth/staff-login', null, { employee_code: code, pin: '4321' });
+  assert(ok.status === 200, `right PIN after lock ended: ${ok.status}`);
+  const row = await db.prepare('SELECT pin_failed_attempts, pin_locked_until FROM users WHERE id = ?').get(cs.id);
+  assert(Number(row.pin_failed_attempts) === 0 && !row.pin_locked_until, `not reset: ${JSON.stringify(row)}`);
+});
+
+check('helper sees only open or closed for the register', async () => {
+  const owner = await loginOwner();
+  const helper = await helperSession(owner.token);
+  const r = await api('GET', `/sales/register/status?location_id=${TEST_LOCATION_ID}`, helper.token);
+  assert(r.status === 200, `status: ${r.status}`);
+  assert(JSON.stringify(Object.keys(r.body).sort()) === JSON.stringify(['data', 'isOpen', 'success']), `top keys: ${Object.keys(r.body)}`);
+  assert(JSON.stringify(Object.keys(r.body.data)) === JSON.stringify(['isOpen']), `data keys: ${Object.keys(r.body.data)}`);
+  const o = await api('GET', `/sales/register/status?location_id=${TEST_LOCATION_ID}`, owner.token);
+  assert(o.body.isOpen === r.body.isOpen && r.body.data.isOpen === r.body.isOpen, `isOpen differs: owner ${o.body.isOpen} helper ${r.body.isOpen}`);
+});
+
+check('helper product view is built from an allowlist, active only', async () => {
+  const owner = await loginOwner();
+  const helper = await helperSession(owner.token);
+  const ALLOWED = new Set(['id', 'name', 'sku', 'description', 'type', 'category', 'category_name', 'selling_price',
+    'tax_rate_id', 'tax_name', 'tax_percentage', 'image_url', 'images', 'options', 'label_code', 'price_mode',
+    'price_hint', 'is_one_off', 'available']);
+  const list = await api('GET', `/products?limit=50&is_active=0&location_id=${TEST_LOCATION_ID}`, helper.token);
+  assert(list.status === 200 && list.body.data.length > 0, `list: ${list.status}`);
+  const db = await getDb();
+  for (const p of list.body.data) {
+    const extra = Object.keys(p).filter((k) => !ALLOWED.has(k));
+    assert(extra.length === 0, `product ${p.id} extra keys ${extra}`);
+    const row = await db.prepare('SELECT is_active FROM products WHERE id = ?').get(p.id);
+    assert(Number(row.is_active) === 1, `inactive product ${p.id} shown to helper`);
+  }
+  const one = await api('GET', `/products/${list.body.data[0].id}`, helper.token);
+  const extra = Object.keys(one.body.data).filter((k) => !ALLOWED.has(k));
+  assert(one.status === 200 && extra.length === 0, `detail extra keys ${extra}`);
+  for (const o of one.body.data.options || []) {
+    assert(JSON.stringify(Object.keys(o).sort()) === JSON.stringify(['id', 'label', 'price']), `option keys ${Object.keys(o)}`);
+  }
+  const off = await db.prepare('SELECT id FROM products WHERE is_active = 0 LIMIT 1').get();
+  if (off) {
+    const r = await api('GET', `/products/${off.id}`, helper.token);
+    assert(r.status === 404, `inactive detail: ${r.status}`);
+  }
 });
 
 async function cleanup() {

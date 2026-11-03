@@ -587,9 +587,11 @@ router.put(
 
       // Cannot reassign another owner's role (removed to allow multiple owners managing each other)
 
-      // An owner/manager approval PIN must not carry over into a new role
-      // (as counter staff it would become a counter login). They set a new one.
-      const clearApprovalPin = ['owner', 'manager'].includes(targetUser.role) && targetUser.role !== role ? 1 : 0;
+      // A PIN never carries across the line between owner/manager (approval
+      // PIN only) and any other role (counter login PIN), either way round.
+      // They set a new one.
+      const isApprover = (r) => r === 'owner' || r === 'manager';
+      const clearApprovalPin = targetUser.role !== role && (isApprover(targetUser.role) || isApprover(role)) ? 1 : 0;
 
       // Promoting into counter_staff/florist_staff auto-assigns an employee_code if the
       // account doesn't already have one (e.g. a live `employee` account being promoted,

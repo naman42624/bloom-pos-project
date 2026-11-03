@@ -581,6 +581,16 @@ router.get('/register/status', authenticate, async (req, res, next) => {
     const { location_id } = req.query;
     if (!location_id) return res.status(400).json({ success: false, message: 'location_id is required' });
 
+    // Helpers get open/closed only: no session, cash or COD figures. The app
+    // reads the top-level isOpen (useRegisterStatus); data carries the same.
+    if (req.user.role === 'helper') {
+      const open = await db.prepare(
+        'SELECT id FROM cash_registers WHERE location_id = ? AND closed_at IS NULL LIMIT 1'
+      ).get(location_id);
+      const isOpen = !!open;
+      return res.json({ success: true, isOpen, data: { isOpen } });
+    }
+
     const today = localToday();
 
     // First check if there is ANY unclosed register for this location (could be from yesterday)
