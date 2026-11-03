@@ -6,6 +6,8 @@
  */
 const h = require('./lib/verify-harness');
 const { isAccessExpired } = require('../utils/helper-access');
+const { redactSecrets } = require('../utils/redact');
+const fs = require('fs');
 
 const { check, api, loginOwner, assert, getDb, TEST_LOCATION_ID } = h;
 
@@ -156,7 +158,29 @@ async function makeJoinLink(ownerToken, userId) {
   assert(r.status === 200 && r.body?.data?.url, `join-link failed: ${r.status} ${JSON.stringify(r.body)}`);
   return r.body.data;
 }
-const tokenOf = (url) => url.split('/join/')[1];
+const issuedJoinTokens = [];
+const tokenOf = (url) => { const t = url.split('/join/')[1]; issuedJoinTokens.push(t); return t; };
+const SECRET_KEYS = ['password', 'pin_hash', 'pin_failed_attempts', 'pin_locked_until'];
+const leakedKeys = (u) => SECRET_KEYS.filter((k) => u && k in u);
+
+check('join tokens are redacted from logged paths', async () => {
+  const t = 'Abc_-123'.repeat(5) + 'xyz';
+  assert(redactSecrets(`/api/auth/join/${t}`) === '/api/auth/join/[redacted]', redactSecrets(`/api/auth/join/${t}`));
+  assert(redactSecrets(`/join/${t}?x=1`) === '/join/[redacted]?x=1', 'query kept, token gone');
+  assert(redactSecrets('/api/users/5/join-link') === '/api/users/5/join-link', 'join-link path untouched');
+  assert(redactSecrets('/api/sales/12') === '/api/sales/12', 'other paths untouched');
+});
+
+check('auth responses never carry password or PIN fields', async () => {
+  const phone = process.env.VERIFY_OWNER_PHONE;
+  const r = await api('POST', '/auth/login', null, { phone, password: process.env.VERIFY_OWNER_PASSWORD });
+  assert(r.status === 200, `login: ${r.status}`);
+  assert(leakedKeys(r.body.data.user).length === 0, `login leaks ${leakedKeys(r.body.data.user)}`);
+  const me = await api('GET', '/auth/me', r.body.data.token);
+  assert(me.status === 200 && leakedKeys(me.body.data.user).length === 0, `me leaks ${leakedKeys(me.body?.data?.user)}`);
+  const list = await api('GET', '/users?limit=100', r.body.data.token);
+  assert(list.status === 200 && list.body.data.users.every((u) => leakedKeys(u).length === 0), 'GET /users leaks secrets');
+});
 
 check('join link for a non-helper refused', async () => {
   const owner = await loginOwner();
@@ -202,7 +226,7 @@ check('join sets pin and returns a session', async () => {
   assert(p.status === 200 && p.body?.data?.token, `POST: ${p.status} ${JSON.stringify(p.body)}`);
   const u = p.body.data.user;
   assert(u.id === helper.id && u.role === 'helper', `user: ${JSON.stringify(u)}`);
-  assert(!('pin_hash' in u) && !('password' in u), 'secrets leaked in user');
+  assert(leakedKeys(u).length === 0, `secrets leaked in join user: ${leakedKeys(u)}`);
   assert(Array.isArray(p.body.data.locations) && p.body.data.locations.some((l) => l.id === TEST_LOCATION_ID), 'locations missing');
   const me = await api('GET', '/auth/me', p.body.data.token);
   assert(me.status === 200 && me.body?.data?.user?.id === helper.id, `session: ${me.status}`);
@@ -262,6 +286,7 @@ check('helper can staff-login with code and pin', async () => {
   assert(j.status === 200, `join: ${j.status} ${JSON.stringify(j.body)}`);
   const s = await api('POST', '/auth/staff-login', null, { employee_code: helper.employee_code, pin: '9035' });
   assert(s.status === 200 && s.body?.data?.user?.id === helper.id && s.body?.data?.token, `staff-login: ${s.status} ${JSON.stringify(s.body)}`);
+  assert(leakedKeys(s.body.data.user).length === 0, `staff-login leaks ${leakedKeys(s.body.data.user)}`);
   // Once access has ended, staff-login refuses with the plain copy
   const yesterday = shopDate(-1);
   const db = await getDb();
@@ -288,6 +313,17 @@ check('expired helper cannot join', async () => {
   assert(row && row.used_at === null, 'token must not be consumed for an expired helper');
   const u = await db.prepare('SELECT pin_hash FROM users WHERE id = ?').get(helperId);
   assert(!u.pin_hash, 'pin must not be set for an expired helper');
+});
+
+// Needs the server log path (VERIFY_API_LOG, e.g. /tmp/api.log); skipped without it.
+check('join tokens never reach the server log', async () => {
+  const logPath = process.env.VERIFY_API_LOG;
+  if (!logPath || !fs.existsSync(logPath)) { console.log('   (skipped: set VERIFY_API_LOG to the server log path)'); return; }
+  assert(issuedJoinTokens.length > 0, 'no join tokens were issued in this run');
+  const log = fs.readFileSync(logPath, 'utf8');
+  const leaked = issuedJoinTokens.filter((t) => log.includes(t));
+  assert(leaked.length === 0, `${leaked.length} join token(s) found in ${logPath}`);
+  assert(log.includes('/api/auth/join/[redacted]'), 'expected redacted join lines in the log');
 });
 
 async function cleanup() {

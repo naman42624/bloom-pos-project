@@ -6,6 +6,7 @@
 
 const path = require('path');
 const { runWithRequest } = require('./request-metrics-context');
+const { redactSecrets } = require('../utils/redact');
 
 // Store metrics for analysis
 const metrics = {
@@ -47,7 +48,7 @@ function performanceMonitor(req, res, next) {
     const metric = {
       timestamp: new Date().toISOString(),
       method: req.method,
-      path: req.path,
+      path: redactSecrets(req.path),
       status: res.statusCode,
       totalMs: Math.round(totalMs * 100) / 100,
       cpuMs: Math.round(cpuMs * 100) / 100,

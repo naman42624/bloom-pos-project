@@ -6,6 +6,7 @@ const { getDb } = require('../config/database');
 const { getDb: getAsyncDb } = require('../config/database-async');
 const { authenticate } = require('../middleware/auth');
 const { refuseIfExpired } = require('../utils/helper-access');
+const { publicUser } = require('../utils/public-user');
 
 const router = express.Router();
 
@@ -79,7 +80,7 @@ router.post(
           return res.status(200).json({
             success: true,
             message: 'Account claimed successfully',
-            data: { user, token },
+            data: { user: publicUser(user), token },
           });
         }
 
@@ -120,7 +121,7 @@ router.post(
       res.status(201).json({
         success: true,
         message: 'Account created successfully',
-        data: { user, token },
+        data: { user: publicUser(user), token },
       });
     } catch (error) {
       next(error);
@@ -186,7 +187,6 @@ router.post(
 
       const token = generateToken(user);
 
-      const { password: _, ...userWithoutPassword } = user;
 
       // Get assigned locations
       const locations = await db
@@ -199,7 +199,7 @@ router.post(
         success: true,
         message: 'Login successful',
         data: {
-          user: userWithoutPassword,
+          user: publicUser(user),
           token,
           locations,
         },
@@ -271,7 +271,6 @@ router.post(
       }
 
       const token = generateToken(user);
-      const { password: _pw, pin_hash: _pin, ...userWithoutSecrets } = user;
 
       const locations = await db.prepare(
         'SELECT l.id, l.name, l.type, l.latitude, l.longitude, l.geofence_radius, ul.is_primary FROM locations l JOIN user_locations ul ON ul.location_id = l.id WHERE ul.user_id = ? AND l.is_active = 1'
@@ -280,7 +279,7 @@ router.post(
       res.json({
         success: true,
         message: 'Login successful',
-        data: { user: userWithoutSecrets, token, locations },
+        data: { user: publicUser(user), token, locations },
       });
     } catch (error) {
       next(error);
@@ -381,7 +380,6 @@ router.post('/join', joinRateLimit, async (req, res, next) => {
 
     const user = await db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
     const sessionToken = generateToken(user);
-    const { password: _pw, pin_hash: _pin, ...userWithoutSecrets } = user;
     const locations = await db.prepare(
       'SELECT l.id, l.name, l.type, l.latitude, l.longitude, l.geofence_radius, ul.is_primary FROM locations l JOIN user_locations ul ON ul.location_id = l.id WHERE ul.user_id = ? AND l.is_active = 1'
     ).all(user.id);
@@ -389,7 +387,7 @@ router.post('/join', joinRateLimit, async (req, res, next) => {
     res.json({
       success: true,
       message: 'Login successful',
-      data: { user: userWithoutSecrets, token: sessionToken, locations },
+      data: { user: publicUser(user), token: sessionToken, locations },
     });
   } catch (error) {
     next(error);
@@ -445,7 +443,7 @@ router.get('/me', authenticate, async (req, res, next) => {
       )
       .all(user.id);
 
-    res.json({ success: true, data: { user, locations } });
+    res.json({ success: true, data: { user: publicUser(user), locations } });
   } catch (error) {
     next(error);
   }
@@ -527,7 +525,7 @@ router.put(
       res.json({
         success: true,
         message: 'Profile updated successfully',
-        data: { user },
+        data: { user: publicUser(user) },
       });
     } catch (error) {
       next(error);
@@ -668,7 +666,7 @@ router.post(
       res.status(201).json({
         success: true,
         message: 'Owner account created. Welcome to Flower point!',
-        data: { user, token },
+        data: { user: publicUser(user), token },
       });
     } catch (error) {
       next(error);

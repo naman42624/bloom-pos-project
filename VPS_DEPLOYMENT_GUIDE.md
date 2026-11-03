@@ -487,6 +487,24 @@ This guide's whole scope (see §1/title) is the **backend API only** — a Node/
    - The public rate limiters need the real client IP: keep the `X-Forwarded-For` header lines in the `/api/` block (the server sets `trust proxy` to 1).
    - **Deploy order: server first, then the app.** A newer app against an older server has no `slip_url` and no `/api/slip` routes.
 
+2b. **Helper join links: keep them out of the access log (added 2026-11-03).** A helper's join link `<PUBLIC_APP_URL>/join/<token>` carries a one-time secret in its path, valid for 24 hours. Anyone who can read an Nginx access log line could use an unspent link to set the helper's PIN. The app itself redacts these paths in its own logs (`server/utils/redact.js`), but Nginx logs the raw URL. Turn access logging off for both the page and its API call:
+   ```nginx
+   location /join/ {
+       access_log off;
+       try_files $uri /index.html;   # SPA fallback: the join screen itself is Task 6 of the helpers plan
+   }
+   location /api/auth/join/ {
+       access_log off;
+       proxy_pass http://127.0.0.1:3001;
+       proxy_http_version 1.1;
+       proxy_set_header Host $host;
+       proxy_set_header X-Real-IP $remote_addr;
+       proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+       proxy_set_header X-Forwarded-Proto $scheme;
+   }
+   ```
+   The `/join/` SPA fallback becomes useful once the app's join screen ships (helpers plan Task 6). `access_log off` is needed from the moment the server can issue links. Keep the `X-Forwarded-For` line, because the join limiter (20 a minute per IP) needs the real client IP.
+
 3. **Re-verify after wiring this up**, the same way the original tracking-page plan's own testing section (`docs/superpowers/specs/2026-09-11-customer-tracking-page-design.md` §7) verified it locally: open a real `tracking_url` in a private/incognito browser tab against the *production* domain, confirm it renders `TrackingScreen.js` and never touches the login screen, confirm an invalid token shows the friendly not-found state, confirm the Share Tracking Link button's WhatsApp message opens a link that actually resolves to the tracking page rather than a 404.
 
 **Until this is done, treat the tracking-link feature as backend-complete but not customer-reachable in production** — the Share Tracking Link buttons on Orders Inbox/Deliveries and the `tracking_link` WhatsApp message will all produce links that currently 404 for a real customer.

@@ -6,6 +6,7 @@ const { getDb } = require('../config/database');
 const { getDb: getAsyncDb, withTransaction } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
 const { hashPin } = require('../utils/pin');
+const { publicUser } = require('../utils/public-user');
 const QRCode = require('qrcode');
 const { createJoinToken, joinUrl } = require('../utils/join-token');
 const { publicUrlMissingInProduction } = require('../utils/public-url');
@@ -99,7 +100,7 @@ router.get(
       res.json({
         success: true,
         data: {
-          users,
+          users: users.map(publicUser),
           pagination: {
             page,
             limit,
@@ -144,7 +145,7 @@ router.get(
         )
         .all(user.id);
 
-      res.json({ success: true, data: { user, locations } });
+      res.json({ success: true, data: { user: publicUser(user), locations } });
     } catch (error) {
       next(error);
     }
@@ -296,7 +297,7 @@ router.post(
       res.status(201).json({
         success: true,
         message: `${role.replace('_', ' ')} account created successfully`,
-        data: { user, locations },
+        data: { user: publicUser(user), locations },
       });
     } catch (error) {
       next(error);
@@ -419,7 +420,7 @@ router.put(
       res.json({
         success: true,
         message: 'User updated successfully',
-        data: { user, locations },
+        data: { user: publicUser(user), locations },
       });
     } catch (error) {
       next(error);
@@ -576,7 +577,7 @@ router.put(
       res.json({
         success: true,
         message: `${targetUser.name}'s role changed to ${role.replace('_', ' ')}`,
-        data: { user: updatedUser },
+        data: { user: publicUser(updatedUser) },
       });
     } catch (error) {
       next(error);

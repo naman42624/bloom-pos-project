@@ -5,6 +5,7 @@ const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
+const { redactSecrets } = require('./utils/redact');
 const path = require('path');
 
 const authRoutes = require('./routes/auth');
@@ -59,7 +60,9 @@ const PORT = process.env.PORT || 3001;
 // ─── Middleware ───────────────────────────────────────────────
 app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }));
 app.use(cors({ origin: '*' })); // Allow all origins in dev; restrict in production
-app.use(morgan('dev'));
+// Same fields as morgan('dev'), but one-time join tokens are redacted from the URL.
+morgan.token('safe-url', (req) => redactSecrets(req.originalUrl || req.url));
+app.use(morgan(':method :safe-url :status :response-time ms - :res[content-length]'));
 app.use(performanceMonitor); // ⚡ Performance tracking middleware
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
