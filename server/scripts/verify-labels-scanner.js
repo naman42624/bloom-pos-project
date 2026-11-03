@@ -4,7 +4,7 @@
  * Local dev only.
  */
 const h = require('./lib/verify-harness');
-const { ALPHABET, ensureLabelCode, labelUrl } = require('../utils/label-code');
+const { ALPHABET, ensureLabelCode, generateLabelCode, labelUrl } = require('../utils/label-code');
 const { check, api, loginOwner, assert, getDb } = h;
 
 const createdProductIds = [];
@@ -43,6 +43,31 @@ check('concurrent ensureLabelCode yields one code', async () => {
   const db = await getDb();
   const row = await db.prepare('SELECT label_code FROM products WHERE id = ?').get(id);
   assert(row.label_code === codes[0], 'stored code differs');
+});
+
+check('code clash retries', async () => {
+  const db = await getDb();
+  const a = await makeProduct('LblClashA');
+  const b = await makeProduct('LblClashB');
+  const codeA = await ensureLabelCode(db, a);
+  let n = 0;
+  const gen = () => (n++ === 0 ? codeA : generateLabelCode());
+  const codeB = await ensureLabelCode(db, b, gen);
+  assert(n === 2, `generator called ${n} times`);
+  assert(codeB !== codeA && codeB.length === 8, `codeB ${codeB}`);
+  const rowA = await db.prepare('SELECT label_code FROM products WHERE id = ?').get(a);
+  assert(rowA.label_code === codeA, 'A changed');
+});
+
+check('create route stores open price mode and hint', async () => {
+  const owner = await loginOwner();
+  const name = `LblCreate ${Date.now()}`;
+  const { status, body } = await api('POST', '/products', owner.token, { name, selling_price: 0, price_mode: 'open', price_hint: 'Ask staff' });
+  assert(status === 201, `status ${status}: ${JSON.stringify(body)}`);
+  createdProductIds.push(body.data.id);
+  const db = await getDb();
+  const row = await db.prepare('SELECT price_mode, price_hint FROM products WHERE id = ?').get(body.data.id);
+  assert(row.price_mode === 'open' && row.price_hint === 'Ask staff', JSON.stringify(row));
 });
 
 check('labels endpoint returns url and qr', async () => {
