@@ -94,6 +94,8 @@ import TeamAttendanceScreen from '../screens/TeamAttendanceScreen';
 
 // Phase 9 — Reports
 import ReportsHubScreen from '../screens/ReportsHubScreen';
+import StaffSalesScreen from '../screens/StaffSalesScreen';
+import StaffSalesPersonScreen from '../screens/StaffSalesPersonScreen';
 import SalesReportScreen from '../screens/SalesReportScreen';
 import InventoryReportScreen from '../screens/InventoryReportScreen';
 import CustomerInsightsScreen from '../screens/CustomerInsightsScreen';
@@ -513,6 +515,8 @@ function MoreStack() {
       <Stack.Screen name="InventoryReport" component={InventoryReportScreen} options={{ title: 'Inventory Report' }} />
       <Stack.Screen name="CustomerInsights" component={CustomerInsightsScreen} options={{ title: 'Customer Insights' }} />
       <Stack.Screen name="EmployeePerformance" component={EmployeePerformanceScreen} options={{ title: 'Employee Performance' }} />
+      <Stack.Screen name="StaffSales" component={StaffSalesScreen} options={{ title: 'Staff sales' }} />
+      <Stack.Screen name="StaffSalesPerson" component={StaffSalesPersonScreen} options={({ route }) => ({ title: route.params?.name || 'Sales' })} />
       {/* Profile */}
       <Stack.Screen name="Profile" component={ProfileScreen} options={{ title: 'Profile' }} />
     </Stack.Navigator>
