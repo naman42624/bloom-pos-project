@@ -174,6 +174,12 @@ check('orders and amount per seller', async () => {
   assert(b.topup_count === 1 && Math.abs(b.topup_total - 60) < 0.01, `B top-up ${b.topup_count}/${b.topup_total}`);
   assert(a.discount_count === 1 && Math.abs(a.discount_total - 10) < 0.01, `A discount ${a.discount_count}/${a.discount_total}`);
   assert(a.override_count === 1 && b.override_count === 0, `override ${a.override_count}/${b.override_count}`);
+  // Cash bag figures belong to helper rows only (verify-helper-bags.js checks their values)
+  for (const row of r.body.data.rows.filter((x) => x.role !== 'helper')) {
+    for (const k of ['floats', 'cash_collected', 'handed_over', 'short_over', 'reveals']) {
+      assert(row[k] == null, `non-helper ${row.user_id} has ${k}=${row[k]}`);
+    }
+  }
   const idx = (id) => r.body.data.rows.findIndex((x) => x.user_id === id);
   assert(idx(f.A) < idx(f.B), 'rows not sorted by net desc');
 });

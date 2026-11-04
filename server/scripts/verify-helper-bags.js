@@ -1072,6 +1072,80 @@ check('float only in bag mode', async () => {
   }
 });
 
+// Task 5: the owner's Staff sales report carries the helper bag figures.
+// Same scenario as 'close counts floats and handovers', built through the
+// real float and handover routes, plus two reveals and one handover preview
+// (a preview is not a reveal).
+function shopToday() { return shopDate(0); }
+
+check('staff sales report includes bag columns', async () => {
+  const owner = await loginOwner();
+  const helper = await helperSession(owner.token);
+  try {
+    await setCashMode('bag');
+    await openOwnRegister(owner.token, 1000);
+    assert((await giveFloat(owner.token, helper.id, 300)).status === 201, 'float');
+    assert((await helperSale(helper.token, [{ method: 'cash', amount: 400 }])).status === 201, 'sale 1');
+    assert((await helperSale(helper.token, [{ method: 'cash', amount: 200 }])).status === 201, 'sale 2');
+    const upi = await helperSale(helper.token, [{ method: 'upi', amount: 150 }]);
+    assert(upi.status === 201, `upi sale: ${upi.status}`);
+    for (let i = 0; i < 2; i += 1) {
+      const r = await api('POST', `/helper-cash/bags/${helper.id}/reveal`, owner.token, { location_id: TEST_LOCATION_ID });
+      assert(r.status === 200, `reveal ${i}: ${r.status}`);
+    }
+    const pv = await api('POST', '/helper-cash/handover', owner.token, { staff_id: helper.id, location_id: TEST_LOCATION_ID, counted_amount: 250, preview: true });
+    assert(pv.status === 200, `preview: ${pv.status}`);
+    assert((await handover(owner.token, helper.id, 250, false)).status === 200, 'partial');
+    const f = await handover(owner.token, helper.id, 640, true);
+    assert(f.status === 200 && near(f.body.data.difference, -10), `final: ${JSON.stringify(f.body)}`);
+
+    const today = shopToday();
+    const rep = await api('GET', `/reports/staff-sales?from=${today}&to=${today}&location_id=${TEST_LOCATION_ID}`, owner.token);
+    assert(rep.status === 200, `report: ${rep.status} ${JSON.stringify(rep.body)}`);
+    const row = rep.body.data.rows.find((r) => r.user_id === helper.id);
+    assert(row && row.role === 'helper', `helper row: ${JSON.stringify(row)}`);
+    assert(row.orders === 3, `orders ${row.orders}`);
+    assert(near(row.floats, 300), `floats ${row.floats}`);
+    assert(near(row.cash_collected, 600), `cash_collected ${row.cash_collected} (UPI must not count)`);
+    assert(near(row.handed_over, 890), `handed_over ${row.handed_over}`);
+    assert(near(row.short_over, -10), `short_over ${row.short_over}`);
+    assert(row.reveals === 2, `reveals ${row.reveals} (previews and handovers are not reveals)`);
+    for (const r of rep.body.data.rows) {
+      if (r.role === 'helper') continue;
+      for (const k of ['floats', 'cash_collected', 'handed_over', 'short_over', 'reveals']) {
+        assert(r[k] == null, `non-helper ${r.user_id} (${r.role}) has ${k}=${r[k]}`);
+      }
+    }
+
+    // All locations: the same figures
+    const all = await api('GET', `/reports/staff-sales?from=${today}&to=${today}`, owner.token);
+    const allRow = all.body.data.rows.find((r) => r.user_id === helper.id);
+    assert(allRow && near(allRow.floats, 300) && near(allRow.handed_over, 890) && allRow.reveals === 2, `all locations: ${JSON.stringify(allRow)}`);
+
+    // Another location and another day: none of it
+    const db = await getDb();
+    const other = await db.prepare('SELECT id FROM locations WHERE id <> ? ORDER BY id LIMIT 1').get(TEST_LOCATION_ID);
+    if (other) {
+      const o = await api('GET', `/reports/staff-sales?from=${today}&to=${today}&location_id=${other.id}`, owner.token);
+      const oRow = o.body.data.rows.find((r) => r.user_id === helper.id);
+      assert(!oRow || (Number(oRow.floats || 0) === 0 && Number(oRow.cash_collected || 0) === 0 && Number(oRow.handed_over || 0) === 0 && Number(oRow.reveals || 0) === 0), `other location: ${JSON.stringify(oRow)}`);
+    }
+    const y = shopDate(-1);
+    const yRep = await api('GET', `/reports/staff-sales?from=${y}&to=${y}`, owner.token);
+    assert(!yRep.body.data.rows.some((r) => r.user_id === helper.id), 'helper listed yesterday');
+
+    // An undone sale's held cash is not cash collected
+    const s3 = await helperSale(helper.token, [{ method: 'cash', amount: 75 }]);
+    assert(s3.status === 201, `sale 3: ${s3.status}`);
+    const undo = await api('POST', `/quick-sale/${s3.body.data.id}/undo`, helper.token, {});
+    assert(undo.status === 200, `undo: ${undo.status} ${JSON.stringify(undo.body)}`);
+    const after = (await api('GET', `/reports/staff-sales?from=${today}&to=${today}`, owner.token)).body.data.rows.find((r) => r.user_id === helper.id);
+    assert(near(after.cash_collected, 600), `cash_collected after undo ${after.cash_collected}`);
+  } finally {
+    await restoreCashMode();
+  }
+});
+
 // Settles every bag this script left non-zero (by SQL, no register), so the
 // mode switch can be tried with all bags empty. Refuses when anyone else
 // holds cash: those are not this script's to settle.

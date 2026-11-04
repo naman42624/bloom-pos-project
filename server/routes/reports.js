@@ -582,6 +582,38 @@ router.get('/staff-sales', authenticate, authorize('owner'), async (req, res, ne
       GROUP BY s.created_by
     `).all(from, to, ...locParams);
 
+    // Helper cash bag figures (spec 4.2, 11): only ever shown on helper rows.
+    // Cash collected matches the bag util: held cash payments on sales that
+    // were not undone. Reveals count only 'helper_bag_reveal' rows (handover
+    // previews and handovers are not reveals).
+    const mvLocSql = locationId ? ' AND m.location_id = ?' : '';
+    const movements = await db.prepare(`
+      SELECT m.staff_id AS user_id,
+        COALESCE(SUM(m.expected_amount) FILTER (WHERE m.type = 'float_out'), 0) AS floats,
+        COALESCE(SUM(m.counted_amount) FILTER (WHERE m.type = 'handover_in'), 0) AS handed_over,
+        COALESCE(SUM(m.difference) FILTER (WHERE m.type = 'handover_in'), 0) AS short_over
+      FROM staff_cash_movements m
+      WHERE ${inPeriod('m.created_at')}${mvLocSql}
+      GROUP BY m.staff_id
+    `).all(from, to, ...locParams);
+
+    const held = await db.prepare(`
+      SELECT p.held_by AS user_id, COALESCE(SUM(p.amount), 0) AS cash_collected
+      FROM payments p JOIN sales s ON s.id = p.sale_id
+      WHERE p.held_by IS NOT NULL AND p.method = 'cash' AND s.undone_at IS NULL
+        AND ${inPeriod('s.created_at')}${locSql}
+      GROUP BY p.held_by
+    `).all(from, to, ...locParams);
+
+    const revLocSql = locationId ? " AND a.previous_state->>'location_id' = ?" : '';
+    const reveals = await db.prepare(`
+      SELECT a.entity_id AS user_id, COUNT(*) AS reveals
+      FROM audit_logs a
+      WHERE a.action = 'helper_bag_reveal' AND a.entity_type = 'user'
+        AND ${inPeriod('a.created_at')}${revLocSql}
+      GROUP BY a.entity_id
+    `).all(from, to, ...(locationId ? [String(locationId)] : []));
+
     const byUser = new Map();
     const blank = (id) => ({
       user_id: id, orders: 0, amount: 0, refunds: 0, net: 0, discount_count: 0, discount_total: 0,
@@ -597,16 +629,33 @@ router.get('/staff-sales', authenticate, authorize('owner'), async (req, res, ne
     };
     [sold, refunded, undone, topups].forEach(merge);
 
-    const ids = [...byUser.keys()];
+    const bagByUser = new Map();
+    const bagBlank = () => ({ floats: 0, cash_collected: 0, handed_over: 0, short_over: 0, reveals: 0 });
+    for (const list of [movements, held, reveals]) {
+      for (const r of list) {
+        if (r.user_id == null) continue;
+        const b = bagByUser.get(r.user_id) || bagBlank();
+        for (const k of Object.keys(r)) if (k !== 'user_id') b[k] = Number(r[k]);
+        bagByUser.set(r.user_id, b);
+      }
+    }
+
+    const ids = [...new Set([...byUser.keys(), ...bagByUser.keys()])];
     const people = ids.length
       ? await db.prepare(`SELECT id, name, role, is_active FROM users WHERE id IN (${ids.map(() => '?').join(',')})`).all(...ids)
       : [];
     const personById = new Map(people.map((u) => [u.id, u]));
 
+    // A helper with bag activity but no sales in the period still gets a row
+    for (const id of bagByUser.keys()) {
+      if (!byUser.has(id) && (personById.get(id) || {}).role === 'helper') byUser.set(id, blank(id));
+    }
+
     const rows = [...byUser.values()].map((r) => {
       const u = personById.get(r.user_id) || {};
       const net = Math.round((r.amount - r.refunds) * 100) / 100;
-      return { ...r, name: u.name || `User #${r.user_id}`, role: u.role || null, is_active: u.is_active, net };
+      const bag = u.role === 'helper' ? (bagByUser.get(r.user_id) || bagBlank()) : {};
+      return { ...r, ...bag, name: u.name || `User #${r.user_id}`, role: u.role || null, is_active: u.is_active, net };
     }).sort((a, b) => b.net - a.net);
 
     res.json({ success: true, data: { from, to, rows } });
