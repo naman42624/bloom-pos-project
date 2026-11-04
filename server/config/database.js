@@ -633,6 +633,31 @@ function ensureCoreTables() {
   runPsql('CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_created_by_client_ref ON sales(created_by, client_ref) WHERE client_ref IS NOT NULL');
   runPsql(`INSERT INTO settings (key, value, description) SELECT 'discount_helper_threshold', COALESCE((SELECT value FROM settings WHERE key = 'discount_manager_threshold'), '20'), 'Largest discount percent a helper can give without a PIN override' WHERE NOT EXISTS (SELECT 1 FROM settings WHERE key = 'discount_helper_threshold')`);
 
+  // Helper cash bags (additive). held_by marks a helper cash payment kept in
+  // the helper bag instead of the register; staff_cash_movements records
+  // floats given out of the register and cash handed back into it.
+  ensureColumn('payments', 'held_by', 'INTEGER REFERENCES users(id) ON DELETE SET NULL');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_payments_held_by ON payments(held_by) WHERE held_by IS NOT NULL');
+  runPsql(`
+    CREATE TABLE IF NOT EXISTS staff_cash_movements (
+      id SERIAL PRIMARY KEY,
+      location_id INT NOT NULL REFERENCES locations(id),
+      staff_id INT NOT NULL REFERENCES users(id),
+      type VARCHAR(20) NOT NULL CHECK (type IN ('float_out','handover_in')),
+      expected_amount DECIMAL(10,2) NOT NULL DEFAULT 0,
+      counted_amount DECIMAL(10,2) NOT NULL DEFAULT 0,
+      settled_amount DECIMAL(10,2) NOT NULL DEFAULT 0,
+      difference DECIMAL(10,2) NOT NULL DEFAULT 0,
+      is_final INTEGER NOT NULL DEFAULT 0,
+      register_id INT REFERENCES cash_registers(id) ON DELETE SET NULL,
+      recorded_by INT REFERENCES users(id) ON DELETE SET NULL,
+      note TEXT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  runPsql('CREATE INDEX IF NOT EXISTS idx_staff_cash_movements_staff_loc_created ON staff_cash_movements(staff_id, location_id, created_at)');
+  runPsql(`INSERT INTO settings (key, value, description) SELECT 'helper_cash_mode', 'register', 'Where helper cash goes: register (straight into the drawer) or bag (each helper holds it until handover)' WHERE NOT EXISTS (SELECT 1 FROM settings WHERE key = 'helper_cash_mode')`);
+
   // Ensure partner_id column exists on delivery_settlements
   if (!hasColumn('delivery_settlements', 'partner_id')) {
     runPsql('ALTER TABLE delivery_settlements ADD COLUMN partner_id INTEGER REFERENCES users(id) ON DELETE SET NULL');

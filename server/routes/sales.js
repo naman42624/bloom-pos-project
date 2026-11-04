@@ -1734,9 +1734,14 @@ router.post(
       // silently dropped (not rejected) from any other role's request body.
       const vendorNameToStore = ['owner', 'manager'].includes(req.user.role) ? (vendor_name || null) : null;
 
+      // Bag mode (helper sales only): the helper keeps the cash, so it is
+      // stored with payments.held_by and never written to cash_registers.
+      const heldBy = req.helperSale && req.helperSale.cashMode === 'bag' ? req.user.id : null;
+
       // Hard register-open check — only when this sale actually writes cash.
-      // Card/UPI-only sales (or sales with no payment yet) are unaffected.
-      if (payments && payments.some((p) => p.method === 'cash') && !hasOpenRegister(db, location_id)) {
+      // Card/UPI-only sales (or sales with no payment yet) are unaffected,
+      // and so is held helper cash, which never reaches the register.
+      if (!heldBy && payments && payments.some((p) => p.method === 'cash') && !hasOpenRegister(db, location_id)) {
         return res.status(400).json({ success: false, message: REGISTER_CLOSED_MESSAGE });
       }
 
@@ -2153,17 +2158,21 @@ router.post(
         // Insert payments
         if (payments && payments.length > 0) {
           const insertPayment = db.prepare(
-            'INSERT INTO payments (sale_id, method, amount, reference_number, received_by, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+            'INSERT INTO payments (sale_id, method, amount, reference_number, received_by, created_at, held_by) VALUES (?, ?, ?, ?, ?, ?, ?)'
           );
           for (const pmt of payments) {
-            insertPayment.run(saleId, pmt.method, pmt.amount, pmt.reference_number || null, req.user.id, nowLocal());
+            const paymentHeldBy = heldBy && pmt.method === 'cash' ? heldBy : null;
+            insertPayment.run(saleId, pmt.method, pmt.amount, pmt.reference_number || null, req.user.id, nowLocal(), paymentHeldBy);
           }
 
           // Update cash register for today
           const register = db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1').get(location_id);
           if (register) {
             for (const pmt of payments) {
-              if (pmt.method === 'cash') {
+              if (pmt.method === 'cash' && heldBy) {
+                // Held in the helper bag: the register does not get this cash
+                continue;
+              } else if (pmt.method === 'cash') {
                 db.prepare('UPDATE cash_registers SET total_cash_sales = total_cash_sales + ?, expected_cash = expected_cash + ? WHERE id = ?').run(pmt.amount, pmt.amount, register.id);
               } else if (pmt.method === 'card') {
                 db.prepare('UPDATE cash_registers SET total_card_sales = total_card_sales + ? WHERE id = ?').run(pmt.amount, register.id);
