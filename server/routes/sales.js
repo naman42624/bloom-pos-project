@@ -15,6 +15,7 @@ const { slipUrl } = require('../utils/slip-token');
 const { reverseSaleEffects } = require('../utils/sale-reversal');
 const { assertValidSeller } = require('../utils/seller');
 const { helperSaleGate, answerClientRefConflict } = require('../utils/helper-sale');
+const { listBags } = require('../utils/helper-bags');
 const QRCode = require('qrcode');
 const { getChecklistForSale, setCheck, loadSaleForChecks } = require('../utils/load-checks');
 
@@ -730,6 +731,123 @@ router.post(
   }
 );
 
+const HELD_CASH_EDIT_MESSAGE = "This sale's cash is with a helper. Undo it within 2 minutes, or refund it from the counter.";
+
+// Register close recompute, shared by the close and its preview so the two
+// can never disagree. Sync db layer (same as the route).
+function computeRegisterClose(db, register, location_id) {
+  // Recalculate totals from actual payment records during this session
+  const sessionStart = register.opening_time || register.opened_at;
+  // 1. Get totals from direct sale payments (excluding auto-allocated credit payments).
+  // Cash held by a helper (payments.held_by, bag mode) never entered the
+  // drawer, so it is left out here; it arrives through handovers below.
+  const directPaymentTotals = db.prepare(`
+    SELECT
+      COALESCE(SUM(CASE WHEN p.method = 'cash' AND p.held_by IS NULL THEN p.amount ELSE 0 END), 0) as cash_total,
+      COALESCE(SUM(CASE WHEN p.method = 'card' THEN p.amount ELSE 0 END), 0) as card_total,
+      COALESCE(SUM(CASE WHEN p.method = 'upi' THEN p.amount ELSE 0 END), 0) as upi_total
+    FROM payments p
+    JOIN sales s ON p.sale_id = s.id
+    WHERE s.location_id = ? AND p.created_at >= ? AND s.status != 'cancelled'
+      AND (p.reference_number IS NULL OR (p.reference_number NOT LIKE 'Credit-%' AND p.reference_number != 'COD' AND p.reference_number NOT LIKE 'COD-%'))
+  `).get(location_id, sessionStart);
+
+  // 2. Get totals from credit payments collected at this location
+  const creditPaymentTotals = db.prepare(`
+    SELECT
+      COALESCE(SUM(CASE WHEN payment_method = 'cash' THEN amount ELSE 0 END), 0) as cash_total,
+      COALESCE(SUM(CASE WHEN payment_method = 'card' THEN amount ELSE 0 END), 0) as card_total,
+      COALESCE(SUM(CASE WHEN payment_method = 'upi' THEN amount ELSE 0 END), 0) as upi_total
+    FROM credit_payments
+    WHERE location_id = ? AND created_at >= ? AND payment_method != 'write_off'
+  `).get(location_id, sessionStart);
+
+  // 3. Get totals from verified delivery COD settlements at this location.
+  // delivery_settlements.total_amount is method-agnostic (a settlement can
+  // batch several deliveries, cash and UPI mixed) — the real per-collection
+  // method lives on delivery_collections, same fact settle-now's own
+  // register credit (POST /deliveries/settlements/settle-now) already
+  // respects via sumCollectionsByMethod. This recompute used to sum
+  // total_amount straight into cash_total, treating 100%-UPI COD as cash;
+  // close then OVERWRITES the register's running total_cash_sales/
+  // total_upi_sales with that miscounted figure, silently discarding the
+  // correct totals settle-now had already written in real time. Found
+  // live, 2026-09-04: a ₹500 UPI COD settlement correctly reported "no
+  // change to cash register" the moment it happened, then produced a
+  // ₹500 discrepancy the next time the register was closed.
+  const settledDeliveryRows = db.prepare(`
+    SELECT dsi.delivery_id
+    FROM delivery_settlement_items dsi
+    JOIN delivery_settlements ds ON ds.id = dsi.settlement_id
+    WHERE ds.location_id = ? AND ds.verified_at >= ? AND ds.status = 'verified'
+  `).all(location_id, sessionStart);
+  const settledDeliveryIds = settledDeliveryRows.map((r) => r.delivery_id);
+  const codSettlementExpectedTotal = db.prepare(`
+    SELECT COALESCE(SUM(ds.total_amount), 0) as total
+    FROM delivery_settlements ds
+    WHERE ds.location_id = ? AND ds.verified_at >= ? AND ds.status = 'verified'
+  `).get(location_id, sessionStart).total;
+  const codByMethod = sumCollectionsByMethod(db, settledDeliveryIds, codSettlementExpectedTotal);
+
+  const paymentTotals = {
+    cash_total: directPaymentTotals.cash_total + creditPaymentTotals.cash_total + codByMethod.cash,
+    card_total: directPaymentTotals.card_total + creditPaymentTotals.card_total,
+    upi_total: directPaymentTotals.upi_total + creditPaymentTotals.upi_total + codByMethod.upi,
+  };
+
+  // A cash refund on a cancelled sale is normally left out: the sale's cash
+  // payment is left out too, so the two cancel. When the sale's cash was held
+  // by a helper, only the refund ever touched the drawer, so it still counts.
+  let refundTotal = 0;
+  try {
+    refundTotal = db.prepare(`
+      SELECT COALESCE(SUM(r.amount), 0) as total
+      FROM refunds r
+      JOIN sales s ON r.sale_id = s.id
+      WHERE s.location_id = ? AND r.created_at >= ? AND r.refund_method = 'cash' AND COALESCE(r.status, 'processed') = 'processed'
+        AND (s.status != 'cancelled' OR EXISTS (SELECT 1 FROM payments hp WHERE hp.sale_id = s.id AND hp.held_by IS NOT NULL))
+    `).get(location_id, sessionStart).total;
+  } catch (err) {
+    const msg = String(err?.message || '').toLowerCase();
+    if (!msg.includes('refund_method')) throw err;
+    refundTotal = db.prepare(`
+      SELECT COALESCE(SUM(r.amount), 0) as total
+      FROM refunds r
+      JOIN sales s ON r.sale_id = s.id
+      WHERE s.location_id = ? AND r.created_at >= ?
+    `).get(location_id, sessionStart).total;
+  }
+
+  // Cash expenses during this session (net of returns).
+  // Use register_id for session-exact scoping; timestamp fallback for legacy expenses.
+  const expenseTotal = db.prepare(`
+    SELECT COALESCE(SUM(CASE WHEN is_return = 1 THEN -amount ELSE amount END), 0) as total
+    FROM expenses
+    WHERE payment_method = 'cash'
+      AND (
+        register_id = ?
+        OR (register_id IS NULL AND location_id = ? AND created_at >= ?)
+      )
+  `).get(register.id, location_id, sessionStart).total;
+
+  // Helper cash bags (spec 11.4): floats given out of this register session
+  // left the drawer; handovers received into it came in (the counted amount,
+  // which is the cash actually put in the drawer).
+  const helperCash = db.prepare(`
+    SELECT
+      COALESCE(SUM(CASE WHEN type = 'handover_in' THEN counted_amount ELSE 0 END), 0) as handovers,
+      COALESCE(SUM(CASE WHEN type = 'float_out' THEN expected_amount ELSE 0 END), 0) as floats
+    FROM staff_cash_movements
+    WHERE register_id = ?
+  `).get(register.id);
+  const handoverTotal = Number(helperCash.handovers) || 0;
+  const floatTotal = Number(helperCash.floats) || 0;
+
+  // Whole paise, so float and handover sums never leave a stray fraction
+  const expectedCash = Math.round((Number(register.opening_balance) + Number(paymentTotals.cash_total) - Number(refundTotal) - Number(expenseTotal) - floatTotal + handoverTotal) * 100) / 100;
+  return { paymentTotals, refundTotal, expenseTotal, floatTotal, handoverTotal, expectedCash };
+}
+
 // ─── PUT /api/sales/register/close ───────────────────────────
 router.put(
   '/register/close',
@@ -741,7 +859,7 @@ router.put(
     body('closing_notes').optional().trim(),
     body('preview').optional().isBoolean({ strict: true }),
   ],
-  (req, res, next) => {
+  async (req, res, next) => {
     try {
       const errors = validationResult(req);
       if (!errors.isEmpty()) return res.status(400).json({ success: false, message: 'Validation failed', errors: errors.array() });
@@ -754,95 +872,7 @@ router.put(
       const register = db.prepare('SELECT * FROM cash_registers WHERE location_id = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1').get(location_id);
       if (!register) return res.status(404).json({ success: false, message: 'No open register found for this location' });
 
-      // Recalculate totals from actual payment records during this session
-      const sessionStart = register.opening_time || register.opened_at;
-      // 1. Get totals from direct sale payments (excluding auto-allocated credit payments)
-      const directPaymentTotals = db.prepare(`
-        SELECT
-          COALESCE(SUM(CASE WHEN p.method = 'cash' THEN p.amount ELSE 0 END), 0) as cash_total,
-          COALESCE(SUM(CASE WHEN p.method = 'card' THEN p.amount ELSE 0 END), 0) as card_total,
-          COALESCE(SUM(CASE WHEN p.method = 'upi' THEN p.amount ELSE 0 END), 0) as upi_total
-        FROM payments p
-        JOIN sales s ON p.sale_id = s.id
-        WHERE s.location_id = ? AND p.created_at >= ? AND s.status != 'cancelled'
-          AND (p.reference_number IS NULL OR (p.reference_number NOT LIKE 'Credit-%' AND p.reference_number != 'COD' AND p.reference_number NOT LIKE 'COD-%'))
-      `).get(location_id, sessionStart);
-
-      // 2. Get totals from credit payments collected at this location
-      const creditPaymentTotals = db.prepare(`
-        SELECT
-          COALESCE(SUM(CASE WHEN payment_method = 'cash' THEN amount ELSE 0 END), 0) as cash_total,
-          COALESCE(SUM(CASE WHEN payment_method = 'card' THEN amount ELSE 0 END), 0) as card_total,
-          COALESCE(SUM(CASE WHEN payment_method = 'upi' THEN amount ELSE 0 END), 0) as upi_total
-        FROM credit_payments
-        WHERE location_id = ? AND created_at >= ? AND payment_method != 'write_off'
-      `).get(location_id, sessionStart);
-
-      // 3. Get totals from verified delivery COD settlements at this location.
-      // delivery_settlements.total_amount is method-agnostic (a settlement can
-      // batch several deliveries, cash and UPI mixed) — the real per-collection
-      // method lives on delivery_collections, same fact settle-now's own
-      // register credit (POST /deliveries/settlements/settle-now) already
-      // respects via sumCollectionsByMethod. This recompute used to sum
-      // total_amount straight into cash_total, treating 100%-UPI COD as cash;
-      // close then OVERWRITES the register's running total_cash_sales/
-      // total_upi_sales with that miscounted figure, silently discarding the
-      // correct totals settle-now had already written in real time. Found
-      // live, 2026-09-04: a ₹500 UPI COD settlement correctly reported "no
-      // change to cash register" the moment it happened, then produced a
-      // ₹500 discrepancy the next time the register was closed.
-      const settledDeliveryRows = db.prepare(`
-        SELECT dsi.delivery_id
-        FROM delivery_settlement_items dsi
-        JOIN delivery_settlements ds ON ds.id = dsi.settlement_id
-        WHERE ds.location_id = ? AND ds.verified_at >= ? AND ds.status = 'verified'
-      `).all(location_id, sessionStart);
-      const settledDeliveryIds = settledDeliveryRows.map((r) => r.delivery_id);
-      const codSettlementExpectedTotal = db.prepare(`
-        SELECT COALESCE(SUM(ds.total_amount), 0) as total
-        FROM delivery_settlements ds
-        WHERE ds.location_id = ? AND ds.verified_at >= ? AND ds.status = 'verified'
-      `).get(location_id, sessionStart).total;
-      const codByMethod = sumCollectionsByMethod(db, settledDeliveryIds, codSettlementExpectedTotal);
-
-      const paymentTotals = {
-        cash_total: directPaymentTotals.cash_total + creditPaymentTotals.cash_total + codByMethod.cash,
-        card_total: directPaymentTotals.card_total + creditPaymentTotals.card_total,
-        upi_total: directPaymentTotals.upi_total + creditPaymentTotals.upi_total + codByMethod.upi,
-      };
-
-      let refundTotal = 0;
-      try {
-        refundTotal = db.prepare(`
-          SELECT COALESCE(SUM(r.amount), 0) as total
-          FROM refunds r
-          JOIN sales s ON r.sale_id = s.id
-          WHERE s.location_id = ? AND r.created_at >= ? AND r.refund_method = 'cash' AND COALESCE(r.status, 'processed') = 'processed' AND s.status != 'cancelled'
-        `).get(location_id, sessionStart).total;
-      } catch (err) {
-        const msg = String(err?.message || '').toLowerCase();
-        if (!msg.includes('refund_method')) throw err;
-        refundTotal = db.prepare(`
-          SELECT COALESCE(SUM(r.amount), 0) as total
-          FROM refunds r
-          JOIN sales s ON r.sale_id = s.id
-          WHERE s.location_id = ? AND r.created_at >= ?
-        `).get(location_id, sessionStart).total;
-      }
-
-      // Cash expenses during this session (net of returns).
-      // Use register_id for session-exact scoping; timestamp fallback for legacy expenses.
-      const expenseTotal = db.prepare(`
-        SELECT COALESCE(SUM(CASE WHEN is_return = 1 THEN -amount ELSE amount END), 0) as total
-        FROM expenses
-        WHERE payment_method = 'cash'
-          AND (
-            register_id = ?
-            OR (register_id IS NULL AND location_id = ? AND created_at >= ?)
-          )
-      `).get(register.id, location_id, sessionStart).total;
-
-      const expectedCash = register.opening_balance + paymentTotals.cash_total - refundTotal - expenseTotal;
+      const { paymentTotals, refundTotal, expectedCash } = computeRegisterClose(db, register, location_id);
       const discrepancy = expectedCash - actual_cash;
 
       // Blind count: once a close has offered to book extra cash, the count is
@@ -896,6 +926,15 @@ router.put(
         return res.json({ success: true, data: { preview: true, expected_cash: expectedCash, actual_cash: Number(actual_cash), discrepancy, pending_cod: pendingCod } });
       }
 
+      // Cash still out with helpers (bag mode). Close goes ahead; the bags
+      // stay open and carry over, and the audit log records who held what.
+      let openBags = [];
+      try {
+        openBags = (await listBags(db, location_id))
+          .filter((b) => Math.round(Number(b.held) * 100) !== 0)
+          .map((b) => ({ staff_id: b.staff_id, name: b.name, held: b.held }));
+      } catch (bagErr) { console.error('register close helper bag read failed:', bagErr.message); }
+
       db.prepare(`
         UPDATE cash_registers SET
           total_cash_sales = ?, total_card_sales = ?, total_upi_sales = ?,
@@ -913,6 +952,20 @@ router.put(
         actual_cash, actual_cash,
         req.user.id, closing_notes || '', register.id
       );
+
+      if (openBags.length > 0) {
+        try {
+          db.prepare(`
+            INSERT INTO audit_logs (entity_type, entity_id, user_id, action, previous_state, new_state, created_at)
+            VALUES ('cash_register', ?, ?, 'register_closed_with_helper_cash', ?, ?, CURRENT_TIMESTAMP)
+          `).run(
+            register.id,
+            req.user.id,
+            JSON.stringify({ register_id: register.id }),
+            JSON.stringify({ bags: openBags })
+          );
+        } catch (auditErr) { console.error('register close helper cash audit failed:', auditErr.message); }
+      }
 
       const updated = db.prepare(`
         SELECT cr.*, u1.name as opened_by_name, u2.name as closed_by_name
@@ -1205,6 +1258,14 @@ router.put('/:id', authenticate, authorize('owner', 'manager', 'employee', 'coun
       payment_status, payments, order_notes,
       items, delivery_address
     } = req.body;
+
+    // Held helper cash (bag mode): the payment rows carry held_by and their
+    // cash never went through the register. Rewriting them would drop held_by
+    // and move register cash that was never there, so payment edits are
+    // refused before anything on the sale is changed.
+    if (Array.isArray(payments) && oldPayments.some((p) => p.held_by != null)) {
+      return res.status(409).json({ success: false, message: HELD_CASH_EDIT_MESSAGE });
+    }
 
     const updates = [];
     const params = [];

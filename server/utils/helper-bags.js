@@ -119,4 +119,13 @@ function maskAmount(n) {
   return `${sign}₹${grouped}`;
 }
 
-module.exports = { getBag, listBags, maskAmount, readCashMode };
+// Serialises everything that changes one helper's bag (undo of a held sale,
+// handover, float) for the rest of the caller's transaction. Takes a
+// transaction-scoped advisory lock, so it is released on COMMIT or ROLLBACK.
+// Must be called inside withTransaction (async layer).
+const BAG_LOCK_NAMESPACE = 7301;
+async function lockBag(tx, staffId) {
+  await tx.prepare('SELECT pg_advisory_xact_lock(?::int, ?::int) AS locked').get(BAG_LOCK_NAMESPACE, Number(staffId));
+}
+
+module.exports = { getBag, listBags, maskAmount, readCashMode, lockBag };

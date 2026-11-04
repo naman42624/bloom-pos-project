@@ -3,6 +3,7 @@ const { withTransaction, getDb } = require('../config/database-async');
 const { todayStr, shopDayRangeUtc } = require('../utils/time');
 const { authenticate, authorize } = require('../middleware/auth');
 const { reverseSaleEffects } = require('../utils/sale-reversal');
+const { lockBag } = require('../utils/helper-bags');
 
 const router = express.Router();
 
@@ -12,6 +13,7 @@ const HELPER_NOT_YOURS_MESSAGE = 'Ask the counter to undo this sale.';
 const HELPER_TOO_OLD_MESSAGE = "It's been more than 2 minutes. Ask the counter to undo this sale.";
 const NOT_QUICK_MESSAGE = "This sale isn't a quick sale entry";
 const CLOSED_SESSION_MESSAGE = "This sale is from a register that's already closed. Use Refund on the sale instead.";
+const HANDED_OVER_MESSAGE = "This sale's cash was already handed over. Ask the counter to refund it.";
 
 // POST /api/quick-sale/:saleId/undo
 // Reverses a quick-sale entry exactly: sale cancelled, register totals
@@ -32,7 +34,6 @@ router.post(
         if (req.user.role === 'helper') {
           // A helper may undo only their own sale, made within the last 2 minutes
           // (database clock, checked here under the row lock).
-          // Part 4 hook: also refuse when a handover_in exists for this helper since the sale.
           if (Number(sale.sold_by) !== Number(req.user.id) || Number(sale.created_by) !== Number(req.user.id)) {
             return { code: 403, message: HELPER_NOT_YOURS_MESSAGE };
           }
@@ -53,6 +54,24 @@ router.post(
         const sessionStart = register ? (register.opening_time || register.opened_at) : null;
 
         const payments = await tx.prepare('SELECT * FROM payments WHERE sale_id = ?').all(sale.id);
+        // Cash held by a helper (bag mode) never went into the register, so
+        // undoing it takes it out of the helper bag only (getBag leaves out
+        // undone sales) and writes nothing to the register.
+        const isHeldCash = (p) => p.method === 'cash' && p.held_by != null;
+        const holders = [...new Set(payments.filter(isHeldCash).map((p) => Number(p.held_by)))];
+        for (const holderId of holders) {
+          // Same lock a handover takes, so a handover cannot settle this cash
+          // while the undo is taking it back out of the bag.
+          await lockBag(tx, holderId);
+          const handedOver = await tx.prepare(`
+            SELECT 1 AS x FROM staff_cash_movements
+            WHERE staff_id = ? AND location_id = ? AND type = 'handover_in'
+              AND created_at > (SELECT created_at FROM sales WHERE id = ?)
+            LIMIT 1
+          `).get(holderId, sale.location_id, sale.id);
+          if (handedOver) return { code: 409, message: HANDED_OVER_MESSAGE };
+        }
+
         // Payments taken in the open session (same created_at test that
         // register close uses to recompute totals).
         const inSessionIds = new Set();
@@ -60,7 +79,7 @@ router.post(
           const rows = await tx.prepare('SELECT id FROM payments WHERE sale_id = ? AND created_at >= ?').all(sale.id, sessionStart);
           rows.forEach((r) => inSessionIds.add(r.id));
         }
-        if (payments.some((p) => p.method === 'cash' && !inSessionIds.has(p.id))) {
+        if (payments.some((p) => p.method === 'cash' && !isHeldCash(p) && !inSessionIds.has(p.id))) {
           return { code: 409, message: req.user.role === 'helper' ? HELPER_NOT_YOURS_MESSAGE : CLOSED_SESSION_MESSAGE };
         }
 
@@ -73,7 +92,7 @@ router.post(
 
         if (register) {
           for (const p of payments) {
-            if (!inSessionIds.has(p.id)) continue;
+            if (!inSessionIds.has(p.id) || isHeldCash(p)) continue;
             const amt = Number(p.amount || 0);
             let upd = null;
             if (p.method === 'cash') {
