@@ -11,6 +11,9 @@ function helperIsGone(err) {
   if (!err || isAccessEndedMessage(err.message)) return false;
   return err.status === 403 || (err.status === 401 && err.message === UNKNOWN_CODE_MESSAGE);
 }
+// The helper's own phone: the server's lockout text says to ask a manager
+// to unlock, which a helper cannot do. Counter staff keep the server text.
+const HELPER_LOCKED = 'Too many wrong PINs. Wait 5 minutes and try again, or ask the owner for a new join code.';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 
 export default function LockScreen({ navigation }) {
@@ -74,7 +77,7 @@ export default function LockScreen({ navigation }) {
         await releasePersonalDevice(`This phone is no longer set up for ${personalDevice.name}.`);
         return;
       }
-      setError(err.message || 'Something went wrong');
+      setError(personalDevice && err?.status === 423 ? HELPER_LOCKED : (err.message || 'Something went wrong'));
       updatePin('');
     } finally {
       submittingRef.current = false;

@@ -313,6 +313,41 @@ test('refreshPrices: a new price that equals another line merges them', () => {
   assert.strictEqual(r.basket[0].qty, 2);
 });
 
+test('refreshPrices: open -> fixed uses the catalog price, not the old typed one', () => {
+  const basket = b.addLine([], custom(500));
+  const r = b.refreshPrices(basket, { 3: product({ id: 3, name: 'Arrangement', selling_price: 650, price_mode: 'fixed' }) });
+  const l = r.basket[0];
+  assert.strictEqual(l.unit_price, 650);
+  assert.strictEqual(l.price_mode, 'fixed');
+  assert.ok(!l.unavailable);
+  assert.deepStrictEqual(r.blocked, []);
+  // the payload no longer sends a typed price
+  assert.strictEqual(b.toSalePayload(r.basket, { locationId: 1, payments: [], clientRef: 'x' }).items[0].unit_price, undefined);
+});
+
+test('refreshPrices: fixed -> open blocks the line with pick-again text', () => {
+  const basket = b.addLine([], rose);
+  const r = b.refreshPrices(basket, { 1: product({ price_mode: 'open' }) });
+  const l = r.basket[0];
+  assert.strictEqual(l.unavailable, true);
+  assert.strictEqual(l.repick, true);
+  assert.strictEqual(l.price_mode, 'open');
+  assert.strictEqual(l.blocked_text, 'Scan or pick Rose (stem) again — its price has changed.');
+  assert.deepStrictEqual(r.blocked, [l.key]);
+  assert.strictEqual(b.basketCount(b.changeQty(r.basket, l.key, -l.qty)), 0); // one-tap Remove
+});
+
+test('refreshPrices: sizes added to a plain product blocks the line', () => {
+  const basket = b.addLine([], rose);
+  const r = b.refreshPrices(basket, { 1: product({ options: [{ id: 31, label: 'Bunch of 10', price: 280 }] }) });
+  assert.strictEqual(r.basket[0].unavailable, true);
+  assert.strictEqual(r.basket[0].repick, true);
+  assert.strictEqual(r.blocked.length, 1);
+  // product back to plain -> the mark goes
+  const again = b.refreshPrices(r.basket, { 1: product({}) });
+  assert.ok(!again.basket[0].unavailable && !again.basket[0].repick && !again.basket[0].blocked_text);
+});
+
 (async () => {
   let failed = 0;
   for (const t of tests) {

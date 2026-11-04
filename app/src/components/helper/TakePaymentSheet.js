@@ -13,11 +13,15 @@
 // <TakePaymentSheet visible basket clientRef locationId shopInfo taxReady
 //    priceNotes onRefreshPrices={async () => ({ basket, changes, blocked })}
 //    onRetryTaxes onClose onSaved={(sale) => …} onNextCustomer
-//    onKeepLeftover={(lines) => …} onAccessEnded={(err) => bool} />
+//    onKeepLeftover={(lines) => …} onAccessEnded={(err) => bool}
+//    onNewClientRef={() => …} />
 //
 // A repeat of the basket's client_ref is answered with the sale saved
 // earlier. When that sale's items differ from this basket, nothing is shown
 // as paid: an amber warning offers to keep the other items as a new sale.
+// When that earlier sale was undone (409 SALE_UNDONE) the basket gets a new
+// number (onNewClientRef) and the sheet goes back to its first step with the
+// server's message, so the next payment sells it again.
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   View, Text, StyleSheet, Modal, TouchableOpacity, ScrollView, TextInput, Image,
@@ -42,6 +46,7 @@ const REGISTER_CLOSED = "The counter hasn't opened the register yet. Ask them to
 const NO_QR = "Ask the customer to pay to the shop's UPI at the counter.";
 const MISMATCH = "The payment doesn't match the total. Check the amounts and try again.";
 const UNFINISHED_START = "This sale didn't finish saving";
+const SALE_UNDONE = 'SALE_UNDONE';
 const OVERRIDE_NET = "Couldn't reach the shop — check the internet and tap Approve again. Type the PIN again.";
 const AUTO_NEXT_SECONDS = 4;
 
@@ -123,6 +128,7 @@ function waNumber(phone) {
 export default function TakePaymentSheet({
   visible, basket, clientRef, locationId, shopInfo, taxReady = true, onRetryTaxes,
   priceNotes, onRefreshPrices, onClose, onSaved, onNextCustomer, onKeepLeftover, onAccessEnded,
+  onNewClientRef,
 }) {
   const insets = useSafeAreaInsets();
   const guard = useSubmitGuard();
@@ -259,6 +265,13 @@ export default function TakePaymentSheet({
         else setError({ kind: 'network', text: SAVE_FAILED });
       } else if (status === 403 && message === NEEDS_OK && !override) {
         setError({ kind: 'needsOk', text: message });
+      } else if (status === 409 && err?.code === SALE_UNDONE) {
+        // The earlier sale of this basket was undone: new basket number,
+        // back to the first step, the next payment sells it again.
+        if (onNewClientRef) onNewClientRef();
+        setOverrideError('');
+        setStep('choose');
+        setError({ kind: 'other', text: message });
       } else if (status === 409 && message.startsWith(UNFINISHED_START)) {
         if (override) setStep(payStepRef.current);
         setError({ kind: 'unfinished', text: message });

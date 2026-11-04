@@ -166,30 +166,45 @@ export function compareSaved(basket, saleItems) {
 
 const taxPct = (p) => (p && p.tax_percentage != null && p.tax_percentage !== '' ? Number(p.tax_percentage) || 0 : 0);
 
+// A line whose product changed how it is priced (sizes added, typed price
+// switched on, its size removed) cannot be re-priced here: it must be picked
+// again so the helper chooses the size or types the price.
+export const repickText = (name) => `Scan or pick ${name} again — its price has changed.`;
+
 // Brings basket prices up to date from freshly loaded products.
 // productsById[id]: the product, null when it is gone / not for sale,
 // undefined when it could not be loaded (the line is left as it was).
-// Typed (open) prices are kept. -> { basket, changes: [{ name, price }], blocked: [key] }
+// The product's current price_mode decides: fixed -> catalog price, open ->
+// the typed price is kept (a line that had no typed price must be picked
+// again), sizes -> the size's price. Blocked lines get unavailable: true,
+// and repick: true + blocked_text when they only need picking again.
+// -> { basket, changes: [{ name, price }], blocked: [key] }
 export function refreshPrices(basket, productsById) {
   const changes = [];
   const updated = (basket || []).map((l) => {
     const p = productsById ? productsById[l.product_id] : undefined;
     if (p === undefined) return l;
-    if (p === null) return { ...l, unavailable: true };
+    const { unavailable, repick, blocked_text: blockedText, ...base } = l;
+    if (p === null) return { ...base, unavailable: true };
+    const mode = p.price_mode || 'fixed';
+    const options = Array.isArray(p.options) ? p.options : [];
+    const again = () => ({ ...base, price_mode: mode, unavailable: true, repick: true, blocked_text: repickText(l.name) });
     let price;
     if (l.option_id != null) {
-      const opt = (p.options || []).find((o) => Number(o.id) === Number(l.option_id));
-      if (!opt) return { ...l, unavailable: true };
+      const opt = options.find((o) => Number(o.id) === Number(l.option_id));
+      if (!opt) return again();
       price = Number(opt.price) || 0;
-    } else if ((p.price_mode || 'fixed') === 'open' || l.price_mode === 'open') {
+    } else if (options.length > 0) {
+      return again();
+    } else if (mode === 'open') {
+      if (l.price_mode !== 'open') return again();
       price = l.unit_price;
     } else {
       price = Number(p.selling_price) || 0;
     }
     price = round2(price);
-    const { unavailable, ...rest } = l;
     if (price !== l.unit_price && !changes.some((c) => c.name === l.name)) changes.push({ name: l.name, price });
-    return { ...rest, unit_price: price, tax_rate: taxPct(p) };
+    return { ...base, unit_price: price, price_mode: mode, tax_rate: taxPct(p) };
   });
   // Re-key, and merge lines that now have the same product + size + price
   const merged = [];

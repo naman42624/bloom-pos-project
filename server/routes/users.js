@@ -233,12 +233,17 @@ router.post(
       const db = getDb();
 
       // Check phone uniqueness
-      const existing = db.prepare('SELECT id FROM users WHERE phone = ?').get(phone);
+      const existing = db.prepare('SELECT id, name, role FROM users WHERE phone = ?').get(phone);
       if (existing) {
-        return res.status(409).json({
-          success: false,
-          message: 'An account with this phone number already exists',
-        });
+        let message = 'An account with this phone number already exists';
+        if (role === 'helper') {
+          // Say what to do next. Never say whether another account is a
+          // customer or staff.
+          message = existing.role === 'helper'
+            ? `${existing.name} is already a helper. Open them in Staff, change Works until, switch them on, then tap Show join code.`
+            : 'This number already belongs to another account. Use a different number for the helper.';
+        }
+        return res.status(409).json({ success: false, message });
       }
 
       if (email) {
@@ -348,6 +353,21 @@ router.put(
       }
 
       const { name, email, is_active, location_ids, access_until } = req.body;
+
+      // A helper with no shop link gets "You can't sell for this shop" on
+      // every sale (DELETE /users/:id removes the links), so a helper who is
+      // on must keep, or be given, a shop.
+      if (targetUser.role === 'helper') {
+        if (Array.isArray(location_ids) && location_ids.length === 0) {
+          return res.status(400).json({ success: false, message: 'Pick the shop this helper works at, then tap Update Staff.' });
+        }
+        if (location_ids === undefined && (is_active === 1 || is_active === true)) {
+          const link = db.prepare('SELECT 1 AS ok FROM user_locations WHERE user_id = ? LIMIT 1').get(targetUser.id);
+          if (!link) {
+            return res.status(400).json({ success: false, message: 'Pick the shop this helper works at, then tap Reactivate Staff again.' });
+          }
+        }
+      }
 
       const updateUser = db.transaction(() => {
         const updates = [];

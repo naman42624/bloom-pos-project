@@ -1296,6 +1296,59 @@ check('helper undo copy hides refund and register wording', async () => {
   assert(r.status === 409 && r.body?.message === NOT_YOURS, `${r.status} ${JSON.stringify(r.body)}`);
 });
 
+// ─── Final review fixes ──────────────────────────────────────
+const UNDONE_COPY = "This basket's sale was undone. Tap Take payment to sell it again.";
+
+check('retry after an undone sale is refused; a new basket number sells again', async () => {
+  const { owner, helper, fixed } = await sellSetup();
+  await openRegister(owner.token, TEST_LOCATION_ID, 100);
+  const ref = newRef();
+  const body = { location_id: TEST_LOCATION_ID, client_ref: ref, items: [{ product_id: fixed.id, quantity: 1, unit_price: 1000 }], payments: [{ method: 'upi', amount: 1000 }] };
+  const first = await api('POST', '/sales', helper.token, body);
+  assert(first.status === 201, `sale: ${first.status} ${JSON.stringify(first.body)}`);
+  const u = await undoSale(helper.token, first.body.data.id);
+  assert(u.status === 200, `undo: ${u.status} ${JSON.stringify(u.body)}`);
+  const retry = await api('POST', '/sales', helper.token, body);
+  assert(retry.status === 409 && retry.body?.message === UNDONE_COPY && retry.body?.code === 'SALE_UNDONE', `retry: ${retry.status} ${JSON.stringify(retry.body)}`);
+  const again = await api('POST', '/sales', helper.token, { ...body, client_ref: newRef() });
+  assert(again.status === 201 && !again.body.duplicate && again.body.data.id !== first.body.data.id, `new ref: ${again.status} ${JSON.stringify(again.body)}`);
+});
+
+check('adding a helper with a phone already in use says what to do', async () => {
+  const owner = await loginOwner();
+  const existing = await makeHelper(owner.token, shopDate(2));
+  assert(existing.status === 201, `helper: ${existing.status}`);
+  const phone = existing.body.data.user.phone;
+  const dup = await api('POST', '/users', owner.token, { name: 'Verify Helper 2', phone, role: 'helper', access_until: shopDate(2), location_ids: [TEST_LOCATION_ID] });
+  const want = 'Verify Helper is already a helper. Open them in Staff, change Works until, switch them on, then tap Show join code.';
+  assert(dup.status === 409 && dup.body?.message === want, `helper dup: ${dup.status} ${JSON.stringify(dup.body)}`);
+  const db = await getDb();
+  const ownerRow = await db.prepare('SELECT phone FROM users WHERE id = ?').get(owner.id);
+  const other = await api('POST', '/users', owner.token, { name: 'Verify Helper 3', phone: ownerRow.phone, role: 'helper', access_until: shopDate(2), location_ids: [TEST_LOCATION_ID] });
+  assert(other.status === 409 && other.body?.message === 'This number already belongs to another account. Use a different number for the helper.', `other dup: ${other.status} ${JSON.stringify(other.body)}`);
+  const staff = await api('POST', '/users', owner.token, { name: 'Verify Emp', phone, password: PASSWORD, role: 'employee', location_ids: [TEST_LOCATION_ID] });
+  if (staff.body?.data?.user?.id) createdUserIds.push(staff.body.data.user.id);
+  assert(staff.status === 409 && staff.body?.message === 'An account with this phone number already exists', `employee dup: ${staff.status} ${JSON.stringify(staff.body)}`);
+});
+
+check('a removed helper is switched back on only with a shop', async () => {
+  const owner = await loginOwner();
+  const res = await makeHelper(owner.token, shopDate(2));
+  const id = res.body.data.user.id;
+  const del = await api('DELETE', `/users/${id}`, owner.token);
+  assert(del.status === 200, `delete: ${del.status}`);
+  const bare = await api('PUT', `/users/${id}`, owner.token, { is_active: 1 });
+  assert(bare.status === 400 && /Pick the shop this helper works at/.test(bare.body?.message || ''), `no shop: ${bare.status} ${JSON.stringify(bare.body)}`);
+  const empty = await api('PUT', `/users/${id}`, owner.token, { location_ids: [] });
+  assert(empty.status === 400, `empty shops: ${empty.status}`);
+  const on = await api('PUT', `/users/${id}`, owner.token, { is_active: 1, location_ids: [TEST_LOCATION_ID] });
+  assert(on.status === 200 && on.body.data.locations.some((l) => l.id === TEST_LOCATION_ID), `switch on: ${on.status} ${JSON.stringify(on.body)}`);
+  const token = await helperToken(res.body.data.user.phone);
+  const { fixed } = await sellSetup();
+  const sale = await sell(token, { items: [{ product_id: fixed.id, quantity: 1, unit_price: 1000 }], payments: [{ method: 'upi', amount: 1000 }] });
+  assert(sale.status === 201, `sale after switch on: ${sale.status} ${JSON.stringify(sale.body)}`);
+});
+
 async function cleanupHelperSales() {
   const db = await getDb();
   if (helperThresholdBackup !== undefined) {

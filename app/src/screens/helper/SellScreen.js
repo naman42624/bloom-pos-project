@@ -341,7 +341,13 @@ export default function SellScreen() {
     try { r = await refreshBasket(); } finally { setOpening(false); }
     if (!r) return; // access ended: the PIN pad is showing
     if (r.blocked.length > 0) {
-      setMessage({ kind: 'error', text: `${NOT_FOR_SALE} Remove it from the basket first.` });
+      const repick = r.basket.find((l) => l.unavailable && l.repick);
+      setMessage({
+        kind: 'error',
+        text: repick
+          ? `${repick.blocked_text} Remove it from the basket first.`
+          : `${NOT_FOR_SALE} Remove it from the basket first.`,
+      });
       return;
     }
     setShowPay(true);
@@ -355,6 +361,12 @@ export default function SellScreen() {
     setShowPay(false);
     setPriceNotes([]);
     setMessage({ kind: 'ok', text: 'The other items are in the basket. Take payment for them.' });
+  }, []);
+
+  // The earlier sale of this basket was undone: same items, new basket
+  // number (saved with the basket), so the next payment makes a new sale.
+  const onNewClientRef = useCallback(() => {
+    setClientRef(newClientRef());
   }, []);
 
   const onSaved = useCallback(() => {
@@ -422,7 +434,7 @@ export default function SellScreen() {
       </View>
       <View style={styles.blockedRow}>
         <Ionicons name="alert-circle" size={22} color={Colors.error} />
-        <Text style={styles.blockedText}>{NOT_FOR_SALE}</Text>
+        <Text style={styles.blockedText}>{item.blocked_text || NOT_FOR_SALE}</Text>
       </View>
       <TouchableOpacity
         style={styles.removeBtn}
@@ -529,7 +541,9 @@ export default function SellScreen() {
       <View style={styles.bar}>
         <Text style={styles.barSummary}>
           {blocked
-            ? 'Remove the item that is not for sale, then take payment.'
+            ? (basket.some((l) => l.unavailable && !l.repick)
+              ? 'Remove the item that is not for sale, then take payment.'
+              : 'Remove the item marked in red, then take payment.')
             : count > 0 ? `${count} ${count === 1 ? 'item' : 'items'} · ${formatRupees(total)}` : 'Scan an item to start'}
         </Text>
         <TouchableOpacity
@@ -608,6 +622,7 @@ export default function SellScreen() {
         onNextCustomer={onNextCustomer}
         onKeepLeftover={onKeepLeftover}
         onAccessEnded={handleAccessEnded}
+        onNewClientRef={onNewClientRef}
       />
     </View>
   );

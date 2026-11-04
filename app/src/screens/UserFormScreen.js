@@ -19,7 +19,7 @@ import DismissKeyboard from '../components/DismissKeyboard';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import DateTimePickerModal from '../components/DateTimePickerModal';
 import useSubmitGuard from '../hooks/useSubmitGuard';
-import { showAlert } from '../utils/alert';
+import { showAlert, showConfirm } from '../utils/alert';
 import { getShopTodayStr, getShopNow } from '../utils/datetime';
 import {
   addDaysStr, dateStrToDate, dateToDateStr, formatWeekdayDayMonth,
@@ -62,6 +62,7 @@ export default function UserFormScreen({ route, navigation }) {
   const [errors, setErrors] = useState({});
   const [locations, setLocations] = useState([]);
   const [selectedLocationIds, setSelectedLocationIds] = useState([]);
+  const [userLocsLoaded, setUserLocsLoaded] = useState(false);
 
   // Role change state (edit mode, owner only)
   const [selectedNewRole, setSelectedNewRole] = useState(null);
@@ -109,6 +110,7 @@ export default function UserFormScreen({ route, navigation }) {
       const response = await api.getUser(userId);
       const userLocations = response.data?.locations || [];
       setSelectedLocationIds(userLocations.map((l) => l.id));
+      setUserLocsLoaded(true);
     } catch {
       // non-critical
     }
@@ -123,10 +125,21 @@ export default function UserFormScreen({ route, navigation }) {
     }
   };
 
+  // A helper with no shop (a removed helper being brought back) cannot sell.
+  // With one shop, tick it for them; with more, they must pick one.
+  useEffect(() => {
+    if (isHelper && userLocsLoaded && selectedLocationIds.length === 0 && locations.length === 1) {
+      setSelectedLocationIds([locations[0].id]);
+    }
+    // Only when the two lists arrive.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isHelper, userLocsLoaded, locations]);
+
   const toggleLocation = (locId) => {
     setSelectedLocationIds((prev) =>
       prev.includes(locId) ? prev.filter((id) => id !== locId) : [...prev, locId]
     );
+    setErrors((e) => (e.locations ? { ...e, locations: undefined } : e));
   };
 
   const validate = () => {
@@ -135,6 +148,7 @@ export default function UserFormScreen({ route, navigation }) {
     if (!phone.trim()) newErrors.phone = 'Phone number is required';
     else if (!/^[6-9]\d{9}$/.test(phone.trim())) newErrors.phone = 'Enter a valid 10-digit number';
     if (isHelper && !worksUntil) newErrors.worksUntil = 'Pick the last day this helper can work.';
+    if (isHelper && locations.length > 0 && selectedLocationIds.length === 0) newErrors.locations = 'Tick the shop this helper works at.';
     if (!isEditing && !password) newErrors.password = 'Password is required';
     else if (!isEditing && password.length < 6) newErrors.password = 'Min 6 characters';
     setErrors(newErrors);
@@ -257,26 +271,32 @@ export default function UserFormScreen({ route, navigation }) {
   const handleToggleActive = async () => {
     const isActive = existingUser.is_active;
     const action = isActive ? 'Deactivate' : 'Reactivate';
+    // Switching a helper back on also saves the shop and Works until shown
+    // on this screen, so they can sell straight away.
+    const helperOn = isHelper && !isActive;
+    if (helperOn && selectedLocationIds.length === 0) {
+      setErrors((e) => ({ ...e, locations: 'Tick the shop this helper works at.' }));
+      showAlert('Pick a shop first', 'Tick the shop this helper works at under Assign to Locations, then tap Reactivate Staff again.');
+      return;
+    }
     const doToggle = async () => {
       setLoading(true);
       try {
-        await api.updateUser(existingUser.id, { is_active: isActive ? 0 : 1 });
-        Alert.alert('Success', `Staff member ${action.toLowerCase()}d`);
+        const update = { is_active: isActive ? 0 : 1 };
+        if (helperOn) {
+          update.location_ids = selectedLocationIds;
+          if (worksUntil) update.access_until = worksUntil;
+        }
+        await api.updateUser(existingUser.id, update);
+        showAlert('Done', `Staff member ${action.toLowerCase()}d`);
         navigation.goBack();
       } catch (err) {
-        Alert.alert('Error', err.message || `Failed to ${action.toLowerCase()} staff`);
+        showAlert(`Couldn't ${action.toLowerCase()}`, err.message || 'Check the internet and try again.');
       } finally {
         setLoading(false);
       }
     };
-    if (Platform.OS === 'web') {
-      if (window.confirm(`${action} this staff member?`)) doToggle();
-    } else {
-      Alert.alert(action, `${action} ${existingUser.name}?`, [
-        { text: 'Cancel', style: 'cancel' },
-        { text: action, style: isActive ? 'destructive' : 'default', onPress: doToggle },
-      ]);
-    }
+    showConfirm(action, `${action} ${existingUser.name}?`, doToggle, { confirmLabel: action, destructive: !!isActive });
   };
 
   const handleResetPassword = async () => {
@@ -447,6 +467,7 @@ export default function UserFormScreen({ route, navigation }) {
                   </View>
                 </TouchableOpacity>
               ))}
+              {!!errors.locations && <Text style={styles.fieldError}>{errors.locations}</Text>}
             </>
           )}
 

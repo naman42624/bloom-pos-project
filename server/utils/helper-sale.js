@@ -27,6 +27,7 @@ const MSG = {
   WRONG_SHOP: "You can't sell for this shop. Ask the owner.",
   APPROVER_WRONG_SHOP: "That person doesn't work at this shop. Ask someone at the counter here.",
   UNFINISHED: "This sale didn't finish saving. Ask the counter to check it before you take payment again.",
+  UNDONE: "This basket's sale was undone. Tap Take payment to sell it again.",
 };
 
 const CLIENT_REF_RE = /^[A-Za-z0-9_-]{1,64}$/;
@@ -87,6 +88,21 @@ function isFullyPaid(sale) {
   if (!sale || sale.payment_status !== 'paid') return false;
   const paid = (sale.payments || []).reduce((s, p) => s + toPaise(p.amount), 0);
   return paid === toPaise(sale.grand_total);
+}
+
+function isUndone(sale) {
+  return !!sale && (sale.status === 'cancelled' || !!sale.undone_at);
+}
+
+// Answer for a repeat of a basket that already has a sale. An undone sale is
+// never answered as saved: the app gives the basket a new number and sells
+// it again. Returns { status, body }.
+function duplicateAnswer(saved) {
+  if (isUndone(saved)) {
+    return { status: 409, body: { success: false, code: 'SALE_UNDONE', message: MSG.UNDONE } };
+  }
+  if (!isFullyPaid(saved)) return { status: 409, body: { success: false, message: MSG.UNFINISHED } };
+  return { status: 200, body: { success: true, duplicate: true, data: saved } };
 }
 
 function isClientRefConflict(err) {
@@ -281,7 +297,7 @@ async function checkHelperDiscount(db, { pct, override, locationId }) {
 
 // Express middleware, placed before the POST /api/sales validators. Does
 // nothing for other roles. For a helper: answers a repeat of a saved basket
-// with that sale (200), refuses anything outside the rules, else replaces
+// with that sale (200; 409 when it was undone or not fully paid), refuses anything outside the rules, else replaces
 // req.body with the clean helper sale and sets req.helperSale.
 function helperSaleGate(getAsyncDb) {
   return async (req, res, next) => {
@@ -293,9 +309,8 @@ function helperSaleGate(getAsyncDb) {
       const db = await getAsyncDb();
       const existingId = await findByClientRef(db, req.user.id, clientRef);
       if (existingId) {
-        const saved = saleResponse(existingId);
-        if (!isFullyPaid(saved)) return res.status(409).json({ success: false, message: MSG.UNFINISHED });
-        return res.status(200).json({ success: true, duplicate: true, data: saved });
+        const answer = duplicateAnswer(saleResponse(existingId));
+        return res.status(answer.status).json(answer.body);
       }
 
       const normalized = await normalizeHelperSale(db, req.body || {}, req.user);
@@ -330,12 +345,8 @@ function answerClientRefConflict(req, res, err) {
   const row = db.prepare('SELECT id FROM sales WHERE created_by = ? AND client_ref = ?').get(req.user.id, req.helperSale.clientRef);
   if (!row) return false;
   console.log(`Helper sale: two first tries of one basket; answered with sale ${row.id}`);
-  const saved = saleResponse(row.id);
-  if (!isFullyPaid(saved)) {
-    res.status(409).json({ success: false, message: MSG.UNFINISHED });
-    return true;
-  }
-  res.status(200).json({ success: true, duplicate: true, data: saved });
+  const answer = duplicateAnswer(saleResponse(row.id));
+  res.status(answer.status).json(answer.body);
   return true;
 }
 
