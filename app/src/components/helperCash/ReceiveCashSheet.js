@@ -102,22 +102,26 @@ export default function ReceiveCashSheet({ visible, helper, locationId, onClose,
     await runPreview();
   });
 
+  const send = async (isFinal) => {
+    const res = await api.helperHandover({
+      staff_id: helper.staff_id, location_id: locationId, counted_amount: counted, is_final: isFinal, preview: false,
+    });
+    onDone && onDone({ ...res.data, name });
+    onClose && onClose();
+  };
   const doCommit = async (isFinal) => {
     setBusy(isFinal ? 'final' : 'partial');
     setError('');
-    const send = async () => {
-      const res = await api.helperHandover({
-        staff_id: helper.staff_id, location_id: locationId, counted_amount: counted, is_final: isFinal, preview: false,
-      });
-      onDone && onDone({ ...res.data, name });
-      onClose && onClose();
-    };
     try {
-      await send();
+      await send(isFinal);
     } catch (err) {
-      handleError(err, async () => {
-        try { await send(); } catch (e2) { setStep('confirm'); handleError(e2, null); }
-      });
+      // Register closed: OpenRegisterForm, then the same handover runs again
+      // under the same guard and busy state.
+      handleError(err, guard(async () => {
+        setStep('confirm');
+        setBusy(isFinal ? 'final' : 'partial');
+        try { await send(isFinal); } catch (e2) { handleError(e2, null); } finally { setBusy(null); }
+      }));
     } finally {
       setBusy(null);
     }
@@ -203,14 +207,16 @@ export default function ReceiveCashSheet({ visible, helper, locationId, onClose,
                       ? `The ${figures.label.toLowerCase()} is recorded against ${name}.`
                       : figures.kind === 'over' ? 'The extra is recorded too.' : `${name}'s bag goes to ₹0.`}
                   </Text>
-                  <TouchableOpacity
-                    onPress={settlePart}
-                    disabled={!!busy}
-                    accessibilityRole="button"
-                    style={styles.secondary}
-                  >
-                    {busy === 'partial' ? <ActivityIndicator color={Colors.primary} /> : <Text style={styles.secondaryText}>No, part of it</Text>}
-                  </TouchableOpacity>
+                  {figures.canPartial ? (
+                    <TouchableOpacity
+                      onPress={settlePart}
+                      disabled={!!busy}
+                      accessibilityRole="button"
+                      style={styles.secondary}
+                    >
+                      {busy === 'partial' ? <ActivityIndicator color={Colors.primary} /> : <Text style={styles.secondaryText}>No, part of it</Text>}
+                    </TouchableOpacity>
+                  ) : null}
                   {figures.canPartial && figures.remainingIfPartial > 0 ? (
                     <Text style={styles.hint}>{rupees(figures.remainingIfPartial)} stays with {name} for later.</Text>
                   ) : null}
@@ -247,7 +253,7 @@ const styles = StyleSheet.create({
     minHeight: 56, borderWidth: 1, borderColor: Colors.border, borderRadius: BorderRadius.md, paddingHorizontal: Spacing.md,
     fontSize: FontSize.xl, fontWeight: '700', color: Colors.text, fontVariant: ['tabular-nums'],
   },
-  error: { color: Colors.error, fontSize: FontSize.sm, marginTop: Spacing.xs },
+  error: { color: Colors.error, fontSize: FontSize.md, marginTop: Spacing.xs },
   primary: {
     marginTop: Spacing.lg, minHeight: 56, borderRadius: BorderRadius.md, alignItems: 'center', justifyContent: 'center',
     backgroundColor: Colors.success,

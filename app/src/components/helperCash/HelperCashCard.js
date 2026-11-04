@@ -28,6 +28,7 @@ import api from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
 import { showAlert } from '../../utils/alert';
 import { REVEAL_MS, rupees, handoverDoneText } from '../../utils/helperCash';
+import useSubmitGuard from '../../hooks/useSubmitGuard';
 import ReceiveCashSheet from './ReceiveCashSheet';
 import GiveFloatSheet from './GiveFloatSheet';
 import { Colors, FontSize, Spacing, BorderRadius } from '../../constants/theme';
@@ -45,6 +46,7 @@ export default function HelperCashCard({ locationId, onChanged }) {
   const revealTimer = useRef(null);
   const noteTimer = useRef(null);
   const alive = useRef(true);
+  const guard = useSubmitGuard();
 
   const hide = useCallback(() => {
     if (revealTimer.current) clearTimeout(revealTimer.current);
@@ -90,8 +92,8 @@ export default function HelperCashCard({ locationId, onChanged }) {
     noteTimer.current = setTimeout(() => setNote(''), NOTE_MS);
   };
 
-  const reveal = async (bag) => {
-    if (revealing) return;
+  // One tap = one reveal (one audit row): the ref guard stops a fast double tap.
+  const reveal = guard(async (bag) => {
     if (revealed && revealed.staff_id === bag.staff_id) { hide(); return; }
     setRevealing(bag.staff_id);
     try {
@@ -105,7 +107,7 @@ export default function HelperCashCard({ locationId, onChanged }) {
     } finally {
       if (alive.current) setRevealing(null);
     }
-  };
+  });
 
   const openReceive = (bag) => { hide(); setReceiveFor({ staff_id: bag.staff_id, name: bag.name }); };
 
@@ -272,7 +274,7 @@ const styles = StyleSheet.create({
     borderRadius: BorderRadius.md, borderWidth: 2, borderColor: Colors.primary, paddingHorizontal: Spacing.md,
   },
   secondaryText: { color: Colors.primary, fontSize: FontSize.md, fontWeight: '700' },
-  hint: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: Spacing.xs },
+  hint: { fontSize: FontSize.md, color: Colors.textSecondary, marginTop: Spacing.xs },
   giveRow: {
     marginTop: Spacing.sm, minHeight: 48, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.xs,
     borderRadius: BorderRadius.md, borderWidth: 1, borderColor: Colors.border,

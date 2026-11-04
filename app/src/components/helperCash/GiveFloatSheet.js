@@ -185,7 +185,7 @@ const styles = StyleSheet.create({
     minHeight: 56, borderWidth: 1, borderColor: Colors.border, borderRadius: BorderRadius.md, paddingHorizontal: Spacing.md,
     fontSize: FontSize.xl, fontWeight: '700', color: Colors.text, fontVariant: ['tabular-nums'],
   },
-  error: { color: Colors.error, fontSize: FontSize.sm, marginTop: Spacing.xs },
+  error: { color: Colors.error, fontSize: FontSize.md, marginTop: Spacing.xs },
   primary: {
     marginTop: Spacing.lg, minHeight: 56, borderRadius: BorderRadius.md, alignItems: 'center', justifyContent: 'center',
     backgroundColor: Colors.success, paddingHorizontal: Spacing.md,

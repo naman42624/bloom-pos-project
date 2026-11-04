@@ -221,6 +221,9 @@ router.post(
         `).run(locationId, staffId, amount, register.id, req.user.id);
         await tx.prepare('UPDATE cash_registers SET expected_cash = expected_cash - ? WHERE id = ? AND closed_at IS NULL')
           .run(amount, register.id);
+        // A locked blind count (quick-sale close) follows the cash that left the drawer
+        await tx.prepare('UPDATE cash_registers SET close_count_locked = close_count_locked - ? WHERE id = ? AND closed_at IS NULL AND close_count_locked IS NOT NULL')
+          .run(amount, register.id);
         const bag = await getBag(tx, staffId, locationId);
         return { movement_id: ins.lastInsertRowid, register_id: register.id, amount, held: bag.held };
       });
@@ -318,6 +321,9 @@ router.post(
         `).run(locationId, staffId, fromPaise(expectedP), fromPaise(countedP), fromPaise(settledP), fromPaise(differenceP), isFinal ? 1 : 0, register.id, req.user.id);
         if (countedP > 0) {
           await tx.prepare('UPDATE cash_registers SET expected_cash = expected_cash + ? WHERE id = ? AND closed_at IS NULL')
+            .run(fromPaise(countedP), register.id);
+          // A locked blind count follows the cash that went into the drawer
+          await tx.prepare('UPDATE cash_registers SET close_count_locked = close_count_locked + ? WHERE id = ? AND closed_at IS NULL AND close_count_locked IS NOT NULL')
             .run(fromPaise(countedP), register.id);
         }
         await tx.prepare(`

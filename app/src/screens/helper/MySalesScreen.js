@@ -34,6 +34,7 @@ export default function MySalesScreen() {
   const { locked, user } = useAuth();
   const { locationId, handleAccessEnded } = useHelperSession();
   const guard = useSubmitGuard();
+  const revealGuard = useSubmitGuard();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -93,8 +94,9 @@ export default function MySalesScreen() {
     if (bagTimer.current) clearTimeout(bagTimer.current);
   }, []);
 
-  const revealBag = async () => {
-    if (bagBusy || !user?.id) return;
+  // One tap = one reveal (one audit row): ref guard against a fast double tap.
+  const revealBag = revealGuard(async () => {
+    if (!user?.id) return;
     if (bagExact != null) { if (bagTimer.current) clearTimeout(bagTimer.current); setBagExact(null); return; }
     setBagBusy(true);
     try {
@@ -107,7 +109,7 @@ export default function MySalesScreen() {
     } finally {
       setBagBusy(false);
     }
-  };
+  });
 
   // Undo hides once a sale is over 2 minutes old (the server decides too).
   useFocusEffect(useCallback(() => {

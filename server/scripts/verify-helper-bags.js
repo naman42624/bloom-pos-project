@@ -750,6 +750,56 @@ check('float picker lists idle helpers, has_cash flags', async () => {
   }
 });
 
+async function counterSession(ownerToken) {
+  const res = await api('POST', '/users', ownerToken, {
+    name: `Verify Bag Counter ${phoneSeq + 1}`, phone: testPhone(), password: crypto.randomBytes(9).toString('base64url'),
+    role: 'counter_staff', location_ids: [TEST_LOCATION_ID],
+  });
+  assert(res.status === 201, `create counter: ${res.status} ${JSON.stringify(res.body)}`);
+  const id = res.body.data.user.id;
+  createdUserIds.push(id);
+  const db = await getDb();
+  await db.prepare('UPDATE users SET pin_hash = ?, pin_failed_attempts = 0, pin_locked_until = NULL WHERE id = ?')
+    .run(await hashPin(HELPER_PIN), id);
+  const login = await api('POST', '/auth/staff-login', null, { employee_code: res.body.data.user.employee_code, pin: HELPER_PIN });
+  assert(login.status === 200 && login.body?.data?.token, `counter login: ${login.status} ${JSON.stringify(login.body)}`);
+  return { id, token: login.body.data.token };
+}
+
+check('count lock follows handover and float', async () => {
+  const owner = await loginOwner();
+  const helper = await helperSession(owner.token);
+  const counter = await counterSession(owner.token);
+  const db = await getDb();
+  try {
+    await setCashMode('bag');
+    const regId = await openOwnRegister(owner.token, 2000);
+    assert((await giveFloat(owner.token, helper.id, 500)).status === 201, 'float 500');
+    const s = await helperSale(helper.token, [{ method: 'cash', amount: 300 }]);
+    assert(s.status === 201, `sale: ${s.status}`);
+    // drawer expected 1500; counting 1600 offers extra cash and locks the count
+    const pv = await api('PUT', '/sales/register/close', counter.token, { location_id: TEST_LOCATION_ID, actual_cash: 1600, preview: true });
+    assert(pv.status === 200, `preview: ${pv.status} ${JSON.stringify(pv.body)}`);
+    const lockOf = async () => Number((await db.prepare('SELECT close_count_locked FROM cash_registers WHERE id = ?').get(regId)).close_count_locked);
+    assert(near(await lockOf(), 1600), `lock not set: ${await lockOf()}`);
+    const ho = await api('POST', '/helper-cash/handover', counter.token, { staff_id: helper.id, location_id: TEST_LOCATION_ID, counted_amount: 200, is_final: false });
+    assert(ho.status === 200, `handover: ${ho.status} ${JSON.stringify(ho.body)}`);
+    assert(near(await lockOf(), 1800), `lock after handover: ${await lockOf()}`);
+    const old = await api('PUT', '/sales/register/close', counter.token, { location_id: TEST_LOCATION_ID, actual_cash: 1600, preview: true });
+    assert(old.status === 409 && old.body?.code === 'COUNT_LOCKED', `old count: ${old.status} ${JSON.stringify(old.body)}`);
+    const fl = await giveFloat(counter.token, helper.id, 100);
+    assert(fl.status === 201, `float 100: ${fl.status}`);
+    assert(near(await lockOf(), 1700), `lock after float: ${await lockOf()}`);
+    const stale = await api('PUT', '/sales/register/close', counter.token, { location_id: TEST_LOCATION_ID, actual_cash: 1800 });
+    assert(stale.status === 409 && stale.body?.code === 'COUNT_LOCKED', `stale count: ${stale.status} ${JSON.stringify(stale.body)}`);
+    const close = await api('PUT', '/sales/register/close', counter.token, { location_id: TEST_LOCATION_ID, actual_cash: 1700 });
+    assert(close.status === 200, `close: ${close.status} ${JSON.stringify(close.body)}`);
+    assert(near(close.body.data.discrepancy, -100), `discrepancy: ${close.body.data.discrepancy}`);
+  } finally {
+    await restoreCashMode();
+  }
+});
+
 check('float needs open register', async () => {
   const owner = await loginOwner();
   const helper = await helperSession(owner.token);
