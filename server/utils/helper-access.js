@@ -49,4 +49,7 @@ function refuseIfExpired(user) {
   return null;
 }
 
-module.exports = { refuseIfExpired, isAccessExpired, normaliseDate, localToday, formatAccessDate, expiredMessage };
+// Helpers never sign in with phone + password; they use their own PIN.
+const HELPER_NO_PASSWORD_COPY = 'Helpers sign in with their PIN on their own phone.';
+
+module.exports = { HELPER_NO_PASSWORD_COPY, refuseIfExpired, isAccessExpired, normaliseDate, localToday, formatAccessDate, expiredMessage };

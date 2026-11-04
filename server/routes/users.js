@@ -2,7 +2,7 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const { body, param, query, validationResult } = require('express-validator');
-const { localToday } = require('../utils/helper-access');
+const { localToday, HELPER_NO_PASSWORD_COPY } = require('../utils/helper-access');
 const { getDb } = require('../config/database');
 const { getDb: getAsyncDb, withTransaction } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
@@ -171,10 +171,10 @@ router.post(
       .isEmail()
       .normalizeEmail(),
     // Helpers sign in with a PIN only (set on their own phone via the join
-    // link), so Add helper sends no password; the server makes an unusable
-    // random one below.
+    // link): any password sent for a helper is ignored and the server stores
+    // an unusable random one below.
     body('password')
-      .if((value, { req }) => req.body.role !== 'helper' || value)
+      .if((value, { req }) => req.body.role !== 'helper')
       .isLength({ min: 6 })
       .withMessage('Password must be at least 6 characters'),
     body('role')
@@ -253,7 +253,7 @@ router.post(
 
       const salt = await bcrypt.genSalt(12);
       const hashedPassword = await bcrypt.hash(
-        password || crypto.randomBytes(32).toString('base64url'),
+        role === 'helper' ? crypto.randomBytes(32).toString('base64url') : password,
         salt
       );
 
@@ -463,6 +463,10 @@ router.put(
 
       if (req.user.role === 'manager' && (targetUser.role === 'owner' || targetUser.role === 'manager')) {
         return res.status(403).json({ success: false, message: 'Access denied' });
+      }
+
+      if (targetUser.role === 'helper') {
+        return res.status(400).json({ success: false, message: HELPER_NO_PASSWORD_COPY });
       }
 
       const salt = await bcrypt.genSalt(12);

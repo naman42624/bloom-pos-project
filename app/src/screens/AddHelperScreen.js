@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, KeyboardAvoidingView, Platform,
 } from 'react-native';
@@ -13,7 +13,7 @@ import useSubmitGuard from '../hooks/useSubmitGuard';
 import { showAlert } from '../utils/alert';
 import { getShopTodayStr, getShopNow } from '../utils/datetime';
 import {
-  addDaysStr, dateStrToDate, dateToDateStr, formatWeekdayDayMonth,
+  addDaysStr, dateStrToDate, dateToDateStr, formatWeekdayDayMonth, toMobileNumber,
 } from '../utils/helperAccess';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 
@@ -36,23 +36,25 @@ export default function AddHelperScreen({ navigation }) {
   const [worksUntil, setWorksUntil] = useState(addDaysStr(today, 7));
   const [showPicker, setShowPicker] = useState(false);
   const [locations, setLocations] = useState([]);
+  const [locationsError, setLocationsError] = useState(false);
   const [locationId, setLocationId] = useState(activeLocation?.id || null);
   const [errors, setErrors] = useState({});
   const [saving, setSaving] = useState(false);
   const guardSubmit = useSubmitGuard();
 
-  useEffect(() => {
-    let alive = true;
-    api.getLocations()
-      .then((res) => {
-        if (!alive) return;
-        const list = (res.data?.locations || []).filter((l) => l.is_active !== 0 && l.is_active !== false);
-        setLocations(list);
-        setLocationId((cur) => (cur && list.some((l) => l.id === cur) ? cur : list[0]?.id || null));
-      })
-      .catch(() => {});
-    return () => { alive = false; };
+  const loadLocations = useCallback(async () => {
+    setLocationsError(false);
+    try {
+      const res = await api.getLocations();
+      const list = (res.data?.locations || []).filter((l) => l.is_active !== 0 && l.is_active !== false);
+      setLocations(list);
+      setLocationId((cur) => (cur && list.some((l) => l.id === cur) ? cur : list[0]?.id || null));
+    } catch (e) {
+      setLocationsError(true);
+    }
   }, []);
+
+  useEffect(() => { loadLocations(); }, [loadLocations]);
 
   const validate = () => {
     const e = {};
@@ -109,10 +111,10 @@ export default function AddHelperScreen({ navigation }) {
           <Input
             label="Phone"
             value={phone}
-            onChangeText={(t) => { setPhone(t.replace(/[^0-9]/g, '').slice(0, 10)); clearError('phone'); }}
+            onChangeText={(t) => { setPhone(toMobileNumber(t)); clearError('phone'); }}
             placeholder="10-digit mobile number"
             keyboardType="phone-pad"
-            maxLength={10}
+            maxLength={20}
             error={errors.phone}
             leftIcon={<Ionicons name="call-outline" size={20} color={Colors.textSecondary} />}
           />
@@ -171,6 +173,11 @@ export default function AddHelperScreen({ navigation }) {
             <Text style={styles.locationLine}>
               <Ionicons name="location-outline" size={16} color={Colors.textSecondary} /> Works at {locations[0].name}
             </Text>
+          ) : locationsError && !locationId ? (
+            <View style={styles.locError}>
+              <Text style={styles.locErrorText}>Couldn't load the shop locations. Check the internet and tap Try again.</Text>
+              <Button title="Try again" variant="outline" onPress={loadLocations} style={styles.locRetry} />
+            </View>
           ) : null}
           {!!errors.location && <Text style={styles.error}>{errors.location}</Text>}
 
@@ -225,5 +232,8 @@ const styles = StyleSheet.create({
   hint: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: Spacing.sm },
   locationLine: { fontSize: FontSize.md, color: Colors.textSecondary, marginTop: Spacing.lg },
   error: { fontSize: FontSize.sm, color: Colors.error, marginTop: Spacing.xs },
+  locError: { marginTop: Spacing.lg, padding: Spacing.md, borderRadius: BorderRadius.md, backgroundColor: Colors.errorLight },
+  locErrorText: { fontSize: FontSize.md, color: Colors.text },
+  locRetry: { marginTop: Spacing.sm },
   primary: { marginTop: Spacing.xl },
 });

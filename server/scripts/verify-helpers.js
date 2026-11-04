@@ -7,6 +7,7 @@
 const h = require('./lib/verify-harness');
 const { isAccessExpired } = require('../utils/helper-access');
 const { redactSecrets } = require('../utils/redact');
+const { hashPin } = require('../utils/pin');
 const fs = require('fs');
 
 const { check, api, loginOwner, ensureClosed, openRegister, assert, getDb, TEST_LOCATION_ID } = h;
@@ -40,8 +41,20 @@ async function makeHelper(token, accessUntil) {
   return res;
 }
 
+// Helpers sign in with employee code + PIN only (no password login). The
+// PIN is set straight in the DB here, standing in for the join page.
+const HELPER_PIN = '5739';
+async function helperStaffLogin(phone) {
+  const db = await getDb();
+  const row = await db.prepare('SELECT id, employee_code FROM users WHERE phone = ?').get(phone);
+  assert(row && row.employee_code, `no helper with phone ${phone}`);
+  await db.prepare('UPDATE users SET pin_hash = ?, pin_failed_attempts = 0, pin_locked_until = NULL WHERE id = ?')
+    .run(await hashPin(HELPER_PIN), row.id);
+  return api('POST', '/auth/staff-login', null, { employee_code: row.employee_code, pin: HELPER_PIN });
+}
+
 async function helperToken(phone) {
-  const r = await api('POST', '/auth/login', null, { phone, password: PASSWORD });
+  const r = await helperStaffLogin(phone);
   assert(r.status === 200 && r.body?.data?.token, `helper login failed: ${r.status} ${JSON.stringify(r.body)}`);
   return r.body.data.token;
 }
@@ -114,10 +127,54 @@ check('expired helper cannot log in', async () => {
   const yesterday = shopDate(-1);
   const db = await getDb();
   await db.prepare('UPDATE users SET access_until = ? WHERE id = ?').run(yesterday, res.body.data.user.id);
-  const r = await api('POST', '/auth/login', null, { phone: res.body.data.user.phone, password: PASSWORD });
+  const r = await helperStaffLogin(res.body.data.user.phone);
   assert(r.status === 401, `Expected 401, got ${r.status}`);
   assert(r.body?.message === `Your access ended on ${shortDate(yesterday)}. Ask the owner if you need more days.`, `Message: ${r.body?.message}`);
   assert(!r.body?.data?.token, 'no token should be issued');
+});
+
+const NO_PASSWORD_COPY = 'Helpers sign in with their PIN on their own phone.';
+
+check('helpers never get a phone + password login', async () => {
+  const owner = await loginOwner();
+  // makeHelper sends PASSWORD; the server must ignore it.
+  const res = await makeHelper(owner.token, shopDate(2));
+  assert(res.status === 201, `create failed: ${res.status}`);
+  const phone = res.body.data.user.phone;
+  const login = await api('POST', '/auth/login', null, { phone, password: PASSWORD });
+  assert(login.status === 401, `sent password: expected 401, got ${login.status}`);
+  assert(login.body?.message === 'Invalid phone number or password', `sent password message: ${login.body?.message}`);
+  assert(!login.body?.data?.token, 'no token should be issued');
+  // Even a known password (set behind the API's back) is refused for a helper.
+  const db = await getDb();
+  await db.prepare('UPDATE users SET password = ? WHERE id = ?')
+    .run(await require('bcryptjs').hash(PASSWORD, 4), res.body.data.user.id);
+  const login2 = await api('POST', '/auth/login', null, { phone, password: PASSWORD });
+  assert(login2.status === 401, `known password: expected 401, got ${login2.status}`);
+  assert(login2.body?.message === NO_PASSWORD_COPY, `known password message: ${login2.body?.message}`);
+  assert(!login2.body?.data?.token, 'no token should be issued');
+});
+
+check('a helper password cannot be reset', async () => {
+  const owner = await loginOwner();
+  const res = await makeHelper(owner.token, shopDate(2));
+  const r = await api('PUT', `/users/${res.body.data.user.id}/reset-password`, owner.token, { newPassword: 'abcdef12' });
+  assert(r.status === 400, `Expected 400, got ${r.status}`);
+  assert(r.body?.message === NO_PASSWORD_COPY, `Message: ${r.body?.message}`);
+});
+
+check('helper can be created without a password; other roles still need one', async () => {
+  const owner = await loginOwner();
+  const ok = await api('POST', '/users', owner.token, {
+    name: 'Verify Helper', phone: testPhone(), role: 'helper', access_until: shopDate(2), location_ids: [TEST_LOCATION_ID],
+  });
+  if (ok.body?.data?.user?.id) createdUserIds.push(ok.body.data.user.id);
+  assert(ok.status === 201, `helper without password: ${ok.status} ${JSON.stringify(ok.body)}`);
+  const bad = await api('POST', '/users', owner.token, {
+    name: 'Verify Emp', phone: testPhone(), role: 'counter_staff', location_ids: [TEST_LOCATION_ID],
+  });
+  if (bad.body?.data?.user?.id) createdUserIds.push(bad.body.data.user.id);
+  assert(bad.status === 400, `counter staff without password: expected 400, got ${bad.status}`);
 });
 
 check('cannot change someone into a helper', async () => {

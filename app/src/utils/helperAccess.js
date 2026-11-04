@@ -2,6 +2,20 @@
 // join-code expiry line). access_until is a plain 'YYYY-MM-DD' shop date;
 // the helper can work all of that day.
 
+import { normalizePhone } from './contact';
+
+// A typed or pasted phone → the 10-digit mobile number, using the same
+// normalizePhone as the WhatsApp link. Only the +91 / 91 / leading-0 forms are
+// shortened; any other length is left as typed so the form says it's wrong
+// rather than silently keeping some other 10 digits (a pasted 919876543210
+// must never become 9198765432).
+export function toMobileNumber(raw) {
+  const digits = String(raw || '').replace(/\D/g, '');
+  const prefixed = (digits.length === 12 && digits.startsWith('91'))
+    || (digits.length === 11 && digits.startsWith('0'));
+  return prefixed ? normalizePhone(digits) : digits;
+}
+
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 function pad(n) {

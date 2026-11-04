@@ -5,7 +5,7 @@ const { body, validationResult } = require('express-validator');
 const { getDb } = require('../config/database');
 const { getDb: getAsyncDb } = require('../config/database-async');
 const { authenticate } = require('../middleware/auth');
-const { refuseIfExpired } = require('../utils/helper-access');
+const { refuseIfExpired, HELPER_NO_PASSWORD_COPY } = require('../utils/helper-access');
 const { publicUser } = require('../utils/public-user');
 
 const router = express.Router();
@@ -178,6 +178,10 @@ router.post(
           success: false,
           message: 'Invalid phone number or password',
         });
+      }
+
+      if (user.role === 'helper') {
+        return res.status(401).json({ success: false, message: HELPER_NO_PASSWORD_COPY });
       }
 
       const expiredMsg = refuseIfExpired(user);
