@@ -20,6 +20,7 @@ const FLOAT_HELPER_MESSAGE = "This helper can't take a float here. Pick a helper
 const AMOUNT_MESSAGE = 'Type an amount above ₹0, like 500 or 500.50.';
 const COUNTED_MESSAGE = 'Type the amount you counted, like 3150 or 3150.50.';
 const PARTIAL_ZERO_MESSAGE = 'Type the amount you counted, or choose "Yes, settle".';
+const BAGS_OFF_MESSAGE = 'Helper cash bags are off. The owner can turn them on in Settings.';
 const overCountMessage = (name) => `That's more than ${name} should have — count again or choose "Yes, settle"`;
 
 const toPaise = (n) => Math.round((Number(n) || 0) * 100);
@@ -30,7 +31,7 @@ const fromPaise = (p) => p / 100;
 function parseMoney(value) {
   if (value === null || value === undefined || value === '' || typeof value === 'boolean') return null;
   const s = String(value).trim();
-  if (!/^\d{1,9}(\.\d{1,2})?$/.test(s)) return null;
+  if (!/^\d{1,8}(\.\d{1,2})?$/.test(s)) return null; // DECIMAL(10,2)
   return toPaise(Number(s));
 }
 
@@ -174,6 +175,8 @@ router.post(
       if (amountP === null || amountP <= 0) return res.status(400).json({ success: false, message: AMOUNT_MESSAGE });
 
       const db = await getDb();
+      // A float only makes sense when helpers keep their own cash
+      if ((await readCashMode(db)) !== 'bag') return res.status(409).json({ success: false, message: BAGS_OFF_MESSAGE });
       const helper = await db.prepare(`
         SELECT u.id, u.name, u.role, u.is_active, u.access_until,
           EXISTS (SELECT 1 FROM user_locations ul WHERE ul.user_id = u.id AND ul.location_id = ?) AS at_location
@@ -235,6 +238,8 @@ router.post(
       const countedP = parseMoney(body.counted_amount);
       if (countedP === null) return res.status(400).json({ success: false, message: COUNTED_MESSAGE });
       const isFinal = body.is_final === true || body.is_final === 'true' || body.is_final === 1;
+      const isPreview = body.preview === true || body.preview === 'true';
+      if (isPreview && countedP <= 0) return res.status(400).json({ success: false, message: COUNTED_MESSAGE });
 
       const db = await getDb();
       // An inactive or expired helper is still collectable (spec 11.4)
@@ -248,6 +253,25 @@ router.post(
         const bag = await getBag(tx, staffId, locationId);
         const expectedP = toPaise(bag.held);
         if (expectedP <= 0) return { code: 409, message: ALREADY_COLLECTED_MESSAGE };
+
+        // Preview: what the counter sheet shows after the count, before the
+        // settle choice. Writes nothing but its own audit row (the counted
+        // amount only, so the expected amount never sits in the log).
+        if (isPreview) {
+          const open = await tx.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1').get(locationId);
+          if (!open) return { code: 400, message: REGISTER_CLOSED_MESSAGE };
+          await tx.prepare(`
+            INSERT INTO audit_logs (entity_type, entity_id, user_id, action, previous_state, new_state, created_at)
+            VALUES ('user', ?, ?, 'helper_bag_handover_preview', ?, ?, CURRENT_TIMESTAMP)
+          `).run(staffId, req.user.id, JSON.stringify({ location_id: locationId }), JSON.stringify({ counted: fromPaise(countedP) }));
+          return {
+            preview: true,
+            expected: fromPaise(expectedP),
+            counted: fromPaise(countedP),
+            difference: fromPaise(countedP - expectedP),
+            remaining_if_partial: fromPaise(Math.max(0, expectedP - countedP)),
+          };
+        }
 
         let settledP;
         let differenceP = 0;
@@ -272,6 +296,11 @@ router.post(
           await tx.prepare('UPDATE cash_registers SET expected_cash = expected_cash + ? WHERE id = ? AND closed_at IS NULL')
             .run(fromPaise(countedP), register.id);
         }
+        await tx.prepare(`
+          INSERT INTO audit_logs (entity_type, entity_id, user_id, action, previous_state, new_state, created_at)
+          VALUES ('user', ?, ?, 'helper_bag_handover', ?, ?, CURRENT_TIMESTAMP)
+        `).run(staffId, req.user.id, JSON.stringify({ location_id: locationId, register_id: register.id }),
+          JSON.stringify({ movement_id: ins.lastInsertRowid, counted: fromPaise(countedP), is_final: isFinal }));
         return {
           movement_id: ins.lastInsertRowid,
           register_id: register.id,
@@ -283,6 +312,9 @@ router.post(
       });
 
       if (outcome.code) return res.status(outcome.code).json({ success: false, message: outcome.message });
+      if (outcome.preview) {
+        return res.status(200).json({ success: true, data: { preview: true, staff_id: staffId, expected: outcome.expected, counted: outcome.counted, difference: outcome.difference, remaining_if_partial: outcome.remaining_if_partial } });
+      }
       res.status(200).json({
         success: true,
         data: {

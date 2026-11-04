@@ -730,10 +730,12 @@ check('float needs open register', async () => {
   try {
     await setCashMode('bag');
     const regId = await openOwnRegister(owner.token, 1000);
-    for (const bad of [0, -5, '1.234', 'abc', null]) {
+    for (const bad of [0, -5, '1.234', 'abc', null, 123456789]) {
       const r = await giveFloat(owner.token, helper.id, bad);
       assert(r.status === 400, `amount ${bad}: ${r.status} ${JSON.stringify(r.body)}`);
     }
+    const tooBig = await handover(owner.token, helper.id, 123456789, true);
+    assert(tooBig.status === 400, `handover 123456789: ${tooBig.status} ${JSON.stringify(tooBig.body)}`);
     const notHelper = await giveFloat(owner.token, owner.id, 100);
     assert(notHelper.status === 400, `float to owner: ${notHelper.status} ${JSON.stringify(notHelper.body)}`);
 
@@ -897,6 +899,93 @@ check('inferred expenses ignore floats and handovers', async () => {
     const st = await api('GET', `/sales/register/status?location_id=${TEST_LOCATION_ID}`, owner.token);
     assert(st.status === 200 && st.body.data && st.body.data.id === regId && st.body.data.closed_at, `status shows register ${st.body?.data?.id}, wanted closed ${regId}`);
     assert(near(st.body.data.total_expenses_cash, 0), `inferred expenses ${st.body.data.total_expenses_cash}`);
+  } finally {
+    await restoreCashMode();
+  }
+});
+
+const BAGS_OFF_COPY = 'Helper cash bags are off. The owner can turn them on in Settings.';
+
+async function auditRows(action, helperId) {
+  const db = await getDb();
+  const rows = await db.prepare("SELECT user_id, new_state FROM audit_logs WHERE action = ? AND entity_type = 'user' AND entity_id = ? ORDER BY id").all(action, helperId);
+  return rows.map((r) => ({ user_id: r.user_id, state: typeof r.new_state === 'string' ? JSON.parse(r.new_state) : r.new_state }));
+}
+
+check('handover preview changes nothing', async () => {
+  const owner = await loginOwner();
+  const helper = await helperSession(owner.token);
+  const db = await getDb();
+  try {
+    await setCashMode('bag');
+    const regId = await openOwnRegister(owner.token, 1000);
+    assert((await giveFloat(owner.token, helper.id, 500)).status === 201, 'float');
+    assert((await helperSale(helper.token, [{ method: 'cash', amount: 345 }])).status === 201, 'sale');
+    const bagBefore = await getBag(db, helper.id, TEST_LOCATION_ID);
+    const regBefore = await registerRow(regId);
+    const mvBefore = await db.prepare('SELECT COUNT(*) AS c FROM staff_cash_movements WHERE staff_id = ?').get(helper.id);
+
+    const p = await api('POST', '/helper-cash/handover', owner.token, { staff_id: helper.id, location_id: TEST_LOCATION_ID, counted_amount: 800, preview: true });
+    assert(p.status === 200 && p.body.data.preview === true, `preview: ${p.status} ${JSON.stringify(p.body)}`);
+    const d = p.body.data;
+    assert(near(d.expected, 845) && near(d.counted, 800) && near(d.difference, -45) && near(d.remaining_if_partial, 45), `figures: ${JSON.stringify(d)}`);
+    const over = await api('POST', '/helper-cash/handover', owner.token, { staff_id: helper.id, location_id: TEST_LOCATION_ID, counted_amount: 900, preview: true });
+    assert(over.status === 200 && near(over.body.data.difference, 55) && near(over.body.data.remaining_if_partial, 0), `over preview: ${JSON.stringify(over.body)}`);
+    const zero = await api('POST', '/helper-cash/handover', owner.token, { staff_id: helper.id, location_id: TEST_LOCATION_ID, counted_amount: 0, preview: true });
+    assert(zero.status === 400, `zero preview: ${zero.status}`);
+
+    assert(JSON.stringify(await getBag(db, helper.id, TEST_LOCATION_ID)) === JSON.stringify(bagBefore), 'bag moved');
+    assert(JSON.stringify(await registerRow(regId)) === JSON.stringify(regBefore), 'register moved');
+    const mvAfter = await db.prepare('SELECT COUNT(*) AS c FROM staff_cash_movements WHERE staff_id = ?').get(helper.id);
+    assert(Number(mvAfter.c) === Number(mvBefore.c), 'movement written');
+    const audits = await auditRows('helper_bag_handover_preview', helper.id);
+    assert(audits.length === 2 && audits[0].user_id === owner.id && near(audits[0].state.counted, 800) && !('expected' in audits[0].state), `preview audit: ${JSON.stringify(audits)}`);
+    assert((await auditRows('helper_bag_reveal', helper.id)).length === 0, 'preview counted as a reveal');
+
+    // Settled: preview answers Already collected
+    assert((await handover(owner.token, helper.id, 845, true)).status === 200, 'final');
+    const after = await api('POST', '/helper-cash/handover', owner.token, { staff_id: helper.id, location_id: TEST_LOCATION_ID, counted_amount: 10, preview: true });
+    assert(after.status === 409 && after.body?.message === ALREADY_COLLECTED_COPY, `preview at 0: ${after.status} ${JSON.stringify(after.body)}`);
+  } finally {
+    await restoreCashMode();
+  }
+});
+
+check('every handover is audited', async () => {
+  const owner = await loginOwner();
+  const helper = await helperSession(owner.token);
+  try {
+    await setCashMode('bag');
+    await openOwnRegister(owner.token, 1000);
+    assert((await giveFloat(owner.token, helper.id, 600)).status === 201, 'float');
+    assert((await handover(owner.token, helper.id, 200, false)).status === 200, 'partial');
+    assert((await handover(owner.token, helper.id, 390, true)).status === 200, 'final');
+    const rows = await auditRows('helper_bag_handover', helper.id);
+    assert(rows.length === 2, `audit rows: ${JSON.stringify(rows)}`);
+    assert(near(rows[0].state.counted, 200) && rows[0].state.is_final === false && rows[0].user_id === owner.id, `partial audit: ${JSON.stringify(rows[0])}`);
+    assert(near(rows[1].state.counted, 390) && rows[1].state.is_final === true, `final audit: ${JSON.stringify(rows[1])}`);
+  } finally {
+    await restoreCashMode();
+  }
+});
+
+check('float only in bag mode', async () => {
+  const owner = await loginOwner();
+  const helper = await helperSession(owner.token);
+  const db = await getDb();
+  try {
+    await setCashMode('bag');
+    const regId = await openOwnRegister(owner.token, 1000);
+    assert((await giveFloat(owner.token, helper.id, 300)).status === 201, 'float in bag mode');
+    await setCashMode('register');
+    const before = await registerRow(regId);
+    const r = await giveFloat(owner.token, helper.id, 100);
+    assert(r.status === 409 && r.body?.message === BAGS_OFF_COPY, `float in register mode: ${r.status} ${JSON.stringify(r.body)}`);
+    assert(JSON.stringify(await registerRow(regId)) === JSON.stringify(before), 'register moved');
+    // Cash still out from bag mode can be collected in register mode
+    const h2 = await handover(owner.token, helper.id, 300, true);
+    assert(h2.status === 200 && near(h2.body.data.expected, 300), `handover in register mode: ${h2.status} ${JSON.stringify(h2.body)}`);
+    assert(near((await getBag(db, helper.id, TEST_LOCATION_ID)).held, 0), 'bag not 0');
   } finally {
     await restoreCashMode();
   }
