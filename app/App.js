@@ -53,7 +53,7 @@ function getSlipToken() {
 // login. Code alphabet excludes I, O, 0, 1.
 function getPriceCode() {
   if (Platform.OS !== 'web' || typeof window === 'undefined') return null;
-  const match = /^\/p\/([A-Z0-9]{8})\/?$/.exec(window.location.pathname);
+  const match = /^\/+p\/([A-Z0-9]{8})\/?$/.exec(window.location.pathname); // /+ : labels printed with a trailing-slash PUBLIC_APP_URL
   return match ? match[1] : null;
 }
 
