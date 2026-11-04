@@ -239,8 +239,12 @@ router.post(
         if (role === 'helper') {
           // Say what to do next. Never say whether another account is a
           // customer or staff.
-          message = existing.role === 'helper'
+          // Only the owner can switch a helper back on in the app.
+          const reactivate = req.user.role === 'owner'
             ? `${existing.name} is already a helper. Open them in Staff, change Works until, switch them on, then tap Show join code.`
+            : `${existing.name} is already a helper. Ask the owner to switch them on again, then open them in Staff and tap Show join code.`;
+          message = existing.role === 'helper'
+            ? reactivate
             : 'This number already belongs to another account. Use a different number for the helper.';
         }
         return res.status(409).json({ success: false, message });
@@ -361,7 +365,7 @@ router.put(
         if (Array.isArray(location_ids) && location_ids.length === 0) {
           return res.status(400).json({ success: false, message: 'Pick the shop this helper works at, then tap Update Staff.' });
         }
-        if (location_ids === undefined && (is_active === 1 || is_active === true)) {
+        if (location_ids === undefined && Number(is_active) === 1) {
           const link = db.prepare('SELECT 1 AS ok FROM user_locations WHERE user_id = ? LIMIT 1').get(targetUser.id);
           if (!link) {
             return res.status(400).json({ success: false, message: 'Pick the shop this helper works at, then tap Reactivate Staff again.' });
