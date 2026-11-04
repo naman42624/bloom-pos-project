@@ -7,7 +7,8 @@
  * Register closed → OpenRegisterForm first, then the float is given.
  *
  * Props: visible, locationId, helpers [{ staff_id, name, last_float }],
- *        initialStaffId, onClose(), onDone({ message, staff_id, amount })
+ *        initialStaffId, onClose(), onDone({ message, staff_id, amount }),
+ *        onRefresh()  (answer lost: the card reloads so staff can see if it went)
  */
 import React, { useEffect, useState } from 'react';
 import { Modal, View, Text, TextInput, TouchableOpacity, ActivityIndicator, KeyboardAvoidingView, Platform, StyleSheet, ScrollView } from 'react-native';
@@ -19,10 +20,12 @@ import { bumpActivity } from '../../hooks/useIdleLock';
 import { parseMoney, cleanMoneyInput, floatDefault, rupees } from '../../utils/helperCash';
 import { Colors, FontSize, Spacing, BorderRadius } from '../../constants/theme';
 
-const NET_ERROR = 'Nothing was given. Check the internet and tap Give again.';
+// No answer from the server: the change may or may not have been given
+// (Ruling 15), so staff look at the refreshed card before giving again.
+const LOST_ERROR = 'No answer from the shop computer. Check the helper card before trying again.';
 const isRegisterClosedError = (err) => err && err.status === 400 && /register isn.t open/i.test(err.message || '');
 
-export default function GiveFloatSheet({ visible, locationId, helpers, initialStaffId, onClose, onDone }) {
+export default function GiveFloatSheet({ visible, locationId, helpers, initialStaffId, onClose, onDone, onRefresh }) {
   const list = Array.isArray(helpers) ? helpers : [];
   const [staffId, setStaffId] = useState(null);
   const [amount, setAmount] = useState('');
@@ -67,7 +70,12 @@ export default function GiveFloatSheet({ visible, locationId, helpers, initialSt
     } catch (err) {
       setBusy(false);
       if (isRegisterClosedError(err)) { setNeedRegister(true); return; }
-      setError(err && err.status ? err.message : NET_ERROR);
+      if (!err || !err.status || err.status >= 500) {
+        setError(LOST_ERROR);
+        if (onRefresh) onRefresh();
+        return;
+      }
+      setError(err.message);
     }
   };
 

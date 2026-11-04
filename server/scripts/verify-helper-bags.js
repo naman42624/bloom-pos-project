@@ -625,6 +625,23 @@ check('edit sale refuses payment change on held cash', async () => {
     assert(after.customer_name === 'Verify Bag Buyer', `name: ${after.customer_name}`);
     const paysAfter = await paymentsOf(saleId);
     assert(paysAfter.length === 1 && paysAfter[0].held_by === helper.id, `held_by lost by a name edit: ${JSON.stringify(paysAfter)}`);
+
+    // Same payments sent back (Sale Details' edit box): ignored, the name
+    // still saves, held_by stays, the register does not move
+    const regMid = await registerRow(regId);
+    const same = await api('PUT', `/sales/${saleId}`, owner.token, {
+      customer_name: 'Verify Bag Same Pay', payment_status: 'paid', payments: [{ method: 'cash', amount: '180.00' }],
+    });
+    assert(same.status === 200, `same-payments edit: ${same.status} ${JSON.stringify(same.body)}`);
+    assert((await db.prepare('SELECT customer_name FROM sales WHERE id = ?').get(saleId)).customer_name === 'Verify Bag Same Pay', 'name not saved with same payments');
+    const paysSame = await paymentsOf(saleId);
+    assert(paysSame.length === 1 && paysSame[0].method === 'cash' && near(paysSame[0].amount, 180) && paysSame[0].held_by === helper.id, `held_by lost by same-payments edit: ${JSON.stringify(paysSame)}`);
+    assert(JSON.stringify(await registerRow(regId)) === JSON.stringify(regMid), 'register moved on same-payments edit');
+    // A different amount or a split is still a change
+    const amt = await api('PUT', `/sales/${saleId}`, owner.token, { payments: [{ method: 'cash', amount: 170 }] });
+    assert(amt.status === 409 && amt.body?.message === HELD_EDIT_COPY, `amount change: ${amt.status} ${JSON.stringify(amt.body)}`);
+    const split = await api('PUT', `/sales/${saleId}`, owner.token, { payments: [{ method: 'cash', amount: 90 }, { method: 'cash', amount: 90 }] });
+    assert(split.status === 409, `split change: ${split.status}`);
   } finally {
     await restoreCashMode();
   }
@@ -637,6 +654,7 @@ check('edit sale refuses payment change on held cash', async () => {
 const REGISTER_CLOSED_COPY = "Register isn't open — open it before taking a cash payment.";
 const HELPER_DENIED_COPY = "Helpers can't open this. Ask the counter.";
 const ALREADY_COLLECTED_COPY = 'Already collected — refresh';
+const NO_HELPER_COPY = 'That helper was not found. Refresh and try again.';
 const overCountCopy = (name) => `That's more than ${name} should have — count again or choose "Yes, settle"`;
 
 async function giveFloat(token, staffId, amount) {
@@ -693,6 +711,76 @@ check('reveal returns exact and is audited', async () => {
     assert(d.last_float && near(d.last_float.amount, 500.5), `last_float: ${JSON.stringify(d.last_float)}`);
     const audit = await db.prepare("SELECT user_id FROM audit_logs WHERE action = 'helper_bag_reveal' AND entity_type = 'user' AND entity_id = ? ORDER BY id DESC LIMIT 1").get(helper.id);
     assert(audit && audit.user_id === owner.id, `audit row: ${JSON.stringify(audit)}`);
+  } finally {
+    await restoreCashMode();
+  }
+});
+
+check('reveal refuses someone who is not a helper', async () => {
+  const owner = await loginOwner();
+  const counter = await counterSession(owner.token);
+  const db = await getDb();
+  try {
+    await setCashMode('bag');
+    for (const id of [counter.id, owner.id]) {
+      const before = await db.prepare("SELECT COUNT(*) AS c FROM audit_logs WHERE action = 'helper_bag_reveal' AND entity_id = ?").get(id);
+      const r = await api('POST', `/helper-cash/bags/${id}/reveal`, owner.token, { location_id: TEST_LOCATION_ID });
+      assert(r.status === 404 && r.body?.message === NO_HELPER_COPY, `reveal of ${id}: ${r.status} ${JSON.stringify(r.body)}`);
+      assert(!('data' in r.body) || r.body.data == null, `figures returned: ${JSON.stringify(r.body)}`);
+      const after = await db.prepare("SELECT COUNT(*) AS c FROM audit_logs WHERE action = 'helper_bag_reveal' AND entity_id = ?").get(id);
+      assert(Number(after.c) === Number(before.c), 'refused reveal wrote an audit row');
+    }
+  } finally {
+    await restoreCashMode();
+  }
+});
+
+check('helper register status says the cash mode', async () => {
+  const owner = await loginOwner();
+  const helper = await helperSession(owner.token);
+  try {
+    await setCashMode('bag');
+    const b = await api('GET', `/sales/register/status?location_id=${TEST_LOCATION_ID}`, helper.token);
+    assert(b.status === 200 && b.body.helper_cash_mode === 'bag' && b.body.data.helper_cash_mode === 'bag', `bag: ${b.status} ${JSON.stringify(b.body)}`);
+    assert(Object.keys(b.body.data).sort().join(',') === 'helper_cash_mode,isOpen', `helper status leaks: ${JSON.stringify(b.body.data)}`);
+    await setCashMode('register');
+    const r = await api('GET', `/sales/register/status?location_id=${TEST_LOCATION_ID}`, helper.token);
+    assert(r.status === 200 && r.body.helper_cash_mode === 'register', `register: ${r.status} ${JSON.stringify(r.body)}`);
+  } finally {
+    await restoreCashMode();
+  }
+});
+
+check('register status and history show helper floats and handovers', async () => {
+  const owner = await loginOwner();
+  const helper = await helperSession(owner.token);
+  try {
+    await setCashMode('bag');
+    const regId = await openOwnRegister(owner.token, 1000);
+    const st0 = await api('GET', `/sales/register/status?location_id=${TEST_LOCATION_ID}`, owner.token);
+    assert(st0.status === 200 && st0.body.data.id === regId && st0.body.data.helper_floats === 0 && st0.body.data.helper_handovers === 0, `fresh session: ${JSON.stringify(st0.body.data)}`);
+    assert((await giveFloat(owner.token, helper.id, 400)).status === 201, 'float');
+    assert((await helperSale(helper.token, [{ method: 'cash', amount: 250 }])).status === 201, 'sale');
+    assert((await handover(owner.token, helper.id, 300, false)).status === 200, 'partial');
+    const st = await api('GET', `/sales/register/status?location_id=${TEST_LOCATION_ID}`, owner.token);
+    const d = st.body.data;
+    assert(st.status === 200 && d.id === regId && !d.closed_at, `status register ${d && d.id}`);
+    assert(d.helper_floats === 400 && d.helper_handovers === 300, `open status: floats ${d.helper_floats} handovers ${d.helper_handovers}`);
+    assert(near(d.expected_cash, 900), `expected_cash ${d.expected_cash} (1000 - 400 + 300)`);
+    assert(near(d.total_expenses_cash, 0), `expenses ${d.total_expenses_cash}`);
+    const hist = await api('GET', `/sales/register/history?location_id=${TEST_LOCATION_ID}&limit=200`, owner.token);
+    const row = hist.body.data.find((r) => r.id === regId);
+    assert(row && row.helper_floats === 400 && row.helper_handovers === 300, `history row: ${JSON.stringify(row && { f: row.helper_floats, h: row.helper_handovers })}`);
+    await previewAndClose(owner.token, regId, 900);
+    const hist2 = await api('GET', `/sales/register/history?location_id=${TEST_LOCATION_ID}&limit=200`, owner.token);
+    const row2 = hist2.body.data.find((r) => r.id === regId);
+    assert(row2 && row2.closed_at && row2.helper_floats === 400 && row2.helper_handovers === 300 && near(row2.discrepancy, 0), `closed history row: ${JSON.stringify(row2 && { f: row2.helper_floats, h: row2.helper_handovers, d: row2.discrepancy })}`);
+    // App history card maths: opening + cash sales - refunds - floats + handovers - expected = 0 expenses
+    const inferred = Number(row2.opening_balance) + Number(row2.total_cash_sales) - Number(row2.total_refunds_cash || 0) - row2.helper_floats + row2.helper_handovers - Number(row2.expected_cash);
+    assert(near(inferred, 0), `history inferred expenses ${inferred}`);
+    // A register with no helper cash carries zeros
+    const other = hist2.body.data.find((r) => r.id !== regId);
+    assert(!other || (typeof other.helper_floats === 'number' && typeof other.helper_handovers === 'number'), `other row types: ${JSON.stringify(other && { f: other.helper_floats, h: other.helper_handovers })}`);
   } finally {
     await restoreCashMode();
   }
@@ -774,7 +862,10 @@ check('count lock follows handover and float', async () => {
   try {
     await setCashMode('bag');
     const regId = await openOwnRegister(owner.token, 2000);
+    const rawLock = async () => (await db.prepare('SELECT close_count_locked FROM cash_registers WHERE id = ?').get(regId)).close_count_locked;
     assert((await giveFloat(owner.token, helper.id, 500)).status === 201, 'float 500');
+    // A float on an unlocked register leaves the lock NULL
+    assert((await rawLock()) === null, `float set a lock on an unlocked register: ${await rawLock()}`);
     const s = await helperSale(helper.token, [{ method: 'cash', amount: 300 }]);
     assert(s.status === 201, `sale: ${s.status}`);
     // drawer expected 1500; counting 1600 offers extra cash and locks the count
@@ -782,6 +873,10 @@ check('count lock follows handover and float', async () => {
     assert(pv.status === 200, `preview: ${pv.status} ${JSON.stringify(pv.body)}`);
     const lockOf = async () => Number((await db.prepare('SELECT close_count_locked FROM cash_registers WHERE id = ?').get(regId)).close_count_locked);
     assert(near(await lockOf(), 1600), `lock not set: ${await lockOf()}`);
+    // A handover preview writes nothing, so the lock stays as it was
+    const hp = await api('POST', '/helper-cash/handover', counter.token, { staff_id: helper.id, location_id: TEST_LOCATION_ID, counted_amount: 200, preview: true });
+    assert(hp.status === 200 && hp.body?.data?.preview === true, `handover preview: ${hp.status} ${JSON.stringify(hp.body)}`);
+    assert(near(await lockOf(), 1600), `lock moved by a handover preview: ${await lockOf()}`);
     const ho = await api('POST', '/helper-cash/handover', counter.token, { staff_id: helper.id, location_id: TEST_LOCATION_ID, counted_amount: 200, is_final: false });
     assert(ho.status === 200, `handover: ${ho.status} ${JSON.stringify(ho.body)}`);
     assert(near(await lockOf(), 1800), `lock after handover: ${await lockOf()}`);
@@ -1144,6 +1239,80 @@ check('staff sales report includes bag columns', async () => {
   } finally {
     await restoreCashMode();
   }
+});
+
+// Rulings 12 and 13: the reveals column counts looks by someone other than
+// the helper, plus handover previews the same person did not follow with a
+// real handover for that helper within 10 minutes.
+check('report reveals: looks by others and unmatched previews', async () => {
+  const owner = await loginOwner();
+  const helper = await helperSession(owner.token);
+  const counter = await counterSession(owner.token);
+  const db = await getDb();
+  try {
+    await setCashMode('bag');
+    await openOwnRegister(owner.token, 1000);
+    assert((await giveFloat(owner.token, helper.id, 900)).status === 201, 'float');
+    const reveal = (token) => api('POST', `/helper-cash/bags/${helper.id}/reveal`, token, { location_id: TEST_LOCATION_ID });
+    const preview = (token, counted) => api('POST', '/helper-cash/handover', token, { staff_id: helper.id, location_id: TEST_LOCATION_ID, counted_amount: counted, preview: true });
+    // helper looks at own bag: not counted
+    assert((await reveal(helper.token)).status === 200, 'self reveal');
+    // owner looks: 1
+    assert((await reveal(owner.token)).status === 200, 'owner reveal');
+    // counter previews twice and never hands over: 2
+    assert((await preview(counter.token, 100)).status === 200, 'counter preview');
+    assert((await preview(counter.token, 150)).status === 200, 'counter preview 2');
+    // owner previews then hands over: 0
+    assert((await preview(owner.token, 100)).status === 200, 'owner preview');
+    assert((await handover(owner.token, helper.id, 100, false)).status === 200, 'owner partial');
+    const today = shopToday();
+    const rows = async () => (await api('GET', `/reports/staff-sales?from=${today}&to=${today}&location_id=${TEST_LOCATION_ID}`, owner.token)).body.data.rows;
+    let row = (await rows()).find((r) => r.user_id === helper.id);
+    assert(row && row.reveals === 3, `reveals ${row && row.reveals} (want 3: owner reveal + two counter lone previews)`);
+
+    // A preview whose handover came more than 10 minutes later counts.
+    // Put a copy of the owner preview 11 minutes before that handover, when
+    // that is still today in the shop.
+    const ho = await db.prepare("SELECT created_at, (created_at - INTERVAL '11 minutes')::date = created_at::date AS same_day FROM audit_logs WHERE action = 'helper_bag_handover' AND entity_id = ? AND user_id = ? ORDER BY id DESC LIMIT 1").get(helper.id, owner.id);
+    if (ho && ho.same_day) {
+      await db.prepare(`
+        INSERT INTO audit_logs (entity_type, entity_id, user_id, action, previous_state, new_state, created_at)
+        SELECT 'user', ?, ?, 'helper_bag_handover_preview', ?, ?, created_at - INTERVAL '11 minutes'
+        FROM audit_logs WHERE action = 'helper_bag_handover' AND entity_id = ? AND user_id = ? ORDER BY id DESC LIMIT 1
+      `).run(helper.id, owner.id, JSON.stringify({ location_id: TEST_LOCATION_ID }), JSON.stringify({ counted: 100 }), helper.id, owner.id);
+      row = (await rows()).find((r) => r.user_id === helper.id);
+      assert(row && row.reveals === 4, `reveals ${row && row.reveals} (want 4 with the late-matched preview)`);
+    } else {
+      console.log('   (late-preview case skipped: too close to midnight)');
+    }
+  } finally {
+    await restoreCashMode();
+  }
+});
+
+// Rows dated yesterday (written by SQL) belong to yesterday only: a period
+// that ends before them does not see them, and today does not either.
+check('report period boundary for backdated movements and reveals', async () => {
+  const owner = await loginOwner();
+  const helper = await helperSession(owner.token);
+  const db = await getDb();
+  const y = shopDate(-1);
+  const y2 = shopDate(-2);
+  const at = `${y} 12:00:00`;
+  await db.prepare("INSERT INTO staff_cash_movements (location_id, staff_id, type, expected_amount, counted_amount, settled_amount, is_final, recorded_by, note, created_at) VALUES (?, ?, 'float_out', 123, 0, 0, 0, ?, 'verify backdated', ?)")
+    .run(TEST_LOCATION_ID, helper.id, owner.id, at);
+  await db.prepare("INSERT INTO staff_cash_movements (location_id, staff_id, type, expected_amount, counted_amount, settled_amount, is_final, recorded_by, note, created_at) VALUES (?, ?, 'handover_in', 123, 120, 123, 1, ?, 'verify backdated', ?)")
+    .run(TEST_LOCATION_ID, helper.id, owner.id, `${y} 12:05:00`);
+  await db.prepare("UPDATE staff_cash_movements SET difference = -3 WHERE staff_id = ? AND type = 'handover_in' AND note = 'verify backdated'").run(helper.id);
+  await db.prepare("INSERT INTO audit_logs (entity_type, entity_id, user_id, action, previous_state, new_state, created_at) VALUES ('user', ?, ?, 'helper_bag_reveal', ?, ?, ?)")
+    .run(helper.id, owner.id, JSON.stringify({ location_id: TEST_LOCATION_ID }), JSON.stringify({ held: 123 }), at);
+  const find = async (from, to) => (await api('GET', `/reports/staff-sales?from=${from}&to=${to}&location_id=${TEST_LOCATION_ID}`, owner.token)).body.data.rows.find((r) => r.user_id === helper.id);
+  const yRow = await find(y, y);
+  assert(yRow && near(yRow.floats, 123) && near(yRow.handed_over, 120) && near(yRow.short_over, -3) && yRow.reveals === 1, `yesterday: ${JSON.stringify(yRow)}`);
+  const before = await find(y2, y2);
+  assert(!before || (Number(before.floats || 0) === 0 && Number(before.handed_over || 0) === 0 && Number(before.reveals || 0) === 0), `period ending before them: ${JSON.stringify(before)}`);
+  const today = await find(shopToday(), shopToday());
+  assert(!today || (Number(today.floats || 0) === 0 && Number(today.handed_over || 0) === 0 && Number(today.reveals || 0) === 0), `today: ${JSON.stringify(today)}`);
 });
 
 // Settles every bag this script left non-zero (by SQL, no register), so the

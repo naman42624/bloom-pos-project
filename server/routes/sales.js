@@ -15,7 +15,7 @@ const { slipUrl } = require('../utils/slip-token');
 const { reverseSaleEffects } = require('../utils/sale-reversal');
 const { assertValidSeller } = require('../utils/seller');
 const { helperSaleGate, answerClientRefConflict } = require('../utils/helper-sale');
-const { listBags } = require('../utils/helper-bags');
+const { listBags, readCashMode } = require('../utils/helper-bags');
 const QRCode = require('qrcode');
 const { getChecklistForSale, setCheck, loadSaleForChecks } = require('../utils/load-checks');
 
@@ -590,7 +590,10 @@ router.get('/register/status', authenticate, async (req, res, next) => {
         'SELECT id FROM cash_registers WHERE location_id = ? AND closed_at IS NULL LIMIT 1'
       ).get(location_id);
       const isOpen = !!open;
-      return res.json({ success: true, isOpen, data: { isOpen } });
+      // helper_cash_mode lets the helper Sell screen skip the closed-register
+      // cash warning in bag mode (cash goes into the helper bag, spec 10.6).
+      const helper_cash_mode = await readCashMode(db);
+      return res.json({ success: true, isOpen, helper_cash_mode, data: { isOpen, helper_cash_mode } });
     }
 
     const today = localToday();
@@ -630,6 +633,18 @@ router.get('/register/status', authenticate, async (req, res, next) => {
     ]);
 
     if (register) {
+      // Helper cash bags: change floats handed out of this session and cash
+      // received from helpers into it (0 when there were none).
+      const helperCashRow = await db.prepare(`
+        SELECT
+          COALESCE(SUM(CASE WHEN type = 'handover_in' THEN counted_amount ELSE 0 END), 0) as handovers,
+          COALESCE(SUM(CASE WHEN type = 'float_out' THEN expected_amount ELSE 0 END), 0) as floats
+        FROM staff_cash_movements
+        WHERE register_id = ?
+      `).get(register.id);
+      register.helper_floats = Math.round((Number(helperCashRow?.floats) || 0) * 100) / 100;
+      register.helper_handovers = Math.round((Number(helperCashRow?.handovers) || 0) * 100) / 100;
+
       if (!register.closed_at) {
         // Open session: get net expenses that belong to THIS session (using register_id for
         // session-exact scoping; timestamp fallback for legacy expenses without register_id)
@@ -648,18 +663,11 @@ router.get('/register/status', authenticate, async (req, res, next) => {
         // Closed session: derive net expenses from expected cash math.
         // Helper floats left the drawer and handovers came into it (bag
         // mode); they are not expenses, so they are taken out of the gap.
-        const helperCash = await db.prepare(`
-          SELECT
-            COALESCE(SUM(CASE WHEN type = 'handover_in' THEN counted_amount ELSE 0 END), 0) as handovers,
-            COALESCE(SUM(CASE WHEN type = 'float_out' THEN expected_amount ELSE 0 END), 0) as floats
-          FROM staff_cash_movements
-          WHERE register_id = ?
-        `).get(register.id);
         const inferredExpenses = (Number(register.opening_balance) || 0) 
                                + (Number(register.total_cash_sales) || 0) 
                                - (Number(register.total_refunds_cash) || 0) 
-                               - (Number(helperCash?.floats) || 0)
-                               + (Number(helperCash?.handovers) || 0)
+                               - register.helper_floats
+                               + register.helper_handovers
                                - (Number(register.expected_cash) || 0);
         register.total_expenses_cash = Math.round(inferredExpenses * 100) / 100;
       }
@@ -741,6 +749,22 @@ router.post(
     } catch (err) { next(err); }
   }
 );
+
+// True when two payment lists hold the same (method, amount in paise) pairs,
+// in any order, counting repeats.
+function samePaymentSet(a, b) {
+  const key = (p) => `${String(p && p.method)}|${Math.round((Number(p && p.amount) || 0) * 100)}`;
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+  const counts = new Map();
+  for (const p of a) counts.set(key(p), (counts.get(key(p)) || 0) + 1);
+  for (const p of b) {
+    const k = key(p);
+    const n = counts.get(k) || 0;
+    if (n === 0) return false;
+    counts.set(k, n - 1);
+  }
+  return true;
+}
 
 const HELD_CASH_EDIT_MESSAGE = "This sale's cash is with a helper. Undo it within 2 minutes, or refund it from the counter.";
 
@@ -1002,7 +1026,11 @@ router.get('/register/history', authenticate, authorize('owner', 'manager'), asy
     const { location_id, limit: lim } = req.query;
 
     let sql = `
-      SELECT cr.*, l.name as location_name, u1.name as opened_by_name, u2.name as closed_by_name
+      SELECT cr.*, l.name as location_name, u1.name as opened_by_name, u2.name as closed_by_name,
+        COALESCE((SELECT SUM(m.expected_amount) FROM staff_cash_movements m
+                  WHERE m.register_id = cr.id AND m.type = 'float_out'), 0) as helper_floats,
+        COALESCE((SELECT SUM(m.counted_amount) FROM staff_cash_movements m
+                  WHERE m.register_id = cr.id AND m.type = 'handover_in'), 0) as helper_handovers
       FROM cash_registers cr
       LEFT JOIN locations l ON cr.location_id = l.id
       LEFT JOIN users u1 ON cr.opened_by = u1.id
@@ -1016,7 +1044,11 @@ router.get('/register/history', authenticate, authorize('owner', 'manager'), asy
     sql += ' LIMIT ?';
     params.push(limit);
 
-    const registers = await db.prepare(sql).all(...params);
+    const registers = (await db.prepare(sql).all(...params)).map((r) => ({
+      ...r,
+      helper_floats: Math.round((Number(r.helper_floats) || 0) * 100) / 100,
+      helper_handovers: Math.round((Number(r.helper_handovers) || 0) * 100) / 100,
+    }));
     res.json({ success: true, data: registers });
   } catch (err) { next(err); }
 });
@@ -1270,16 +1302,22 @@ router.put('/:id', authenticate, authorize('owner', 'manager', 'employee', 'coun
     // We allow updating limited fields in this MVP
     const {
       customer_name, customer_phone,
-      payment_status, payments, order_notes,
+      payment_status, order_notes,
       items, delivery_address
     } = req.body;
+    let { payments } = req.body;
 
     // Held helper cash (bag mode): the payment rows carry held_by and their
     // cash never went through the register. Rewriting them would drop held_by
-    // and move register cash that was never there, so payment edits are
-    // refused before anything on the sale is changed.
+    // and move register cash that was never there, so a real payment change is
+    // refused before anything on the sale is changed. Payments sent back
+    // unchanged (same method and amount pairs) are ignored, so the other edits
+    // (name, phone) still go through and held_by stays.
     if (Array.isArray(payments) && oldPayments.some((p) => p.held_by != null)) {
-      return res.status(409).json({ success: false, message: HELD_CASH_EDIT_MESSAGE });
+      if (!samePaymentSet(oldPayments, payments)) {
+        return res.status(409).json({ success: false, message: HELD_CASH_EDIT_MESSAGE });
+      }
+      payments = undefined;
     }
 
     const updates = [];

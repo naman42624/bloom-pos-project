@@ -149,7 +149,9 @@ router.post(
       if (!locationId) return res.status(400).json({ success: false, message: LOCATION_MESSAGE });
 
       const db = await getDb();
-      const person = await db.prepare('SELECT id FROM users WHERE id = ?').get(staffId);
+      // Only a helper has a bag: anyone else is refused, so the reveal can
+      // never be used to read another staff member's cash figures.
+      const person = await db.prepare("SELECT id FROM users WHERE id = ? AND role = 'helper'").get(staffId);
       if (!person) return res.status(404).json({ success: false, message: NO_HELPER_MESSAGE });
 
       const bag = await getBag(db, staffId, locationId);

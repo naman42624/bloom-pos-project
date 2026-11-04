@@ -131,7 +131,7 @@ export default function HelperCashCard({ locationId, onChanged }) {
         locationId={locationId}
         onClose={() => setReceiveFor(null)}
         onDone={(r) => { showNote(handoverDoneText(r)); load(); onChanged && onChanged(); }}
-        onStale={load}
+        onStale={() => { load(); onChanged && onChanged(); }}
       />
       <GiveFloatSheet
         visible={!!floatOpen}
@@ -140,6 +140,7 @@ export default function HelperCashCard({ locationId, onChanged }) {
         initialStaffId={floatOpen ? floatOpen.initialStaffId : null}
         onClose={() => setFloatOpen(null)}
         onDone={(r) => { showNote(r.message); load(); onChanged && onChanged(); }}
+        onRefresh={() => { load(); onChanged && onChanged(); }}
       />
     </>
   );

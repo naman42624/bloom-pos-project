@@ -29,6 +29,9 @@ import { Colors, FontSize, Spacing, BorderRadius } from '../../constants/theme';
 
 const ALREADY_COLLECTED = 'Already collected — refresh';
 const NET_ERROR = 'Nothing was saved. Check the internet and tap again.';
+// No answer to a real handover: it may or may not have gone in (Ruling 15),
+// so the card is refreshed and staff look at it before trying again.
+const LOST_ERROR = 'No answer from the shop computer. Check the helper card before trying again.';
 const isRegisterClosedError = (err) => err && err.status === 400 && /register isn.t open/i.test(err.message || '');
 
 export default function ReceiveCashSheet({ visible, helper, locationId, onClose, onDone, onStale }) {
@@ -55,7 +58,7 @@ export default function ReceiveCashSheet({ visible, helper, locationId, onClose,
   const name = helper.name || 'the helper';
   const counted = parseMoney(count);
 
-  const handleError = (err, retry) => {
+  const handleError = (err, retry, committing = false) => {
     if (err && err.status === 409 && (err.message || '').startsWith('Already collected')) {
       showAlert(ALREADY_COLLECTED, `${name}'s cash was already taken in. The list will refresh now.`);
       onStale && onStale();
@@ -67,7 +70,13 @@ export default function ReceiveCashSheet({ visible, helper, locationId, onClose,
       setStep('register');
       return;
     }
-    setError(err && err.status ? err.message : NET_ERROR);
+    const lost = !err || !err.status || err.status >= 500;
+    if (lost && committing) {
+      setError(LOST_ERROR);
+      if (onStale) onStale();
+      return;
+    }
+    setError(err && err.status && err.status < 500 ? err.message : NET_ERROR);
   };
 
   const runPreview = async () => {
@@ -120,8 +129,8 @@ export default function ReceiveCashSheet({ visible, helper, locationId, onClose,
       handleError(err, guard(async () => {
         setStep('confirm');
         setBusy(isFinal ? 'final' : 'partial');
-        try { await send(isFinal); } catch (e2) { handleError(e2, null); } finally { setBusy(null); }
-      }));
+        try { await send(isFinal); } catch (e2) { handleError(e2, null, true); } finally { setBusy(null); }
+      }), true);
     } finally {
       setBusy(null);
     }
@@ -220,14 +229,19 @@ export default function ReceiveCashSheet({ visible, helper, locationId, onClose,
                   {figures.canPartial && figures.remainingIfPartial > 0 ? (
                     <Text style={styles.hint}>{rupees(figures.remainingIfPartial)} stays with {name} for later.</Text>
                   ) : null}
+                  {/* Ruling 14: the count shown above cannot be retyped here.
+                      Count again closes the sheet; opening it again starts a
+                      fresh blind count. */}
                   <TouchableOpacity
-                    onPress={() => { setStep('count'); setPreview(null); setError(''); }}
+                    onPress={onClose}
                     disabled={!!busy}
                     accessibilityRole="button"
+                    accessibilityHint="Closes this. Tap the helper again to count from the start."
                     style={styles.link}
                   >
                     <Text style={styles.linkText}>Count again</Text>
                   </TouchableOpacity>
+                  <Text style={styles.hint}>Count again closes this. Tap {name} again to start over.</Text>
                 </>
               )}
             </>

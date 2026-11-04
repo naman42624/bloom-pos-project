@@ -584,8 +584,10 @@ router.get('/staff-sales', authenticate, authorize('owner'), async (req, res, ne
 
     // Helper cash bag figures (spec 4.2, 11): only ever shown on helper rows.
     // Cash collected matches the bag util: held cash payments on sales that
-    // were not undone. Reveals count only 'helper_bag_reveal' rows (handover
-    // previews and handovers are not reveals).
+    // were not undone. Reveals (Rulings 12 and 13) count looks at a helper bag
+    // by someone other than that helper: 'helper_bag_reveal' rows, plus
+    // handover previews (they show the expected amount) that the same person
+    // did not follow with a real handover for that helper within 10 minutes.
     const mvLocSql = locationId ? ' AND m.location_id = ?' : '';
     const movements = await db.prepare(`
       SELECT m.staff_id AS user_id,
@@ -609,7 +611,21 @@ router.get('/staff-sales', authenticate, authorize('owner'), async (req, res, ne
     const reveals = await db.prepare(`
       SELECT a.entity_id AS user_id, COUNT(*) AS reveals
       FROM audit_logs a
-      WHERE a.action = 'helper_bag_reveal' AND a.entity_type = 'user'
+      WHERE a.entity_type = 'user'
+        AND a.user_id IS DISTINCT FROM a.entity_id
+        AND (
+          a.action = 'helper_bag_reveal'
+          OR (
+            a.action = 'helper_bag_handover_preview'
+            AND NOT EXISTS (
+              SELECT 1 FROM audit_logs h
+              WHERE h.action = 'helper_bag_handover' AND h.entity_type = 'user'
+                AND h.entity_id = a.entity_id AND h.user_id = a.user_id
+                AND h.created_at >= a.created_at
+                AND h.created_at <= a.created_at + INTERVAL '10 minutes'
+            )
+          )
+        )
         AND ${inPeriod('a.created_at')}${revLocSql}
       GROUP BY a.entity_id
     `).all(from, to, ...(locationId ? [String(locationId)] : []));

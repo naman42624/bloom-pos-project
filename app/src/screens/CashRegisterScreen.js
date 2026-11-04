@@ -40,11 +40,15 @@ const HistoryCard = ({ session, isToday }) => {
   const expected = Number(session.expected_cash || 0);
   const actual = Number(session.actual_cash || 0);
   const discrepancy = Number(session.discrepancy || 0);
+  // Helper cash bags: change handed to helpers left the drawer, cash
+  // received from helpers came into it. Neither is an expense.
+  const helperFloats = Number(session.helper_floats || 0);
+  const helperHandovers = Number(session.helper_handovers || 0);
   
   // Dynamically derive Net Cash Expenses for closed sessions
-  // expected = opening + cashSales - cashRefunds - netExpenses
-  // netExpenses = opening + cashSales - cashRefunds - expected
-  const inferredExpenses = opening + cashSales - cashRefunds - expected;
+  // expected = opening + cashSales - cashRefunds - floats + handovers - netExpenses
+  // netExpenses = opening + cashSales - cashRefunds - floats + handovers - expected
+  const inferredExpenses = Math.round((opening + cashSales - cashRefunds - helperFloats + helperHandovers - expected) * 100) / 100;
   const hasDiscrepancy = Math.abs(discrepancy) >= 1;
 
   return (
@@ -89,6 +93,18 @@ const HistoryCard = ({ session, isToday }) => {
                 <View style={styles.detailRow}>
                   <Text style={styles.detailLabel}>Cash Refunds</Text>
                   <Text style={[styles.detailVal, { color: Colors.error }]}>-₹{cashRefunds.toFixed(2)}</Text>
+                </View>
+              )}
+              {helperFloats > 0 && (
+                <View style={styles.detailRow}>
+                  <Text style={styles.detailLabel}>Change given to helpers</Text>
+                  <Text style={[styles.detailVal, { color: Colors.error }]}>-₹{helperFloats.toFixed(2)}</Text>
+                </View>
+              )}
+              {helperHandovers > 0 && (
+                <View style={styles.detailRow}>
+                  <Text style={styles.detailLabel}>Cash from helpers</Text>
+                  <Text style={[styles.detailVal, { color: Colors.success }]}>+₹{helperHandovers.toFixed(2)}</Text>
                 </View>
               )}
               {inferredExpenses > 0 ? (
@@ -387,7 +403,10 @@ export default function CashRegisterScreen({ navigation, route }) {
     if (preview && Number.isFinite(excess) && excess >= 1) {
       const pendingCod = Math.round(Number(preview.pending_cod || 0) * 100) / 100;
       const bookable = Math.round((excess - pendingCod) * 100) / 100;
-      setTopup({ excess, pendingCod, bookable, cash, locationId: selectedLocation, registerId: (register && register.id) || null });
+      // Bag mode: extra cash in the drawer may be helper cash that was
+      // handed over without Receive cash. Offer Collect now before booking.
+      const bagLines = await helperCashOut(selectedLocation);
+      setTopup({ excess, pendingCod, bookable, cash, locationId: selectedLocation, registerId: (register && register.id) || null, bagLines });
       return;
     }
     setTopup(null);
@@ -441,6 +460,17 @@ export default function CashRegisterScreen({ navigation, route }) {
       setSubmitting(false);
     }
     await doClose(cash, locationId);
+  };
+
+  // From the top-up panel: back to the "still with <name>" warning, whose
+  // Collect now buttons open the blind handover for each helper.
+  const handleTopupCollect = () => {
+    if (!topup || !topup.bagLines || topup.bagLines.length === 0) return;
+    const { cash, locationId, bagLines } = topup;
+    dropTopup();
+    if (selectedLocation !== locationId) return;
+    setBagNote('');
+    setBagWarn({ cash, locationId, lines: bagLines });
   };
 
   const handleCloseAsIs = async () => {
@@ -575,15 +605,35 @@ export default function CashRegisterScreen({ navigation, route }) {
                   </View>
                 ) : null}
 
+                {Number(register.helper_floats || 0) > 0 && (
+                  <View style={styles.calcRow}>
+                    <Text style={styles.calcLabel}>- Change given to helpers</Text>
+                    <Text style={[styles.calcVal, { color: Colors.error }]}>₹{Number(register.helper_floats).toFixed(2)}</Text>
+                  </View>
+                )}
+                {Number(register.helper_handovers || 0) > 0 && (
+                  <View style={styles.calcRow}>
+                    <Text style={styles.calcLabel}>+ Cash from helpers</Text>
+                    <Text style={[styles.calcVal, { color: Colors.success }]}>₹{Number(register.helper_handovers).toFixed(2)}</Text>
+                  </View>
+                )}
+
                 <View style={styles.calcDivider} />
                 <View style={styles.calcRow}>
                   <Text style={styles.calcTotalLabel}>Expected in Drawer</Text>
                   <Text style={styles.calcTotalVal}>
+                    {/* The server keeps expected_cash for the open session
+                        (sales, refunds, expenses, helper floats and cash);
+                        the sum of the lines above is only a fallback. */}
                     ₹{(
-                      Number(register.opening_balance || 0) + 
-                      Number(register.total_cash_sales || 0) - 
-                      Number(register.total_refunds_cash || 0) - 
-                      Number(register.total_expenses_cash || 0)
+                      register.expected_cash != null && Number.isFinite(Number(register.expected_cash))
+                        ? Number(register.expected_cash)
+                        : Number(register.opening_balance || 0) +
+                          Number(register.total_cash_sales || 0) -
+                          Number(register.total_refunds_cash || 0) -
+                          Number(register.total_expenses_cash || 0) -
+                          Number(register.helper_floats || 0) +
+                          Number(register.helper_handovers || 0)
                     ).toFixed(2)}
                   </Text>
                 </View>
@@ -671,6 +721,20 @@ export default function CashRegisterScreen({ navigation, route }) {
                   <Text style={styles.topupNote}>Your count of {rupees(topup.cash)} is saved and cannot be changed now.</Text>
                 ) : null}
                 <Text style={styles.topupText}>{rupees(topup.excess)} more than recorded.{topup.bookable >= 1 ? (topup.pendingCod > 0 ? ` Book the other ${rupees(topup.bookable)} as unrecorded sales?` : ' Book it as unrecorded sales?') : ''}</Text>
+                {topup.bagLines && topup.bagLines.length > 0 ? (
+                  <View>
+                    <Text style={styles.topupNote}>Did a helper give you cash? Tap Collect now first.</Text>
+                    <TouchableOpacity
+                      style={[styles.topupNo, submitting && { opacity: 0.6 }]}
+                      onPress={handleTopupCollect}
+                      disabled={submitting}
+                      accessibilityRole="button"
+                      accessibilityLabel="Collect now from helpers"
+                    >
+                      <Text style={styles.topupNoText}>Collect now</Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : null}
                 {topup.pendingCod > 0 ? (
                   <View>
                     <Text style={styles.topupNote}>{rupees(topup.pendingCod)} of delivery cash is not settled yet and may be in the drawer. Settle it first.</Text>

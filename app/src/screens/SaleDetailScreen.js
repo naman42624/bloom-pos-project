@@ -277,6 +277,10 @@ export default function SaleDetailScreen({ route, navigation }) {
   const [editCustomerPhone, setEditCustomerPhone] = useState('');
   const [editPaymentStatus, setEditPaymentStatus] = useState('');
   const [editPaymentMethod, setEditPaymentMethod] = useState('cash');
+  // Method shown when the edit box opened: payments are sent only when it
+  // changed, so a name/phone edit never rewrites the payments (a helper's
+  // held cash cannot be rewritten at all, and a split payment would merge).
+  const editInitialMethod = useRef(null);
   const [savingEdit, setSavingEdit] = useState(false);
 
   // Item price/quantity edit
@@ -362,7 +366,9 @@ export default function SaleDetailScreen({ route, navigation }) {
     setEditCustomerName(sale.customer_name || sale.customer_display_name || '');
     setEditCustomerPhone(sale.customer_phone || sale.customer_display_phone || '');
     setEditPaymentStatus(sale.payment_status || 'pending');
-    setEditPaymentMethod(sale.payments && sale.payments[0] ? sale.payments[0].method : 'cash');
+    const firstMethod = sale.payments && sale.payments[0] ? sale.payments[0].method : 'cash';
+    setEditPaymentMethod(firstMethod);
+    editInitialMethod.current = firstMethod;
     setEditError(null);
     setEditModalVisible(true);
   };
@@ -380,8 +386,9 @@ export default function SaleDetailScreen({ route, navigation }) {
       };
 
       if (currentPaid > 0) {
-        // Just replacing the method of the existing payments
-        payload.payments = [{ method: editPaymentMethod, amount: currentPaid }];
+        // Just replacing the method of the existing payments, and only when
+        // the method was actually changed
+        if (editPaymentMethod !== editInitialMethod.current) payload.payments = [{ method: editPaymentMethod, amount: currentPaid }];
       } else if (editPaymentStatus === 'paid') {
         // If changed from pending to paid and no previous payments exist, insert full amount
         payload.payments = [{ method: editPaymentMethod, amount: sale.grand_total }];
