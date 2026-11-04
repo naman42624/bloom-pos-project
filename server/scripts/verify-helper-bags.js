@@ -723,6 +723,33 @@ check('helper sees only own bag', async () => {
   }
 });
 
+check('float picker lists idle helpers, has_cash flags', async () => {
+  const owner = await loginOwner();
+  const busy = await helperSession(owner.token);
+  const idle = await helperSession(owner.token);
+  try {
+    await setCashMode('bag');
+    await openOwnRegister(owner.token, 2000);
+    assert((await giveFloat(owner.token, busy.id, 250)).status === 201, 'float busy');
+    const plain = await listAs(owner.token);
+    assert(plain.status === 200 && !('helpers' in plain.body.data), `helpers sent without include_idle: ${JSON.stringify(plain.body.data)}`);
+    assert(plain.body.data.has_cash === true, `total has_cash: ${JSON.stringify(plain.body.data)}`);
+    const row = plain.body.data.bags.find((b) => b.staff_id === busy.id);
+    assert(row && row.has_cash === true, `row has_cash: ${JSON.stringify(row)}`);
+    assert(!plain.body.data.bags.some((b) => b.staff_id === idle.id), 'idle helper in bags');
+    const r = await api('GET', `/helper-cash/bags?location_id=${TEST_LOCATION_ID}&include_idle=1`, owner.token);
+    const hs = r.body?.data?.helpers || [];
+    const hi = hs.find((h) => h.staff_id === idle.id);
+    const hb = hs.find((h) => h.staff_id === busy.id);
+    assert(hi && hi.last_float === null, `idle helper: ${JSON.stringify(hs)}`);
+    assert(hb && near(hb.last_float, 250), `busy helper last_float: ${JSON.stringify(hb)}`);
+    const own = await api('GET', `/helper-cash/bags?location_id=${TEST_LOCATION_ID}&include_idle=1`, idle.token);
+    assert(own.status === 200 && !('helpers' in own.body.data), `helper got the picker: ${JSON.stringify(own.body)}`);
+  } finally {
+    await restoreCashMode();
+  }
+});
+
 check('float needs open register', async () => {
   const owner = await loginOwner();
   const helper = await helperSession(owner.token);

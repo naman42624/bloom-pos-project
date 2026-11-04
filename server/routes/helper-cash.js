@@ -95,20 +95,40 @@ router.get(
       }
 
       const totalPaise = bags.reduce((s, b) => s + toPaise(b.held), 0);
-      res.json({
-        success: true,
-        data: {
-          mode,
-          total_masked: maskAmount(fromPaise(totalPaise)),
-          bags: bags.map((b) => ({
-            staff_id: b.staff_id,
-            name: b.name,
-            held_masked: maskAmount(b.held),
-            sale_count: b.sale_count,
-            access_ended: b.access_ended,
-          })),
-        },
-      });
+      const data = {
+        mode,
+        total_masked: maskAmount(fromPaise(totalPaise)),
+        // Whether any cash is out at all (the masked text cannot say: ₹0.50 masks like ₹0)
+        has_cash: totalPaise !== 0,
+        bags: bags.map((b) => ({
+          staff_id: b.staff_id,
+          name: b.name,
+          held_masked: maskAmount(b.held),
+          has_cash: toPaise(b.held) !== 0,
+          sale_count: b.sale_count,
+          access_ended: b.access_ended,
+        })),
+      };
+
+      // include_idle=1 (counter only): every helper who can take a float here,
+      // including ones with an empty bag, for the Give float picker.
+      if (req.user.role !== 'helper' && String(req.query.include_idle || '') === '1') {
+        const people = await db.prepare(`
+          SELECT u.id, u.name, u.access_until FROM users u
+          JOIN user_locations ul ON ul.user_id = u.id AND ul.location_id = ?
+          WHERE u.role = 'helper' AND u.is_active = 1
+          ORDER BY u.name ASC, u.id ASC
+        `).all(locationId);
+        const helpers = [];
+        for (const p of people) {
+          if (isAccessExpired(p.access_until)) continue;
+          const last = await lastFloat(db, p.id, locationId);
+          helpers.push({ staff_id: p.id, name: p.name, last_float: last ? last.amount : null });
+        }
+        data.helpers = helpers;
+      }
+
+      res.json({ success: true, data });
     } catch (err) { next(err); }
   }
 );
