@@ -86,9 +86,12 @@ async function setCashMode(mode) {
   await db.prepare("UPDATE settings SET value = ? WHERE key = 'helper_cash_mode'").run(mode);
 }
 
+// Puts back the value read before this run changed it (nothing to do when
+// the run never changed it)
 async function restoreCashMode() {
+  if (cashModeBackup === undefined) return;
   const db = await getDb();
-  await db.prepare("UPDATE settings SET value = 'register' WHERE key = 'helper_cash_mode'").run();
+  await db.prepare("UPDATE settings SET value = ? WHERE key = 'helper_cash_mode'").run(cashModeBackup);
 }
 
 // Opens a register at Test Loc for this script. Refuses (never closes) when
@@ -278,12 +281,17 @@ check('bag balance formula', async () => {
     bag = await getBag(db, helper.id, TEST_LOCATION_ID);
     assert(bag.held === 1200 && bag.sale_count === 3, `after upi: ${JSON.stringify(bag)}`);
 
-    // A handover settles part of it; a cancelled sale drops out
+    // A handover settles part of it
     await db.prepare("INSERT INTO staff_cash_movements (location_id, staff_id, type, expected_amount, counted_amount, settled_amount, recorded_by) VALUES (?, ?, 'handover_in', 1200, 250, 250, ?)")
       .run(TEST_LOCATION_ID, helper.id, owner.id);
-    await db.prepare("UPDATE sales SET status = 'cancelled' WHERE id = ?").run(b.body.data.id);
     bag = await getBag(db, helper.id, TEST_LOCATION_ID);
-    assert(bag.held === 650 && bag.cash_sales === 400 && bag.settled === 250 && bag.sale_count === 2, `after handover + cancel: ${JSON.stringify(bag)}`);
+    assert(bag.held === 950 && bag.cash_sales === 700 && bag.settled === 250 && bag.sale_count === 3, `after handover: ${JSON.stringify(bag)}`);
+
+    // An undone sale drops out. Set by SQL: the real undo route still
+    // reverses register cash for a held sale until Task 2 changes it.
+    await db.prepare("UPDATE sales SET status = 'cancelled', undone_at = NOW() WHERE id = ?").run(b.body.data.id);
+    bag = await getBag(db, helper.id, TEST_LOCATION_ID);
+    assert(bag.held === 650 && bag.cash_sales === 400 && bag.settled === 250 && bag.sale_count === 2, `after handover + undo: ${JSON.stringify(bag)}`);
 
     // Another location: nothing there
     const other = await getBag(db, helper.id, TEST_LOCATION_ID === 1 ? 2 : 1);
@@ -295,6 +303,38 @@ check('bag balance formula', async () => {
     assert(row && row.held === 650 && row.sale_count === 2, `listBags row: ${JSON.stringify(row)}`);
     assert(row.is_active === true && row.access_until === shopDate(2) && /Verify Bag Helper/.test(row.name), `listBags fields: ${JSON.stringify(row)}`);
     assert(maskAmount(row.held) === '₹6xx', `masked ${maskAmount(row.held)}`);
+  } finally {
+    await restoreCashMode();
+  }
+});
+
+check('refunded and cancelled bag sale keeps its cash in the bag', async () => {
+  const owner = await loginOwner();
+  const helper = await helperSession(owner.token);
+  const db = await getDb();
+  try {
+    await setCashMode('bag');
+    const regId = await openOwnRegister(owner.token, 1000);
+    const sale = await helperSale(helper.token, [{ method: 'cash', amount: 350 }]);
+    assert(sale.status === 201, `sale: ${sale.status} ${JSON.stringify(sale.body)}`);
+    const saleId = sale.body.data.id;
+    const before = await getBag(db, helper.id, TEST_LOCATION_ID);
+    assert(before.held === 350, `bag before refund: ${JSON.stringify(before)}`);
+    const regBefore = await registerRow(regId);
+
+    // Real path: cash refund from the drawer, then cancel
+    const refund = await api('POST', `/sales/${saleId}/refund`, owner.token, { amount: 350, reason: 'verify bag refund', refund_method: 'cash' });
+    assert(refund.status === 200 || refund.status === 201, `refund: ${refund.status} ${JSON.stringify(refund.body)}`);
+    const cancel = await api('PUT', `/sales/${saleId}/cancel`, owner.token);
+    assert(cancel.status === 200, `cancel: ${cancel.status} ${JSON.stringify(cancel.body)}`);
+    const row = await db.prepare('SELECT status, undone_at FROM sales WHERE id = ?').get(saleId);
+    assert(row.status === 'cancelled' && row.undone_at === null, `sale row: ${JSON.stringify(row)}`);
+
+    // The refund was paid from the drawer; the helper still holds the 350
+    const regAfter = await registerRow(regId);
+    assert(regBefore.expected_cash - regAfter.expected_cash === 350, `drawer paid ${regBefore.expected_cash - regAfter.expected_cash}, wanted 350`);
+    const after = await getBag(db, helper.id, TEST_LOCATION_ID);
+    assert(after.held === 350 && after.cash_sales === 350, `bag after refund + cancel: ${JSON.stringify(after)}`);
   } finally {
     await restoreCashMode();
   }
@@ -332,9 +372,6 @@ async function cleanup() {
   const db = await getDb();
   try {
     await restoreCashMode();
-    if (cashModeBackup !== undefined && cashModeBackup !== 'register') {
-      console.error(`   (note: helper_cash_mode was '${cashModeBackup}' before the run; left as 'register')`);
-    }
   } catch (err) {
     console.error(`   (cleanup warning: helper_cash_mode: ${err.message})`);
   }
@@ -348,6 +385,7 @@ async function cleanup() {
     try {
       await db.prepare('DELETE FROM production_tasks WHERE sale_id = ?').run(id);
       await db.prepare('DELETE FROM deliveries WHERE sale_id = ?').run(id);
+      await db.prepare('DELETE FROM refunds WHERE sale_id = ?').run(id);
       await db.prepare('DELETE FROM payments WHERE sale_id = ?').run(id);
       await db.prepare('DELETE FROM sale_items WHERE sale_id = ?').run(id);
       await db.prepare("DELETE FROM audit_logs WHERE entity_type = 'sale' AND entity_id = ?").run(id);

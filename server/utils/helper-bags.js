@@ -3,7 +3,9 @@
 // In bag mode a helper keeps the cash they take (payments.held_by = helper)
 // instead of it going into the register. Their bag, per (staff, location):
 //   floats given (float_out.expected_amount)
-// + cash payments held by them on sales that were not cancelled or undone
+// + cash payments held by them on sales that were not undone
+//   (a refunded and then cancelled sale still counts: its refund was paid
+//   from the drawer, so the cash the helper took is still in their bag)
 // - amounts settled by handovers (handover_in.settled_amount)
 //
 // Every function takes the caller's db (async pool, a withTransaction tx, or
@@ -45,7 +47,7 @@ async function getBag(db, staffId, locationId) {
     FROM payments p
     JOIN sales s ON s.id = p.sale_id
     WHERE p.held_by = ? AND p.method = 'cash' AND s.location_id = ?
-      AND s.status <> 'cancelled' AND s.undone_at IS NULL
+      AND s.undone_at IS NULL
   `).get(staffId, locationId);
 
   const floats = toPaise(mv && mv.floats);
