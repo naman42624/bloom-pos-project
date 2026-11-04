@@ -775,7 +775,8 @@ function parseScanPayload(raw) {
   if (/^https?:\/\//i.test(text)) {
     let u;
     try { u = new URL(text); } catch { return null; }
-    const m = u.pathname.match(/^\/p\/([^/]+)\/?$/);
+    // /+ also accepts labels printed while PUBLIC_APP_URL ended in a slash (//p/CODE)
+    const m = u.pathname.match(/^\/+p\/([^/]+)\/?$/);
     if (!m) return null;
     const code = m[1].toUpperCase();
     return SCAN_CODE_RE.test(code) ? { code } : null;

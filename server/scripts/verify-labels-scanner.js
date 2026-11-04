@@ -5,7 +5,7 @@
  */
 const h = require('./lib/verify-harness');
 const { ALPHABET, ensureLabelCode, generateLabelCode, labelUrl } = require('../utils/label-code');
-const { publicUrlMissingInProduction, publicUrlHost, DEV_FALLBACK } = require('../utils/public-url');
+const { publicUrlMissingInProduction, publicUrlHost, DEV_FALLBACK, normalizeBaseUrl } = require('../utils/public-url');
 const { check, api, loginOwner, assert, getDb, TEST_LOCATION_ID } = h;
 
 const createdProductIds = [];
@@ -131,6 +131,22 @@ check('url payload resolves', async () => {
   assert(r.status === 200 && r.body.data.id === id, JSON.stringify(r.body));
   const other = await scan(owner.token, `https://example.org/p/${code}`);
   assert(other.status === 200 && other.body.data.id === id, 'any host with exact path');
+});
+
+check('url with a doubled slash resolves (PUBLIC_APP_URL ending in /)', async () => {
+  const owner = await loginOwner();
+  const db = await getDb();
+  const id = await makeProduct('ScanSlash');
+  const code = await ensureLabelCode(db, id);
+  const r = await scan(owner.token, `https://shop.example.com//p/${code}`);
+  assert(r.status === 200 && r.body.data.id === id, JSON.stringify(r.body));
+});
+
+check('PUBLIC_APP_URL trailing slashes are dropped', async () => {
+  assert(normalizeBaseUrl('https://shop.example.com/') === 'https://shop.example.com', 'one slash');
+  assert(normalizeBaseUrl(' https://shop.example.com// ') === 'https://shop.example.com', 'two slashes + spaces');
+  assert(normalizeBaseUrl('https://shop.example.com') === 'https://shop.example.com', 'none');
+  assert(normalizeBaseUrl('') === '', 'blank');
 });
 
 check('bare code resolves', async () => {
