@@ -17,6 +17,13 @@ import Input from '../components/Input';
 import Button from '../components/Button';
 import DismissKeyboard from '../components/DismissKeyboard';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
+import DateTimePickerModal from '../components/DateTimePickerModal';
+import useSubmitGuard from '../hooks/useSubmitGuard';
+import { showAlert } from '../utils/alert';
+import { getShopTodayStr, getShopNow } from '../utils/datetime';
+import {
+  addDaysStr, dateStrToDate, dateToDateStr, formatWeekdayDayMonth,
+} from '../utils/helperAccess';
 
 const ROLES = [
   { key: 'owner', label: 'Owner', icon: 'key', color: Colors.roleOwner || '#EAB308' },
@@ -36,12 +43,16 @@ const ROLE_LABELS = {
   florist_staff: 'Florist/Prep Staff',
   delivery_partner: 'Delivery Partner',
   customer: 'Customer',
+  helper: 'Helper',
 };
 
 export default function UserFormScreen({ route, navigation }) {
   const existingUser = route.params?.user;
   const isEditing = !!existingUser;
-  const { user: currentUser } = useAuth();
+  const { user: currentUser, settings } = useAuth();
+  const timezone = settings?.timezone?.value || 'Asia/Kolkata';
+  const today = getShopTodayStr(timezone);
+  const isHelper = isEditing && existingUser?.role === 'helper';
 
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
@@ -60,7 +71,21 @@ export default function UserFormScreen({ route, navigation }) {
   const [newPin, setNewPin] = useState('');
   const [pinSaving, setPinSaving] = useState(false);
 
+  // Helper access (edit mode, helper accounts): extend Works until.
+  const [worksUntil, setWorksUntil] = useState(existingUser?.access_until ? String(existingUser.access_until).slice(0, 10) : null);
+  const [showDatePicker, setShowDatePicker] = useState(false);
+
+  // Approval PIN (owner only, for manager/owner accounts): approves a
+  // helper's discount, never signs anyone in.
+  const [approvalPin, setApprovalPin] = useState('');
+  const [approvalPin2, setApprovalPin2] = useState('');
+  const [approvalPinError, setApprovalPinError] = useState(null);
+  const [approvalSaving, setApprovalSaving] = useState(false);
+  const [approvalCode, setApprovalCode] = useState(existingUser?.employee_code || null);
+  const guardSubmit = useSubmitGuard();
+
   const isOwner = currentUser?.role === 'owner';
+  const showApprovalPin = isEditing && isOwner && ['manager', 'owner'].includes(existingUser?.role);
   const canChangeRole = isEditing && isOwner && existingUser?.id !== currentUser?.id;
 
   // Manager can only create employee/counter_staff/florist_staff/delivery_partner/customer
@@ -109,6 +134,7 @@ export default function UserFormScreen({ route, navigation }) {
     if (!name.trim()) newErrors.name = 'Name is required';
     if (!phone.trim()) newErrors.phone = 'Phone number is required';
     else if (!/^[6-9]\d{9}$/.test(phone.trim())) newErrors.phone = 'Enter a valid 10-digit number';
+    if (isHelper && !worksUntil) newErrors.worksUntil = 'Pick the last day this helper can work.';
     if (!isEditing && !password) newErrors.password = 'Password is required';
     else if (!isEditing && password.length < 6) newErrors.password = 'Min 6 characters';
     setErrors(newErrors);
@@ -121,7 +147,9 @@ export default function UserFormScreen({ route, navigation }) {
     try {
       const data = { name: name.trim(), phone: phone.trim(), role };
       if (isEditing) {
-        await api.updateUser(existingUser.id, { ...data, location_ids: selectedLocationIds });
+        const update = { ...data, location_ids: selectedLocationIds };
+        if (isHelper) update.access_until = worksUntil;
+        await api.updateUser(existingUser.id, update);
       } else {
         data.password = password;
         data.location_ids = selectedLocationIds;
@@ -129,7 +157,8 @@ export default function UserFormScreen({ route, navigation }) {
       }
       navigation.goBack();
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to save user');
+      const first = Array.isArray(err?.errors) && err.errors[0]?.msg;
+      showAlert("Couldn't save", first || err.message || 'Check the internet and try again.');
     } finally {
       setLoading(false);
     }
@@ -194,6 +223,34 @@ export default function UserFormScreen({ route, navigation }) {
       Alert.alert('Error', err.message || 'Failed to set PIN');
     } finally {
       setPinSaving(false);
+    }
+  };
+
+  const submitApprovalPin = async () => {
+    if (!/^\d{4}$/.test(approvalPin)) {
+      setApprovalPinError('Type 4 digits.');
+      return;
+    }
+    if (approvalPin !== approvalPin2) {
+      setApprovalPinError("The two PINs don't match — try again");
+      setApprovalPin2('');
+      return;
+    }
+    setApprovalPinError(null);
+    setApprovalSaving(true);
+    try {
+      const res = await api.setUserPin(existingUser.id, approvalPin);
+      const code = res.data?.employee_code || approvalCode;
+      setApprovalCode(code);
+      setApprovalPin('');
+      setApprovalPin2('');
+      showAlert('Approval PIN saved', code
+        ? `To approve a helper's discount, ${existingUser.name} types code ${code} and this PIN.`
+        : 'Approval PIN saved.');
+    } catch (err) {
+      showAlert("Couldn't save the PIN", err?.message || 'Check the internet and tap Save PIN again.');
+    } finally {
+      setApprovalSaving(false);
     }
   };
 
@@ -298,6 +355,7 @@ export default function UserFormScreen({ route, navigation }) {
             leftIcon={<Ionicons name="call-outline" size={20} color={Colors.textSecondary} />}
           />
 
+          {!isHelper && (
           <Input
             label={isEditing ? 'New Password (leave blank to keep current)' : 'Password'}
             value={password}
@@ -307,6 +365,56 @@ export default function UserFormScreen({ route, navigation }) {
             error={errors.password}
             leftIcon={<Ionicons name="lock-closed-outline" size={20} color={Colors.textSecondary} />}
           />
+          )}
+
+          {isHelper && (
+            <View style={styles.helperCard}>
+              <Text style={styles.label}>Works until</Text>
+              <TouchableOpacity
+                style={styles.dateButton}
+                onPress={() => setShowDatePicker(true)}
+                accessibilityRole="button"
+                accessibilityLabel={`Works until ${formatWeekdayDayMonth(worksUntil)}. Tap to change.`}
+              >
+                <Ionicons name="calendar-outline" size={22} color={Colors.primary} />
+                <Text style={styles.dateText}>{worksUntil ? formatWeekdayDayMonth(worksUntil) : 'Pick a date'}</Text>
+                <Text style={styles.dateChange}>Change</Text>
+              </TouchableOpacity>
+              <View style={styles.chipRow}>
+                {[7, 14, 30].map((days) => {
+                  const base = worksUntil && worksUntil > today ? worksUntil : today;
+                  return (
+                    <TouchableOpacity
+                      key={days}
+                      style={styles.chip}
+                      onPress={() => { setWorksUntil(addDaysStr(base, days)); clearError('worksUntil'); }}
+                      accessibilityRole="button"
+                    >
+                      <Text style={styles.chipText}>+{days === 7 ? '1 week' : days === 14 ? '2 weeks' : '1 month'}</Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+              {worksUntil && worksUntil < today ? (
+                <Text style={styles.helperHint}>Their access ended. Pick a new date and tap Update Staff to let them work again.</Text>
+              ) : (
+                <Text style={styles.helperHint}>They can work all of that day. Tap Update Staff to save a new date.</Text>
+              )}
+              {!!errors.worksUntil && <Text style={styles.fieldError}>{errors.worksUntil}</Text>}
+
+              {existingUser?.is_active ? (
+                <TouchableOpacity
+                  style={styles.joinCodeBtn}
+                  onPress={() => navigation.navigate('HelperJoinQR', { helper: existingUser })}
+                  accessibilityRole="button"
+                >
+                  <Ionicons name="qr-code-outline" size={20} color={Colors.primary} />
+                  <Text style={styles.joinCodeText}>Show join code</Text>
+                </TouchableOpacity>
+              ) : null}
+              <Text style={styles.helperHint}>A new join code cancels the old one. Use it when they get a new phone or can't sign in.</Text>
+            </View>
+          )}
 
           {isEditing && password.length > 0 && (
             <Button
@@ -404,6 +512,41 @@ export default function UserFormScreen({ route, navigation }) {
             </View>
           )}
 
+          {showApprovalPin && (
+            <View style={styles.pinSection}>
+              <Text style={styles.sectionLabel}>Approval PIN</Text>
+              <Text style={styles.approvalHint}>Used only to approve a helper's discount. It can't open the counter app.</Text>
+              {approvalCode ? (
+                <Text style={styles.employeeCodeText}>Code: {approvalCode}</Text>
+              ) : null}
+              <Input
+                label="New 4-digit PIN"
+                value={approvalPin}
+                onChangeText={(t) => { setApprovalPin(t.replace(/[^0-9]/g, '').slice(0, 4)); setApprovalPinError(null); }}
+                keyboardType="number-pad"
+                maxLength={4}
+                secureTextEntry
+                placeholder="4 digits"
+              />
+              <Input
+                label="Type it again"
+                value={approvalPin2}
+                onChangeText={(t) => { setApprovalPin2(t.replace(/[^0-9]/g, '').slice(0, 4)); setApprovalPinError(null); }}
+                keyboardType="number-pad"
+                maxLength={4}
+                secureTextEntry
+                placeholder="4 digits"
+                error={approvalPinError}
+              />
+              <Button
+                title="Save PIN"
+                variant="outline"
+                onPress={guardSubmit(submitApprovalPin)}
+                loading={approvalSaving}
+              />
+            </View>
+          )}
+
           <Button
             title={isEditing ? 'Update Staff' : 'Add Staff'}
             onPress={handleSubmit}
@@ -429,6 +572,23 @@ export default function UserFormScreen({ route, navigation }) {
           )}
         </ScrollView>
       </KeyboardAvoidingView>
+
+      {isHelper && (
+        <DateTimePickerModal
+          visible={showDatePicker}
+          mode="date"
+          value={worksUntil ? dateStrToDate(worksUntil) : getShopNow(timezone)}
+          minimumDate={getShopNow(timezone)}
+          title="Works until"
+          onCancel={() => setShowDatePicker(false)}
+          onConfirm={(d) => {
+            setShowDatePicker(false);
+            const picked = dateToDateStr(d);
+            setWorksUntil(picked < today ? today : picked);
+            clearError('worksUntil');
+          }}
+        />
+      )}
 
       <Modal visible={pinModalVisible} transparent animationType="fade" onRequestClose={() => setPinModalVisible(false)}>
         <View style={styles.modalOverlay}>
@@ -538,6 +698,28 @@ const styles = StyleSheet.create({
   setPinButton: { flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start' },
   setPinButtonText: { color: Colors.primary, fontWeight: '600' },
   noCodeText: { fontSize: FontSize.sm, color: Colors.textLight },
+  approvalHint: { fontSize: FontSize.md, color: Colors.textSecondary, marginBottom: Spacing.sm, lineHeight: 22 },
+
+  // Helper access
+  helperCard: { marginTop: Spacing.md, padding: Spacing.md, backgroundColor: Colors.surface, borderRadius: BorderRadius.md, borderWidth: 1, borderColor: Colors.border },
+  dateButton: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
+    minHeight: 52, paddingHorizontal: Spacing.md,
+    backgroundColor: Colors.background, borderRadius: BorderRadius.md,
+    borderWidth: 1, borderColor: Colors.border,
+  },
+  dateText: { flex: 1, fontSize: FontSize.lg, fontWeight: '600', color: Colors.text },
+  dateChange: { fontSize: FontSize.md, fontWeight: '600', color: Colors.primary },
+  chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm, marginTop: Spacing.sm },
+  chip: {
+    minHeight: 44, justifyContent: 'center', paddingHorizontal: Spacing.md,
+    borderRadius: BorderRadius.full, borderWidth: 1, borderColor: Colors.border, backgroundColor: Colors.surface,
+  },
+  chipText: { fontSize: FontSize.md, color: Colors.text, fontWeight: '500' },
+  helperHint: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: Spacing.sm },
+  fieldError: { fontSize: FontSize.sm, color: Colors.error, marginTop: Spacing.xs },
+  joinCodeBtn: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, minHeight: 48, marginTop: Spacing.md },
+  joinCodeText: { fontSize: FontSize.md, fontWeight: '600', color: Colors.primary },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', padding: Spacing.lg },
   modalCard: { backgroundColor: Colors.white, borderRadius: BorderRadius.lg, padding: Spacing.lg, width: '100%', maxWidth: 360 },
   modalTitle: { fontSize: FontSize.lg, fontWeight: '700', color: Colors.text, marginBottom: Spacing.md },

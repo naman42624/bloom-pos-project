@@ -15,6 +15,8 @@ import LocationDetailScreen from '../screens/LocationDetailScreen';
 import LocationFormScreen from '../screens/LocationFormScreen';
 import UsersScreen from '../screens/UsersScreen';
 import UserFormScreen from '../screens/UserFormScreen';
+import AddHelperScreen from '../screens/AddHelperScreen';
+import HelperJoinQRScreen from '../screens/HelperJoinQRScreen';
 import ProfileScreen from '../screens/ProfileScreen';
 import SettingsScreen from '../screens/SettingsScreen';
 import QuickSaleTilesScreen from '../screens/QuickSaleTilesScreen';
@@ -205,6 +207,8 @@ function UsersStack() {
           presentation: 'modal',
         })}
       />
+      <Stack.Screen name="AddHelper" component={AddHelperScreen} options={{ title: 'Add helper' }} />
+      <Stack.Screen name="HelperJoinQR" component={HelperJoinQRScreen} options={{ title: 'Join code' }} />
     </Stack.Navigator>
   );
 }
@@ -492,6 +496,8 @@ function MoreStack() {
         component={UserFormScreen}
         options={({ route }) => ({ title: route.params?.user ? 'Edit Staff' : 'Add Staff', presentation: 'modal' })}
       />
+      <Stack.Screen name="AddHelper" component={AddHelperScreen} options={{ title: 'Add helper' }} />
+      <Stack.Screen name="HelperJoinQR" component={HelperJoinQRScreen} options={{ title: 'Join code' }} />
       <Stack.Screen name="Settlements" component={SettlementsScreen} options={{ title: 'Settlements' }} />
       <Stack.Screen name="CashRegister" component={CashRegisterScreen} options={{ title: 'Cash Register' }} />
       <Stack.Screen name="Expenses" component={ExpensesScreen} options={{ title: 'Expenses' }} />

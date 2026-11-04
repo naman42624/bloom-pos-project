@@ -1,5 +1,6 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
 const { body, param, query, validationResult } = require('express-validator');
 const { localToday } = require('../utils/helper-access');
 const { getDb } = require('../config/database');
@@ -50,7 +51,7 @@ router.get(
 
       // Managers can see operational staff including managers for shift setup
       if (req.user.role === 'manager') {
-        whereClause += " AND u.role IN ('manager', 'employee', 'counter_staff', 'florist_staff', 'delivery_partner')";
+        whereClause += " AND u.role IN ('manager', 'employee', 'counter_staff', 'florist_staff', 'delivery_partner', 'helper')";
       }
 
       // Always exclude customers from staff listing (separate page)
@@ -169,7 +170,11 @@ router.post(
       .optional({ nullable: true, checkFalsy: true })
       .isEmail()
       .normalizeEmail(),
+    // Helpers sign in with a PIN only (set on their own phone via the join
+    // link), so Add helper sends no password; the server makes an unusable
+    // random one below.
     body('password')
+      .if((value, { req }) => req.body.role !== 'helper' || value)
       .isLength({ min: 6 })
       .withMessage('Password must be at least 6 characters'),
     body('role')
@@ -247,7 +252,10 @@ router.post(
       }
 
       const salt = await bcrypt.genSalt(12);
-      const hashedPassword = await bcrypt.hash(password, salt);
+      const hashedPassword = await bcrypt.hash(
+        password || crypto.randomBytes(32).toString('base64url'),
+        salt
+      );
 
       const createUser = db.transaction(() => {
         let employeeCode = null;

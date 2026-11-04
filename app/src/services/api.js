@@ -195,6 +195,11 @@ class ApiService {
     });
   }
 
+  // One-time join link + QR for a helper. A new one cancels the old one.
+  createHelperJoinLink(userId) {
+    return this.request(`/users/${userId}/join-link`, { method: 'POST' });
+  }
+
   // ─── Locations ───────────────────────────────────────────
   getLocations() {
     return this.request('/locations');

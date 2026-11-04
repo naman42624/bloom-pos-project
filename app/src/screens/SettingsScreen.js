@@ -25,6 +25,7 @@ const SETTING_LABELS = {
   business_name: 'Business Name',
   currency: 'Currency',
   discount_approval_threshold: 'Discount Approval Threshold (%)',
+  discount_helper_threshold: 'Helper discount limit %',
   max_refund_without_approval: 'Max Refund Without Approval (₹)',
   geofence_default_radius: 'Default Geofence Radius (m)',
   attendance_geofence_enabled: 'Geofence Attendance (1=on, 0=off)',
@@ -302,6 +303,28 @@ export default function SettingsScreen() {
               );
             }
 
+            if (key === 'discount_helper_threshold') {
+              if (!isOwner) return null;
+              const counterLimit = (editedValues.discount_manager_threshold !== undefined
+                ? editedValues.discount_manager_threshold
+                : settings.discount_manager_threshold?.value) || '20';
+              return (
+                <View key={key} style={styles.settingRow}>
+                  <Text style={styles.settingLabel}>{SETTING_LABELS[key]}</Text>
+                  <Text style={styles.settingDesc}>The biggest discount a helper can give without a PIN from the counter.</Text>
+                  <TextInput
+                    style={styles.settingInput}
+                    value={String(currentValue)}
+                    onChangeText={(text) => handleChange(key, text.replace(/[^0-9.]/g, ''))}
+                    keyboardType="decimal-pad"
+                    accessibilityLabel="Helper discount limit percent"
+                    placeholderTextColor={Colors.textLight}
+                  />
+                  <Text style={styles.helperLine}>Helpers can never give more than counter staff ({counterLimit}%).</Text>
+                </View>
+              );
+            }
+
             if (key === 'upi_qr_image_url') {
               return (
                 <View key={key} style={styles.settingRow}>
@@ -426,6 +449,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: Colors.border,
   },
+  helperLine: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: Spacing.xs },
   inputDisabled: { backgroundColor: Colors.surfaceAlt, color: Colors.textSecondary },
 
   toggleRow: {
