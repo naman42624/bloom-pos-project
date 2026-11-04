@@ -645,12 +645,23 @@ router.get('/register/status', authenticate, async (req, res, next) => {
         `).get(register.id, location_id, sessionStart);
         register.total_expenses_cash = expenseRow?.total || 0;
       } else {
-        // Closed session: derive net expenses from expected cash math
+        // Closed session: derive net expenses from expected cash math.
+        // Helper floats left the drawer and handovers came into it (bag
+        // mode); they are not expenses, so they are taken out of the gap.
+        const helperCash = await db.prepare(`
+          SELECT
+            COALESCE(SUM(CASE WHEN type = 'handover_in' THEN counted_amount ELSE 0 END), 0) as handovers,
+            COALESCE(SUM(CASE WHEN type = 'float_out' THEN expected_amount ELSE 0 END), 0) as floats
+          FROM staff_cash_movements
+          WHERE register_id = ?
+        `).get(register.id);
         const inferredExpenses = (Number(register.opening_balance) || 0) 
                                + (Number(register.total_cash_sales) || 0) 
                                - (Number(register.total_refunds_cash) || 0) 
+                               - (Number(helperCash?.floats) || 0)
+                               + (Number(helperCash?.handovers) || 0)
                                - (Number(register.expected_cash) || 0);
-        register.total_expenses_cash = inferredExpenses;
+        register.total_expenses_cash = Math.round(inferredExpenses * 100) / 100;
       }
     }
 
@@ -935,7 +946,7 @@ router.put(
           .map((b) => ({ staff_id: b.staff_id, name: b.name, held: b.held }));
       } catch (bagErr) { console.error('register close helper bag read failed:', bagErr.message); }
 
-      db.prepare(`
+      const closeResult = db.prepare(`
         UPDATE cash_registers SET
           total_cash_sales = ?, total_card_sales = ?, total_upi_sales = ?,
           total_refunds_cash = ?, expected_cash = ?,
@@ -944,7 +955,7 @@ router.put(
           closed_by = ?, closing_notes = ?,
           closed_at = CURRENT_TIMESTAMP, closing_time = CURRENT_TIMESTAMP,
           status = 'closed'
-        WHERE id = ?
+        WHERE id = ? AND closed_at IS NULL
       `).run(
         paymentTotals.cash_total, paymentTotals.card_total, paymentTotals.upi_total,
         refundTotal, expectedCash,
@@ -952,6 +963,10 @@ router.put(
         actual_cash, actual_cash,
         req.user.id, closing_notes || '', register.id
       );
+      // Someone else closed it a moment ago: do not close it twice
+      if (!closeResult || closeResult.changes === 0) {
+        return res.status(409).json({ success: false, message: 'This register was just closed by someone else. Refresh to see it.' });
+      }
 
       if (openBags.length > 0) {
         try {

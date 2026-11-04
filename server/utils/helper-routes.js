@@ -15,6 +15,8 @@ const HELPER_ROUTES = [
   ['GET', /^\/api\/sales\/register\/status\/?$/, 'register open hint'],
   ['POST', /^\/api\/quick-sale\/\d+\/undo\/?$/, 'undo own sale'],
   ['GET', /^\/api\/quick-sale\/my-sales\/?$/, 'own sales today'],
+  ['GET', /^\/api\/helper-cash\/bags\/?$/, 'own cash bag (masked); handler returns only their own'],
+  ['POST', /^\/api\/helper-cash\/bags\/\d+\/reveal\/?$/, 'own cash bag exact; handler refuses anyone else'],
 ];
 
 function isHelperRouteAllowed(method, fullPath) {

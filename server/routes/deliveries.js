@@ -1641,7 +1641,14 @@ router.put(
           const register = db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1').get(sale.location_id);
           if (register) {
             if ((payment_method || 'cash') === 'cash') {
-              db.prepare('UPDATE cash_registers SET total_cash_sales = total_cash_sales + ?, expected_cash = opening_balance + total_cash_sales + ? - total_refunds_cash WHERE id = ?').run(paidNow, paidNow, register.id);
+              // Recomputes expected_cash from the running totals (it already
+              // leaves out cash expenses, as it always has); helper floats
+              // and handovers in this session are kept in (bag mode).
+              db.prepare(`UPDATE cash_registers SET total_cash_sales = total_cash_sales + ?,
+                expected_cash = opening_balance + total_cash_sales + ? - total_refunds_cash
+                  - COALESCE((SELECT SUM(m.expected_amount) FROM staff_cash_movements m WHERE m.register_id = cash_registers.id AND m.type = 'float_out'), 0)
+                  + COALESCE((SELECT SUM(m.counted_amount) FROM staff_cash_movements m WHERE m.register_id = cash_registers.id AND m.type = 'handover_in'), 0)
+                WHERE id = ?`).run(paidNow, paidNow, register.id);
             } else if (payment_method === 'card') {
               db.prepare('UPDATE cash_registers SET total_card_sales = total_card_sales + ? WHERE id = ?').run(paidNow, register.id);
             } else if (payment_method === 'upi') {

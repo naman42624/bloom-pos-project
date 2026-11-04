@@ -631,6 +631,340 @@ check('edit sale refuses payment change on held cash', async () => {
 });
 
 // ---------------------------------------------------------------------------
+// Task 3: bag API (list, reveal, float, blind handover) and the mode switch,
+// all through the real routes.
+
+const REGISTER_CLOSED_COPY = "Register isn't open — open it before taking a cash payment.";
+const HELPER_DENIED_COPY = "Helpers can't open this. Ask the counter.";
+const ALREADY_COLLECTED_COPY = 'Already collected — refresh';
+const overCountCopy = (name) => `That's more than ${name} should have — count again or choose "Yes, settle"`;
+
+async function giveFloat(token, staffId, amount) {
+  return api('POST', '/helper-cash/float', token, { staff_id: staffId, location_id: TEST_LOCATION_ID, amount });
+}
+async function handover(token, staffId, counted, isFinal) {
+  return api('POST', '/helper-cash/handover', token, { staff_id: staffId, location_id: TEST_LOCATION_ID, counted_amount: counted, is_final: isFinal });
+}
+async function listAs(token) {
+  return api('GET', `/helper-cash/bags?location_id=${TEST_LOCATION_ID}`, token);
+}
+async function helperName(id) {
+  const db = await getDb();
+  return (await db.prepare('SELECT name FROM users WHERE id = ?').get(id)).name;
+}
+
+check('bags list is masked', async () => {
+  const owner = await loginOwner();
+  const helper = await helperSession(owner.token);
+  try {
+    await setCashMode('bag');
+    await openOwnRegister(owner.token, 2000);
+    const f = await giveFloat(owner.token, helper.id, 500);
+    assert(f.status === 201, `float: ${f.status} ${JSON.stringify(f.body)}`);
+    const s = await helperSale(helper.token, [{ method: 'cash', amount: 345 }]);
+    assert(s.status === 201, `sale: ${s.status}`);
+    const r = await listAs(owner.token);
+    assert(r.status === 200 && r.body?.data?.mode === 'bag', `list: ${r.status} ${JSON.stringify(r.body)}`);
+    const row = r.body.data.bags.find((b) => b.staff_id === helper.id);
+    assert(row && row.held_masked === '₹8xx' && row.sale_count === 1 && row.access_ended === false, `row: ${JSON.stringify(row)}`);
+    assert(!('held' in row), `exact amount leaked: ${JSON.stringify(row)}`);
+    assert(typeof r.body.data.total_masked === 'string' && /^₹[\dx,]+$/.test(r.body.data.total_masked) && !/\d{2}/.test(r.body.data.total_masked.replace(/,/g, '')), `total_masked: ${r.body.data.total_masked}`);
+    assert(!JSON.stringify(r.body).includes('845'), 'exact amount somewhere in the list response');
+  } finally {
+    await restoreCashMode();
+  }
+});
+
+check('reveal returns exact and is audited', async () => {
+  const owner = await loginOwner();
+  const helper = await helperSession(owner.token);
+  const db = await getDb();
+  try {
+    await setCashMode('bag');
+    await openOwnRegister(owner.token, 2000);
+    assert((await giveFloat(owner.token, helper.id, 200)).status === 201, 'float 200');
+    assert((await giveFloat(owner.token, helper.id, '500.50')).status === 201, 'float 500.50');
+    const s = await helperSale(helper.token, [{ method: 'cash', amount: 345 }]);
+    assert(s.status === 201, `sale: ${s.status}`);
+    const r = await api('POST', `/helper-cash/bags/${helper.id}/reveal`, owner.token, { location_id: TEST_LOCATION_ID });
+    assert(r.status === 200, `reveal: ${r.status} ${JSON.stringify(r.body)}`);
+    const d = r.body.data;
+    assert(near(d.held, 1045.5) && near(d.floats, 700.5) && near(d.cash_sales, 345) && near(d.settled, 0), `figures: ${JSON.stringify(d)}`);
+    assert(d.last_float && near(d.last_float.amount, 500.5), `last_float: ${JSON.stringify(d.last_float)}`);
+    const audit = await db.prepare("SELECT user_id FROM audit_logs WHERE action = 'helper_bag_reveal' AND entity_type = 'user' AND entity_id = ? ORDER BY id DESC LIMIT 1").get(helper.id);
+    assert(audit && audit.user_id === owner.id, `audit row: ${JSON.stringify(audit)}`);
+  } finally {
+    await restoreCashMode();
+  }
+});
+
+check('helper sees only own bag', async () => {
+  const owner = await loginOwner();
+  const a = await helperSession(owner.token);
+  const b = await helperSession(owner.token);
+  try {
+    await setCashMode('bag');
+    await openOwnRegister(owner.token, 2000);
+    assert((await giveFloat(owner.token, a.id, 300)).status === 201, 'float a');
+    assert((await giveFloat(owner.token, b.id, 400)).status === 201, 'float b');
+    const r = await listAs(a.token);
+    assert(r.status === 200 && r.body.data.bags.length === 1 && r.body.data.bags[0].staff_id === a.id, `helper list: ${r.status} ${JSON.stringify(r.body)}`);
+    assert(r.body.data.bags[0].held_masked === '₹3xx' && r.body.data.total_masked === '₹3xx', `helper masks: ${JSON.stringify(r.body.data)}`);
+    const own = await api('POST', `/helper-cash/bags/${a.id}/reveal`, a.token, { location_id: TEST_LOCATION_ID });
+    assert(own.status === 200 && near(own.body.data.held, 300), `own reveal: ${own.status} ${JSON.stringify(own.body)}`);
+    const other = await api('POST', `/helper-cash/bags/${b.id}/reveal`, a.token, { location_id: TEST_LOCATION_ID });
+    assert(other.status === 403 && other.body?.message === HELPER_DENIED_COPY, `other reveal: ${other.status} ${JSON.stringify(other.body)}`);
+    const fl = await giveFloat(a.token, a.id, 50);
+    assert(fl.status === 403, `helper gave a float: ${fl.status}`);
+    const ho = await handover(a.token, a.id, 50, false);
+    assert(ho.status === 403, `helper ran a handover: ${ho.status}`);
+  } finally {
+    await restoreCashMode();
+  }
+});
+
+check('float needs open register', async () => {
+  const owner = await loginOwner();
+  const helper = await helperSession(owner.token);
+  const db = await getDb();
+  try {
+    await setCashMode('bag');
+    const regId = await openOwnRegister(owner.token, 1000);
+    for (const bad of [0, -5, '1.234', 'abc', null]) {
+      const r = await giveFloat(owner.token, helper.id, bad);
+      assert(r.status === 400, `amount ${bad}: ${r.status} ${JSON.stringify(r.body)}`);
+    }
+    const notHelper = await giveFloat(owner.token, owner.id, 100);
+    assert(notHelper.status === 400, `float to owner: ${notHelper.status} ${JSON.stringify(notHelper.body)}`);
+
+    const before = await registerRow(regId);
+    const ok = await giveFloat(owner.token, helper.id, 250);
+    assert(ok.status === 201 && ok.body.data.register_id === regId, `float: ${ok.status} ${JSON.stringify(ok.body)}`);
+    const after = await registerRow(regId);
+    assert(near(before.expected_cash - after.expected_cash, 250) && after.total_cash_sales === before.total_cash_sales, `register: ${JSON.stringify(before)} -> ${JSON.stringify(after)}`);
+    const mv = await db.prepare("SELECT register_id, recorded_by, expected_amount FROM staff_cash_movements WHERE staff_id = ? AND type = 'float_out'").get(helper.id);
+    assert(mv.register_id === regId && mv.recorded_by === owner.id && near(mv.expected_amount, 250), `movement: ${JSON.stringify(mv)}`);
+
+    await closeOwnRegister(regId);
+    const closed = await giveFloat(owner.token, helper.id, 100);
+    assert(closed.status === 400 && closed.body?.message === REGISTER_CLOSED_COPY, `closed: ${closed.status} ${JSON.stringify(closed.body)}`);
+    const ho = await handover(owner.token, helper.id, 100, false);
+    assert(ho.status === 400 && ho.body?.message === REGISTER_CLOSED_COPY, `handover closed: ${ho.status} ${JSON.stringify(ho.body)}`);
+    assert(near((await getBag(db, helper.id, TEST_LOCATION_ID)).held, 250), 'bag moved with the register closed');
+  } finally {
+    await restoreCashMode();
+  }
+});
+
+check('handover response reveals expected only after count', async () => {
+  const owner = await loginOwner();
+  const helper = await helperSession(owner.token);
+  try {
+    await setCashMode('bag');
+    const regId = await openOwnRegister(owner.token, 1000);
+    const s = await helperSale(helper.token, [{ method: 'cash', amount: 3200 }]);
+    assert(s.status === 201, `sale: ${s.status}`);
+    const before = await registerRow(regId);
+    // Only the count goes in: an "expected" the client might send is ignored
+    const r = await api('POST', '/helper-cash/handover', owner.token, { staff_id: helper.id, location_id: TEST_LOCATION_ID, counted_amount: 3150, is_final: true, expected_amount: 3150 });
+    assert(r.status === 200, `handover: ${r.status} ${JSON.stringify(r.body)}`);
+    const d = r.body.data;
+    assert(near(d.expected, 3200) && near(d.counted, 3150) && near(d.difference, -50) && near(d.remaining, 0), `response: ${JSON.stringify(d)}`);
+    const after = await registerRow(regId);
+    assert(near(after.expected_cash - before.expected_cash, 3150), `register moved by ${after.expected_cash - before.expected_cash}`);
+    const db = await getDb();
+    const mv = await db.prepare("SELECT expected_amount, counted_amount, settled_amount, difference, is_final, register_id FROM staff_cash_movements WHERE staff_id = ? AND type = 'handover_in'").get(helper.id);
+    assert(near(mv.expected_amount, 3200) && near(mv.counted_amount, 3150) && near(mv.settled_amount, 3200) && near(mv.difference, -50) && Number(mv.is_final) === 1 && mv.register_id === regId, `movement: ${JSON.stringify(mv)}`);
+  } finally {
+    await restoreCashMode();
+  }
+});
+
+check('partial handover keeps the rest', async () => {
+  const owner = await loginOwner();
+  const helper = await helperSession(owner.token);
+  const db = await getDb();
+  try {
+    await setCashMode('bag');
+    await openOwnRegister(owner.token, 1000);
+    assert((await giveFloat(owner.token, helper.id, 500)).status === 201, 'float');
+    assert((await helperSale(helper.token, [{ method: 'cash', amount: 345 }])).status === 201, 'sale');
+    const name = await helperName(helper.id);
+
+    const over = await handover(owner.token, helper.id, 900, false);
+    assert(over.status === 400 && over.body?.message === overCountCopy(name), `over: ${over.status} ${JSON.stringify(over.body)}`);
+    const zero = await handover(owner.token, helper.id, 0, false);
+    assert(zero.status === 400, `partial 0: ${zero.status}`);
+
+    const part = await handover(owner.token, helper.id, 300, false);
+    assert(part.status === 200 && near(part.body.data.expected, 845) && near(part.body.data.remaining, 545) && near(part.body.data.difference, 0), `partial: ${part.status} ${JSON.stringify(part.body)}`);
+    assert(near((await getBag(db, helper.id, TEST_LOCATION_ID)).held, 545), 'bag after partial');
+
+    const fin = await handover(owner.token, helper.id, 540, true);
+    assert(fin.status === 200 && near(fin.body.data.expected, 545) && near(fin.body.data.difference, -5) && near(fin.body.data.remaining, 0), `final: ${fin.status} ${JSON.stringify(fin.body)}`);
+    assert(near((await getBag(db, helper.id, TEST_LOCATION_ID)).held, 0), 'bag after final');
+    const again = await handover(owner.token, helper.id, 10, false);
+    assert(again.status === 409 && again.body?.message === ALREADY_COLLECTED_COPY, `after final: ${again.status} ${JSON.stringify(again.body)}`);
+  } finally {
+    await restoreCashMode();
+  }
+});
+
+check('double handover', async () => {
+  const owner = await loginOwner();
+  const helper = await helperSession(owner.token);
+  const db = await getDb();
+  try {
+    await setCashMode('bag');
+    const regId = await openOwnRegister(owner.token, 1000);
+    assert((await helperSale(helper.token, [{ method: 'cash', amount: 700 }])).status === 201, 'sale');
+    const before = await registerRow(regId);
+    const [x, y] = await Promise.all([handover(owner.token, helper.id, 700, true), handover(owner.token, helper.id, 700, true)]);
+    const codes = [x.status, y.status].sort();
+    assert(codes[0] === 200 && codes[1] === 409, `statuses ${x.status} ${y.status}: ${JSON.stringify([x.body, y.body])}`);
+    const loser = x.status === 409 ? x : y;
+    assert(loser.body?.message === ALREADY_COLLECTED_COPY, `loser copy: ${JSON.stringify(loser.body)}`);
+    const rows = await db.prepare("SELECT COUNT(*) AS c FROM staff_cash_movements WHERE staff_id = ? AND type = 'handover_in'").get(helper.id);
+    assert(Number(rows.c) === 1, `handover rows: ${rows.c}`);
+    const after = await registerRow(regId);
+    assert(near(after.expected_cash - before.expected_cash, 700), `register moved by ${after.expected_cash - before.expected_cash}`);
+    assert(near((await getBag(db, helper.id, TEST_LOCATION_ID)).held, 0), 'bag not 0');
+  } finally {
+    await restoreCashMode();
+  }
+});
+
+check('expired helper bag still listed', async () => {
+  const owner = await loginOwner();
+  const helper = await helperSession(owner.token);
+  const db = await getDb();
+  try {
+    await setCashMode('bag');
+    await openOwnRegister(owner.token, 1000);
+    assert((await giveFloat(owner.token, helper.id, 150)).status === 201, 'float');
+    await db.prepare('UPDATE users SET access_until = ?, is_active = 0 WHERE id = ?').run(shopDate(-1), helper.id);
+    const r = await listAs(owner.token);
+    const row = r.body?.data?.bags?.find((b) => b.staff_id === helper.id);
+    assert(row && row.held_masked === '₹1xx' && row.access_ended === true, `row: ${JSON.stringify(row)}`);
+    const fl = await giveFloat(owner.token, helper.id, 50);
+    assert(fl.status === 400, `float to expired helper: ${fl.status}`);
+    const fin = await handover(owner.token, helper.id, 150, true);
+    assert(fin.status === 200 && near(fin.body.data.difference, 0), `collect: ${fin.status} ${JSON.stringify(fin.body)}`);
+    const r2 = await listAs(owner.token);
+    assert(!r2.body.data.bags.some((b) => b.staff_id === helper.id), 'settled expired helper still listed');
+  } finally {
+    await restoreCashMode();
+  }
+});
+
+check('close through float and handover routes', async () => {
+  const owner = await loginOwner();
+  const helper = await helperSession(owner.token);
+  try {
+    await setCashMode('bag');
+    const regId = await openOwnRegister(owner.token, 1000);
+    assert((await giveFloat(owner.token, helper.id, 300)).status === 201, 'float');
+    assert((await helperSale(helper.token, [{ method: 'cash', amount: 400 }])).status === 201, 'sale 1');
+    assert((await helperSale(helper.token, [{ method: 'cash', amount: 200 }])).status === 201, 'sale 2');
+    const p = await handover(owner.token, helper.id, 250, false);
+    assert(p.status === 200 && near(p.body.data.remaining, 650), `partial: ${JSON.stringify(p.body)}`);
+    const f = await handover(owner.token, helper.id, 640, true);
+    assert(f.status === 200 && near(f.body.data.difference, -10), `final: ${JSON.stringify(f.body)}`);
+    const running = await registerRow(regId);
+    assert(near(running.expected_cash, 1590), `running expected_cash ${running.expected_cash}`);
+    const { preview, close } = await previewAndClose(owner.token, regId, 1590);
+    assert(near(preview.expected_cash, 1590) && near(preview.discrepancy, 0), `preview ${JSON.stringify(preview)}`);
+    assert(near(close.expected_cash, 1590) && near(close.discrepancy, 0), `close ${close.expected_cash}/${close.discrepancy}`);
+
+    // Closing twice: the second close finds no open register
+    const again = await api('PUT', '/sales/register/close', owner.token, { location_id: TEST_LOCATION_ID, actual_cash: 1590 });
+    assert(again.status === 404, `second close: ${again.status}`);
+  } finally {
+    await restoreCashMode();
+  }
+});
+
+check('inferred expenses ignore floats and handovers', async () => {
+  const owner = await loginOwner();
+  const helper = await helperSession(owner.token);
+  try {
+    await setCashMode('bag');
+    const regId = await openOwnRegister(owner.token, 1000);
+    assert((await giveFloat(owner.token, helper.id, 400)).status === 201, 'float');
+    assert((await helperSale(helper.token, [{ method: 'cash', amount: 250 }])).status === 201, 'sale');
+    assert((await handover(owner.token, helper.id, 500, false)).status === 200, 'handover');
+    await previewAndClose(owner.token, regId, 1100);
+    const st = await api('GET', `/sales/register/status?location_id=${TEST_LOCATION_ID}`, owner.token);
+    assert(st.status === 200 && st.body.data && st.body.data.id === regId && st.body.data.closed_at, `status shows register ${st.body?.data?.id}, wanted closed ${regId}`);
+    assert(near(st.body.data.total_expenses_cash, 0), `inferred expenses ${st.body.data.total_expenses_cash}`);
+  } finally {
+    await restoreCashMode();
+  }
+});
+
+// Settles every bag this script left non-zero (by SQL, no register), so the
+// mode switch can be tried with all bags empty. Refuses when anyone else
+// holds cash: those are not this script's to settle.
+async function settleOwnBags() {
+  const db = await getDb();
+  const locations = await db.prepare('SELECT id FROM locations').all();
+  for (const loc of locations) {
+    for (const b of await listBags(db, loc.id)) {
+      if (Math.round(b.held * 100) === 0) continue;
+      assert(createdUserIds.includes(b.staff_id), `${b.name} (not created by this script) holds cash at location ${loc.id}; cannot test the empty-bag switch`);
+      await db.prepare("INSERT INTO staff_cash_movements (location_id, staff_id, type, expected_amount, counted_amount, settled_amount, is_final, note) VALUES (?, ?, 'handover_in', ?, ?, ?, 1, 'verify settle')")
+        .run(loc.id, b.staff_id, b.held, b.held, b.held);
+    }
+  }
+}
+
+check('mode switch refused with cash out', async () => {
+  const owner = await loginOwner();
+  const helper = await helperSession(owner.token);
+  const db = await getDb();
+  try {
+    await setCashMode('bag');
+    await openOwnRegister(owner.token, 1000);
+    assert((await giveFloat(owner.token, helper.id, 5234)).status === 201, 'float');
+    const name = await helperName(helper.id);
+    const r = await api('PUT', '/settings', owner.token, { settings: { helper_cash_mode: 'register' } });
+    assert(r.status === 409 && /^Collect the cash from .+ first \(₹[\dx,]+\)\.$/.test(r.body?.message || '') && r.body.message.includes(name), `switch: ${r.status} ${JSON.stringify(r.body)}`);
+    const mode = await db.prepare("SELECT value FROM settings WHERE key = 'helper_cash_mode'").get();
+    assert(mode.value === 'bag', `mode changed to ${mode.value}`);
+    // Saving the same value is not a switch
+    const same = await api('PUT', '/settings', owner.token, { settings: { helper_cash_mode: 'bag' } });
+    assert(same.status === 200, `same value: ${same.status} ${JSON.stringify(same.body)}`);
+    const bad = await api('PUT', '/settings', owner.token, { settings: { helper_cash_mode: 'pocket' } });
+    assert(bad.status === 400, `bad value: ${bad.status}`);
+
+    // Only this helper holds cash: exact copy
+    await settleOwnBags();
+    await db.prepare("DELETE FROM staff_cash_movements WHERE staff_id = ? AND note = 'verify settle'").run(helper.id);
+    const exact = await api('PUT', '/settings', owner.token, { settings: { helper_cash_mode: 'register' } });
+    assert(exact.status === 409 && exact.body?.message === `Collect the cash from ${name} first (₹5,xxx).`, `exact copy: ${exact.status} ${JSON.stringify(exact.body)}`);
+  } finally {
+    await restoreCashMode();
+  }
+});
+
+check('mode switch allowed when bags are empty', async () => {
+  const owner = await loginOwner();
+  const db = await getDb();
+  try {
+    await setCashMode('bag');
+    await settleOwnBags();
+    const toRegister = await api('PUT', '/settings', owner.token, { settings: { helper_cash_mode: 'register' } });
+    assert(toRegister.status === 200, `bag -> register: ${toRegister.status} ${JSON.stringify(toRegister.body)}`);
+    assert((await db.prepare("SELECT value FROM settings WHERE key = 'helper_cash_mode'").get()).value === 'register', 'not register');
+    const toBag = await api('PUT', '/settings', owner.token, { settings: { helper_cash_mode: 'bag' } });
+    assert(toBag.status === 200, `register -> bag: ${toBag.status} ${JSON.stringify(toBag.body)}`);
+    assert((await db.prepare("SELECT value FROM settings WHERE key = 'helper_cash_mode'").get()).value === 'bag', 'not bag');
+  } finally {
+    await restoreCashMode();
+  }
+});
+
+// ---------------------------------------------------------------------------
 
 const extraSaleIds = [];
 function trackSale(id) { extraSaleIds.push(id); }
