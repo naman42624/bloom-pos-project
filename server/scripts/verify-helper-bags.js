@@ -931,6 +931,10 @@ check('handover preview changes nothing', async () => {
     assert(near(d.expected, 845) && near(d.counted, 800) && near(d.difference, -45) && near(d.remaining_if_partial, 45), `figures: ${JSON.stringify(d)}`);
     const over = await api('POST', '/helper-cash/handover', owner.token, { staff_id: helper.id, location_id: TEST_LOCATION_ID, counted_amount: 900, preview: true });
     assert(over.status === 200 && near(over.body.data.difference, 55) && near(over.body.data.remaining_if_partial, 0), `over preview: ${JSON.stringify(over.body)}`);
+    for (const odd of [1, '1', 'true', 'yes']) {
+      const r = await api('POST', '/helper-cash/handover', owner.token, { staff_id: helper.id, location_id: TEST_LOCATION_ID, counted_amount: 800, preview: odd, is_final: 1 });
+      assert(r.status === 400, `preview ${JSON.stringify(odd)} should be refused: ${r.status}`);
+    }
     const zero = await api('POST', '/helper-cash/handover', owner.token, { staff_id: helper.id, location_id: TEST_LOCATION_ID, counted_amount: 0, preview: true });
     assert(zero.status === 400, `zero preview: ${zero.status}`);
 

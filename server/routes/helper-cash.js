@@ -238,7 +238,11 @@ router.post(
       const countedP = parseMoney(body.counted_amount);
       if (countedP === null) return res.status(400).json({ success: false, message: COUNTED_MESSAGE });
       const isFinal = body.is_final === true || body.is_final === 'true' || body.is_final === 1;
-      const isPreview = body.preview === true || body.preview === 'true';
+      // Only a real true or false is accepted, so a preview can never commit by mistake
+      if (body.preview !== undefined && body.preview !== true && body.preview !== false) {
+        return res.status(400).json({ success: false, message: 'Something went wrong. Close this and try again.' });
+      }
+      const isPreview = body.preview === true;
       if (isPreview && countedP <= 0) return res.status(400).json({ success: false, message: COUNTED_MESSAGE });
 
       const db = await getDb();
