@@ -2,9 +2,14 @@
 // Dev fallback is this project's Expo web port (8081).
 const DEV_FALLBACK = 'http://localhost:8081';
 
-// Trailing slashes are dropped: "https://shop.com/" would otherwise make
-// "https://shop.com//p/CODE" links that the scanner and price page refuse.
-const normalizeBaseUrl = (url) => String(url || '').trim().replace(/\/+$/, '');
+// Trailing slashes are dropped ("https://shop.com/" would make "//p/CODE"
+// links) and a missing scheme gets https:// ("shop.com" would make QR codes
+// that are plain text, not links). Both made labels the scanner refused.
+const normalizeBaseUrl = (url) => {
+  const s = String(url || '').trim().replace(/\/+$/, '');
+  if (!s) return '';
+  return /^[a-z][a-z0-9+.-]*:\/\//i.test(s) ? s : `https://${s}`;
+};
 
 const configuredUrl = (env = process.env) => normalizeBaseUrl(env && env.PUBLIC_APP_URL);
 

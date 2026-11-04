@@ -10,7 +10,8 @@ const crypto = require('crypto');
 if (process.env.NODE_ENV === 'production' && !process.env.PUBLIC_APP_URL) {
   throw new Error('PUBLIC_APP_URL must be set in production — otherwise order-request links point at localhost.');
 }
-const PUBLIC_APP_URL = process.env.PUBLIC_APP_URL || 'http://localhost:19006';
+const { normalizeBaseUrl } = require('./public-url');
+const PUBLIC_APP_URL = normalizeBaseUrl(process.env.PUBLIC_APP_URL) || 'http://localhost:19006';
 
 function generateOrderRequestToken() {
   return crypto.randomBytes(24).toString('hex');
