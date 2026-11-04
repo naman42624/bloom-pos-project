@@ -1270,6 +1270,14 @@ check('report reveals: looks by others and unmatched previews', async () => {
     let row = (await rows()).find((r) => r.user_id === helper.id);
     assert(row && row.reveals === 3, `reveals ${row && row.reveals} (want 3: owner reveal + two counter lone previews)`);
 
+    // Count fishing: a throwaway preview, then a fresh sheet with the right
+    // count and a real handover. Only the matching preview is cancelled.
+    assert((await preview(counter.token, 50)).status === 200, 'fishing preview');
+    assert((await preview(counter.token, 200)).status === 200, 'matching preview');
+    assert((await handover(counter.token, helper.id, 200, false)).status === 200, 'counter partial');
+    row = (await rows()).find((r) => r.user_id === helper.id);
+    assert(row && row.reveals === 4, `reveals ${row && row.reveals} (want 4: the fishing preview counts)`);
+
     // A preview whose handover came more than 10 minutes later counts.
     // Put a copy of the owner preview 11 minutes before that handover, when
     // that is still today in the shop.
@@ -1281,7 +1289,7 @@ check('report reveals: looks by others and unmatched previews', async () => {
         FROM audit_logs WHERE action = 'helper_bag_handover' AND entity_id = ? AND user_id = ? ORDER BY id DESC LIMIT 1
       `).run(helper.id, owner.id, JSON.stringify({ location_id: TEST_LOCATION_ID }), JSON.stringify({ counted: 100 }), helper.id, owner.id);
       row = (await rows()).find((r) => r.user_id === helper.id);
-      assert(row && row.reveals === 4, `reveals ${row && row.reveals} (want 4 with the late-matched preview)`);
+      assert(row && row.reveals === 5, `reveals ${row && row.reveals} (want 5 with the late-matched preview)`);
     } else {
       console.log('   (late-preview case skipped: too close to midnight)');
     }

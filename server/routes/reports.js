@@ -623,6 +623,7 @@ router.get('/staff-sales', authenticate, authorize('owner'), async (req, res, ne
                 AND h.entity_id = a.entity_id AND h.user_id = a.user_id
                 AND h.created_at >= a.created_at
                 AND h.created_at <= a.created_at + INTERVAL '10 minutes'
+                AND (h.new_state->>'counted')::numeric = (a.new_state->>'counted')::numeric
             )
           )
         )
