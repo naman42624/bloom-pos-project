@@ -5,7 +5,7 @@
  */
 const h = require('./lib/verify-harness');
 const { ALPHABET, ensureLabelCode, generateLabelCode, labelUrl } = require('../utils/label-code');
-const { publicUrlMissingInProduction, publicUrlHost, DEV_FALLBACK } = require('../utils/public-url');
+const { publicUrlMissingInProduction, publicUrlHost, DEV_FALLBACK, normalizeBaseUrl } = require('../utils/public-url');
 const { check, api, loginOwner, assert, getDb, TEST_LOCATION_ID } = h;
 
 const createdProductIds = [];
@@ -131,6 +131,43 @@ check('url payload resolves', async () => {
   assert(r.status === 200 && r.body.data.id === id, JSON.stringify(r.body));
   const other = await scan(owner.token, `https://example.org/p/${code}`);
   assert(other.status === 200 && other.body.data.id === id, 'any host with exact path');
+});
+
+check('url with a doubled slash resolves (PUBLIC_APP_URL ending in /)', async () => {
+  const owner = await loginOwner();
+  const db = await getDb();
+  const id = await makeProduct('ScanSlash');
+  const code = await ensureLabelCode(db, id);
+  const r = await scan(owner.token, `https://shop.example.com//p/${code}`);
+  assert(r.status === 200 && r.body.data.id === id, JSON.stringify(r.body));
+});
+
+check('url without https:// resolves (PUBLIC_APP_URL set without a scheme)', async () => {
+  const owner = await loginOwner();
+  const db = await getDb();
+  const id = await makeProduct('ScanNoScheme');
+  const code = await ensureLabelCode(db, id);
+  for (const p of [`shop.example.com/p/${code}`, `shop.example.com//p/${code}/`, `www.shop.example.com:8080/p/${code.toLowerCase()}`]) {
+    const r = await scan(owner.token, p);
+    assert(r.status === 200 && r.body.data.id === id, `${p} -> ${r.status} ${JSON.stringify(r.body)}`);
+  }
+  for (const p of [`shop.example.com/x/p/${code}`, `p/${code}`, `/p/${code}`]) {
+    const r = await scan(owner.token, p);
+    assert(r.status === 400 && r.body.message === UNKNOWN, `${p} -> ${r.status} ${r.body.message}`);
+  }
+});
+
+check('PUBLIC_APP_URL without a scheme gets https://', async () => {
+  assert(normalizeBaseUrl('admin.shop.example.com') === 'https://admin.shop.example.com', 'bare host');
+  assert(normalizeBaseUrl('admin.shop.example.com/') === 'https://admin.shop.example.com', 'bare host + slash');
+  assert(normalizeBaseUrl('http://localhost:8081') === 'http://localhost:8081', 'http kept');
+});
+
+check('PUBLIC_APP_URL trailing slashes are dropped', async () => {
+  assert(normalizeBaseUrl('https://shop.example.com/') === 'https://shop.example.com', 'one slash');
+  assert(normalizeBaseUrl(' https://shop.example.com// ') === 'https://shop.example.com', 'two slashes + spaces');
+  assert(normalizeBaseUrl('https://shop.example.com') === 'https://shop.example.com', 'none');
+  assert(normalizeBaseUrl('') === '', 'blank');
 });
 
 check('bare code resolves', async () => {

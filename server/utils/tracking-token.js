@@ -66,7 +66,8 @@ function verifyTrackingToken(token) {
 if (process.env.NODE_ENV === 'production' && !process.env.PUBLIC_APP_URL) {
   throw new Error('PUBLIC_APP_URL must be set in production — otherwise customer-facing tracking links point at localhost.');
 }
-const PUBLIC_APP_URL = process.env.PUBLIC_APP_URL || 'http://localhost:19006';
+const { normalizeBaseUrl } = require('./public-url');
+const PUBLIC_APP_URL = normalizeBaseUrl(process.env.PUBLIC_APP_URL) || 'http://localhost:19006';
 
 function buildTrackingUrl(saleId) {
   return `${PUBLIC_APP_URL}/track/${generateTrackingToken(saleId)}`;

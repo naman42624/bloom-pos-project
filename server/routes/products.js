@@ -772,10 +772,13 @@ function parseScanPayload(raw) {
     } catch { /* fall through */ }
     return null;
   }
-  if (/^https?:\/\//i.test(text)) {
+  // A label printed while PUBLIC_APP_URL had no scheme reads "shop.com/p/CODE"
+  const url = /^(localhost|[a-z0-9-]+(\.[a-z0-9-]+)+)(:\d+)?\//i.test(text) ? `https://${text}` : text;
+  if (/^https?:\/\//i.test(url)) {
     let u;
-    try { u = new URL(text); } catch { return null; }
-    const m = u.pathname.match(/^\/p\/([^/]+)\/?$/);
+    try { u = new URL(url); } catch { return null; }
+    // /+ also accepts labels printed while PUBLIC_APP_URL ended in a slash (//p/CODE)
+    const m = u.pathname.match(/^\/+p\/([^/]+)\/?$/);
     if (!m) return null;
     const code = m[1].toUpperCase();
     return SCAN_CODE_RE.test(code) ? { code } : null;
