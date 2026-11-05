@@ -14,6 +14,8 @@ import { showAlert, showConfirm } from '../utils/alert';
 import { buildQuickSalePayload, amountError, TOPUP_LABEL } from '../utils/quickSale';
 import { METHOD_COLOR } from '../components/quickSale/QuickSaleRoll';
 import useSubmitGuard from '../hooks/useSubmitGuard';
+import ReceiveCashSheet from '../components/helperCash/ReceiveCashSheet';
+import { closeWarningLines, handoverDoneText } from '../utils/helperCash';
 
 const formatTime = (timeStr) => {
   if (!timeStr) return '-';
@@ -38,11 +40,15 @@ const HistoryCard = ({ session, isToday }) => {
   const expected = Number(session.expected_cash || 0);
   const actual = Number(session.actual_cash || 0);
   const discrepancy = Number(session.discrepancy || 0);
+  // Helper cash bags: change handed to helpers left the drawer, cash
+  // received from helpers came into it. Neither is an expense.
+  const helperFloats = Number(session.helper_floats || 0);
+  const helperHandovers = Number(session.helper_handovers || 0);
   
   // Dynamically derive Net Cash Expenses for closed sessions
-  // expected = opening + cashSales - cashRefunds - netExpenses
-  // netExpenses = opening + cashSales - cashRefunds - expected
-  const inferredExpenses = opening + cashSales - cashRefunds - expected;
+  // expected = opening + cashSales - cashRefunds - floats + handovers - netExpenses
+  // netExpenses = opening + cashSales - cashRefunds - floats + handovers - expected
+  const inferredExpenses = Math.round((opening + cashSales - cashRefunds - helperFloats + helperHandovers - expected) * 100) / 100;
   const hasDiscrepancy = Math.abs(discrepancy) >= 1;
 
   return (
@@ -87,6 +93,18 @@ const HistoryCard = ({ session, isToday }) => {
                 <View style={styles.detailRow}>
                   <Text style={styles.detailLabel}>Cash Refunds</Text>
                   <Text style={[styles.detailVal, { color: Colors.error }]}>-₹{cashRefunds.toFixed(2)}</Text>
+                </View>
+              )}
+              {helperFloats > 0 && (
+                <View style={styles.detailRow}>
+                  <Text style={styles.detailLabel}>Change given to helpers</Text>
+                  <Text style={[styles.detailVal, { color: Colors.error }]}>-₹{helperFloats.toFixed(2)}</Text>
+                </View>
+              )}
+              {helperHandovers > 0 && (
+                <View style={styles.detailRow}>
+                  <Text style={styles.detailLabel}>Cash from helpers</Text>
+                  <Text style={[styles.detailVal, { color: Colors.success }]}>+₹{helperHandovers.toFixed(2)}</Text>
                 </View>
               )}
               {inferredExpenses > 0 ? (
@@ -196,6 +214,12 @@ export default function CashRegisterScreen({ navigation, route }) {
   const dropTopup = () => { topupSaleRef.current = null; setTopup(null); };
   // A top-up belongs to one location and one count; leaving either drops it.
   useEffect(() => { dropTopup(); }, [selectedLocation]);
+  // Helper cash still out (bag mode): { cash, locationId, lines } while the
+  // "still with <name>" warning shows before closing.
+  const [bagWarn, setBagWarn] = useState(null);
+  const [collectFor, setCollectFor] = useState(null);
+  const [bagNote, setBagNote] = useState('');
+  useEffect(() => { setBagWarn(null); setBagNote(''); }, [selectedLocation]);
   const guardSubmit = useSubmitGuard();
   const [pendingCodTotal, setPendingCodTotal] = useState(0);
   const [pendingCodDeliveries, setPendingCodDeliveries] = useState(0);
@@ -311,12 +335,59 @@ export default function CashRegisterScreen({ navigation, route }) {
     } finally { closingRef.current = false; setSubmitting(false); }
   };
 
+  // Bag mode: helpers still holding cash when the register closes.
+  // Returns the warning lines, or [] (also when the check itself fails:
+  // closing must never wait on it).
+  const helperCashOut = async (locationId) => {
+    try {
+      const res = await api.getHelperBags(locationId);
+      if (!res || !res.data || res.data.mode !== 'bag' || !res.data.has_cash) return [];
+      return closeWarningLines(res.data.bags);
+    } catch (e) {
+      return [];
+    }
+  };
+
   const handleClose = async () => {
     const cash = parseFloat(actualCash);
     if (isNaN(cash) || cash < 0) {
       showAlert('Invalid', 'Enter actual cash in drawer');
       return;
     }
+    setSubmitting(true);
+    const lines = await helperCashOut(selectedLocation);
+    setSubmitting(false);
+    if (lines.length > 0) {
+      setBagNote('');
+      setBagWarn({ cash, locationId: selectedLocation, lines });
+      return;
+    }
+    await continueClose(cash);
+  };
+
+  // Close anyway: the bags stay open and carry over (the server records it).
+  const handleCloseAnyway = async () => {
+    if (!bagWarn) return;
+    const { cash, locationId } = bagWarn;
+    setBagWarn(null);
+    if (selectedLocation !== locationId) return;
+    await continueClose(cash);
+  };
+
+  const refreshBagWarn = async () => {
+    const lines = await helperCashOut(selectedLocation);
+    setBagWarn((w) => (w && lines.length > 0 ? { ...w, lines } : null));
+  };
+
+  const handleCollected = async (r) => {
+    setActualCash('');
+    setBagNote(`${handoverDoneText(r)} Put it in the drawer, count the drawer again, then tap Close Register.`);
+    const lines = await helperCashOut(selectedLocation);
+    setBagWarn((w) => (w && lines.length > 0 ? { ...w, lines } : null));
+    fetchStatus(selectedLocation);
+  };
+
+  const continueClose = async (cash) => {
     setSubmitting(true);
     let preview = null;
     try {
@@ -332,7 +403,10 @@ export default function CashRegisterScreen({ navigation, route }) {
     if (preview && Number.isFinite(excess) && excess >= 1) {
       const pendingCod = Math.round(Number(preview.pending_cod || 0) * 100) / 100;
       const bookable = Math.round((excess - pendingCod) * 100) / 100;
-      setTopup({ excess, pendingCod, bookable, cash, locationId: selectedLocation, registerId: (register && register.id) || null });
+      // Bag mode: extra cash in the drawer may be helper cash that was
+      // handed over without Receive cash. Offer Collect now before booking.
+      const bagLines = await helperCashOut(selectedLocation);
+      setTopup({ excess, pendingCod, bookable, cash, locationId: selectedLocation, registerId: (register && register.id) || null, bagLines });
       return;
     }
     setTopup(null);
@@ -386,6 +460,17 @@ export default function CashRegisterScreen({ navigation, route }) {
       setSubmitting(false);
     }
     await doClose(cash, locationId);
+  };
+
+  // From the top-up panel: back to the "still with <name>" warning, whose
+  // Collect now buttons open the blind handover for each helper.
+  const handleTopupCollect = () => {
+    if (!topup || !topup.bagLines || topup.bagLines.length === 0) return;
+    const { cash, locationId, bagLines } = topup;
+    dropTopup();
+    if (selectedLocation !== locationId) return;
+    setBagNote('');
+    setBagWarn({ cash, locationId, lines: bagLines });
   };
 
   const handleCloseAsIs = async () => {
@@ -520,15 +605,35 @@ export default function CashRegisterScreen({ navigation, route }) {
                   </View>
                 ) : null}
 
+                {Number(register.helper_floats || 0) > 0 && (
+                  <View style={styles.calcRow}>
+                    <Text style={styles.calcLabel}>- Change given to helpers</Text>
+                    <Text style={[styles.calcVal, { color: Colors.error }]}>₹{Number(register.helper_floats).toFixed(2)}</Text>
+                  </View>
+                )}
+                {Number(register.helper_handovers || 0) > 0 && (
+                  <View style={styles.calcRow}>
+                    <Text style={styles.calcLabel}>+ Cash from helpers</Text>
+                    <Text style={[styles.calcVal, { color: Colors.success }]}>₹{Number(register.helper_handovers).toFixed(2)}</Text>
+                  </View>
+                )}
+
                 <View style={styles.calcDivider} />
                 <View style={styles.calcRow}>
                   <Text style={styles.calcTotalLabel}>Expected in Drawer</Text>
                   <Text style={styles.calcTotalVal}>
+                    {/* The server keeps expected_cash for the open session
+                        (sales, refunds, expenses, helper floats and cash);
+                        the sum of the lines above is only a fallback. */}
                     ₹{(
-                      Number(register.opening_balance || 0) + 
-                      Number(register.total_cash_sales || 0) - 
-                      Number(register.total_refunds_cash || 0) - 
-                      Number(register.total_expenses_cash || 0)
+                      register.expected_cash != null && Number.isFinite(Number(register.expected_cash))
+                        ? Number(register.expected_cash)
+                        : Number(register.opening_balance || 0) +
+                          Number(register.total_cash_sales || 0) -
+                          Number(register.total_refunds_cash || 0) -
+                          Number(register.total_expenses_cash || 0) -
+                          Number(register.helper_floats || 0) +
+                          Number(register.helper_handovers || 0)
                     ).toFixed(2)}
                   </Text>
                 </View>
@@ -585,7 +690,7 @@ export default function CashRegisterScreen({ navigation, route }) {
               <TextInput
                 style={styles.inputLarge}
                 value={actualCash}
-                onChangeText={(t) => { setActualCash(t); dropTopup(); }}
+                onChangeText={(t) => { setActualCash(t); dropTopup(); setBagWarn(null); }}
                 editable={!(topup && !canManage)}
                 placeholder="0.00"
                 placeholderTextColor={Colors.textLight}
@@ -593,6 +698,13 @@ export default function CashRegisterScreen({ navigation, route }) {
               />
             </View>
             
+            {!!bagNote && (
+              <View style={styles.bagNote}>
+                <Ionicons name="checkmark-circle" size={20} color={Colors.success} />
+                <Text style={styles.bagNoteText}>{bagNote}</Text>
+              </View>
+            )}
+
             <Text style={[styles.formLabel, { marginTop: Spacing.md }]}>Closing Notes (optional)</Text>
             <TextInput
               style={styles.inputArea}
@@ -609,6 +721,20 @@ export default function CashRegisterScreen({ navigation, route }) {
                   <Text style={styles.topupNote}>Your count of {rupees(topup.cash)} is saved and cannot be changed now.</Text>
                 ) : null}
                 <Text style={styles.topupText}>{rupees(topup.excess)} more than recorded.{topup.bookable >= 1 ? (topup.pendingCod > 0 ? ` Book the other ${rupees(topup.bookable)} as unrecorded sales?` : ' Book it as unrecorded sales?') : ''}</Text>
+                {topup.bagLines && topup.bagLines.length > 0 ? (
+                  <View>
+                    <Text style={styles.topupNote}>Did a helper give you cash? Tap Collect now first.</Text>
+                    <TouchableOpacity
+                      style={[styles.topupNo, submitting && { opacity: 0.6 }]}
+                      onPress={handleTopupCollect}
+                      disabled={submitting}
+                      accessibilityRole="button"
+                      accessibilityLabel="Collect now from helpers"
+                    >
+                      <Text style={styles.topupNoText}>Collect now</Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : null}
                 {topup.pendingCod > 0 ? (
                   <View>
                     <Text style={styles.topupNote}>{rupees(topup.pendingCod)} of delivery cash is not settled yet and may be in the drawer. Settle it first.</Text>
@@ -643,6 +769,32 @@ export default function CashRegisterScreen({ navigation, route }) {
                 >
                   <Text style={styles.topupNoText}>No, close as it is</Text>
                 </TouchableOpacity>
+              </View>
+            ) : bagWarn ? (
+              <View style={styles.bagPanel}>
+                {bagWarn.lines.map((l) => (
+                  <View key={l.staff_id} style={styles.bagLine}>
+                    <Ionicons name="wallet-outline" size={22} color={Colors.text} />
+                    <Text style={styles.bagText}>{l.text}</Text>
+                    <TouchableOpacity
+                      style={styles.bagCollect}
+                      onPress={() => setCollectFor({ staff_id: l.staff_id, name: l.name })}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Collect now from ${l.name}`}
+                    >
+                      <Text style={styles.btnCloseText}>Collect now</Text>
+                    </TouchableOpacity>
+                  </View>
+                ))}
+                <TouchableOpacity
+                  style={[styles.topupNo, submitting && { opacity: 0.6 }]}
+                  onPress={guardSubmit(handleCloseAnyway)}
+                  disabled={submitting}
+                  accessibilityRole="button"
+                >
+                  <Text style={styles.topupNoText}>Close anyway</Text>
+                </TouchableOpacity>
+                <Text style={styles.topupNote}>Close anyway keeps the cash with the helper for the next session.</Text>
               </View>
             ) : (
             <TouchableOpacity style={[styles.btnClose, submitting && { opacity: 0.6 }]} onPress={guardSubmit(handleClose)} disabled={submitting}>
@@ -697,6 +849,14 @@ export default function CashRegisterScreen({ navigation, route }) {
       )}
 
       <View style={{ height: 60 }} />
+      <ReceiveCashSheet
+        visible={!!collectFor}
+        helper={collectFor}
+        locationId={selectedLocation}
+        onClose={() => setCollectFor(null)}
+        onDone={handleCollected}
+        onStale={refreshBagWarn}
+      />
     </ScrollView>
   );
 }
@@ -797,6 +957,12 @@ const styles = StyleSheet.create({
   topupNo: { borderRadius: BorderRadius.md, borderWidth: 1, borderColor: Colors.border, minHeight: TouchTarget.min || 48, padding: Spacing.md, alignItems: 'center', justifyContent: 'center', marginTop: Spacing.sm },
   topupNoText: { color: Colors.text, fontSize: FontSize.md, fontWeight: '600' },
   btnCloseText: { color: Colors.white, fontSize: FontSize.md, fontWeight: '700' },
+  bagPanel: { marginTop: Spacing.lg, backgroundColor: Colors.warningLight, borderRadius: BorderRadius.md, padding: Spacing.md, gap: Spacing.sm },
+  bagLine: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: Spacing.sm },
+  bagText: { flex: 1, minWidth: 180, fontSize: FontSize.md, fontWeight: '600', color: Colors.text, lineHeight: 22 },
+  bagCollect: { backgroundColor: Colors.success, borderRadius: BorderRadius.md, minHeight: 48, paddingHorizontal: Spacing.md, alignItems: 'center', justifyContent: 'center' },
+  bagNote: { flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.xs, marginTop: Spacing.sm, padding: Spacing.sm, borderRadius: BorderRadius.md, backgroundColor: Colors.successLight },
+  bagNoteText: { flex: 1, fontSize: FontSize.md, color: Colors.text, lineHeight: 22 },
 
   actionRow: { flexDirection: 'row', gap: Spacing.md, marginBottom: Spacing.xl },
   actionBtn: {

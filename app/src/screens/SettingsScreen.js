@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -53,6 +53,22 @@ const SETTING_LABELS = {
   supplier_manager_fields: 'Supplier Fields Visible to Managers',
   upi_qr_image_url: 'UPI QR Code',
 };
+
+// Where helper cash goes (spec 11.1); copy from the spec, word for word
+const CASH_MODE_OPTIONS = [
+  {
+    value: 'register',
+    label: 'Straight to the register',
+    description: "helpers' cash counts as drawer cash right away. Use when helpers hand you every payment.",
+    icon: 'cash-outline',
+  },
+  {
+    value: 'bag',
+    label: 'Separate bag per helper',
+    description: 'each helper keeps their cash and hands it over later. You always see who holds how much.',
+    icon: 'wallet-outline',
+  },
+];
 
 const SUPPLIER_FIELD_OPTIONS = [
   { key: 'phone', label: 'Phone Number' },
@@ -167,7 +183,7 @@ export default function SettingsScreen() {
 
   const hasChanges = Object.keys(editedValues).length > 0;
   const sortedKeys = Object.keys(settings)
-    .filter((k) => !PREFERENCE_SETTINGS.some((p) => p.key === k))
+    .filter((k) => !PREFERENCE_SETTINGS.some((p) => p.key === k) && k !== 'helper_cash_mode')
     .sort();
 
   const handlePrefToggle = async (key, currentValue) => {
@@ -182,6 +198,34 @@ export default function SettingsScreen() {
       if (refreshSettings) await refreshSettings();
     } catch (err) {
       Alert.alert('Error', err.message || 'Failed to update preference');
+    }
+  };
+
+  const [cashModeSaving, setCashModeSaving] = useState(null); // value being saved
+  const [cashModeError, setCashModeError] = useState('');
+  const cashModeBusy = useRef(false);
+
+  // Saves at once (no Save button); the server refuses a switch while a
+  // helper still holds cash, and that message is shown right under the choices.
+  const handleCashMode = async (value) => {
+    if (!isOwner || cashModeBusy.current) return;
+    const current = settings.helper_cash_mode?.value === 'bag' ? 'bag' : 'register';
+    if (value === current) { setCashModeError(''); return; }
+    cashModeBusy.current = true;
+    setCashModeSaving(value);
+    setCashModeError('');
+    try {
+      await api.updateSettings({ helper_cash_mode: value });
+      setSettings((prev) => ({
+        ...prev,
+        helper_cash_mode: { ...prev.helper_cash_mode, value },
+      }));
+      if (refreshSettings) await refreshSettings();
+    } catch (err) {
+      setCashModeError(err.message || "Couldn't change where helper cash goes. Check the connection and tap again.");
+    } finally {
+      cashModeBusy.current = false;
+      setCashModeSaving(null);
     }
   };
 
@@ -262,6 +306,51 @@ export default function SettingsScreen() {
               })}
             </View>
           )}
+
+          {/* ─── Helpers: where their cash goes (owner only) ─── */}
+          {isOwner && settings.helper_cash_mode !== undefined && (() => {
+            const mode = settings.helper_cash_mode?.value === 'bag' ? 'bag' : 'register';
+            return (
+              <View style={styles.settingRow}>
+                <Text style={styles.sectionTitle}>Helpers</Text>
+                <Text style={styles.settingLabel}>Where helpers' cash goes</Text>
+                {CASH_MODE_OPTIONS.map((opt) => {
+                  const selected = mode === opt.value;
+                  const saving = cashModeSaving === opt.value;
+                  return (
+                    <TouchableOpacity
+                      key={opt.value}
+                      style={[styles.modeOption, selected && styles.modeOptionSelected]}
+                      onPress={() => handleCashMode(opt.value)}
+                      disabled={!!cashModeSaving}
+                      accessibilityRole="radio"
+                      accessibilityState={{ selected, disabled: !!cashModeSaving }}
+                      accessibilityLabel={`${opt.label}. ${opt.description}`}
+                    >
+                      <Ionicons
+                        name={selected ? 'radio-button-on' : 'radio-button-off'}
+                        size={24}
+                        color={selected ? Colors.primary : Colors.textSecondary}
+                      />
+                      <View style={styles.modeText}>
+                        <Text style={styles.modeDesc}>
+                          <Text style={styles.modeLabel}>{opt.label}</Text>
+                          {` — ${opt.description}`}
+                        </Text>
+                        {saving ? <Text style={styles.modeSaving}>Saving…</Text> : null}
+                      </View>
+                    </TouchableOpacity>
+                  );
+                })}
+                {cashModeError ? (
+                  <View style={styles.modeError} accessibilityLiveRegion="polite">
+                    <Ionicons name="alert-circle-outline" size={18} color={Colors.error} />
+                    <Text style={styles.modeErrorText}>{cashModeError}</Text>
+                  </View>
+                ) : null}
+              </View>
+            );
+          })()}
 
           {/* ─── General Settings ─── */}
           {sortedKeys.map((key) => {
@@ -469,6 +558,22 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: Colors.border,
   },
+  sectionTitle: { fontSize: FontSize.sm, fontWeight: '700', color: Colors.primary, marginBottom: Spacing.xs },
+  modeOption: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.sm,
+    minHeight: 56, padding: Spacing.md, marginTop: Spacing.sm,
+    borderRadius: BorderRadius.md, borderWidth: 1.5, borderColor: Colors.border, backgroundColor: Colors.background,
+  },
+  modeOptionSelected: { borderColor: Colors.primary, backgroundColor: Colors.primary + '10' },
+  modeText: { flex: 1 },
+  modeLabel: { fontSize: FontSize.md, fontWeight: '700', color: Colors.text },
+  modeDesc: { fontSize: FontSize.md, color: Colors.textSecondary, lineHeight: 22 },
+  modeSaving: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: Spacing.xs },
+  modeError: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.xs,
+    marginTop: Spacing.sm, padding: Spacing.sm, borderRadius: BorderRadius.sm, backgroundColor: Colors.errorLight,
+  },
+  modeErrorText: { flex: 1, fontSize: FontSize.md, color: Colors.error, fontWeight: '600' },
   helperLine: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: Spacing.xs },
   helperWarn: { fontSize: FontSize.sm, color: Colors.text, fontWeight: '600', marginTop: Spacing.xs },
   inputDisabled: { backgroundColor: Colors.surfaceAlt, color: Colors.textSecondary },

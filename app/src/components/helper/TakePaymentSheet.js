@@ -180,7 +180,9 @@ export default function TakePaymentSheet({
     let alive = true;
     if (locationId) {
       api.getRegisterStatus(locationId)
-        .then((res) => { if (alive) setRegisterOpen(!!res?.isOpen); })
+        // Bag mode: helper cash goes into their own bag, the register can be
+        // shut (spec 10.6) - treat it as open so no cash warning shows.
+        .then((res) => { if (alive) setRegisterOpen(!!res?.isOpen || res?.helper_cash_mode === 'bag'); })
         .catch((err) => { if (onAccessEnded) onAccessEnded(err); });
     }
     return () => { alive = false; };

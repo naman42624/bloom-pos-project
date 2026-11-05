@@ -28,6 +28,14 @@ function Line({ label, value, bold }) {
   );
 }
 
+// Handover difference: below 0 = short, above 0 = over
+function shortOver(n) {
+  const v = Math.round((Number(n) || 0) * 100) / 100;
+  if (v < 0) return `Short ${money(-v)}`;
+  if (v > 0) return `Over ${money(v)}`;
+  return money(0);
+}
+
 export default function StaffSalesScreen({ navigation }) {
   const { user } = useAuth();
   const reqId = useRef(0);
@@ -157,6 +165,16 @@ export default function StaffSalesScreen({ navigation }) {
               />
               <Line label="Undone" value={`${r.undone_count ?? 0} · ${money(r.undone_total ?? 0)}`} />
               <Line label="Booked at close" value={`${r.topup_count ?? 0} · ${money(r.topup_total ?? 0)}`} />
+              {r.role === 'helper' && r.floats != null && (
+                <View style={styles.bagBlock}>
+                  <Text style={styles.bagTitle}>Cash bag</Text>
+                  <Line label="Change float given" value={money(r.floats ?? 0)} />
+                  <Line label="Cash taken from customers" value={money(r.cash_collected ?? 0)} />
+                  <Line label="Handed over" value={money(r.handed_over ?? 0)} />
+                  <Line label="Short / over" value={shortOver(r.short_over)} bold={Number(r.short_over) !== 0} />
+                  <Line label="Times the amount was shown" value={String(r.reveals ?? 0)} />
+                </View>
+              )}
               <Text style={styles.more}>See their sales ›</Text>
             </TouchableOpacity>
           ))
@@ -211,5 +229,7 @@ const styles = StyleSheet.create({
   lineLabel: { fontSize: FontSize.md, color: Colors.textSecondary, marginRight: Spacing.md },
   lineValue: { fontSize: FontSize.md, color: Colors.text, flexShrink: 1, textAlign: 'right' },
   lineBold: { fontWeight: '700', fontSize: FontSize.lg },
+  bagBlock: { marginTop: Spacing.sm, paddingTop: Spacing.sm, borderTopWidth: 1, borderTopColor: Colors.border },
+  bagTitle: { fontSize: FontSize.md, fontWeight: '700', color: Colors.text, marginBottom: 2 },
   more: { fontSize: FontSize.md, color: Colors.primary, fontWeight: '600', marginTop: Spacing.sm },
 });

@@ -32,6 +32,7 @@ import { resolvePreparerStep } from '../components/orderBoard/OrderCard';
 import CollectCodModal from '../components/orderBoard/CollectCodModal';
 import TaskCompletionModal from '../components/orderBoard/TaskCompletionModal';
 import DateTimePickerModal from '../components/DateTimePickerModal';
+import HelperCashCard from '../components/helperCash/HelperCashCard';
 import AttachmentVoiceRow from '../components/AttachmentVoiceRow';
 import ImageModal from '../components/ImageModal';
 import {
@@ -1573,6 +1574,9 @@ export default function DashboardScreen({ navigation }) {
               </TouchableOpacity>
             </View>
 
+            {/* Cash with helpers (bag mode only; renders nothing otherwise) */}
+            <HelperCashCard locationId={activeLocation?.id} onChanged={fetchDashboard} />
+
             {/* Added 2026-09-13 (staff-ux fix): counter staff's only path to
                 add an expense was Register card -> Expenses -> Add Expense,
                 3 taps. Straight to the add form in one, matching the same
@@ -1756,6 +1760,8 @@ export default function DashboardScreen({ navigation }) {
                 </TouchableOpacity>
               )}
             </View>
+
+            {role === 'employee' && <HelperCashCard locationId={activeLocation?.id} onChanged={fetchDashboard} />}
 
             {/* employee only, not florist_staff — same reasoning as the
                 Register card above (florist_staff never takes payments or

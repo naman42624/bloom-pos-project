@@ -31,9 +31,10 @@ function timeText(value) {
 }
 
 export default function MySalesScreen() {
-  const { locked } = useAuth();
+  const { locked, user } = useAuth();
   const { locationId, handleAccessEnded } = useHelperSession();
   const guard = useSubmitGuard();
+  const revealGuard = useSubmitGuard();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -42,14 +43,25 @@ export default function MySalesScreen() {
   const [undoingId, setUndoingId] = useState(null);
   const [now, setNow] = useState(Date.now());
   const revealTimer = useRef(null);
+  // Bag mode: the cash this helper holds (change given + cash sales - handed
+  // over), masked from GET /helper-cash/bags; exact for 15 s on tap.
+  const [bag, setBag] = useState(null); // { held_masked, has_cash } or null
+  const [bagExact, setBagExact] = useState(null);
+  const [bagBusy, setBagBusy] = useState(false);
+  const bagTimer = useRef(null);
 
   const load = useCallback(async (pull = false) => {
     if (!locationId) return;
     if (pull) setRefreshing(true); else setLoading(true);
     setError('');
     try {
-      const res = await api.getMySales(locationId);
+      const [res, bagRes] = await Promise.all([
+        api.getMySales(locationId),
+        api.getHelperBags(locationId).catch(() => null),
+      ]);
       setData(res?.data || { sales: [], count: 0, totals: { cash: 0, upi: 0 } });
+      const bd = bagRes && bagRes.data;
+      setBag(bd && bd.mode === 'bag' && bd.bags && bd.bags[0] ? bd.bags[0] : null);
     } catch (err) {
       if (!handleAccessEnded(err)) setError(LOAD_FAILED);
     } finally {
@@ -58,7 +70,17 @@ export default function MySalesScreen() {
     }
   }, [locationId, handleAccessEnded]);
 
-  useFocusEffect(useCallback(() => { load(); }, [load]));
+  const hideAll = useCallback(() => {
+    if (revealTimer.current) clearTimeout(revealTimer.current);
+    if (bagTimer.current) clearTimeout(bagTimer.current);
+    revealTimer.current = null;
+    bagTimer.current = null;
+    setRevealed(false);
+    setBagExact(null);
+  }, []);
+
+  // Leaving the tab hides any amount that was showing.
+  useFocusEffect(useCallback(() => { load(); return () => hideAll(); }, [load, hideAll]));
 
   // The lock no longer blurs the screen: refetch when the PIN pad closes.
   const wasLocked = useRef(locked);
@@ -67,7 +89,27 @@ export default function MySalesScreen() {
     wasLocked.current = locked;
   }, [locked, load]);
 
-  useEffect(() => () => { if (revealTimer.current) clearTimeout(revealTimer.current); }, []);
+  useEffect(() => () => {
+    if (revealTimer.current) clearTimeout(revealTimer.current);
+    if (bagTimer.current) clearTimeout(bagTimer.current);
+  }, []);
+
+  // One tap = one reveal (one audit row): ref guard against a fast double tap.
+  const revealBag = revealGuard(async () => {
+    if (!user?.id) return;
+    if (bagExact != null) { if (bagTimer.current) clearTimeout(bagTimer.current); setBagExact(null); return; }
+    setBagBusy(true);
+    try {
+      const res = await api.revealHelperBag(user.id, locationId);
+      setBagExact(Number(res?.data?.held) || 0);
+      if (bagTimer.current) clearTimeout(bagTimer.current);
+      bagTimer.current = setTimeout(() => { bagTimer.current = null; setBagExact(null); }, REVEAL_MS);
+    } catch (err) {
+      if (!handleAccessEnded(err)) showAlert("Couldn't show the amount", err?.status ? err.message : 'Check the internet and tap again.');
+    } finally {
+      setBagBusy(false);
+    }
+  });
 
   // Undo hides once a sale is over 2 minutes old (the server decides too).
   useFocusEffect(useCallback(() => {
@@ -138,6 +180,24 @@ export default function MySalesScreen() {
           <Text style={styles.statValue}>{data ? formatRupees(upi) : '—'}</Text>
         </View>
       </View>
+      {bag ? (
+        <TouchableOpacity
+          style={styles.bagLine}
+          onPress={revealBag}
+          activeOpacity={0.7}
+          accessibilityRole="button"
+          accessibilityLabel={bagExact != null ? `Cash you hold ${formatRupees(bagExact)}` : 'Cash you hold, hidden, tap to see'}
+        >
+          <Ionicons name="wallet-outline" size={24} color={Colors.text} />
+          <View style={{ flex: 1 }}>
+            <Text style={styles.bagLabel}>Cash you hold now</Text>
+            <Text style={styles.statHint}>{bagExact != null ? 'Hides again soon' : 'Tap to see'}</Text>
+          </View>
+          {bagBusy
+            ? <ActivityIndicator color={Colors.primary} />
+            : <Text style={styles.bagValue}>{bagExact != null ? formatRupees(bagExact) : bag.held_masked}</Text>}
+        </TouchableOpacity>
+      ) : null}
     </View>
   );
 
@@ -230,6 +290,12 @@ const styles = StyleSheet.create({
   statTap: { borderWidth: 2, borderColor: Colors.primary },
   statLabel: { fontSize: FontSize.md, fontWeight: '600', color: Colors.textSecondary },
   statValue: { fontSize: FontSize.xl, fontWeight: '800', color: Colors.text, fontVariant: ['tabular-nums'] },
+  bagLine: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, marginTop: Spacing.sm, minHeight: 64, padding: Spacing.sm,
+    backgroundColor: Colors.surface, borderRadius: BorderRadius.md, borderWidth: 2, borderColor: Colors.primary,
+  },
+  bagLabel: { fontSize: FontSize.md, fontWeight: '700', color: Colors.text },
+  bagValue: { fontSize: FontSize.xl, fontWeight: '800', color: Colors.text, fontVariant: ['tabular-nums'] },
   statHint: { fontSize: FontSize.sm, color: Colors.primaryDark, fontWeight: '600' },
   card: { backgroundColor: Colors.surface, borderRadius: BorderRadius.md, padding: Spacing.md, borderWidth: 1, borderColor: Colors.border },
   cardUndone: { backgroundColor: Colors.surfaceAlt },

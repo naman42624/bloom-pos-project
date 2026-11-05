@@ -9,6 +9,7 @@
 const { getDb: getSyncDb } = require('../config/database');
 const { verifyApprovalPin, approverMaxDiscountPct, APPROVER_ROLES } = require('./approval-pin');
 const { normalizeDateFields } = require('./normalizeDates');
+const { readCashMode } = require('./helper-bags');
 
 const MSG = {
   CUSTOM_ITEM: 'Helpers can only sell items from the catalog.',
@@ -241,8 +242,10 @@ async function normalizeHelperSale(db, body, user) {
   }
   if (paidPaise !== toPaise(grandTotal)) fail(400, MSG.PAYMENT_MISMATCH);
 
-  // Register mode: cash goes into the open register
-  if (cleanPayments.some((p) => p.method === 'cash')) {
+  // Register mode: cash goes into the open register. Bag mode: the helper
+  // keeps the cash (payments.held_by), so no register is needed (spec 10.6).
+  const cashMode = await readCashMode(db);
+  if (cashMode !== 'bag' && cleanPayments.some((p) => p.method === 'cash')) {
     const reg = await db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND closed_at IS NULL LIMIT 1').get(locationId);
     if (!reg) fail(400, MSG.REGISTER_CLOSED);
   }
@@ -259,6 +262,7 @@ async function normalizeHelperSale(db, body, user) {
     },
     discountPct,
     grandTotal,
+    cashMode,
   };
 }
 
@@ -326,6 +330,8 @@ function helperSaleGate(getAsyncDb) {
         approvedBy,
         discountPct: normalized.discountPct,
         grandTotal: normalized.grandTotal,
+        // Read once for this request; POST /api/sales uses it for held cash
+        cashMode: normalized.cashMode,
       };
       return next();
     } catch (err) {

@@ -655,6 +655,29 @@ class ApiService {
     return this.request(`/quick-sale/my-sales?location_id=${encodeURIComponent(locationId)}`);
   }
 
+  // ─── Helper cash bags (bag mode) ─────────────────────────
+  // Masked list; includeIdle adds `helpers` (everyone who can take a float)
+  getHelperBags(locationId, { includeIdle = false } = {}) {
+    return this.request(`/helper-cash/bags?location_id=${encodeURIComponent(locationId)}${includeIdle ? '&include_idle=1' : ''}`);
+  }
+
+  // Exact figures for one bag (audited on the server)
+  revealHelperBag(staffId, locationId) {
+    return this.request(`/helper-cash/bags/${staffId}/reveal`, { method: 'POST', body: JSON.stringify({ location_id: locationId }) });
+  }
+
+  giveHelperFloat({ staff_id, location_id, amount }) {
+    return this.request('/helper-cash/float', { method: 'POST', body: JSON.stringify({ staff_id, location_id, amount }) });
+  }
+
+  // preview must be a real boolean (server refuses anything else)
+  helperHandover({ staff_id, location_id, counted_amount, is_final, preview }) {
+    return this.request('/helper-cash/handover', {
+      method: 'POST',
+      body: JSON.stringify({ staff_id, location_id, counted_amount, is_final: is_final === true, preview: preview === true }),
+    });
+  }
+
   getQuickRoll(locationId) {
     return this.request(`/quick-sale/roll?location_id=${encodeURIComponent(locationId)}`);
   }

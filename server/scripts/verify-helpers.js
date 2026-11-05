@@ -720,8 +720,11 @@ check('helper sees only open or closed for the register', async () => {
   const helper = await helperSession(owner.token);
   const r = await api('GET', `/sales/register/status?location_id=${TEST_LOCATION_ID}`, helper.token);
   assert(r.status === 200, `status: ${r.status}`);
-  assert(JSON.stringify(Object.keys(r.body).sort()) === JSON.stringify(['data', 'isOpen', 'success']), `top keys: ${Object.keys(r.body)}`);
-  assert(JSON.stringify(Object.keys(r.body.data)) === JSON.stringify(['isOpen']), `data keys: ${Object.keys(r.body.data)}`);
+  // helper_cash_mode (bag plan): lets the Sell screen skip the closed-register
+  // cash warning in bag mode; it carries no money figures.
+  assert(JSON.stringify(Object.keys(r.body).sort()) === JSON.stringify(['data', 'helper_cash_mode', 'isOpen', 'success']), `top keys: ${Object.keys(r.body)}`);
+  assert(JSON.stringify(Object.keys(r.body.data).sort()) === JSON.stringify(['helper_cash_mode', 'isOpen']), `data keys: ${Object.keys(r.body.data)}`);
+  assert(['bag', 'register'].includes(r.body.helper_cash_mode) && r.body.data.helper_cash_mode === r.body.helper_cash_mode, `mode: ${r.body.helper_cash_mode}`);
   const o = await api('GET', `/sales/register/status?location_id=${TEST_LOCATION_ID}`, owner.token);
   assert(o.body.isOpen === r.body.isOpen && r.body.data.isOpen === r.body.isOpen, `isOpen differs: owner ${o.body.isOpen} helper ${r.body.isOpen}`);
 });

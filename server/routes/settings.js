@@ -4,6 +4,30 @@ const { getDb } = require('../config/database');
 const { getDb: getAsyncDb } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
 const { clearTimezoneCache } = require('../utils/time');
+const { listBags, maskAmount, readCashMode } = require('../utils/helper-bags');
+
+// "Raju", "Raju and Priya", "Raju, Priya and Sam"
+function joinNames(names) {
+  if (names.length <= 1) return names.join('');
+  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+}
+
+// The refusal copy when any helper at any shop still holds cash, else null.
+async function helperCashOut(adb) {
+  const locations = await adb.prepare('SELECT id FROM locations ORDER BY id').all();
+  const names = new Map(); // staff_id -> name
+  let totalPaise = 0;
+  for (const loc of locations) {
+    for (const b of await listBags(adb, loc.id)) {
+      const p = Math.round(Number(b.held) * 100);
+      if (p === 0) continue;
+      totalPaise += p;
+      names.set(b.staff_id, b.name);
+    }
+  }
+  if (names.size === 0) return null;
+  return `Collect the cash from ${joinNames([...names.values()])} first (${maskAmount(totalPaise / 100)}).`;
+}
 
 const router = express.Router();
 router.use(authenticate);
@@ -41,7 +65,7 @@ router.put(
       .isObject()
       .withMessage('Settings must be an object of key-value pairs'),
   ],
-  (req, res, next) => {
+  async (req, res, next) => {
     try {
       const errors = validationResult(req);
       if (!errors.isEmpty()) {
@@ -50,6 +74,22 @@ router.put(
 
       const db = getDb();
       const { settings } = req.body;
+
+      // Helper cash mode (spec 11.1): only 'register' or 'bag', and no
+      // switch while any helper still holds cash at any shop.
+      if (Object.prototype.hasOwnProperty.call(settings, 'helper_cash_mode')) {
+        const wanted = String(settings.helper_cash_mode).trim();
+        if (wanted !== 'register' && wanted !== 'bag') {
+          return res.status(400).json({ success: false, message: 'Pick where helper cash goes: straight to the register, or a separate bag per helper.' });
+        }
+        settings.helper_cash_mode = wanted;
+        const adb = await getAsyncDb();
+        const current = await readCashMode(adb);
+        if (wanted !== current) {
+          const blocked = await helperCashOut(adb);
+          if (blocked) return res.status(409).json({ success: false, message: blocked });
+        }
+      }
 
       const update = db.prepare(
         "UPDATE settings SET value = ?, updated_by = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?"
