@@ -11,7 +11,7 @@ import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import { formatTime } from '../utils/datetime';
 import { showAlert } from '../utils/alert';
-import { buildLabelSheetHtml } from '../utils/labelSheetHtml';
+import { printProductTag } from '../utils/productTag';
 import { printHtml } from '../utils/printHelpers';
 
 export default function ProduceScreen({ navigation }) {
@@ -202,35 +202,10 @@ export default function ProduceScreen({ navigation }) {
   const handlePrintTag = async () => {
     if (tagBusyRef.current || !lastMade?.id) return;
     tagBusyRef.current = true;
-    const single = lastMade.qty === 1;
     setTagStatus('printing');
     setTagError('');
     try {
-      if (single) {
-        try {
-          await api.markProductOneOff(lastMade.id);
-        } catch (e) {
-          throw new Error(e?.status === 403
-            ? (e.message || 'You cannot tag this item. Ask the owner.')
-            : 'Could not set up the tag. Check the connection and tap Print tag again.');
-        }
-      }
-      let rows = [];
-      try {
-        const res = await api.getLabels([lastMade.id]);
-        rows = res?.data || [];
-      } catch (e) {
-        if (e && e.status === 409 && e.message) throw new Error(e.message);
-        throw new Error('Could not make the tag. Check the connection and tap Print tag again.');
-      }
-      if (!rows.length) throw new Error('This item could not be found. Refresh and tap Print tag again.');
-      const html = buildLabelSheetHtml({
-        layout: 'bucket',
-        items: rows.slice(0, 1).map((r) => ({ ...r, count: single ? 1 : lastMade.qty })),
-        showPrice: false,
-        date: new Date(),
-      });
-      await printHtml(html, single ? 'Tag' : 'Labels');
+      await printProductTag({ api, printHtml }, { productId: lastMade.id, qty: lastMade.qty, retry: lastMade.qty === 1 ? 'Print tag' : `Print ${lastMade.qty} labels` });
       setTagStatus('done');
     } catch (e) {
       setTagStatus('');
