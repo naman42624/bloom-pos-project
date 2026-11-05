@@ -295,6 +295,16 @@ export default function SaleDetailScreen({ route, navigation }) {
   // allowed — mirrors PUT /api/sales/:id's own same-day + creator-only rules
   // (the register-closed check isn't verified client-side; that error surfaces
   // from the server on save instead, see handleSaveItemEdit).
+  // GST bill (bill_version 2): prices include GST. Items = what the shelf
+  // prices added up to; GST included = items GST + GST inside delivery.
+  const isGstBill = Number(sale?.bill_version) === 2;
+  const gstItemsTotal = isGstBill ? (Math.round((Number(sale.subtotal) || 0) * 100) + Math.round((Number(sale.tax_total) || 0) * 100)) / 100 : 0;
+  const gstIncluded = isGstBill ? (Math.round((Number(sale.tax_total) || 0) * 100) + Math.round((Number(sale.delivery_tax) || 0) * 100)) / 100 : 0;
+  // Shelf price of one unit of a line, before the order discount
+  const shelfPriceOf = (item) => (isGstBill && item.gross_amount != null && Number(item.quantity) > 0
+    ? Math.round((Number(item.gross_amount) * 100) / Number(item.quantity)) / 100
+    : Number(item.unit_price) || 0);
+
   const itemEditBlockReason = !sale
     ? null
     : !isToday(sale.created_at)
@@ -414,7 +424,7 @@ export default function SaleDetailScreen({ route, navigation }) {
     }
     setEditingItem(item);
     setEditItemQuantity(String(item.quantity ?? ''));
-    setEditItemPrice(String(item.unit_price ?? ''));
+    setEditItemPrice(String(shelfPriceOf(item)));
     setItemEditError(null);
     setItemEditModalVisible(true);
   };
@@ -434,7 +444,9 @@ export default function SaleDetailScreen({ route, navigation }) {
     setSavingItemEdit(true);
     setItemEditError(null);
     try {
-      await api.updateSale(saleId, { items: [{ id: editingItem.id, quantity: qty, unit_price: price }] });
+      // GST bills send the shelf price (GST included); older bills keep
+      // their price without GST, as before
+      await api.updateSale(saleId, { items: [{ id: editingItem.id, quantity: qty, ...(isGstBill ? { shelf_price: price } : { unit_price: price }) }] });
       setItemEditModalVisible(false);
       setEditingItem(null);
       await fetchSale(); // refreshes items + grand_total + history from the server
@@ -1313,8 +1325,8 @@ export default function SaleDetailScreen({ route, navigation }) {
                   <View style={{ flex: 1 }}>
                     <Text style={styles.itemName}>{itemName}</Text>
                     <Text style={styles.itemMeta}>
-                      {item.quantity} × ₹{Number(item.unit_price || 0).toFixed(2)}
-                      {item.tax_rate > 0 ? ` (${item.tax_rate}% tax)` : ''}
+                      {item.quantity} × ₹{shelfPriceOf(item).toFixed(2)}
+                      {item.tax_rate > 0 ? (isGstBill ? ` (incl. ${Number(item.tax_rate)}% GST)` : ` (${item.tax_rate}% tax)`) : ''}
                     </Text>
                     {item.special_instructions ? <Text style={{ fontSize: FontSize.xs, color: Colors.textLight, marginTop: 4 }}>Note: {item.special_instructions}</Text> : null}
                     {itemVoiceNotes.length > 0 && (
@@ -1506,8 +1518,16 @@ export default function SaleDetailScreen({ route, navigation }) {
 
       {/* Totals */}
       <View style={styles.totalsBox}>
-        <View style={styles.totalRow}><Text style={styles.totalLabel}>Subtotal</Text><Text style={styles.totalVal}>₹{Number(sale.subtotal || 0).toFixed(2)}</Text></View>
-        <View style={styles.totalRow}><Text style={styles.totalLabel}>Tax</Text><Text style={styles.totalVal}>₹{Number(sale.tax_total || 0).toFixed(2)}</Text></View>
+        {isGstBill ? (
+          // GST bill: shelf prices include GST, so the items line is what the
+          // customer saw; GST is shown as "included", not added
+          <View style={styles.totalRow}><Text style={styles.totalLabel}>Items</Text><Text style={styles.totalVal}>₹{gstItemsTotal.toFixed(2)}</Text></View>
+        ) : (
+          <>
+            <View style={styles.totalRow}><Text style={styles.totalLabel}>Subtotal</Text><Text style={styles.totalVal}>₹{Number(sale.subtotal || 0).toFixed(2)}</Text></View>
+            <View style={styles.totalRow}><Text style={styles.totalLabel}>Tax</Text><Text style={styles.totalVal}>₹{Number(sale.tax_total || 0).toFixed(2)}</Text></View>
+          </>
+        )}
         {sale.discount_amount > 0 && (
           <View style={styles.totalRow}>
             <Text style={[styles.totalLabel, { color: Colors.error }]}>Discount{sale.discount_type === 'percentage' ? ` (${sale.discount_percentage}%)` : ''}</Text>
@@ -1517,11 +1537,17 @@ export default function SaleDetailScreen({ route, navigation }) {
         {sale.delivery_charges > 0 && (
           <View style={styles.totalRow}><Text style={styles.totalLabel}>Delivery</Text><Text style={styles.totalVal}>₹{Number(sale.delivery_charges).toFixed(2)}</Text></View>
         )}
+        {Number(sale.round_off) !== 0 && sale.round_off != null && (
+          <View style={styles.totalRow}><Text style={styles.totalLabel}>Round off</Text><Text style={styles.totalVal}>{Number(sale.round_off) > 0 ? '+' : '-'}₹{Math.abs(Number(sale.round_off)).toFixed(2)}</Text></View>
+        )}
         <View style={styles.divider} />
         <View style={styles.totalRow}>
           <Text style={styles.grandLabel}>Grand Total</Text>
           <Text style={styles.grandVal}>₹{Number(sale.grand_total || 0).toFixed(2)}</Text>
         </View>
+        {isGstBill && (
+          <Text style={styles.gstNote}>Includes GST ₹{gstIncluded.toFixed(2)}{sale.invoice_number ? ` · Bill no. ${sale.invoice_number}` : ''}</Text>
+        )}
       </View>
 
       {/* Payments */}
@@ -2408,6 +2434,12 @@ const styles = StyleSheet.create({
   bomName: { flex: 1, fontSize: FontSize.xs, color: Colors.text },
   bomQty: { fontSize: FontSize.xs, fontWeight: '600', color: Colors.textSecondary },
 
+  gstNote: {
+    fontSize: FontSize.sm,
+    color: Colors.textSecondary,
+    textAlign: 'right',
+    marginTop: Spacing.xs,
+  },
   totalsBox: {
     backgroundColor: Colors.surface, borderRadius: BorderRadius.md,
     borderWidth: 1, borderColor: Colors.border, padding: Spacing.md, marginTop: Spacing.md,

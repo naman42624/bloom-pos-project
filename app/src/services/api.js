@@ -242,6 +242,11 @@ class ApiService {
     return this.request('/settings');
   }
 
+  // Round-off and GST rates every staff screen needs to match the server bill
+  getBillSettings() {
+    return this.request('/settings/bill');
+  }
+
   updateSettings(settings) {
     return this.request('/settings', {
       method: 'PUT',

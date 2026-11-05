@@ -3,6 +3,8 @@ import { View, Text, StyleSheet, ScrollView, TextInput, TouchableOpacity, Activi
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import api from '../services/api';
+import { computeBill } from '../utils/gst';
+import useBillSettings from '../hooks/useBillSettings';
 import VoiceNoteRecorder from '../components/VoiceNoteRecorder';
 import SoldByPicker from '../components/SoldByPicker';
 import RoutePicker from '../components/RoutePicker';
@@ -47,6 +49,7 @@ function showAlert(title, message, onDismiss) {
 
 export default function LogOrderScreen({ navigation, route }) {
   const { user, activeLocation, settings } = useAuth();
+  const billSettings = useBillSettings();
   const timezone = settings?.timezone?.value || 'Asia/Kolkata';
 
   const [channel, setChannel] = useState('whatsapp');
@@ -363,10 +366,12 @@ export default function LogOrderScreen({ navigation, route }) {
 
   const clearItemAttachments = (idx) => setItems((prev) => prev.map((it, i) => (i === idx ? { ...it, pendingAttachments: [] } : it)));
 
-  const computeItemsTotal = () => items.reduce(
-    (sum, it) => sum + (Number(it.unit_price) || 0) * (Number(it.quantity) || 0),
-    0
-  );
+  // The order's total exactly as the server saves it (utils/gst.js): prices
+  // include GST, so only the owner's round-off can change the sum
+  const computeItemsTotal = () => computeBill(
+    items.map((it) => ({ unitPrice: Number(it.unit_price) || 0, qty: Number(it.quantity) || 0, taxRate: 0 })),
+    null, null, { roundOff: !!billSettings.round_off }
+  ).payable;
 
   const selectPaymentMode = (mode) => {
     setPaymentMode(mode);

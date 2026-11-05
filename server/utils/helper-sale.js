@@ -42,6 +42,7 @@ function fail(status, message) {
 }
 
 const toPaise = (n) => Math.round(Number(n) * 100);
+const { computeBill } = require('./gst');
 
 async function readSettings(db, keys) {
   const placeholders = keys.map(() => '?').join(', ');
@@ -134,8 +135,7 @@ async function normalizeHelperSale(db, body, user) {
   }
 
   const lines = [];
-  let subtotal = 0;
-  let taxTotal = 0;
+  const billLines = [];
   for (const item of items) {
     if (!item || typeof item !== 'object') fail(400, MSG.BAD_ITEMS);
     const productId = Number(item.product_id);
@@ -180,16 +180,7 @@ async function normalizeHelperSale(db, body, user) {
       if (tr) taxRate = Number(tr.percentage) || 0;
     }
 
-    // Same as POST /api/sales: prices are tax-inclusive by default
-    let taxableUnitPrice = Number(unitPrice) || 0;
-    let taxAmount = 0;
-    if (taxRate > 0) {
-      const gross = taxableUnitPrice * qty;
-      taxAmount = (gross * taxRate) / (100 + taxRate);
-      taxableUnitPrice = taxableUnitPrice - (taxableUnitPrice * taxRate) / (100 + taxRate);
-    }
-    subtotal += taxableUnitPrice * qty;
-    taxTotal += taxAmount;
+    billLines.push({ unitPrice, qty, taxRate });
 
     lines.push({
       product_id: product.id,
@@ -200,31 +191,20 @@ async function normalizeHelperSale(db, body, user) {
     });
   }
 
-  // Discount: an amount (fixed) or a percent, measured against the subtotal
+  // Discount and total: the same utils/gst.js maths POST /api/sales uses
   let discountType = null;
   let discountValue = null;
-  let discountAmount = 0;
-  let discountPct = 0;
   const dv = Number(body.discount_value);
   if (body.discount_type && Number.isFinite(dv) && dv > 0) {
-    if (body.discount_type === 'percentage') {
-      if (dv > 100) fail(400, MSG.BAD_DISCOUNT);
-      discountType = 'percentage';
-      discountValue = dv;
-      discountPct = dv;
-      discountAmount = subtotal * dv / 100;
-    } else if (body.discount_type === 'fixed') {
-      if (dv > subtotal) fail(400, MSG.BAD_DISCOUNT);
-      discountType = 'fixed';
-      discountValue = dv;
-      discountAmount = dv;
-      discountPct = subtotal > 0 ? (dv / subtotal) * 100 : 0;
-    } else {
-      fail(400, MSG.BAD_DISCOUNT);
-    }
+    if (!['percentage', 'fixed'].includes(body.discount_type)) fail(400, MSG.BAD_DISCOUNT);
+    discountType = body.discount_type;
+    discountValue = dv;
   }
-
-  const grandTotal = Math.round((Math.max(0, subtotal - discountAmount) + taxTotal) * 100) / 100;
+  const bill = computeBill(billLines, discountType ? { type: discountType, value: discountValue } : null, null, { roundOff: false });
+  if (bill.error) fail(400, MSG.BAD_DISCOUNT);
+  // Same % POST /api/sales stores (a typed % is kept as typed)
+  const discountPct = discountType === 'percentage' ? dv : (discountType ? Math.round(bill.discountPct * 100) / 100 : 0);
+  const grandTotal = bill.payableP / 100;
 
   // Full payment now, cash and/or UPI only
   if (body.is_credit_sale) fail(400, MSG.CASH_OR_UPI);

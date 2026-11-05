@@ -22,6 +22,11 @@ const { getChecklistForSale, setCheck, loadSaleForChecks } = require('../utils/l
 const router = express.Router();
 
 const { normalizeDateFields } = require('../utils/normalizeDates');
+const { computeBill } = require('../utils/gst');
+const { readGstSettings, cleanHsn, GSTIN_RE } = require('../utils/gst-settings');
+const { nextNumber: nextInvoiceNumber } = require('../utils/invoice-number');
+const { planBill, writeBill } = require('../utils/sale-bill');
+const { generateSaleNumber } = require('../utils/sale-number');
 
 // ─── Auto-migration: expand schema CHECK constraints ─────────
 try {
@@ -46,27 +51,6 @@ try {
 
 
 // ─── Helper: Generate sale number ────────────────────────────
-async function generateSaleNumber(db, locationId) {
-  // Inside a money transaction, one sale number at a time per shop, so two
-  // sales saved at the same moment never get the same number.
-  if (db.isMoneyTx) await db.prepare('SELECT pg_advisory_xact_lock(?::int, ?::int) AS locked').get(41001, Number(locationId) || 0);
-  const loc = await db.prepare('SELECT name FROM locations WHERE id = ?').get(locationId);
-  const locCode = loc ? loc.name.replace(/[^A-Za-z]/g, '').substring(0, 4).toUpperCase() : 'XX';
-  const today = localToday().replace(/-/g, '');
-  const prefix = `INV-${locCode}-${today}`;
-
-  const last = await db.prepare(
-    "SELECT sale_number FROM sales WHERE sale_number LIKE ? ORDER BY id DESC LIMIT 1"
-  ).get(`${prefix}-%`);
-
-  let seq = 1;
-  if (last) {
-    const lastNum = parseInt(last.sale_number.split('-').pop(), 10);
-    if (!isNaN(lastNum)) seq = lastNum + 1;
-  }
-  return `${prefix}-${String(seq).padStart(3, '0')}`;
-}
-
 // ─── Helper: Recalculate sale totals from items ──────────────
 async function recalcSaleTotals(db, saleId) {
   const items = await db.prepare('SELECT * FROM sale_items WHERE sale_id = ?').all(saleId);
@@ -1370,32 +1354,52 @@ router.put('/:id', authenticate, authorize('owner', 'manager', 'employee', 'coun
 
     // Update items if provided (edit existing rows only; no add/remove in this task)
     if (items && Array.isArray(items)) {
-      const updateItem = db.prepare('UPDATE sale_items SET quantity = COALESCE(?, quantity), unit_price = COALESCE(?, unit_price), product_name = COALESCE(?, product_name) WHERE id = ? AND sale_id = ?');
-      for (const item of items) {
-        if (!item.id) continue;
-        await updateItem.run(item.quantity ?? null, item.unit_price ?? null, item.product_name ?? null, item.id, saleId);
-      }
-      // Recalculate totals after item edits, and their downstream consequences
-      // (tax_total, percentage discount_amount, payment_status, deliveries.cod_amount).
-      // NOTE: recalcSaleTotals() (defined near the top of this file) is written for the
-      // sync db layer (db.prepare().run() without await) and must NOT be called from this
-      // async route. Recompute inline using the async db instance instead — logic adapted
-      // from the equivalent recalculation in POST /:id/payments further down this file.
-      const updatedItems = await db.prepare('SELECT * FROM sale_items WHERE sale_id = ?').all(saleId);
-      // Guard each term with `|| 0`, not just the outer Number(...) call — a single row
-      // with a non-numeric/garbled unit_price or quantity would otherwise turn the whole
-      // reduce() into NaN and silently corrupt this sale's totals for every item, not just
-      // the bad one.
-      const newSubtotal = updatedItems.reduce((s, i) => s + ((Number(i.unit_price) || 0) * (Number(i.quantity) || 0)), 0);
-      const newTaxTotal = updatedItems.reduce((s, i) => s + (Number(i.tax_amount) || 0), 0);
-      const currentSale = await db.prepare('SELECT discount_amount, discount_type, discount_percentage, delivery_charges, order_type, is_credit_sale FROM sales WHERE id = ?').get(saleId);
+      const billPlan = await planBill(db, saleId, {
+        overrides: new Map(items.filter((it) => it.id).map((it) => [Number(it.id), {
+          quantity: it.quantity ?? null, shelf_price: it.shelf_price ?? null, unit_price: it.unit_price ?? null,
+        }])),
+      });
+      let newGrandTotal;
+      let legacyTotals = null;
+      if (billPlan) {
+        // GST sale: the whole bill is worked out again (utils/sale-bill.js)
+        for (const item of items) {
+          if (item.id && item.product_name != null) {
+            await db.prepare('UPDATE sale_items SET product_name = ? WHERE id = ? AND sale_id = ?').run(item.product_name, item.id, saleId);
+          }
+        }
+        newGrandTotal = billPlan.grandTotal;
+      } else {
+        const updateItem = db.prepare('UPDATE sale_items SET quantity = COALESCE(?, quantity), unit_price = COALESCE(?, unit_price), product_name = COALESCE(?, product_name) WHERE id = ? AND sale_id = ?');
+        for (const item of items) {
+          if (!item.id) continue;
+          await updateItem.run(item.quantity ?? null, item.unit_price ?? null, item.product_name ?? null, item.id, saleId);
+        }
+        // Recalculate totals after item edits, and their downstream consequences
+        // (tax_total, percentage discount_amount, payment_status, deliveries.cod_amount).
+        // NOTE: recalcSaleTotals() (defined near the top of this file) is written for the
+        // sync db layer (db.prepare().run() without await) and must NOT be called from this
+        // async route. Recompute inline using the async db instance instead — logic adapted
+        // from the equivalent recalculation in POST /:id/payments further down this file.
+        const updatedItems = await db.prepare('SELECT * FROM sale_items WHERE sale_id = ?').all(saleId);
+        // Guard each term with `|| 0`, not just the outer Number(...) call — a single row
+        // with a non-numeric/garbled unit_price or quantity would otherwise turn the whole
+        // reduce() into NaN and silently corrupt this sale's totals for every item, not just
+        // the bad one.
+        const newSubtotal = updatedItems.reduce((s, i) => s + ((Number(i.unit_price) || 0) * (Number(i.quantity) || 0)), 0);
+        const newTaxTotal = updatedItems.reduce((s, i) => s + (Number(i.tax_amount) || 0), 0);
+        const currentSale = await db.prepare('SELECT discount_amount, discount_type, discount_percentage, delivery_charges, order_type, is_credit_sale FROM sales WHERE id = ?').get(saleId);
 
-      let newDiscountAmount = Number(currentSale.discount_amount || 0);
-      if (currentSale.discount_type === 'percentage' && Number(currentSale.discount_percentage) > 0) {
-        newDiscountAmount = newSubtotal * Number(currentSale.discount_percentage) / 100;
-      }
+        let newDiscountAmount = Number(currentSale.discount_amount || 0);
+        if (currentSale.discount_type === 'percentage' && Number(currentSale.discount_percentage) > 0) {
+          newDiscountAmount = newSubtotal * Number(currentSale.discount_percentage) / 100;
+        }
 
-      const newGrandTotal = Math.max(0, newSubtotal - newDiscountAmount) + newTaxTotal + Number(currentSale.delivery_charges || 0);
+        newGrandTotal = Math.max(0, newSubtotal - newDiscountAmount) + newTaxTotal + Number(currentSale.delivery_charges || 0);
+        // The old (pre-GST) maths keeps writing its own figures below
+        legacyTotals = { newSubtotal, newTaxTotal, newDiscountAmount };
+      }
+      const currentSale = await db.prepare('SELECT order_type, is_credit_sale FROM sales WHERE id = ?').get(saleId);
 
       // Recalculate payment status by comparing total paid against the new grand total
       const totalPaidRow = await db.prepare('SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE sale_id = ?').get(saleId);
@@ -1406,9 +1410,33 @@ router.put('/:id', authenticate, authorize('owner', 'manager', 'employee', 'coun
       if (roundedTotalPaid >= roundedGrandTotal - 0.01) newPaymentStatus = 'paid';
       else if (roundedTotalPaid > 0) newPaymentStatus = 'partial';
 
-      await db.prepare(
-        'UPDATE sales SET subtotal = ?, tax_total = ?, discount_amount = ?, grand_total = ?, payment_status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'
-      ).run(newSubtotal, newTaxTotal, newDiscountAmount, newGrandTotal, newPaymentStatus, saleId);
+      // Lowering an order below what was already paid would leave money to
+      // give back with no refund record: refuse, same as convert-type
+      const refundedRow = await db.prepare("SELECT COALESCE(SUM(amount), 0) AS refunded FROM refunds WHERE sale_id = ?").get(saleId);
+      if (Number(refundedRow.refunded) === 0 && totalPaid - newGrandTotal > 0.009) {
+        const e = new Error(`This order is already paid ₹${totalPaid.toFixed(2)}, more than the new total of ₹${newGrandTotal.toFixed(2)}. Keep the item as it was, or use Refund to give money back.`);
+        e.statusCode = 409;
+        throw e;
+      }
+      // Dues and total spent follow the new total (same rule as a new sale:
+      // the unpaid part sits on the sender for a delivery, else the customer)
+      const before = await db.prepare('SELECT grand_total, order_type, sender_customer_id, customer_id FROM sales WHERE id = ?').get(saleId);
+      const duesCustomerId = (before.order_type === 'delivery' && before.sender_customer_id) ? before.sender_customer_id : before.customer_id;
+      const oldTotal = Number(before.grand_total) || 0;
+      if (duesCustomerId && Math.abs(oldTotal - newGrandTotal) > 0.009) {
+        const unpaidBefore = Math.max(0, oldTotal - totalPaid);
+        const unpaidAfter = Math.max(0, newGrandTotal - totalPaid);
+        await db.prepare('UPDATE users SET total_spent = GREATEST(0, total_spent - ? + ?), credit_balance = GREATEST(0, credit_balance - ? + ?), updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+          .run(oldTotal, newGrandTotal, unpaidBefore, unpaidAfter, duesCustomerId);
+      }
+      if (billPlan) {
+        await writeBill(db, billPlan);
+        await db.prepare('UPDATE sales SET payment_status = ? WHERE id = ?').run(newPaymentStatus, saleId);
+      } else {
+        await db.prepare(
+          'UPDATE sales SET subtotal = ?, tax_total = ?, discount_amount = ?, grand_total = ?, payment_status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'
+        ).run(legacyTotals.newSubtotal, legacyTotals.newTaxTotal, legacyTotals.newDiscountAmount, newGrandTotal, newPaymentStatus, saleId);
+      }
 
       // Keep the delivery's COD amount in sync with the new outstanding balance
       if (currentSale.order_type === 'delivery' || currentSale.order_type === 'pre_order') {
@@ -1795,6 +1823,11 @@ router.post(
         }
         soldBy = Number(req.body.sold_by);
       }
+      // Buyer GSTIN (optional, for a business customer who wants a GST bill)
+      const buyerGstin = req.body.buyer_gstin ? String(req.body.buyer_gstin).trim().toUpperCase() : null;
+      if (buyerGstin && !GSTIN_RE.test(buyerGstin)) {
+        return res.status(400).json({ success: false, message: "That GSTIN doesn't look right. It has 15 letters and numbers, like 07ABCDE1234F1Z5. Check it or leave it empty." });
+      }
       // Mutable alias — may be set by auto-create logic below
       let customer_id = customer_id_from_body || null;
       // Owner-only field, but only owner/manager may set it at creation —
@@ -1822,11 +1855,10 @@ router.post(
         if (paysCashToRegister && !lockedRegister) throw registerClosedError();
 
         // Calculate line items — supports both products and raw materials
-        let subtotal = 0;
-        let taxTotal = 0;
+        const gstCfg = await readGstSettings(db);
         const processedItems = [];
         for (const item of items) processedItems.push(await (async () => {
-          let name, unitPrice, taxRate = 0, productId = null, materialId = null;
+          let name, unitPrice, taxRate = 0, productId = null, materialId = null, hsn = null;
 
           if (item.material_id) {
             // Raw material sale
@@ -1834,11 +1866,11 @@ router.post(
             if (!material) throw new Error(`Material ID ${item.material_id} not found or inactive`);
             name = item.product_name || material.name;
             unitPrice = item.unit_price;
-            taxRate = item.tax_rate || 0;
+            taxRate = item.tax_rate != null && item.tax_rate !== '' ? Number(item.tax_rate) || 0 : gstCfg.defaultRate;
             materialId = material.id;
           } else if (item.product_id) {
             // Product sale
-            const product = await db.prepare('SELECT id, name, tax_rate_id, selling_price FROM products WHERE id = ? AND is_active = 1').get(item.product_id);
+            const product = await db.prepare('SELECT id, name, tax_rate_id, selling_price, hsn_code FROM products WHERE id = ? AND is_active = 1').get(item.product_id);
             if (!product && entryMode) {
               const inactiveErr = new Error("This item isn't sold any more — the buttons have been refreshed");
               inactiveErr.statusCode = 400;
@@ -1856,49 +1888,70 @@ router.post(
             }
             name = item.product_name || product.name;
             productId = product.id;
+            hsn = product.hsn_code || null;
           } else {
             // Custom ad-hoc item
             name = item.product_name || 'Custom Item';
             unitPrice = Number(item.unit_price) || 0;
-            taxRate = item.tax_rate || 0;
+            taxRate = item.tax_rate != null && item.tax_rate !== '' ? Number(item.tax_rate) || 0 : gstCfg.defaultRate;
+            hsn = cleanHsn(item.hsn_code);
             productId = null;
             materialId = null;
           }
 
           const qty = item.quantity || 1;
-          const taxInclusive = item.tax_inclusive !== false;
-          let taxableUnitPrice = Number(unitPrice) || 0;
-          let taxAmount = 0;
+          // Prices include GST. An older app sends the price without GST
+          // (tax_inclusive: false); put GST back on to get the shelf price.
+          const rate = Number(taxRate) || 0;
+          const shelfPrice = item.tax_inclusive === false && rate > 0
+            ? Math.round(Number(unitPrice || 0) * (100 + rate)) / 100
+            : Math.round(Number(unitPrice || 0) * 100) / 100;
 
-          if (taxRate > 0) {
-            if (taxInclusive) {
-              const gross = taxableUnitPrice * qty;
-              taxAmount = (gross * taxRate) / (100 + taxRate);
-              taxableUnitPrice = taxableUnitPrice - (taxableUnitPrice * taxRate) / (100 + taxRate);
-            } else {
-              taxAmount = (taxableUnitPrice * qty * taxRate) / 100;
-            }
-          }
-
-          const lineTotal = (taxableUnitPrice * qty) + taxAmount;
-          subtotal += taxableUnitPrice * qty;
-          taxTotal += taxAmount;
-
-          return { product_id: productId, material_id: materialId, product_name: name, quantity: qty, unit_price: taxableUnitPrice, tax_rate: taxRate, tax_amount: taxAmount, line_total: lineTotal, special_instructions: item.special_instructions || null, image_url: item.image_url || null, custom_materials: item.custom_materials || null, fulfill_from_stock: item.fulfill_from_stock };
+          return { product_id: productId, material_id: materialId, product_name: name, quantity: qty, shelf_price: shelfPrice, tax_rate: rate, hsn_code: hsn || gstCfg.defaultHsn || null, special_instructions: item.special_instructions || null, image_url: item.image_url || null, custom_materials: item.custom_materials || null, fulfill_from_stock: item.fulfill_from_stock };
         })());
+
+        // GST bill maths (utils/gst.js, shared with the app): discount off the
+        // GST-inclusive price, shared over the lines, GST on what is left,
+        // delivery taxed at its own rate, total rounded to the rupee.
+        const bill = computeBill(
+          processedItems.map((it) => ({ unitPrice: it.shelf_price, qty: it.quantity, taxRate: it.tax_rate })),
+          discount_type && discount_value > 0 ? { type: discount_type, value: discount_value } : null,
+          { amount: delivery_charges || 0, taxRate: gstCfg.deliveryRate },
+          // Typed-amount sales (quick sale, close top-up) and helper sales are
+          // never rounded: the sale must equal the money actually taken, and a
+          // helper phone works the total out without the shop settings
+          { roundOff: gstCfg.roundOff && !entryMode && !req.helperSale }
+        );
+        if (bill.error) {
+          const e = new Error(bill.error);
+          e.statusCode = 400;
+          throw e;
+        }
+        bill.lines.forEach((l, i) => {
+          const it = processedItems[i];
+          it.unit_price = Math.round(l.unitTaxable * 100) / 100;
+          it.tax_amount = l.taxP / 100;
+          it.gross_amount = l.grossP / 100;
+          it.discount_amount = l.discountP / 100;
+          it.taxable_value = l.taxableP / 100;
+          it.cgst_amount = l.cgstP / 100;
+          it.sgst_amount = l.sgstP / 100;
+          it.line_total = l.netP / 100;
+        });
+        const itemsTaxableP = bill.lines.reduce((t, l) => t + l.taxableP, 0);
+        const itemsTaxP = bill.lines.reduce((t, l) => t + l.taxP, 0);
+        // Kept so grand_total = subtotal - discount + tax + delivery + round_off
+        // holds for every sale, old and new (reports rely on it).
+        const subtotal = (itemsTaxableP + bill.discountP) / 100;
+        const taxTotal = itemsTaxP / 100;
 
         // Discount — with threshold enforcement
         let discountAmount = 0;
         let discountPercentage = null;
         let discountApprovedBy = null;
         if (discount_type && discount_value > 0) {
-          if (discount_type === 'percentage') {
-            discountPercentage = discount_value;
-            discountAmount = subtotal * discount_value / 100;
-          } else {
-            discountAmount = discount_value;
-            discountPercentage = subtotal > 0 ? (discount_value / subtotal) * 100 : 0;
-          }
+          discountAmount = bill.discountP / 100;
+          discountPercentage = discount_type === 'percentage' ? Number(discount_value) : Math.round(bill.discountPct * 100) / 100;
 
           // Enforce discount thresholds
           const mgrThreshold = parseFloat(
@@ -1932,7 +1985,7 @@ router.post(
           }
         }
 
-        const grandTotal = Math.round((Math.max(0, subtotal - discountAmount) + taxTotal + (delivery_charges || 0)) * 100) / 100;
+        const grandTotal = bill.payableP / 100;
 
         // Determine payment status
         const totalPaid = (payments || []).reduce((s, p) => s + (Number(p.amount) || 0), 0);
@@ -1940,6 +1993,13 @@ router.post(
         // A helper sale is paid in full, to the paisa (checked before any write)
         if (req.helperSale && Math.round(totalPaid * 100) !== Math.round(grandTotal * 100)) {
           const e = new Error("The payment doesn't match the total. Check the amounts and try again.");
+          e.statusCode = 400;
+          throw e;
+        }
+        // More money than the bill is never recorded: change is given from
+        // the drawer, and only the bill amount is entered
+        if (Math.round(roundedTotalPaid * 100) > Math.round(grandTotal * 100)) {
+          const e = new Error(`The payment (₹${roundedTotalPaid.toFixed(2)}) is more than the bill (₹${grandTotal.toFixed(2)}). Enter only the bill amount and give change from the drawer.`);
           e.statusCode = 400;
           throw e;
         }
@@ -2084,6 +2144,10 @@ router.post(
           needsProduction = true;
         }
 
+        // Invoice number: taken last, inside this transaction, so a refused
+        // or failed sale never uses one up
+        const invoice = await nextInvoiceNumber(db, location_id, 'invoice');
+
         // Insert sale
         const saleResult = await db.prepare(`
           INSERT INTO sales (sale_number, location_id, customer_id, customer_name, customer_phone,
@@ -2093,8 +2157,10 @@ router.post(
             special_instructions, customer_notes,
             sender_customer_id, receiver_customer_id, sender_same_as_receiver,
             sender_name, sender_phone, receiver_name, receiver_phone, sender_message,
-            created_by, created_at, is_credit_sale, vendor_name, entry_mode, sold_by, client_ref)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            created_by, created_at, is_credit_sale, vendor_name, entry_mode, sold_by, client_ref,
+            bill_version, round_off, delivery_tax, delivery_tax_rate, taxable_total, cgst_total, sgst_total,
+            invoice_number, invoice_fy, buyer_gstin, buyer_legal_name)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           saleNumber, location_id, customer_id || null, saleCustomerName || null, saleCustomerPhone || null,
           subtotal, taxTotal, discountAmount, discount_type || null, discountPercentage, discountApprovedBy,
@@ -2106,13 +2172,16 @@ router.post(
           senderCustomerId || null, receiverCustomerId || null, senderReceiverSame ? 1 : 0,
           senderNameForSale || '', senderPhoneForSale || '', receiverNameForSale || '', receiverPhoneForSale || '', sender_message || '', req.user.id,
           nowLocal(), is_credit_sale ? 1 : 0, vendorNameToStore, entryMode, soldBy,
-          req.helperSale ? req.helperSale.clientRef : null
+          req.helperSale ? req.helperSale.clientRef : null,
+          2, bill.roundOffP / 100, bill.delivery.taxP / 100, bill.delivery.amountP > 0 ? bill.delivery.taxRate : null,
+          bill.taxableP / 100, bill.cgstP / 100, bill.sgstP / 100,
+          invoice.number, invoice.fy, buyerGstin, buyerGstin ? (String(req.body.buyer_legal_name || '').trim().slice(0, 150) || null) : null
         );
         const saleId = saleResult.lastInsertRowid;
 
         // Insert items — omit line_total (GENERATED ALWAYS on production; DEFAULT 0 on legacy)
         const insertItem = db.prepare(
-          'INSERT INTO sale_items (sale_id, product_id, material_id, product_name, quantity, unit_price, tax_rate, tax_amount, materials_deducted, from_product_stock, special_instructions, image_url, custom_materials) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+          'INSERT INTO sale_items (sale_id, product_id, material_id, product_name, quantity, unit_price, tax_rate, tax_amount, materials_deducted, from_product_stock, special_instructions, image_url, custom_materials, hsn_code, gross_amount, discount_amount, taxable_value, cgst_amount, sgst_amount) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
         );
         const saleItemIds = [];
         for (const item of processedItems) {
@@ -2129,7 +2198,8 @@ router.post(
             0,
             item.special_instructions || null,
             item.image_url || null,
-            item.custom_materials ? JSON.stringify(item.custom_materials) : null
+            item.custom_materials ? JSON.stringify(item.custom_materials) : null,
+            item.hsn_code || null, item.gross_amount, item.discount_amount, item.taxable_value, item.cgst_amount, item.sgst_amount
           );
           saleItemIds.push({ ...item, sale_item_id: res.lastInsertRowid });
         }
@@ -3089,7 +3159,12 @@ router.put(
         // Update order type. The total changes by the delivery charge, so the
         // dues and total spent move with it (same rule as a new sale: dues
         // hold the unpaid part, on the sender for a delivery).
-        const newGrandTotal = Math.round((Number(sale.grand_total) - (Number(sale.delivery_charges) || 0) + Number(charges)) * 100) / 100;
+        // A GST sale works its whole bill out again (GST inside the delivery
+        // charge, round-off); an older sale moves by the charge only
+        const convertPlan = await planBill(db, sale.id, { deliveryCharges: Number(charges) || 0 });
+        const newGrandTotal = convertPlan
+          ? convertPlan.grandTotal
+          : Math.round((Number(sale.grand_total) - (Number(sale.delivery_charges) || 0) + Number(charges)) * 100) / 100;
         const paidSoFar = Number((await db.prepare('SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE sale_id = ?').get(sale.id)).total) || 0;
         const refundedSoFar = Number((await db.prepare('SELECT COALESCE(SUM(amount), 0) as total FROM refunds WHERE sale_id = ?').get(sale.id)).total) || 0;
         if (refundedSoFar === 0 && paidSoFar - newGrandTotal > 0.009) {
@@ -3145,6 +3220,8 @@ router.put(
           receiverPhoneFinal || '',
           sale.id
         );
+        // GST sale: save the rest of the new bill (delivery GST, round-off)
+        if (convertPlan) await writeBill(db, convertPlan);
 
         if (new_order_type === 'delivery') {
           // Pickup → Delivery: clear pickup_status, create delivery record

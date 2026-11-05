@@ -662,6 +662,57 @@ function ensureCoreTables() {
   // older rows stay NULL and the unique index ignores them.
   ensureColumn('staff_cash_movements', 'request_id', 'TEXT');
   runPsql('CREATE UNIQUE INDEX IF NOT EXISTS idx_staff_cash_movements_request ON staff_cash_movements(staff_id, request_id) WHERE request_id IS NOT NULL');
+
+  // GST bills (2026-11-05), all additive. bill_version 2 marks a sale whose
+  // lines and totals were worked out by utils/gst.js. Older sales stay NULL.
+  ensureColumn('products', 'hsn_code', 'VARCHAR(8)');
+  ensureColumn('sale_items', 'hsn_code', 'VARCHAR(8)');
+  ensureColumn('sale_items', 'gross_amount', 'NUMERIC(12,2)');
+  ensureColumn('sale_items', 'discount_amount', 'NUMERIC(12,2) DEFAULT 0');
+  ensureColumn('sale_items', 'taxable_value', 'NUMERIC(12,2)');
+  ensureColumn('sale_items', 'cgst_amount', 'NUMERIC(12,2)');
+  ensureColumn('sale_items', 'sgst_amount', 'NUMERIC(12,2)');
+  ensureColumn('sales', 'bill_version', 'INTEGER');
+  ensureColumn('sales', 'round_off', 'NUMERIC(10,2) DEFAULT 0');
+  ensureColumn('sales', 'delivery_tax', 'NUMERIC(10,2) DEFAULT 0');
+  ensureColumn('sales', 'delivery_tax_rate', 'NUMERIC(5,2)');
+  ensureColumn('sales', 'taxable_total', 'NUMERIC(12,2)');
+  ensureColumn('sales', 'cgst_total', 'NUMERIC(12,2)');
+  ensureColumn('sales', 'sgst_total', 'NUMERIC(12,2)');
+  ensureColumn('sales', 'invoice_number', 'VARCHAR(40)');
+  ensureColumn('sales', 'invoice_fy', 'VARCHAR(9)');
+  ensureColumn('sales', 'buyer_gstin', 'VARCHAR(15)');
+  ensureColumn('sales', 'buyer_legal_name', 'VARCHAR(150)');
+  runPsql('CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_invoice_number ON sales(invoice_number) WHERE invoice_number IS NOT NULL');
+  ensureColumn('refunds', 'credit_note_number', 'VARCHAR(40)');
+  runPsql('CREATE UNIQUE INDEX IF NOT EXISTS idx_refunds_credit_note_number ON refunds(credit_note_number) WHERE credit_note_number IS NOT NULL');
+  ensureColumn('locations', 'state_code', 'VARCHAR(2)');
+  ensureColumn('locations', 'fssai_number', 'VARCHAR(20)');
+  ensureColumn('locations', 'invoice_prefix', 'VARCHAR(12)');
+  runPsql(`
+    CREATE TABLE IF NOT EXISTS invoice_counters (
+      series_key VARCHAR(40) NOT NULL,
+      fy VARCHAR(9) NOT NULL,
+      last_no INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (series_key, fy)
+    )
+  `);
+  const gstSettings = [
+    ['gst_delivery_rate', '18', 'GST percent included in delivery charges'],
+    ['gst_default_hsn', '', 'HSN code used for custom items and products with none'],
+    ['gst_default_rate', '0', 'GST percent used for custom items'],
+    ['invoice_series_mode', 'shop', 'shop = one invoice series per shop, all = one series for every shop'],
+    ['invoice_prefix', 'INV', 'Start of every invoice number when a shop has none of its own'],
+    ['credit_note_prefix', 'CN', 'Start of every credit note number'],
+    ['bill_round_off', '0', 'Round the bill total to the nearest rupee (turn on once every counter has the new app)'],
+    ['bill_legal_name', '', 'Registered business name printed on the bill'],
+    ['bill_pan', '', 'PAN printed on the bill (blank = not printed)'],
+    ['bill_show_fields', '{}', 'Which optional lines the bill prints (JSON)'],
+    ['bill_terms', '', 'Terms printed at the bottom of the bill'],
+  ];
+  for (const [k, v, d] of gstSettings) {
+    runPsql(`INSERT INTO settings (key, value, description) VALUES ('${k}', '${v}', '${d}') ON CONFLICT (key) DO NOTHING`);
+  }
   runPsql(`INSERT INTO settings (key, value, description) SELECT 'helper_cash_mode', 'register', 'Where helper cash goes: register (straight into the drawer) or bag (each helper holds it until handover)' WHERE NOT EXISTS (SELECT 1 FROM settings WHERE key = 'helper_cash_mode')`);
 
   // Ensure partner_id column exists on delivery_settlements
@@ -1318,7 +1369,7 @@ function runPsql(sql) {
 }
 
 function runSelect(sql) {
-  const wrapped = `SELECT COALESCE(json_agg(t), '[]'::json)::text FROM (${sql}) t`;
+  const wrapped = `SELECT COALESCE(json_agg(mtx_row), '[]'::json)::text FROM (${sql}) mtx_row`;
   const output = runPsql(wrapped);
 
   if (!output) return [];

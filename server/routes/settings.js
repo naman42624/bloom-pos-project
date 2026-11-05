@@ -4,6 +4,7 @@ const { getDb } = require('../config/database');
 const { getDb: getAsyncDb } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
 const { clearTimezoneCache } = require('../utils/time');
+const { readGstSettings } = require('../utils/gst-settings');
 const { listBags, maskAmount, readCashMode } = require('../utils/helper-bags');
 
 // "Raju", "Raju and Priya", "Raju, Priya and Sam"
@@ -34,6 +35,19 @@ router.use(authenticate);
 
 // ─── GET /api/settings ──────────────────────────────────────
 // Owner and Manager can view all settings
+// ─── GET /api/settings/bill ─────────────────────────────────
+// What every staff screen needs to work a bill out exactly as the server
+// does (utils/gst.js). No amounts, no secrets.
+router.get('/bill', async (req, res, next) => {
+  try {
+    const db = await getAsyncDb();
+    const cfg = await readGstSettings(db);
+    res.json({ success: true, data: { round_off: cfg.roundOff, delivery_rate: cfg.deliveryRate, default_rate: cfg.defaultRate, default_hsn: cfg.defaultHsn } });
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.get('/', authorize('owner', 'manager'), async (req, res, next) => {
   try {
     const db = await getAsyncDb();

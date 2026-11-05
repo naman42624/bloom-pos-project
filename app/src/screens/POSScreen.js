@@ -265,9 +265,10 @@ export default function POSScreen({ navigation, route }) {
     }
   };
 
+  // Shelf prices include GST, so the cart total is just price x quantity
+  // (Quick Checkout then shows the final bill: discount, delivery, round-off)
   const subtotal = cart.reduce((s, c) => s + (c.unit_price * c.quantity), 0);
-  const taxTotal = cart.reduce((s, c) => s + ((c.unit_price * c.quantity * c.tax_rate) / 100), 0);
-  const grandTotal = subtotal + taxTotal;
+  const grandTotal = subtotal;
   const itemCount = cart.reduce((s, c) => s + c.quantity, 0);
 
   const handleQuickAdd = async () => {

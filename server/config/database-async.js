@@ -428,7 +428,7 @@ async function withMoneyTx(fn) {
   };
   const select = async (raw, params) => {
     const statement = bindParams(syncShapeSql(raw), params);
-    const r = await guarded(`SELECT COALESCE(json_agg(t), '[]'::json)::text AS j FROM (${statement}\n) t`);
+    const r = await guarded(`SELECT COALESCE(json_agg(mtx_row), '[]'::json)::text AS j FROM (${statement}\n) mtx_row`);
     return JSON.parse((r.rows[0] && r.rows[0].j) || '[]');
   };
   const tx = {

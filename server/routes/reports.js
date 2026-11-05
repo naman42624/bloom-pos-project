@@ -43,6 +43,8 @@ router.get('/sales-summary', authenticate, authorize('owner', 'manager'), async 
         COALESCE(SUM(s.tax_total), 0) as total_tax,
         COALESCE(SUM(s.discount_amount), 0) as total_discounts,
         COALESCE(SUM(s.delivery_charges), 0) as total_delivery_charges,
+        COALESCE(SUM(s.round_off), 0) as total_round_off,
+        COALESCE(SUM(s.delivery_tax), 0) as total_delivery_tax,
         COALESCE(AVG(s.grand_total), 0) as avg_order_value,
         COUNT(CASE WHEN s.order_type = 'walk_in' THEN 1 END) as walk_in_count,
         COUNT(CASE WHEN s.order_type = 'pickup' THEN 1 END) as pickup_count,
@@ -83,8 +85,11 @@ router.get('/sales-summary', authenticate, authorize('owner', 'manager'), async 
       SELECT
         si.product_name,
         SUM(si.quantity) as total_qty,
-        -- line_total is 0 on older databases that never computed it, so fall back to quantity x price + tax
-        SUM(CASE WHEN COALESCE(si.line_total, 0) > 0 THEN si.line_total
+        -- GST bills store the amount after the order discount (taxable value + GST).
+        -- Older rows: line_total, which is 0 on older databases that never computed it,
+        -- so fall back to quantity x price + tax
+        SUM(CASE WHEN si.taxable_value IS NOT NULL THEN si.taxable_value + COALESCE(si.tax_amount, 0)
+                 WHEN COALESCE(si.line_total, 0) > 0 THEN si.line_total
                  ELSE si.quantity * si.unit_price + COALESCE(si.tax_amount, 0) END) as total_revenue
       FROM sale_items si
       JOIN sales s ON si.sale_id = s.id
