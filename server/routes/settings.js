@@ -111,13 +111,16 @@ router.get('/tax-rates', authorize('owner', 'manager', 'employee', 'counter_staf
 // GET /api/settings/shop-info
 // The one setting every staff role needs to read: the shop name printed on
 // delivery challans / pickup slips. GET / stays owner/manager-only (it holds
-// prefs and flags staff shouldn't see), so this exposes shop_name alone —
+// prefs and flags staff shouldn't see), so this exposes shop_name (and the UPI QR) only —
 // same narrow-endpoint pattern as /tax-rates above and /auth/staff-roster.
-router.get('/shop-info', authorize('owner', 'manager', 'employee', 'counter_staff', 'florist_staff', 'delivery_partner'), async (req, res, next) => {
+// upi_qr_image_url is the shop's UPI QR, shown on the helper payment screen
+// (already public on the customer order page).
+router.get('/shop-info', authorize('owner', 'manager', 'employee', 'counter_staff', 'florist_staff', 'delivery_partner', 'helper'), async (req, res, next) => {
   try {
     const db = await getAsyncDb();
     const row = await db.prepare("SELECT value FROM settings WHERE key = 'shop_name'").get();
-    res.json({ success: true, data: { shop_name: row?.value || null } });
+    const qr = await db.prepare("SELECT value FROM settings WHERE key = 'upi_qr_image_url'").get();
+    res.json({ success: true, data: { shop_name: row?.value || null, upi_qr_image_url: qr?.value || null } });
   } catch (error) {
     next(error);
   }

@@ -5,6 +5,8 @@ const { body, validationResult } = require('express-validator');
 const { getDb } = require('../config/database');
 const { getDb: getAsyncDb } = require('../config/database-async');
 const { authenticate } = require('../middleware/auth');
+const { refuseIfExpired, HELPER_NO_PASSWORD_COPY } = require('../utils/helper-access');
+const { publicUser } = require('../utils/public-user');
 
 const router = express.Router();
 
@@ -78,7 +80,7 @@ router.post(
           return res.status(200).json({
             success: true,
             message: 'Account claimed successfully',
-            data: { user, token },
+            data: { user: publicUser(user), token },
           });
         }
 
@@ -119,7 +121,7 @@ router.post(
       res.status(201).json({
         success: true,
         message: 'Account created successfully',
-        data: { user, token },
+        data: { user: publicUser(user), token },
       });
     } catch (error) {
       next(error);
@@ -178,9 +180,17 @@ router.post(
         });
       }
 
+      if (user.role === 'helper') {
+        return res.status(401).json({ success: false, message: HELPER_NO_PASSWORD_COPY });
+      }
+
+      const expiredMsg = refuseIfExpired(user);
+      if (expiredMsg) {
+        return res.status(401).json({ success: false, message: expiredMsg });
+      }
+
       const token = generateToken(user);
 
-      const { password: _, ...userWithoutPassword } = user;
 
       // Get assigned locations
       const locations = await db
@@ -193,7 +203,7 @@ router.post(
         success: true,
         message: 'Login successful',
         data: {
-          user: userWithoutPassword,
+          user: publicUser(user),
           token,
           locations,
         },
@@ -206,7 +216,11 @@ router.post(
 
 // ─── POST /api/auth/staff-login ──────────────────────────────
 // Employee code + PIN login for the shared counter device.
-const { hashPin, verifyPin, PIN_MAX_ATTEMPTS, PIN_LOCKOUT_MINUTES } = require('../utils/pin');
+const { hashPin } = require('../utils/pin');
+const { checkCodeAndPin } = require('../utils/approval-pin');
+// Owner and manager are left out on purpose: their approval PIN approves
+// helper discounts only and never signs anyone in on a counter device.
+const STAFF_LOGIN_ROLES = ['employee', 'counter_staff', 'florist_staff', 'helper'];
 
 router.post(
   '/staff-login',
@@ -224,43 +238,23 @@ router.post(
       const { employee_code, pin } = req.body;
       const db = await getAsyncDb();
 
-      const user = await db.prepare(
-        "SELECT * FROM users WHERE employee_code = ? AND role IN ('employee', 'counter_staff', 'florist_staff')"
-      ).get(employee_code);
-
-      if (!user) {
-        return res.status(401).json({ success: false, message: 'Employee code not recognized.' });
+      let user;
+      try {
+        user = await checkCodeAndPin(db, employee_code, pin, {
+          roles: STAFF_LOGIN_ROLES,
+          wrongPinMessage: (left) => `Wrong PIN — ${left} tries left.`,
+        });
+      } catch (err) {
+        if (err.pinCheck) return res.status(err.status).json({ success: false, message: err.message });
+        throw err;
       }
 
-      if (!user.is_active) {
-        return res.status(403).json({ success: false, message: 'Your account has been deactivated. Contact your manager.' });
+      const expiredMsg = refuseIfExpired(user);
+      if (expiredMsg) {
+        return res.status(401).json({ success: false, message: expiredMsg });
       }
-
-      if (user.pin_locked_until && new Date(user.pin_locked_until) > new Date()) {
-        return res.status(423).json({ success: false, message: `Too many wrong tries — ask your manager to unlock this in ${PIN_LOCKOUT_MINUTES} minutes.` });
-      }
-
-      const isValidPin = await verifyPin(pin, user.pin_hash);
-
-      if (!isValidPin) {
-        const attempts = (user.pin_failed_attempts || 0) + 1;
-        const locked = attempts >= PIN_MAX_ATTEMPTS;
-        await db.prepare(
-          'UPDATE users SET pin_failed_attempts = ?, pin_locked_until = ? WHERE id = ?'
-        ).run(attempts, locked ? new Date(Date.now() + PIN_LOCKOUT_MINUTES * 60000) : null, user.id);
-
-        if (locked) {
-          return res.status(423).json({ success: false, message: `Too many wrong tries — ask your manager to unlock this in ${PIN_LOCKOUT_MINUTES} minutes.` });
-        }
-        return res.status(401).json({ success: false, message: `Wrong PIN — ${PIN_MAX_ATTEMPTS - attempts} tries left.` });
-      }
-
-      await db.prepare(
-        'UPDATE users SET pin_failed_attempts = 0, pin_locked_until = NULL WHERE id = ?'
-      ).run(user.id);
 
       const token = generateToken(user);
-      const { password: _pw, pin_hash: _pin, ...userWithoutSecrets } = user;
 
       const locations = await db.prepare(
         'SELECT l.id, l.name, l.type, l.latitude, l.longitude, l.geofence_radius, ul.is_primary FROM locations l JOIN user_locations ul ON ul.location_id = l.id WHERE ul.user_id = ? AND l.is_active = 1'
@@ -269,13 +263,120 @@ router.post(
       res.json({
         success: true,
         message: 'Login successful',
-        data: { user: userWithoutSecrets, token, locations },
+        data: { user: publicUser(user), token, locations },
       });
     } catch (error) {
       next(error);
     }
   }
 );
+
+// ─── Helper join links (public) ──────────────────────────────
+// A helper opens a one-time link on their own phone, sets a 4-digit PIN and
+// gets a session. Public and unauthenticated, so it has its own per-IP
+// fixed-window limiter (same shape as routes/track.js, separate state).
+const {
+  consumeJoinToken,
+  findLiveJoinToken,
+  JOIN_LINK_COPY,
+} = require('../utils/join-token');
+const { withTransaction } = require('../config/database-async');
+
+const JOIN_RATE_LIMIT_WINDOW_MS = 60 * 1000;
+const JOIN_RATE_LIMIT_MAX = 20;
+const joinRateLimitBuckets = new Map(); // ip -> { count, windowStart }
+
+function isJoinRateLimited(ip) {
+  if (joinRateLimitBuckets.size > 10000) joinRateLimitBuckets.clear();
+  const now = Date.now();
+  const bucket = joinRateLimitBuckets.get(ip);
+  if (!bucket || now - bucket.windowStart >= JOIN_RATE_LIMIT_WINDOW_MS) {
+    joinRateLimitBuckets.set(ip, { count: 1, windowStart: now });
+    return false;
+  }
+  bucket.count += 1;
+  return bucket.count > JOIN_RATE_LIMIT_MAX;
+}
+
+function joinRateLimit(req, res, next) {
+  if (isJoinRateLimited(req.ip)) {
+    return res.status(429).json({ success: false, message: 'Too many requests — please try again in a minute.' });
+  }
+  next();
+}
+
+// Returns { status, message } when this live token row must not be used,
+// or null when it can. Unknown, used, expired, non-helper and switched-off
+// accounts all get the same join copy; only an ended access window says so.
+function joinRefusal(row) {
+  if (!row || row.role !== 'helper' || !row.is_active) {
+    return { status: 410, message: JOIN_LINK_COPY };
+  }
+  const expiredMsg = refuseIfExpired(row);
+  if (expiredMsg) return { status: 401, message: expiredMsg };
+  return null;
+}
+
+// ─── GET /api/auth/join/:token ───────────────────────────────
+router.get('/join/:token', joinRateLimit, async (req, res, next) => {
+  try {
+    const db = await getAsyncDb();
+    const row = await findLiveJoinToken(db, req.params.token);
+    const refusal = joinRefusal(row);
+    if (refusal) return res.status(refusal.status).json({ success: false, message: refusal.message });
+    res.json({ success: true, data: { name: row.name } });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ─── POST /api/auth/join ─────────────────────────────────────
+router.post('/join', joinRateLimit, async (req, res, next) => {
+  try {
+    const { token, pin } = req.body || {};
+    if (typeof pin !== 'string' || !/^\d{4}$/.test(pin)) {
+      return res.status(400).json({ success: false, message: 'Enter a 4-digit PIN' });
+    }
+
+    const db = await getAsyncDb();
+    const row = await findLiveJoinToken(db, token);
+    const refusal = joinRefusal(row);
+    if (refusal) return res.status(refusal.status).json({ success: false, message: refusal.message });
+
+    const pinHash = await hashPin(pin);
+    // Consume and set the PIN together: two simultaneous submits cannot both
+    // succeed, and a failed PIN write leaves the link unused.
+    const userId = await withTransaction(async (tx) => {
+      const id = await consumeJoinToken(tx, token);
+      if (!id) return null;
+      const updated = await tx.prepare(`
+        UPDATE users
+        SET pin_hash = ?, pin_failed_attempts = 0, pin_locked_until = NULL, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ? AND role = 'helper' AND is_active = 1
+      `).run(pinHash, id);
+      if (updated.changes !== 1) throw Object.assign(new Error('join target changed'), { joinRefused: true });
+      return id;
+    }).catch((err) => {
+      if (err.joinRefused) return null;
+      throw err;
+    });
+    if (!userId) return res.status(410).json({ success: false, message: JOIN_LINK_COPY });
+
+    const user = await db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
+    const sessionToken = generateToken(user);
+    const locations = await db.prepare(
+      'SELECT l.id, l.name, l.type, l.latitude, l.longitude, l.geofence_radius, ul.is_primary FROM locations l JOIN user_locations ul ON ul.location_id = l.id WHERE ul.user_id = ? AND l.is_active = 1'
+    ).all(user.id);
+
+    res.json({
+      success: true,
+      message: 'Login successful',
+      data: { user: publicUser(user), token: sessionToken, locations },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
 
 // ─── GET /api/auth/staff-roster ──────────────────────────────
 // Unauthenticated by design — shown on the lock screen before anyone
@@ -326,7 +427,7 @@ router.get('/me', authenticate, async (req, res, next) => {
       )
       .all(user.id);
 
-    res.json({ success: true, data: { user, locations } });
+    res.json({ success: true, data: { user: publicUser(user), locations } });
   } catch (error) {
     next(error);
   }
@@ -408,7 +509,7 @@ router.put(
       res.json({
         success: true,
         message: 'Profile updated successfully',
-        data: { user },
+        data: { user: publicUser(user) },
       });
     } catch (error) {
       next(error);
@@ -549,7 +650,7 @@ router.post(
       res.status(201).json({
         success: true,
         message: 'Owner account created. Welcome to Flower point!',
-        data: { user, token },
+        data: { user: publicUser(user), token },
       });
     } catch (error) {
       next(error);

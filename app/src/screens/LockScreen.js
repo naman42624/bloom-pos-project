@@ -2,20 +2,39 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, FlatList, Image, ActivityIndicator, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import api from '../services/api';
-import { useAuth } from '../context/AuthContext';
+import { useAuth, isAccessEndedMessage } from '../context/AuthContext';
+
+// staff-login answers that mean this phone's helper is gone for good (code no
+// longer known, or switched off), as opposed to a wrong PIN or ended access.
+const UNKNOWN_CODE_MESSAGE = 'Employee code not recognized.';
+function helperIsGone(err) {
+  if (!err || isAccessEndedMessage(err.message)) return false;
+  return err.status === 403 || (err.status === 401 && err.message === UNKNOWN_CODE_MESSAGE);
+}
+// The helper's own phone: the server's lockout text says to ask a manager
+// to unlock, which a helper cannot do. Counter staff keep the server text.
+const HELPER_LOCKED = 'Too many wrong PINs. Wait 5 minutes and try again, or ask the owner for a new join code.';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 
 export default function LockScreen({ navigation }) {
-  const { staffLogin, getDeviceLocationId, user } = useAuth();
+  const { staffLogin, getDeviceLocationId, user, personalDevice, lockMessage, releasePersonalDevice } = useAuth();
   const [staff, setStaff] = useState([]);
   const [loading, setLoading] = useState(true);
   const [locationId, setLocationId] = useState(null);
-  const [selectedStaff, setSelectedStaff] = useState(null);
+  const [rosterPick, setRosterPick] = useState(null);
   const [pin, setPin] = useState('');
-  const [error, setError] = useState('');
+  const [error, setError] = useState(personalDevice && lockMessage ? lockMessage : '');
   const [submitting, setSubmitting] = useState(false);
 
+  // A helper's own phone (set up from a join link) shows only their PIN pad:
+  // no shop roster and no "Not you?". Owner/manager login is one level down.
+  const selectedStaff = personalDevice || rosterPick;
+  const setSelectedStaff = setRosterPick;
+
+  useEffect(() => { if (lockMessage && personalDevice) setError(lockMessage); }, [lockMessage, personalDevice]);
+
   const loadRoster = useCallback(async () => {
+    if (personalDevice) { setLoading(false); return; }
     setLoading(true);
     try {
       // Prefer the currently-locked user's own location if we have one
@@ -35,7 +54,7 @@ export default function LockScreen({ navigation }) {
     } finally {
       setLoading(false);
     }
-  }, [user, getDeviceLocationId]);
+  }, [user, getDeviceLocationId, personalDevice]);
 
   useEffect(() => { loadRoster(); }, [loadRoster]);
 
@@ -53,7 +72,12 @@ export default function LockScreen({ navigation }) {
       // AuthContext's LOGIN action already flips locked:false — nothing
       // else to do here, RootNavigator swaps to MainNavigator on its own.
     } catch (err) {
-      setError(err.message || 'Something went wrong');
+      if (personalDevice && helperIsGone(err)) {
+        updatePin('');
+        await releasePersonalDevice(`This phone is no longer set up for ${personalDevice.name}.`);
+        return;
+      }
+      setError(personalDevice && err?.status === 423 ? HELPER_LOCKED : (err.message || 'Something went wrong'));
       updatePin('');
     } finally {
       submittingRef.current = false;
@@ -82,7 +106,7 @@ export default function LockScreen({ navigation }) {
   keyHandlerRef.current = (e) => {
     if (/^[0-9]$/.test(e.key)) { e.preventDefault(); handleDigit(e.key); }
     else if (e.key === 'Backspace') { e.preventDefault(); handleBackspace(); }
-    else if (e.key === 'Escape') { leavePin(); }
+    else if (e.key === 'Escape' && !personalDevice) { leavePin(); }
   };
   useEffect(() => {
     if (Platform.OS !== 'web' || !selectedStaff || typeof window === 'undefined') return undefined;
@@ -94,10 +118,12 @@ export default function LockScreen({ navigation }) {
   if (selectedStaff) {
     return (
       <View style={styles.container}>
-        <TouchableOpacity style={styles.backLink} onPress={leavePin} accessibilityRole="button">
-          <Ionicons name="chevron-back" size={20} color={Colors.textSecondary} />
-          <Text style={styles.backLinkText}>Not {selectedStaff.name}?</Text>
-        </TouchableOpacity>
+        {personalDevice ? null : (
+          <TouchableOpacity style={styles.backLink} onPress={leavePin} accessibilityRole="button">
+            <Ionicons name="chevron-back" size={20} color={Colors.textSecondary} />
+            <Text style={styles.backLinkText}>Not {selectedStaff.name}?</Text>
+          </TouchableOpacity>
+        )}
         <Text style={styles.pinTitle}>{selectedStaff.name} — enter PIN</Text>
         <View style={styles.pinDots}>
           {[0, 1, 2, 3].map((i) => (
@@ -128,12 +154,18 @@ export default function LockScreen({ navigation }) {
         {Platform.OS === 'web' ? (
           <Text style={styles.keyboardHint}>You can also type your PIN on the keyboard.</Text>
         ) : null}
+        {personalDevice && navigation ? (
+          <TouchableOpacity style={styles.smallLink} onPress={() => navigation.navigate('Login')} accessibilityRole="link">
+            <Text style={styles.smallLinkText}>Owner or manager? Log in here</Text>
+          </TouchableOpacity>
+        ) : null}
       </View>
     );
   }
 
   return (
     <View style={styles.container}>
+      {lockMessage ? <Text style={styles.noticeText}>{lockMessage}</Text> : null}
       <Text style={styles.title}>Who's working?</Text>
       {loading ? (
         <ActivityIndicator color={Colors.primary} style={{ marginTop: Spacing.xl }} />
@@ -191,7 +223,10 @@ const styles = StyleSheet.create({
   pinDot: { width: 16, height: 16, borderRadius: 8, borderWidth: 2, borderColor: Colors.border },
   pinDotFilled: { backgroundColor: Colors.primary, borderColor: Colors.primary },
   statusLine: { minHeight: 28, justifyContent: 'center', alignItems: 'center', marginBottom: Spacing.sm },
-  errorText: { color: Colors.error, textAlign: 'center', fontSize: FontSize.md },
+  errorText: { color: Colors.error, textAlign: 'center', fontSize: FontSize.md, maxWidth: 360 },
+  smallLink: { alignSelf: 'center', minHeight: 44, justifyContent: 'center', paddingHorizontal: Spacing.md, marginTop: Spacing.md },
+  smallLinkText: { color: Colors.textSecondary, fontSize: FontSize.md, textDecorationLine: 'underline' },
+  noticeText: { color: Colors.text, fontSize: FontSize.md, textAlign: 'center', marginBottom: Spacing.md },
   keyboardHint: { color: Colors.textSecondary, fontSize: FontSize.sm, textAlign: 'center', marginTop: Spacing.md },
   keypad: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', marginTop: Spacing.lg, maxWidth: 320, alignSelf: 'center' },
   keypadKey: { width: 90, height: 70, justifyContent: 'center', alignItems: 'center' },

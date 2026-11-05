@@ -476,16 +476,35 @@ This guide's whole scope (see §1/title) is the **backend API only** — a Node/
    ```
    If `PUBLIC_APP_URL` and the API's own public domain (§9) are meant to be the same domain, these two server blocks need reconciling (e.g. one Nginx site handling both `/api/*` → backend and everything else → the static web build) rather than run as truly independent configs — work out the real domain/subdomain split for this shop's setup before wiring TLS (§10) for it.
 
-2a. **Same fallback covers the slip page and open order link (added 2026-10-29).** The printed slip QR opens `<PUBLIC_APP_URL>/slip/<token>`, and customers open `<PUBLIC_APP_URL>/order-request/<token>`, `/order-request/open` and `/order-request/status/<token>`; the product label QR opens `<PUBLIC_APP_URL>/p/<code>` (public price page, API `/api/price/<code>`). All are pages of the same web build, so the `location / { try_files $uri $uri/ /index.html; }` block above already serves them, provided no other block proxies those paths to Express. If you add explicit blocks, use:
+2a. **Same fallback covers the slip page and open order link (added 2026-10-29).** The printed slip QR opens `<PUBLIC_APP_URL>/slip/<token>`, and customers open `<PUBLIC_APP_URL>/order-request/<token>`, `/order-request/open` and `/order-request/status/<token>`; the product label QR opens `<PUBLIC_APP_URL>/p/<code>` (public price page, API `/api/price/<code>`); a helper's join link opens `<PUBLIC_APP_URL>/join/<token>` (API `/api/auth/join/*`, see 2b for its no-access-log block). All are pages of the same web build, so the `location / { try_files $uri $uri/ /index.html; }` block above already serves them, provided no other block proxies those paths to Express. If you add explicit blocks, use:
    ```nginx
    location /slip/          { try_files $uri /index.html; }
    location /order-request/ { try_files $uri /index.html; }   # includes open and status/
    location /p/             { try_files $uri /index.html; }   # product label QR price page
+   location /join/          { access_log off; try_files $uri /index.html; }   # helper join page, see 2b
    ```
-   Do not proxy these prefixes to port 3001: Express only has `/api/slip/*`, `/api/order-request/*` and `/api/price/*`. Also:
+   Do not proxy these prefixes to port 3001: Express only has `/api/slip/*`, `/api/order-request/*`, `/api/price/*` and `/api/auth/join/*`. Also:
    - `PUBLIC_APP_URL` must be the public **web** origin (the one serving this build), not the API host, or every QR code and link points at a dead address.
    - The public rate limiters need the real client IP: keep the `X-Forwarded-For` header lines in the `/api/` block (the server sets `trust proxy` to 1).
    - **Deploy order: server first, then the app.** A newer app against an older server has no `slip_url` and no `/api/slip` routes.
+
+2b. **Helper join links: keep them out of the access log (added 2026-11-03).** A helper's join link `<PUBLIC_APP_URL>/join/<token>` carries a one-time secret in its path, valid for 24 hours. Anyone who can read an Nginx access log line could use an unspent link to set the helper's PIN. The app itself redacts these paths in its own logs (`server/utils/redact.js`), but Nginx logs the raw URL. Turn access logging off for both the page and its API call:
+   ```nginx
+   location /join/ {
+       access_log off;
+       try_files $uri /index.html;   # SPA fallback: serves the app's join screen (JoinScreen.js)
+   }
+   location /api/auth/join/ {
+       access_log off;
+       proxy_pass http://127.0.0.1:3001;
+       proxy_http_version 1.1;
+       proxy_set_header Host $host;
+       proxy_set_header X-Real-IP $remote_addr;
+       proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+       proxy_set_header X-Forwarded-Proto $scheme;
+   }
+   ```
+   The `/join/` SPA fallback serves the app's join screen (shipped 2026-11-03); without it every join link 404s in production. `access_log off` is needed from the moment the server can issue links. Keep the `X-Forwarded-For` line, because the join limiter (20 a minute per IP) needs the real client IP.
 
 3. **Re-verify after wiring this up**, the same way the original tracking-page plan's own testing section (`docs/superpowers/specs/2026-09-11-customer-tracking-page-design.md` §7) verified it locally: open a real `tracking_url` in a private/incognito browser tab against the *production* domain, confirm it renders `TrackingScreen.js` and never touches the login screen, confirm an invalid token shows the friendly not-found state, confirm the Share Tracking Link button's WhatsApp message opens a link that actually resolves to the tracking page rather than a 404.
 

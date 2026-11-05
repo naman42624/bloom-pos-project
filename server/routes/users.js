@@ -1,18 +1,24 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
 const { body, param, query, validationResult } = require('express-validator');
+const { localToday, HELPER_NO_PASSWORD_COPY } = require('../utils/helper-access');
 const { getDb } = require('../config/database');
-const { getDb: getAsyncDb } = require('../config/database-async');
+const { getDb: getAsyncDb, withTransaction } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
 const { hashPin } = require('../utils/pin');
+const { publicUser } = require('../utils/public-user');
+const QRCode = require('qrcode');
+const { createJoinToken, joinUrl } = require('../utils/join-token');
+const { publicUrlMissingInProduction } = require('../utils/public-url');
 
 const router = express.Router();
 router.use(authenticate);
 
 const USER_SELECT_FIELDS =
-  'id, phone, email, name, role, avatar, bio, employee_code, job_title, is_active, created_by, created_at, updated_at';
+  'id, phone, email, name, role, avatar, bio, employee_code, job_title, is_active, access_until, created_by, created_at, updated_at';
 
-const VALID_ROLES = ['manager', 'employee', 'counter_staff', 'florist_staff', 'delivery_partner', 'customer'];
+const VALID_ROLES = ['manager', 'employee', 'counter_staff', 'florist_staff', 'delivery_partner', 'customer', 'helper'];
 
 // ─── GET /api/users ──────────────────────────────────────────
 // List users (Owner: all, Manager: employees & delivery partners at their locations)
@@ -45,7 +51,7 @@ router.get(
 
       // Managers can see operational staff including managers for shift setup
       if (req.user.role === 'manager') {
-        whereClause += " AND u.role IN ('manager', 'employee', 'counter_staff', 'florist_staff', 'delivery_partner')";
+        whereClause += " AND u.role IN ('manager', 'employee', 'counter_staff', 'florist_staff', 'delivery_partner', 'helper')";
       }
 
       // Always exclude customers from staff listing (separate page)
@@ -95,7 +101,7 @@ router.get(
       res.json({
         success: true,
         data: {
-          users,
+          users: users.map(publicUser),
           pagination: {
             page,
             limit,
@@ -140,7 +146,7 @@ router.get(
         )
         .all(user.id);
 
-      res.json({ success: true, data: { user, locations } });
+      res.json({ success: true, data: { user: publicUser(user), locations } });
     } catch (error) {
       next(error);
     }
@@ -164,16 +170,26 @@ router.post(
       .optional({ nullable: true, checkFalsy: true })
       .isEmail()
       .normalizeEmail(),
+    // Helpers sign in with a PIN only (set on their own phone via the join
+    // link): any password sent for a helper is ignored and the server stores
+    // an unusable random one below.
     body('password')
+      .if((value, { req }) => req.body.role !== 'helper')
       .isLength({ min: 6 })
       .withMessage('Password must be at least 6 characters'),
     body('role')
       .isIn([...VALID_ROLES, 'owner'])
-      .withMessage('Role must be owner, manager, employee, counter_staff, florist_staff, delivery_partner, or customer'),
+      .withMessage('Role must be owner, manager, employee, counter_staff, florist_staff, delivery_partner, customer, or helper'),
     body('location_ids')
       .optional()
       .isArray()
       .withMessage('location_ids must be an array'),
+    body('access_until')
+      .optional({ nullable: true, checkFalsy: true })
+      .isISO8601({ strict: true, strictSeparator: true })
+      .withMessage('Pick a real date for Works until.')
+      .matches(/^\d{4}-\d{2}-\d{2}$/)
+      .withMessage('Pick a real date for Works until.'),
   ],
   async (req, res, next) => {
     try {
@@ -186,7 +202,17 @@ router.post(
         });
       }
 
-      const { name, phone, email, password, role, location_ids } = req.body;
+      const { name, phone, email, password, role, location_ids, access_until } = req.body;
+
+      if (role === 'helper' && access_until && access_until < localToday()) {
+        return res.status(400).json({ success: false, message: "Works until can't be in the past." });
+      }
+      if (role === 'helper' && !access_until) {
+        return res.status(400).json({
+          success: false,
+          message: 'Pick the last day this helper can work.',
+        });
+      }
 
       // Only Owner can create managers and owners
       if ((role === 'manager' || role === 'owner') && req.user.role !== 'owner') {
@@ -197,22 +223,31 @@ router.post(
       }
 
       // Managers can only create employees and delivery partners
-      if (req.user.role === 'manager' && !['employee', 'counter_staff', 'florist_staff', 'delivery_partner', 'customer'].includes(role)) {
+      if (req.user.role === 'manager' && !['employee', 'counter_staff', 'florist_staff', 'delivery_partner', 'customer', 'helper'].includes(role)) {
         return res.status(403).json({
           success: false,
-          message: 'You can only create employee, delivery partner, or customer accounts',
+          message: 'You can only create employee, delivery partner, helper, or customer accounts',
         });
       }
 
       const db = getDb();
 
       // Check phone uniqueness
-      const existing = db.prepare('SELECT id FROM users WHERE phone = ?').get(phone);
+      const existing = db.prepare('SELECT id, name, role FROM users WHERE phone = ?').get(phone);
       if (existing) {
-        return res.status(409).json({
-          success: false,
-          message: 'An account with this phone number already exists',
-        });
+        let message = 'An account with this phone number already exists';
+        if (role === 'helper') {
+          // Say what to do next. Never say whether another account is a
+          // customer or staff.
+          // Only the owner can switch a helper back on in the app.
+          const reactivate = req.user.role === 'owner'
+            ? `${existing.name} is already a helper. Open them in Staff, change Works until, switch them on, then tap Show join code.`
+            : `${existing.name} is already a helper. Ask the owner to switch them on again, then open them in Staff and tap Show join code.`;
+          message = existing.role === 'helper'
+            ? reactivate
+            : 'This number already belongs to another account. Use a different number for the helper.';
+        }
+        return res.status(409).json({ success: false, message });
       }
 
       if (email) {
@@ -226,11 +261,14 @@ router.post(
       }
 
       const salt = await bcrypt.genSalt(12);
-      const hashedPassword = await bcrypt.hash(password, salt);
+      const hashedPassword = await bcrypt.hash(
+        role === 'helper' ? crypto.randomBytes(32).toString('base64url') : password,
+        salt
+      );
 
       const createUser = db.transaction(() => {
         let employeeCode = null;
-        if (role === 'counter_staff' || role === 'florist_staff') {
+        if (role === 'counter_staff' || role === 'florist_staff' || role === 'helper') {
           const maxRow = db.prepare(
             "SELECT COALESCE(MAX(CAST(employee_code AS INTEGER)), 1000) as max_code FROM users WHERE employee_code ~ '^[0-9]+$'"
           ).get();
@@ -239,9 +277,9 @@ router.post(
 
         const result = db
           .prepare(
-            'INSERT INTO users (name, phone, email, password, role, created_by, employee_code) VALUES (?, ?, ?, ?, ?, ?, ?)'
+            'INSERT INTO users (name, phone, email, password, role, created_by, employee_code, access_until) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
           )
-          .run(name, phone, email || null, hashedPassword, role, req.user.id, employeeCode);
+          .run(name, phone, email || null, hashedPassword, role, req.user.id, employeeCode, role === 'helper' ? access_until : null);
 
         const userId = result.lastInsertRowid;
 
@@ -276,7 +314,7 @@ router.post(
       res.status(201).json({
         success: true,
         message: `${role.replace('_', ' ')} account created successfully`,
-        data: { user, locations },
+        data: { user: publicUser(user), locations },
       });
     } catch (error) {
       next(error);
@@ -295,6 +333,7 @@ router.put(
     body('email').optional({ nullable: true, checkFalsy: true }).isEmail().normalizeEmail(),
     body('is_active').optional().isIn([0, 1, true, false]),
     body('location_ids').optional().isArray(),
+    body('access_until').optional({ nullable: true, checkFalsy: true }).isISO8601({ strict: true, strictSeparator: true }).withMessage('Pick a real date for Works until.').matches(/^\d{4}-\d{2}-\d{2}$/).withMessage('Pick a real date for Works until.'),
   ],
   (req, res, next) => {
     try {
@@ -317,7 +356,22 @@ router.put(
         return res.status(403).json({ success: false, message: 'Access denied' });
       }
 
-      const { name, email, is_active, location_ids } = req.body;
+      const { name, email, is_active, location_ids, access_until } = req.body;
+
+      // A helper with no shop link gets "You can't sell for this shop" on
+      // every sale (DELETE /users/:id removes the links), so a helper who is
+      // on must keep, or be given, a shop.
+      if (targetUser.role === 'helper') {
+        if (Array.isArray(location_ids) && location_ids.length === 0) {
+          return res.status(400).json({ success: false, message: 'Pick the shop this helper works at, then tap Update Staff.' });
+        }
+        if (location_ids === undefined && Number(is_active) === 1) {
+          const link = db.prepare('SELECT 1 AS ok FROM user_locations WHERE user_id = ? LIMIT 1').get(targetUser.id);
+          if (!link) {
+            return res.status(400).json({ success: false, message: 'Pick the shop this helper works at, then tap Reactivate Staff again.' });
+          }
+        }
+      }
 
       const updateUser = db.transaction(() => {
         const updates = [];
@@ -339,6 +393,11 @@ router.put(
           }
           updates.push('email = ?');
           values.push(email || null);
+        }
+        if (access_until !== undefined && targetUser.role === 'helper') {
+          if (!access_until) throw { status: 400, message: 'Pick the last day this helper can work.' };
+          updates.push('access_until = ?');
+          values.push(access_until);
         }
         if (is_active !== undefined) {
           updates.push('is_active = ?');
@@ -393,7 +452,7 @@ router.put(
       res.json({
         success: true,
         message: 'User updated successfully',
-        data: { user, locations },
+        data: { user: publicUser(user), locations },
       });
     } catch (error) {
       next(error);
@@ -430,6 +489,10 @@ router.put(
         return res.status(403).json({ success: false, message: 'Access denied' });
       }
 
+      if (targetUser.role === 'helper') {
+        return res.status(400).json({ success: false, message: HELPER_NO_PASSWORD_COPY });
+      }
+
       const salt = await bcrypt.genSalt(12);
       const hashedPassword = await bcrypt.hash(req.body.newPassword, salt);
 
@@ -447,6 +510,13 @@ router.put(
 
 // ─── PUT /api/users/:id/pin ──────────────────────────────────
 // Owner/Manager sets or resets a staff member's PIN. Clears any lockout.
+// The owner can also give a manager or an owner (themself included) an
+// approval PIN: it approves helper discounts only and never signs anyone in
+// (staff-login leaves owner/manager out). Such an account gets an
+// employee_code the first time, from the same counter used for counter staff.
+const STAFF_PIN_ROLES = ['employee', 'counter_staff', 'florist_staff'];
+const APPROVAL_PIN_ROLES = ['manager', 'owner'];
+
 router.put(
   '/:id/pin',
   authorize('owner', 'manager'),
@@ -461,24 +531,52 @@ router.put(
         return res.status(400).json({ success: false, errors: errors.array() });
       }
 
-      const db = getDb();
-      const targetUser = db.prepare('SELECT id, role, employee_code FROM users WHERE id = ?').get(req.params.id);
+      const db = await getAsyncDb();
+      const targetUser = await db.prepare('SELECT id, role, employee_code FROM users WHERE id = ?').get(req.params.id);
 
       if (!targetUser) {
         return res.status(404).json({ success: false, message: 'User not found' });
       }
-      if (!['employee', 'counter_staff', 'florist_staff'].includes(targetUser.role)) {
+
+      const isApprovalPin = APPROVAL_PIN_ROLES.includes(targetUser.role);
+      if (isApprovalPin && req.user.role !== 'owner') {
+        return res.status(403).json({ success: false, message: 'Only the owner can set a PIN for a manager or the owner.' });
+      }
+      if (!isApprovalPin && !STAFF_PIN_ROLES.includes(targetUser.role)) {
         return res.status(400).json({ success: false, message: 'PIN login is only available for staff accounts' });
       }
-      if (!targetUser.employee_code) {
+      if (!isApprovalPin && !targetUser.employee_code) {
         return res.status(400).json({ success: false, message: 'This account has no employee code yet — recreate it as Counter Staff or Florist/Prep Staff, or contact support to backfill one' });
       }
 
       const hashedPin = await hashPin(req.body.pin);
 
-      db.prepare(
+      if (isApprovalPin) {
+        // One statement: keeps an existing code, otherwise takes the next
+        // number. The employee_code UNIQUE constraint still catches a race.
+        const row = await db.prepare(`
+          UPDATE users
+          SET pin_hash = ?,
+              pin_failed_attempts = 0,
+              pin_locked_until = NULL,
+              employee_code = COALESCE(employee_code, (
+                SELECT COALESCE(MAX(CAST(employee_code AS INTEGER)), 1000) + 1
+                FROM users WHERE employee_code ~ '^[0-9]+$'
+              )::text),
+              updated_at = CURRENT_TIMESTAMP
+          WHERE id = ?
+          RETURNING employee_code
+        `).get(hashedPin, targetUser.id);
+        return res.json({
+          success: true,
+          message: 'Approval PIN set',
+          data: { employee_code: row.employee_code },
+        });
+      }
+
+      await db.prepare(
         'UPDATE users SET pin_hash = ?, pin_failed_attempts = 0, pin_locked_until = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?'
-      ).run(hashedPin, req.params.id);
+      ).run(hashedPin, targetUser.id);
 
       res.json({ success: true, message: 'PIN set successfully' });
     } catch (error) {
@@ -496,7 +594,7 @@ router.put(
     param('id').isInt(),
     body('role')
       .isIn([...VALID_ROLES, 'owner'])
-      .withMessage('Role must be owner, manager, employee, counter_staff, florist_staff, delivery_partner, or customer'),
+      .withMessage('Role must be owner, manager, employee, counter_staff, florist_staff, delivery_partner, customer, or helper'),
   ],
   (req, res, next) => {
     try {
@@ -509,6 +607,10 @@ router.put(
       const targetId = parseInt(req.params.id);
       const { role } = req.body;
 
+      if (role === 'helper') {
+        return res.status(400).json({ success: false, message: 'Use Add helper to give someone helper access.' });
+      }
+
       // Cannot change your own role
       if (targetId === req.user.id) {
         return res.status(400).json({ success: false, message: 'You cannot change your own role' });
@@ -520,6 +622,12 @@ router.put(
       }
 
       // Cannot reassign another owner's role (removed to allow multiple owners managing each other)
+
+      // A PIN never carries across the line between owner/manager (approval
+      // PIN only) and any other role (counter login PIN), either way round.
+      // They set a new one.
+      const isApprover = (r) => r === 'owner' || r === 'manager';
+      const clearApprovalPin = targetUser.role !== role && (isApprover(targetUser.role) || isApprover(role)) ? 1 : 0;
 
       // Promoting into counter_staff/florist_staff auto-assigns an employee_code if the
       // account doesn't already have one (e.g. a live `employee` account being promoted,
@@ -537,16 +645,19 @@ router.put(
               )::text
               ELSE NULL
             END,
+            pin_hash = CASE WHEN ? = 1 THEN NULL ELSE pin_hash END,
+            pin_failed_attempts = CASE WHEN ? = 1 THEN 0 ELSE pin_failed_attempts END,
+            pin_locked_until = CASE WHEN ? = 1 THEN NULL ELSE pin_locked_until END,
             updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
-      `).run(role, role, targetId);
+      `).run(role, role, clearApprovalPin, clearApprovalPin, clearApprovalPin, targetId);
 
       const updatedUser = db.prepare(`SELECT ${USER_SELECT_FIELDS} FROM users WHERE id = ?`).get(targetId);
 
       res.json({
         success: true,
         message: `${targetUser.name}'s role changed to ${role.replace('_', ' ')}`,
-        data: { user: updatedUser },
+        data: { user: publicUser(updatedUser) },
       });
     } catch (error) {
       next(error);
@@ -554,6 +665,39 @@ router.put(
   }
 );
 
+
+// ─── POST /api/users/:id/join-link ───────────────────────────
+// One-time join link + QR for a helper to set their PIN on their own phone.
+// A new link cancels any older unused one for the same helper.
+router.post(
+  '/:id/join-link',
+  authorize('owner', 'manager'),
+  [param('id').isInt()],
+  async (req, res, next) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({ success: false, errors: errors.array() });
+      }
+      if (publicUrlMissingInProduction()) {
+        return res.status(409).json({ success: false, message: "Join links can't be made yet — the shop's web address isn't set up. Ask the owner." });
+      }
+      const db = await getAsyncDb();
+      const target = await db.prepare('SELECT id, role, is_active FROM users WHERE id = ?').get(req.params.id);
+      if (!target || target.role !== 'helper' || !target.is_active) {
+        return res.status(400).json({ success: false, message: 'Join links are only for helpers.' });
+      }
+      const { token, expires_at } = await withTransaction((tx) => createJoinToken(tx, target.id, req.user.id));
+      const url = joinUrl(token);
+      res.json({
+        success: true,
+        data: { url, expires_at, qr_data_url: await QRCode.toDataURL(url, { width: 300, margin: 1 }) },
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
 
 router.delete('/:id', authorize('owner'), (req, res, next) => {
   try {

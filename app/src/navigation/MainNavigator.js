@@ -1,4 +1,5 @@
 import React from 'react';
+import { TouchableOpacity, Text } from 'react-native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
@@ -14,6 +15,8 @@ import LocationDetailScreen from '../screens/LocationDetailScreen';
 import LocationFormScreen from '../screens/LocationFormScreen';
 import UsersScreen from '../screens/UsersScreen';
 import UserFormScreen from '../screens/UserFormScreen';
+import AddHelperScreen from '../screens/AddHelperScreen';
+import HelperJoinQRScreen from '../screens/HelperJoinQRScreen';
 import ProfileScreen from '../screens/ProfileScreen';
 import SettingsScreen from '../screens/SettingsScreen';
 import QuickSaleTilesScreen from '../screens/QuickSaleTilesScreen';
@@ -108,13 +111,17 @@ import ShiftManagementScreen from '../screens/ShiftManagementScreen';
 import SalaryManagementScreen from '../screens/SalaryManagementScreen';
 import LiveDeliveryMapScreen from '../screens/LiveDeliveryMapScreen';
 import NotificationCenterScreen from '../screens/NotificationCenterScreen';
+
+// Helpers (temporary staff on their own phone)
+import HelperSellScreen from '../screens/helper/SellScreen';
+import HelperMySalesScreen from '../screens/helper/MySalesScreen';
 import NotificationBell from '../components/NotificationBell';
 import SwitchUserButton from '../components/SwitchUserButton';
 import HeaderActions from '../components/HeaderActions';
 import usePushNotifications from '../hooks/usePushNotifications';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { Colors, FontSize } from '../constants/theme';
+import { Colors, FontSize, Spacing } from '../constants/theme';
 
 const Tab = createBottomTabNavigator();
 const Stack = createNativeStackNavigator();
@@ -201,6 +208,8 @@ function UsersStack() {
           presentation: 'modal',
         })}
       />
+      <Stack.Screen name="AddHelper" component={AddHelperScreen} options={{ title: 'Add helper' }} />
+      <Stack.Screen name="HelperJoinQR" component={HelperJoinQRScreen} options={{ title: 'Join code' }} />
     </Stack.Navigator>
   );
 }
@@ -490,6 +499,8 @@ function MoreStack() {
         component={UserFormScreen}
         options={({ route }) => ({ title: route.params?.user ? 'Edit Staff' : 'Add Staff', presentation: 'modal' })}
       />
+      <Stack.Screen name="AddHelper" component={AddHelperScreen} options={{ title: 'Add helper' }} />
+      <Stack.Screen name="HelperJoinQR" component={HelperJoinQRScreen} options={{ title: 'Join code' }} />
       <Stack.Screen name="Settlements" component={SettlementsScreen} options={{ title: 'Settlements' }} />
       <Stack.Screen name="CashRegister" component={CashRegisterScreen} options={{ title: 'Cash Register' }} />
       <Stack.Screen name="Expenses" component={ExpensesScreen} options={{ title: 'Expenses' }} />
@@ -593,9 +604,73 @@ const TAB_ICONS = {
   Attendance: { active: 'time', inactive: 'time-outline' },
   More: { active: 'apps', inactive: 'apps-outline' },
   Profile: { active: 'person-circle', inactive: 'person-circle-outline' },
+  Sell: { active: 'cart', inactive: 'cart-outline' },
+  MySales: { active: 'receipt', inactive: 'receipt-outline' },
 };
 
+// ─── Helper app: two tabs only (spec §9) ────────────────────
+// Kept apart from StaffTabs so none of the staff-wide hooks (geofence,
+// delivery tracking, push-token registration) run for a helper: a helper
+// token reaches only server/utils/helper-routes.js, and those hooks call
+// other routes.
+// Header "Lock": a helper's phone is their own, but it still gets put down.
+// Locks to their personal PIN pad; the basket and screen stay as they were.
+function HelperLockButton() {
+  const { lock } = useAuth();
+  return (
+    <TouchableOpacity
+      onPress={lock}
+      style={{ flexDirection: 'row', alignItems: 'center', gap: 4, minHeight: 44, paddingHorizontal: Spacing.md, marginRight: Spacing.xs }}
+      accessibilityRole="button"
+      accessibilityLabel="Lock this phone"
+    >
+      <Ionicons name="lock-closed-outline" size={22} color={Colors.text} />
+      <Text style={{ fontSize: FontSize.md, fontWeight: '600', color: Colors.text }}>Lock</Text>
+    </TouchableOpacity>
+  );
+}
+
+function HelperTabs() {
+  const insets = useSafeAreaInsets();
+  return (
+    <Tab.Navigator
+      screenOptions={({ route }) => ({
+        tabBarIcon: ({ focused, color, size }) => {
+          const icons = TAB_ICONS[route.name] || TAB_ICONS.Sell;
+          return <Ionicons name={focused ? icons.active : icons.inactive} size={size} color={color} />;
+        },
+        tabBarActiveTintColor: Colors.primary,
+        tabBarInactiveTintColor: Colors.textSecondary,
+        tabBarLabelStyle: { fontSize: FontSize.sm, fontWeight: '700' },
+        tabBarStyle: {
+          backgroundColor: Colors.surface,
+          borderTopColor: Colors.border,
+          borderTopWidth: 1,
+          paddingBottom: insets.bottom > 0 ? insets.bottom + 4 : 8,
+          paddingTop: 8,
+          height: insets.bottom > 0 ? 60 + insets.bottom : 70,
+          elevation: 0,
+          shadowOpacity: 0,
+        },
+        headerStyle: { backgroundColor: Colors.surface },
+        headerTintColor: Colors.text,
+        headerTitleStyle: { fontWeight: '600' },
+        headerRight: () => <HelperLockButton />,
+      })}
+    >
+      <Tab.Screen name="Sell" component={HelperSellScreen} options={{ title: 'Sell', tabBarLabel: 'Sell' }} />
+      <Tab.Screen name="MySales" component={HelperMySalesScreen} options={{ title: 'My sales', tabBarLabel: 'My sales' }} />
+    </Tab.Navigator>
+  );
+}
+
 export default function MainNavigator() {
+  const { user } = useAuth();
+  if (user?.role === 'helper') return <HelperTabs />;
+  return <StaffTabs />;
+}
+
+function StaffTabs() {
   const { user, locations } = useAuth();
   const role = user?.role;
   const isExpoGo = Constants.appOwnership === 'expo';

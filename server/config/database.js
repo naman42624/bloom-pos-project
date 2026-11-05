@@ -617,6 +617,22 @@ function ensureCoreTables() {
     )
   `);
 
+  // Helpers: one-time join tokens (stored as SHA-256 hash) and sale retry safety.
+  runPsql(`
+    CREATE TABLE IF NOT EXISTS helper_join_tokens (
+      id SERIAL PRIMARY KEY,
+      user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      token_hash VARCHAR(64) NOT NULL UNIQUE,
+      expires_at TIMESTAMP NOT NULL,
+      used_at TIMESTAMP,
+      created_by INT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  ensureColumn('sales', 'client_ref', 'VARCHAR(64)');
+  runPsql('CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_created_by_client_ref ON sales(created_by, client_ref) WHERE client_ref IS NOT NULL');
+  runPsql(`INSERT INTO settings (key, value, description) SELECT 'discount_helper_threshold', COALESCE((SELECT value FROM settings WHERE key = 'discount_manager_threshold'), '20'), 'Largest discount percent a helper can give without a PIN override' WHERE NOT EXISTS (SELECT 1 FROM settings WHERE key = 'discount_helper_threshold')`);
+
   // Ensure partner_id column exists on delivery_settlements
   if (!hasColumn('delivery_settlements', 'partner_id')) {
     runPsql('ALTER TABLE delivery_settlements ADD COLUMN partner_id INTEGER REFERENCES users(id) ON DELETE SET NULL');
@@ -772,6 +788,8 @@ function ensureCompatibilityColumns() {
   ensureColumn('users', 'pin_locked_until', 'TIMESTAMP');
   ensureColumn('users', 'job_title', 'TEXT');
   ensureColumn('users', 'order_request_token', 'VARCHAR(64) UNIQUE');
+  // Last day a temporary helper may use the app (shop local date). NULL for everyone else.
+  ensureColumn('users', 'access_until', 'DATE');
 
   // users_role_check (from schema.sql's original 5-role enum) was only ever
   // dropped by hand on the local dev DB when counter_staff/florist_staff
@@ -782,8 +800,10 @@ function ensureCompatibilityColumns() {
   // Recreate it with the full current role set (routes/users.js VALID_ROLES + 'owner').
   try { runPsql('ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check'); } catch (_) {}
   try {
-    runPsql("ALTER TABLE users ADD CONSTRAINT users_role_check CHECK(role IN ('owner', 'manager', 'employee', 'counter_staff', 'florist_staff', 'delivery_partner', 'customer'))");
-  } catch (_) {}
+    runPsql("ALTER TABLE users ADD CONSTRAINT users_role_check CHECK(role IN ('owner', 'manager', 'employee', 'counter_staff', 'florist_staff', 'delivery_partner', 'customer', 'helper'))");
+  } catch (err) {
+    console.error('users_role_check could not be re-added:', err && err.message);
+  }
 
   ensureColumn('settings', 'updated_by', 'INTEGER REFERENCES users(id) ON DELETE SET NULL');
   ensureColumn('expenses', 'is_return', 'INTEGER DEFAULT 0');

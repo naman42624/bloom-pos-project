@@ -115,6 +115,19 @@ class ApiService {
     });
   }
 
+  // Helper join link (public): who the link is for, then set the PIN.
+  getJoinInfo(token) {
+    return this.request(`/auth/join/${encodeURIComponent(token)}`, { noAuth: true });
+  }
+
+  joinWithPin(token, pin) {
+    return this.request('/auth/join', {
+      method: 'POST',
+      body: JSON.stringify({ token, pin }),
+      noAuth: true,
+    });
+  }
+
   getStaffRoster(locationId) {
     return this.request(`/auth/staff-roster?location_id=${locationId}`);
   }
@@ -180,6 +193,11 @@ class ApiService {
       method: 'PUT',
       body: JSON.stringify({ pin }),
     });
+  }
+
+  // One-time join link + QR for a helper. A new one cancels the old one.
+  createHelperJoinLink(userId) {
+    return this.request(`/users/${userId}/join-link`, { method: 'POST' });
   }
 
   // ─── Locations ───────────────────────────────────────────
@@ -630,6 +648,11 @@ class ApiService {
 
   undoQuickSale(saleId) {
     return this.request(`/quick-sale/${saleId}/undo`, { method: 'POST' });
+  }
+
+  // Helper's own sales today at one shop (count, cash/UPI totals, can_undo per sale)
+  getMySales(locationId) {
+    return this.request(`/quick-sale/my-sales?location_id=${encodeURIComponent(locationId)}`);
   }
 
   getQuickRoll(locationId) {

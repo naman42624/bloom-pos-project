@@ -6,13 +6,15 @@ import {
   FlatList,
   TouchableOpacity,
   RefreshControl,
-  Alert,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
+import { showAlert } from '../utils/alert';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
+import { getShopTodayStr } from '../utils/datetime';
+import { helperTag } from '../utils/helperAccess';
 
 const ROLE_LABELS = {
   owner: 'Owner',
@@ -22,6 +24,7 @@ const ROLE_LABELS = {
   florist_staff: 'Florist/Prep Staff',
   delivery_partner: 'Delivery',
   customer: 'Customer',
+  helper: 'Helper',
 };
 
 const ROLE_COLORS = {
@@ -32,6 +35,7 @@ const ROLE_COLORS = {
   florist_staff: Colors.roleFloristStaff,
   delivery_partner: Colors.roleDelivery,
   customer: Colors.roleCustomer,
+  helper: Colors.info,
 };
 
 const FILTER_ROLES = [
@@ -41,10 +45,13 @@ const FILTER_ROLES = [
   { key: 'counter_staff', label: 'Counter Staff' },
   { key: 'florist_staff', label: 'Florist/Prep' },
   { key: 'delivery_partner', label: 'Delivery' },
+  { key: 'helper', label: 'Helpers' },
 ];
 
 export default function UsersScreen({ navigation }) {
-  const { user } = useAuth();
+  const { user, settings } = useAuth();
+  const today = getShopTodayStr(settings?.timezone?.value || 'Asia/Kolkata');
+  const canManage = user?.role === 'owner' || user?.role === 'manager';
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -57,7 +64,7 @@ export default function UsersScreen({ navigation }) {
       const response = await api.getUsers(params);
       setUsers(response.data?.users || []);
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to load users');
+      showAlert('Staff', err.message || 'Could not load the staff list. Pull down to try again.');
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -70,7 +77,10 @@ export default function UsersScreen({ navigation }) {
     }, [fetchUsers])
   );
 
-  const renderItem = ({ item }) => (
+  const renderItem = ({ item }) => {
+    const tag = item.role === 'helper' ? helperTag(item.access_until, today) : null;
+    const roleColor = tag?.ended ? Colors.textSecondary : (ROLE_COLORS[item.role] || Colors.textLight);
+    return (
     <TouchableOpacity
       style={styles.card}
       onPress={() => navigation.navigate('UserForm', { user: item })}
@@ -93,16 +103,17 @@ export default function UsersScreen({ navigation }) {
           ) : null}
         </View>
         <View style={styles.cardRight}>
-          <View style={[styles.roleBadge, { backgroundColor: (ROLE_COLORS[item.role] || Colors.textLight) + '15' }]}>
-            <Text style={[styles.roleLabel, { color: ROLE_COLORS[item.role] || Colors.textLight }]}>
-              {ROLE_LABELS[item.role]}
+          <View style={[styles.roleBadge, { backgroundColor: roleColor + '15' }]}>
+            <Text style={[styles.roleLabel, { color: roleColor }]}>
+              {tag ? tag.text : ROLE_LABELS[item.role]}
             </Text>
           </View>
           {!item.is_active && <Text style={styles.inactiveLabel}>Inactive</Text>}
         </View>
       </View>
     </TouchableOpacity>
-  );
+    );
+  };
 
   return (
     <View style={styles.container}>
@@ -146,8 +157,23 @@ export default function UsersScreen({ navigation }) {
         }
       />
 
-      {(user?.role === 'owner' || user?.role === 'manager') && (
+      {canManage && (
         <TouchableOpacity
+          style={styles.addHelperBtn}
+          onPress={() => navigation.navigate('AddHelper')}
+          activeOpacity={0.8}
+          accessibilityRole="button"
+          accessibilityLabel="Add helper"
+        >
+          <Ionicons name="person-add-outline" size={20} color={Colors.white} />
+          <Text style={styles.addHelperText}>Add helper</Text>
+        </TouchableOpacity>
+      )}
+
+      {canManage && (
+        <TouchableOpacity
+          accessibilityRole="button"
+          accessibilityLabel="Add staff"
           style={styles.fab}
           onPress={() => navigation.navigate('UserForm')}
           activeOpacity={0.8}
@@ -206,6 +232,21 @@ const styles = StyleSheet.create({
   empty: { alignItems: 'center', paddingTop: 80 },
   emptyTitle: { fontSize: FontSize.lg, fontWeight: '600', color: Colors.textSecondary, marginTop: Spacing.md },
   emptyText: { fontSize: FontSize.sm, color: Colors.textLight, marginTop: Spacing.xs },
+
+  addHelperBtn: {
+    position: 'absolute',
+    bottom: 24,
+    left: 20,
+    minHeight: 48,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    paddingHorizontal: Spacing.md,
+    borderRadius: BorderRadius.full,
+    backgroundColor: Colors.info,
+    elevation: 6,
+  },
+  addHelperText: { fontSize: FontSize.md, fontWeight: '600', color: Colors.white },
 
   fab: {
     position: 'absolute',
