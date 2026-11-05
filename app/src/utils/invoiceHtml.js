@@ -116,3 +116,58 @@ export function buildInvoiceHtml(v) {
     ${head}<div class="dash"></div>${meta}<div class="dash"></div>${items}<div class="dash"></div>${totals}${gstTable}${tail}
   </body></html>`;
 }
+
+// Credit note (GST bill refund) or refund receipt (plain bill), same roll.
+export function buildCreditNoteHtml(v) {
+  const isTax = v.kind === 'credit_note';
+  const s = v.seller || {};
+  const head = [
+    `<div class="shop">${esc(s.name)}</div>`,
+    s.legal_name ? `<div class="c">${esc(s.legal_name)}</div>` : '',
+    s.address ? `<div class="c">${esc(s.address)}</div>` : '',
+    s.gstin ? `<div class="c b">GSTIN ${esc(s.gstin)}</div>` : '',
+  ].join('');
+  const meta = [
+    `<div class="title">${esc(v.title)}</div>`,
+    v.credit_note_number ? row('Credit note No', esc(v.credit_note_number)) : '',
+    row('Date', formatWhen(v.date)),
+    v.against_invoice ? row('Against bill', esc(v.against_invoice)) : '',
+    v.against_order ? row('Order', esc(v.against_order)) : '',
+    v.against_date ? row('Bill date', formatWhen(v.against_date)) : '',
+    v.place_of_supply ? row('Place of supply', esc(v.place_of_supply)) : '',
+    v.bill_to ? `<div>Customer: ${esc(v.bill_to.name)}${v.bill_to.phone ? `&nbsp;&nbsp;${esc(v.bill_to.phone)}` : ''}</div>` : '',
+    v.buyer_gstin ? `<div>Buyer GSTIN: ${esc(v.buyer_gstin)}${v.buyer_legal_name ? ` ${esc(v.buyer_legal_name)}` : ''}</div>` : '',
+    v.reason ? `<div>Reason: ${esc(v.reason)}</div>` : '',
+  ].join('');
+  let gst = '';
+  if (isTax && (v.tax_by_rate || []).length) {
+    const cell = (a, b, c, d, e, cls = '') => `<div class="gt ${cls}"><span>${a}</span><span>${b}</span><span>${c}</span><span>${d}</span><span>${e}</span></div>`;
+    const tt = v.tax_totals || {};
+    gst = [
+      '<div class="gap"></div>',
+      cell('GST', 'Taxable', 'CGST', 'SGST', 'Total', 'hd'),
+      ...v.tax_by_rate.map((r) => cell(`${esc(r.rate)}%`, money(r.taxable), money(r.cgst), money(r.sgst), money(r.total))),
+      '<div class="dash"></div>',
+      cell('', money(tt.taxable), money(tt.cgst), money(tt.sgst), money(tt.total), 'b'),
+    ].join('');
+  }
+  return `<html><head><meta charset="utf-8"><title>${esc(v.credit_note_number || 'Refund')}</title><style>
+    @page { size: 80mm auto; margin: 0; }
+    * { box-sizing: border-box; }
+    body { width: 72mm; margin: 0 auto; padding: 3mm 0; font-family: 'Courier New', monospace; font-size: 11px; line-height: 1.35; color: #000; }
+    .shop { text-align: center; font-size: 15px; font-weight: bold; }
+    .c { text-align: center; } .b { font-weight: bold; } .small { font-size: 10px; }
+    .title { text-align: center; font-weight: bold; font-size: 13px; margin: 2mm 0 1mm; }
+    .row { display: flex; justify-content: space-between; gap: 2mm; } .row.big { font-size: 14px; font-weight: bold; }
+    .gt { display: flex; } .gt span { flex: 1; text-align: right; } .gt span:first-child { flex: 0.6; text-align: left; }
+    .gt.hd, .gt.b { font-weight: bold; }
+    .dash { border-top: 1px dashed #000; margin: 1.5mm 0; } .dbl { border-top: 2px solid #000; margin: 1.5mm 0; }
+    .gap { margin-top: 2mm; }
+  </style></head><body>
+    ${head}<div class="dash"></div>${meta}<div class="dbl"></div>
+    ${row(`Refunded (${esc(METHOD[v.method] || (v.method === 'store_credit' ? 'Store credit' : v.method))})`, `Rs ${money(v.amount)}`, 'big')}
+    <div class="dbl"></div><div>${esc(v.words)}</div>${gst}
+    ${isTax ? '<div class="small gap">GST shown is the part of the refund that was GST on the original bill.</div>' : ''}
+    ${v.footer ? `<div class="c gap">${esc(v.footer)}</div>` : ''}
+  </body></html>`;
+}

@@ -6,6 +6,40 @@ const { authenticate, authorize } = require('../middleware/auth');
 const { safeParseJSON } = require('../utils/json');
 
 const router = express.Router();
+const { GSTIN_RE } = require('../utils/gst-settings');
+const { cleanPrefix } = require('../utils/invoice-number');
+
+// GSTIN, state code, FSSAI and invoice prefix for a shop's bills. Cleans the
+// values in place; returns a plain message when one is wrong.
+function normalizeShopBillFields(db, b, shopId) {
+  if (b.gst_number !== undefined) {
+    const g = String(b.gst_number || '').trim().toUpperCase();
+    if (g && !GSTIN_RE.test(g)) return "That GSTIN doesn't look right. It has 15 letters and numbers, like 07ABCDE1234F1Z5.";
+    b.gst_number = g || null;
+    if (g && (b.state_code === undefined || b.state_code === '')) b.state_code = g.slice(0, 2);
+  }
+  if (b.state_code !== undefined) {
+    const c = String(b.state_code || '').trim();
+    if (c && !/^\d{2}$/.test(c)) return 'The state code is 2 numbers, like 07 for Delhi.';
+    b.state_code = c || null;
+  }
+  if (b.fssai_number !== undefined) {
+    const f = String(b.fssai_number || '').replace(/\s/g, '');
+    if (f && !/^\d{14}$/.test(f)) return 'The FSSAI number is 14 numbers. Check it or leave it empty.';
+    b.fssai_number = f || null;
+  }
+  if (b.invoice_prefix !== undefined) {
+    const raw = String(b.invoice_prefix || '').trim();
+    const pre = cleanPrefix(raw);
+    if (raw && pre !== raw.toUpperCase()) return 'The bill number start can use only letters and numbers, up to 5, like FP1.';
+    if (pre) {
+      const clash = db.prepare('SELECT name FROM locations WHERE UPPER(invoice_prefix) = ? AND id <> ?').get(pre, shopId || 0);
+      if (clash) return `${clash.name} already uses ${pre}. Pick a different start so bill numbers never repeat.`;
+    }
+    b.invoice_prefix = pre || null;
+  }
+  return null;
+}
 router.use(authenticate);
 
 // ─── GET /api/locations ──────────────────────────────────────
@@ -161,6 +195,8 @@ router.post(
       } = req.body;
 
       const db = getDb();
+      const billErr = normalizeShopBillFields(db, req.body, 0);
+      if (billErr) return res.status(400).json({ success: false, message: billErr });
 
       const result = db
         .prepare(
@@ -179,10 +215,12 @@ router.post(
           geofence_radius || 50,
           phone || null,
           email || null,
-          gst_number || null,
+          req.body.gst_number || null,
           operating_hours ? JSON.stringify(operating_hours) : null,
           req.user.id
         );
+      db.prepare('UPDATE locations SET state_code = ?, fssai_number = ?, invoice_prefix = ? WHERE id = ?')
+        .run(req.body.state_code || null, req.body.fssai_number || null, req.body.invoice_prefix || null, result.lastInsertRowid);
 
       const location = db
         .prepare('SELECT * FROM locations WHERE id = ?')
@@ -246,7 +284,10 @@ router.put(
         'name', 'address', 'city', 'state', 'pincode',
         'latitude', 'longitude', 'geofence_radius',
         'phone', 'email', 'gst_number', 'is_active',
+        'state_code', 'fssai_number', 'invoice_prefix',
       ];
+      const billErr = normalizeShopBillFields(db, req.body, Number(req.params.id));
+      if (billErr) return res.status(400).json({ success: false, message: billErr });
 
       const updates = [];
       const values = [];

@@ -68,6 +68,7 @@ export default function ProductFormScreen({ route, navigation }) {
   const [category, setCategory] = useState(editProduct?.category || null);
   const [sellingPrice, setSellingPrice] = useState(editProduct?.selling_price?.toString() || '');
   const [taxRateId, setTaxRateId] = useState(editProduct?.tax_rate_id || null);
+  const [hsnCode, setHsnCode] = useState(editProduct?.hsn_code || '');
   const [taxMode, setTaxMode] = useState(
     editProduct?.tax_rate_id ? 'preset' : (Number(editProduct?.tax_percentage || 0) > 0 ? 'custom' : 'none')
   );
@@ -256,6 +257,8 @@ export default function ProductFormScreen({ route, navigation }) {
         price_mode: priceMode,
         price_hint: priceMode === 'open' && priceHint.trim() ? priceHint.trim() : null,
         is_one_off: isOneOff ? 1 : 0,
+        // Empty clears it; the bill then uses the shop's default HSN
+        hsn_code: hsnCode.trim(),
       };
       if (sku.trim()) data.sku = sku.trim();
 
@@ -603,6 +606,18 @@ export default function ProductFormScreen({ route, navigation }) {
             keyboardType="decimal-pad"
           />
         )}
+
+        <Text style={[styles.label, { marginTop: Spacing.md }]}>HSN code</Text>
+        <TextInput
+          style={styles.input}
+          value={hsnCode}
+          onChangeText={(t) => setHsnCode(t.replace(/\D/g, '').slice(0, 8))}
+          placeholder="Printed on the bill, like 0603 (optional)"
+          placeholderTextColor={Colors.textLight}
+          keyboardType="number-pad"
+          maxLength={8}
+          accessibilityLabel="HSN code"
+        />
 
         {/* Materials (Bill of Materials) — create mode only */}
         {!isEdit && (

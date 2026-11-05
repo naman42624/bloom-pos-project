@@ -115,6 +115,19 @@ function resolveTaxRateId(db, taxRateId, taxPercentage, createdBy) {
 // PRODUCT CRUD
 // ═══════════════════════════════════════════════════════════════
 
+// HSN code: 4 to 8 digits, or empty to clear. Sets req.body.hsn_code to the
+// clean value (null when cleared); returns a plain message when it is wrong.
+const { cleanHsn } = require('../utils/gst-settings');
+function normalizeHsnBody(b) {
+  if (b.hsn_code === undefined) return null;
+  const raw = String(b.hsn_code == null ? '' : b.hsn_code).replace(/\s/g, '');
+  if (raw === '') { b.hsn_code = null; return null; }
+  const ok = cleanHsn(raw);
+  if (!ok) return 'The HSN code is 4 to 8 numbers, like 0603. Check it or leave it empty.';
+  b.hsn_code = ok;
+  return null;
+}
+
 // Helpers never see cost, margin, stock numbers or sales counts (spec 8.2).
 // Instead of stock numbers they get a yes/no `available`, decided the way
 // scan and the public price page decide it: a one-off item is available only
@@ -352,6 +365,8 @@ router.post(
       if (!errors.isEmpty()) return res.status(400).json({ success: false, message: 'Validation failed', errors: errors.array() });
 
       const db = getDb();
+      const hsnErr = normalizeHsnBody(req.body);
+      if (hsnErr) return res.status(400).json({ success: false, message: hsnErr });
       const { name, sku, description, type, category, selling_price, tax_rate_id, tax_percentage, location_id, materials } = req.body;
 
       // Check name uniqueness
@@ -373,6 +388,7 @@ router.post(
       ).run(name, finalSku, description || '', type || 'standard', category || null, selling_price || 0, resolvedTaxRateId || null, location_id || null, req.user.id);
 
       const productId = result.lastInsertRowid;
+      if (req.body.hsn_code) db.prepare('UPDATE products SET hsn_code = ? WHERE id = ?').run(req.body.hsn_code, productId);
 
       if (req.body.price_mode !== undefined || req.body.price_hint !== undefined || req.body.is_one_off !== undefined) {
         db.prepare('UPDATE products SET price_mode = COALESCE(?, price_mode), price_hint = ?, is_one_off = COALESCE(?, is_one_off) WHERE id = ?')
@@ -429,6 +445,8 @@ router.put(
     try {
       const errors = validationResult(req);
       if (!errors.isEmpty()) return res.status(400).json({ success: false, message: 'Validation failed', errors: errors.array() });
+      const hsnErr = normalizeHsnBody(req.body);
+      if (hsnErr) return res.status(400).json({ success: false, message: hsnErr });
 
       const db = getDb();
       const existing = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
@@ -443,7 +461,7 @@ router.put(
         if (dupSku) return res.status(409).json({ success: false, message: 'SKU already exists' });
       }
 
-      const fields = ['name', 'sku', 'description', 'type', 'category', 'selling_price', 'tax_rate_id', 'location_id', 'image_url', 'is_active', 'price_mode', 'price_hint', 'is_one_off'];
+      const fields = ['name', 'sku', 'description', 'type', 'category', 'selling_price', 'tax_rate_id', 'location_id', 'image_url', 'is_active', 'price_mode', 'price_hint', 'is_one_off', 'hsn_code'];
       const updates = [];
       const values = [];
 

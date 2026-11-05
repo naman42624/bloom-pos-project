@@ -20,6 +20,7 @@ import HelperJoinQRScreen from '../screens/HelperJoinQRScreen';
 import ProfileScreen from '../screens/ProfileScreen';
 import SettingsScreen from '../screens/SettingsScreen';
 import QuickSaleTilesScreen from '../screens/QuickSaleTilesScreen';
+import BillSettingsScreen from '../screens/BillSettingsScreen';
 import DataManagementScreen from '../screens/DataManagementScreen';
 
 // Phase 2 — Inventory
@@ -314,6 +315,14 @@ function ProfileStack() {
       />
       <Stack.Screen name="Settings" component={SettingsScreen} options={{ title: 'Settings' }} />
       <Stack.Screen name="QuickSaleTiles" component={QuickSaleTilesScreen} options={{ title: 'Quick sale buttons' }} />
+      <Stack.Screen name="BillSettings" component={BillSettingsScreen} options={{ title: 'Bill and GST' }} />
+      <Stack.Screen name="Locations" component={LocationsScreen} options={{ title: 'Locations' }} />
+      <Stack.Screen name="LocationDetail" component={LocationDetailScreen} options={{ title: 'Location Details' }} />
+      <Stack.Screen
+        name="LocationForm"
+        component={LocationFormScreen}
+        options={({ route }) => ({ title: route.params?.location ? 'Edit Location' : 'New Location', presentation: 'modal' })}
+      />
       <Stack.Screen name="Notifications" component={NotificationCenterScreen} options={{ title: 'Notifications' }} />
       {/* employee/counter_staff's own path to Customers (2026-09-13, staff-
           ux fix) — owner/manager already have it via the More tab; these
@@ -506,6 +515,7 @@ function MoreStack() {
       <Stack.Screen name="Expenses" component={ExpensesScreen} options={{ title: 'Expenses' }} />
       <Stack.Screen name="Settings" component={SettingsScreen} options={{ title: 'Settings' }} />
       <Stack.Screen name="QuickSaleTiles" component={QuickSaleTilesScreen} options={{ title: 'Quick sale buttons' }} />
+      <Stack.Screen name="BillSettings" component={BillSettingsScreen} options={{ title: 'Bill and GST' }} />
       <Stack.Screen name="DataManagement" component={DataManagementScreen} options={{ title: 'Data Management' }} />
       <Stack.Screen name="SaleDetail" component={SaleDetailScreen} options={{ title: 'Sale Details' }} />
       <Stack.Screen name="RefundSale" component={RefundSaleScreen} options={{ title: 'Refund' }} />

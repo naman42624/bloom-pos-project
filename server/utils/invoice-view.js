@@ -8,7 +8,7 @@
  * gst_delivery_sac, bill_show_fields (JSON, every key defaults to true):
  *   customer_phone, order_number, ship_to, payments, words, gst_table
  */
-const { amountInWords } = require('./gst');
+const { amountInWords, shareOut, splitInclusive, toPaise } = require('./gst');
 
 const SHOW_KEYS = ['customer_phone', 'order_number', 'ship_to', 'payments', 'words', 'gst_table'];
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
@@ -158,4 +158,47 @@ async function buildInvoiceView(db, saleId) {
   };
 }
 
-module.exports = { buildInvoiceView, readBillSettings, SHOW_KEYS };
+// Credit note for the sale's refund. The refunded amount is shared over the
+// original bill's GST rates by value (the same way the bill was split), and
+// each share is split into taxable value, CGST and SGST.
+async function buildCreditNoteView(db, saleId) {
+  const refund = await db.prepare('SELECT * FROM refunds WHERE sale_id = ? ORDER BY id LIMIT 1').get(saleId);
+  if (!refund) return null;
+  const bill = await buildInvoiceView(db, saleId);
+  if (!bill) return null;
+  const refundP = toPaise(refund.amount);
+  const isTax = bill.kind === 'tax_invoice' && !!refund.credit_note_number;
+  let taxByRate = [];
+  if (isTax) {
+    const rates = bill.tax_by_rate.length ? bill.tax_by_rate : [];
+    const parts = shareOut(refundP, rates.map((r) => toPaise(r.taxable) + toPaise(r.cgst) + toPaise(r.sgst)));
+    taxByRate = rates.map((r, i) => {
+      const sp = splitInclusive(parts[i], r.rate);
+      return { rate: r.rate, taxable: sp.taxableP / 100, cgst: sp.cgstP / 100, sgst: sp.sgstP / 100, total: sp.taxP / 100 };
+    });
+  }
+  const sum = (k) => Math.round(taxByRate.reduce((t, r) => t + toPaise(r[k]), 0)) / 100;
+  return {
+    kind: isTax ? 'credit_note' : 'refund_receipt',
+    title: isTax ? 'CREDIT NOTE' : 'REFUND RECEIPT',
+    seller: bill.seller,
+    credit_note_number: refund.credit_note_number || '',
+    date: refund.created_at,
+    against_invoice: bill.invoice_number,
+    against_order: bill.order_number,
+    against_date: bill.date,
+    place_of_supply: bill.place_of_supply,
+    bill_to: bill.bill_to,
+    buyer_gstin: bill.buyer_gstin,
+    buyer_legal_name: bill.buyer_legal_name,
+    reason: refund.reason || '',
+    method: refund.refund_method,
+    amount: refundP / 100,
+    words: amountInWords(refundP / 100),
+    tax_by_rate: taxByRate,
+    tax_totals: isTax ? { taxable: sum('taxable'), cgst: sum('cgst'), sgst: sum('sgst'), total: sum('total') } : null,
+    footer: bill.footer,
+  };
+}
+
+module.exports = { buildInvoiceView, buildCreditNoteView, readBillSettings, SHOW_KEYS };

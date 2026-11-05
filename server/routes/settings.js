@@ -4,7 +4,54 @@ const { getDb } = require('../config/database');
 const { getDb: getAsyncDb } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
 const { clearTimezoneCache } = require('../utils/time');
-const { readGstSettings } = require('../utils/gst-settings');
+const { readGstSettings, cleanHsn } = require('../utils/gst-settings');
+const { cleanPrefix } = require('../utils/invoice-number');
+const { SHOW_KEYS } = require('../utils/invoice-view');
+
+// Bill settings (Settings -> Bill). Cleans values in place; returns a plain
+// message when one is wrong.
+function normalizeBillSettings(st) {
+  const has = (k) => Object.prototype.hasOwnProperty.call(st, k);
+  const rate = (k, label) => {
+    if (!has(k)) return null;
+    const n = Number(st[k]);
+    if (String(st[k]).trim() === '' || !Number.isFinite(n) || n < 0 || n > 40) return `${label} must be a GST percent from 0 to 40.`;
+    st[k] = String(n);
+    return null;
+  };
+  const e = rate('gst_delivery_rate', 'Delivery GST') || rate('gst_default_rate', 'GST for custom items');
+  if (e) return e;
+  for (const k of ['gst_default_hsn', 'gst_delivery_sac']) {
+    if (!has(k)) continue;
+    const raw = String(st[k] || '').replace(/\s/g, '');
+    if (raw && !cleanHsn(raw)) return 'HSN and SAC codes are 4 to 8 numbers, like 0603.';
+    st[k] = raw;
+  }
+  for (const k of ['invoice_prefix', 'credit_note_prefix']) {
+    if (!has(k)) continue;
+    const raw = String(st[k] || '').trim();
+    if (!raw || cleanPrefix(raw) !== raw.toUpperCase()) return 'A bill number start uses only letters and numbers, 1 to 5 of them, like INV.';
+    st[k] = raw.toUpperCase();
+  }
+  if (has('invoice_series_mode') && !['shop', 'all'].includes(st.invoice_series_mode)) return 'Pick one bill number series per shop, or one for all shops.';
+  if (has('bill_round_off')) st.bill_round_off = st.bill_round_off === true || st.bill_round_off === '1' || st.bill_round_off === 1 ? '1' : '0';
+  if (has('bill_pan')) {
+    const p = String(st.bill_pan || '').trim().toUpperCase();
+    if (p && !/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(p)) return 'The PAN has 10 letters and numbers, like ABCDE1234F. Check it or leave it empty.';
+    st.bill_pan = p;
+  }
+  for (const k of ['bill_legal_name', 'bill_terms']) {
+    if (has(k)) st[k] = String(st[k] || '').trim().slice(0, k === 'bill_terms' ? 300 : 150);
+  }
+  if (has('bill_show_fields')) {
+    let obj = st.bill_show_fields;
+    if (typeof obj === 'string') { try { obj = JSON.parse(obj); } catch (err) { obj = {}; } }
+    const clean = {};
+    for (const k of SHOW_KEYS) if (obj && obj[k] === false) clean[k] = false;
+    st.bill_show_fields = JSON.stringify(clean);
+  }
+  return null;
+}
 const { listBags, maskAmount, readCashMode } = require('../utils/helper-bags');
 
 // "Raju", "Raju and Priya", "Raju, Priya and Sam"
@@ -104,6 +151,9 @@ router.put(
           if (blocked) return res.status(409).json({ success: false, message: blocked });
         }
       }
+
+      const billErr = normalizeBillSettings(settings);
+      if (billErr) return res.status(400).json({ success: false, message: billErr });
 
       const update = db.prepare(
         "UPDATE settings SET value = ?, updated_by = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?"

@@ -578,6 +578,10 @@ class ApiService {
     return this.request(`/sales/${id}/invoice`);
   }
 
+  getCreditNote(id) {
+    return this.request(`/sales/${id}/credit-note`);
+  }
+
   getSaleAuditLogs(id) {
     return this.request(`/sales/${id}/audit-logs`);
   }

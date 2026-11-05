@@ -27,7 +27,7 @@ const { readGstSettings, cleanHsn, GSTIN_RE } = require('../utils/gst-settings')
 const { nextNumber: nextInvoiceNumber } = require('../utils/invoice-number');
 const { planBill, writeBill } = require('../utils/sale-bill');
 const { generateSaleNumber } = require('../utils/sale-number');
-const { buildInvoiceView } = require('../utils/invoice-view');
+const { buildInvoiceView, buildCreditNoteView } = require('../utils/invoice-view');
 
 // ─── Auto-migration: expand schema CHECK constraints ─────────
 try {
@@ -1257,6 +1257,15 @@ router.put('/:id', authenticate, authorize('owner', 'manager', 'employee', 'coun
     }
     }
 
+    if (Array.isArray(payments)) {
+      for (const pmt of payments) {
+        const amt = Number(pmt && pmt.amount);
+        if (!pmt || !['cash', 'card', 'upi'].includes(pmt.method) || !Number.isFinite(amt) || amt <= 0) {
+          return res.status(400).json({ success: false, message: 'Each payment needs Cash, Card or UPI and an amount above ₹0.' });
+        }
+      }
+    }
+
     // Every write below is one transaction. Lock order: the sale row, then
     // the open register (only when payments change).
     const newState = await withMoneyTx(async (db) => {
@@ -1266,7 +1275,20 @@ router.put('/:id', authenticate, authorize('owner', 'manager', 'employee', 'coun
 
     if (customer_name !== undefined) { updates.push('customer_name = ?'); params.push(customer_name); }
     if (customer_phone !== undefined) { updates.push('customer_phone = ?'); params.push(customer_phone); }
-    if (payment_status !== undefined) { updates.push('payment_status = ?'); params.push(payment_status); }
+    // Paid / partly paid / unpaid follows the money. A status sent on its own
+    // that changes it to something the payments don't show is refused (it
+    // used to be saved as typed, so an order could say Paid with no money).
+    if (payment_status !== undefined && payment_status !== oldSale.payment_status && !Array.isArray(payments) && !(items && Array.isArray(items))) {
+      const paidNow = oldPayments.reduce((t, p) => t + (Number(p.amount) || 0), 0);
+      const gt = Number(oldSale.grand_total) || 0;
+      const byMoney = paidNow >= gt - 0.009 ? 'paid' : (paidNow > 0.009 ? 'partial' : 'pending');
+      if (payment_status !== byMoney && payment_status !== 'refunded') {
+        const e = new Error(`This order has ₹${paidNow.toFixed(2)} paid of ₹${gt.toFixed(2)}. To take more money use Add Payment. To give money back use Refund.`);
+        e.statusCode = 409;
+        throw e;
+      }
+    }
+    if (payment_status !== undefined && !Array.isArray(payments)) { updates.push('payment_status = ?'); params.push(payment_status); }
     if (notesValue !== undefined) { updates.push('customer_notes = ?'); params.push(notesValue); }
     if (delivery_address !== undefined) { updates.push('delivery_address = ?'); params.push(delivery_address); }
 
@@ -1350,6 +1372,36 @@ router.put('/:id', authenticate, authorize('owner', 'manager', 'employee', 'coun
       const insertPayment = db.prepare('INSERT INTO payments (sale_id, method, amount, reference_number, received_by, created_at) VALUES (?, ?, ?, ?, ?, ?)');
       for (const pmt of payments) {
         await insertPayment.run(saleId, pmt.method, pmt.amount, pmt.reference_number || null, req.user.id, preservedCreatedAt);
+      }
+
+      // The paid total changed (e.g. an unpaid order marked paid). Item edits
+      // below redo status, dues and COD from the new total themselves.
+      const oldPaid = lockedOldPayments.reduce((t, p) => t + (Number(p.amount) || 0), 0);
+      const newPaid = payments.reduce((t, p) => t + (Number(p.amount) || 0), 0);
+      if (!(items && Array.isArray(items))) {
+        const cur = await db.prepare('SELECT grand_total, order_type, sender_customer_id, customer_id, is_credit_sale FROM sales WHERE id = ?').get(saleId);
+        const gt = Number(cur.grand_total) || 0;
+        if (newPaid - gt > 0.009 && newPaid - oldPaid > 0.009) {
+          const e = new Error(`The payment (₹${newPaid.toFixed(2)}) is more than the bill (₹${gt.toFixed(2)}). Enter only the bill amount and give change from the drawer.`);
+          e.statusCode = 400;
+          throw e;
+        }
+        if (Math.abs(newPaid - oldPaid) > 0.009) {
+          const status = newPaid >= gt - 0.009 ? 'paid' : (newPaid > 0.009 ? 'partial' : 'pending');
+          await db.prepare('UPDATE sales SET payment_status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(status, saleId);
+          const duesCustomerId = (cur.order_type === 'delivery' && cur.sender_customer_id) ? cur.sender_customer_id : cur.customer_id;
+          const unpaidBefore = Math.max(0, gt - oldPaid);
+          const unpaidAfter = Math.max(0, gt - newPaid);
+          if (duesCustomerId && Math.abs(unpaidBefore - unpaidAfter) > 0.009) {
+            await db.prepare('UPDATE users SET credit_balance = GREATEST(0, credit_balance - ? + ?), updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+              .run(unpaidBefore, unpaidAfter, duesCustomerId);
+          }
+          if (cur.order_type === 'delivery' || cur.order_type === 'pre_order') {
+            const cod = cur.is_credit_sale ? 0 : unpaidAfter;
+            await db.prepare("UPDATE deliveries SET cod_amount = ?, cod_status = ? WHERE sale_id = ? AND status NOT IN ('delivered', 'cancelled')")
+              .run(cod, cod > 0.01 ? 'pending' : 'collected', saleId);
+          }
+        }
       }
     }
 
@@ -1477,6 +1529,17 @@ router.get('/:id/invoice', authenticate, authorize('owner', 'manager', 'employee
     const db = await getAsyncDb();
     const view = await buildInvoiceView(db, req.params.id);
     if (!view) return res.status(404).json({ success: false, message: 'Sale not found' });
+    res.json({ success: true, data: view });
+  } catch (err) { next(err); }
+});
+
+// ─── GET /api/sales/:id/credit-note ──────────────────────────
+// The printed credit note for this sale's refund (utils/invoice-view.js)
+router.get('/:id/credit-note', authenticate, authorize('owner', 'manager', 'employee', 'counter_staff'), async (req, res, next) => {
+  try {
+    const db = await getAsyncDb();
+    const view = await buildCreditNoteView(db, req.params.id);
+    if (!view) return res.status(404).json({ success: false, message: 'This order has no refund to print.' });
     res.json({ success: true, data: view });
   } catch (err) { next(err); }
 });
@@ -1901,7 +1964,8 @@ router.post(
             }
             name = item.product_name || product.name;
             productId = product.id;
-            hsn = product.hsn_code || null;
+            // A changed HSN typed at the counter wins over the product's own
+            hsn = cleanHsn(item.hsn_code) || product.hsn_code || null;
           } else {
             // Custom ad-hoc item
             name = item.product_name || 'Custom Item';
@@ -3393,10 +3457,13 @@ router.post(
         const register = refund_method === 'cash' ? await lockOpenRegister(db, sale.location_id) : null;
         if (refund_method === 'cash' && !register) throw registerClosedError();
 
+        // A GST bill refund gets a credit note number (own series, taken in
+        // this transaction so a failed refund never uses one up)
+        const creditNote = sale.invoice_number ? await nextInvoiceNumber(db, sale.location_id, 'credit_note') : null;
         await db.prepare(
-          `INSERT INTO refunds (sale_id, amount, reason, status, requested_by, approved_by, refund_method)
-           VALUES (?, ?, ?, 'processed', ?, ?, ?)`
-        ).run(req.params.id, amount, reason, req.user.id, req.user.id, refund_method);
+          `INSERT INTO refunds (sale_id, amount, reason, status, requested_by, approved_by, refund_method, credit_note_number)
+           VALUES (?, ?, ?, 'processed', ?, ?, ?, ?)`
+        ).run(req.params.id, amount, reason, req.user.id, req.user.id, refund_method, creditNote ? creditNote.number : null);
 
         await db.prepare("UPDATE sales SET payment_status = 'refunded', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(req.params.id);
 

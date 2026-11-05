@@ -183,6 +183,107 @@ check('editing an item on a GST sale redoes the bill and moves the dues', async 
   assert(low.status === 409 && /already paid/.test(low.body.message), `${low.status} ${JSON.stringify(low.body)}`);
 });
 
+check('edit bill: cash to UPI moves the register by exactly that amount and keeps the bill', async () => {
+  const owner = await loginOwner();
+  const reg = await openRegister(owner.token, LOC, 500);
+  const p18 = await taxedProduct(118, await rateId(18), '7013');
+  const r = await newSale(owner.token, { items: [{ product_id: p18, quantity: 2, unit_price: 118 }], payments: [{ method: 'cash', amount: 236 }] });
+  assert(r.status === 201, `${r.status} ${JSON.stringify(r.body)}`);
+  const before = await saleRow(r.body.data.id);
+  const exp = async () => Number((await api('GET', `/sales/register/status?location_id=${LOC}`, owner.token)).body.data.expected_cash);
+  const e0 = await exp();
+  assert(P(e0) === 73600, `expected cash after sale ${e0}`);
+  // Split: 100 cash + 136 UPI
+  const e = await api('PUT', `/sales/${r.body.data.id}`, owner.token, { payments: [{ method: 'cash', amount: 100 }, { method: 'upi', amount: 136 }] });
+  assert(e.status === 200, `${e.status} ${JSON.stringify(e.body)}`);
+  assert(P(await exp()) === 60000, 'register moved by 136 only');
+  const after = await saleRow(r.body.data.id);
+  assert(after.invoice_number === before.invoice_number && P(after.grand_total) === P(before.grand_total) && P(after.taxable_total) === P(before.taxable_total), 'bill unchanged');
+  // An over-payment edit is refused and moves nothing
+  const over = await api('PUT', `/sales/${r.body.data.id}`, owner.token, { payments: [{ method: 'cash', amount: 300 }] });
+  assert(over.status >= 400 && P(await exp()) === 60000, `over ${over.status} ${JSON.stringify(over.body)}`);
+  // All UPI
+  const u = await api('PUT', `/sales/${r.body.data.id}`, owner.token, { payments: [{ method: 'upi', amount: 236 }] });
+  assert(u.status === 200 && P(await exp()) === 50000, `${u.status} back to opening`);
+  // Close balances at the opening float exactly
+  const pv = await api('PUT', '/sales/register/close', owner.token, { location_id: LOC, actual_cash: 500, preview: true });
+  assert(pv.status === 200 && Math.abs(Number(pv.body.data.difference ?? pv.body.data.cash_difference ?? 0)) < 0.005, JSON.stringify(pv.body.data));
+  assert(reg.id, 'register');
+});
+
+check('edit bill: raising a paid order keeps the invoice number, owes the rest, prints the new figures', async () => {
+  const owner = await loginOwner();
+  const c = await customer(owner.token);
+  const p5 = await taxedProduct(105, await rateId(5), '0603');
+  const p18 = await taxedProduct(118, await rateId(18), '7013');
+  const r = await newSale(owner.token, { customer_id: c.id, items: [{ product_id: p5, quantity: 1, unit_price: 105 }, { product_id: p18, quantity: 1, unit_price: 118 }], payments: [{ method: 'upi', amount: 223 }] });
+  assert(r.status === 201, `${r.status}`);
+  const before = await saleRow(r.body.data.id);
+  assert(before.payment_status === 'paid', before.payment_status);
+  const line = before.items.find((i) => Number(i.product_id) === Number(p18));
+  const e = await api('PUT', `/sales/${r.body.data.id}`, owner.token, { items: [{ id: line.id, quantity: 2, shelf_price: 118 }] });
+  assert(e.status === 200, `${e.status} ${JSON.stringify(e.body)}`);
+  const s = await saleRow(r.body.data.id);
+  const want = computeBill([{ unitPrice: 105, qty: 1, taxRate: 5 }, { unitPrice: 118, qty: 2, taxRate: 18 }], null, { amount: 0, taxRate: 18 }, { roundOff: false });
+  assert(P(s.grand_total) === want.payableP && s.invoice_number === before.invoice_number, JSON.stringify({ g: s.grand_total, inv: s.invoice_number }));
+  assert(s.payment_status === 'partial', s.payment_status);
+  // Stored identity still holds
+  const ident = P(s.subtotal) - P(s.discount_amount) + P(s.tax_total) + P(s.delivery_charges) + P(s.round_off);
+  assert(ident === P(s.grand_total), `identity ${ident} vs ${P(s.grand_total)}`);
+  const db = await getDb();
+  const dues = Number((await db.prepare('SELECT credit_balance FROM users WHERE id = ?').get(c.id)).credit_balance);
+  assert(P(dues) === want.payableP - 22300, `dues ${dues}`);
+  const v = (await api('GET', `/sales/${r.body.data.id}/invoice`, owner.token)).body.data;
+  const linesSum = v.lines.reduce((t, l) => t + P(l.amount), 0);
+  assert(P(v.totals.total) === want.payableP && linesSum === want.itemsGrossP && P(v.due) === want.payableP - 22300, JSON.stringify(v.totals));
+  assert(P(v.tax_totals.taxable) + P(v.tax_totals.total) === want.payableP, JSON.stringify(v.tax_totals));
+});
+
+check('edit bill: marking an unpaid order paid clears its dues; a status with no money is refused', async () => {
+  const owner = await loginOwner();
+  await openRegister(owner.token, LOC, 0);
+  const c = await customer(owner.token);
+  const p5 = await taxedProduct(105, await rateId(5), '0603');
+  const r = await newSale(owner.token, { customer_id: c.id, items: [{ product_id: p5, quantity: 1, unit_price: 105 }], payments: [] });
+  assert(r.status === 201, `${r.status}`);
+  const db = await getDb();
+  const dues = async () => P((await db.prepare('SELECT credit_balance FROM users WHERE id = ?').get(c.id)).credit_balance);
+  assert(await dues() === 10500, 'dues after sale');
+  // Status alone, no money: refused, nothing changes
+  const bad = await api('PUT', `/sales/${r.body.data.id}`, owner.token, { payment_status: 'paid' });
+  assert(bad.status === 409 && /Add Payment/.test(bad.body.message), `${bad.status} ${JSON.stringify(bad.body)}`);
+  assert((await saleRow(r.body.data.id)).payment_status === 'pending' && await dues() === 10500, 'unchanged');
+  // A name change with the same status still saves
+  const nm = await api('PUT', `/sales/${r.body.data.id}`, owner.token, { customer_name: 'GST renamed', payment_status: 'pending' });
+  assert(nm.status === 200, `${nm.status} ${JSON.stringify(nm.body)}`);
+  // What Sale Details sends for "mark paid": the full bill in cash
+  const exp = async () => P((await api('GET', `/sales/register/status?location_id=${LOC}`, owner.token)).body.data.expected_cash);
+  const e0 = await exp();
+  const ok = await api('PUT', `/sales/${r.body.data.id}`, owner.token, { payment_status: 'paid', payments: [{ method: 'cash', amount: 105 }] });
+  assert(ok.status === 200, `${ok.status} ${JSON.stringify(ok.body)}`);
+  const s = await saleRow(r.body.data.id);
+  assert(s.payment_status === 'paid' && await dues() === 0 && (await exp()) - e0 === 10500, JSON.stringify({ st: s.payment_status, d: await dues() }));
+  // Bad payment rows are refused
+  const neg = await api('PUT', `/sales/${r.body.data.id}`, owner.token, { payments: [{ method: 'cash', amount: -5 }] });
+  const odd = await api('PUT', `/sales/${r.body.data.id}`, owner.token, { payments: [{ method: 'cheque', amount: 105 }] });
+  assert(neg.status === 400 && odd.status === 400 && (await exp()) - e0 === 10500, `${neg.status} ${odd.status}`);
+});
+
+check('edit bill: an older sale (before GST bills) still edits with its old maths', async () => {
+  const owner = await loginOwner();
+  const r = await newSale(owner.token, { items: [{ product_name: 'GST old edit', quantity: 1, unit_price: 50, tax_rate: 0 }], payments: [] });
+  assert(r.status === 201, `${r.status}`);
+  const db = await getDb();
+  await db.prepare('UPDATE sales SET bill_version = NULL, invoice_number = NULL WHERE id = ?').run(r.body.data.id);
+  const item = (await saleRow(r.body.data.id)).items[0];
+  const e = await api('PUT', `/sales/${r.body.data.id}`, owner.token, { items: [{ id: item.id, quantity: 3, unit_price: 50 }] });
+  assert(e.status === 200, `${e.status} ${JSON.stringify(e.body)}`);
+  const s = await saleRow(r.body.data.id);
+  assert(s.bill_version == null && !s.invoice_number && P(s.grand_total) === 15000, JSON.stringify({ g: s.grand_total, v: s.bill_version }));
+  const v = (await api('GET', `/sales/${r.body.data.id}/invoice`, owner.token)).body.data;
+  assert(v.kind === 'bill' && P(v.totals.total) === 15000, v.kind);
+});
+
 check('turning a GST pickup into a delivery adds the charge with its GST', async () => {
   const owner = await loginOwner();
   const r = await newSale(owner.token, { order_type: 'pickup', scheduled_date: '2026-12-01', items: [{ product_name: 'GST convert', quantity: 1, unit_price: 300, tax_rate: 0 }], payments: [] });
@@ -258,6 +359,72 @@ check('the printed bill matches the saved sale: tax invoice with a GSTIN, plain 
   } finally {
     await db.prepare('UPDATE locations SET gst_number = ?, state = ?, state_code = ? WHERE id = ?').run(loc.gst_number, loc.state, loc.state_code, LOC);
   }
+});
+
+check('a refund on a GST bill gets a credit note that reverses GST in the bill proportions', async () => {
+  const db = await getDb();
+  const owner = await loginOwner();
+  const loc = await db.prepare('SELECT gst_number, state, state_code FROM locations WHERE id = ?').get(LOC);
+  try {
+    await db.prepare("UPDATE locations SET gst_number = '07ABCDE1234F1Z5', state = 'Delhi' WHERE id = ?").run(LOC);
+    const p5 = await taxedProduct(105, await rateId(5), '0603');
+    const p18 = await taxedProduct(118, await rateId(18), '7013');
+    const r = await newSale(owner.token, { items: [{ product_id: p5, quantity: 1, unit_price: 105 }, { product_id: p18, quantity: 1, unit_price: 118 }], payments: [{ method: 'upi', amount: 223 }] });
+    assert(r.status === 201, `${r.status} ${JSON.stringify(r.body)}`);
+    const rf = await api('POST', `/sales/${r.body.data.id}/refund`, owner.token, { amount: 111.5, reason: 'GST test refund', refund_method: 'upi' });
+    assert(rf.status === 201 && /^[A-Z0-9]+\/\d{4}\/\d{4,}$/.test(rf.body.data.credit_note_number || ''), `${rf.status} ${JSON.stringify(rf.body)}`);
+    const cn = (await api('GET', `/sales/${r.body.data.id}/credit-note`, owner.token)).body.data;
+    assert(cn.kind === 'credit_note' && cn.credit_note_number === rf.body.data.credit_note_number && cn.against_invoice, JSON.stringify({ k: cn.kind }));
+    const tt = cn.tax_totals;
+    assert(P(tt.taxable) + P(tt.total) === 11150 && P(tt.cgst) + P(tt.sgst) === P(tt.total), JSON.stringify(tt));
+    // Half the bill refunded: each rate gets half (105 -> 52.50 at 5%, 118 -> 59 at 18%)
+    const r5 = cn.tax_by_rate.find((x) => x.rate === 5);
+    const r18 = cn.tax_by_rate.find((x) => x.rate === 18);
+    assert(P(r5.taxable) === 5000 && P(r18.taxable) === 5000 && P(r5.total) === 250 && P(r18.total) === 900, JSON.stringify(cn.tax_by_rate));
+    // No credit note number on a sale without an invoice number (older bill)
+    const old = await newSale(owner.token, { items: [{ product_name: 'GST old style', quantity: 1, unit_price: 20, tax_rate: 0 }], payments: [{ method: 'upi', amount: 20 }] });
+    await db.prepare('UPDATE sales SET invoice_number = NULL, bill_version = NULL WHERE id = ?').run(old.body.data.id);
+    const rf2 = await api('POST', `/sales/${old.body.data.id}/refund`, owner.token, { amount: 20, reason: 'GST test refund', refund_method: 'upi' });
+    assert(rf2.status === 201 && !rf2.body.data.credit_note_number, JSON.stringify(rf2.body));
+    const rr = (await api('GET', `/sales/${old.body.data.id}/credit-note`, owner.token)).body.data;
+    assert(rr.kind === 'refund_receipt', rr.kind);
+  } finally {
+    await db.prepare('UPDATE locations SET gst_number = ?, state = ?, state_code = ? WHERE id = ?').run(loc.gst_number, loc.state, loc.state_code, LOC);
+    await db.prepare("DELETE FROM invoice_counters WHERE series_key = ?").run(`credit_note:loc:${LOC}`);
+  }
+});
+
+check('a changed HSN at the counter is saved on the line; product HSN is checked and saved', async () => {
+  const owner = await loginOwner();
+  const p5 = await taxedProduct(105, await rateId(5), '0603');
+  const r = await newSale(owner.token, { items: [{ product_id: p5, quantity: 1, unit_price: 105, hsn_code: '0604' }, { product_name: 'GST custom hsn', quantity: 1, unit_price: 10, tax_rate: 0, hsn_code: '9999' }], payments: [] });
+  assert(r.status === 201, `${r.status}`);
+  const s = await saleRow(r.body.data.id);
+  assert(s.items[0].hsn_code === '0604' && s.items[1].hsn_code === '9999', JSON.stringify(s.items.map((i) => i.hsn_code)));
+  const bad = await api('PUT', `/products/${p5}`, owner.token, { hsn_code: '12' });
+  assert(bad.status === 400 && /HSN/.test(bad.body.message), `${bad.status} ${JSON.stringify(bad.body)}`);
+  const ok = await api('PUT', `/products/${p5}`, owner.token, { hsn_code: '0603 10' });
+  assert(ok.status === 200, `${ok.status} ${JSON.stringify(ok.body)}`);
+  const db = await getDb();
+  assert((await db.prepare('SELECT hsn_code FROM products WHERE id = ?').get(p5)).hsn_code === '060310', 'saved');
+});
+
+check('bill settings and shop GST fields refuse wrong values in plain words', async () => {
+  const owner = await loginOwner();
+  const bad = [
+    [{ gst_delivery_rate: '55' }, /GST percent/],
+    [{ invoice_prefix: 'TOO-LONG' }, /letters and numbers/],
+    [{ bill_pan: 'XYZ' }, /PAN/],
+    [{ invoice_series_mode: 'weird' }, /series/],
+  ];
+  for (const [settings, re] of bad) {
+    const r = await api('PUT', '/settings', owner.token, { settings });
+    assert(r.status === 400 && re.test(r.body.message), `${JSON.stringify(settings)} -> ${r.status} ${JSON.stringify(r.body)}`);
+  }
+  const g = await api('PUT', `/locations/${LOC}`, owner.token, { gst_number: '12345' });
+  assert(g.status === 400 && /GSTIN/.test(g.body.message), `${g.status} ${JSON.stringify(g.body)}`);
+  const f = await api('PUT', `/locations/${LOC}`, owner.token, { fssai_number: '123' });
+  assert(f.status === 400 && /FSSAI/.test(f.body.message), `${f.status}`);
 });
 
 check('bill settings are readable by counter staff and hold no amounts', async () => {

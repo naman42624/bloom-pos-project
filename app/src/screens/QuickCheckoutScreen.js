@@ -160,6 +160,10 @@ export default function QuickCheckoutScreen({ navigation, route }) {
   const [receiverId, setReceiverId] = useState(null);
   const [routeId, setRouteId] = useState(null);
   const [orderNotes, setOrderNotes] = useState('');
+  // Business bill: buyer GSTIN printed on the tax invoice (optional)
+  const [showBuyerGstin, setShowBuyerGstin] = useState(false);
+  const [buyerGstin, setBuyerGstin] = useState('');
+  const [buyerLegalName, setBuyerLegalName] = useState('');
   // Voice notes recorded for this order, uploaded after the sale is created (see
   // handlePlaceOrder). Local file URIs only — never carried into a saved draft.
   const [pendingAttachments, setPendingAttachments] = useState([]);
@@ -776,6 +780,10 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     return Math.max(0, parseFloat(item?.baseProduct?.tax_percentage) || 0);
   }, []);
 
+  // HSN shown and sent for a line: typed here, else the product's, else the
+  // owner's default for custom items
+  const resolveItemHsn = (item) => (item.hsn_code != null ? item.hsn_code : (item.baseProduct?.hsn_code || billSettings.default_hsn || ''));
+
   // One line before any order discount: shelf price x qty, and the GST inside it
   const getItemGrossTotal = (item) => (parseFloat(item.price) || 0) * (parseInt(item.quantity) || 1);
   const getItemTaxAmount = (item) => splitInclusive(toPaise(getItemGrossTotal(item)), resolveItemTaxRate(item)).taxP / 100;
@@ -1003,6 +1011,9 @@ export default function QuickCheckoutScreen({ navigation, route }) {
   );
 
   const resetForm = useCallback(() => {
+    setShowBuyerGstin(false);
+    setBuyerGstin('');
+    setBuyerLegalName('');
     setCustomerName('');
     setCustomerPhone('');
     setCustomerAddress('');
@@ -1211,6 +1222,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
 
     const validationErrors = [];
     if (totals.billError) validationErrors.push(`${totals.billError} Lower the discount.`);
+    if (buyerGstin.trim() && buyerGstin.trim().length !== 15) validationErrors.push('The buyer GSTIN needs 15 letters and numbers. Finish it or clear it.');
     setSubmitErrors([]);
 
     if (!selectedLocation) validationErrors.push('Please select a location.');
@@ -1362,6 +1374,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
         // Shelf price (GST included); the server works out the GST split
         unit_price: Math.round((parseFloat(item.price) || 0) * 100) / 100,
         tax_rate: resolveItemTaxRate(item),
+        hsn_code: resolveItemHsn(item) || null,
         product_id: item.baseProduct?.id || null,
         material_id: item.baseMaterial?.id || null,
         product_name: item.name,
@@ -1422,6 +1435,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
         discount_value: discVal,
         delivery_charges: delivery,
         notes: orderNotes || null,
+        ...(buyerGstin.trim() ? { buyer_gstin: buyerGstin.trim(), buyer_legal_name: buyerLegalName.trim() || null } : {}),
         delivery_address: needsDelivery ? customerAddress.trim() : null,
         sender_customer_id: needsDelivery ? (useCustomerAsSender ? (effectiveSenderId || null) : null) : null,
         receiver_customer_id: needsDelivery ? (effectiveReceiverId || null) : null,
@@ -2087,6 +2101,43 @@ export default function QuickCheckoutScreen({ navigation, route }) {
             multiline
           />
 
+          {showBuyerGstin ? (
+            <>
+              <Text style={styles.label}>Buyer GSTIN</Text>
+              <TextInput
+                style={styles.input}
+                value={buyerGstin}
+                onChangeText={(t) => setBuyerGstin(t.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 15))}
+                placeholder="15 letters and numbers, like 07ABCDE1234F1Z5"
+                placeholderTextColor={Colors.textLight}
+                autoCapitalize="characters"
+                maxLength={15}
+                accessibilityLabel="Buyer GSTIN"
+              />
+              {buyerGstin.length > 0 && buyerGstin.length < 15 ? (
+                <Text style={styles.billErrorText}>A GSTIN has 15 letters and numbers. {15 - buyerGstin.length} more to go.</Text>
+              ) : null}
+              <Text style={styles.label}>Business name (optional)</Text>
+              <TextInput
+                style={styles.input}
+                value={buyerLegalName}
+                onChangeText={setBuyerLegalName}
+                placeholder="As registered for GST"
+                placeholderTextColor={Colors.textLight}
+              />
+            </>
+          ) : (
+            <TouchableOpacity
+              style={styles.addGstinLink}
+              onPress={() => setShowBuyerGstin(true)}
+              accessibilityRole="button"
+              accessibilityLabel="Business bill, add buyer GSTIN"
+            >
+              <Ionicons name="business-outline" size={20} color={Colors.primary} />
+              <Text style={styles.addGstinText}>Business bill? Add GSTIN</Text>
+            </TouchableOpacity>
+          )}
+
           <Text style={styles.label}>Voice note (optional)</Text>
           <VoiceNoteRecorder
             onRecorded={(uri, durationSeconds) => setPendingAttachments((prev) => [...prev, { uri, type: 'voice_note', durationSeconds }])}
@@ -2282,6 +2333,25 @@ export default function QuickCheckoutScreen({ navigation, route }) {
                     </Text>
                   </View>
                 </View>
+              </View>
+
+              {/* HSN printed on the bill: the product's own, or the shop
+                  default for a custom item. Change it only if it is wrong. */}
+              <View style={styles.fieldRow}>
+                <View style={styles.fieldHalf}>
+                  <Text style={styles.label}>HSN code</Text>
+                  <TextInput
+                    style={styles.input}
+                    value={resolveItemHsn(item)}
+                    onChangeText={(v) => updateItem(idx, 'hsn_code', v.replace(/\D/g, '').slice(0, 8))}
+                    placeholder="Like 0603"
+                    placeholderTextColor={Colors.textLight}
+                    keyboardType="number-pad"
+                    maxLength={8}
+                    accessibilityLabel="HSN code"
+                  />
+                </View>
+                <View style={styles.fieldHalf} />
               </View>
 
               {/* Fulfill From Stock Toggle */}
@@ -3288,6 +3358,18 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
 
+  addGstinLink: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    minHeight: 48,
+    marginTop: Spacing.sm,
+  },
+  addGstinText: {
+    fontSize: FontSize.md,
+    color: Colors.primary,
+    fontWeight: '600',
+  },
   gstIncludedText: {
     fontSize: FontSize.sm,
     color: Colors.textSecondary,

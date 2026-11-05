@@ -9,7 +9,7 @@ import * as ImagePicker from 'expo-image-picker';
 import api from '../services/api';
 import { showAlert, showConfirm } from '../utils/alert';
 import { resolveItemLineTotal } from '../utils/lineTotal';
-import { printSaleBill } from '../utils/printHelpers';
+import { printSaleBill, printCreditNote } from '../utils/printHelpers';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import { formatDateTime, formatCardDateTime, isToday } from '../utils/datetime';
@@ -1503,6 +1503,18 @@ export default function SaleDetailScreen({ route, navigation }) {
             </View>
             <Text style={[styles.payAmount, { color: Colors.error }]}>-₹{Number(sale.refund.amount || 0).toFixed(2)}</Text>
           </View>
+          {sale.refund.credit_note_number ? (
+            <Text style={[styles.payRef, { marginTop: Spacing.xs }]}>Credit note no. {sale.refund.credit_note_number}</Text>
+          ) : null}
+          <TouchableOpacity
+            style={styles.creditNoteBtn}
+            onPress={() => printCreditNote(saleId)}
+            accessibilityRole="button"
+            accessibilityLabel={sale.refund.credit_note_number ? 'Print credit note' : 'Print refund receipt'}
+          >
+            <Ionicons name="print-outline" size={20} color={Colors.primary} />
+            <Text style={styles.creditNoteBtnText}>{sale.refund.credit_note_number ? 'Print credit note' : 'Print refund receipt'}</Text>
+          </TouchableOpacity>
         </View>
       )}
 
@@ -1518,15 +1530,6 @@ export default function SaleDetailScreen({ route, navigation }) {
               {(sale.pre_order.status || 'pending').toUpperCase()}
             </Text>
           </View>
-        </View>
-      )}
-
-      {/* Refund info */}
-      {sale.refund && (
-        <View style={[styles.section, { borderColor: Colors.error, borderWidth: 1 }]}>
-          <Text style={[styles.sectionTitle, { color: Colors.error }]}>Refund</Text>
-          <Text style={styles.infoText}>Amount: ₹{Number(sale.refund.amount || 0).toFixed(2)} via {sale.refund.refund_method}</Text>
-          <Text style={styles.infoSubtext}>Reason: {sale.refund.reason}</Text>
         </View>
       )}
 
@@ -2342,6 +2345,22 @@ const styles = StyleSheet.create({
   bomName: { flex: 1, fontSize: FontSize.xs, color: Colors.text },
   bomQty: { fontSize: FontSize.xs, fontWeight: '600', color: Colors.textSecondary },
 
+  creditNoteBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.sm,
+    minHeight: 48,
+    marginTop: Spacing.sm,
+    borderWidth: 1,
+    borderColor: Colors.primary,
+    borderRadius: BorderRadius.md,
+  },
+  creditNoteBtnText: {
+    fontSize: FontSize.md,
+    fontWeight: '600',
+    color: Colors.primary,
+  },
   gstNote: {
     fontSize: FontSize.sm,
     color: Colors.textSecondary,
