@@ -1260,19 +1260,26 @@ router.get('/settlements/unsettled', authenticate, authorize('owner', 'manager',
 
     const partnerId = req.user.role === 'delivery_partner' ? req.user.id : parseInt(delivery_partner_id);
     if (!partnerId) return res.status(400).json({ success: false, message: 'delivery_partner_id required' });
+    // Optional shop filter: the Settlements screen lists only the chosen
+    // shop, so its "Settle" total can only ever go into that shop register.
+    // It used to list a rider's COD from every shop, all ticked (2026-11-06).
+    const locationId = req.query.location_id ? parseInt(req.query.location_id, 10) : null;
 
     const unsettled = await db.prepare(`
-      SELECT d.id, d.sale_id, d.cod_amount, d.cod_collected, d.cod_status, d.delivered_time,
+      SELECT d.id, d.sale_id, d.location_id, d.cod_amount, d.cod_collected, d.cod_status, d.delivered_time,
              s.sale_number, d.customer_name, d.customer_phone
       FROM deliveries d
       LEFT JOIN sales s ON d.sale_id = s.id
       WHERE d.delivery_partner_id = ? AND d.status = 'delivered'
         AND d.cod_collected > 0 AND d.cod_status IN ('collected', 'partial')
         AND d.id NOT IN (SELECT delivery_id FROM delivery_settlement_items)
+        ${locationId ? 'AND d.location_id = ?' : ''}
       ORDER BY d.delivered_time ASC
-    `).all(partnerId);
+    `).all(...(locationId ? [partnerId, locationId] : [partnerId]));
 
-    const totalUnsettled = unsettled.reduce((s, d) => s + d.cod_collected, 0);
+    // Summed in paise: the pool returns money columns as text, and adding
+    // text joined the amounts ("0500.00177.00") instead of adding them.
+    const totalUnsettled = unsettled.reduce((sum, d) => sum + Math.round((Number(d.cod_collected) || 0) * 100), 0) / 100;
 
     res.json({ success: true, data: { deliveries: unsettled, total_unsettled: totalUnsettled } });
   } catch (err) { next(err); }
@@ -1331,10 +1338,23 @@ router.post(
         return res.status(400).json({ success: false, message: 'No eligible unsettled deliveries found for this partner' });
       }
 
-      // Derive location from first delivery if not explicitly provided
-      if (!location_id && delivery_ids.length > 0) {
-        const firstDel = db.prepare('SELECT location_id FROM deliveries WHERE id = ?').get(delivery_ids[0]);
-        location_id = firstDel ? firstDel.location_id : null;
+      // Every delivery in one settlement must belong to one shop, and to the
+      // shop asked for: all of its cash goes into that shop register. The
+      // shop used to be taken from the first delivery, so a mixed set put
+      // another shop COD into this drawer (2026-11-06).
+      {
+        const placeholders = delivery_ids.map(() => '?').join(',');
+        const locRows = await (await getAsyncDb()).prepare(
+          `SELECT DISTINCT d.location_id, l.name AS location_name FROM deliveries d LEFT JOIN locations l ON l.id = d.location_id WHERE d.id IN (${placeholders})`
+        ).all(...delivery_ids.map(Number));
+        if (locRows.length > 1) {
+          return res.status(400).json({ success: false, message: 'These deliveries are from different shops. Settle each shop on its own: pick the shop at the top, then tap Settle.' });
+        }
+        const deliveryLoc = locRows[0] ? Number(locRows[0].location_id) : null;
+        if (location_id && deliveryLoc && Number(location_id) !== deliveryLoc) {
+          return res.status(400).json({ success: false, message: `This delivery belongs to ${locRows[0].location_name || 'another shop'}. Pick that shop at the top of Settlements, then settle it there.` });
+        }
+        if (!location_id) location_id = deliveryLoc;
       }
 
       const settleTx = () => withMoneyTx(async (db) => {
@@ -1352,11 +1372,13 @@ router.post(
             "SELECT * FROM deliveries WHERE id = ? AND delivery_partner_id = ? AND status = 'delivered' AND cod_collected > 0"
           ).get(did, delivery_partner_id);
           if (!d) throw new Error(`Delivery #${did} not eligible for settlement`);
+          // Checked again under the row lock (the check above ran before it).
+          if (Number(d.location_id) !== Number(location_id)) throw new Error('This delivery belongs to another shop. Settle it from that shop.');
 
           const already = await db.prepare('SELECT id FROM delivery_settlement_items WHERE delivery_id = ?').get(did);
           if (already) throw new Error(`Delivery #${did} is already settled`);
 
-          totalAmount += Number(d.cod_collected);
+          totalAmount = Math.round((totalAmount + Number(d.cod_collected)) * 100) / 100;
         }
 
         const settlementNumber = await generateSettlementNumber(db, location_id);
@@ -1433,7 +1455,7 @@ router.post(
       // screen still described the whole amount as going to cash).
       res.status(201).json({ success: true, data: { ...settlement, by_method: byMethod } });
     } catch (err) {
-      if (err.message?.includes('not eligible') || err.message?.includes('already settled') || err.message?.includes("Register isn't open")) {
+      if (err.message?.includes('not eligible') || err.message?.includes('already settled') || err.message?.includes("Register isn't open") || err.message?.includes('belongs to another shop')) {
         return res.status(400).json({ success: false, message: err.message });
       }
       next(err);

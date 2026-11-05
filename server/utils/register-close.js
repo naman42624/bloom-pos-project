@@ -20,7 +20,7 @@ async function computeShutTimePayments(db, register, location_id) {
       COALESCE(SUM(CASE WHEN p.method = 'upi' THEN p.amount ELSE 0 END), 0) as upi,
       COALESCE(SUM(CASE WHEN p.method = 'card' THEN p.amount ELSE 0 END), 0) as card
     FROM payments p JOIN sales s ON s.id = p.sale_id
-    WHERE s.location_id = ? AND s.status != 'cancelled' AND p.created_at < ?
+    WHERE s.location_id = ? AND (s.status != 'cancelled' OR EXISTS (SELECT 1 FROM refunds kr WHERE kr.sale_id = s.id AND COALESCE(kr.status, 'processed') = 'processed')) AND p.created_at < ?
       AND (? IS NULL OR p.created_at >= ?)
       AND (p.reference_number IS NULL OR (p.reference_number NOT LIKE 'Credit-%' AND p.reference_number != 'COD' AND p.reference_number NOT LIKE 'COD-%'))
   `).get(location_id, sessionStart, from, from);
@@ -53,7 +53,8 @@ async function computeRegisterClose(db, register, location_id, { until = null } 
       COALESCE(SUM(CASE WHEN p.method = 'upi' THEN p.amount ELSE 0 END), 0) as upi_total
     FROM payments p
     JOIN sales s ON p.sale_id = s.id
-    WHERE s.location_id = ? AND p.created_at >= ?${endSql('p.created_at')} AND s.status != 'cancelled'
+    WHERE s.location_id = ? AND p.created_at >= ?${endSql('p.created_at')}
+      AND (s.status != 'cancelled' OR EXISTS (SELECT 1 FROM refunds kr WHERE kr.sale_id = s.id AND COALESCE(kr.status, 'processed') = 'processed'))
       AND (p.reference_number IS NULL OR (p.reference_number NOT LIKE 'Credit-%' AND p.reference_number != 'COD' AND p.reference_number NOT LIKE 'COD-%'))
   `).get(location_id, sessionStart);
 
@@ -100,9 +101,16 @@ async function computeRegisterClose(db, register, location_id, { until = null } 
     upi_total: directPaymentTotals.upi_total + creditPaymentTotals.upi_total + codByMethod.upi,
   };
 
-  // A cash refund on a cancelled sale is normally left out: the sale's cash
-  // payment is left out too, so the two cancel. When the sale's cash was held
-  // by a helper, only the refund ever touched the drawer, so it still counts.
+  // Every processed cash refund counts: it is cash that left the drawer.
+  // A cancelled sale's payments are left out above only when it has no
+  // refund (an undone quick sale or an old-style cancel, whose cash was taken
+  // off the register at the time). A sale refunded and then cancelled keeps
+  // its payments and its refunds, because both really moved money. Leaving
+  // out both used to assume the refund matched the payments method by
+  // method: paid Rs 55 cash + Rs 100 UPI, refunded Rs 155 by UPI, cancelled,
+  // and close then expected Rs 55 less than the drawer held (found
+  // 2026-11-06). Cash held by a helper is still left out of payments
+  // (held_by) while its refund counts, as before.
   let refundTotal = 0;
   try {
     refundTotal = (await db.prepare(`
@@ -110,7 +118,6 @@ async function computeRegisterClose(db, register, location_id, { until = null } 
       FROM refunds r
       JOIN sales s ON r.sale_id = s.id
       WHERE s.location_id = ? AND r.created_at >= ?${endSql('r.created_at')} AND r.refund_method = 'cash' AND COALESCE(r.status, 'processed') = 'processed'
-        AND (s.status != 'cancelled' OR EXISTS (SELECT 1 FROM payments hp WHERE hp.sale_id = s.id AND hp.held_by IS NOT NULL))
     `).get(location_id, sessionStart)).total;
   } catch (err) {
     const msg = String(err?.message || '').toLowerCase();

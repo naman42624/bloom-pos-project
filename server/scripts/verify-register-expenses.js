@@ -169,7 +169,8 @@ check('close correctly sums a session spanning two calendar dates — nothing lo
   // at this heavily-reused test location.
   const directCash = Number((await db.prepare(`
     SELECT COALESCE(SUM(p.amount), 0) as total FROM payments p JOIN sales s ON p.sale_id = s.id
-    WHERE s.location_id = ? AND p.method = 'cash' AND p.created_at >= ? AND s.status != 'cancelled'
+    WHERE s.location_id = ? AND p.method = 'cash' AND p.held_by IS NULL AND p.created_at >= ?
+      AND (s.status != 'cancelled' OR EXISTS (SELECT 1 FROM refunds kr WHERE kr.sale_id = s.id AND COALESCE(kr.status, 'processed') = 'processed'))
       AND (p.reference_number IS NULL OR (p.reference_number NOT LIKE 'Credit-%' AND p.reference_number != 'COD' AND p.reference_number NOT LIKE 'COD-%'))
   `).get(TEST_LOCATION_ID, sessionStart)).total);
   const creditCash = Number((await db.prepare(`
@@ -183,7 +184,7 @@ check('close correctly sums a session spanning two calendar dates — nothing lo
   const baselineCash = directCash + creditCash + codCash;
   const baselineRefunds = Number((await db.prepare(`
     SELECT COALESCE(SUM(r.amount), 0) as total FROM refunds r JOIN sales s ON r.sale_id = s.id
-    WHERE s.location_id = ? AND r.created_at >= ? AND r.refund_method = 'cash' AND COALESCE(r.status, 'processed') = 'processed' AND s.status != 'cancelled'
+    WHERE s.location_id = ? AND r.created_at >= ? AND r.refund_method = 'cash' AND COALESCE(r.status, 'processed') = 'processed'
   `).get(TEST_LOCATION_ID, sessionStart)).total);
   const baselineExpenses = Number((await db.prepare(`
     SELECT COALESCE(SUM(CASE WHEN is_return = 1 THEN -amount ELSE amount END), 0) as total FROM expenses
@@ -423,6 +424,85 @@ check('multi-delivery batched settlement: TWO deliveries collected via DIFFERENT
   assert(Number(closed.total_cash_sales) === 300, `Expected total_cash_sales 300 (only delivery A's cash), got ${closed.total_cash_sales}`);
   assert(Number(closed.total_upi_sales) === 400, `Expected total_upi_sales 400 (only delivery B's upi), got ${closed.total_upi_sales}`);
 });
+check('FIXED: a sale paid cash + UPI, fully refunded by UPI and then cancelled keeps its cash in the close count (zero discrepancy)', async () => {
+  // Found on screen 2026-11-06: paid Rs 55 cash + Rs 100 UPI, refunded
+  // Rs 155 by UPI, cancelled. The Rs 55 cash is still in the drawer, but the
+  // close maths left out every payment of a cancelled sale, so close
+  // expected Rs 55 less and offered to book the "extra" as a sale.
+  const owner = await loginOwner();
+  await openRegister(owner.token, TEST_LOCATION_ID, 1000);
+  const { body: saleBody } = await api('POST', '/sales', owner.token, {
+    location_id: TEST_LOCATION_ID, order_type: 'walk_in', channel: 'walk_in',
+    items: [{ quantity: 1, unit_price: 155, product_name: 'Test Refund-Cancel Mixed Item' }],
+    payments: [{ method: 'cash', amount: 55 }, { method: 'upi', amount: 100 }],
+  });
+  assert(saleBody?.data?.id, `sale not created: ${JSON.stringify(saleBody)}`);
+  const saleId = saleBody.data.id;
+  createdSaleIds.push(saleId);
+
+  const refund = await api('POST', `/sales/${saleId}/refund`, owner.token, { amount: 155, reason: 'verify mixed refund', refund_method: 'upi' });
+  assert(refund.status < 300, `refund failed: ${refund.status} ${JSON.stringify(refund.body)}`);
+  const cancel = await api('PUT', `/sales/${saleId}/cancel`, owner.token, {});
+  assert(cancel.status < 300, `cancel failed: ${cancel.status} ${JSON.stringify(cancel.body)}`);
+
+  const { body: reg } = await api('GET', `/sales/register/status?location_id=${TEST_LOCATION_ID}`, owner.token);
+  assert(Number(reg.data.expected_cash) === Number(reg.data.running_expected_cash),
+    `close maths (${reg.data.expected_cash}) and running total (${reg.data.running_expected_cash}) disagree`);
+  assert(Number(reg.data.expected_cash) === 1055, `Expected 1055 (float 1000 + Rs 55 cash kept), got ${reg.data.expected_cash}`);
+  const closed = await closeRegisterWith(owner.token, TEST_LOCATION_ID, 1055);
+  assert(Number(closed.discrepancy) === 0, `Expected discrepancy 0, got ${closed.discrepancy}`);
+});
+
+async function makeDeliveredCod(token, locationId, amount, label) {
+  const { body } = await api('POST', '/sales', token, {
+    location_id: locationId, order_type: 'delivery', channel: 'phone',
+    delivery_address: `${label} St`, receiver_name: 'Test', receiver_phone: '9998887777',
+    items: [{ quantity: 1, unit_price: amount, product_name: `${label} Item` }],
+  });
+  assert(body?.data?.id, `sale not created: ${JSON.stringify(body)}`);
+  const saleId = body.data.id;
+  createdSaleIds.push(saleId);
+  await api('PUT', `/sales/${saleId}/status`, token, { status: 'preparing' });
+  const tasksRes = await api('GET', `/production/tasks?sale_id=${saleId}`, token);
+  for (const t of tasksRes.body.data.filter((x) => x.sale_id === saleId)) {
+    await api('PUT', `/production/tasks/${t.id}/complete`, token);
+  }
+  const after = await api('GET', `/sales/${saleId}`, token);
+  const deliveryId = after.body.data.delivery.id;
+  await api('PUT', `/deliveries/${deliveryId}/assign`, token, { delivery_partner_id: 9 });
+  await api('PUT', `/deliveries/${deliveryId}/pickup`, token, {});
+  const del = await api('PUT', `/deliveries/${deliveryId}/deliver`, token, { cod_collected: amount, cod_method: 'cash' });
+  assert(del.status < 300, `deliver failed: ${del.status} ${JSON.stringify(del.body)}`);
+  return deliveryId;
+}
+
+check('FIXED: settle-now never puts one shop COD into another shop register (list filtered by shop, mixed or other-shop sets refused)', async () => {
+  const owner = await loginOwner();
+  await openRegister(owner.token, TEST_LOCATION_ID, 1000);
+  const hereId = await makeDeliveredCod(owner.token, TEST_LOCATION_ID, 177, 'Test Settle Here');
+  const otherId = await makeDeliveredCod(owner.token, OTHER_LOCATION_ID, 500, 'Test Settle Other');
+
+  const listed = await api('GET', `/deliveries/settlements/unsettled?delivery_partner_id=9&location_id=${TEST_LOCATION_ID}`, owner.token);
+  const ids = listed.body.data.deliveries.map((d) => d.id);
+  assert(ids.includes(hereId) && !ids.includes(otherId), `Test Loc list should hold only its own delivery, got ${JSON.stringify(ids)}`);
+  assert(typeof listed.body.data.total_unsettled === 'number', `total_unsettled should be a number, got ${JSON.stringify(listed.body.data.total_unsettled)}`);
+
+  const { body: before } = await api('GET', `/sales/register/status?location_id=${TEST_LOCATION_ID}`, owner.token);
+  const mixed = await api('POST', '/deliveries/settlements/settle-now', owner.token, { delivery_partner_id: 9, delivery_ids: [hereId, otherId], location_id: TEST_LOCATION_ID });
+  assert(mixed.status === 400, `mixed-shop settle should be refused, got ${mixed.status} ${JSON.stringify(mixed.body)}`);
+  const wrong = await api('POST', '/deliveries/settlements/settle-now', owner.token, { delivery_partner_id: 9, delivery_ids: [otherId], location_id: TEST_LOCATION_ID });
+  assert(wrong.status === 400, `other-shop settle should be refused, got ${wrong.status} ${JSON.stringify(wrong.body)}`);
+  const { body: mid } = await api('GET', `/sales/register/status?location_id=${TEST_LOCATION_ID}`, owner.token);
+  assert(Number(mid.data.running_expected_cash) === Number(before.data.running_expected_cash), 'a refused settle moved the register');
+
+  const ok = await api('POST', '/deliveries/settlements/settle-now', owner.token, { delivery_partner_id: 9, delivery_ids: [hereId], location_id: TEST_LOCATION_ID });
+  assert(ok.status === 201, `own-shop settle should work, got ${ok.status} ${JSON.stringify(ok.body)}`);
+  const { body: after } = await api('GET', `/sales/register/status?location_id=${TEST_LOCATION_ID}`, owner.token);
+  assert(Math.round(Number(after.data.running_expected_cash) * 100) === Math.round((Number(before.data.running_expected_cash) + 177) * 100), `register should rise by exactly 177, went ${before.data.running_expected_cash} -> ${after.data.running_expected_cash}`);
+  assert(Number(after.data.expected_cash) === Number(after.data.running_expected_cash), 'close maths and running total disagree after the settle');
+  await closeRegisterWith(owner.token, TEST_LOCATION_ID, Number(after.data.expected_cash));
+});
+
 check('NEW: GET /register/sessions lists every session for a given date, not just today', async () => {
   const owner = await loginOwner();
   const reg1 = await openRegister(owner.token, TEST_LOCATION_ID, 500);
@@ -455,6 +535,7 @@ async function cleanup() {
       await db.prepare('DELETE FROM deliveries WHERE sale_id = ?').run(saleId);
       await db.prepare('DELETE FROM production_tasks WHERE sale_id = ?').run(saleId);
       await db.prepare('DELETE FROM payments WHERE sale_id = ?').run(saleId);
+      await db.prepare('DELETE FROM refunds WHERE sale_id = ?').run(saleId);
       await db.prepare('DELETE FROM sale_items WHERE sale_id = ?').run(saleId);
       await db.prepare('DELETE FROM sales WHERE id = ?').run(saleId);
     } catch (err) {
