@@ -174,7 +174,7 @@ const HistoryCard = ({ session, isToday }) => {
 };
 
 export default function CashRegisterScreen({ navigation, route }) {
-  const { user } = useAuth();
+  const { user, activeLocation } = useAuth();
   const initialLocationId = route.params?.locationId;
   const canManage = user?.role === 'owner' || user?.role === 'manager';
   // employee/counter_staff are the roles actually handling cash day-to-day
@@ -193,6 +193,11 @@ export default function CashRegisterScreen({ navigation, route }) {
 
   const [locations, setLocations] = useState([]);
   const [selectedLocation, setSelectedLocation] = useState(initialLocationId || null);
+  // The focus refresh below is created once, so it must read the shop from a
+  // ref: reading the state there saw the first value and snapped back to the
+  // first shop every time staff came back to this screen.
+  const selectedLocationRef = useRef(selectedLocation);
+  selectedLocationRef.current = selectedLocation;
   const [register, setRegister] = useState(null);
   const [isOpen, setIsOpen] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -240,7 +245,10 @@ export default function CashRegisterScreen({ navigation, route }) {
       const locs = res.data?.locations || res.data || [];
       setLocations(locs);
       if (locs.length > 0) {
-        const locId = selectedLocation || locs[0].id;
+        // Keep the shop staff picked; else this device's shop (as Quick
+        // Checkout does); else the first shop.
+        const preferred = activeLocation && locs.find((l) => Number(l.id) === Number(activeLocation.id));
+        const locId = selectedLocationRef.current || (preferred ? preferred.id : locs[0].id);
         setSelectedLocation(locId);
         fetchStatus(locId);
       }
@@ -827,7 +835,7 @@ export default function CashRegisterScreen({ navigation, route }) {
       {(isCashHandlingStaff || canManage) && (
         <View style={styles.actionRow}>
           {isCashHandlingStaff && (
-            <TouchableOpacity style={styles.actionBtn} onPress={() => navigation.navigate('Expenses')}>
+            <TouchableOpacity style={styles.actionBtn} onPress={() => navigation.navigate('Expenses', { locationId: selectedLocation })}>
               <View style={[styles.actionIconWrap, { backgroundColor: Colors.infoLight }]}>
                 <Ionicons name="wallet" size={20} color={Colors.info} />
               </View>

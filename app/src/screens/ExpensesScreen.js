@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import {
   View, Text, StyleSheet, FlatList, TextInput,
   TouchableOpacity, Alert, ScrollView, Modal, ActivityIndicator,
@@ -39,13 +39,15 @@ const PAYROLL_ROLES = ['manager', 'employee', 'counter_staff', 'florist_staff', 
 export default function ExpensesScreen() {
   const navigation = useNavigation();
   const route = useRoute();
-  const { settings, user } = useAuth();
+  const { settings, user, activeLocation } = useAuth();
   const timezone = settings?.timezone?.value || 'Asia/Kolkata';
   const [expenses, setExpenses] = useState([]);
 
   const [total, setTotal] = useState(0);
   const [locations, setLocations] = useState([]);
-  const [selectedLocation, setSelectedLocation] = useState(null);
+  // Cash Register passes its shop, so an expense lands on the drawer staff
+  // were just looking at.
+  const [selectedLocation, setSelectedLocation] = useState(route.params?.locationId || null);
   const [loading, setLoading] = useState(true);
 
   // Add modal
@@ -102,9 +104,18 @@ export default function ExpensesScreen() {
   // leaving a disabled option sitting selected. Only fires when it would
   // actually change something, so it never fights a deliberate choice of
   // card/UPI.
+  // When the register is open again (another shop picked, or it was opened),
+  // go back to Cash, but only if this screen moved off it, never over a
+  // choice staff made. UPI, not card: the shop takes UPI, rarely cards.
+  const autoMovedOffCash = useRef(false);
   useEffect(() => {
-    if (!registerStatus.loading && !registerStatus.isOpen && paymentMethod === 'cash') {
-      setPaymentMethod('card');
+    if (registerStatus.loading) return;
+    if (!registerStatus.isOpen && paymentMethod === 'cash') {
+      autoMovedOffCash.current = true;
+      setPaymentMethod('upi');
+    } else if (registerStatus.isOpen && autoMovedOffCash.current) {
+      autoMovedOffCash.current = false;
+      if (paymentMethod === 'upi') setPaymentMethod('cash');
     }
   }, [registerStatus.loading, registerStatus.isOpen, paymentMethod]);
 
@@ -223,7 +234,9 @@ export default function ExpensesScreen() {
       const res = await api.getLocations();
       const locs = res.data?.locations || res.data || [];
       setLocations(locs);
-      if (locs.length > 0 && !selectedLocation) setSelectedLocation(locs[0].id);
+      // Else this device's shop (as Quick Checkout does), else the first shop.
+      const preferred = activeLocation && locs.find((l) => Number(l.id) === Number(activeLocation.id));
+      if (locs.length > 0) setSelectedLocation((cur) => cur || (preferred ? preferred.id : locs[0].id));
     } catch {}
   };
 
@@ -512,7 +525,7 @@ export default function ExpensesScreen() {
                       <TouchableOpacity
                         key={m.key}
                         style={[styles.chip, active && styles.chipActive, disabled && styles.chipDisabled]}
-                        onPress={() => setPaymentMethod(m.key)}
+                        onPress={() => { autoMovedOffCash.current = false; setPaymentMethod(m.key); }}
                         disabled={disabled}
                       >
                         <Ionicons name={m.icon} size={14} color={active ? Colors.white : disabled ? Colors.textLight : Colors.textSecondary} />
