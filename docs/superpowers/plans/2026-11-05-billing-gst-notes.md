@@ -14,3 +14,9 @@ Fields seen on the two reference invoices the user shared (Blinkit and Zepto tax
 - Authorised signatory, terms and conditions, a QR code.
 
 Thermal layout idea (80 mm): seller block, invoice meta, bill-to, then each item on two lines (name + HSN; qty × rate, taxable, GST %, amount), a tax summary grouped by rate (taxable, CGST, SGST), totals, round-off, amount in words, payment, footer.
+
+## Decisions (2026-11-05)
+- Layout: two lines per item on the 80 mm roll (owner chose this over the wide table). Item name, qty, rate, amount; then HSN, GST %, line discount; then taxable value, CGST, SGST. Delivery prints as its own line with its SAC (setting `gst_delivery_sac`, default 9968). Totals: Items, Discount, Delivery, Round off, TOTAL, amount in words, rate-wise GST table, "Prices include GST. Reverse charge: No", payments, terms, footer.
+- Maths (built, utils/gst.js): discount off the GST-inclusive price, shared over the lines by value; GST worked out on what is left. Stored identity for every sale: grand_total = subtotal - discount_amount + tax_total + delivery_charges + round_off (on GST sales subtotal = items taxable value + discount; tax_total = items GST only; delivery GST in sales.delivery_tax).
+- Round-off: setting `bill_round_off`, seeded off; never applied to quick sale, close top-up or helper sales (the sale must equal the money taken).
+- Older sales (bill_version NULL) keep their own maths on edit and print as a plain bill, not a tax invoice.

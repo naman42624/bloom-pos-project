@@ -701,6 +701,7 @@ function ensureCoreTables() {
     ['gst_delivery_rate', '18', 'GST percent included in delivery charges'],
     ['gst_default_hsn', '', 'HSN code used for custom items and products with none'],
     ['gst_default_rate', '0', 'GST percent used for custom items'],
+    ['gst_delivery_sac', '9968', 'SAC code printed on the delivery charge line'],
     ['invoice_series_mode', 'shop', 'shop = one invoice series per shop, all = one series for every shop'],
     ['invoice_prefix', 'INV', 'Start of every invoice number when a shop has none of its own'],
     ['credit_note_prefix', 'CN', 'Start of every credit note number'],

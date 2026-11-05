@@ -21,7 +21,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import api from '../../services/api';
 import { OpenRegisterForm } from '../OpenRegisterSheet';
-import { printOrderSlip } from '../../utils/printHelpers';
+import { printSaleBill } from '../../utils/printHelpers';
 import { showAlert } from '../../utils/alert';
 import { Colors, FontSize, Spacing, BorderRadius } from '../../constants/theme';
 import {
@@ -325,7 +325,7 @@ export default function QuickSalePanel({ locationId, navigation, helpSignal = 0,
     }
   };
 
-  const onPrint = (row) => { printOrderSlip(row.saleId); };
+  const onPrint = (row) => { printSaleBill(row.saleId); };
   const onAddDetails = (row) => { navigation.navigate('SaleDetail', { saleId: row.saleId }); };
 
   // ── Web: digits typed anywhere go into the amount box ──

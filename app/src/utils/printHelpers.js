@@ -4,6 +4,7 @@ import { Platform } from 'react-native';
 import api from '../services/api';
 import { showAlert } from './alert';
 import { formatDate, formatCardDateTime } from './datetime';
+import { buildInvoiceHtml } from './invoiceHtml';
 
 export const printHtmlOnWeb = (markup, title) => {
   const frame = document.createElement('iframe');
@@ -43,16 +44,17 @@ export const printNoun = (title) => {
   const t = String(title || '').trim().toLowerCase();
   if (t.startsWith('label')) return 'labels';
   if (t.startsWith('tag')) return 'tag';
+  if (t.startsWith('bill') || t.startsWith('tax invoice')) return 'bill';
   return 'slip';
 };
 
-export const printHtml = async (html, title) => {
+export const printHtml = async (html, title, { width = 595 } = {}) => {
   try {
     if (Platform.OS === 'web') {
       printHtmlOnWeb(html, title);
       return;
     }
-    const { uri } = await Print.printToFileAsync({ html, width: 595 }); // A4 width approx for slips
+    const { uri } = await Print.printToFileAsync({ html, width }); // 595 = A4 width for slips
     await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: title });
   } catch (err) {
     showAlert('Could not print', `The ${printNoun(title)} could not be printed. Check the printer is on and try again.`);
@@ -260,3 +262,20 @@ export const printOrderSlip = async (saleId) => {
 // Which orders get a print button: anything handed over later (delivery,
 // pickup, or a pre_order). A walk_in leaves with the customer — no slip.
 export const canPrintOrderSlip = (order) => !!order && order.order_type !== 'walk_in';
+
+// ─── Bill / tax invoice (80 mm roll) ─────────────────────────
+// One printer for every place that prints a customer's bill (Sale Details,
+// quick sale "Print bill"). 227 pt = 80 mm.
+export const printSaleBill = async (saleId) => {
+  let view = null;
+  try {
+    view = (await api.getSaleInvoice(saleId))?.data || null;
+  } catch {
+    view = null;
+  }
+  if (!view) {
+    showAlert('Could not print', "Couldn't load this bill. Check the internet connection and try again.");
+    return;
+  }
+  await printHtml(buildInvoiceHtml(view), `${view.kind === 'tax_invoice' ? 'Tax Invoice' : 'Bill'} ${view.invoice_number || ''}`.trim(), { width: 227 });
+};

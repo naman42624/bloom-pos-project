@@ -573,6 +573,11 @@ class ApiService {
     return this.request(`/sales/${id}`);
   }
 
+  // What the printed bill shows (server/utils/invoice-view.js)
+  getSaleInvoice(id) {
+    return this.request(`/sales/${id}/invoice`);
+  }
+
   getSaleAuditLogs(id) {
     return this.request(`/sales/${id}/audit-logs`);
   }

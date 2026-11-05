@@ -5,12 +5,11 @@ import {
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
-import * as Print from 'expo-print';
-import * as Sharing from 'expo-sharing';
 import * as ImagePicker from 'expo-image-picker';
 import api from '../services/api';
 import { showAlert, showConfirm } from '../utils/alert';
 import { resolveItemLineTotal } from '../utils/lineTotal';
+import { printSaleBill } from '../utils/printHelpers';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import { formatDateTime, formatCardDateTime, isToday } from '../utils/datetime';
@@ -876,99 +875,8 @@ export default function SaleDetailScreen({ route, navigation }) {
   };
 
 
-  const generateReceipt = async () => {
-    const paidAmt = (sale.payments || []).reduce((s, p) => s + Number(p.amount || 0), 0);
-    const dueAmt = Number(sale.grand_total || 0) - paidAmt;
-    const receiptHtml = `
-      <html><head><meta charset="utf-8"><style>
-        body { font-family: 'Courier New', monospace; max-width: 300px; margin: 0 auto; padding: 16px; font-size: 12px; }
-        .center { text-align: center; }
-        .bold { font-weight: bold; }
-        .line { border-top: 1px dashed #333; margin: 8px 0; }
-        .row { display: flex; justify-content: space-between; }
-        .total-row { display: flex; justify-content: space-between; font-weight: bold; font-size: 14px; margin: 4px 0; }
-        h2 { margin: 4px 0; }
-        p { margin: 2px 0; }
-      </style></head><body>
-        <div class="center">
-          <h2>Flower point</h2>
-          <p>${sale.location_name || ''}</p>
-          <p>Invoice: <strong>${sale.sale_number}</strong></p>
-          <p>${formatDateTime(sale.created_at)}</p>
-        </div>
-        ${sale.customer_name ? `<p>Customer: ${sale.customer_name}</p>` : ''}
-        ${sale.customer_phone ? `<p>Phone: ${sale.customer_phone}</p>` : ''}
-        <div class="line"></div>
-        ${(sale.items || []).map(item => `
-          <div>
-            <p>${item.product_name || item.display_name || 'Item'}</p>
-            <div class="row">
-              <span>${item.quantity} x ₹${Number(item.unit_price || 0).toFixed(2)}</span>
-              <span>₹${Number(resolveItemLineTotal(item)).toFixed(2)}</span>
-            </div>
-          </div>
-        `).join('')}
-        <div class="line"></div>
-        <div class="row"><span>Subtotal</span><span>₹${Number(sale.subtotal || 0).toFixed(2)}</span></div>
-        <div class="row"><span>Tax</span><span>₹${Number(sale.tax_total || 0).toFixed(2)}</span></div>
-        ${sale.discount_amount > 0 ? `<div class="row"><span>Discount</span><span>-₹${Number(sale.discount_amount).toFixed(2)}</span></div>` : ''}
-        ${sale.delivery_charges > 0 ? `<div class="row"><span>Delivery</span><span>₹${Number(sale.delivery_charges).toFixed(2)}</span></div>` : ''}
-        <div class="line"></div>
-        <div class="total-row"><span>TOTAL</span><span>₹${Number(sale.grand_total || 0).toFixed(2)}</span></div>
-        <div class="line"></div>
-        ${(sale.payments || []).map(p => `
-          <div class="row"><span>${(p.method || '').toUpperCase()}</span><span>₹${Number(p.amount || 0).toFixed(2)}</span></div>
-        `).join('')}
-        ${dueAmt > 0.01 ? `<div class="row bold"><span>BALANCE DUE</span><span>₹${Number(dueAmt).toFixed(2)}</span></div>` : ''}
-        <div class="line"></div>
-        <div class="center"><p>Thank you for your purchase!</p></div>
-      </body></html>
-    `;
-
-    const printHtmlOnWeb = (markup, title) => {
-      const frame = document.createElement('iframe');
-      frame.style.position = 'fixed';
-      frame.style.right = '0';
-      frame.style.bottom = '0';
-      frame.style.width = '0';
-      frame.style.height = '0';
-      frame.style.border = '0';
-      frame.setAttribute('aria-hidden', 'true');
-      document.body.appendChild(frame);
-
-      const frameDoc = frame.contentWindow?.document;
-      if (!frameDoc) {
-        document.body.removeChild(frame);
-        throw new Error('Unable to open print frame');
-      }
-
-      frameDoc.open();
-      frameDoc.write(`<html><head><title>${title}</title></head><body>${markup}</body></html>`);
-      frameDoc.close();
-
-      setTimeout(() => {
-        try {
-          frame.contentWindow?.focus();
-          frame.contentWindow?.print();
-        } finally {
-          setTimeout(() => {
-            if (frame.parentNode) frame.parentNode.removeChild(frame);
-          }, 500);
-        }
-      }, 250);
-    };
-    try {
-      if (Platform.OS === 'web') {
-        printHtmlOnWeb(receiptHtml, 'Receipt');
-        return;
-      }
-
-      const { uri } = await Print.printToFileAsync({ html: receiptHtml, width: 300 });
-      await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: `Receipt ${sale.sale_number}` });
-    } catch (err) {
-      showAlert('Error', 'Could not generate receipt');
-    }
-  };
+  // The bill / tax invoice on the 80 mm roll (utils/invoiceHtml.js)
+  const generateReceipt = () => printSaleBill(saleId);
 
   if (loading) {
     return <View style={styles.center}><ActivityIndicator color={Colors.primary} size="large" /></View>;

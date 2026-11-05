@@ -27,6 +27,7 @@ const { readGstSettings, cleanHsn, GSTIN_RE } = require('../utils/gst-settings')
 const { nextNumber: nextInvoiceNumber } = require('../utils/invoice-number');
 const { planBill, writeBill } = require('../utils/sale-bill');
 const { generateSaleNumber } = require('../utils/sale-number');
+const { buildInvoiceView } = require('../utils/invoice-view');
 
 // ─── Auto-migration: expand schema CHECK constraints ─────────
 try {
@@ -1467,6 +1468,18 @@ router.put('/:id', authenticate, authorize('owner', 'manager', 'employee', 'coun
   } catch (err) { next(err); }
 });
 
+
+// ─── GET /api/sales/:id/invoice ──────────────────────────────
+// What the printed bill shows (utils/invoice-view.js): shop details from the
+// shop and owner bill settings, figures as saved on the sale. No cost data.
+router.get('/:id/invoice', authenticate, authorize('owner', 'manager', 'employee', 'counter_staff', 'florist_staff', 'delivery_partner'), async (req, res, next) => {
+  try {
+    const db = await getAsyncDb();
+    const view = await buildInvoiceView(db, req.params.id);
+    if (!view) return res.status(404).json({ success: false, message: 'Sale not found' });
+    res.json({ success: true, data: view });
+  } catch (err) { next(err); }
+});
 
 // ─── GET /api/sales/:id ──────────────────────────────────────
 router.get('/:id', authenticate, async (req, res, next) => {

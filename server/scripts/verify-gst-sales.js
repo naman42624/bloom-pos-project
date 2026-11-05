@@ -15,6 +15,7 @@ const createdUserIds = [];
 const createdRecurringIds = [];
 let counterBefore = null;
 let roundOffBefore = null;
+let locBefore = null;
 
 const P = (n) => Math.round(Number(n) * 100);
 
@@ -221,6 +222,42 @@ check('a recurring order makes one GST sale with an invoice number, even if run 
   assert(String(next.next_run_date) > today, `next ${next.next_run_date}`);
   const dues = await db.prepare('SELECT credit_balance FROM users WHERE id = ?').get(c.id);
   assert(P(dues.credit_balance) === 21000, `dues ${dues.credit_balance}`);
+});
+
+check('the printed bill matches the saved sale: tax invoice with a GSTIN, plain bill without', async () => {
+  const db = await getDb();
+  const owner = await loginOwner();
+  const loc = await db.prepare('SELECT gst_number, state, state_code FROM locations WHERE id = ?').get(LOC);
+  locBefore = loc;
+  try {
+    await db.prepare("UPDATE locations SET gst_number = '07ABCDE1234F1Z5', state = 'Delhi' WHERE id = ?").run(LOC);
+    const p5 = await taxedProduct(525, await rateId(5), '0603');
+    const p18 = await taxedProduct(236, await rateId(18), '7013');
+    const r = await newSale(owner.token, {
+      order_type: 'delivery', delivery_address: '4 Park St', scheduled_date: '2026-12-01', receiver_name: 'Anil', receiver_phone: '9000000001',
+      items: [{ product_id: p5, quantity: 2, unit_price: 525 }, { product_id: p18, quantity: 1, unit_price: 236 }],
+      discount_type: 'percentage', discount_value: 10, delivery_charges: 118, payments: [],
+    });
+    assert(r.status === 201, `${r.status} ${JSON.stringify(r.body)}`);
+    const inv = await api('GET', `/sales/${r.body.data.id}/invoice`, owner.token);
+    assert(inv.status === 200, `${inv.status}`);
+    const v = inv.body.data;
+    const s = await saleRow(r.body.data.id);
+    assert(v.kind === 'tax_invoice' && v.title === 'TAX INVOICE' && v.invoice_number === s.invoice_number, JSON.stringify({ k: v.kind, n: v.invoice_number }));
+    assert(v.seller.gstin === '07ABCDE1234F1Z5' && v.seller.state_code === '07' && /Delhi \(07\)/.test(v.place_of_supply), JSON.stringify(v.seller));
+    assert(P(v.totals.total) === P(s.grand_total) && P(v.totals.items) === 128600, JSON.stringify(v.totals));
+    assert(P(v.totals.items) - P(v.totals.discount) + P(v.totals.delivery) + P(v.totals.round_off) === P(v.totals.total), 'totals add up');
+    assert(P(v.tax_totals.taxable) === P(s.taxable_total) && P(v.tax_totals.cgst) === P(s.cgst_total) && P(v.tax_totals.sgst) === P(s.sgst_total), JSON.stringify(v.tax_totals));
+    assert(P(v.tax_totals.taxable) + P(v.tax_totals.total) === P(s.grand_total) - P(s.round_off), 'taxable + GST = total before round off');
+    assert(v.lines[0].hsn === '0603' && v.delivery && v.delivery.hsn === '9968' && v.ship_to && v.ship_to.address === '4 Park St', 'lines');
+    assert(/^Rupees /.test(v.words) && v.prices_include_gst === true, v.words);
+    assert(!JSON.stringify(v).includes('estimated_cost') && !JSON.stringify(v).includes('vendor'), 'no cost data');
+    await db.prepare("UPDATE locations SET gst_number = '' WHERE id = ?").run(LOC);
+    const plain = (await api('GET', `/sales/${r.body.data.id}/invoice`, owner.token)).body.data;
+    assert(plain.kind === 'bill' && plain.title === 'BILL' && P(plain.totals.total) === P(s.grand_total), JSON.stringify({ k: plain.kind }));
+  } finally {
+    await db.prepare('UPDATE locations SET gst_number = ?, state = ?, state_code = ? WHERE id = ?').run(loc.gst_number, loc.state, loc.state_code, LOC);
+  }
 });
 
 check('bill settings are readable by counter staff and hold no amounts', async () => {
