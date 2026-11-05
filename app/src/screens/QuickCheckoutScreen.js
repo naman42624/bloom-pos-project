@@ -2169,6 +2169,14 @@ export default function QuickCheckoutScreen({ navigation, route }) {
             <View style={styles.emptyItems}>
               <Ionicons name="gift-outline" size={48} color={Colors.textLight} />
               <Text style={styles.emptyText}>No items yet — tap "Scan" or "Add Item" to start</Text>
+              <TouchableOpacity
+                style={styles.quickTagLink}
+                onPress={() => navigation.navigate('QuickTag')}
+                accessibilityRole="button"
+              >
+                <Ionicons name="pricetag-outline" size={18} color={Colors.primary} />
+                <Text style={styles.quickTagLinkText}>Need a QR tag for something? Make a quick tag</Text>
+              </TouchableOpacity>
             </View>
           )}
 
@@ -3125,6 +3133,8 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.surface, borderWidth: 2, borderColor: Colors.primary,
     paddingHorizontal: Spacing.md, borderRadius: BorderRadius.md, marginRight: Spacing.sm,
   },
+  quickTagLink: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs, minHeight: 48, marginTop: Spacing.sm, paddingHorizontal: Spacing.sm },
+  quickTagLinkText: { color: Colors.primary, fontSize: FontSize.md, fontWeight: '600', textDecorationLine: 'underline' },
   scanBtnText: { color: Colors.primary, fontWeight: '700', fontSize: FontSize.sm },
 
   emptyItems: { alignItems: 'center', paddingVertical: Spacing.xl },

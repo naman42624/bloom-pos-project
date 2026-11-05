@@ -33,6 +33,8 @@ export default function LabelSheetScreen({ route }) {
   const [showPrice, setShowPrice] = useState(false);
   const [printing, setPrinting] = useState(false);
   const [error, setError] = useState('');
+  // Opened from one product: show just that product until "Add more products".
+  const [showAll, setShowAll] = useState(!preselect);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -65,6 +67,11 @@ export default function LabelSheetScreen({ route }) {
     return products.filter((p) => (!category || p.category === category)
       && (!q || String(p.name || '').toLowerCase().includes(q)));
   }, [products, search, category]);
+
+  // A preselected product that is not in the active list (switched off)
+  // cannot be shown alone, so fall back to the full list.
+  const onlyPicked = !showAll && products.some((p) => counts[p.id] !== undefined);
+  const shown = onlyPicked ? products.filter((p) => counts[p.id] !== undefined) : visible;
 
   const selectedIds = Object.keys(counts).map(Number);
   const isCard = layout === 'price_card';
@@ -139,7 +146,8 @@ export default function LabelSheetScreen({ route }) {
     <View style={styles.container}>
       <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
         <View style={styles.column}>
-          <Text style={styles.heading}>1. Pick the products</Text>
+          <Text style={styles.heading}>{onlyPicked ? '1. How many labels?' : '1. Pick the products'}</Text>
+          {!onlyPicked && <>
           <TextInput
             style={styles.input}
             placeholder="Search by name"
@@ -163,9 +171,10 @@ export default function LabelSheetScreen({ route }) {
           {selectedIds.length > 0 && (
             <TouchableOpacity style={styles.clearBtn} onPress={clearAll}><Text style={styles.clearText}>Clear all ({selectedIds.length} ticked)</Text></TouchableOpacity>
           )}
+          </>}
 
-          {visible.length === 0 && <Text style={styles.msg}>No products match.</Text>}
-          {visible.map((p) => {
+          {shown.length === 0 && <Text style={styles.msg}>No products match.</Text>}
+          {shown.map((p) => {
             const on = counts[p.id] !== undefined;
             return (
               <View key={p.id} style={[styles.row, on && styles.rowOn]}>
@@ -192,6 +201,11 @@ export default function LabelSheetScreen({ route }) {
               </View>
             );
           })}
+          {onlyPicked && (
+            <TouchableOpacity style={styles.secondaryBtn} onPress={() => setShowAll(true)} accessibilityRole="button">
+              <Text style={styles.secondaryText}>Add more products</Text>
+            </TouchableOpacity>
+          )}
 
           <Text style={[styles.heading, { marginTop: Spacing.lg }]}>2. Pick the sheet</Text>
           <View style={styles.chipWrap}>
