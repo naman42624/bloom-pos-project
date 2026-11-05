@@ -292,9 +292,6 @@ export default function ProductDetailScreen({ route, navigation }) {
             </View>
             {canManage && (
               <View style={styles.headerActions}>
-                <TouchableOpacity onPress={() => navigation.navigate('QRLabel', { productId: product.id })} style={styles.actionBtn}>
-                  <Ionicons name="qr-code" size={20} color={Colors.info} />
-                </TouchableOpacity>
                 <TouchableOpacity onPress={() => navigation.navigate('ProductForm', { product })} style={styles.actionBtn}>
                   <Ionicons name="create-outline" size={20} color={Colors.primary} />
                 </TouchableOpacity>
@@ -312,6 +309,14 @@ export default function ProductDetailScreen({ route, navigation }) {
           {product.category && <Text style={styles.productDesc}>Category: {product.category.replace('_', ' ')}</Text>}
           {product.location_name && <Text style={styles.productDesc}>Location: {product.location_name}</Text>}
           {product.description ? <Text style={styles.productDesc}>{product.description}</Text> : null}
+          <TouchableOpacity
+            style={styles.printLabelsBtn}
+            onPress={() => navigation.navigate('QRLabel', { productId: product.id })}
+            accessibilityRole="button"
+          >
+            <Ionicons name="qr-code-outline" size={20} color={Colors.primary} />
+            <Text style={styles.printLabelsText}>Print labels</Text>
+          </TouchableOpacity>
         </View>
 
         {/* Pricing card */}
@@ -572,6 +577,8 @@ const styles = StyleSheet.create({
   typeTagText: { fontSize: FontSize.xs, fontWeight: '600' },
   headerActions: { flexDirection: 'row', gap: Spacing.sm },
   actionBtn: { padding: 6 },
+  printLabelsBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.sm, minHeight: 48, marginTop: Spacing.md, borderRadius: BorderRadius.md, borderWidth: 1, borderColor: Colors.primary },
+  printLabelsText: { color: Colors.primary, fontSize: FontSize.md, fontWeight: '700' },
   productName: { fontSize: FontSize.xl, fontWeight: '700', color: Colors.text },
   productSku: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: 2 },
   productDesc: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: Spacing.sm, lineHeight: 20 },

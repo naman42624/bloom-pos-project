@@ -230,12 +230,25 @@ export default function ProductsScreen({ navigation }) {
         ) : null}
       </View>
 
+      {/* Labels: print for catalog products, or a quick tag for anything */}
+      <View style={styles.labelRow}>
+        <TouchableOpacity style={styles.labelBtn} onPress={() => navigation.navigate('QRLabel')} accessibilityRole="button">
+          <Ionicons name="qr-code-outline" size={20} color={Colors.primary} />
+          <Text style={styles.labelBtnText}>Print labels</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.labelBtn} onPress={() => navigation.navigate('QuickTag')} accessibilityRole="button">
+          <Ionicons name="pricetag-outline" size={20} color={Colors.primary} />
+          <Text style={styles.labelBtnText}>Quick tag</Text>
+        </TouchableOpacity>
+      </View>
+
       {/* Type filter chips */}
       <FlatList
         horizontal
         showsHorizontalScrollIndicator={false}
         data={TYPE_FILTERS}
         keyExtractor={(item) => String(item.key ?? 'all')}
+        style={styles.chipStrip}
         contentContainerStyle={styles.chipList}
         renderItem={({ item }) => (
           <TouchableOpacity
@@ -359,6 +372,9 @@ export default function ProductsScreen({ navigation }) {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
+  labelRow: { flexDirection: 'row', gap: Spacing.sm, marginHorizontal: Spacing.md, marginTop: Spacing.sm },
+  labelBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.xs, minHeight: 48, borderRadius: BorderRadius.md, borderWidth: 1, borderColor: Colors.primary, backgroundColor: Colors.surface },
+  labelBtnText: { color: Colors.primary, fontSize: FontSize.md, fontWeight: '700' },
   searchContainer: {
     flexDirection: 'row', alignItems: 'center', backgroundColor: Colors.surface,
     marginHorizontal: Spacing.md, marginTop: Spacing.md, paddingHorizontal: Spacing.md,
@@ -366,6 +382,7 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: Colors.border,
   },
   searchInput: { flex: 1, fontSize: FontSize.md, color: Colors.text },
+  chipStrip: { flexGrow: 0, flexShrink: 0 },
   chipList: { paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm, gap: Spacing.sm },
   chip: {
     paddingHorizontal: Spacing.md, paddingVertical: Spacing.xs + 2, borderRadius: BorderRadius.full,

@@ -295,6 +295,36 @@ check('lookup scan: owner opens a switched-off product, counter_staff still refu
   assert(onR.status === 200 && onR.body.data.is_active === 1, JSON.stringify(onR.body));
 });
 
+check('quick tag by counter staff: saved, in the product list, prints, scans at checkout', async () => {
+  const owner = await loginOwner();
+  const staff = await createCounterStaff(owner.token);
+  const name = `QuickTag ${Date.now()}`;
+  // One tag = one-of-a-kind item (same route Produce uses for a custom make).
+  const made = await api('POST', '/production/produce/custom', staff.token, {
+    name, location_id: TEST_LOCATION_ID, quantity: 1, selling_price: 750, category: 'other', notes: 'Quick tag',
+  });
+  assert(made.status === 201, `create ${made.status} ${JSON.stringify(made.body)}`);
+  const id = made.body.data.product.id;
+  createdProductIds.push(id);
+  assert(String(made.body.data.product.sku).startsWith('CUST-'), made.body.data.product.sku);
+  const oneOff = await api('PUT', `/products/${id}/one-off`, staff.token, {});
+  assert(oneOff.status === 200, `one-off ${oneOff.status}`);
+  const list = await api('GET', `/products?search=${encodeURIComponent(name)}`, staff.token);
+  assert(list.status === 200 && (list.body.data || []).some((p) => p.id === id), `not in product list: ${JSON.stringify(list.body).slice(0, 200)}`);
+  const labels = await api('POST', '/products/labels', staff.token, { product_ids: [id] });
+  assert(labels.status === 200 && labels.body.data.length === 1, `labels ${labels.status}`);
+  const row = labels.body.data[0];
+  const sc = await api('POST', '/products/scan', staff.token, { payload: row.url, location_id: TEST_LOCATION_ID });
+  assert(sc.status === 200 && sc.body.data.id === id && sc.body.data.in_stock === true && sc.body.data.selling_price === 750 && sc.body.data.is_one_off === 1, JSON.stringify(sc.body));
+  // Several tags: stays a normal product with that many in stock.
+  const many = await api('POST', '/production/produce/custom', staff.token, {
+    name: `${name} x3`, location_id: TEST_LOCATION_ID, quantity: 3, selling_price: 120, category: 'other', notes: 'Quick tag',
+  });
+  assert(many.status === 201, `create x3 ${many.status}`);
+  createdProductIds.push(many.body.data.product.id);
+  assert(Number(many.body.data.ready_qty) === 3 && !Number(many.body.data.product.is_one_off), JSON.stringify(many.body.data));
+});
+
 check('concurrent option saves leave one list', async () => {
   const owner = await loginOwner();
   const id = await makeProduct('LblOptsRace');
@@ -373,6 +403,7 @@ async function cleanup() {
   for (const id of createdProductIds) {
     try {
       await db.prepare('DELETE FROM product_stock WHERE product_id = ?').run(id);
+      await db.prepare('DELETE FROM production_logs WHERE product_id = ?').run(id);
       await db.prepare('DELETE FROM product_options WHERE product_id = ?').run(id);
       await db.prepare('DELETE FROM products WHERE id = ?').run(id);
     } catch (err) { console.error(`   (cleanup warning: product ${id}: ${err.message})`); }

@@ -13,6 +13,8 @@ const QUICK_LINKS = [
   { label: 'Categories', icon: 'folder-open', screen: 'Categories', color: '#9C27B0' },
   { label: 'Materials', icon: 'cube', screen: 'Materials', color: Colors.primary },
   { label: 'Products', icon: 'gift', screen: 'Products', color: '#4CAF50' },
+  { label: 'Print labels', icon: 'qr-code-outline', screen: 'QRLabel', color: '#00897B' },
+  { label: 'Quick tag', icon: 'pricetag', screen: 'QuickTag', color: '#D81B60' },
   { label: 'Metrics', icon: 'analytics', screen: 'InventoryMetrics', color: '#E91E63' },
   { label: 'Product Stock', icon: 'layers', screen: 'ProductStock', color: '#3F51B5' },
   { label: 'Suppliers', icon: 'people', screen: 'Suppliers', color: '#FF9800' },

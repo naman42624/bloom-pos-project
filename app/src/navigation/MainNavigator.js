@@ -48,6 +48,7 @@ import ProductFormScreen from '../screens/ProductFormScreen';
 import ProductStockScreen from '../screens/ProductStockScreen';
 import QRScannerScreen from '../screens/QRScannerScreen';
 import LabelSheetScreen from '../screens/LabelSheetScreen';
+import QuickTagScreen from '../screens/QuickTagScreen';
 
 // Phase 4 — POS & Sales
 import POSScreen from '../screens/POSScreen';
@@ -275,6 +276,7 @@ function InventoryStack() {
       {/* QR */}
       <Stack.Screen name="QRScanner" component={QRScannerScreen} options={{ title: 'Scan QR Code' }} />
       <Stack.Screen name="QRLabel" component={LabelSheetScreen} options={{ title: 'Print Labels' }} />
+      <Stack.Screen name="QuickTag" component={QuickTagScreen} options={{ title: 'Quick tag' }} />
     </Stack.Navigator>
   );
 }
@@ -336,6 +338,7 @@ function POSStack() {
       <Stack.Screen name="RefundSale" component={RefundSaleScreen} options={{ title: 'Refund' }} />
       <Stack.Screen name="AddPayment" component={AddPaymentScreen} options={{ title: 'Record Payment' }} />
       <Stack.Screen name="QRScanner" component={QRScannerScreen} options={{ title: 'Scan QR' }} />
+      <Stack.Screen name="QuickTag" component={QuickTagScreen} options={{ title: 'Quick tag' }} />
       <Stack.Screen name="CashRegister" component={CashRegisterScreen} options={{ title: 'Cash Register' }} />
       <Stack.Screen name="Expenses" component={ExpensesScreen} options={{ title: 'Expenses' }} />
       <Stack.Screen name="Settlements" component={SettlementsScreen} options={{ title: 'Settlements' }} />
