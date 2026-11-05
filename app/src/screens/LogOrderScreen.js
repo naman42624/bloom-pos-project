@@ -15,7 +15,7 @@ import { useAuth } from '../context/AuthContext';
 import { getShopNow } from '../utils/datetime';
 import { bumpActivity } from '../hooks/useIdleLock';
 import useSubmitGuard from '../hooks/useSubmitGuard';
-import OldDuesCard, { EMPTY_DUES, duesAmountError } from '../components/OldDuesCard';
+import OldDuesCard, { EMPTY_DUES, duesAmountError, takeNowSummary } from '../components/OldDuesCard';
 import CollectDuesSheet from '../components/CollectDuesSheet';
 import OpenRegisterSheet from '../components/OpenRegisterSheet';
 
@@ -830,14 +830,12 @@ export default function LogOrderScreen({ navigation, route }) {
         {duesCollect.enabled && customerId && customerDues > 0 && !duesAmountError(customerDues, duesCollect) && (() => {
           const dues = Math.round((parseFloat(duesCollect.amount) || 0) * 100) / 100;
           const nowPaid = paymentMode !== 'unpaid' ? Math.round((parseFloat(paymentAmount) || 0) * 100) / 100 : 0;
-          const method = duesCollect.method === 'upi' ? 'upi' : 'cash';
-          const total = Math.round((nowPaid + dues) * 100) / 100;
+          const take = takeNowSummary(nowPaid > 0 ? [{ method: paymentMethod, amount: nowPaid }] : [], dues, duesCollect.method === 'upi' ? 'upi' : 'cash');
           return (
             <View style={{ marginTop: Spacing.sm }}>
               <Text style={{ fontSize: FontSize.md, color: Colors.textSecondary }}>Old dues: ₹{dues.toFixed(2)}</Text>
-              <Text style={{ fontSize: FontSize.lg, fontWeight: '800', color: Colors.text }}>
-                Take from customer now: ₹{total.toFixed(2)}{method !== 'cash' ? ` (${method.toUpperCase()})` : ''}
-              </Text>
+              <Text style={{ fontSize: FontSize.lg, fontWeight: '800', color: Colors.text }}>{take.total}</Text>
+              {take.detail ? <Text style={{ fontSize: FontSize.md, fontWeight: '700', color: Colors.text }}>{take.detail}</Text> : null}
             </View>
           );
         })()}

@@ -16,7 +16,7 @@ import AttachmentVoiceRow from '../components/AttachmentVoiceRow';
 import { showAlert } from '../utils/alert';
 import CollectDuesSheet from '../components/CollectDuesSheet';
 import OpenRegisterSheet from '../components/OpenRegisterSheet';
-import OldDuesCard, { EMPTY_DUES, duesAmountError } from '../components/OldDuesCard';
+import OldDuesCard, { EMPTY_DUES, duesAmountError, takeNowSummary } from '../components/OldDuesCard';
 import api from '../services/api';
 import { computeBill, splitInclusive, toPaise } from '../utils/gst';
 import useBillSettings from '../hooks/useBillSettings';
@@ -1291,7 +1291,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
         // sale mislabeled as fully paid up front, too high overcredited the
         // register with no warning (found in the same audit, 2026-09-04).
         } else if (Math.abs(entered - totals.finalTotal) > 0.01) {
-          validationErrors.push(`Split payments (₹${entered.toFixed(0)}) must add up to the total (₹${totals.finalTotal.toFixed(0)}).`);
+          validationErrors.push(`Split payments (₹${entered.toFixed(2)}) must add up to the total (₹${totals.finalTotal.toFixed(2)}).`);
         }
       }
     }
@@ -1306,7 +1306,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     if (paymentMode === 'partial' && enableSplitPayment) {
       const splitEntered = payments.reduce((sum, p) => sum + (parseFloat(p.amount) || 0), 0);
       if (Math.abs(splitEntered - partialAdvance) > 0.01) {
-        validationErrors.push(`Split payments (₹${splitEntered.toFixed(0)}) must add up to the advance amount (₹${partialAdvance.toFixed(0)}).`);
+        validationErrors.push(`Split payments (₹${splitEntered.toFixed(2)}) must add up to the advance amount (₹${partialAdvance.toFixed(2)}).`);
       }
     }
 
@@ -2726,14 +2726,16 @@ export default function QuickCheckoutScreen({ navigation, route }) {
             } else if (paymentMode === 'partial') {
               nowPaid = Math.round((parseFloat(advanceAmount) || 0) * 100) / 100;
             }
-            const method = duesCollect.method === 'upi' ? 'upi' : 'cash';
-            const total = Math.round((nowPaid + dues) * 100) / 100;
+            const orderParts = nowPaid <= 0 ? []
+              : enableSplitPayment
+                ? payments.map((p) => ({ method: p.method, amount: parseFloat(p.amount) || 0 }))
+                : [{ method: paymentMethod, amount: nowPaid }];
+            const take = takeNowSummary(orderParts, dues, duesCollect.method === 'upi' ? 'upi' : 'cash');
             return (
               <View style={{ marginTop: Spacing.sm }}>
                 <Text style={{ fontSize: FontSize.md, color: Colors.textSecondary }}>Old dues: ₹{dues.toFixed(2)}</Text>
-                <Text style={{ fontSize: FontSize.lg, fontWeight: '800', color: Colors.text }}>
-                  Take from customer now: ₹{total.toFixed(2)}{method !== 'cash' ? ` (${method.toUpperCase()})` : ''}
-                </Text>
+                <Text style={{ fontSize: FontSize.lg, fontWeight: '800', color: Colors.text }}>{take.total}</Text>
+                {take.detail ? <Text style={{ fontSize: FontSize.md, fontWeight: '700', color: Colors.text }}>{take.detail}</Text> : null}
               </View>
             );
           })()}

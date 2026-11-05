@@ -13,7 +13,7 @@ const money = (n) => (Math.round((Number(n) || 0) * 100) / 100).toFixed(2);
 const METHOD = { cash: 'Cash', upi: 'UPI', card: 'Card', bank_transfer: 'Bank', credit: 'Credit' };
 
 function formatWhen(value) {
-  const d = value ? new Date(String(value).replace(' ', 'T')) : null;
+  const d = value instanceof Date ? value : (value ? new Date(String(value).replace(' ', 'T')) : null);
   if (!d || Number.isNaN(d.getTime())) return esc(value || '');
   const date = d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
   const time = d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });

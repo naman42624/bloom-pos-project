@@ -1,10 +1,12 @@
 import React, { useState } from 'react';
 import {
   View, Text, StyleSheet, TextInput, TouchableOpacity,
-  Alert, ActivityIndicator, ScrollView, Platform,
+  ActivityIndicator, ScrollView, Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import api from '../services/api';
+import { showAlert } from '../utils/alert';
+import useSubmitGuard from '../hooks/useSubmitGuard';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 
 const PAYMENT_METHODS = [
@@ -18,6 +20,7 @@ export default function AddPaymentScreen({ route, navigation }) {
   const [payments, setPayments] = useState([{ method: 'cash', amount: String(due || 0), reference_number: '' }]);
   const [writeOffAmount, setWriteOffAmount] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const guardSubmit = useSubmitGuard();
 
   const handleAddPayment = () => {
     setPayments([...payments, { method: 'cash', amount: '', reference_number: '' }]);
@@ -39,7 +42,9 @@ export default function AddPaymentScreen({ route, navigation }) {
     const totalReduction = totalPayments + woAmount;
 
     if (totalReduction <= 0 || totalReduction > due + 0.01) {
-      Alert.alert('Invalid', `Total amount must be between ₹1 and ₹${Number(due).toFixed(2)}`);
+      showAlert('Check the amount', totalReduction <= 0
+        ? 'Type how much the customer is paying.'
+        : `Only ₹${Number(due).toFixed(2)} is due. Take just that and give change from the drawer.`);
       return;
     }
 
@@ -55,13 +60,13 @@ export default function AddPaymentScreen({ route, navigation }) {
       });
       
       if (res.success) {
-        Alert.alert('Success', `₹${Number(totalPayments).toFixed(2)} payment recorded`);
+        showAlert('Payment saved', `₹${Number(totalPayments).toFixed(2)} recorded on this order.`);
         navigation.goBack();
       } else {
-        Alert.alert('Error', res.message || 'Failed to add payment');
+        showAlert('Not saved', res.message || 'The payment was not saved. Try again.');
       }
     } catch (err) {
-      Alert.alert('Error', err.message || 'Something went wrong');
+      showAlert('Not saved', err.message || 'The payment was not saved. Check the internet connection and try again.');
     } finally { setSubmitting(false); }
   };
 
@@ -76,7 +81,7 @@ export default function AddPaymentScreen({ route, navigation }) {
         <View style={styles.dueRow}>
           <Text style={styles.hint}>Balance due: ₹{Number(due || 0).toFixed(2)}</Text>
           <Text style={[styles.hint, { color: remaining < 0 ? Colors.error : remaining === 0 ? Colors.success : Colors.warning }]}>
-            Remaining: ₹{remaining.toFixed(2)}
+            {remaining < -0.009 ? `₹${(-remaining).toFixed(2)} more than is due` : `Remaining: ₹${remaining.toFixed(2)}`}
           </Text>
         </View>
 
@@ -142,7 +147,7 @@ export default function AddPaymentScreen({ route, navigation }) {
           placeholderTextColor={Colors.textLight}
         />
 
-        <TouchableOpacity style={[styles.btn, submitting && { opacity: 0.6 }]} onPress={handleSubmit} disabled={submitting}>
+        <TouchableOpacity style={[styles.btn, submitting && { opacity: 0.6 }]} onPress={guardSubmit(handleSubmit)} disabled={submitting}>
           {submitting ? <ActivityIndicator color={Colors.white} /> : (
             <>
               <Ionicons name="checkmark-circle" size={18} color={Colors.white} />
