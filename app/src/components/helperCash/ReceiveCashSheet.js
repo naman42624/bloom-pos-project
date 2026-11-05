@@ -25,6 +25,7 @@ import { OpenRegisterForm } from '../OpenRegisterSheet';
 import useSubmitGuard from '../../hooks/useSubmitGuard';
 import { bumpActivity } from '../../hooks/useIdleLock';
 import { parseMoney, cleanMoneyInput, handoverResult, rupees } from '../../utils/helperCash';
+import { newRequestId } from '../../utils/requestId';
 import { Colors, FontSize, Spacing, BorderRadius } from '../../constants/theme';
 
 const ALREADY_COLLECTED = 'Already collected — refresh';
@@ -111,10 +112,17 @@ export default function ReceiveCashSheet({ visible, helper, locationId, onClose,
     await runPreview();
   });
 
+  // Same helper, count and choice = the same handover: a retry reuses the
+  // id, so the server never takes the cash in twice.
+  const reqRef = useRef({ key: null, id: null });
   const send = async (isFinal) => {
+    const key = `${helper.staff_id}:${counted}:${isFinal ? 'f' : 'p'}`;
+    if (reqRef.current.key !== key) reqRef.current = { key, id: newRequestId() };
     const res = await api.helperHandover({
       staff_id: helper.staff_id, location_id: locationId, counted_amount: counted, is_final: isFinal, preview: false,
+      request_id: reqRef.current.id,
     });
+    reqRef.current = { key: null, id: null };
     onDone && onDone({ ...res.data, name });
     onClose && onClose();
   };

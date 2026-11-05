@@ -28,12 +28,13 @@
 // app doesn't recognize, the unaccounted amount is folded into cash rather than
 // silently dropped from the register. This matches the pre-existing assume-cash
 // default and is logged so the drift stays visible instead of silent.
-function sumCollectionsByMethod(db, deliveryIds, expectedTotal) {
+// Async: await it. Works on the sync db, the async pool and a money transaction.
+async function sumCollectionsByMethod(db, deliveryIds, expectedTotal) {
   const totals = { cash: 0, upi: 0 };
   let recognizedTotal = 0;
   if (deliveryIds && deliveryIds.length > 0) {
     const placeholders = deliveryIds.map(() => '?').join(',');
-    const rows = db.prepare(
+    const rows = await db.prepare(
       `SELECT method, COALESCE(SUM(amount), 0) as total FROM delivery_collections WHERE delivery_id IN (${placeholders}) GROUP BY method`
     ).all(...deliveryIds);
     for (const row of rows) {

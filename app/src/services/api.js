@@ -666,15 +666,15 @@ class ApiService {
     return this.request(`/helper-cash/bags/${staffId}/reveal`, { method: 'POST', body: JSON.stringify({ location_id: locationId }) });
   }
 
-  giveHelperFloat({ staff_id, location_id, amount }) {
-    return this.request('/helper-cash/float', { method: 'POST', body: JSON.stringify({ staff_id, location_id, amount }) });
+  giveHelperFloat({ staff_id, location_id, amount, request_id }) {
+    return this.request('/helper-cash/float', { method: 'POST', body: JSON.stringify({ staff_id, location_id, amount, request_id }) });
   }
 
   // preview must be a real boolean (server refuses anything else)
-  helperHandover({ staff_id, location_id, counted_amount, is_final, preview }) {
+  helperHandover({ staff_id, location_id, counted_amount, is_final, preview, request_id }) {
     return this.request('/helper-cash/handover', {
       method: 'POST',
-      body: JSON.stringify({ staff_id, location_id, counted_amount, is_final: is_final === true, preview: preview === true }),
+      body: JSON.stringify({ staff_id, location_id, counted_amount, is_final: is_final === true, preview: preview === true, request_id }),
     });
   }
 

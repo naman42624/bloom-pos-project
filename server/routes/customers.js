@@ -6,10 +6,10 @@ function localDateStr(dt) {
 }
 const { body, validationResult } = require('express-validator');
 const { getDb } = require('../config/database');
-const { getDb: getAsyncDb } = require('../config/database-async');
+const { getDb: getAsyncDb, withMoneyTx } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
 const { safeParseJSON } = require('../utils/json');
-const { hasOpenRegister, REGISTER_CLOSED_MESSAGE } = require('../utils/register-guard');
+const { hasOpenRegister, lockOpenRegister, registerClosedError, REGISTER_CLOSED_MESSAGE } = require('../utils/register-guard');
 const { generateOrderRequestToken, buildOrderRequestUrl } = require('../utils/order-request-token');
 
 // ─── GET /api/customers ─────────────────────────────────────
@@ -601,7 +601,7 @@ router.post(
     body('location_id').isInt({ min: 1 }).withMessage('Location ID is required'),
     body('notes').optional().trim(),
   ],
-  (req, res, next) => {
+  async (req, res, next) => {
     try {
       const errors = validationResult(req);
       if (!errors.isEmpty()) return res.status(400).json({ success: false, message: 'Validation failed', errors: errors.array() });
@@ -652,12 +652,34 @@ router.post(
         return res.status(400).json({ success: false, message: REGISTER_CLOSED_MESSAGE });
       }
 
-      const creditTx = db.transaction(() => {
+      const creditTx = () => withMoneyTx(async (db) => {
         let lastInsertId = null;
+
+        // Lock order (same as every money route): sale rows (in id order),
+        // then the open register, then the customer row. Then re-check the
+        // dues under the lock, so two taps can't both take the same dues.
+        const lockSaleIds = sale_id
+          ? [Number(sale_id)]
+          : (await db.prepare(`
+              SELECT s.id FROM sales s
+              WHERE (s.customer_id = ? OR s.sender_customer_id = ?) AND s.status != 'cancelled' AND s.payment_status != 'paid' AND s.id <> ?
+              ORDER BY s.id
+            `).all(customerId, customerId, excludeSaleId)).map((r) => Number(r.id));
+        for (const sid of [...new Set(lockSaleIds)].sort((a, b) => a - b)) {
+          await db.prepare('SELECT id FROM sales WHERE id = ? FOR UPDATE').get(sid);
+        }
+        const register = paymentList.length > 0 ? await lockOpenRegister(db, numLocationId) : null;
+        if (paymentList.some((p) => p.method === 'cash') && !register) throw registerClosedError();
+        const lockedCustomer = await db.prepare('SELECT credit_balance FROM users WHERE id = ? FOR UPDATE').get(customerId);
+        if (totalReduction > Number(lockedCustomer.credit_balance) + 0.01) {
+          const e = new Error(`Total reduction (₹${totalReduction}) exceeds outstanding balance (₹${lockedCustomer.credit_balance})`);
+          e.statusCode = 400;
+          throw e;
+        }
 
         // 1. Record credit payments (cash, card, upi)
         for (const p of paymentList) {
-          const result = db.prepare(
+          const result = await db.prepare(
             'INSERT INTO credit_payments (customer_id, amount, payment_method, recorded_by, notes, sale_id, location_id, collected_with_sale_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
           ).run(customerId, p.amount, p.method, req.user.id, notes || '', sale_id || null, numLocationId, collectedWithSaleId);
           lastInsertId = result.lastInsertRowid;
@@ -665,38 +687,38 @@ router.post(
 
         // 2. Record write_off in credit_payments if > 0
         if (woAmount > 0) {
-          const result = db.prepare(
+          const result = await db.prepare(
             'INSERT INTO credit_payments (customer_id, amount, payment_method, recorded_by, notes, sale_id, location_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
           ).run(customerId, woAmount, 'write_off', req.user.id, notes || 'Write-off', sale_id || null, numLocationId);
           lastInsertId = lastInsertId || result.lastInsertRowid;
         }
 
         // Reduce customer credit balance
-        db.prepare('UPDATE users SET credit_balance = GREATEST(0, credit_balance - ?), updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(totalReduction, customerId);
+        await db.prepare('UPDATE users SET credit_balance = GREATEST(0, credit_balance - ?), updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(totalReduction, customerId);
 
         // If linked to a sale, also add as a payment on that sale
         if (sale_id) {
           for (const p of paymentList) {
-            db.prepare(
+            await db.prepare(
               'INSERT INTO payments (sale_id, method, amount, reference_number, received_by) VALUES (?, ?, ?, ?, ?)'
             ).run(sale_id, p.method, p.amount, `Credit-${lastInsertId}`, req.user.id);
           }
 
           if (woAmount > 0) {
-            db.prepare('UPDATE sales SET discount_amount = COALESCE(discount_amount, 0) + ?, grand_total = GREATEST(0, grand_total - ?) WHERE id = ?')
+            await db.prepare('UPDATE sales SET discount_amount = COALESCE(discount_amount, 0) + ?, grand_total = GREATEST(0, grand_total - ?) WHERE id = ?')
               .run(woAmount, woAmount, sale_id);
           }
 
           // Recalculate sale payment status
-          const sale = db.prepare('SELECT grand_total FROM sales WHERE id = ?').get(sale_id);
+          const sale = await db.prepare('SELECT grand_total FROM sales WHERE id = ?').get(sale_id);
           if (sale) {
-            const totalPaid = db.prepare('SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE sale_id = ?').get(sale_id).total;
+            const totalPaid = (await db.prepare('SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE sale_id = ?').get(sale_id)).total;
             const roundedGrandTotal = Math.round(Number(sale.grand_total || 0) * 100) / 100;
             const roundedTotalPaid = Math.round(Number(totalPaid || 0) * 100) / 100;
             let paymentStatus = 'pending';
             if (roundedTotalPaid >= roundedGrandTotal - 0.01) paymentStatus = 'paid';
             else if (roundedTotalPaid > 0) paymentStatus = 'partial';
-            db.prepare('UPDATE sales SET payment_status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(paymentStatus, sale_id);
+            await db.prepare('UPDATE sales SET payment_status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(paymentStatus, sale_id);
           }
         } else {
           // Auto-allocate general credit payment to the oldest unpaid sales
@@ -704,7 +726,7 @@ router.post(
           let remainingWo = woAmount;
           let totalRemaining = remainingCash + remainingWo;
 
-          const unpaidSales = db.prepare(`
+          const unpaidSales = await db.prepare(`
             SELECT s.id, s.grand_total, COALESCE((SELECT SUM(amount) FROM payments WHERE sale_id = s.id), 0) as total_paid
             FROM sales s
             WHERE (s.customer_id = ? OR s.sender_customer_id = ?) AND s.status != 'cancelled' AND s.payment_status != 'paid' AND s.id <> ?
@@ -719,7 +741,7 @@ router.post(
             // Allocate write-off first
             if (remainingWo > 0.01 && saleUnpaid > 0.01) {
               const allocWo = Math.min(saleUnpaid, remainingWo);
-              db.prepare('UPDATE sales SET discount_amount = COALESCE(discount_amount, 0) + ?, grand_total = GREATEST(0, grand_total - ?) WHERE id = ?').run(allocWo, allocWo, s.id);
+              await db.prepare('UPDATE sales SET discount_amount = COALESCE(discount_amount, 0) + ?, grand_total = GREATEST(0, grand_total - ?) WHERE id = ?').run(allocWo, allocWo, s.id);
               remainingWo -= allocWo;
               totalRemaining -= allocWo;
               saleUnpaid -= allocWo;
@@ -729,34 +751,33 @@ router.post(
             if (remainingCash > 0.01 && saleUnpaid > 0.01) {
               const allocCash = Math.min(saleUnpaid, remainingCash);
               const autoMethod = paymentList.length > 0 ? paymentList[0].method : 'cash';
-              db.prepare('INSERT INTO payments (sale_id, method, amount, reference_number, received_by) VALUES (?, ?, ?, ?, ?)').run(s.id, autoMethod, allocCash, `Credit-${lastInsertId}`, req.user.id);
+              await db.prepare('INSERT INTO payments (sale_id, method, amount, reference_number, received_by) VALUES (?, ?, ?, ?, ?)').run(s.id, autoMethod, allocCash, `Credit-${lastInsertId}`, req.user.id);
               remainingCash -= allocCash;
               totalRemaining -= allocCash;
               saleUnpaid -= allocCash;
             }
               
             // Update status
-            const updatedSale = db.prepare('SELECT grand_total FROM sales WHERE id = ?').get(s.id);
-            const newTotalPaid = db.prepare('SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE sale_id = ?').get(s.id).total;
+            const updatedSale = await db.prepare('SELECT grand_total FROM sales WHERE id = ?').get(s.id);
+            const newTotalPaid = (await db.prepare('SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE sale_id = ?').get(s.id)).total;
             const roundedGrandTotal = Math.round(Number(updatedSale.grand_total || 0) * 100) / 100;
             const roundedTotalPaid = Math.round(Number(newTotalPaid || 0) * 100) / 100;
             let paymentStatus = 'pending';
             if (roundedTotalPaid >= roundedGrandTotal - 0.01) paymentStatus = 'paid';
             else if (roundedTotalPaid > 0) paymentStatus = 'partial';
-            db.prepare('UPDATE sales SET payment_status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(paymentStatus, s.id);
+            await db.prepare('UPDATE sales SET payment_status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(paymentStatus, s.id);
           }
         }
 
-        // Update cash register if payment is cash
-        const register = db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1').get(numLocationId);
+        // Update the open register (locked above)
         if (register) {
           for (const p of paymentList) {
             if (p.method === 'cash') {
-              db.prepare('UPDATE cash_registers SET total_cash_sales = total_cash_sales + ?, expected_cash = expected_cash + ? WHERE id = ?').run(p.amount, p.amount, register.id);
+              await db.prepare('UPDATE cash_registers SET total_cash_sales = total_cash_sales + ?, expected_cash = expected_cash + ? WHERE id = ?').run(p.amount, p.amount, register.id);
             } else if (p.method === 'card') {
-              db.prepare('UPDATE cash_registers SET total_card_sales = total_card_sales + ? WHERE id = ?').run(p.amount, register.id);
+              await db.prepare('UPDATE cash_registers SET total_card_sales = total_card_sales + ? WHERE id = ?').run(p.amount, register.id);
             } else if (p.method === 'upi') {
-              db.prepare('UPDATE cash_registers SET total_upi_sales = total_upi_sales + ? WHERE id = ?').run(p.amount, register.id);
+              await db.prepare('UPDATE cash_registers SET total_upi_sales = total_upi_sales + ? WHERE id = ?').run(p.amount, register.id);
             }
           }
         }
@@ -764,7 +785,7 @@ router.post(
         return lastInsertId;
       });
 
-      const paymentId = creditTx();
+      const paymentId = await creditTx();
 
       const payment = db.prepare(`
         SELECT cp.*, cp.payment_method as method, u.name as received_by_name, l.name as location_name
@@ -792,7 +813,7 @@ router.post(
     body('date').optional().trim(),
     body('notes').optional().trim(),
   ],
-  (req, res, next) => {
+  async (req, res, next) => {
     try {
       const errors = validationResult(req);
       if (!errors.isEmpty()) return res.status(400).json({ success: false, message: 'Validation failed', errors: errors.array() });
@@ -807,7 +828,7 @@ router.post(
       const parsedAmount = parseFloat(amount);
       const negativeAmount = -Math.abs(parsedAmount);
 
-      const dueTx = db.transaction(() => {
+      const dueTx = () => withMoneyTx(async (db) => {
         // Insert record into credit_payments to log the addition of dues
         // Using payment_method = 'previous_due'
         let insertQuery = 'INSERT INTO credit_payments (customer_id, amount, payment_method, recorded_by, notes) VALUES (?, ?, ?, ?, ?)';
@@ -818,15 +839,15 @@ router.post(
            params.push(date + (date.length === 10 ? ' 00:00:00' : ''));
         }
 
-        const result = db.prepare(insertQuery).run(...params);
+        const result = await db.prepare(insertQuery).run(...params);
 
         // Increase customer credit balance
-        db.prepare('UPDATE users SET credit_balance = credit_balance + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(parsedAmount, customerId);
+        await db.prepare('UPDATE users SET credit_balance = credit_balance + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(parsedAmount, customerId);
 
         return result.lastInsertRowid;
       });
 
-      const paymentId = dueTx();
+      const paymentId = await dueTx();
 
       const payment = db.prepare(`
         SELECT cp.*, cp.payment_method as method, u.name as received_by_name, l.name as location_name
@@ -990,6 +1011,39 @@ router.get('/:id/credits', authenticate, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// A dues payment taken in cash/card/UPI is already in a register session and
+// may already have been applied to orders ("Credit-<id>" payments). Changing
+// its amount or method, or deleting it, is only safe while it is still in the
+// open session and not applied to any order. Returns the locked open register
+// when allowed; throws a plain-language 409 otherwise.
+const REAL_METHODS = ['cash', 'card', 'upi'];
+async function assertDuesPaymentChangeable(tx, record) {
+  const allocated = await tx.prepare("SELECT 1 AS x FROM payments WHERE reference_number = ? LIMIT 1").get(`Credit-${record.id}`);
+  const register = record.location_id ? await lockOpenRegister(tx, record.location_id) : null;
+  const inOpenSession = register
+    ? await tx.prepare('SELECT 1 AS x FROM credit_payments WHERE id = ? AND created_at >= ?').get(record.id, register.opening_time || register.opened_at)
+    : null;
+  if (allocated || !inOpenSession) {
+    const e = new Error(allocated
+      ? "This payment was already applied to orders, so it can't be changed or deleted. To correct the dues, use Add due or a write-off."
+      : "This payment was counted when the register was closed, so it can't be changed or deleted. To correct the dues, use Add due or a write-off.");
+    e.statusCode = 409;
+    throw e;
+  }
+  return register;
+}
+
+async function moveRegisterTotals(tx, register, method, amount) {
+  if (!register || !amount) return;
+  if (method === 'cash') {
+    await tx.prepare('UPDATE cash_registers SET total_cash_sales = total_cash_sales + ?, expected_cash = expected_cash + ? WHERE id = ?').run(amount, amount, register.id);
+  } else if (method === 'card') {
+    await tx.prepare('UPDATE cash_registers SET total_card_sales = total_card_sales + ? WHERE id = ?').run(amount, register.id);
+  } else if (method === 'upi') {
+    await tx.prepare('UPDATE cash_registers SET total_upi_sales = total_upi_sales + ? WHERE id = ?').run(amount, register.id);
+  }
+}
+
 // ─── PUT /api/customers/:id/credits/:creditId ─────────────────
 router.put(
   '/:id/credits/:creditId',
@@ -1001,7 +1055,7 @@ router.put(
     body('notes').optional().trim(),
     body('date').optional().trim()
   ],
-  (req, res, next) => {
+  async (req, res, next) => {
     try {
       const errors = validationResult(req);
       if (!errors.isEmpty()) return res.status(400).json({ success: false, message: 'Validation failed', errors: errors.array() });
@@ -1017,7 +1071,28 @@ router.put(
         return res.status(400).json({ success: false, message: 'Cannot edit amount or method for payments linked to a sale. Edit the sale instead.' });
       }
 
-      const editTx = db.transaction(() => {
+      const editTx = () => withMoneyTx(async (db) => {
+        const locked = await db.prepare('SELECT * FROM credit_payments WHERE id = ? FOR UPDATE').get(creditId);
+        if (!locked) { const e = new Error('Credit record not found'); e.statusCode = 404; throw e; }
+        const isReal = REAL_METHODS.includes(locked.payment_method);
+        const amountChanges = amount !== undefined && Number(amount) !== Number(locked.amount);
+        const methodChanges = method !== undefined && method !== locked.payment_method;
+        let register = null;
+        if (isReal && (amountChanges || methodChanges || date !== undefined)) {
+          if (date !== undefined) {
+            const e = new Error("The date of a cash, card or UPI payment can't be changed: it would move the money to a different register session."); e.statusCode = 409; throw e;
+          }
+          if (methodChanges && !REAL_METHODS.includes(method)) {
+            const e = new Error("A payment can't be turned into a previous due. Delete it and use Add due instead."); e.statusCode = 400; throw e;
+          }
+          register = await assertDuesPaymentChangeable(db, locked);
+          // Register: take the old payment out, put the new one in
+          await moveRegisterTotals(db, register, locked.payment_method, -Number(locked.amount));
+          await moveRegisterTotals(db, register, methodChanges ? method : locked.payment_method, amountChanges ? Number(amount) : Number(locked.amount));
+        } else if (!isReal && methodChanges && REAL_METHODS.includes(method)) {
+          const e = new Error("A due or write-off can't be turned into a payment. Record the payment with Collect instead."); e.statusCode = 400; throw e;
+        }
+        await db.prepare('SELECT id FROM users WHERE id = ? FOR UPDATE').get(customerId);
         let updates = [];
         let params = [];
         
@@ -1046,15 +1121,15 @@ router.put(
 
         if (updates.length > 0) {
           params.push(creditId);
-          db.prepare(`UPDATE credit_payments SET ${updates.join(', ')} WHERE id = ?`).run(...params);
+          await db.prepare(`UPDATE credit_payments SET ${updates.join(', ')} WHERE id = ?`).run(...params);
 
           if (amountDelta !== 0) {
-            db.prepare('UPDATE users SET credit_balance = credit_balance + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(amountDelta, customerId);
+            await db.prepare('UPDATE users SET credit_balance = credit_balance + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(amountDelta, customerId);
           }
         }
       });
 
-      editTx();
+      await editTx();
 
       const updatedRecord = db.prepare(`
         SELECT cp.*, cp.payment_method as method, u.name as received_by_name, l.name as location_name
@@ -1071,7 +1146,7 @@ router.put(
 );
 
 // ─── DELETE /api/customers/:id/credits/:creditId ──────────────
-router.delete('/:id/credits/:creditId', authenticate, authorize('owner'), (req, res, next) => {
+router.delete('/:id/credits/:creditId', authenticate, authorize('owner'), async (req, res, next) => {
   try {
     const db = getDb();
     const { id: customerId, creditId } = req.params;
@@ -1083,12 +1158,18 @@ router.delete('/:id/credits/:creditId', authenticate, authorize('owner'), (req, 
       return res.status(400).json({ success: false, message: 'Cannot delete payments linked to a sale directly. Modify the sale instead.' });
     }
 
-    const deleteTx = db.transaction(() => {
-      db.prepare('UPDATE users SET credit_balance = credit_balance + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(record.amount, customerId);
-      db.prepare('DELETE FROM credit_payments WHERE id = ?').run(creditId);
+    const deleteTx = () => withMoneyTx(async (db) => {
+      const locked = await db.prepare('SELECT * FROM credit_payments WHERE id = ? FOR UPDATE').get(creditId);
+      if (!locked) return;
+      if (REAL_METHODS.includes(locked.payment_method)) {
+        const register = await assertDuesPaymentChangeable(db, locked);
+        await moveRegisterTotals(db, register, locked.payment_method, -Number(locked.amount));
+      }
+      await db.prepare('UPDATE users SET credit_balance = credit_balance + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(locked.amount, customerId);
+      await db.prepare('DELETE FROM credit_payments WHERE id = ?').run(creditId);
     });
 
-    deleteTx();
+    await deleteTx();
 
     const customer = db.prepare('SELECT credit_balance FROM users WHERE id = ?').get(customerId);
     res.json({ success: true, message: 'Record deleted successfully', new_balance: customer.credit_balance });

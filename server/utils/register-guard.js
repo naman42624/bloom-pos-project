@@ -20,4 +20,21 @@ function hasOpenRegister(db, locationId) {
 
 const REGISTER_CLOSED_MESSAGE = "Register isn't open — open it before taking a cash payment.";
 
-module.exports = { hasOpenRegister, REGISTER_CLOSED_MESSAGE };
+// Inside a money transaction (withMoneyTx): lock the shop's open register row
+// until the transaction ends, so a close and a cash write can never overlap.
+// Lock order everywhere: sale row(s), then a helper bag, then the register.
+// Returns the register row, or null when none is open.
+async function lockOpenRegister(tx, locationId) {
+  const row = await tx.prepare(
+    'SELECT * FROM cash_registers WHERE location_id = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1 FOR UPDATE'
+  ).get(locationId);
+  return row || null;
+}
+
+function registerClosedError() {
+  const e = new Error(REGISTER_CLOSED_MESSAGE);
+  e.statusCode = 400;
+  return e;
+}
+
+module.exports = { hasOpenRegister, lockOpenRegister, registerClosedError, REGISTER_CLOSED_MESSAGE };

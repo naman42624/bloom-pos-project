@@ -134,7 +134,7 @@ check('schema: payments.held_by, staff_cash_movements, helper_cash_mode seed', a
   assert(col, 'payments.held_by missing');
   const cols = await db.prepare("SELECT column_name FROM information_schema.columns WHERE table_name = 'staff_cash_movements'").all();
   const names = cols.map((c) => c.column_name).sort().join(',');
-  const want = ['id', 'location_id', 'staff_id', 'type', 'expected_amount', 'counted_amount', 'settled_amount', 'difference', 'is_final', 'register_id', 'recorded_by', 'note', 'created_at'].sort().join(',');
+  const want = ['id', 'location_id', 'staff_id', 'type', 'expected_amount', 'counted_amount', 'settled_amount', 'difference', 'is_final', 'register_id', 'recorded_by', 'note', 'created_at', 'request_id'].sort().join(',');
   assert(names === want, `staff_cash_movements columns: ${names}`);
   const idx = await db.prepare("SELECT 1 AS x FROM pg_indexes WHERE tablename = 'staff_cash_movements' AND indexdef LIKE '%(staff_id, location_id, created_at)%'").get();
   assert(idx, 'index (staff_id, location_id, created_at) missing');
@@ -688,6 +688,32 @@ check('bags list is masked', async () => {
     assert(!('held' in row), `exact amount leaked: ${JSON.stringify(row)}`);
     assert(typeof r.body.data.total_masked === 'string' && /^₹[\dx,]+$/.test(r.body.data.total_masked) && !/\d{2}/.test(r.body.data.total_masked.replace(/,/g, '')), `total_masked: ${r.body.data.total_masked}`);
     assert(!JSON.stringify(r.body).includes('845'), 'exact amount somewhere in the list response');
+  } finally {
+    await restoreCashMode();
+  }
+});
+
+check('C28: a repeated float or handover request moves the cash once', async () => {
+  const owner = await loginOwner();
+  const helper = await helperSession(owner.token);
+  try {
+    await setCashMode('bag');
+    const reg = await openOwnRegister(owner.token, 2000);
+    const regId = reg && (reg.id || reg);
+    const fbody = { staff_id: helper.id, location_id: TEST_LOCATION_ID, amount: 300, request_id: `rtestfloat${Date.now()}` };
+    const f1 = await api('POST', '/helper-cash/float', owner.token, fbody);
+    const f2 = await api('POST', '/helper-cash/float', owner.token, fbody);
+    assert(f1.status === 201 && f2.status === 201 && f1.body.data.movement_id === f2.body.data.movement_id, `floats ${f1.status}/${f2.status} ${JSON.stringify(f2.body)}`);
+    const hbody = { staff_id: helper.id, location_id: TEST_LOCATION_ID, counted_amount: 300, is_final: true, preview: false, request_id: `rtesthand${Date.now()}` };
+    const [h1, h2] = await Promise.all([1, 2].map(() => api('POST', '/helper-cash/handover', owner.token, hbody)));
+    assert(h1.status === 200 && h2.status === 200 && h1.body.data.movement_id === h2.body.data.movement_id, `handovers ${h1.status}/${h2.status} ${JSON.stringify(h2.body)}`);
+    const db = await getDb();
+    const n = await db.prepare('SELECT COUNT(*) AS n FROM staff_cash_movements WHERE staff_id = ?').get(helper.id);
+    assert(Number(n.n) === 2, `movements ${n.n}`);
+    const row = await registerRow(regId);
+    assert(Math.round(Number(row.expected_cash) * 100) === 200000, `expected_cash ${row.expected_cash}`);
+    const bad = await api('POST', '/helper-cash/float', owner.token, { ...fbody, request_id: 'bad id!' });
+    assert(bad.status === 400, `bad id ${bad.status}`);
   } finally {
     await restoreCashMode();
   }

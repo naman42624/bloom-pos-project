@@ -1,11 +1,11 @@
 const express = require('express');
 const router = express.Router();
 const { getDb } = require('../config/database');
-const { getDb: getAsyncDb } = require('../config/database-async');
+const { getDb: getAsyncDb, withMoneyTx } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
 const { nowLocal, todayStr } = require('../utils/time');
 const { computeShiftWork, findPartialDays, normalizeSegments, matchSegmentForTime, lateMinutesFor, timestampToMinutes } = require('../utils/shift-work');
-const { hasOpenRegister, REGISTER_CLOSED_MESSAGE } = require('../utils/register-guard');
+const { hasOpenRegister, lockOpenRegister, REGISTER_CLOSED_MESSAGE } = require('../utils/register-guard');
 const { createNotification } = require('./notifications');
 
 router.use(authenticate);
@@ -539,7 +539,7 @@ router.post('/payroll/calculate', authorize('owner'), (req, res) => {
 });
 
 // Disburse salary (create payment record)
-router.post('/payroll/disburse', authorize('owner'), (req, res) => {
+router.post('/payroll/disburse', authorize('owner'), async (req, res) => {
   try {
     const db = getDb();
     const {
@@ -635,11 +635,20 @@ router.post('/payroll/disburse', authorize('owner'), (req, res) => {
       locationId = employeeLocation ? employeeLocation.location_id : null;
     }
 
-    const openRegister = (method === 'cash' && locationId)
-      ? db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1').get(locationId)
-      : null;
-
-    const disburseTx = db.transaction(() => {
+    // One transaction: the payee row, then the register, locked. A repeat of
+    // the same payout within 2 minutes (a second tap) is refused.
+    const disburseTx = () => withMoneyTx(async (db) => {
+      await db.prepare('SELECT id FROM users WHERE id = ? FOR UPDATE').get(user_id);
+      const repeat = await db.prepare(`
+        SELECT 1 AS x FROM salary_payments
+        WHERE user_id = ? AND period_start = ? AND period_end = ? AND net_amount = ? AND paid_at > NOW() - INTERVAL '2 minutes'
+        LIMIT 1
+      `).get(user_id, period_start, period_end, net_amount);
+      if (repeat) throw Object.assign(new Error('This salary was just paid. Refresh to see it.'), { statusCode: 409 });
+      const openRegister = (method === 'cash' && locationId) ? await lockOpenRegister(db, locationId) : null;
+      if (method === 'cash' && !openRegister) {
+        throw Object.assign(new Error("The cash drawer isn't open at this employee's location — open the register first, or choose UPI/Bank if you're paying this by transfer."), { statusCode: 400 });
+      }
       let expenseId = null;
       // Write the expense FIRST (see this task's header note on why —
       // db.transaction() here does not provide real atomicity). Only when
@@ -648,8 +657,8 @@ router.post('/payroll/disburse', authorize('owner'), (req, res) => {
       // employee with no location assignment at all when paying by
       // transfer.
       if (locationId) {
-        const payeeUser = db.prepare('SELECT name FROM users WHERE id = ?').get(user_id);
-        const expenseResult = db.prepare(`
+        const payeeUser = await db.prepare('SELECT name FROM users WHERE id = ?').get(user_id);
+        const expenseResult = await db.prepare(`
           INSERT INTO expenses (location_id, category, amount, description, payment_method, expense_date, created_by, employee_id, register_id)
           VALUES (?, 'salary', ?, ?, ?, ?, ?, ?, ?)
         `).run(
@@ -661,11 +670,11 @@ router.post('/payroll/disburse', authorize('owner'), (req, res) => {
         expenseId = expenseResult.lastInsertRowid;
 
         if (method === 'cash' && openRegister && Number(net_amount) > 0) {
-          db.prepare('UPDATE cash_registers SET expected_cash = expected_cash - ? WHERE id = ?').run(net_amount, openRegister.id);
+          await db.prepare('UPDATE cash_registers SET expected_cash = expected_cash - ? WHERE id = ?').run(net_amount, openRegister.id);
         }
       }
 
-      const paymentResult = db.prepare(`
+      const paymentResult = await db.prepare(`
         INSERT INTO salary_payments (
           user_id, period_start, period_end, base_salary, days_worked, days_in_period,
           hours_worked, late_days, absent_days, leaves_taken, deductions,
@@ -684,14 +693,14 @@ router.post('/payroll/disburse', authorize('owner'), (req, res) => {
 
       if (advancesDeducted > 0) {
         let remaining = advancesDeducted;
-        const advances = db.prepare(
+        const advances = await db.prepare(
           'SELECT * FROM salary_advances WHERE user_id = ? AND status = ? AND repaid_amount < amount ORDER BY date'
         ).all(user_id, 'approved');
         for (const adv of advances) {
           if (remaining <= 0) break;
           const owed = adv.amount - adv.repaid_amount;
           const toDeduct = Math.min(owed, remaining);
-          db.prepare('UPDATE salary_advances SET repaid_amount = repaid_amount + ?, status = CASE WHEN repaid_amount + ? >= amount THEN ? ELSE status END WHERE id = ?')
+          await db.prepare('UPDATE salary_advances SET repaid_amount = repaid_amount + ?, status = CASE WHEN repaid_amount + ? >= amount THEN ? ELSE status END WHERE id = ?')
             .run(toDeduct, toDeduct, 'repaid', adv.id);
           remaining -= toDeduct;
         }
@@ -700,7 +709,7 @@ router.post('/payroll/disburse', authorize('owner'), (req, res) => {
       return paymentId;
     });
 
-    const paymentId = disburseTx();
+    const paymentId = await disburseTx();
     const payment = db.prepare(`
       SELECT sp.*, u.name as user_name, u.role as user_role, p.name as paid_by_name
       FROM salary_payments sp
@@ -711,6 +720,7 @@ router.post('/payroll/disburse', authorize('owner'), (req, res) => {
 
     res.status(201).json({ success: true, data: payment });
   } catch (error) {
+    if (error.statusCode) return res.status(error.statusCode).json({ success: false, message: error.message });
     console.error('Disburse salary error:', error);
     res.status(500).json({ success: false, message: 'Failed to disburse salary.' });
   }

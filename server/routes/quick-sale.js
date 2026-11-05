@@ -48,11 +48,6 @@ router.post(
         const refunded = Number((await tx.prepare('SELECT COALESCE(SUM(amount), 0) AS total FROM refunds WHERE sale_id = ?').get(sale.id)).total);
         if (refunded > 0) return { code: 409, message: req.user.role === 'helper' ? HELPER_NOT_YOURS_MESSAGE : REFUNDED_MESSAGE };
 
-        const register = await tx
-          .prepare('SELECT * FROM cash_registers WHERE location_id = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1')
-          .get(sale.location_id);
-        const sessionStart = register ? (register.opening_time || register.opened_at) : null;
-
         const payments = await tx.prepare('SELECT * FROM payments WHERE sale_id = ?').all(sale.id);
         // Cash held by a helper (bag mode) never went into the register, so
         // undoing it takes it out of the helper bag only (getBag leaves out
@@ -71,6 +66,13 @@ router.post(
           `).get(holderId, sale.location_id, sale.id);
           if (handedOver) return { code: 409, message: HANDED_OVER_MESSAGE };
         }
+
+        // Lock order: sale row, helper bag(s) above, then the open register,
+        // so a close or a cash write can't overlap this undo.
+        const register = await tx
+          .prepare('SELECT * FROM cash_registers WHERE location_id = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1 FOR UPDATE')
+          .get(sale.location_id);
+        const sessionStart = register ? (register.opening_time || register.opened_at) : null;
 
         // Payments taken in the open session (same created_at test that
         // register close uses to recompute totals).

@@ -538,6 +538,22 @@ export default function CashRegisterScreen({ navigation, route }) {
         </TouchableOpacity>
       )}
 
+      {/* Card/UPI taken while the register was shut: no session counts it,
+          so it is shown here on its own (it never belongs in the drawer). */}
+      {register && !register.closed_at && register.shut_time_payments
+        && (Number(register.shut_time_payments.upi) > 0 || Number(register.shut_time_payments.card) > 0) && (
+        <View style={styles.shutInfo} accessibilityRole="text">
+          <Ionicons name="information-circle" size={20} color={Colors.info || Colors.primary} />
+          <Text style={styles.shutInfoText}>
+            Taken while the register was shut:
+            {Number(register.shut_time_payments.upi) > 0 ? ` UPI ₹${Number(register.shut_time_payments.upi).toLocaleString('en-IN', { maximumFractionDigits: 2 })}` : ''}
+            {Number(register.shut_time_payments.upi) > 0 && Number(register.shut_time_payments.card) > 0 ? ',' : ''}
+            {Number(register.shut_time_payments.card) > 0 ? ` card ₹${Number(register.shut_time_payments.card).toLocaleString('en-IN', { maximumFractionDigits: 2 })}` : ''}
+            . This is not cash, so it is not in the drawer count.
+          </Text>
+        </View>
+      )}
+
       {/* Main Status Hero. isStale (open, but not opened today — spans a day
           boundary) gets its own amber treatment rather than reading as a
           normal "Open" — this text used to unconditionally say "Opened
@@ -876,6 +892,13 @@ const styles = StyleSheet.create({
   locChipText: { fontSize: FontSize.sm, color: Colors.textSecondary, fontWeight: '500' },
   locChipTextActive: { color: Colors.white },
 
+  shutInfo: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.sm,
+    backgroundColor: Colors.white, borderRadius: BorderRadius.md,
+    borderWidth: 1, borderColor: Colors.border,
+    padding: Spacing.md, marginBottom: Spacing.md,
+  },
+  shutInfoText: { flex: 1, fontSize: FontSize.md, color: Colors.text, lineHeight: 22 },
   codBanner: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
     backgroundColor: '#FEF3C7', borderRadius: BorderRadius.lg,

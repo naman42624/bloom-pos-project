@@ -656,6 +656,12 @@ function ensureCoreTables() {
     )
   `);
   runPsql('CREATE INDEX IF NOT EXISTS idx_staff_cash_movements_staff_loc_created ON staff_cash_movements(staff_id, location_id, created_at)');
+  // C28 (2026-11-05): a float or handover may carry the app's request_id, so
+  // a repeat of the same request (lost response, second tap) returns the
+  // first result instead of moving the cash twice. Additive and nullable:
+  // older rows stay NULL and the unique index ignores them.
+  ensureColumn('staff_cash_movements', 'request_id', 'TEXT');
+  runPsql('CREATE UNIQUE INDEX IF NOT EXISTS idx_staff_cash_movements_request ON staff_cash_movements(staff_id, request_id) WHERE request_id IS NOT NULL');
   runPsql(`INSERT INTO settings (key, value, description) SELECT 'helper_cash_mode', 'register', 'Where helper cash goes: register (straight into the drawer) or bag (each helper holds it until handover)' WHERE NOT EXISTS (SELECT 1 FROM settings WHERE key = 'helper_cash_mode')`);
 
   // Ensure partner_id column exists on delivery_settlements

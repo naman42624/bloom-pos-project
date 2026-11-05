@@ -119,6 +119,18 @@ export default function DeliveryDetailScreen({ route, navigation }) {
   if (loading) return <View style={styles.center}><ActivityIndicator size="large" color={Colors.primary} /></View>;
   if (!delivery) return <View style={styles.center}><Text>Delivery not found</Text></View>;
 
+  // Money on the order, from its own payment rows (whole paise)
+  const paise = (n) => Math.round((Number(n) || 0) * 100);
+  const pays = Array.isArray(delivery.payments) ? delivery.payments : [];
+  const isCodRef = (p) => /^COD/.test(String(p.reference_number || ''));
+  const paidTotalP = pays.reduce((t, p) => t + paise(p.amount), 0);
+  const counterPaidAfter = delivery.status === 'delivered'
+    ? pays.filter((p) => !isCodRef(p) && delivery.delivered_time && String(p.created_at) > String(delivery.delivered_time)).reduce((t, p) => t + paise(p.amount), 0) / 100
+    : 0;
+  const stillDue = delivery.is_credit_sale
+    ? 0
+    : Math.max(0, paise(delivery.grand_total) - paidTotalP) / 100;
+
   const stepIndex = STATUS_STEPS.indexOf(delivery.status);
   const isFinal = ['delivered', 'failed', 'cancelled'].includes(delivery.status);
 
@@ -283,9 +295,15 @@ export default function DeliveryDetailScreen({ route, navigation }) {
         {delivery.cod_amount > 0 && (
           <>
             <InfoRow icon="card-outline" label={isPartner ? 'Amount to Collect' : 'COD Amount'} value={`₹${Number(delivery.cod_amount).toFixed(0)}`} />
-            <InfoRow icon="checkmark-done-outline" label="Collected" value={`₹${Number(delivery.cod_collected || 0).toFixed(0)}`} />
-            {delivery.cod_amount - (delivery.cod_collected || 0) > 0.01 && (
-              <InfoRow icon="alert-circle-outline" label="Remaining" value={`₹${Number(delivery.cod_amount - (delivery.cod_collected || 0)).toFixed(0)}`} />
+            {/* Rider cash and counter top-ups shown apart; what is still due
+                comes from the order's own payments, so a top-up taken at the
+                counter after delivery is not shown as still owed. */}
+            <InfoRow icon="checkmark-done-outline" label={isPartner ? 'Collected' : 'Collected by rider'} value={`₹${Number(delivery.cod_collected || 0).toFixed(0)}`} />
+            {!isPartner && counterPaidAfter > 0.01 && (
+              <InfoRow icon="storefront-outline" label="Paid at the counter" value={`₹${counterPaidAfter.toFixed(0)}`} />
+            )}
+            {stillDue > 0.01 && (
+              <InfoRow icon="alert-circle-outline" label="Remaining" value={`₹${stillDue.toFixed(0)}`} />
             )}
             <View style={[styles.codStatusBadge, { backgroundColor: delivery.cod_status === 'collected' ? '#E8F5E9' : delivery.cod_status === 'settled' ? '#E3F2FD' : '#FFF3E0' }]}>
               <Text style={styles.codStatusText}>

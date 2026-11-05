@@ -368,9 +368,105 @@ async function withTransaction(fn) {
   }
 }
 
+// ─── withMoneyTx: a real transaction with the sync layer's row shape ───
+// Money routes were written for config/database.js, whose db.transaction()
+// does nothing (each statement is its own psql process). withMoneyTx runs
+// every statement on ONE client inside BEGIN/COMMIT and returns rows exactly
+// as the sync layer does (read through json_agg: numbers are numbers,
+// timestamps are strings), so moving a route is only `await` and db → tx.
+// Each statement runs under its own SAVEPOINT: a statement whose error the
+// caller catches and ignores (as some sync code does) leaves the rest of the
+// transaction usable, as it was before. An error that escapes fn rolls back
+// everything.
+function syncShapeSql(sql) {
+  let s = normalizeSql(sql)
+    .replace(/datetime\('now'\)/gi, 'CURRENT_TIMESTAMP')
+    .replace(/date\('now'\)/gi, 'CURRENT_DATE');
+  return s;
+}
+
+function syncShapeRun(sql) {
+  const normalized = syncShapeSql(sql);
+  const upper = normalized.toUpperCase();
+  const isInsertIgnore = /^\s*INSERT\s+OR\s+IGNORE\s+INTO\s+/i.test(normalized);
+  let statement = normalized.replace(/^\s*INSERT\s+OR\s+IGNORE\s+INTO\s+/i, 'INSERT INTO ');
+  if (isInsertIgnore) statement += ' ON CONFLICT DO NOTHING';
+  if (upper.startsWith('INSERT')) {
+    if (!/\bRETURNING\b/i.test(statement)) statement += ' RETURNING id';
+    return { statement, mode: 'insert' };
+  }
+  if (upper.startsWith('UPDATE') || upper.startsWith('DELETE')) {
+    if (!/\bRETURNING\b/i.test(statement)) statement += ' RETURNING 1 as _affected';
+    return { statement, mode: 'mutate' };
+  }
+  return { statement, mode: 'other' };
+}
+
+async function withMoneyTx(fn) {
+  const client = await pool.connect();
+  let n = 0;
+  // Statements run strictly one after another (a queue), so two calls made
+  // without awaiting each other can never interleave their savepoints.
+  let queue = Promise.resolve();
+  const runOne = async (text) => {
+    n += 1;
+    const sp = `mtx_${n}`;
+    await client.query(`SAVEPOINT ${sp}`);
+    try {
+      const r = await client.query(text);
+      await client.query(`RELEASE SAVEPOINT ${sp}`);
+      return r;
+    } catch (err) {
+      await client.query(`ROLLBACK TO SAVEPOINT ${sp}`);
+      throw err;
+    }
+  };
+  const guarded = (text) => {
+    const p = queue.then(() => runOne(text));
+    queue = p.catch(() => {});
+    return p;
+  };
+  const select = async (raw, params) => {
+    const statement = bindParams(syncShapeSql(raw), params);
+    const r = await guarded(`SELECT COALESCE(json_agg(t), '[]'::json)::text AS j FROM (${statement}\n) t`);
+    return JSON.parse((r.rows[0] && r.rows[0].j) || '[]');
+  };
+  const tx = {
+    isMoneyTx: true,
+    prepare(sql) {
+      const raw = String(sql || '');
+      return {
+        async get(...params) { return (await select(raw, params))[0] || undefined; },
+        async all(...params) { return select(raw, params); },
+        async run(...params) {
+          const { statement, mode } = syncShapeRun(raw);
+          const r = await guarded(bindParams(statement, params));
+          if (mode === 'insert') {
+            const first = r.rows[0] ? r.rows[0].id : null;
+            const id = first != null && !Number.isNaN(Number(first)) ? Number(first) : (first ?? null);
+            return { changes: r.rowCount || 0, lastInsertRowid: id };
+          }
+          return { changes: mode === 'mutate' ? (r.rowCount || 0) : 0, lastInsertRowid: null };
+        },
+      };
+    },
+  };
+  try {
+    await client.query('BEGIN');
+    const out = await fn(tx);
+    await client.query('COMMIT');
+    return out;
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch { /* connection already broken */ }
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 async function closeDb() {
   initialized = false;
   await pool.end();
 }
 
-module.exports = { getDb, closeDb, withTransaction };
+module.exports = { getDb, closeDb, withTransaction, withMoneyTx };
