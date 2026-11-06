@@ -1296,11 +1296,15 @@ export default function DashboardScreen({ navigation }) {
   // Customers used to sit on the Profile page (2026-10-31: moved here, where
   // staff look during the day). "Collect dues" opens the same list showing only
   // customers who owe, highest first, each with a Collect button.
+  // Owner/manager reach Customers through More; staff through Orders (the
+  // owner has no Orders-inbox tab named EmployeeOrders, so the rows were
+  // never shown to them).
+  const customersTab = isOwnerOrManager ? 'More' : 'EmployeeOrders';
   const renderCustomerRows = () => (
     <View style={{ flexDirection: 'row', gap: 8 }}>
       <TouchableOpacity
         style={[styles.codBannerCompact, { flex: 1 }]}
-        onPress={() => navigation.navigate('EmployeeOrders', { screen: 'Customers', initial: false, params: { dueOnly: false, dueToken: Date.now() } })}
+        onPress={() => navigation.navigate(customersTab, { screen: 'Customers', initial: false, params: { dueOnly: false, dueToken: Date.now() } })}
       >
         <Ionicons name="people-outline" size={20} color="#92400E" />
         <Text style={styles.codBannerCompactText}>Customers</Text>
@@ -1308,7 +1312,7 @@ export default function DashboardScreen({ navigation }) {
       </TouchableOpacity>
       <TouchableOpacity
         style={[styles.codBannerCompact, { flex: 1 }]}
-        onPress={() => navigation.navigate('EmployeeOrders', { screen: 'Customers', initial: false, params: { dueOnly: true, dueToken: Date.now() } })}
+        onPress={() => navigation.navigate(customersTab, { screen: 'Customers', initial: false, params: { dueOnly: true, dueToken: Date.now() } })}
       >
         <Ionicons name="wallet-outline" size={20} color="#92400E" />
         <Text style={styles.codBannerCompactText}>Collect dues</Text>
@@ -2094,6 +2098,8 @@ export default function DashboardScreen({ navigation }) {
                   </Text>
                 </TouchableOpacity>
               )}
+
+              {isOwnerOrManager && renderCustomerRows()}
 
               <View style={{ gap: 12 }}>
                 <OrderKanbanBoard

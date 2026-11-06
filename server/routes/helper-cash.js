@@ -182,6 +182,14 @@ router.post(
 
 // ─── POST /api/helper-cash/float ────────────────────────────
 // Change float out of the open register into a helper's bag.
+// Optional request id from the app (one per tap). A repeat of the same id,
+// e.g. after a lost response, gets the first result back and moves no cash.
+function parseRequestId(v) {
+  if (v === undefined || v === null || v === '') return null;
+  const s = String(v).trim();
+  return /^[A-Za-z0-9_-]{8,64}$/.test(s) ? s : undefined;
+}
+
 router.post(
   '/float',
   authenticate,
@@ -195,6 +203,8 @@ router.post(
       if (!staffId) return res.status(400).json({ success: false, message: NO_HELPER_MESSAGE });
       const amountP = parseMoney(body.amount);
       if (amountP === null || amountP <= 0) return res.status(400).json({ success: false, message: AMOUNT_MESSAGE });
+      const requestId = parseRequestId(body.request_id);
+      if (requestId === undefined) return res.status(400).json({ success: false, message: 'Something went wrong. Close this and try again.' });
 
       const db = await getDb();
       // A float only makes sense when helpers keep their own cash
@@ -212,15 +222,22 @@ router.post(
       const outcome = await withTransaction(async (tx) => {
         // Bag lock first, then the register row: same order as a handover
         await lockBag(tx, staffId);
+        if (requestId) {
+          const done = await tx.prepare("SELECT id, register_id, expected_amount FROM staff_cash_movements WHERE staff_id = ? AND request_id = ? AND type = 'float_out'").get(staffId, requestId);
+          if (done) {
+            const bagNow = await getBag(tx, staffId, locationId);
+            return { movement_id: done.id, register_id: done.register_id, amount: Number(done.expected_amount), held: bagNow.held, repeated: true };
+          }
+        }
         const register = await lockOpenRegister(tx, locationId);
         if (!register) return { code: 400, message: REGISTER_CLOSED_MESSAGE };
 
         const amount = fromPaise(amountP);
         const ins = await tx.prepare(`
           INSERT INTO staff_cash_movements
-            (location_id, staff_id, type, expected_amount, counted_amount, settled_amount, difference, is_final, register_id, recorded_by, created_at)
-          VALUES (?, ?, 'float_out', ?, 0, 0, 0, 0, ?, ?, clock_timestamp())
-        `).run(locationId, staffId, amount, register.id, req.user.id);
+            (location_id, staff_id, type, expected_amount, counted_amount, settled_amount, difference, is_final, register_id, recorded_by, created_at, request_id)
+          VALUES (?, ?, 'float_out', ?, 0, 0, 0, 0, ?, ?, clock_timestamp(), ?)
+        `).run(locationId, staffId, amount, register.id, req.user.id, requestId);
         await tx.prepare('UPDATE cash_registers SET expected_cash = expected_cash - ? WHERE id = ? AND closed_at IS NULL')
           .run(amount, register.id);
         // A locked blind count (quick-sale close) follows the cash that left the drawer
@@ -269,6 +286,8 @@ router.post(
       }
       const isPreview = body.preview === true;
       if (isPreview && countedP <= 0) return res.status(400).json({ success: false, message: COUNTED_MESSAGE });
+      const requestId = parseRequestId(body.request_id);
+      if (requestId === undefined) return res.status(400).json({ success: false, message: 'Something went wrong. Close this and try again.' });
 
       const db = await getDb();
       // An inactive or expired helper is still collectable (spec 11.4)
@@ -279,6 +298,20 @@ router.post(
         // Serialise every change to this bag, then read it on this same
         // transaction: a second handover waits here and then sees the first.
         await lockBag(tx, staffId);
+        if (requestId && !isPreview) {
+          const done = await tx.prepare("SELECT * FROM staff_cash_movements WHERE staff_id = ? AND request_id = ? AND type = 'handover_in'").get(staffId, requestId);
+          if (done) {
+            return {
+              movement_id: done.id,
+              register_id: done.register_id,
+              expected: Number(done.expected_amount),
+              counted: Number(done.counted_amount),
+              difference: Number(done.difference),
+              remaining: fromPaise(toPaise(done.expected_amount) - toPaise(done.settled_amount)),
+              repeated: true,
+            };
+          }
+        }
         const bag = await getBag(tx, staffId, locationId);
         const expectedP = toPaise(bag.held);
         if (expectedP <= 0) return { code: 409, message: ALREADY_COLLECTED_MESSAGE };
@@ -318,9 +351,9 @@ router.post(
 
         const ins = await tx.prepare(`
           INSERT INTO staff_cash_movements
-            (location_id, staff_id, type, expected_amount, counted_amount, settled_amount, difference, is_final, register_id, recorded_by, created_at)
-          VALUES (?, ?, 'handover_in', ?, ?, ?, ?, ?, ?, ?, clock_timestamp())
-        `).run(locationId, staffId, fromPaise(expectedP), fromPaise(countedP), fromPaise(settledP), fromPaise(differenceP), isFinal ? 1 : 0, register.id, req.user.id);
+            (location_id, staff_id, type, expected_amount, counted_amount, settled_amount, difference, is_final, register_id, recorded_by, created_at, request_id)
+          VALUES (?, ?, 'handover_in', ?, ?, ?, ?, ?, ?, ?, clock_timestamp(), ?)
+        `).run(locationId, staffId, fromPaise(expectedP), fromPaise(countedP), fromPaise(settledP), fromPaise(differenceP), isFinal ? 1 : 0, register.id, req.user.id, requestId);
         if (countedP > 0) {
           await tx.prepare('UPDATE cash_registers SET expected_cash = expected_cash + ? WHERE id = ? AND closed_at IS NULL')
             .run(fromPaise(countedP), register.id);

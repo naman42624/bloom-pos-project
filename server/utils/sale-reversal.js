@@ -10,7 +10,8 @@
 async function reverseSaleEffects(db, sale, { paymentTotal, userId }) {
   // Revert customer total_spent/credit_balance. total_spent was bumped
   // by the full grand_total at creation regardless of payment status,
-  // so it always reverses by grand_total. credit_balance is different:
+  // so it reverses by grand_total, less any refund (which already came
+  // off). credit_balance is different:
   // it was only ever bumped by the UNPAID portion at creation (and
   // reduced as payments came in) — refunds never touch it (see
   // POST /:id/refund). So a sale that was paid in full then refunded
@@ -20,7 +21,14 @@ async function reverseSaleEffects(db, sale, { paymentTotal, userId }) {
   const duesCustomerId = (sale.order_type === 'delivery' && sale.sender_customer_id) ? sale.sender_customer_id : sale.customer_id;
   if (duesCustomerId) {
     const unpaidRemaining = Math.max(0, Number(sale.grand_total) - paymentTotal);
-    await db.prepare('UPDATE users SET total_spent = GREATEST(0, total_spent - ?), credit_balance = GREATEST(0, credit_balance - ?), updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(sale.grand_total, unpaidRemaining, duesCustomerId);
+    // A processed refund already took its amount off total_spent
+    // (POST /:id/refund), so only the rest comes off here.
+    const refunded = Number((await db.prepare("SELECT COALESCE(SUM(amount), 0) AS total FROM refunds WHERE sale_id = ? AND COALESCE(status, 'processed') = 'processed'").get(sale.id)).total) || 0;
+    // A write-off took its amount off total_spent too (POST /:id/payments,
+    // resolve-balance); the dues write-off on the customer page does not.
+    const writtenOff = Number((await db.prepare("SELECT COALESCE(SUM(amount), 0) AS total FROM payments WHERE sale_id = ? AND method = 'write_off' AND (reference_number IS NULL OR reference_number NOT LIKE 'Credit-%')").get(sale.id)).total) || 0;
+    const spentToRemove = Math.max(0, Math.round((Number(sale.grand_total) - refunded - writtenOff) * 100) / 100);
+    await db.prepare('UPDATE users SET total_spent = GREATEST(0, total_spent - ?), credit_balance = GREATEST(0, credit_balance - ?), updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(spentToRemove, unpaidRemaining, duesCustomerId);
   }
 
   // Cancel any pending/in-progress production tasks

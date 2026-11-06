@@ -101,10 +101,10 @@ test('basketTotal with a percent discount', () => {
   assert.deepStrictEqual(b.basketTotal(basket, { type: 'percentage', value: 10 }), { subtotal: 800, discount: 80, total: 720, error: null });
 });
 
-test('basketTotal mirrors the server: % off the pre-tax subtotal (10% off ₹1000 at 18% inclusive = ₹915.25)', () => {
+test('basketTotal mirrors the server: % off the GST-inclusive price (10% off ₹1000 at 18% = ₹900)', () => {
   const basket = b.addLine([], { product_id: 9, option_id: null, name: 'Vase', unit_price: 1000, price_mode: 'fixed', tax_rate: 18 });
   assert.deepStrictEqual(b.basketTotal(basket, null), { subtotal: 1000, discount: 0, total: 1000, error: null });
-  assert.deepStrictEqual(b.basketTotal(basket, { type: 'percentage', value: 10 }), { subtotal: 1000, discount: 84.75, total: 915.25, error: null });
+  assert.deepStrictEqual(b.basketTotal(basket, { type: 'percentage', value: 10 }), { subtotal: 1000, discount: 100, total: 900, error: null });
   // A rupee discount comes straight off
   assert.deepStrictEqual(b.basketTotal(basket, { type: 'fixed', value: 100 }), { subtotal: 1000, discount: 100, total: 900, error: null });
 });
@@ -114,18 +114,17 @@ test('basketTotal mixed tax lines, 15% off (same order of sums as the server)', 
   basket = b.addLine(basket, { product_id: 9, option_id: null, name: 'Vase', unit_price: 499, price_mode: 'fixed', tax_rate: 12 });
   basket = b.addLine(basket, { product_id: 1, option_id: null, name: 'Rose', unit_price: 30, price_mode: 'fixed', tax_rate: 0 });
   basket = b.changeQty(basket, basket[0].key, 6); // 7 roses
-  // Server order is payload order: Rose (top line) then Vase.
-  // Rose: taxable 210, tax 0. Vase: taxable 499 - 499*12/112 = 445.535714..., tax 53.464285...
-  // 15% of 655.535714 = 98.330357; 655.535714 - 98.330357 + 53.464285 = 610.669642 -> 610.67
+  // Items 210 + 499 = 709 (GST included); 15% of 709 = 106.35 -> 602.65
   const t = b.basketTotal(basket, { type: 'percentage', value: 15 });
-  assert.strictEqual(t.total, 610.67);
+  assert.strictEqual(t.total, 602.65);
   assert.strictEqual(t.subtotal, 709);
-  assert.strictEqual(t.discount, 98.33);
+  assert.strictEqual(t.discount, 106.35);
 });
 
-test('basketTotal refuses a rupee discount over the pre-tax subtotal, like the server', () => {
+test('basketTotal refuses a rupee discount over the price, like the server', () => {
   const basket = b.addLine([], { product_id: 9, option_id: null, name: 'Vase', unit_price: 1000, price_mode: 'fixed', tax_rate: 18 });
-  const t = b.basketTotal(basket, { type: 'fixed', value: 900 });
+  assert.strictEqual(b.basketTotal(basket, { type: 'fixed', value: 900 }).error, null);
+  const t = b.basketTotal(basket, { type: 'fixed', value: 1001 });
   assert.strictEqual(t.error, "The discount can't be more than the price.");
   const p = b.basketTotal(basket, { type: 'percentage', value: 120 });
   assert.strictEqual(p.error, "The discount can't be more than the price.");

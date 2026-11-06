@@ -5,14 +5,14 @@ import {
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
-import * as Print from 'expo-print';
-import * as Sharing from 'expo-sharing';
 import * as ImagePicker from 'expo-image-picker';
 import api from '../services/api';
 import { showAlert, showConfirm } from '../utils/alert';
 import { resolveItemLineTotal } from '../utils/lineTotal';
+import { printSaleBill, printCreditNote } from '../utils/printHelpers';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
+import { writeOffLabel, writeOffProblem } from '../utils/writeOff';
 import { formatDateTime, formatCardDateTime, isToday } from '../utils/datetime';
 import { Image } from 'react-native';
 import ImageModal from '../components/ImageModal';
@@ -281,6 +281,10 @@ export default function SaleDetailScreen({ route, navigation }) {
   // changed, so a name/phone edit never rewrites the payments (a helper's
   // held cash cannot be rewritten at all, and a split payment would merge).
   const editInitialMethod = useRef(null);
+  // A sale paid in parts (e.g. cash + UPI): one method per part, amounts
+  // kept. A single method choice used to turn the whole paid amount into
+  // that one method, losing the split.
+  const [editPaymentRows, setEditPaymentRows] = useState([]);
   const [savingEdit, setSavingEdit] = useState(false);
 
   // Item price/quantity edit
@@ -295,6 +299,16 @@ export default function SaleDetailScreen({ route, navigation }) {
   // allowed — mirrors PUT /api/sales/:id's own same-day + creator-only rules
   // (the register-closed check isn't verified client-side; that error surfaces
   // from the server on save instead, see handleSaveItemEdit).
+  // GST bill (bill_version 2): prices include GST. Items = what the shelf
+  // prices added up to; GST included = items GST + GST inside delivery.
+  const isGstBill = Number(sale?.bill_version) === 2;
+  const gstItemsTotal = isGstBill ? (Math.round((Number(sale.subtotal) || 0) * 100) + Math.round((Number(sale.tax_total) || 0) * 100)) / 100 : 0;
+  const gstIncluded = isGstBill ? (Math.round((Number(sale.tax_total) || 0) * 100) + Math.round((Number(sale.delivery_tax) || 0) * 100)) / 100 : 0;
+  // Shelf price of one unit of a line, before the order discount
+  const shelfPriceOf = (item) => (isGstBill && item.gross_amount != null && Number(item.quantity) > 0
+    ? Math.round((Number(item.gross_amount) * 100) / Number(item.quantity)) / 100
+    : Number(item.unit_price) || 0);
+
   const itemEditBlockReason = !sale
     ? null
     : !isToday(sale.created_at)
@@ -366,9 +380,13 @@ export default function SaleDetailScreen({ route, navigation }) {
     setEditCustomerName(sale.customer_name || sale.customer_display_name || '');
     setEditCustomerPhone(sale.customer_phone || sale.customer_display_phone || '');
     setEditPaymentStatus(sale.payment_status || 'pending');
-    const firstMethod = sale.payments && sale.payments[0] ? sale.payments[0].method : 'cash';
+    const moneyPayments = (sale.payments || []).filter((p) => p.method !== 'write_off');
+    const firstMethod = moneyPayments[0] ? moneyPayments[0].method : 'cash';
     setEditPaymentMethod(firstMethod);
     editInitialMethod.current = firstMethod;
+    setEditPaymentRows((sale.payments || []).filter((p) => p.method !== 'write_off').map((p) => ({
+      method: p.method, initial: p.method, amount: Number(p.amount || 0), reference_number: p.reference_number || null,
+    })));
     setEditError(null);
     setEditModalVisible(true);
   };
@@ -377,7 +395,8 @@ export default function SaleDetailScreen({ route, navigation }) {
     setSavingEdit(true);
     try {
       // Calculate current paid amount to retain the amount but change the method
-      const currentPaid = (sale.payments || []).reduce((sum, p) => sum + Number(p.amount || 0), 0);
+      // Money lines only: a write-off line is kept as it is by the server
+      const currentPaid = (sale.payments || []).filter((p) => p.method !== 'write_off').reduce((sum, p) => sum + Number(p.amount || 0), 0);
 
       const payload = {
         customer_name: editCustomerName,
@@ -385,7 +404,12 @@ export default function SaleDetailScreen({ route, navigation }) {
         payment_status: editPaymentStatus,
       };
 
-      if (currentPaid > 0) {
+      if (editPaymentRows.length > 1) {
+        // Split payment: each part keeps its amount, only its method changes
+        if (editPaymentRows.some((r) => r.method !== r.initial)) {
+          payload.payments = editPaymentRows.map((r) => ({ method: r.method, amount: r.amount, reference_number: r.reference_number }));
+        }
+      } else if (currentPaid > 0) {
         // Just replacing the method of the existing payments, and only when
         // the method was actually changed
         if (editPaymentMethod !== editInitialMethod.current) payload.payments = [{ method: editPaymentMethod, amount: currentPaid }];
@@ -414,7 +438,7 @@ export default function SaleDetailScreen({ route, navigation }) {
     }
     setEditingItem(item);
     setEditItemQuantity(String(item.quantity ?? ''));
-    setEditItemPrice(String(item.unit_price ?? ''));
+    setEditItemPrice(String(shelfPriceOf(item)));
     setItemEditError(null);
     setItemEditModalVisible(true);
   };
@@ -434,7 +458,9 @@ export default function SaleDetailScreen({ route, navigation }) {
     setSavingItemEdit(true);
     setItemEditError(null);
     try {
-      await api.updateSale(saleId, { items: [{ id: editingItem.id, quantity: qty, unit_price: price }] });
+      // GST bills send the shelf price (GST included); older bills keep
+      // their price without GST, as before
+      await api.updateSale(saleId, { items: [{ id: editingItem.id, quantity: qty, ...(isGstBill ? { shelf_price: price } : { unit_price: price }) }] });
       setItemEditModalVisible(false);
       setEditingItem(null);
       await fetchSale(); // refreshes items + grand_total + history from the server
@@ -599,6 +625,17 @@ export default function SaleDetailScreen({ route, navigation }) {
     try {
       await api.advanceOrder(nextAction);
       fetchSale();
+      // Say it worked: a handed-over order used to change silently, so staff
+      // could not tell whether the tap had done anything.
+      const DONE = {
+        'Confirm Pickup': 'Picked up. The order is done.',
+        'Mark Delivered': 'Marked as delivered.',
+        'Mark Picked Up': 'The rider has it. It is out for delivery.',
+        'Mark Ready': 'Marked as ready.',
+        'Start Preparing': 'Marked as being prepared.',
+        Complete: 'The order is done.',
+      };
+      showAlert('Done', DONE[nextAction.label] || 'Order updated.');
     } catch (err) {
       const msg = err.message || 'Unable to update this order.';
       showAlert('Order Update', msg);
@@ -610,6 +647,11 @@ export default function SaleDetailScreen({ route, navigation }) {
   const handleConfirmPickupPayment = async () => {
     const totalPayments = pickupPayments.reduce((sum, p) => sum + (parseFloat(p.amount) || 0), 0);
     const woAmount = parseFloat(pickupWriteOffAmount) || 0;
+    const woProblem = writeOffProblem(user?.role, woAmount);
+    if (woProblem) {
+      showAlert('Write-off too big', woProblem);
+      return;
+    }
     const totalReduction = totalPayments + woAmount;
 
     if (totalReduction <= 0) {
@@ -864,99 +906,8 @@ export default function SaleDetailScreen({ route, navigation }) {
   };
 
 
-  const generateReceipt = async () => {
-    const paidAmt = (sale.payments || []).reduce((s, p) => s + Number(p.amount || 0), 0);
-    const dueAmt = Number(sale.grand_total || 0) - paidAmt;
-    const receiptHtml = `
-      <html><head><meta charset="utf-8"><style>
-        body { font-family: 'Courier New', monospace; max-width: 300px; margin: 0 auto; padding: 16px; font-size: 12px; }
-        .center { text-align: center; }
-        .bold { font-weight: bold; }
-        .line { border-top: 1px dashed #333; margin: 8px 0; }
-        .row { display: flex; justify-content: space-between; }
-        .total-row { display: flex; justify-content: space-between; font-weight: bold; font-size: 14px; margin: 4px 0; }
-        h2 { margin: 4px 0; }
-        p { margin: 2px 0; }
-      </style></head><body>
-        <div class="center">
-          <h2>Flower point</h2>
-          <p>${sale.location_name || ''}</p>
-          <p>Invoice: <strong>${sale.sale_number}</strong></p>
-          <p>${formatDateTime(sale.created_at)}</p>
-        </div>
-        ${sale.customer_name ? `<p>Customer: ${sale.customer_name}</p>` : ''}
-        ${sale.customer_phone ? `<p>Phone: ${sale.customer_phone}</p>` : ''}
-        <div class="line"></div>
-        ${(sale.items || []).map(item => `
-          <div>
-            <p>${item.product_name || item.display_name || 'Item'}</p>
-            <div class="row">
-              <span>${item.quantity} x ₹${Number(item.unit_price || 0).toFixed(2)}</span>
-              <span>₹${Number(resolveItemLineTotal(item)).toFixed(2)}</span>
-            </div>
-          </div>
-        `).join('')}
-        <div class="line"></div>
-        <div class="row"><span>Subtotal</span><span>₹${Number(sale.subtotal || 0).toFixed(2)}</span></div>
-        <div class="row"><span>Tax</span><span>₹${Number(sale.tax_total || 0).toFixed(2)}</span></div>
-        ${sale.discount_amount > 0 ? `<div class="row"><span>Discount</span><span>-₹${Number(sale.discount_amount).toFixed(2)}</span></div>` : ''}
-        ${sale.delivery_charges > 0 ? `<div class="row"><span>Delivery</span><span>₹${Number(sale.delivery_charges).toFixed(2)}</span></div>` : ''}
-        <div class="line"></div>
-        <div class="total-row"><span>TOTAL</span><span>₹${Number(sale.grand_total || 0).toFixed(2)}</span></div>
-        <div class="line"></div>
-        ${(sale.payments || []).map(p => `
-          <div class="row"><span>${(p.method || '').toUpperCase()}</span><span>₹${Number(p.amount || 0).toFixed(2)}</span></div>
-        `).join('')}
-        ${dueAmt > 0.01 ? `<div class="row bold"><span>BALANCE DUE</span><span>₹${Number(dueAmt).toFixed(2)}</span></div>` : ''}
-        <div class="line"></div>
-        <div class="center"><p>Thank you for your purchase!</p></div>
-      </body></html>
-    `;
-
-    const printHtmlOnWeb = (markup, title) => {
-      const frame = document.createElement('iframe');
-      frame.style.position = 'fixed';
-      frame.style.right = '0';
-      frame.style.bottom = '0';
-      frame.style.width = '0';
-      frame.style.height = '0';
-      frame.style.border = '0';
-      frame.setAttribute('aria-hidden', 'true');
-      document.body.appendChild(frame);
-
-      const frameDoc = frame.contentWindow?.document;
-      if (!frameDoc) {
-        document.body.removeChild(frame);
-        throw new Error('Unable to open print frame');
-      }
-
-      frameDoc.open();
-      frameDoc.write(`<html><head><title>${title}</title></head><body>${markup}</body></html>`);
-      frameDoc.close();
-
-      setTimeout(() => {
-        try {
-          frame.contentWindow?.focus();
-          frame.contentWindow?.print();
-        } finally {
-          setTimeout(() => {
-            if (frame.parentNode) frame.parentNode.removeChild(frame);
-          }, 500);
-        }
-      }, 250);
-    };
-    try {
-      if (Platform.OS === 'web') {
-        printHtmlOnWeb(receiptHtml, 'Receipt');
-        return;
-      }
-
-      const { uri } = await Print.printToFileAsync({ html: receiptHtml, width: 300 });
-      await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: `Receipt ${sale.sale_number}` });
-    } catch (err) {
-      showAlert('Error', 'Could not generate receipt');
-    }
-  };
+  // The bill / tax invoice on the 80 mm roll (utils/invoiceHtml.js)
+  const generateReceipt = () => printSaleBill(saleId);
 
   if (loading) {
     return <View style={styles.center}><ActivityIndicator color={Colors.primary} size="large" /></View>;
@@ -1313,8 +1264,8 @@ export default function SaleDetailScreen({ route, navigation }) {
                   <View style={{ flex: 1 }}>
                     <Text style={styles.itemName}>{itemName}</Text>
                     <Text style={styles.itemMeta}>
-                      {item.quantity} × ₹{Number(item.unit_price || 0).toFixed(2)}
-                      {item.tax_rate > 0 ? ` (${item.tax_rate}% tax)` : ''}
+                      {item.quantity} × ₹{shelfPriceOf(item).toFixed(2)}
+                      {item.tax_rate > 0 ? (isGstBill ? ` (incl. ${Number(item.tax_rate)}% GST)` : ` (${item.tax_rate}% tax)`) : ''}
                     </Text>
                     {item.special_instructions ? <Text style={{ fontSize: FontSize.xs, color: Colors.textLight, marginTop: 4 }}>Note: {item.special_instructions}</Text> : null}
                     {itemVoiceNotes.length > 0 && (
@@ -1506,8 +1457,16 @@ export default function SaleDetailScreen({ route, navigation }) {
 
       {/* Totals */}
       <View style={styles.totalsBox}>
-        <View style={styles.totalRow}><Text style={styles.totalLabel}>Subtotal</Text><Text style={styles.totalVal}>₹{Number(sale.subtotal || 0).toFixed(2)}</Text></View>
-        <View style={styles.totalRow}><Text style={styles.totalLabel}>Tax</Text><Text style={styles.totalVal}>₹{Number(sale.tax_total || 0).toFixed(2)}</Text></View>
+        {isGstBill ? (
+          // GST bill: shelf prices include GST, so the items line is what the
+          // customer saw; GST is shown as "included", not added
+          <View style={styles.totalRow}><Text style={styles.totalLabel}>Items</Text><Text style={styles.totalVal}>₹{gstItemsTotal.toFixed(2)}</Text></View>
+        ) : (
+          <>
+            <View style={styles.totalRow}><Text style={styles.totalLabel}>Subtotal</Text><Text style={styles.totalVal}>₹{Number(sale.subtotal || 0).toFixed(2)}</Text></View>
+            <View style={styles.totalRow}><Text style={styles.totalLabel}>Tax</Text><Text style={styles.totalVal}>₹{Number(sale.tax_total || 0).toFixed(2)}</Text></View>
+          </>
+        )}
         {sale.discount_amount > 0 && (
           <View style={styles.totalRow}>
             <Text style={[styles.totalLabel, { color: Colors.error }]}>Discount{sale.discount_type === 'percentage' ? ` (${sale.discount_percentage}%)` : ''}</Text>
@@ -1517,11 +1476,17 @@ export default function SaleDetailScreen({ route, navigation }) {
         {sale.delivery_charges > 0 && (
           <View style={styles.totalRow}><Text style={styles.totalLabel}>Delivery</Text><Text style={styles.totalVal}>₹{Number(sale.delivery_charges).toFixed(2)}</Text></View>
         )}
+        {Number(sale.round_off) !== 0 && sale.round_off != null && (
+          <View style={styles.totalRow}><Text style={styles.totalLabel}>Round off</Text><Text style={styles.totalVal}>{Number(sale.round_off) > 0 ? '+' : '-'}₹{Math.abs(Number(sale.round_off)).toFixed(2)}</Text></View>
+        )}
         <View style={styles.divider} />
         <View style={styles.totalRow}>
           <Text style={styles.grandLabel}>Grand Total</Text>
           <Text style={styles.grandVal}>₹{Number(sale.grand_total || 0).toFixed(2)}</Text>
         </View>
+        {isGstBill && (
+          <Text style={styles.gstNote}>Includes GST ₹{gstIncluded.toFixed(2)}{sale.invoice_number ? ` · Bill no. ${sale.invoice_number}` : ''}</Text>
+        )}
       </View>
 
       {/* Payments */}
@@ -1529,9 +1494,9 @@ export default function SaleDetailScreen({ route, navigation }) {
         <Text style={styles.sectionTitle}>Payments</Text>
         {(sale.payments || []).map((p, idx) => (
           <View key={idx} style={styles.paymentRow}>
-            <Ionicons name={p.method === 'cash' ? 'cash' : p.method === 'card' ? 'card' : 'phone-portrait'} size={18} color={Colors.primary} />
+            <Ionicons name={p.method === 'write_off' ? 'remove-circle-outline' : p.method === 'cash' ? 'cash' : p.method === 'card' ? 'card' : 'phone-portrait'} size={18} color={p.method === 'write_off' ? Colors.textSecondary : Colors.primary} />
             <View style={{ flex: 1, marginLeft: Spacing.sm }}>
-              <Text style={styles.payMethod}>{p.method?.toUpperCase()}</Text>
+              <Text style={styles.payMethod}>{p.method === 'write_off' ? 'WRITTEN OFF' : p.method?.toUpperCase()}</Text>
               {p.reference_number ? <Text style={styles.payRef}>Ref: {p.reference_number}</Text> : null}
             </View>
             <Text style={styles.payAmount}>₹{Number(p.amount || 0).toFixed(2)}</Text>
@@ -1569,6 +1534,18 @@ export default function SaleDetailScreen({ route, navigation }) {
             </View>
             <Text style={[styles.payAmount, { color: Colors.error }]}>-₹{Number(sale.refund.amount || 0).toFixed(2)}</Text>
           </View>
+          {sale.refund.credit_note_number ? (
+            <Text style={[styles.payRef, { marginTop: Spacing.xs }]}>Credit note no. {sale.refund.credit_note_number}</Text>
+          ) : null}
+          <TouchableOpacity
+            style={styles.creditNoteBtn}
+            onPress={() => printCreditNote(saleId)}
+            accessibilityRole="button"
+            accessibilityLabel={sale.refund.credit_note_number ? 'Print credit note' : 'Print refund receipt'}
+          >
+            <Ionicons name="print-outline" size={20} color={Colors.primary} />
+            <Text style={styles.creditNoteBtnText}>{sale.refund.credit_note_number ? 'Print credit note' : 'Print refund receipt'}</Text>
+          </TouchableOpacity>
         </View>
       )}
 
@@ -1584,15 +1561,6 @@ export default function SaleDetailScreen({ route, navigation }) {
               {(sale.pre_order.status || 'pending').toUpperCase()}
             </Text>
           </View>
-        </View>
-      )}
-
-      {/* Refund info */}
-      {sale.refund && (
-        <View style={[styles.section, { borderColor: Colors.error, borderWidth: 1 }]}>
-          <Text style={[styles.sectionTitle, { color: Colors.error }]}>Refund</Text>
-          <Text style={styles.infoText}>Amount: ₹{Number(sale.refund.amount || 0).toFixed(2)} via {sale.refund.refund_method}</Text>
-          <Text style={styles.infoSubtext}>Reason: {sale.refund.reason}</Text>
         </View>
       )}
 
@@ -2164,7 +2132,7 @@ export default function SaleDetailScreen({ route, navigation }) {
                 <Text style={{ color: Colors.primary, marginLeft: 4, fontWeight: '600', fontSize: FontSize.sm }}>Add Split Payment</Text>
               </TouchableOpacity>
 
-              <Text style={styles.fieldLabel}>Write-off Amount (Optional)</Text>
+              <Text style={styles.fieldLabel}>{writeOffLabel(user?.role)}</Text>
               <TextInput style={styles.modalInput} value={pickupWriteOffAmount} onChangeText={setPickupWriteOffAmount} keyboardType="numeric" placeholder="₹ Small discrepancy amount" />
             </ScrollView>
 
@@ -2222,6 +2190,33 @@ export default function SaleDetailScreen({ route, navigation }) {
                 keyboardType="phone-pad"
               />
 
+              {editPaymentRows.length > 1 ? (
+                <>
+                  <Text style={styles.fieldLabel}>Paid in {editPaymentRows.length} parts — pick how each part was paid</Text>
+                  {editPaymentRows.map((row, idx) => (
+                    <View key={idx} style={{ marginBottom: Spacing.sm }}>
+                      <Text style={{ fontSize: FontSize.md, fontWeight: '700', color: Colors.text, marginBottom: 4 }}>
+                        {`₹${row.amount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+                      </Text>
+                      <View style={styles.chipRow}>
+                        {PAYMENT_METHODS.map(m => (
+                          <TouchableOpacity
+                            key={m.key}
+                            style={[styles.methodChip, row.method === m.key && styles.methodChipActive]}
+                            onPress={() => setEditPaymentRows((rows) => rows.map((r, i) => (i === idx ? { ...r, method: m.key } : r)))}
+                            accessibilityRole="button"
+                            accessibilityState={{ selected: row.method === m.key }}
+                          >
+                            <Ionicons name={m.icon} size={16} color={row.method === m.key ? '#fff' : Colors.textSecondary} />
+                            <Text style={[styles.methodChipText, row.method === m.key && styles.methodChipTextActive]}>{m.label}</Text>
+                          </TouchableOpacity>
+                        ))}
+                      </View>
+                    </View>
+                  ))}
+                </>
+              ) : (
+              <>
               <Text style={styles.fieldLabel}>Payment Method</Text>
               <View style={styles.chipRow}>
                 {PAYMENT_METHODS.map(m => (
@@ -2235,6 +2230,8 @@ export default function SaleDetailScreen({ route, navigation }) {
                   </TouchableOpacity>
                 ))}
               </View>
+              </>
+              )}
 
               <Text style={styles.fieldLabel}>Payment Status</Text>
               <View style={styles.chipRow}>
@@ -2408,6 +2405,28 @@ const styles = StyleSheet.create({
   bomName: { flex: 1, fontSize: FontSize.xs, color: Colors.text },
   bomQty: { fontSize: FontSize.xs, fontWeight: '600', color: Colors.textSecondary },
 
+  creditNoteBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.sm,
+    minHeight: 48,
+    marginTop: Spacing.sm,
+    borderWidth: 1,
+    borderColor: Colors.primary,
+    borderRadius: BorderRadius.md,
+  },
+  creditNoteBtnText: {
+    fontSize: FontSize.md,
+    fontWeight: '600',
+    color: Colors.primary,
+  },
+  gstNote: {
+    fontSize: FontSize.sm,
+    color: Colors.textSecondary,
+    textAlign: 'right',
+    marginTop: Spacing.xs,
+  },
   totalsBox: {
     backgroundColor: Colors.surface, borderRadius: BorderRadius.md,
     borderWidth: 1, borderColor: Colors.border, padding: Spacing.md, marginTop: Spacing.md,

@@ -141,7 +141,9 @@ export default function SettlementsScreen({ navigation, route }) {
     if (!partnerDeliveries[pid]) {
       setLoadingDeliveries(true);
       try {
-        const res = await api.getUnsettledDeliveries({ delivery_partner_id: pid });
+        // Only this shop's deliveries: everything settled here goes into this
+        // shop's register (it used to list the rider's COD from every shop).
+        const res = await api.getUnsettledDeliveries({ delivery_partner_id: pid, ...(selectedLocation ? { location_id: selectedLocation } : {}) });
         setPartnerDeliveries(prev => ({ ...prev, [pid]: res.data?.deliveries || [] }));
         // Default: select all
         const allIds = new Set((res.data?.deliveries || []).map(d => d.id));

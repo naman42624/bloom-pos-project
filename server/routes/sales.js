@@ -1,27 +1,35 @@
 const express = require('express');
 const { body, query, validationResult } = require('express-validator');
 const { getDb } = require('../config/database');
-const { getDb: getAsyncDb } = require('../config/database-async');
+const { getDb: getAsyncDb, withMoneyTx } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
 const { notifyByRole, createNotification } = require('./notifications');
 const { todayStr: localToday, nowLocal, nowTimeStr, parseServerDate } = require('../utils/time');
 const { safeParseJSON } = require('../utils/json');
-const { hasOpenRegister, REGISTER_CLOSED_MESSAGE } = require('../utils/register-guard');
+const { hasOpenRegister, lockOpenRegister, registerClosedError, REGISTER_CLOSED_MESSAGE } = require('../utils/register-guard');
 const { completeProductionTaskCore } = require('./production');
 const { computeOrderStage, getStageFlags } = require('../utils/order-stage');
-const { sumCollectionsByMethod } = require('../utils/settlement-math');
+const { computeRegisterClose, computeShutTimePayments } = require('../utils/register-close');
 const { buildTrackingUrl } = require('../utils/tracking-token');
 const { slipUrl } = require('../utils/slip-token');
 const { reverseSaleEffects } = require('../utils/sale-reversal');
 const { assertValidSeller } = require('../utils/seller');
 const { helperSaleGate, answerClientRefConflict } = require('../utils/helper-sale');
-const { listBags, readCashMode } = require('../utils/helper-bags');
+const { verifyApprovalPin } = require('../utils/approval-pin');
+const { writeOffError, recordWriteOff, WRITE_OFF_METHOD } = require('../utils/write-off');
+const { listBags, readCashMode, lockBag } = require('../utils/helper-bags');
 const QRCode = require('qrcode');
 const { getChecklistForSale, setCheck, loadSaleForChecks } = require('../utils/load-checks');
 
 const router = express.Router();
 
 const { normalizeDateFields } = require('../utils/normalizeDates');
+const { computeBill } = require('../utils/gst');
+const { readGstSettings, cleanHsn, GSTIN_RE } = require('../utils/gst-settings');
+const { nextNumber: nextInvoiceNumber } = require('../utils/invoice-number');
+const { planBill, writeBill } = require('../utils/sale-bill');
+const { generateSaleNumber } = require('../utils/sale-number');
+const { buildInvoiceView, buildCreditNoteView } = require('../utils/invoice-view');
 
 // ─── Auto-migration: expand schema CHECK constraints ─────────
 try {
@@ -46,38 +54,20 @@ try {
 
 
 // ─── Helper: Generate sale number ────────────────────────────
-function generateSaleNumber(db, locationId) {
-  const loc = db.prepare('SELECT name FROM locations WHERE id = ?').get(locationId);
-  const locCode = loc ? loc.name.replace(/[^A-Za-z]/g, '').substring(0, 4).toUpperCase() : 'XX';
-  const today = localToday().replace(/-/g, '');
-  const prefix = `INV-${locCode}-${today}`;
-
-  const last = db.prepare(
-    "SELECT sale_number FROM sales WHERE sale_number LIKE ? ORDER BY id DESC LIMIT 1"
-  ).get(`${prefix}-%`);
-
-  let seq = 1;
-  if (last) {
-    const lastNum = parseInt(last.sale_number.split('-').pop(), 10);
-    if (!isNaN(lastNum)) seq = lastNum + 1;
-  }
-  return `${prefix}-${String(seq).padStart(3, '0')}`;
-}
-
 // ─── Helper: Recalculate sale totals from items ──────────────
-function recalcSaleTotals(db, saleId) {
-  const items = db.prepare('SELECT * FROM sale_items WHERE sale_id = ?').all(saleId);
+async function recalcSaleTotals(db, saleId) {
+  const items = await db.prepare('SELECT * FROM sale_items WHERE sale_id = ?').all(saleId);
   const subtotal = items.reduce((s, i) => s + (i.unit_price * i.quantity), 0);
   const taxTotal = items.reduce((s, i) => s + i.tax_amount, 0);
 
-  const sale = db.prepare('SELECT discount_type, discount_percentage, discount_amount, delivery_charges FROM sales WHERE id = ?').get(saleId);
+  const sale = await db.prepare('SELECT discount_type, discount_percentage, discount_amount, delivery_charges FROM sales WHERE id = ?').get(saleId);
   let discountAmount = sale.discount_amount || 0;
   if (sale.discount_type === 'percentage' && sale.discount_percentage > 0) {
     discountAmount = subtotal * sale.discount_percentage / 100;
   }
   const grandTotal = Math.max(0, subtotal - discountAmount) + taxTotal + (sale.delivery_charges || 0);
 
-  db.prepare(
+  await db.prepare(
     'UPDATE sales SET subtotal = ?, tax_total = ?, discount_amount = ?, grand_total = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'
   ).run(subtotal, taxTotal, discountAmount, grandTotal, saleId);
 
@@ -94,42 +84,42 @@ function buildAutoAddressLabel(customerName, fallback = 'Address') {
   return `${cleanName} Address`;
 }
 
-function resolveOrCreateCustomer(db, { customerId, name, phone }) {
+async function resolveOrCreateCustomer(db, { customerId, name, phone }) {
   if (customerId) return customerId;
 
   const phoneNorm = normalizePhone(phone);
   if (!phoneNorm) return null;
 
-  const existingCustomer = db.prepare(
+  const existingCustomer = await db.prepare(
     "SELECT id FROM users WHERE phone = ? AND role = 'customer'"
   ).get(phoneNorm);
   if (existingCustomer) return existingCustomer.id;
 
-  const anyUser = db.prepare("SELECT id FROM users WHERE phone = ?").get(phoneNorm);
+  const anyUser = await db.prepare("SELECT id FROM users WHERE phone = ?").get(phoneNorm);
   if (anyUser) return anyUser.id;
 
   const bcrypt = require('bcryptjs');
   const salt = bcrypt.genSaltSync(10);
   const hashedPassword = bcrypt.hashSync(`bloom_${Date.now()}`, salt);
-  const created = db.prepare(
+  const created = await db.prepare(
     "INSERT INTO users (name, phone, password, role, created_at, updated_at) VALUES (?, ?, ?, 'customer', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
   ).run(name || 'Guest', phoneNorm, hashedPassword);
   return created.lastInsertRowid;
 }
 
-function saveCustomerAddress(db, { customerId, address, label, customerName, fallbackLabel = 'Address' }) {
+async function saveCustomerAddress(db, { customerId, address, label, customerName, fallbackLabel = 'Address' }) {
   const addrClean = String(address || '').trim();
   if (!customerId || !addrClean) return;
   const finalLabel = String(label || '').trim() || buildAutoAddressLabel(customerName, fallbackLabel);
 
   let existingAddr = null;
   try {
-    existingAddr = db.prepare(
+    existingAddr = await db.prepare(
       'SELECT id FROM customer_addresses WHERE customer_id = ? AND LOWER(BTRIM(address_line_1)) = LOWER(BTRIM(?))'
     ).get(customerId, addrClean);
   } catch (_) {
     try {
-      existingAddr = db.prepare(
+      existingAddr = await db.prepare(
         'SELECT id FROM customer_addresses WHERE customer_id = ? AND LOWER(BTRIM(address)) = LOWER(BTRIM(?))'
       ).get(customerId, addrClean);
     } catch (__) { }
@@ -137,17 +127,17 @@ function saveCustomerAddress(db, { customerId, address, label, customerName, fal
 
   if (existingAddr) return;
 
-  const addrCount = db.prepare(
+  const addrCount = (await db.prepare(
     'SELECT COUNT(*) as cnt FROM customer_addresses WHERE customer_id = ?'
-  ).get(customerId).cnt;
+  ).get(customerId)).cnt;
 
   try {
-    db.prepare(
+    await db.prepare(
       'INSERT INTO customer_addresses (customer_id, label, address_line_1, is_default, created_at, updated_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)'
     ).run(customerId, finalLabel, addrClean, addrCount === 0 ? 1 : 0);
   } catch (_) {
     try {
-      db.prepare(
+      await db.prepare(
         'INSERT INTO customer_addresses (customer_id, label, address, is_default, created_at, updated_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)'
       ).run(customerId, finalLabel, addrClean, addrCount === 0 ? 1 : 0);
     } catch (__) { }
@@ -420,7 +410,9 @@ router.get('/today-summary', authenticate, async (req, res, next) => {
       GROUP BY p.method
     `).all(...params);
 
-    res.json({ success: true, data: { ...summary, paymentBreakdown } });
+    // Write-offs are money let go, not a way of paying: shown on their own
+    const written_off = paymentBreakdown.filter((r) => r.method === 'write_off').reduce((t, r) => t + Number(r.total || 0), 0);
+    res.json({ success: true, data: { ...summary, written_off, paymentBreakdown: paymentBreakdown.filter((r) => r.method !== 'write_off') } });
   } catch (err) { next(err); }
 });
 
@@ -659,6 +651,25 @@ router.get('/register/status', authenticate, async (req, res, next) => {
             )
         `).get(register.id, location_id, sessionStart);
         register.total_expenses_cash = expenseRow?.total || 0;
+
+        // Show exactly what close would record (one calculation for status,
+        // preview and close). The running columns are kept for comparison.
+        // Re-read the row inside the transaction: the pool returns timestamps
+        // as Date objects, which would shift the session start when bound.
+        const live = await withMoneyTx(async (tx) => {
+          const row = await tx.prepare('SELECT * FROM cash_registers WHERE id = ?').get(register.id);
+          const close = await computeRegisterClose(tx, row, location_id);
+          close.shut = await computeShutTimePayments(tx, row, location_id);
+          return close;
+        });
+        register.shut_time_payments = live.shut;
+        register.running_expected_cash = Number(register.expected_cash) || 0;
+        register.expected_cash = live.expectedCash;
+        register.total_cash_sales = live.paymentTotals.cash_total;
+        register.total_card_sales = live.paymentTotals.card_total;
+        register.total_upi_sales = live.paymentTotals.upi_total;
+        register.total_refunds_cash = live.refundTotal;
+        register.total_expenses_cash = live.expenseTotal;
       } else {
         // Closed session: derive net expenses from expected cash math.
         // Helper floats left the drawer and handovers came into it (bag
@@ -714,7 +725,7 @@ router.post(
     body('location_id').isInt(),
     body('opening_balance').isFloat({ min: 0 }),
   ],
-  (req, res, next) => {
+  async (req, res, next) => {
     try {
       const errors = validationResult(req);
       if (!errors.isEmpty()) return res.status(400).json({ success: false, message: 'Validation failed', errors: errors.array() });
@@ -723,20 +734,25 @@ router.post(
       const { location_id, opening_balance } = req.body;
       const today = localToday();
 
-      // Check if there's already an open (unclosed) register for this location
-      const openRegister = db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1').get(location_id);
-      if (openRegister) {
+      // One open at a time per shop (a lock held to the end of the
+      // transaction), so two taps can't open two registers.
+      const opened = await withMoneyTx(async (tx) => {
+        await tx.prepare('SELECT pg_advisory_xact_lock(?::int, ?::int) AS locked').get(41002, Number(location_id) || 0);
+        const openRegister = await tx.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1').get(location_id);
+        if (openRegister) return false;
+        // Always create a new register session (allows multiple per day)
+        await tx.prepare(
+          `INSERT INTO cash_registers (
+            location_id, date, opened_by,
+            opening_balance, opening_amount,
+            expected_cash, opened_at, opening_time, status
+          ) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'open')`
+        ).run(location_id, today, req.user.id, opening_balance, opening_balance, opening_balance);
+        return true;
+      });
+      if (!opened) {
         return res.status(409).json({ success: false, message: 'Register is already open. Please close it first.' });
       }
-
-      // Always create a new register session (allows multiple per day)
-      db.prepare(
-        `INSERT INTO cash_registers (
-          location_id, date, opened_by,
-          opening_balance, opening_amount,
-          expected_cash, opened_at, opening_time, status
-        ) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'open')`
-      ).run(location_id, today, req.user.id, opening_balance, opening_balance, opening_balance);
 
       const register = db.prepare(`
         SELECT cr.*, u.name as opened_by_name
@@ -770,119 +786,6 @@ const HELD_CASH_EDIT_MESSAGE = "This sale's cash is with a helper. Undo it withi
 
 // Register close recompute, shared by the close and its preview so the two
 // can never disagree. Sync db layer (same as the route).
-function computeRegisterClose(db, register, location_id) {
-  // Recalculate totals from actual payment records during this session
-  const sessionStart = register.opening_time || register.opened_at;
-  // 1. Get totals from direct sale payments (excluding auto-allocated credit payments).
-  // Cash held by a helper (payments.held_by, bag mode) never entered the
-  // drawer, so it is left out here; it arrives through handovers below.
-  const directPaymentTotals = db.prepare(`
-    SELECT
-      COALESCE(SUM(CASE WHEN p.method = 'cash' AND p.held_by IS NULL THEN p.amount ELSE 0 END), 0) as cash_total,
-      COALESCE(SUM(CASE WHEN p.method = 'card' THEN p.amount ELSE 0 END), 0) as card_total,
-      COALESCE(SUM(CASE WHEN p.method = 'upi' THEN p.amount ELSE 0 END), 0) as upi_total
-    FROM payments p
-    JOIN sales s ON p.sale_id = s.id
-    WHERE s.location_id = ? AND p.created_at >= ? AND s.status != 'cancelled'
-      AND (p.reference_number IS NULL OR (p.reference_number NOT LIKE 'Credit-%' AND p.reference_number != 'COD' AND p.reference_number NOT LIKE 'COD-%'))
-  `).get(location_id, sessionStart);
-
-  // 2. Get totals from credit payments collected at this location
-  const creditPaymentTotals = db.prepare(`
-    SELECT
-      COALESCE(SUM(CASE WHEN payment_method = 'cash' THEN amount ELSE 0 END), 0) as cash_total,
-      COALESCE(SUM(CASE WHEN payment_method = 'card' THEN amount ELSE 0 END), 0) as card_total,
-      COALESCE(SUM(CASE WHEN payment_method = 'upi' THEN amount ELSE 0 END), 0) as upi_total
-    FROM credit_payments
-    WHERE location_id = ? AND created_at >= ? AND payment_method != 'write_off'
-  `).get(location_id, sessionStart);
-
-  // 3. Get totals from verified delivery COD settlements at this location.
-  // delivery_settlements.total_amount is method-agnostic (a settlement can
-  // batch several deliveries, cash and UPI mixed) — the real per-collection
-  // method lives on delivery_collections, same fact settle-now's own
-  // register credit (POST /deliveries/settlements/settle-now) already
-  // respects via sumCollectionsByMethod. This recompute used to sum
-  // total_amount straight into cash_total, treating 100%-UPI COD as cash;
-  // close then OVERWRITES the register's running total_cash_sales/
-  // total_upi_sales with that miscounted figure, silently discarding the
-  // correct totals settle-now had already written in real time. Found
-  // live, 2026-09-04: a ₹500 UPI COD settlement correctly reported "no
-  // change to cash register" the moment it happened, then produced a
-  // ₹500 discrepancy the next time the register was closed.
-  const settledDeliveryRows = db.prepare(`
-    SELECT dsi.delivery_id
-    FROM delivery_settlement_items dsi
-    JOIN delivery_settlements ds ON ds.id = dsi.settlement_id
-    WHERE ds.location_id = ? AND ds.verified_at >= ? AND ds.status = 'verified'
-  `).all(location_id, sessionStart);
-  const settledDeliveryIds = settledDeliveryRows.map((r) => r.delivery_id);
-  const codSettlementExpectedTotal = db.prepare(`
-    SELECT COALESCE(SUM(ds.total_amount), 0) as total
-    FROM delivery_settlements ds
-    WHERE ds.location_id = ? AND ds.verified_at >= ? AND ds.status = 'verified'
-  `).get(location_id, sessionStart).total;
-  const codByMethod = sumCollectionsByMethod(db, settledDeliveryIds, codSettlementExpectedTotal);
-
-  const paymentTotals = {
-    cash_total: directPaymentTotals.cash_total + creditPaymentTotals.cash_total + codByMethod.cash,
-    card_total: directPaymentTotals.card_total + creditPaymentTotals.card_total,
-    upi_total: directPaymentTotals.upi_total + creditPaymentTotals.upi_total + codByMethod.upi,
-  };
-
-  // A cash refund on a cancelled sale is normally left out: the sale's cash
-  // payment is left out too, so the two cancel. When the sale's cash was held
-  // by a helper, only the refund ever touched the drawer, so it still counts.
-  let refundTotal = 0;
-  try {
-    refundTotal = db.prepare(`
-      SELECT COALESCE(SUM(r.amount), 0) as total
-      FROM refunds r
-      JOIN sales s ON r.sale_id = s.id
-      WHERE s.location_id = ? AND r.created_at >= ? AND r.refund_method = 'cash' AND COALESCE(r.status, 'processed') = 'processed'
-        AND (s.status != 'cancelled' OR EXISTS (SELECT 1 FROM payments hp WHERE hp.sale_id = s.id AND hp.held_by IS NOT NULL))
-    `).get(location_id, sessionStart).total;
-  } catch (err) {
-    const msg = String(err?.message || '').toLowerCase();
-    if (!msg.includes('refund_method')) throw err;
-    refundTotal = db.prepare(`
-      SELECT COALESCE(SUM(r.amount), 0) as total
-      FROM refunds r
-      JOIN sales s ON r.sale_id = s.id
-      WHERE s.location_id = ? AND r.created_at >= ?
-    `).get(location_id, sessionStart).total;
-  }
-
-  // Cash expenses during this session (net of returns).
-  // Use register_id for session-exact scoping; timestamp fallback for legacy expenses.
-  const expenseTotal = db.prepare(`
-    SELECT COALESCE(SUM(CASE WHEN is_return = 1 THEN -amount ELSE amount END), 0) as total
-    FROM expenses
-    WHERE payment_method = 'cash'
-      AND (
-        register_id = ?
-        OR (register_id IS NULL AND location_id = ? AND created_at >= ?)
-      )
-  `).get(register.id, location_id, sessionStart).total;
-
-  // Helper cash bags (spec 11.4): floats given out of this register session
-  // left the drawer; handovers received into it came in (the counted amount,
-  // which is the cash actually put in the drawer).
-  const helperCash = db.prepare(`
-    SELECT
-      COALESCE(SUM(CASE WHEN type = 'handover_in' THEN counted_amount ELSE 0 END), 0) as handovers,
-      COALESCE(SUM(CASE WHEN type = 'float_out' THEN expected_amount ELSE 0 END), 0) as floats
-    FROM staff_cash_movements
-    WHERE register_id = ?
-  `).get(register.id);
-  const handoverTotal = Number(helperCash.handovers) || 0;
-  const floatTotal = Number(helperCash.floats) || 0;
-
-  // Whole paise, so float and handover sums never leave a stray fraction
-  const expectedCash = Math.round((Number(register.opening_balance) + Number(paymentTotals.cash_total) - Number(refundTotal) - Number(expenseTotal) - floatTotal + handoverTotal) * 100) / 100;
-  return { paymentTotals, refundTotal, expenseTotal, floatTotal, handoverTotal, expectedCash };
-}
-
 // ─── PUT /api/sales/register/close ───────────────────────────
 router.put(
   '/register/close',
@@ -903,11 +806,13 @@ router.put(
       const { location_id, actual_cash, closing_notes } = req.body;
       const today = localToday();
 
-      // Find the most recent unclosed register for this location
-      const register = db.prepare('SELECT * FROM cash_registers WHERE location_id = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1').get(location_id);
-      if (!register) return res.status(404).json({ success: false, message: 'No open register found for this location' });
+      // One transaction, register row locked: no sale, payment, refund, float
+      // or handover can land between the count and the save.
+      const outcome = await withMoneyTx(async (db) => {
+      const register = await lockOpenRegister(db, location_id);
+      if (!register) return { status: 404, body: { success: false, message: 'No open register found for this location' } };
 
-      const { paymentTotals, refundTotal, expectedCash } = computeRegisterClose(db, register, location_id);
+      const { paymentTotals, refundTotal, expectedCash } = await computeRegisterClose(db, register, location_id);
       const discrepancy = expectedCash - actual_cash;
 
       // Blind count: once a close has offered to book extra cash, the count is
@@ -917,15 +822,15 @@ router.put(
       const lockedCount = register.close_count_locked == null ? null : Number(register.close_count_locked);
       const canOverrideCount = req.user.role === 'owner' || req.user.role === 'manager';
       if (lockedCount != null && !canOverrideCount && Math.abs(lockedCount - Number(actual_cash)) >= 0.005) {
-        return res.status(409).json({
+        return { status: 409, body: {
           success: false,
           code: 'COUNT_LOCKED',
           locked_cash: lockedCount,
           message: 'You already counted ₹' + lockedCount.toLocaleString('en-IN', { maximumFractionDigits: 2 }) + ' in the drawer. Close with that amount, or ask a manager to close the register.',
-        });
+        } };
       }
       if (isPreview && lockedCount == null && -discrepancy >= 1) {
-        db.prepare('UPDATE cash_registers SET close_count_locked = ? WHERE id = ? AND close_count_locked IS NULL').run(Number(actual_cash), register.id);
+        await db.prepare('UPDATE cash_registers SET close_count_locked = ? WHERE id = ? AND close_count_locked IS NULL').run(Number(actual_cash), register.id);
       }
 
       // Preview: report what a close would record, without closing anything.
@@ -933,7 +838,7 @@ router.put(
         // Same unsettled delivery cash the register status banner shows.
         let pendingCod = 0;
         try {
-          const codRow = db.prepare(`
+          const codRow = await db.prepare(`
             SELECT COALESCE(SUM(d.cod_collected), 0) as total
             FROM deliveries d
             WHERE d.location_id = ?
@@ -947,7 +852,7 @@ router.put(
 
         // Every preview leaves a trail; apart from the count lock above it never changes the register.
         try {
-          db.prepare(`
+          await db.prepare(`
             INSERT INTO audit_logs (entity_type, entity_id, user_id, action, previous_state, new_state, created_at)
             VALUES ('cash_register', ?, ?, 'register_close_preview', ?, ?, CURRENT_TIMESTAMP)
           `).run(
@@ -958,7 +863,8 @@ router.put(
           );
         } catch (auditErr) { console.error('register close preview audit failed:', auditErr.message); }
 
-        return res.json({ success: true, data: { preview: true, expected_cash: expectedCash, actual_cash: Number(actual_cash), discrepancy, pending_cod: pendingCod } });
+        const shutTime = await computeShutTimePayments(db, register, location_id);
+        return { status: 200, body: { success: true, data: { preview: true, expected_cash: expectedCash, actual_cash: Number(actual_cash), discrepancy, pending_cod: pendingCod, shut_time_payments: shutTime } } };
       }
 
       // Cash still out with helpers (bag mode). Close goes ahead; the bags
@@ -970,7 +876,7 @@ router.put(
           .map((b) => ({ staff_id: b.staff_id, name: b.name, held: b.held }));
       } catch (bagErr) { console.error('register close helper bag read failed:', bagErr.message); }
 
-      const closeResult = db.prepare(`
+      const closeResult = await db.prepare(`
         UPDATE cash_registers SET
           total_cash_sales = ?, total_card_sales = ?, total_upi_sales = ?,
           total_refunds_cash = ?, expected_cash = ?,
@@ -989,8 +895,12 @@ router.put(
       );
       // Someone else closed it a moment ago: do not close it twice
       if (!closeResult || closeResult.changes === 0) {
-        return res.status(409).json({ success: false, message: 'This register was just closed by someone else. Refresh to see it.' });
+        return { status: 409, body: { success: false, message: 'This register was just closed by someone else. Refresh to see it.' } };
       }
+      return { status: 0, register, openBags };
+      });
+      if (outcome.status) return res.status(outcome.status).json(outcome.body);
+      const { register, openBags } = outcome;
 
       if (openBags.length > 0) {
         try {
@@ -1271,9 +1181,18 @@ router.put('/:id', authenticate, authorize('owner', 'manager', 'employee', 'coun
       return res.status(400).json({ success: false, message: "This sale was undone or cancelled — it can't be changed." });
     }
 
-    // 1. Permission Check
-    if (['employee', 'counter_staff'].includes(req.user.role) && oldSale.created_by !== req.user.id) {
-      return res.status(403).json({ success: false, message: 'Employees can only edit sales they created' });
+    // 1. Permission Check. Staff edit their own sales. A coworker's quick
+    // sale is the exception: anyone working at that shop may switch its
+    // Cash/UPI (only the payment, only while its register session is open,
+    // checked below); the audit log records who changed it.
+    const EDIT_FIELDS = ['customer_name', 'customer_phone', 'payment_status', 'order_notes', 'customer_notes', 'items', 'delivery_address'];
+    const onlyPaymentChange = Array.isArray(req.body.payments) && EDIT_FIELDS.every((k) => req.body[k] === undefined);
+    if (['employee', 'counter_staff'].includes(req.user.role) && Number(oldSale.created_by) !== Number(req.user.id)) {
+      const worksHere = oldSale.entry_mode === 'quick' && onlyPaymentChange
+        && await db.prepare('SELECT 1 AS ok FROM user_locations WHERE user_id = ? AND location_id = ?').get(req.user.id, oldSale.location_id);
+      if (!worksHere) {
+        return res.status(403).json({ success: false, message: 'Employees can only edit sales they created' });
+      }
     }
 
     // 2. Time/Register Check
@@ -1302,9 +1221,11 @@ router.put('/:id', authenticate, authorize('owner', 'manager', 'employee', 'coun
     // We allow updating limited fields in this MVP
     const {
       customer_name, customer_phone,
-      payment_status, order_notes,
+      payment_status, order_notes, customer_notes,
       items, delivery_address
     } = req.body;
+    // The notes column is customer_notes (order_notes is accepted as its old name)
+    const notesValue = customer_notes !== undefined ? customer_notes : order_notes;
     let { payments } = req.body;
 
     // Held helper cash (bag mode): the payment rows carry held_by and their
@@ -1320,13 +1241,59 @@ router.put('/:id', authenticate, authorize('owner', 'manager', 'employee', 'coun
       payments = undefined;
     }
 
+    if (items && Array.isArray(items)) {
+  // Validate every item before writing anything, so a bad item never
+  // reaches the transaction below.
+    for (const item of items) {
+      if (!item.id) continue;
+      if (item.quantity !== undefined && item.quantity !== null) {
+        const qty = Number(item.quantity);
+        if (!Number.isFinite(qty) || qty <= 0) {
+          return res.status(400).json({ success: false, message: `Item ${item.id}: quantity must be a positive number` });
+        }
+      }
+      if (item.unit_price !== undefined && item.unit_price !== null) {
+        const price = Number(item.unit_price);
+        if (!Number.isFinite(price) || price < 0) {
+          return res.status(400).json({ success: false, message: `Item ${item.id}: price cannot be negative` });
+        }
+      }
+    }
+    }
+
+    if (Array.isArray(payments)) {
+      for (const pmt of payments) {
+        const amt = Number(pmt && pmt.amount);
+        if (!pmt || !['cash', 'card', 'upi'].includes(pmt.method) || !Number.isFinite(amt) || amt <= 0) {
+          return res.status(400).json({ success: false, message: 'Each payment needs Cash, Card or UPI and an amount above ₹0.' });
+        }
+      }
+    }
+
+    // Every write below is one transaction. Lock order: the sale row, then
+    // the open register (only when payments change).
+    const newState = await withMoneyTx(async (db) => {
+    await db.prepare('SELECT id FROM sales WHERE id = ? FOR UPDATE').get(saleId);
     const updates = [];
     const params = [];
 
     if (customer_name !== undefined) { updates.push('customer_name = ?'); params.push(customer_name); }
     if (customer_phone !== undefined) { updates.push('customer_phone = ?'); params.push(customer_phone); }
-    if (payment_status !== undefined) { updates.push('payment_status = ?'); params.push(payment_status); }
-    if (order_notes !== undefined) { updates.push('order_notes = ?'); params.push(order_notes); }
+    // Paid / partly paid / unpaid follows the money. A status sent on its own
+    // that changes it to something the payments don't show is refused (it
+    // used to be saved as typed, so an order could say Paid with no money).
+    if (payment_status !== undefined && payment_status !== oldSale.payment_status && !Array.isArray(payments) && !(items && Array.isArray(items))) {
+      const paidNow = oldPayments.reduce((t, p) => t + (Number(p.amount) || 0), 0);
+      const gt = Number(oldSale.grand_total) || 0;
+      const byMoney = paidNow >= gt - 0.009 ? 'paid' : (paidNow > 0.009 ? 'partial' : 'pending');
+      if (payment_status !== byMoney && payment_status !== 'refunded') {
+        const e = new Error(`This order has ₹${paidNow.toFixed(2)} paid of ₹${gt.toFixed(2)}. To take more money use Add Payment. To give money back use Refund.`);
+        e.statusCode = 409;
+        throw e;
+      }
+    }
+    if (payment_status !== undefined && !Array.isArray(payments)) { updates.push('payment_status = ?'); params.push(payment_status); }
+    if (notesValue !== undefined) { updates.push('customer_notes = ?'); params.push(notesValue); }
     if (delivery_address !== undefined) { updates.push('delivery_address = ?'); params.push(delivery_address); }
 
     if (updates.length > 0) {
@@ -1359,12 +1326,24 @@ router.put('/:id', authenticate, authorize('owner', 'manager', 'employee', 'coun
     // payments by created_at >= sessionStart); preserving the original
     // timestamp keeps it correctly out of that later window.
     if (payments && Array.isArray(payments)) {
+      // Only money methods can be edited here. Write-off lines are kept
+      // exactly as they are (a write-off is never edited into a payment or
+      // back), and none can be added this way past the write-off limit.
+      if (payments.some((p) => !['cash', 'card', 'upi'].includes(p && p.method))) {
+        const e = new Error('Pick Cash, Card or UPI for each payment.');
+        e.statusCode = 400;
+        throw e;
+      }
+      // Re-read under the lock (rows in the transaction's shape)
+      const allLockedPayments = await db.prepare('SELECT * FROM payments WHERE sale_id = ?').all(saleId);
+      const lockedOldPayments = allLockedPayments.filter((p) => p.method !== WRITE_OFF_METHOD);
+      const writtenOff = allLockedPayments.filter((p) => p.method === WRITE_OFF_METHOD).reduce((t, p) => t + (Number(p.amount) || 0), 0);
       const sumByMethod = (rows) => rows.reduce((acc, p) => {
         const m = p.method === 'cash' || p.method === 'card' || p.method === 'upi' ? p.method : 'cash';
         acc[m] = (acc[m] || 0) + Number(p.amount || 0);
         return acc;
       }, { cash: 0, card: 0, upi: 0 });
-      const oldTotals = sumByMethod(oldPayments);
+      const oldTotals = sumByMethod(lockedOldPayments);
       const newTotals = sumByMethod(payments);
       const delta = {
         cash: newTotals.cash - oldTotals.cash,
@@ -1372,12 +1351,25 @@ router.put('/:id', authenticate, authorize('owner', 'manager', 'employee', 'coun
         upi: newTotals.upi - oldTotals.upi,
       };
 
-      const openRegister = await db.prepare(
-        'SELECT id FROM cash_registers WHERE location_id = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1'
-      ).get(oldSale.location_id);
+      const changed = delta.cash !== 0 || delta.card !== 0 || delta.upi !== 0 || !samePaymentSet(lockedOldPayments, payments);
+      const openRegister = changed ? await lockOpenRegister(db, oldSale.location_id) : null;
 
-      if (delta.cash !== 0 && !openRegister) {
-        return res.status(400).json({ success: false, message: REGISTER_CLOSED_MESSAGE });
+      if (delta.cash !== 0 && !openRegister) throw registerClosedError();
+
+      // A payment taken in a register session that is already closed was
+      // counted at that close. Changing it now would move cash in a different
+      // session than the one that held it, so it is refused.
+      // (Same created_at test close uses. With no register open at all, the
+      // day has none yet, since a closed one stops the edit above, so no
+      // session counted these payments.)
+      if (changed && openRegister && lockedOldPayments.length > 0) {
+        const fromClosedSession = await db.prepare("SELECT 1 AS x FROM payments WHERE sale_id = ? AND method != 'write_off' AND created_at < ? LIMIT 1")
+          .get(saleId, openRegister.opening_time || openRegister.opened_at);
+        if (fromClosedSession) {
+          const e = new Error("This payment was counted when the register was closed, so it can't be changed here. Use Refund on the sale instead.");
+          e.statusCode = 409;
+          throw e;
+        }
       }
 
       if (openRegister && (delta.cash !== 0 || delta.card !== 0 || delta.upi !== 0)) {
@@ -1386,65 +1378,96 @@ router.put('/:id', authenticate, authorize('owner', 'manager', 'employee', 'coun
         ).run(delta.cash, delta.cash, delta.card, delta.upi, openRegister.id);
       }
 
-      const preservedCreatedAt = oldPayments.length > 0
-        ? oldPayments.reduce((earliest, p) => (p.created_at < earliest ? p.created_at : earliest), oldPayments[0].created_at)
+      const preservedCreatedAt = lockedOldPayments.length > 0
+        ? lockedOldPayments.reduce((earliest, p) => (p.created_at < earliest ? p.created_at : earliest), lockedOldPayments[0].created_at)
         : nowLocal();
 
-      await db.prepare('DELETE FROM payments WHERE sale_id = ?').run(saleId);
+      await db.prepare('DELETE FROM payments WHERE sale_id = ? AND method != ?').run(saleId, WRITE_OFF_METHOD);
       const insertPayment = db.prepare('INSERT INTO payments (sale_id, method, amount, reference_number, received_by, created_at) VALUES (?, ?, ?, ?, ?, ?)');
       for (const pmt of payments) {
         await insertPayment.run(saleId, pmt.method, pmt.amount, pmt.reference_number || null, req.user.id, preservedCreatedAt);
+      }
+
+      // The paid total changed (e.g. an unpaid order marked paid). Item edits
+      // below redo status, dues and COD from the new total themselves.
+      // Settled amounts: money plus any write-off, as everywhere else
+      const oldPaid = lockedOldPayments.reduce((t, p) => t + (Number(p.amount) || 0), 0) + writtenOff;
+      const newPaid = payments.reduce((t, p) => t + (Number(p.amount) || 0), 0) + writtenOff;
+      if (!(items && Array.isArray(items))) {
+        const cur = await db.prepare('SELECT grand_total, order_type, sender_customer_id, customer_id, is_credit_sale FROM sales WHERE id = ?').get(saleId);
+        const gt = Number(cur.grand_total) || 0;
+        if (newPaid - gt > 0.009 && newPaid - oldPaid > 0.009) {
+          const e = new Error(`The payment (₹${newPaid.toFixed(2)}) is more than the bill (₹${gt.toFixed(2)}). Enter only the bill amount and give change from the drawer.`);
+          e.statusCode = 400;
+          throw e;
+        }
+        if (Math.abs(newPaid - oldPaid) > 0.009) {
+          const status = newPaid >= gt - 0.009 ? 'paid' : (newPaid > 0.009 ? 'partial' : 'pending');
+          await db.prepare('UPDATE sales SET payment_status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(status, saleId);
+          const duesCustomerId = (cur.order_type === 'delivery' && cur.sender_customer_id) ? cur.sender_customer_id : cur.customer_id;
+          const unpaidBefore = Math.max(0, gt - oldPaid);
+          const unpaidAfter = Math.max(0, gt - newPaid);
+          if (duesCustomerId && Math.abs(unpaidBefore - unpaidAfter) > 0.009) {
+            await db.prepare('UPDATE users SET credit_balance = GREATEST(0, credit_balance - ? + ?), updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+              .run(unpaidBefore, unpaidAfter, duesCustomerId);
+          }
+          if (cur.order_type === 'delivery' || cur.order_type === 'pre_order') {
+            const cod = cur.is_credit_sale ? 0 : unpaidAfter;
+            await db.prepare("UPDATE deliveries SET cod_amount = ?, cod_status = ? WHERE sale_id = ? AND status NOT IN ('delivered', 'cancelled')")
+              .run(cod, cod > 0.01 ? 'pending' : 'collected', saleId);
+          }
+        }
       }
     }
 
     // Update items if provided (edit existing rows only; no add/remove in this task)
     if (items && Array.isArray(items)) {
-      // Validate every item before writing anything — this loop isn't wrapped in a
-      // DB transaction (see the parked transaction-safety note below), so rejecting
-      // up front avoids leaving earlier items in the array updated while a later one
-      // fails, and avoids ever writing a negative/zero quantity or negative price.
-      for (const item of items) {
-        if (!item.id) continue;
-        if (item.quantity !== undefined && item.quantity !== null) {
-          const qty = Number(item.quantity);
-          if (!Number.isFinite(qty) || qty <= 0) {
-            return res.status(400).json({ success: false, message: `Item ${item.id}: quantity must be a positive number` });
+      const billPlan = await planBill(db, saleId, {
+        overrides: new Map(items.filter((it) => it.id).map((it) => [Number(it.id), {
+          quantity: it.quantity ?? null, shelf_price: it.shelf_price ?? null, unit_price: it.unit_price ?? null,
+        }])),
+      });
+      let newGrandTotal;
+      let legacyTotals = null;
+      if (billPlan) {
+        // GST sale: the whole bill is worked out again (utils/sale-bill.js)
+        for (const item of items) {
+          if (item.id && item.product_name != null) {
+            await db.prepare('UPDATE sale_items SET product_name = ? WHERE id = ? AND sale_id = ?').run(item.product_name, item.id, saleId);
           }
         }
-        if (item.unit_price !== undefined && item.unit_price !== null) {
-          const price = Number(item.unit_price);
-          if (!Number.isFinite(price) || price < 0) {
-            return res.status(400).json({ success: false, message: `Item ${item.id}: price cannot be negative` });
-          }
+        newGrandTotal = billPlan.grandTotal;
+      } else {
+        const updateItem = db.prepare('UPDATE sale_items SET quantity = COALESCE(?, quantity), unit_price = COALESCE(?, unit_price), product_name = COALESCE(?, product_name) WHERE id = ? AND sale_id = ?');
+        for (const item of items) {
+          if (!item.id) continue;
+          await updateItem.run(item.quantity ?? null, item.unit_price ?? null, item.product_name ?? null, item.id, saleId);
         }
-      }
+        // Recalculate totals after item edits, and their downstream consequences
+        // (tax_total, percentage discount_amount, payment_status, deliveries.cod_amount).
+        // NOTE: recalcSaleTotals() (defined near the top of this file) is written for the
+        // sync db layer (db.prepare().run() without await) and must NOT be called from this
+        // async route. Recompute inline using the async db instance instead — logic adapted
+        // from the equivalent recalculation in POST /:id/payments further down this file.
+        const updatedItems = await db.prepare('SELECT * FROM sale_items WHERE sale_id = ?').all(saleId);
+        // Guard each term with `|| 0`, not just the outer Number(...) call — a single row
+        // with a non-numeric/garbled unit_price or quantity would otherwise turn the whole
+        // reduce() into NaN and silently corrupt this sale's totals for every item, not just
+        // the bad one.
+        const newSubtotal = updatedItems.reduce((s, i) => s + ((Number(i.unit_price) || 0) * (Number(i.quantity) || 0)), 0);
+        const newTaxTotal = updatedItems.reduce((s, i) => s + (Number(i.tax_amount) || 0), 0);
+        const currentSale = await db.prepare('SELECT discount_amount, discount_type, discount_percentage, delivery_charges, order_type, is_credit_sale FROM sales WHERE id = ?').get(saleId);
 
-      const updateItem = db.prepare('UPDATE sale_items SET quantity = COALESCE(?, quantity), unit_price = COALESCE(?, unit_price), product_name = COALESCE(?, product_name) WHERE id = ? AND sale_id = ?');
-      for (const item of items) {
-        if (!item.id) continue;
-        await updateItem.run(item.quantity ?? null, item.unit_price ?? null, item.product_name ?? null, item.id, saleId);
-      }
-      // Recalculate totals after item edits, and their downstream consequences
-      // (tax_total, percentage discount_amount, payment_status, deliveries.cod_amount).
-      // NOTE: recalcSaleTotals() (defined near the top of this file) is written for the
-      // sync db layer (db.prepare().run() without await) and must NOT be called from this
-      // async route. Recompute inline using the async db instance instead — logic adapted
-      // from the equivalent recalculation in POST /:id/payments further down this file.
-      const updatedItems = await db.prepare('SELECT * FROM sale_items WHERE sale_id = ?').all(saleId);
-      // Guard each term with `|| 0`, not just the outer Number(...) call — a single row
-      // with a non-numeric/garbled unit_price or quantity would otherwise turn the whole
-      // reduce() into NaN and silently corrupt this sale's totals for every item, not just
-      // the bad one.
-      const newSubtotal = updatedItems.reduce((s, i) => s + ((Number(i.unit_price) || 0) * (Number(i.quantity) || 0)), 0);
-      const newTaxTotal = updatedItems.reduce((s, i) => s + (Number(i.tax_amount) || 0), 0);
-      const currentSale = await db.prepare('SELECT discount_amount, discount_type, discount_percentage, delivery_charges, order_type, is_credit_sale FROM sales WHERE id = ?').get(saleId);
+        let newDiscountAmount = Number(currentSale.discount_amount || 0);
+        if (currentSale.discount_type === 'percentage' && Number(currentSale.discount_percentage) > 0) {
+          newDiscountAmount = newSubtotal * Number(currentSale.discount_percentage) / 100;
+        }
 
-      let newDiscountAmount = Number(currentSale.discount_amount || 0);
-      if (currentSale.discount_type === 'percentage' && Number(currentSale.discount_percentage) > 0) {
-        newDiscountAmount = newSubtotal * Number(currentSale.discount_percentage) / 100;
+        newGrandTotal = Math.max(0, newSubtotal - newDiscountAmount) + newTaxTotal + Number(currentSale.delivery_charges || 0);
+        // The old (pre-GST) maths keeps writing its own figures below
+        legacyTotals = { newSubtotal, newTaxTotal, newDiscountAmount };
       }
-
-      const newGrandTotal = Math.max(0, newSubtotal - newDiscountAmount) + newTaxTotal + Number(currentSale.delivery_charges || 0);
+      const currentSale = await db.prepare('SELECT order_type, is_credit_sale FROM sales WHERE id = ?').get(saleId);
 
       // Recalculate payment status by comparing total paid against the new grand total
       const totalPaidRow = await db.prepare('SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE sale_id = ?').get(saleId);
@@ -1455,9 +1478,33 @@ router.put('/:id', authenticate, authorize('owner', 'manager', 'employee', 'coun
       if (roundedTotalPaid >= roundedGrandTotal - 0.01) newPaymentStatus = 'paid';
       else if (roundedTotalPaid > 0) newPaymentStatus = 'partial';
 
-      await db.prepare(
-        'UPDATE sales SET subtotal = ?, tax_total = ?, discount_amount = ?, grand_total = ?, payment_status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'
-      ).run(newSubtotal, newTaxTotal, newDiscountAmount, newGrandTotal, newPaymentStatus, saleId);
+      // Lowering an order below what was already paid would leave money to
+      // give back with no refund record: refuse, same as convert-type
+      const refundedRow = await db.prepare("SELECT COALESCE(SUM(amount), 0) AS refunded FROM refunds WHERE sale_id = ?").get(saleId);
+      if (Number(refundedRow.refunded) === 0 && totalPaid - newGrandTotal > 0.009) {
+        const e = new Error(`This order is already paid ₹${totalPaid.toFixed(2)}, more than the new total of ₹${newGrandTotal.toFixed(2)}. Keep the item as it was, or use Refund to give money back.`);
+        e.statusCode = 409;
+        throw e;
+      }
+      // Dues and total spent follow the new total (same rule as a new sale:
+      // the unpaid part sits on the sender for a delivery, else the customer)
+      const before = await db.prepare('SELECT grand_total, order_type, sender_customer_id, customer_id FROM sales WHERE id = ?').get(saleId);
+      const duesCustomerId = (before.order_type === 'delivery' && before.sender_customer_id) ? before.sender_customer_id : before.customer_id;
+      const oldTotal = Number(before.grand_total) || 0;
+      if (duesCustomerId && Math.abs(oldTotal - newGrandTotal) > 0.009) {
+        const unpaidBefore = Math.max(0, oldTotal - totalPaid);
+        const unpaidAfter = Math.max(0, newGrandTotal - totalPaid);
+        await db.prepare('UPDATE users SET total_spent = GREATEST(0, total_spent - ? + ?), credit_balance = GREATEST(0, credit_balance - ? + ?), updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+          .run(oldTotal, newGrandTotal, unpaidBefore, unpaidAfter, duesCustomerId);
+      }
+      if (billPlan) {
+        await writeBill(db, billPlan);
+        await db.prepare('UPDATE sales SET payment_status = ? WHERE id = ?').run(newPaymentStatus, saleId);
+      } else {
+        await db.prepare(
+          'UPDATE sales SET subtotal = ?, tax_total = ?, discount_amount = ?, grand_total = ?, payment_status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'
+        ).run(legacyTotals.newSubtotal, legacyTotals.newTaxTotal, legacyTotals.newDiscountAmount, newGrandTotal, newPaymentStatus, saleId);
+      }
 
       // Keep the delivery's COD amount in sync with the new outstanding balance
       if (currentSale.order_type === 'delivery' || currentSale.order_type === 'pre_order') {
@@ -1479,6 +1526,8 @@ router.put('/:id', authenticate, authorize('owner', 'manager', 'employee', 'coun
       INSERT INTO audit_logs (entity_type, entity_id, user_id, action, previous_state, new_state, created_at)
       VALUES ('sale', ?, ?, 'update', ?, ?, CURRENT_TIMESTAMP)
     `).run(saleId, req.user.id, JSON.stringify(oldState), JSON.stringify(newState));
+    return newState;
+    });
 
     if (req.user.role !== 'owner') delete newState.vendor_name;
 
@@ -1486,6 +1535,29 @@ router.put('/:id', authenticate, authorize('owner', 'manager', 'employee', 'coun
   } catch (err) { next(err); }
 });
 
+
+// ─── GET /api/sales/:id/invoice ──────────────────────────────
+// What the printed bill shows (utils/invoice-view.js): shop details from the
+// shop and owner bill settings, figures as saved on the sale. No cost data.
+router.get('/:id/invoice', authenticate, authorize('owner', 'manager', 'employee', 'counter_staff', 'florist_staff', 'delivery_partner'), async (req, res, next) => {
+  try {
+    const db = await getAsyncDb();
+    const view = await buildInvoiceView(db, req.params.id);
+    if (!view) return res.status(404).json({ success: false, message: 'Sale not found' });
+    res.json({ success: true, data: view });
+  } catch (err) { next(err); }
+});
+
+// ─── GET /api/sales/:id/credit-note ──────────────────────────
+// The printed credit note for this sale's refund (utils/invoice-view.js)
+router.get('/:id/credit-note', authenticate, authorize('owner', 'manager', 'employee', 'counter_staff'), async (req, res, next) => {
+  try {
+    const db = await getAsyncDb();
+    const view = await buildCreditNoteView(db, req.params.id);
+    if (!view) return res.status(404).json({ success: false, message: 'This order has no refund to print.' });
+    res.json({ success: true, data: view });
+  } catch (err) { next(err); }
+});
 
 // ─── GET /api/sales/:id ──────────────────────────────────────
 router.get('/:id', authenticate, async (req, res, next) => {
@@ -1810,7 +1882,7 @@ router.post(
     body('entry_mode').optional({ nullable: true }).isString(),
     body('sold_by').optional({ nullable: true }).isInt(),
   ],
-  (req, res, next) => {
+  async (req, res, next) => {
     try {
       const errors = validationResult(req);
       if (!errors.isEmpty()) return res.status(400).json({ success: false, message: 'Validation failed', errors: errors.array() });
@@ -1842,6 +1914,11 @@ router.post(
         }
         soldBy = Number(req.body.sold_by);
       }
+      // Buyer GSTIN (optional, for a business customer who wants a GST bill)
+      const buyerGstin = req.body.buyer_gstin ? String(req.body.buyer_gstin).trim().toUpperCase() : null;
+      if (buyerGstin && !GSTIN_RE.test(buyerGstin)) {
+        return res.status(400).json({ success: false, message: "That GSTIN doesn't look right. It has 15 letters and numbers, like 07ABCDE1234F1Z5. Check it or leave it empty." });
+      }
       // Mutable alias — may be set by auto-create logic below
       let customer_id = customer_id_from_body || null;
       // Owner-only field, but only owner/manager may set it at creation —
@@ -1859,24 +1936,62 @@ router.post(
         return res.status(400).json({ success: false, message: REGISTER_CLOSED_MESSAGE });
       }
 
-      const createSale = db.transaction(() => {
+      // Counter staff / employee discount over their limit: a manager or the
+      // owner OKs it on the spot with their approver code + PIN
+      // (discount_override, same shape as a helper sale). Checked here, before
+      // the sale transaction: the PIN check saves its try count with its own
+      // write, which a rolled-back transaction would undo. Whether the discount
+      // really needs it, and whether this approver's limit covers it, is
+      // decided inside, once the bill is worked out.
+      let staffDiscountApprover = null;
+      const override = req.body.discount_override;
+      if (['counter_staff', 'employee'].includes(req.user.role) && override && typeof override === 'object' && override.employee_code && override.pin) {
+        const code = String(override.employee_code).trim();
+        const who = await db.prepare("SELECT id, role, is_active FROM users WHERE employee_code = ? AND role IN ('manager', 'owner')").get(code);
+        if (!who || !Number(who.is_active)) {
+          return res.status(403).json({ success: false, code: 'DISCOUNT_APPROVER', message: "That code isn't a manager or the owner. Ask a manager or the owner to type their own code and PIN." });
+        }
+        // A manager must work at this shop (checked before the PIN, so a
+        // wrong-shop manager does not use up a try); the owner works anywhere
+        if (who.role === 'manager') {
+          const link = await db.prepare('SELECT 1 AS ok FROM user_locations WHERE user_id = ? AND location_id = ?').get(who.id, location_id);
+          if (!link) return res.status(403).json({ success: false, code: 'DISCOUNT_APPROVER', message: "That manager doesn't work at this shop. Ask a manager from this shop or the owner." });
+        }
+        try {
+          const approver = await verifyApprovalPin(await getAsyncDb(), code, String(override.pin));
+          staffDiscountApprover = { id: approver.id, role: approver.role };
+        } catch (e) {
+          if (e && e.pinCheck) return res.status(e.status || 401).json({ success: false, code: 'DISCOUNT_PIN', message: e.message });
+          throw e;
+        }
+      }
+
+      const createSale = () => withMoneyTx(async (db) => {
+        // Locks first (order: helper bag, then register). A helper's held cash
+        // sale takes the bag lock so a handover can't count around it; any
+        // payment that reaches the register locks it, so a close can't miss it.
+        if (heldBy) await lockBag(db, req.user.id);
+        const paysCashToRegister = !heldBy && (payments || []).some((p) => p.method === 'cash');
+        const lockedRegister = (payments && payments.length > 0) ? await lockOpenRegister(db, location_id) : null;
+        if (paysCashToRegister && !lockedRegister) throw registerClosedError();
+
         // Calculate line items — supports both products and raw materials
-        let subtotal = 0;
-        let taxTotal = 0;
-        const processedItems = items.map((item) => {
-          let name, unitPrice, taxRate = 0, productId = null, materialId = null;
+        const gstCfg = await readGstSettings(db);
+        const processedItems = [];
+        for (const item of items) processedItems.push(await (async () => {
+          let name, unitPrice, taxRate = 0, productId = null, materialId = null, hsn = null;
 
           if (item.material_id) {
             // Raw material sale
-            const material = db.prepare('SELECT id, name FROM materials WHERE id = ? AND is_active = 1').get(item.material_id);
+            const material = await db.prepare('SELECT id, name FROM materials WHERE id = ? AND is_active = 1').get(item.material_id);
             if (!material) throw new Error(`Material ID ${item.material_id} not found or inactive`);
             name = item.product_name || material.name;
             unitPrice = item.unit_price;
-            taxRate = item.tax_rate || 0;
+            taxRate = item.tax_rate != null && item.tax_rate !== '' ? Number(item.tax_rate) || 0 : gstCfg.defaultRate;
             materialId = material.id;
           } else if (item.product_id) {
             // Product sale
-            const product = db.prepare('SELECT id, name, tax_rate_id, selling_price FROM products WHERE id = ? AND is_active = 1').get(item.product_id);
+            const product = await db.prepare('SELECT id, name, tax_rate_id, selling_price, hsn_code FROM products WHERE id = ? AND is_active = 1').get(item.product_id);
             if (!product && entryMode) {
               const inactiveErr = new Error("This item isn't sold any more — the buttons have been refreshed");
               inactiveErr.statusCode = 400;
@@ -1886,7 +2001,7 @@ router.post(
             unitPrice = item.unit_price != null ? item.unit_price : product.selling_price;
             taxRate = 0;
             if (product.tax_rate_id) {
-              const tr = db.prepare('SELECT percentage FROM tax_rates WHERE id = ?').get(product.tax_rate_id);
+              const tr = await db.prepare('SELECT percentage FROM tax_rates WHERE id = ?').get(product.tax_rate_id);
               if (tr) taxRate = tr.percentage;
             }
             if (item.tax_rate !== undefined && item.tax_rate !== null && !Number.isNaN(Number(item.tax_rate))) {
@@ -1894,56 +2009,78 @@ router.post(
             }
             name = item.product_name || product.name;
             productId = product.id;
+            // A changed HSN typed at the counter wins over the product's own
+            hsn = cleanHsn(item.hsn_code) || product.hsn_code || null;
           } else {
             // Custom ad-hoc item
             name = item.product_name || 'Custom Item';
             unitPrice = Number(item.unit_price) || 0;
-            taxRate = item.tax_rate || 0;
+            taxRate = item.tax_rate != null && item.tax_rate !== '' ? Number(item.tax_rate) || 0 : gstCfg.defaultRate;
+            hsn = cleanHsn(item.hsn_code);
             productId = null;
             materialId = null;
           }
 
           const qty = item.quantity || 1;
-          const taxInclusive = item.tax_inclusive !== false;
-          let taxableUnitPrice = Number(unitPrice) || 0;
-          let taxAmount = 0;
+          // Prices include GST. An older app sends the price without GST
+          // (tax_inclusive: false); put GST back on to get the shelf price.
+          const rate = Number(taxRate) || 0;
+          const shelfPrice = item.tax_inclusive === false && rate > 0
+            ? Math.round(Number(unitPrice || 0) * (100 + rate)) / 100
+            : Math.round(Number(unitPrice || 0) * 100) / 100;
 
-          if (taxRate > 0) {
-            if (taxInclusive) {
-              const gross = taxableUnitPrice * qty;
-              taxAmount = (gross * taxRate) / (100 + taxRate);
-              taxableUnitPrice = taxableUnitPrice - (taxableUnitPrice * taxRate) / (100 + taxRate);
-            } else {
-              taxAmount = (taxableUnitPrice * qty * taxRate) / 100;
-            }
-          }
+          return { product_id: productId, material_id: materialId, product_name: name, quantity: qty, shelf_price: shelfPrice, tax_rate: rate, hsn_code: hsn || gstCfg.defaultHsn || null, special_instructions: item.special_instructions || null, image_url: item.image_url || null, custom_materials: item.custom_materials || null, fulfill_from_stock: item.fulfill_from_stock };
+        })());
 
-          const lineTotal = (taxableUnitPrice * qty) + taxAmount;
-          subtotal += taxableUnitPrice * qty;
-          taxTotal += taxAmount;
-
-          return { product_id: productId, material_id: materialId, product_name: name, quantity: qty, unit_price: taxableUnitPrice, tax_rate: taxRate, tax_amount: taxAmount, line_total: lineTotal, special_instructions: item.special_instructions || null, image_url: item.image_url || null, custom_materials: item.custom_materials || null, fulfill_from_stock: item.fulfill_from_stock };
+        // GST bill maths (utils/gst.js, shared with the app): discount off the
+        // GST-inclusive price, shared over the lines, GST on what is left,
+        // delivery taxed at its own rate, total rounded to the rupee.
+        const bill = computeBill(
+          processedItems.map((it) => ({ unitPrice: it.shelf_price, qty: it.quantity, taxRate: it.tax_rate })),
+          discount_type && discount_value > 0 ? { type: discount_type, value: discount_value } : null,
+          { amount: delivery_charges || 0, taxRate: gstCfg.deliveryRate },
+          // Typed-amount sales (quick sale, close top-up) and helper sales are
+          // never rounded: the sale must equal the money actually taken, and a
+          // helper phone works the total out without the shop settings
+          { roundOff: gstCfg.roundOff && !entryMode && !req.helperSale }
+        );
+        if (bill.error) {
+          const e = new Error(bill.error);
+          e.statusCode = 400;
+          throw e;
+        }
+        bill.lines.forEach((l, i) => {
+          const it = processedItems[i];
+          it.unit_price = Math.round(l.unitTaxable * 100) / 100;
+          it.tax_amount = l.taxP / 100;
+          it.gross_amount = l.grossP / 100;
+          it.discount_amount = l.discountP / 100;
+          it.taxable_value = l.taxableP / 100;
+          it.cgst_amount = l.cgstP / 100;
+          it.sgst_amount = l.sgstP / 100;
+          it.line_total = l.netP / 100;
         });
+        const itemsTaxableP = bill.lines.reduce((t, l) => t + l.taxableP, 0);
+        const itemsTaxP = bill.lines.reduce((t, l) => t + l.taxP, 0);
+        // Kept so grand_total = subtotal - discount + tax + delivery + round_off
+        // holds for every sale, old and new (reports rely on it).
+        const subtotal = (itemsTaxableP + bill.discountP) / 100;
+        const taxTotal = itemsTaxP / 100;
 
         // Discount — with threshold enforcement
         let discountAmount = 0;
         let discountPercentage = null;
         let discountApprovedBy = null;
         if (discount_type && discount_value > 0) {
-          if (discount_type === 'percentage') {
-            discountPercentage = discount_value;
-            discountAmount = subtotal * discount_value / 100;
-          } else {
-            discountAmount = discount_value;
-            discountPercentage = subtotal > 0 ? (discount_value / subtotal) * 100 : 0;
-          }
+          discountAmount = bill.discountP / 100;
+          discountPercentage = discount_type === 'percentage' ? Number(discount_value) : Math.round(bill.discountPct * 100) / 100;
 
           // Enforce discount thresholds
           const mgrThreshold = parseFloat(
-            (db.prepare("SELECT value FROM settings WHERE key = 'discount_manager_threshold'").get() || {}).value || '20'
+            (await db.prepare("SELECT value FROM settings WHERE key = 'discount_manager_threshold'").get() || {}).value || '20'
           );
           const ownerThreshold = parseFloat(
-            (db.prepare("SELECT value FROM settings WHERE key = 'discount_owner_threshold'").get() || {}).value || '30'
+            (await db.prepare("SELECT value FROM settings WHERE key = 'discount_owner_threshold'").get() || {}).value || '30'
           );
           const effectivePct = discountPercentage || 0;
 
@@ -1955,22 +2092,28 @@ router.post(
               throw e;
             }
             discountApprovedBy = req.helperSale.approvedBy;
-          } else if (effectivePct > ownerThreshold) {
-            // Only owner can approve
-            if (req.user.role !== 'owner') {
-              throw new Error(`Discount of ${effectivePct.toFixed(1)}% exceeds owner threshold (${ownerThreshold}%). Only an owner can apply this discount.`);
-            }
-            discountApprovedBy = req.user.id;
           } else if (effectivePct > mgrThreshold) {
-            // Manager or owner can approve
-            if (req.user.role !== 'owner' && req.user.role !== 'manager') {
-              throw new Error(`Discount of ${effectivePct.toFixed(1)}% exceeds manager threshold (${mgrThreshold}%). A manager or owner must apply this discount.`);
+            // Above the counter limit: the caller's own role, or the manager /
+            // owner who typed their PIN, must cover it. Owner: any discount;
+            // manager: up to the owner threshold.
+            const covers = (role) => role === 'owner' || (role === 'manager' && effectivePct <= ownerThreshold);
+            const needOwner = effectivePct > ownerThreshold;
+            if (covers(req.user.role)) {
+              discountApprovedBy = req.user.id;
+            } else if (staffDiscountApprover && covers(staffDiscountApprover.role)) {
+              discountApprovedBy = staffDiscountApprover.id;
+            } else {
+              const e = new Error(needOwner
+                ? `${effectivePct.toFixed(1)}% off is more than ${ownerThreshold}%. Only the owner can OK this. Ask the owner to type their code and PIN, or lower the discount.`
+                : `${effectivePct.toFixed(1)}% off is more than the ${mgrThreshold}% you can give. Ask a manager or the owner to type their code and PIN, or lower the discount.`);
+              e.statusCode = 403;
+              e.code = staffDiscountApprover ? 'DISCOUNT_NEEDS_OWNER' : 'DISCOUNT_NEEDS_OK';
+              throw e;
             }
-            discountApprovedBy = req.user.id;
           }
         }
 
-        const grandTotal = Math.round((Math.max(0, subtotal - discountAmount) + taxTotal + (delivery_charges || 0)) * 100) / 100;
+        const grandTotal = bill.payableP / 100;
 
         // Determine payment status
         const totalPaid = (payments || []).reduce((s, p) => s + (Number(p.amount) || 0), 0);
@@ -1981,11 +2124,18 @@ router.post(
           e.statusCode = 400;
           throw e;
         }
+        // More money than the bill is never recorded: change is given from
+        // the drawer, and only the bill amount is entered
+        if (Math.round(roundedTotalPaid * 100) > Math.round(grandTotal * 100)) {
+          const e = new Error(`The payment (₹${roundedTotalPaid.toFixed(2)}) is more than the bill (₹${grandTotal.toFixed(2)}). Enter only the bill amount and give change from the drawer.`);
+          e.statusCode = 400;
+          throw e;
+        }
         let paymentStatus = 'pending';
         if (roundedTotalPaid >= grandTotal - 0.01) paymentStatus = 'paid';
         else if (roundedTotalPaid > 0) paymentStatus = 'partial';
 
-        const saleNumber = generateSaleNumber(db, location_id);
+        const saleNumber = await generateSaleNumber(db, location_id);
         let saleCustomerName = customer_name || null;
         let saleCustomerPhone = customer_phone || null;
         let senderCustomerId = null;
@@ -2018,7 +2168,7 @@ router.post(
             receiverPhoneForSale = senderPhoneForSale;
           }
 
-          senderCustomerId = resolveOrCreateCustomer(db, {
+          senderCustomerId = await resolveOrCreateCustomer(db, {
             customerId: sender_customer_id_from_body || (!senderExplicit ? customer_id_from_body : null),
             name: senderNameForSale || customer_name,
             phone: senderPhoneForSale || customer_phone,
@@ -2026,14 +2176,14 @@ router.post(
 
           receiverCustomerId = senderReceiverSame
             ? senderCustomerId
-            : resolveOrCreateCustomer(db, {
+            : await resolveOrCreateCustomer(db, {
               customerId: receiver_customer_id_from_body || null,
               name: receiverNameForSale,
               phone: receiverPhoneForSale,
             });
 
           if (senderExplicit && customerExplicit) {
-            customer_id = resolveOrCreateCustomer(db, {
+            customer_id = await resolveOrCreateCustomer(db, {
               customerId: customer_id_from_body || null,
               name: customer_name,
               phone: customer_phone,
@@ -2046,7 +2196,7 @@ router.post(
             saleCustomerPhone = senderPhoneForSale || customer_phone || receiverPhoneForSale || null;
           }
         } else {
-          customer_id = resolveOrCreateCustomer(db, {
+          customer_id = await resolveOrCreateCustomer(db, {
             customerId: customer_id_from_body || null,
             name: customer_name,
             phone: customer_phone,
@@ -2095,7 +2245,7 @@ router.post(
             }
 
             if (item.product_id) {
-              const ready = getReadyStockCheck.get(item.product_id, location_id);
+              const ready = await getReadyStockCheck.get(item.product_id, location_id);
               if (!ready || ready.quantity < item.quantity) {
                 allSubmittableFromStock = false;
                 break;
@@ -2122,8 +2272,12 @@ router.post(
           needsProduction = true;
         }
 
+        // Invoice number: taken last, inside this transaction, so a refused
+        // or failed sale never uses one up
+        const invoice = await nextInvoiceNumber(db, location_id, 'invoice');
+
         // Insert sale
-        const saleResult = db.prepare(`
+        const saleResult = await db.prepare(`
           INSERT INTO sales (sale_number, location_id, customer_id, customer_name, customer_phone,
             subtotal, tax_total, discount_amount, discount_type, discount_percentage, discount_approved_by,
             delivery_charges, delivery_address, scheduled_date, scheduled_time,
@@ -2131,8 +2285,10 @@ router.post(
             special_instructions, customer_notes,
             sender_customer_id, receiver_customer_id, sender_same_as_receiver,
             sender_name, sender_phone, receiver_name, receiver_phone, sender_message,
-            created_by, created_at, is_credit_sale, vendor_name, entry_mode, sold_by, client_ref)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            created_by, created_at, is_credit_sale, vendor_name, entry_mode, sold_by, client_ref,
+            bill_version, round_off, delivery_tax, delivery_tax_rate, taxable_total, cgst_total, sgst_total,
+            invoice_number, invoice_fy, buyer_gstin, buyer_legal_name)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           saleNumber, location_id, customer_id || null, saleCustomerName || null, saleCustomerPhone || null,
           subtotal, taxTotal, discountAmount, discount_type || null, discountPercentage, discountApprovedBy,
@@ -2144,17 +2300,20 @@ router.post(
           senderCustomerId || null, receiverCustomerId || null, senderReceiverSame ? 1 : 0,
           senderNameForSale || '', senderPhoneForSale || '', receiverNameForSale || '', receiverPhoneForSale || '', sender_message || '', req.user.id,
           nowLocal(), is_credit_sale ? 1 : 0, vendorNameToStore, entryMode, soldBy,
-          req.helperSale ? req.helperSale.clientRef : null
+          req.helperSale ? req.helperSale.clientRef : null,
+          2, bill.roundOffP / 100, bill.delivery.taxP / 100, bill.delivery.amountP > 0 ? bill.delivery.taxRate : null,
+          bill.taxableP / 100, bill.cgstP / 100, bill.sgstP / 100,
+          invoice.number, invoice.fy, buyerGstin, buyerGstin ? (String(req.body.buyer_legal_name || '').trim().slice(0, 150) || null) : null
         );
         const saleId = saleResult.lastInsertRowid;
 
         // Insert items — omit line_total (GENERATED ALWAYS on production; DEFAULT 0 on legacy)
         const insertItem = db.prepare(
-          'INSERT INTO sale_items (sale_id, product_id, material_id, product_name, quantity, unit_price, tax_rate, tax_amount, materials_deducted, from_product_stock, special_instructions, image_url, custom_materials) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+          'INSERT INTO sale_items (sale_id, product_id, material_id, product_name, quantity, unit_price, tax_rate, tax_amount, materials_deducted, from_product_stock, special_instructions, image_url, custom_materials, hsn_code, gross_amount, discount_amount, taxable_value, cgst_amount, sgst_amount) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
         );
         const saleItemIds = [];
         for (const item of processedItems) {
-          const res = insertItem.run(
+          const res = await insertItem.run(
             saleId,
             item.product_id,
             item.material_id,
@@ -2167,7 +2326,8 @@ router.post(
             0,
             item.special_instructions || null,
             item.image_url || null,
-            item.custom_materials ? JSON.stringify(item.custom_materials) : null
+            item.custom_materials ? JSON.stringify(item.custom_materials) : null,
+            item.hsn_code || null, item.gross_amount, item.discount_amount, item.taxable_value, item.cgst_amount, item.sgst_amount
           );
           saleItemIds.push({ ...item, sale_item_id: res.lastInsertRowid });
         }
@@ -2181,22 +2341,22 @@ router.post(
         
         let assignedTaskIds = [];
 
-        const insertTaskToDb = (saleId, saleItemId, productId, locId, qty, priority, notes, createdAt) => {
+        const insertTaskToDb = async (saleId, saleItemId, productId, locId, qty, priority, notes, createdAt) => {
           // Quick entries are goods already handed over: no production work
           if (entryMode) return;
           if (skip_assignment) {
-            db.prepare(
+            await db.prepare(
               `INSERT INTO production_tasks (sale_id, sale_item_id, product_id, location_id, quantity, priority, notes, status, assigned_to, picked_by, completed_at, created_at, updated_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?, ?, ?)`
             ).run(saleId, saleItemId, productId, locId, qty, priority, notes, req.user.id, req.user.id, createdAt, createdAt, createdAt);
           } else if (req.body.assigned_to) {
-            const res = db.prepare(
+            const res = await db.prepare(
               `INSERT INTO production_tasks (sale_id, sale_item_id, product_id, location_id, quantity, priority, notes, status, assigned_to, created_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, 'assigned', ?, ?)`
             ).run(saleId, saleItemId, productId, locId, qty, priority, notes, req.body.assigned_to, createdAt);
             assignedTaskIds.push(res.lastInsertRowid);
           } else {
-            db.prepare(
+            await db.prepare(
               `INSERT INTO production_tasks (sale_id, sale_item_id, product_id, location_id, quantity, priority, notes, created_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
             ).run(saleId, saleItemId, productId, locId, qty, priority, notes, createdAt);
@@ -2207,21 +2367,21 @@ router.post(
           // Walk-in, all products in stock: deduct from product_stock
           for (const item of saleItemIds) {
             if (item.material_id) {
-              deductMaterialStock.run(item.quantity, item.material_id, location_id);
-              logMaterialTx.run(item.material_id, location_id, item.quantity, saleId, `Sale ${saleNumber}`, req.user.id);
-              db.prepare('UPDATE sale_items SET materials_deducted = 1 WHERE id = ?').run(item.sale_item_id);
+              await deductMaterialStock.run(item.quantity, item.material_id, location_id);
+              await logMaterialTx.run(item.material_id, location_id, item.quantity, saleId, `Sale ${saleNumber}`, req.user.id);
+              await db.prepare('UPDATE sale_items SET materials_deducted = 1 WHERE id = ?').run(item.sale_item_id);
             } else if (item.product_id) {
-              deductProductStock.run(item.quantity, item.product_id, location_id);
-              db.prepare('UPDATE sale_items SET from_product_stock = 1, materials_deducted = 1 WHERE id = ?').run(item.sale_item_id);
+              await deductProductStock.run(item.quantity, item.product_id, location_id);
+              await db.prepare('UPDATE sale_items SET from_product_stock = 1, materials_deducted = 1 WHERE id = ?').run(item.sale_item_id);
             }
           }
         } else if (needsProduction) {
           // Create production tasks — for walk-in, use partial ready stock; for others, always full production
           for (const item of saleItemIds) {
             if (item.material_id) {
-              deductMaterialStock.run(item.quantity, item.material_id, location_id);
-              logMaterialTx.run(item.material_id, location_id, item.quantity, saleId, `Sale ${saleNumber}`, req.user.id);
-              db.prepare('UPDATE sale_items SET materials_deducted = 1 WHERE id = ?').run(item.sale_item_id);
+              await deductMaterialStock.run(item.quantity, item.material_id, location_id);
+              await logMaterialTx.run(item.material_id, location_id, item.quantity, saleId, `Sale ${saleNumber}`, req.user.id);
+              await db.prepare('UPDATE sale_items SET materials_deducted = 1 WHERE id = ?').run(item.sale_item_id);
             } else if (item.product_id) {
               let toMake = item.quantity;
 
@@ -2229,26 +2389,26 @@ router.post(
               const shouldFulfill = order_type === 'walk_in' && (item.fulfill_from_stock === true || item.fulfill_from_stock === 'true');
 
               if (shouldFulfill) {
-                const ready = getReadyStock.get(item.product_id, location_id);
+                const ready = await getReadyStock.get(item.product_id, location_id);
                 const readyQty = ready ? ready.quantity : 0;
                 if (readyQty > 0) {
                   const fromStock = Math.min(readyQty, item.quantity);
                   toMake = item.quantity - fromStock;
-                  deductProductStock.run(fromStock, item.product_id, location_id);
+                  await deductProductStock.run(fromStock, item.product_id, location_id);
                   if (fromStock > 0) {
-                    db.prepare('UPDATE sale_items SET from_product_stock = 1, materials_deducted = 1 WHERE id = ?').run(item.sale_item_id);
+                    await db.prepare('UPDATE sale_items SET from_product_stock = 1, materials_deducted = 1 WHERE id = ?').run(item.sale_item_id);
                   }
                 }
               }
 
               if (toMake > 0) {
                 const priority = order_type === 'walk_in' ? 'urgent' : 'medium';
-                insertTaskToDb(saleId, item.sale_item_id, item.product_id, location_id, toMake, priority, '', nowLocal());
+                await insertTaskToDb(saleId, item.sale_item_id, item.product_id, location_id, toMake, priority, '', nowLocal());
               }
             } else {
               // Ad-hoc item (no product_id) — still create a production task
               const priority = order_type === 'walk_in' ? 'urgent' : 'medium';
-              insertTaskToDb(saleId, item.sale_item_id, item.product_id || null, location_id, item.quantity, priority, item.special_instructions || '', nowLocal());
+              await insertTaskToDb(saleId, item.sale_item_id, item.product_id || null, location_id, item.quantity, priority, item.special_instructions || '', nowLocal());
             }
           }
         }
@@ -2256,15 +2416,15 @@ router.post(
         // Final status check: Auto-promote to 'completed' (for walk-in) or 'ready' (for others)
         // if everything was fulfilled from stock (i.e. zero production tasks created)
         if (needsProduction) {
-          const taskCount = db.prepare("SELECT COUNT(*) as cnt FROM production_tasks WHERE sale_id = ? AND status NOT IN ('completed', 'cancelled')").get(saleId).cnt;
-          const unfulfilledItems = db.prepare("SELECT COUNT(*) as cnt FROM sale_items WHERE sale_id = ? AND product_id IS NOT NULL AND from_product_stock = 0").get(saleId).cnt;
+          const taskCount = (await db.prepare("SELECT COUNT(*) as cnt FROM production_tasks WHERE sale_id = ? AND status NOT IN ('completed', 'cancelled')").get(saleId)).cnt;
+          const unfulfilledItems = (await db.prepare("SELECT COUNT(*) as cnt FROM sale_items WHERE sale_id = ? AND product_id IS NOT NULL AND from_product_stock = 0").get(saleId)).cnt;
 
           if (taskCount === 0 && (unfulfilledItems === 0 || skip_assignment)) {
             let finalStatus = order_type === 'walk_in' ? 'completed' : 'ready';
 
-            db.prepare("UPDATE sales SET status = ?, stock_deducted = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(finalStatus, saleId);
+            await db.prepare("UPDATE sales SET status = ?, stock_deducted = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(finalStatus, saleId);
             if (order_type === 'pickup' && finalStatus === 'ready') {
-              db.prepare("UPDATE sales SET pickup_status = 'ready_for_pickup' WHERE id = ?").run(saleId);
+              await db.prepare("UPDATE sales SET pickup_status = 'ready_for_pickup' WHERE id = ?").run(saleId);
             }
           }
         }
@@ -2276,22 +2436,22 @@ router.post(
           );
           for (const pmt of payments) {
             const paymentHeldBy = heldBy && pmt.method === 'cash' ? heldBy : null;
-            insertPayment.run(saleId, pmt.method, pmt.amount, pmt.reference_number || null, req.user.id, nowLocal(), paymentHeldBy);
+            await insertPayment.run(saleId, pmt.method, pmt.amount, pmt.reference_number || null, req.user.id, nowLocal(), paymentHeldBy);
           }
 
-          // Update cash register for today
-          const register = db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1').get(location_id);
+          // Update the open register (locked at the start of this transaction)
+          const register = lockedRegister;
           if (register) {
             for (const pmt of payments) {
               if (pmt.method === 'cash' && heldBy) {
                 // Held in the helper bag: the register does not get this cash
                 continue;
               } else if (pmt.method === 'cash') {
-                db.prepare('UPDATE cash_registers SET total_cash_sales = total_cash_sales + ?, expected_cash = expected_cash + ? WHERE id = ?').run(pmt.amount, pmt.amount, register.id);
+                await db.prepare('UPDATE cash_registers SET total_cash_sales = total_cash_sales + ?, expected_cash = expected_cash + ? WHERE id = ?').run(pmt.amount, pmt.amount, register.id);
               } else if (pmt.method === 'card') {
-                db.prepare('UPDATE cash_registers SET total_card_sales = total_card_sales + ? WHERE id = ?').run(pmt.amount, register.id);
+                await db.prepare('UPDATE cash_registers SET total_card_sales = total_card_sales + ? WHERE id = ?').run(pmt.amount, register.id);
               } else if (pmt.method === 'upi') {
-                db.prepare('UPDATE cash_registers SET total_upi_sales = total_upi_sales + ? WHERE id = ?').run(pmt.amount, register.id);
+                await db.prepare('UPDATE cash_registers SET total_upi_sales = total_upi_sales + ? WHERE id = ?').run(pmt.amount, register.id);
               }
             }
           }
@@ -2301,7 +2461,7 @@ router.post(
         if (order_type === 'pre_order' && scheduled_date) {
           const advPmt = advance_amount || totalPaid;
           const remaining = grandTotal - advPmt;
-          db.prepare(
+          await db.prepare(
             'INSERT INTO pre_orders (sale_id, scheduled_date, scheduled_time, advance_payment, remaining_amount) VALUES (?, ?, ?, ?, ?)'
           ).run(saleId, scheduled_date, scheduled_time || null, advPmt, Math.max(0, remaining));
         }
@@ -2310,7 +2470,7 @@ router.post(
         const needsDeliveryRecord = order_type === 'delivery' || (order_type === 'pre_order' && delivery_address);
         if (needsDeliveryRecord && delivery_address) {
           const codAmount = is_credit_sale ? 0 : Math.max(0, grandTotal - totalPaid);
-          db.prepare(`
+          await db.prepare(`
             INSERT INTO deliveries (sale_id, location_id, delivery_address, customer_name, customer_phone,
               scheduled_date, scheduled_time, cod_amount, cod_status, route_id, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -2321,7 +2481,7 @@ router.post(
         // Save sender/receiver addresses with labels when provided
         if (delivery_address) {
           if (receiverCustomerId) {
-            saveCustomerAddress(db, {
+            await saveCustomerAddress(db, {
               customerId: receiverCustomerId,
               address: delivery_address,
               label: receiver_address_label,
@@ -2330,7 +2490,7 @@ router.post(
             });
           }
           if (senderCustomerId && senderReceiverSame) {
-            saveCustomerAddress(db, {
+            await saveCustomerAddress(db, {
               customerId: senderCustomerId,
               address: delivery_address,
               label: sender_address_label,
@@ -2341,7 +2501,7 @@ router.post(
         }
 
         if (senderCustomerId && sender_address) {
-          saveCustomerAddress(db, {
+          await saveCustomerAddress(db, {
             customerId: senderCustomerId,
             address: sender_address,
             label: sender_address_label,
@@ -2352,25 +2512,25 @@ router.post(
 
         // Auto-set pickup_status for pickup orders (always waiting — lazy stock)
         if (order_type === 'pickup') {
-          const currentSale = db.prepare("SELECT pickup_status FROM sales WHERE id = ?").get(saleId);
+          const currentSale = await db.prepare("SELECT pickup_status FROM sales WHERE id = ?").get(saleId);
           if (!currentSale.pickup_status || currentSale.pickup_status === 'waiting' || currentSale.pickup_status === 'pending') {
-            db.prepare("UPDATE sales SET pickup_status = 'waiting' WHERE id = ?").run(saleId);
+            await db.prepare("UPDATE sales SET pickup_status = 'waiting' WHERE id = ?").run(saleId);
           }
         }
 
         // Update customer total_spent and credit_balance
         const duesCustomerId = (order_type === 'delivery' && senderCustomerId) ? senderCustomerId : customer_id;
         if (duesCustomerId) {
-          db.prepare('UPDATE users SET total_spent = total_spent + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(grandTotal, duesCustomerId);
+          await db.prepare('UPDATE users SET total_spent = total_spent + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(grandTotal, duesCustomerId);
           // If not fully paid, add remaining to credit balance
           const unpaid = grandTotal - totalPaid;
           if (unpaid > 0) {
-            db.prepare('UPDATE users SET credit_balance = credit_balance + ? WHERE id = ?').run(unpaid, duesCustomerId);
+            await db.prepare('UPDATE users SET credit_balance = credit_balance + ? WHERE id = ?').run(unpaid, duesCustomerId);
           }
         }
 
         // Return created sale along with assigned tasks
-        const newSale = db.prepare(`
+        const newSale = await db.prepare(`
           SELECT s.*, l.name as location_name, u.name as created_by_name
           FROM sales s
           LEFT JOIN locations l ON s.location_id = l.id
@@ -2388,7 +2548,7 @@ router.post(
         // approve call a safe no-op that never overwrites an existing
         // created_sale_id.
         if (source_order_request_id) {
-          db.prepare(`
+          await db.prepare(`
             UPDATE order_requests
             SET status = 'approved', created_sale_id = ?, reviewed_by = ?, reviewed_at = CURRENT_TIMESTAMP
             WHERE id = ? AND status = 'pending'
@@ -2400,7 +2560,7 @@ router.post(
 
       let created;
       try {
-        created = createSale();
+        created = await createSale();
       } catch (e) {
         // Two first tries of one helper basket: the loser answers with the winner
         if (answerClientRefConflict(req, res, e)) return;
@@ -2480,7 +2640,7 @@ router.post(
     body('reference_number').optional({ nullable: true }).trim(),
     body('write_off_amount').optional().isFloat({ min: 0.01 }),
   ],
-  (req, res, next) => {
+  async (req, res, next) => {
     try {
       const errors = validationResult(req);
       if (!errors.isEmpty()) return res.status(400).json({ success: false, message: 'Validation failed', errors: errors.array() });
@@ -2503,66 +2663,91 @@ router.post(
         return res.status(400).json({ success: false, message: REGISTER_CLOSED_MESSAGE });
       }
 
-      const tx = db.transaction(() => {
+      const tx = () => withMoneyTx(async (db) => {
+        // Lock order: the sale row, then the open register.
+        const locked = await db.prepare('SELECT id, grand_total FROM sales WHERE id = ? FOR UPDATE').get(sale.id);
+        const register = paymentList.length > 0 ? await lockOpenRegister(db, sale.location_id) : null;
+        if (paymentList.some((p) => p.method === 'cash') && !register) throw registerClosedError();
+        // Never take more than is still due: extra money would leave the
+        // customer's dues and the drawer out of step.
+        const paidBefore = Number((await db.prepare('SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE sale_id = ?').get(sale.id)).total) || 0;
+        // A write-off makes money due simply disappear, so it is capped: never
+        // more than is still due, and staff only for small change.
+        const woPaise = Math.round((Number(write_off_amount) || 0) * 100);
+        const dueBeforeP = Math.round((Number(locked.grand_total) - paidBefore) * 100);
+        if (woPaise > 0) {
+          const woErr = writeOffError(req.user.role, woPaise, dueBeforeP);
+          if (woErr) { const e = new Error(woErr); e.statusCode = woErr.startsWith('Only') ? 403 : 400; throw e; }
+        }
+        const dueNow = Math.round((Number(locked.grand_total) - paidBefore - (Number(write_off_amount) || 0)) * 100) / 100;
+        const payingNow = Math.round(paymentList.reduce((t, p) => t + (Number(p.amount) || 0), 0) * 100) / 100;
+        if (payingNow > Math.max(0, dueNow) + 0.009) {
+          const e = new Error(dueNow > 0
+            ? `That's more than the ₹${dueNow.toFixed(2)} still due on this order. Check the amount and try again.`
+            : 'Nothing is due on this order any more. Refresh to see the latest.');
+          e.statusCode = 400;
+          throw e;
+        }
         let totalAmountPaidNow = 0;
         for (const p of paymentList) {
-          db.prepare('INSERT INTO payments (sale_id, method, amount, reference_number, received_by, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+          await db.prepare('INSERT INTO payments (sale_id, method, amount, reference_number, received_by, created_at) VALUES (?, ?, ?, ?, ?, ?)')
             .run(sale.id, p.method, p.amount, p.reference_number || null, req.user.id, nowLocal());
           totalAmountPaidNow += Number(p.amount);
 
-          // Update cash register
-          const register = db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1').get(sale.location_id);
+          // Update the open register (locked above)
           if (register) {
             if (p.method === 'cash') {
-              db.prepare('UPDATE cash_registers SET total_cash_sales = total_cash_sales + ?, expected_cash = expected_cash + ? WHERE id = ?').run(p.amount, p.amount, register.id);
+              await db.prepare('UPDATE cash_registers SET total_cash_sales = total_cash_sales + ?, expected_cash = expected_cash + ? WHERE id = ?').run(p.amount, p.amount, register.id);
             } else if (p.method === 'card') {
-              db.prepare('UPDATE cash_registers SET total_card_sales = total_card_sales + ? WHERE id = ?').run(p.amount, register.id);
+              await db.prepare('UPDATE cash_registers SET total_card_sales = total_card_sales + ? WHERE id = ?').run(p.amount, register.id);
             } else if (p.method === 'upi') {
-              db.prepare('UPDATE cash_registers SET total_upi_sales = total_upi_sales + ? WHERE id = ?').run(p.amount, register.id);
+              await db.prepare('UPDATE cash_registers SET total_upi_sales = total_upi_sales + ? WHERE id = ?').run(p.amount, register.id);
             }
           }
         }
 
         // Apply write_off_amount if provided
         if (write_off_amount > 0) {
-          db.prepare('UPDATE sales SET discount_amount = COALESCE(discount_amount, 0) + ?, grand_total = GREATEST(0, grand_total - ?) WHERE id = ?')
-            .run(write_off_amount, write_off_amount, sale.id);
+          // Its own line, never a change to the bill (utils/write-off.js)
+          await recordWriteOff(db, sale.id, write_off_amount, req.user.id);
           
-          if (sale.customer_id) {
-            db.prepare('UPDATE users SET credit_balance = GREATEST(0, credit_balance - ?), total_spent = GREATEST(0, total_spent - ?) WHERE id = ?')
-              .run(write_off_amount, write_off_amount, sale.customer_id);
+          // Dues sit on the sender for a delivery (same rule as sale creation)
+          const writeOffCustomerId = (sale.order_type === 'delivery' && sale.sender_customer_id) ? sale.sender_customer_id : sale.customer_id;
+          if (writeOffCustomerId) {
+            await db.prepare('UPDATE users SET credit_balance = GREATEST(0, credit_balance - ?), total_spent = GREATEST(0, total_spent - ?) WHERE id = ?')
+              .run(write_off_amount, write_off_amount, writeOffCustomerId);
           }
         }
 
         // Fetch updated sale grand total
-        const updatedSale = db.prepare('SELECT grand_total FROM sales WHERE id = ?').get(sale.id);
+        const updatedSale = await db.prepare('SELECT grand_total FROM sales WHERE id = ?').get(sale.id);
 
         // Recalculate payment status
-        const totalPaid = db.prepare('SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE sale_id = ?').get(sale.id).total;
+        const totalPaid = (await db.prepare('SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE sale_id = ?').get(sale.id)).total;
         const roundedGrandTotal = Math.round(Number(updatedSale.grand_total || 0) * 100) / 100;
         const roundedTotalPaid = Math.round(Number(totalPaid || 0) * 100) / 100;
         let paymentStatus = 'pending';
         if (roundedTotalPaid >= roundedGrandTotal - 0.01) paymentStatus = 'paid';
         else if (roundedTotalPaid > 0) paymentStatus = 'partial';
 
-        db.prepare('UPDATE sales SET payment_status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(paymentStatus, sale.id);
+        await db.prepare('UPDATE sales SET payment_status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(paymentStatus, sale.id);
 
         // Decrement customer credit balance for the payments made
         const duesCustomerId = (sale.order_type === 'delivery' && sale.sender_customer_id) ? sale.sender_customer_id : sale.customer_id;
         if (duesCustomerId && totalAmountPaidNow > 0) {
-          db.prepare('UPDATE users SET credit_balance = GREATEST(0, credit_balance - ?) WHERE id = ?').run(totalAmountPaidNow, duesCustomerId);
+          await db.prepare('UPDATE users SET credit_balance = GREATEST(0, credit_balance - ?) WHERE id = ?').run(totalAmountPaidNow, duesCustomerId);
         }
 
         if (sale.order_type === 'delivery' || sale.order_type === 'pre_order') {
           const newCodAmount = sale.is_credit_sale ? 0 : Math.max(0, updatedSale.grand_total - totalPaid);
           const codStatus = newCodAmount > 0.01 ? 'pending' : 'collected';
-          db.prepare('UPDATE deliveries SET cod_amount = ?, cod_status = ? WHERE sale_id = ?').run(newCodAmount, codStatus, sale.id);
+          await db.prepare('UPDATE deliveries SET cod_amount = ?, cod_status = ? WHERE sale_id = ?').run(newCodAmount, codStatus, sale.id);
         }
 
         return { paymentStatus, totalPaid };
       });
 
-      const { paymentStatus, totalPaid } = tx();
+      const { paymentStatus, totalPaid } = await tx();
 
       const allPayments = db.prepare('SELECT * FROM payments WHERE sale_id = ?').all(sale.id);
       res.status(201).json({ success: true, data: { payments: allPayments, payment_status: paymentStatus, total_paid: totalPaid } });
@@ -2597,7 +2782,9 @@ router.put(
       // so a plain paidCount>0 check would block cancel forever, even
       // right after the sale was fully refunded. Compare what was paid
       // against what's already been refunded instead.
-      const paymentTotal = Number(db.prepare('SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE sale_id = ?').get(sale.id).total);
+      // Money actually taken: a write-off line was never received, so there
+      // is nothing of it to give back (utils/write-off.js)
+      const paymentTotal = Number(db.prepare(`SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE sale_id = ? AND method != 'write_off'`).get(sale.id).total);
       const refundTotal = Number(db.prepare('SELECT COALESCE(SUM(amount), 0) as total FROM refunds WHERE sale_id = ?').get(sale.id).total);
       const unrefundedBalance = paymentTotal - refundTotal;
       if (unrefundedBalance > 0.01) {
@@ -2625,10 +2812,24 @@ router.put(
         });
       }
 
-      const cancelTx = db.transaction(async () => {
-        db.prepare("UPDATE sales SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(req.params.id);
+      const cancelTx = () => withMoneyTx(async (db) => {
+        // Re-check under the sale row lock: a payment or a second cancel
+        // arriving at the same moment must not slip past the checks above.
+        const lockedSale = await db.prepare('SELECT * FROM sales WHERE id = ? FOR UPDATE').get(sale.id);
+        if (!lockedSale || lockedSale.status === 'cancelled') {
+          const e = new Error('Sale already cancelled'); e.statusCode = 400; throw e;
+        }
+        // paidNow (write-off lines too) settles dues in the reversal below;
+        // only money actually taken has to be refunded first
+        const paidNow = Number((await db.prepare('SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE sale_id = ?').get(sale.id)).total);
+        const takenNow = Number((await db.prepare("SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE sale_id = ? AND method != 'write_off'").get(sale.id)).total);
+        const refundedNow = Number((await db.prepare('SELECT COALESCE(SUM(amount), 0) as total FROM refunds WHERE sale_id = ?').get(sale.id)).total);
+        if (takenNow - refundedNow > 0.01) {
+          const e = new Error('This sale has an unrefunded balance — refund it first, then cancel.'); e.statusCode = 400; throw e;
+        }
+        await db.prepare("UPDATE sales SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(req.params.id);
 
-        await reverseSaleEffects(db, sale, { paymentTotal, userId: req.user.id });
+        await reverseSaleEffects(db, lockedSale, { paymentTotal: paidNow, userId: req.user.id });
 
         // Cascade to any deliveries row still sitting 'pending' or 'failed'
         // for this sale — the guard above already blocked cancel outright
@@ -2646,7 +2847,7 @@ router.put(
         // production tasks, since this transaction already ran its own
         // stock-return loop over sale_items above; re-running that one too
         // would double-credit stock for any item where both happen to be true.
-        db.prepare(`
+        await db.prepare(`
           UPDATE deliveries SET status = 'cancelled', failure_reason = 'Order cancelled', updated_at = CURRENT_TIMESTAMP
           WHERE sale_id = ? AND status IN ('pending', 'failed')
         `).run(req.params.id);
@@ -3024,7 +3225,7 @@ router.put(
     body('sender_address_label').optional({ nullable: true }).trim(),
     body('receiver_address_label').optional({ nullable: true }).trim(),
   ],
-  (req, res, next) => {
+  async (req, res, next) => {
     try {
       const errors = validationResult(req);
       if (!errors.isEmpty()) return res.status(400).json({ success: false, message: 'Validation failed', errors: errors.array() });
@@ -3063,7 +3264,9 @@ router.put(
         return res.status(400).json({ success: false, message: 'Delivery address is required when converting to delivery' });
       }
 
-      const convertTx = db.transaction(() => {
+      const convertTx = () => withMoneyTx(async (db) => {
+        // Lock the sale and work from its current row
+        const sale = await db.prepare('SELECT * FROM sales WHERE id = ? FOR UPDATE').get(req.params.id);
         const addr = delivery_address || sale.delivery_address || '';
         const charges = delivery_charges != null ? delivery_charges : 0;
         const senderNameFinal = sender_name || sale.sender_name || sale.customer_name || '';
@@ -3079,7 +3282,7 @@ router.put(
           receiverPhoneFinal = senderPhoneFinal;
         }
 
-        const senderCustomerId = resolveOrCreateCustomer(db, {
+        const senderCustomerId = await resolveOrCreateCustomer(db, {
           customerId: senderExplicit
             ? null
             : (sale.sender_customer_id || sale.customer_id || null),
@@ -3088,15 +3291,42 @@ router.put(
         });
         const receiverCustomerId = senderSame
           ? senderCustomerId
-          : resolveOrCreateCustomer(db, {
+          : await resolveOrCreateCustomer(db, {
             customerId: sale.receiver_customer_id || null,
             name: receiverNameFinal,
             phone: receiverPhoneFinal,
           });
 
-        // Update order type
-        const newGrandTotal = sale.grand_total - (sale.delivery_charges || 0) + charges;
-        db.prepare(`
+        // Update order type. The total changes by the delivery charge, so the
+        // dues and total spent move with it (same rule as a new sale: dues
+        // hold the unpaid part, on the sender for a delivery).
+        // A GST sale works its whole bill out again (GST inside the delivery
+        // charge, round-off); an older sale moves by the charge only
+        const convertPlan = await planBill(db, sale.id, { deliveryCharges: Number(charges) || 0 });
+        const newGrandTotal = convertPlan
+          ? convertPlan.grandTotal
+          : Math.round((Number(sale.grand_total) - (Number(sale.delivery_charges) || 0) + Number(charges)) * 100) / 100;
+        const paidSoFar = Number((await db.prepare('SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE sale_id = ?').get(sale.id)).total) || 0;
+        const refundedSoFar = Number((await db.prepare('SELECT COALESCE(SUM(amount), 0) as total FROM refunds WHERE sale_id = ?').get(sale.id)).total) || 0;
+        if (refundedSoFar === 0 && paidSoFar - newGrandTotal > 0.009) {
+          const e = new Error(`This order is already paid ₹${paidSoFar.toFixed(2)}, more than the new total of ₹${newGrandTotal.toFixed(2)}. Keep the delivery charge, or refund the difference first.`);
+          e.statusCode = 400;
+          throw e;
+        }
+        const duesBefore = (sale.order_type === 'delivery' && sale.sender_customer_id) ? sale.sender_customer_id : sale.customer_id;
+        const newCustomerId = sale.customer_id || senderCustomerId || null;
+        const duesAfter = (new_order_type === 'delivery' && senderCustomerId) ? senderCustomerId : newCustomerId;
+        const unpaidBefore = Math.max(0, Number(sale.grand_total) - paidSoFar);
+        const unpaidAfter = Math.max(0, newGrandTotal - paidSoFar);
+        if (duesBefore) {
+          await db.prepare('UPDATE users SET total_spent = GREATEST(0, total_spent - ?), credit_balance = GREATEST(0, credit_balance - ?), updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+            .run(Number(sale.grand_total) || 0, unpaidBefore, duesBefore);
+        }
+        if (duesAfter) {
+          await db.prepare('UPDATE users SET total_spent = total_spent + ?, credit_balance = credit_balance + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+            .run(newGrandTotal, unpaidAfter, duesAfter);
+        }
+        await db.prepare(`
           UPDATE sales
           SET order_type = ?,
               delivery_address = ?,
@@ -3131,17 +3361,19 @@ router.put(
           receiverPhoneFinal || '',
           sale.id
         );
+        // GST sale: save the rest of the new bill (delivery GST, round-off)
+        if (convertPlan) await writeBill(db, convertPlan);
 
         if (new_order_type === 'delivery') {
           // Pickup → Delivery: clear pickup_status, create delivery record
-          db.prepare("UPDATE sales SET pickup_status = NULL, picked_up_at = NULL WHERE id = ?").run(sale.id);
+          await db.prepare("UPDATE sales SET pickup_status = NULL, picked_up_at = NULL WHERE id = ?").run(sale.id);
 
           // Check if delivery record already exists
-          const existingDelivery = db.prepare('SELECT id FROM deliveries WHERE sale_id = ?').get(sale.id);
+          const existingDelivery = await db.prepare('SELECT id FROM deliveries WHERE sale_id = ?').get(sale.id);
           if (!existingDelivery) {
-            const totalPaid = db.prepare('SELECT COALESCE(SUM(amount),0) as total FROM payments WHERE sale_id = ?').get(sale.id).total;
+            const totalPaid = (await db.prepare('SELECT COALESCE(SUM(amount),0) as total FROM payments WHERE sale_id = ?').get(sale.id)).total;
             const codAmount = Math.max(0, newGrandTotal - totalPaid);
-            db.prepare(`
+            await db.prepare(`
               INSERT INTO deliveries (sale_id, location_id, delivery_address, customer_name, customer_phone,
                 scheduled_date, scheduled_time, cod_amount, cod_status, created_at)
               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -3151,13 +3383,16 @@ router.put(
               sale.scheduled_date || null, sale.scheduled_time || null,
               codAmount, codAmount > 0 ? 'pending' : 'collected', nowLocal());
           } else {
-            // Update existing delivery record
-            db.prepare('UPDATE deliveries SET delivery_address = ?, customer_name = ?, customer_phone = ?, updated_at = CURRENT_TIMESTAMP WHERE sale_id = ?')
+            // Update existing delivery record, and its COD to the new balance
+            await db.prepare('UPDATE deliveries SET delivery_address = ?, customer_name = ?, customer_phone = ?, updated_at = CURRENT_TIMESTAMP WHERE sale_id = ?')
               .run(addr, receiverNameFinal || senderNameFinal || sale.customer_name || null, receiverPhoneFinal || senderPhoneFinal || sale.customer_phone || null, sale.id);
+            const codNow = sale.is_credit_sale ? 0 : unpaidAfter;
+            await db.prepare("UPDATE deliveries SET cod_amount = ?, cod_status = ? WHERE sale_id = ? AND status NOT IN ('delivered', 'cancelled')")
+              .run(codNow, codNow > 0.01 ? 'pending' : 'collected', sale.id);
           }
 
           if (receiverCustomerId && addr) {
-            saveCustomerAddress(db, {
+            await saveCustomerAddress(db, {
               customerId: receiverCustomerId,
               address: addr,
               label: receiver_address_label,
@@ -3166,7 +3401,7 @@ router.put(
             });
           }
           if (senderCustomerId && senderSame && addr) {
-            saveCustomerAddress(db, {
+            await saveCustomerAddress(db, {
               customerId: senderCustomerId,
               address: addr,
               label: sender_address_label,
@@ -3175,7 +3410,7 @@ router.put(
             });
           }
           if (senderCustomerId && sender_address) {
-            saveCustomerAddress(db, {
+            await saveCustomerAddress(db, {
               customerId: senderCustomerId,
               address: sender_address,
               label: sender_address_label,
@@ -3188,16 +3423,16 @@ router.put(
           let pickupStatus = 'waiting';
           if (sale.status === 'ready') pickupStatus = 'ready_for_pickup';
           else if (sale.status === 'completed') pickupStatus = 'picked_up';
-          db.prepare("UPDATE sales SET pickup_status = ? WHERE id = ?").run(pickupStatus, sale.id);
+          await db.prepare("UPDATE sales SET pickup_status = ? WHERE id = ?").run(pickupStatus, sale.id);
 
           // Cancel any pending/assigned delivery
-          const delivery = db.prepare("SELECT id, status FROM deliveries WHERE sale_id = ?").get(sale.id);
+          const delivery = await db.prepare("SELECT id, status FROM deliveries WHERE sale_id = ?").get(sale.id);
           if (delivery && !['delivered', 'cancelled'].includes(delivery.status)) {
-            db.prepare("UPDATE deliveries SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(delivery.id);
+            await db.prepare("UPDATE deliveries SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(delivery.id);
           }
         }
       });
-      convertTx();
+      await convertTx();
 
       // Return updated sale with delivery/items
       const updated = db.prepare(`
@@ -3227,7 +3462,7 @@ router.post(
     body('reason').trim().notEmpty().withMessage('Reason is required'),
     body('refund_method').isIn(['cash', 'card', 'upi', 'store_credit']),
   ],
-  (req, res, next) => {
+  async (req, res, next) => {
     try {
       const errors = validationResult(req);
       if (!errors.isEmpty()) return res.status(400).json({ success: false, message: 'Validation failed', errors: errors.array() });
@@ -3248,7 +3483,8 @@ router.post(
       // row is ever allowed per sale (see the `existing` check above), so
       // there's no prior refund to net out here — paymentTotal alone is the
       // real ceiling.
-      const paymentTotal = Number(db.prepare('SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE sale_id = ?').get(req.params.id).total);
+      // A write-off line is not money taken, so it can never be refunded
+      const paymentTotal = Number(db.prepare("SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE sale_id = ? AND method != 'write_off'").get(req.params.id).total);
       if (Number(amount) > paymentTotal) {
         return res.status(400).json({ success: false, message: `Refund amount cannot exceed what was actually paid (₹${paymentTotal.toFixed(2)}).` });
       }
@@ -3276,43 +3512,42 @@ router.post(
         return res.status(400).json({ success: false, message: REGISTER_CLOSED_MESSAGE });
       }
 
-      db.prepare(
-        `INSERT INTO refunds (sale_id, amount, reason, status, requested_by, approved_by, refund_method)
-         VALUES (?, ?, ?, 'processed', ?, ?, ?)`
-      ).run(req.params.id, amount, reason, req.user.id, req.user.id, refund_method);
-
-      db.prepare("UPDATE sales SET payment_status = 'refunded', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(req.params.id);
-
-      // Update cash register if cash refund
-      if (refund_method === 'cash') {
-        const saleDate = localToday(parseServerDate(sale.created_at));
-        const today = localToday();
-
-        if (saleDate === today) {
-          // Sale was made today. Log as normal cash refund on today's register.
-          const register = db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1').get(sale.location_id);
-          if (register) {
-            db.prepare('UPDATE cash_registers SET total_refunds_cash = total_refunds_cash + ?, expected_cash = expected_cash - ? WHERE id = ?').run(amount, amount, register.id);
-          }
-        } else {
-          // Sale was made on a previous day. Log as an expense for today.
-          try {
-            db.prepare(
-              `INSERT INTO expenses (location_id, category, amount, description, payment_method, expense_date, created_by)
-               VALUES (?, 'other', ?, ?, 'cash', ?, ?)`
-            ).run(sale.location_id, amount, `Refund for past sale ${sale.sale_number}`, today, req.user.id);
-          } catch (e) {
-            // Ignore if expenses table has strict constraints not met here
-            console.error('Failed to insert refund expense:', e);
-          }
-
-          // Deduct from today's register expected_cash
-          const register = db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1').get(sale.location_id);
-          if (register) {
-            db.prepare('UPDATE cash_registers SET expected_cash = expected_cash - ? WHERE id = ?').run(amount, register.id);
-          }
+      // One transaction. Lock order: the sale row, then the open register.
+      await withMoneyTx(async (db) => {
+        await db.prepare('SELECT id FROM sales WHERE id = ? FOR UPDATE').get(req.params.id);
+        // Re-checked under the lock, so two taps can't refund twice
+        if (await db.prepare('SELECT id FROM refunds WHERE sale_id = ?').get(req.params.id)) {
+          const e = new Error('Refund already exists for this sale'); e.statusCode = 409; throw e;
         }
-      }
+        const register = refund_method === 'cash' ? await lockOpenRegister(db, sale.location_id) : null;
+        if (refund_method === 'cash' && !register) throw registerClosedError();
+
+        // A GST bill refund gets a credit note number (own series, taken in
+        // this transaction so a failed refund never uses one up)
+        const creditNote = sale.invoice_number ? await nextInvoiceNumber(db, sale.location_id, 'credit_note') : null;
+        await db.prepare(
+          `INSERT INTO refunds (sale_id, amount, reason, status, requested_by, approved_by, refund_method, credit_note_number)
+           VALUES (?, ?, ?, 'processed', ?, ?, ?, ?)`
+        ).run(req.params.id, amount, reason, req.user.id, req.user.id, refund_method, creditNote ? creditNote.number : null);
+
+        await db.prepare("UPDATE sales SET payment_status = 'refunded', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(req.params.id);
+
+        // Money given back is no longer money spent: lower the customer's
+        // total_spent by it (dues customer, as at creation). Cancelling the
+        // sale later takes off only the rest (utils/sale-reversal.js).
+        const refundCustomerId = (sale.order_type === 'delivery' && sale.sender_customer_id) ? sale.sender_customer_id : sale.customer_id;
+        if (refundCustomerId) {
+          await db.prepare('UPDATE users SET total_spent = GREATEST(0, total_spent - ?), updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(amount, refundCustomerId);
+        }
+
+        // A cash refund is cash leaving today's drawer, whatever day the sale
+        // was. It is recorded once, as this refund row: close subtracts cash
+        // refunds made in the session. (It used to add an expense row too for
+        // a past-day sale, and close subtracted both.)
+        if (refund_method === 'cash') {
+          await db.prepare('UPDATE cash_registers SET total_refunds_cash = total_refunds_cash + ?, expected_cash = expected_cash - ? WHERE id = ?').run(amount, amount, register.id);
+        }
+      });
 
       const refund = db.prepare('SELECT * FROM refunds WHERE sale_id = ?').get(req.params.id);
       res.status(201).json({ success: true, data: refund });
@@ -3586,49 +3821,50 @@ router.post('/admin/reset', authenticate, authorize('owner'), (req, res, next) =
 
 
 // ─── Resolve Balance (Write-off or Credit) ───────────────
-router.post('/:id/resolve-balance', authenticate, authorize('owner', 'manager'), (req, res, next) => {
+router.post('/:id/resolve-balance', authenticate, authorize('owner', 'manager'), async (req, res, next) => {
   try {
-    const db = getDb();
     const { action } = req.body;
-    const sale = db.prepare('SELECT * FROM sales WHERE id = ?').get(req.params.id);
-    if (!sale) return res.status(404).json({ success: false, message: 'Sale not found' });
-
-    const totalPaid = db.prepare('SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE sale_id = ?').get(sale.id).total;
-    const balanceDue = sale.grand_total - totalPaid;
-
-    if (balanceDue <= 0.01) {
-      return res.status(400).json({ success: false, message: 'No balance due on this sale' });
-    }
-
-    if (action === 'credit') {
-      if (!sale.customer_id) {
-        return res.status(400).json({ success: false, message: 'Cannot convert to credit sale: No customer attached to this order. Please edit the sale to add a customer first.' });
-      }
-      db.prepare('UPDATE sales SET is_credit_sale = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(sale.id);
-      
-      if (sale.order_type === 'delivery' || sale.order_type === 'pre_order') {
-         db.prepare("UPDATE deliveries SET cod_amount = 0, cod_status = 'collected' WHERE sale_id = ?").run(sale.id);
-      }
-      
-      return res.json({ success: true, message: 'Converted to Credit Sale successfully' });
-    } else if (action === 'write_off') {
-      db.transaction(() => {
-        db.prepare('UPDATE sales SET discount_amount = COALESCE(discount_amount, 0) + ?, grand_total = grand_total - ?, payment_status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
-          .run(balanceDue, balanceDue, 'paid', sale.id);
-
-        if (sale.customer_id) {
-          db.prepare('UPDATE users SET credit_balance = GREATEST(0, credit_balance - ?), total_spent = GREATEST(0, total_spent - ?), updated_at = CURRENT_TIMESTAMP WHERE id = ?')
-            .run(balanceDue, balanceDue, sale.customer_id);
-        }
-        
-        if (sale.order_type === 'delivery' || sale.order_type === 'pre_order') {
-           db.prepare("UPDATE deliveries SET cod_amount = 0, cod_status = 'collected' WHERE sale_id = ?").run(sale.id);
-        }
-      })();
-      return res.json({ success: true, message: 'Balance written off successfully' });
-    } else {
+    if (action !== 'credit' && action !== 'write_off') {
       return res.status(400).json({ success: false, message: 'Invalid action' });
     }
+    // One transaction with the sale row locked, so a payment arriving at the
+    // same moment can't make the write-off bigger than what is really due.
+    const outcome = await withMoneyTx(async (db) => {
+      const sale = await db.prepare('SELECT * FROM sales WHERE id = ? FOR UPDATE').get(req.params.id);
+      if (!sale) return { status: 404, body: { success: false, message: 'Sale not found' } };
+
+      const totalPaid = Number((await db.prepare('SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE sale_id = ?').get(sale.id)).total) || 0;
+      const balanceDue = Math.round((Number(sale.grand_total) - totalPaid) * 100) / 100;
+      if (balanceDue <= 0.01) {
+        return { status: 400, body: { success: false, message: 'No balance due on this sale' } };
+      }
+
+      if (action === 'credit') {
+        if (!sale.customer_id) {
+          return { status: 400, body: { success: false, message: 'Cannot convert to credit sale: No customer attached to this order. Please edit the sale to add a customer first.' } };
+        }
+        await db.prepare('UPDATE sales SET is_credit_sale = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(sale.id);
+        if (sale.order_type === 'delivery' || sale.order_type === 'pre_order') {
+          await db.prepare("UPDATE deliveries SET cod_amount = 0, cod_status = 'collected' WHERE sale_id = ?").run(sale.id);
+        }
+        return { status: 200, body: { success: true, message: 'Converted to Credit Sale successfully' } };
+      }
+
+      // Its own line, never a change to the bill (utils/write-off.js)
+      await recordWriteOff(db, sale.id, balanceDue, req.user.id);
+      await db.prepare("UPDATE sales SET payment_status = 'paid', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(sale.id);
+      // Dues sit on the sender for a delivery (same rule as sale creation)
+      const duesCustomerId = (sale.order_type === 'delivery' && sale.sender_customer_id) ? sale.sender_customer_id : sale.customer_id;
+      if (duesCustomerId) {
+        await db.prepare('UPDATE users SET credit_balance = GREATEST(0, credit_balance - ?), total_spent = GREATEST(0, total_spent - ?), updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+          .run(balanceDue, balanceDue, duesCustomerId);
+      }
+      if (sale.order_type === 'delivery' || sale.order_type === 'pre_order') {
+        await db.prepare("UPDATE deliveries SET cod_amount = 0, cod_status = 'collected' WHERE sale_id = ?").run(sale.id);
+      }
+      return { status: 200, body: { success: true, message: 'Balance written off successfully' } };
+    });
+    return res.status(outcome.status).json(outcome.body);
   } catch (error) {
     next(error);
   }

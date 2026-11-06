@@ -55,6 +55,11 @@ const SETTING_LABELS = {
 };
 
 // Where helper cash goes (spec 11.1); copy from the spec, word for word
+// Edited on their own screen (BillSettingsScreen), not in this list
+const BILL_KEYS = ['bill_round_off', 'bill_legal_name', 'bill_pan', 'bill_terms', 'bill_show_fields', 'receipt_footer',
+  'gst_delivery_rate', 'gst_delivery_sac', 'gst_default_rate', 'gst_default_hsn', 'gst_number',
+  'invoice_series_mode', 'invoice_prefix', 'credit_note_prefix'];
+
 const CASH_MODE_OPTIONS = [
   {
     value: 'register',
@@ -183,7 +188,9 @@ export default function SettingsScreen() {
 
   const hasChanges = Object.keys(editedValues).length > 0;
   const sortedKeys = Object.keys(settings)
-    .filter((k) => !PREFERENCE_SETTINGS.some((p) => p.key === k) && k !== 'helper_cash_mode')
+    .filter((k) => !PREFERENCE_SETTINGS.some((p) => p.key === k) && k !== 'helper_cash_mode' && !BILL_KEYS.includes(k))
+    // One "Bill and GST" row stands for every bill setting
+    .concat(settings.bill_round_off ? ['bill_round_off'] : [])
     .sort();
 
   const handlePrefToggle = async (key, currentValue) => {
@@ -387,6 +394,25 @@ export default function SettingsScreen() {
                     </View>
                   ))}
                 </View>
+              );
+            }
+
+            if (key === 'bill_round_off') {
+              if (!isOwner) return null;
+              return (
+                <TouchableOpacity
+                  key={key}
+                  style={[styles.settingRow, { flexDirection: 'row', alignItems: 'center', minHeight: 56 }]}
+                  onPress={() => navigation.navigate('BillSettings')}
+                  accessibilityRole="button"
+                  accessibilityLabel="Bill and GST"
+                >
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.settingLabel}>Bill and GST</Text>
+                    <Text style={styles.settingDesc}>What the printed bill shows, GST rates, HSN codes and bill numbers</Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={22} color={Colors.textSecondary} />
+                </TouchableOpacity>
               );
             }
 

@@ -2,6 +2,7 @@ import React from 'react';
 import { TouchableOpacity, Text } from 'react-native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
+import { CommonActions } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import Constants from 'expo-constants';
 import { useAuth } from '../context/AuthContext';
@@ -20,6 +21,7 @@ import HelperJoinQRScreen from '../screens/HelperJoinQRScreen';
 import ProfileScreen from '../screens/ProfileScreen';
 import SettingsScreen from '../screens/SettingsScreen';
 import QuickSaleTilesScreen from '../screens/QuickSaleTilesScreen';
+import BillSettingsScreen from '../screens/BillSettingsScreen';
 import DataManagementScreen from '../screens/DataManagementScreen';
 
 // Phase 2 — Inventory
@@ -125,6 +127,54 @@ import { Colors, FontSize, Spacing } from '../constants/theme';
 
 const Tab = createBottomTabNavigator();
 const Stack = createNativeStackNavigator();
+
+// Tapping a tab always shows that tab's first screen. React Navigation 7's
+// navigate() pushes a new copy instead of going back, so screens other tabs
+// opened inside this one (Home's Settle Now opens Settlements in the POS
+// tab) stayed on top: the POS tab showed Settlements, and back led nowhere
+// useful. If the first screen is already at the bottom it is kept, with its
+// state (a half-built Quick Checkout cart survives); otherwise the tab
+// starts fresh on it.
+function goToTabRoot(navigation, route, tab, root) {
+  // The route handed to the listener can be an old copy without its nested
+  // state, so read this tab's stack from the tab navigator as it is now.
+  // The change is made by the tab navigator itself: an action aimed at the
+  // inner stack from here is never handled (actions only travel upward).
+  const tabState = navigation.getState && navigation.getState();
+  const idx = tabState && Array.isArray(tabState.routes) ? tabState.routes.findIndex((r) => r.name === tab) : -1;
+  const tabRoute = idx >= 0 ? tabState.routes[idx] : null;
+  const stack = tabRoute && tabRoute.state;
+  if (stack && Array.isArray(stack.routes) && stack.routes.length > 0) {
+    let nextStack = null;
+    if (stack.routes[0].name === root) {
+      // Same first screen (same key, so it keeps what was typed): drop what is on top.
+      if (stack.index > 0) nextStack = { ...stack, index: 0, routes: [stack.routes[0]] };
+    } else {
+      nextStack = { routes: [{ name: root }], index: 0 };
+    }
+    if (nextStack) {
+      navigation.dispatch(CommonActions.reset({
+        ...tabState,
+        index: idx,
+        routes: tabState.routes.map((r, i) => (i === idx ? { ...r, state: nextStack } : r)),
+      }));
+      return;
+    }
+  } else if (tabRoute && tabRoute.params && tabRoute.params.screen && tabRoute.params.screen !== root) {
+    // No stack stored yet, only the "open this screen" request another tab
+    // sent (navigate('POS', { screen: 'Settlements' })): the tab keeps
+    // rebuilding that screen from it, so replace it with the first screen.
+    navigation.dispatch(CommonActions.reset({
+      ...tabState,
+      index: idx,
+      routes: tabState.routes.map((r, i) => (i === idx
+        ? { name: r.name, key: r.key, state: { routes: [{ name: root }], index: 0 } }
+        : r)),
+    }));
+    return;
+  }
+  navigation.navigate(tab);
+}
 
 const stackScreenOptions = {
   headerStyle: { backgroundColor: Colors.surface },
@@ -314,6 +364,14 @@ function ProfileStack() {
       />
       <Stack.Screen name="Settings" component={SettingsScreen} options={{ title: 'Settings' }} />
       <Stack.Screen name="QuickSaleTiles" component={QuickSaleTilesScreen} options={{ title: 'Quick sale buttons' }} />
+      <Stack.Screen name="BillSettings" component={BillSettingsScreen} options={{ title: 'Bill and GST' }} />
+      <Stack.Screen name="Locations" component={LocationsScreen} options={{ title: 'Locations' }} />
+      <Stack.Screen name="LocationDetail" component={LocationDetailScreen} options={{ title: 'Location Details' }} />
+      <Stack.Screen
+        name="LocationForm"
+        component={LocationFormScreen}
+        options={({ route }) => ({ title: route.params?.location ? 'Edit Location' : 'New Location', presentation: 'modal' })}
+      />
       <Stack.Screen name="Notifications" component={NotificationCenterScreen} options={{ title: 'Notifications' }} />
       {/* employee/counter_staff's own path to Customers (2026-09-13, staff-
           ux fix) — owner/manager already have it via the More tab; these
@@ -506,6 +564,7 @@ function MoreStack() {
       <Stack.Screen name="Expenses" component={ExpensesScreen} options={{ title: 'Expenses' }} />
       <Stack.Screen name="Settings" component={SettingsScreen} options={{ title: 'Settings' }} />
       <Stack.Screen name="QuickSaleTiles" component={QuickSaleTilesScreen} options={{ title: 'Quick sale buttons' }} />
+      <Stack.Screen name="BillSettings" component={BillSettingsScreen} options={{ title: 'Bill and GST' }} />
       <Stack.Screen name="DataManagement" component={DataManagementScreen} options={{ title: 'Data Management' }} />
       <Stack.Screen name="SaleDetail" component={SaleDetailScreen} options={{ title: 'Sale Details' }} />
       <Stack.Screen name="RefundSale" component={RefundSaleScreen} options={{ title: 'Refund' }} />
@@ -736,9 +795,9 @@ function StaffTabs() {
           name="POS"
           component={POSStack}
           options={{ tabBarLabel: 'POS' }}
-          listeners={({ navigation }) => ({
+          listeners={({ navigation, route }) => ({
             tabPress: () => {
-              navigation.navigate('POS', { screen: 'QuickCheckout' });
+              goToTabRoot(navigation, route, 'POS', 'QuickCheckout');
             },
           })}
         />
@@ -750,9 +809,9 @@ function StaffTabs() {
           name="Orders"
           component={OrdersStack}
           options={{ tabBarLabel: 'Orders' }}
-          listeners={({ navigation }) => ({
+          listeners={({ navigation, route }) => ({
             tabPress: () => {
-              navigation.navigate('Orders', { screen: 'OrdersHub' });
+              goToTabRoot(navigation, route, 'Orders', 'OrdersHub');
             },
           })}
         />
@@ -764,9 +823,9 @@ function StaffTabs() {
           name="EmployeeOrders"
           component={EmployeeOrdersStack}
           options={{ tabBarLabel: 'Orders' }}
-          listeners={({ navigation }) => ({
+          listeners={({ navigation, route }) => ({
             tabPress: () => {
-              navigation.navigate('EmployeeOrders', { screen: 'OrdersInbox' });
+              goToTabRoot(navigation, route, 'EmployeeOrders', 'OrdersInbox');
             },
           })}
         />
@@ -778,9 +837,9 @@ function StaffTabs() {
           name="Inventory"
           component={InventoryStack}
           options={{ tabBarLabel: 'Inventory' }}
-          listeners={({ navigation }) => ({
+          listeners={({ navigation, route }) => ({
             tabPress: () => {
-              navigation.navigate('Inventory', { screen: 'StockOverview' });
+              goToTabRoot(navigation, route, 'Inventory', 'StockOverview');
             },
           })}
         />
@@ -792,9 +851,9 @@ function StaffTabs() {
           name="Florist"
           component={FloristStack}
           options={{ tabBarLabel: 'Production' }}
-          listeners={({ navigation }) => ({
+          listeners={({ navigation, route }) => ({
             tabPress: () => {
-              navigation.navigate('Florist', { screen: 'ProductionQueue' });
+              goToTabRoot(navigation, route, 'Florist', 'ProductionQueue');
             },
           })}
         />
@@ -842,9 +901,9 @@ function StaffTabs() {
           name="More"
           component={MoreStack}
           options={{ tabBarLabel: 'More' }}
-          listeners={({ navigation }) => ({
+          listeners={({ navigation, route }) => ({
             tabPress: () => {
-              navigation.navigate('More', { screen: 'MoreHome' });
+              goToTabRoot(navigation, route, 'More', 'MoreHome');
             },
           })}
         />

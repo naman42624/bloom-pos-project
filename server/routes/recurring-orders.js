@@ -7,7 +7,11 @@ function localDateStr(dt) {
 }
 const { body, validationResult } = require('express-validator');
 const { getDb } = require('../config/database');
-const { getDb: getAsyncDb } = require('../config/database-async');
+const { getDb: getAsyncDb, withMoneyTx } = require('../config/database-async');
+const { computeBill } = require('../utils/gst');
+const { readGstSettings, cleanHsn } = require('../utils/gst-settings');
+const { nextNumber: nextInvoiceNumber } = require('../utils/invoice-number');
+const { generateSaleNumber } = require('../utils/sale-number');
 const { authenticate, authorize } = require('../middleware/auth');
 const { nowLocal, nowTimeStr, localToday } = require('../utils/time');
 const { safeParseJSON } = require('../utils/json');
@@ -189,139 +193,133 @@ router.delete(
 // ═══════════════════════════════════════════════════════════════
 // Recurring Order Processor — called by setInterval in server.js
 // ═══════════════════════════════════════════════════════════════
-function processRecurringOrders() {
+// One recurring order -> one sale, in one money transaction: the recurring
+// row is locked and re-checked, the sale is priced with utils/gst.js (shelf
+// prices include GST), gets a sale number and invoice number, and the next
+// run date moves in the same commit, so a crash can never make two sales.
+async function createSaleForRecurring(roId, tomorrowStr, today) {
+  return withMoneyTx(async (db) => {
+    const ro = await db.prepare('SELECT * FROM recurring_orders WHERE id = ? FOR UPDATE').get(roId);
+    if (!ro || !Number(ro.is_active) || !(String(ro.next_run_date) <= tomorrowStr)) return null;
+    const items = safeParseJSON(ro.items, []);
+    if (items.length === 0) return null;
+    const customer = await db.prepare('SELECT id, name, phone FROM users WHERE id = ?').get(ro.customer_id);
+    if (!customer) return null;
+
+    const cfg = await readGstSettings(db);
+    const lines = items.map((item) => ({
+      product_id: item.product_id || null,
+      material_id: item.material_id || null,
+      product_name: item.product_name,
+      quantity: item.quantity || 1,
+      shelf: Number(item.unit_price) || 0,
+      rate: item.tax_rate != null && item.tax_rate !== '' ? Number(item.tax_rate) || 0 : cfg.defaultRate,
+      hsn: cleanHsn(item.hsn_code),
+    }));
+    for (const l of lines) {
+      if (l.product_id) {
+        const p = await db.prepare('SELECT hsn_code FROM products WHERE id = ?').get(l.product_id);
+        if (p && p.hsn_code) l.hsn = p.hsn_code;
+      }
+      if (!l.hsn) l.hsn = cfg.defaultHsn || null;
+    }
+    const bill = computeBill(
+      lines.map((l) => ({ unitPrice: l.shelf, qty: l.quantity, taxRate: l.rate })),
+      null, null, { roundOff: cfg.roundOff }
+    );
+    if (bill.error) throw new Error(bill.error);
+    const itemsTaxableP = bill.lines.reduce((t, l) => t + l.taxableP, 0);
+    const itemsTaxP = bill.lines.reduce((t, l) => t + l.taxP, 0);
+    const grandTotal = bill.payableP / 100;
+
+    const saleNumber = await generateSaleNumber(db, ro.location_id);
+    const invoice = await nextInvoiceNumber(db, ro.location_id, 'invoice');
+    // The recurring order next_run_date is the pickup/delivery date
+    const scheduledDate = ro.next_run_date;
+
+    const saleResult = await db.prepare(`
+      INSERT INTO sales (sale_number, location_id, customer_id, customer_name, customer_phone,
+        subtotal, tax_total, discount_amount, delivery_charges, delivery_address,
+        scheduled_date, scheduled_time, grand_total, payment_status, order_type, status,
+        special_instructions, customer_notes, sender_message, sender_name, sender_phone, created_by, source, created_at,
+        bill_version, round_off, taxable_total, cgst_total, sgst_total, invoice_number, invoice_fy)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, 'pending', ?, 'pending', ?, ?, ?, ?, ?, ?, 'recurring', ?, 2, ?, ?, ?, ?, ?, ?)
+    `).run(
+      saleNumber, ro.location_id, customer.id, customer.name, customer.phone,
+      itemsTaxableP / 100, itemsTaxP / 100, ro.delivery_address || null,
+      scheduledDate, ro.scheduled_time || null, grandTotal, ro.order_type,
+      ro.notes || '', '', ro.sender_message || '', ro.sender_name || '', ro.sender_phone || '',
+      ro.created_by, nowLocal(),
+      bill.roundOffP / 100, bill.taxableP / 100, bill.cgstP / 100, bill.sgstP / 100, invoice.number, invoice.fy
+    );
+    const saleId = saleResult.lastInsertRowid;
+
+    // line_total is left out: production computes it itself
+    for (let i = 0; i < lines.length; i += 1) {
+      const l = lines[i];
+      const b = bill.lines[i];
+      const r = await db.prepare(
+        'INSERT INTO sale_items (sale_id, product_id, material_id, product_name, quantity, unit_price, tax_rate, tax_amount, materials_deducted, from_product_stock, hsn_code, gross_amount, discount_amount, taxable_value, cgst_amount, sgst_amount) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, 0, ?, ?, ?)'
+      ).run(saleId, l.product_id, l.material_id, l.product_name, l.quantity, Math.round(b.unitTaxable * 100) / 100, l.rate, b.taxP / 100,
+        l.hsn, b.grossP / 100, b.taxableP / 100, b.cgstP / 100, b.sgstP / 100);
+      if (l.product_id) {
+        await db.prepare(
+          "INSERT INTO production_tasks (sale_id, sale_item_id, product_id, location_id, quantity, priority, notes, created_at) VALUES (?, ?, ?, ?, ?, 'normal', '', ?)"
+        ).run(saleId, r.lastInsertRowid, l.product_id, ro.location_id, l.quantity, nowLocal());
+      }
+    }
+
+    if (ro.order_type === 'delivery' && ro.delivery_address) {
+      await db.prepare(`
+        INSERT INTO deliveries (sale_id, location_id, delivery_address, customer_name, customer_phone,
+          scheduled_date, scheduled_time, cod_amount, cod_status, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+      `).run(saleId, ro.location_id, ro.delivery_address, customer.name, customer.phone,
+        scheduledDate, ro.scheduled_time || null, grandTotal, nowLocal());
+    }
+    if (ro.order_type === 'pickup') {
+      await db.prepare("UPDATE sales SET pickup_status = 'waiting' WHERE id = ?").run(saleId);
+    }
+
+    // Dues and total spent, same as any unpaid sale
+    await db.prepare('UPDATE users SET credit_balance = credit_balance + ?, total_spent = total_spent + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+      .run(grandTotal, grandTotal, customer.id);
+
+    const nextDate = calculateNextRunDate(ro.frequency, ro.custom_days, ro.next_run_date);
+    await db.prepare('UPDATE recurring_orders SET last_generated_date = ?, next_run_date = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+      .run(today, nextDate, ro.id);
+    return { saleId, scheduledDate };
+  });
+}
+
+let processing = false;
+async function processRecurringOrders() {
+  if (processing) return;
+  processing = true;
   try {
-    const db = getDb();
+    const db = await getAsyncDb();
     // Generate orders 1 day before the scheduled pickup/delivery date
     const tomorrow = new Date();
     tomorrow.setDate(tomorrow.getDate() + 1);
     const tomorrowStr = localDateStr(tomorrow);
     const today = localDateStr();
 
-    const dueOrders = db.prepare(
-      "SELECT * FROM recurring_orders WHERE is_active = 1 AND next_run_date <= ?"
+    const dueOrders = await db.prepare(
+      'SELECT id FROM recurring_orders WHERE is_active = 1 AND next_run_date <= ?'
     ).all(tomorrowStr);
 
-    if (dueOrders.length === 0) return;
-
-    // Helper to generate sale number (same logic as sales.js)
-    function generateSaleNumber(locationId) {
-      const loc = db.prepare('SELECT name FROM locations WHERE id = ?').get(locationId);
-      const locCode = loc ? loc.name.replace(/[^A-Za-z]/g, '').substring(0, 4).toUpperCase() : 'XX';
-      const dateStr = localDateStr().replace(/-/g, '');
-      const prefix = `INV-${locCode}-${dateStr}`;
-      const last = db.prepare("SELECT sale_number FROM sales WHERE sale_number LIKE ? ORDER BY id DESC LIMIT 1").get(`${prefix}-%`);
-      let seq = 1;
-      if (last) {
-        const lastNum = parseInt(last.sale_number.split('-').pop(), 10);
-        if (!isNaN(lastNum)) seq = lastNum + 1;
-      }
-      return `${prefix}-${String(seq).padStart(3, '0')}`;
-    }
-
-    const createSaleForRecurring = db.transaction((ro) => {
-      const items = safeParseJSON(ro.items, []);
-      if (items.length === 0) return null;
-
-      const customer = db.prepare('SELECT id, name, phone FROM users WHERE id = ?').get(ro.customer_id);
-      if (!customer) return null;
-
-      let subtotal = 0;
-      let taxTotal = 0;
-      const processedItems = items.map((item) => {
-        const qty = item.quantity || 1;
-        const unitPrice = item.unit_price || 0;
-        const taxRate = item.tax_rate || 0;
-        const taxAmount = (unitPrice * qty * taxRate) / 100;
-        subtotal += unitPrice * qty;
-        taxTotal += taxAmount;
-        return {
-          product_id: item.product_id || null,
-          material_id: item.material_id || null,
-          product_name: item.product_name,
-          quantity: qty,
-          unit_price: unitPrice,
-          tax_rate: taxRate,
-          tax_amount: taxAmount,
-          line_total: (unitPrice * qty) + taxAmount,
-        };
-      });
-
-      const grandTotal = subtotal + taxTotal;
-      const saleNumber = generateSaleNumber(ro.location_id);
-
-      // Use the recurring order's next_run_date as the scheduled date
-      // (the actual pickup/delivery date, not the generation date)
-      const scheduledDate = ro.next_run_date;
-
-      const saleResult = db.prepare(`
-        INSERT INTO sales (sale_number, location_id, customer_id, customer_name, customer_phone,
-          subtotal, tax_total, discount_amount, delivery_charges, delivery_address,
-          scheduled_date, scheduled_time, grand_total, payment_status, order_type, status,
-          special_instructions, customer_notes, sender_message, sender_name, sender_phone, created_by, source, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, 'pending', ?, 'pending', ?, ?, ?, ?, ?, ?, 'recurring', ?)
-      `).run(
-        saleNumber, ro.location_id, customer.id, customer.name, customer.phone,
-        subtotal, taxTotal, ro.delivery_address || null,
-        scheduledDate, ro.scheduled_time || null, grandTotal, ro.order_type,
-        ro.notes || '', '', ro.sender_message || '', ro.sender_name || '', ro.sender_phone || '',
-        ro.created_by, nowLocal()
-      );
-      const saleId = saleResult.lastInsertRowid;
-
-      // Insert items
-      const insertItem = db.prepare(
-        'INSERT INTO sale_items (sale_id, product_id, material_id, product_name, quantity, unit_price, tax_rate, tax_amount, line_total, materials_deducted, from_product_stock) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)'
-      );
-      for (const item of processedItems) {
-        insertItem.run(saleId, item.product_id, item.material_id, item.product_name, item.quantity, item.unit_price, item.tax_rate, item.tax_amount, item.line_total);
-      }
-
-      // Create production tasks
-      const insertTask = db.prepare(
-        "INSERT INTO production_tasks (sale_id, sale_item_id, product_id, location_id, quantity, priority, notes, created_at) VALUES (?, ?, ?, ?, ?, 'normal', '', ?)"
-      );
-      const saleItems = db.prepare('SELECT * FROM sale_items WHERE sale_id = ?').all(saleId);
-      for (const si of saleItems) {
-        if (si.product_id) {
-          insertTask.run(saleId, si.id, si.product_id, ro.location_id, si.quantity, nowLocal());
-        }
-      }
-
-      // Create delivery record if delivery order
-      if (ro.order_type === 'delivery' && ro.delivery_address) {
-        db.prepare(`
-          INSERT INTO deliveries (sale_id, location_id, delivery_address, customer_name, customer_phone,
-            scheduled_date, scheduled_time, cod_amount, cod_status, created_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
-        `).run(saleId, ro.location_id, ro.delivery_address, customer.name, customer.phone,
-          scheduledDate, ro.scheduled_time || null, grandTotal, nowLocal());
-      }
-
-      // Set pickup status if pickup
-      if (ro.order_type === 'pickup') {
-        db.prepare("UPDATE sales SET pickup_status = 'waiting' WHERE id = ?").run(saleId);
-      }
-
-      // Update credit balance
-      db.prepare('UPDATE users SET credit_balance = credit_balance + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(grandTotal, customer.id);
-
-      return saleId;
-    });
-
-    for (const ro of dueOrders) {
-      const saleId = createSaleForRecurring(ro);
-      if (saleId) {
-        // Calculate next run date from the current next_run_date
-        const nextDate = calculateNextRunDate(ro.frequency, ro.custom_days, ro.next_run_date);
-        db.prepare(
-          'UPDATE recurring_orders SET last_generated_date = ?, next_run_date = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'
-        ).run(today, nextDate, ro.id);
-        console.log(`📦 Recurring order #${ro.id} → Sale #${saleId} generated (scheduled for ${ro.next_run_date})`);
+    for (const { id } of dueOrders) {
+      try {
+        const made = await createSaleForRecurring(id, tomorrowStr, today);
+        if (made) console.log(`📦 Recurring order #${id} → Sale #${made.saleId} generated (scheduled for ${made.scheduledDate})`);
+      } catch (err) {
+        console.error(`❌ Recurring order #${id} not generated:`, err.message);
       }
     }
   } catch (err) {
     console.error('❌ Recurring order processing error:', err.message);
+  } finally {
+    processing = false;
   }
 }
 

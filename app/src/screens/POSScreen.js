@@ -171,8 +171,10 @@ export default function POSScreen({ navigation, route }) {
             : c
         );
       }
-      const taxRate = product.tax_percentage || 0;
-      const unitPrice = product.selling_price || 0;
+      // Prices come from the API as text ("118.00"); keep them numbers so
+      // nothing is added as text. Shelf prices include GST.
+      const taxRate = Number(product.tax_percentage) || 0;
+      const unitPrice = Number(product.selling_price) || 0;
       const taxAmount = (unitPrice * taxRate) / 100;
       return [...prev, {
         product_id: product.id,
@@ -265,9 +267,10 @@ export default function POSScreen({ navigation, route }) {
     }
   };
 
+  // Shelf prices include GST, so the cart total is just price x quantity
+  // (Quick Checkout then shows the final bill: discount, delivery, round-off)
   const subtotal = cart.reduce((s, c) => s + (c.unit_price * c.quantity), 0);
-  const taxTotal = cart.reduce((s, c) => s + ((c.unit_price * c.quantity * c.tax_rate) / 100), 0);
-  const grandTotal = subtotal + taxTotal;
+  const grandTotal = subtotal;
   const itemCount = cart.reduce((s, c) => s + c.quantity, 0);
 
   const handleQuickAdd = async () => {
@@ -769,7 +772,7 @@ export default function POSScreen({ navigation, route }) {
                 {c.material_id ? '🌿 ' : ''}{c.product_name}
               </Text>
               <Text style={styles.cartItemPrice} numberOfLines={2}>
-                ₹{Number(c.unit_price || 0).toFixed(2)} × {c.quantity} = ₹{Number(c.line_total || (c.unit_price * c.quantity) || 0).toFixed(2)}
+                ₹{Number(c.unit_price || 0).toFixed(2)} × {c.quantity} = ₹{((Number(c.unit_price) || 0) * (Number(c.quantity) || 0)).toFixed(2)}
               </Text>
             </View>
             <View style={styles.qtyControls}>

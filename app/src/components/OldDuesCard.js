@@ -31,6 +31,30 @@ export function duesAmountError(dueAmount, value) {
   return '';
 }
 
+// What to take from the customer right now when old dues ride along with an
+// order, split by how each part is paid. One number with one method was wrong
+// when the order and the dues use different methods (₹50 cash order + ₹45 UPI
+// dues showed "₹95.00 (UPI)", so the drawer came up ₹50 short).
+// orderParts: [{ method, amount }] for the money taken on the order now.
+export function takeNowSummary(orderParts, dues, duesMethod) {
+  const label = (m) => (m === 'upi' ? 'UPI' : m === 'card' ? 'Card' : 'Cash');
+  const by = {};
+  const add = (m, amount) => {
+    const a = Math.round((Number(amount) || 0) * 100);
+    if (a <= 0) return;
+    const k = label(m);
+    by[k] = (by[k] || 0) + a;
+  };
+  (orderParts || []).forEach((p) => add(p.method, p.amount));
+  add(duesMethod, dues);
+  const keys = Object.keys(by);
+  const totalPaise = keys.reduce((s, k) => s + by[k], 0);
+  const rupees = (paise) => `₹${(paise / 100).toFixed(2)}`;
+  const total = `Take from customer now: ${rupees(totalPaise)}`;
+  if (keys.length <= 1) return { total: keys.length ? `${total} (${keys[0]})` : total, detail: null };
+  return { total, detail: keys.map((k) => `${rupees(by[k])} ${k}`).join(' + ') };
+}
+
 export default function OldDuesCard({ dueAmount, value, onCollect, onRemove }) {
   const due = Number(dueAmount) || 0;
   if (due <= 0) return null;

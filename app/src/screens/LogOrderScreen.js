@@ -3,6 +3,8 @@ import { View, Text, StyleSheet, ScrollView, TextInput, TouchableOpacity, Activi
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import api from '../services/api';
+import { computeBill } from '../utils/gst';
+import useBillSettings from '../hooks/useBillSettings';
 import VoiceNoteRecorder from '../components/VoiceNoteRecorder';
 import SoldByPicker from '../components/SoldByPicker';
 import RoutePicker from '../components/RoutePicker';
@@ -13,7 +15,7 @@ import { useAuth } from '../context/AuthContext';
 import { getShopNow } from '../utils/datetime';
 import { bumpActivity } from '../hooks/useIdleLock';
 import useSubmitGuard from '../hooks/useSubmitGuard';
-import OldDuesCard, { EMPTY_DUES, duesAmountError } from '../components/OldDuesCard';
+import OldDuesCard, { EMPTY_DUES, duesAmountError, takeNowSummary } from '../components/OldDuesCard';
 import CollectDuesSheet from '../components/CollectDuesSheet';
 import OpenRegisterSheet from '../components/OpenRegisterSheet';
 
@@ -47,6 +49,7 @@ function showAlert(title, message, onDismiss) {
 
 export default function LogOrderScreen({ navigation, route }) {
   const { user, activeLocation, settings } = useAuth();
+  const billSettings = useBillSettings();
   const timezone = settings?.timezone?.value || 'Asia/Kolkata';
 
   const [channel, setChannel] = useState('whatsapp');
@@ -363,10 +366,12 @@ export default function LogOrderScreen({ navigation, route }) {
 
   const clearItemAttachments = (idx) => setItems((prev) => prev.map((it, i) => (i === idx ? { ...it, pendingAttachments: [] } : it)));
 
-  const computeItemsTotal = () => items.reduce(
-    (sum, it) => sum + (Number(it.unit_price) || 0) * (Number(it.quantity) || 0),
-    0
-  );
+  // The order's total exactly as the server saves it (utils/gst.js): prices
+  // include GST, so only the owner's round-off can change the sum
+  const computeItemsTotal = () => computeBill(
+    items.map((it) => ({ unitPrice: Number(it.unit_price) || 0, qty: Number(it.quantity) || 0, taxRate: 0 })),
+    null, null, { roundOff: !!billSettings.round_off }
+  ).payable;
 
   const selectPaymentMode = (mode) => {
     setPaymentMode(mode);
@@ -825,14 +830,12 @@ export default function LogOrderScreen({ navigation, route }) {
         {duesCollect.enabled && customerId && customerDues > 0 && !duesAmountError(customerDues, duesCollect) && (() => {
           const dues = Math.round((parseFloat(duesCollect.amount) || 0) * 100) / 100;
           const nowPaid = paymentMode !== 'unpaid' ? Math.round((parseFloat(paymentAmount) || 0) * 100) / 100 : 0;
-          const method = duesCollect.method === 'upi' ? 'upi' : 'cash';
-          const total = Math.round((nowPaid + dues) * 100) / 100;
+          const take = takeNowSummary(nowPaid > 0 ? [{ method: paymentMethod, amount: nowPaid }] : [], dues, duesCollect.method === 'upi' ? 'upi' : 'cash');
           return (
             <View style={{ marginTop: Spacing.sm }}>
               <Text style={{ fontSize: FontSize.md, color: Colors.textSecondary }}>Old dues: ₹{dues.toFixed(2)}</Text>
-              <Text style={{ fontSize: FontSize.lg, fontWeight: '800', color: Colors.text }}>
-                Take from customer now: ₹{total.toFixed(2)}{method !== 'cash' ? ` (${method.toUpperCase()})` : ''}
-              </Text>
+              <Text style={{ fontSize: FontSize.lg, fontWeight: '800', color: Colors.text }}>{take.total}</Text>
+              {take.detail ? <Text style={{ fontSize: FontSize.md, fontWeight: '700', color: Colors.text }}>{take.detail}</Text> : null}
             </View>
           );
         })()}

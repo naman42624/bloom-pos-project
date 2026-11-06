@@ -137,7 +137,9 @@ async function build() {
   f.b2 = await mk(B, 60);
   await db.prepare("UPDATE sales SET entry_mode = 'close_topup', created_by = ? WHERE id = ?").run(B, f.b2);
   f.c1 = await mk(C, 75);
-  await db.prepare("UPDATE sales SET created_at = ?::timestamp WHERE id = ?").run(`${TODAY} 23:50:00`, f.c1);
+  // created_at is stored in UTC: stamp 23:50 on the shop's clock, not 23:50 UTC
+  // (05:20 the next morning in India).
+  await db.prepare("UPDATE sales SET created_at = (?::timestamp AT TIME ZONE 'Asia/Kolkata') AT TIME ZONE 'UTC' WHERE id = ?").run(`${TODAY} 23:50:00`, f.c1);
   await db.prepare('UPDATE users SET is_active = 0 WHERE id = ?').run(C);
   f.q = await mk(A, 20, { entry_mode: 'quick', payments: [{ method: 'cash', amount: 20 }] });
   const u = await api('POST', `/quick-sale/${f.q}/undo`, owner.token, {});
