@@ -1,7 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Alert } from 'react-native';
+import { } from 'react-native';
 import { useAudioRecorder, RecordingPresets, AudioModule } from 'expo-audio';
 import { RecorderButton } from './VoiceNoteRecorder.shared';
+import { appAlert } from '../utils/alert';
 
 const MAX_SECONDS_DEFAULT = 60;
 
@@ -50,7 +51,7 @@ export default function VoiceNoteRecorder({ onRecorded, maxSeconds = MAX_SECONDS
   const start = async () => {
     const { granted } = await AudioModule.requestRecordingPermissionsAsync();
     if (!granted) {
-      Alert.alert('Microphone permission needed', 'Please allow microphone access to record a voice note.');
+      appAlert('Microphone permission needed', 'Please allow microphone access to record a voice note.');
       return;
     }
 

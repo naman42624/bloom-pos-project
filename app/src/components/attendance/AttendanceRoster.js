@@ -7,13 +7,14 @@
 // inside StaffAttendanceScreen: More → Attendance → Staff Today → row).
 // See spec §7.
 import React, { useState, useCallback, useRef } from 'react';
-import { View, Text, StyleSheet, SectionList, TouchableOpacity, ActivityIndicator, Alert, Platform, RefreshControl } from 'react-native';
+import { View, Text, StyleSheet, SectionList, TouchableOpacity, ActivityIndicator, Platform, RefreshControl } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '../../context/AuthContext';
 import api from '../../services/api';
 import { Colors, FontSize, Spacing, BorderRadius } from '../../constants/theme';
 import { formatTime as formatServerTime, formatDateLabel } from '../../utils/datetime';
+import { appAlert } from '../../utils/alert';
 
 function formatTime(iso) {
   if (!iso) return '--:--';
@@ -71,8 +72,7 @@ function formatOutdoor(hours) {
 
 const confirmClockOut = (name, onOk) => {
   const msg = `Clock out ${name}?`;
-  if (Platform.OS === 'web') { if (window.confirm(msg)) onOk(); }
-  else Alert.alert('Clock Out', msg, [{ text: 'Cancel', style: 'cancel' }, { text: 'OK', onPress: onOk }]);
+  appAlert('Clock Out', msg, [{ text: 'Cancel', style: 'cancel' }, { text: 'OK', onPress: onOk }]);
 };
 
 export default function AttendanceRoster() {
@@ -136,7 +136,7 @@ export default function AttendanceRoster() {
     try {
       await api.clockIn({ user_id: staffId, location_id: locId, method: 'manual' });
     } catch (e) {
-      Alert.alert('Error', e.message || 'Failed to clock in staff.');
+      appAlert('Error', e.message || 'Failed to clock in staff.');
     } finally {
       // Refetch regardless of success/failure — a failed request that
       // actually succeeded server-side (lost response, not lost request)
@@ -153,7 +153,7 @@ export default function AttendanceRoster() {
       try {
         await api.clockOut({ user_id: staffId, method: 'manual' });
       } catch (e) {
-        Alert.alert('Error', e.message || 'Failed to clock out staff.');
+        appAlert('Error', e.message || 'Failed to clock out staff.');
       } finally {
         await fetchData();
         setActionLoadingKey(null);

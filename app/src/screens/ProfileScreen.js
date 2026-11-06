@@ -1,13 +1,5 @@
 import React, { useState } from 'react';
-import {
-  View,
-  Text,
-  StyleSheet,
-  ScrollView,
-  TouchableOpacity,
-  Alert,
-  Platform,
-} from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import { useAuth } from '../context/AuthContext';
@@ -16,6 +8,7 @@ import Button from '../components/Button';
 import api from '../services/api';
 import DismissKeyboard from '../components/DismissKeyboard';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
+import { appAlert } from '../utils/alert';
 
 export default function ProfileScreen() {
   const navigation = useNavigation();
@@ -34,16 +27,16 @@ export default function ProfileScreen() {
 
   const handleSaveProfile = async () => {
     if (!name.trim()) {
-      Alert.alert('Error', 'Name cannot be empty');
+      appAlert('Error', 'Name cannot be empty');
       return;
     }
     setLoading(true);
     try {
       await updateUser({ name: name.trim(), bio: bio.trim() });
       setIsEditing(false);
-      Alert.alert('Success', 'Profile updated!');
+      appAlert('Success', 'Profile updated!');
     } catch (err) {
-      Alert.alert('Error', err.message);
+      appAlert('Error', err.message);
     } finally {
       setLoading(false);
     }
@@ -51,11 +44,11 @@ export default function ProfileScreen() {
 
   const handleChangePassword = async () => {
     if (!currentPassword || !newPassword) {
-      Alert.alert('Error', 'Please fill in both fields');
+      appAlert('Error', 'Please fill in both fields');
       return;
     }
     if (newPassword.length < 6) {
-      Alert.alert('Error', 'New password must be at least 6 characters');
+      appAlert('Error', 'New password must be at least 6 characters');
       return;
     }
     setPasswordLoading(true);
@@ -64,23 +57,19 @@ export default function ProfileScreen() {
       setShowPasswordForm(false);
       setCurrentPassword('');
       setNewPassword('');
-      Alert.alert('Success', 'Password changed successfully!');
+      appAlert('Success', 'Password changed successfully!');
     } catch (err) {
-      Alert.alert('Error', err.message);
+      appAlert('Error', err.message);
     } finally {
       setPasswordLoading(false);
     }
   };
 
   const handleLogout = () => {
-    if (Platform.OS === 'web') {
-      if (window.confirm('Are you sure you want to log out?')) logout();
-    } else {
-      Alert.alert('Logout', 'Are you sure you want to log out?', [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Logout', style: 'destructive', onPress: logout },
-      ]);
-    }
+    appAlert('Logout', 'Are you sure you want to log out?', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Logout', style: 'destructive', onPress: logout },
+    ]);
   };
 
   return (

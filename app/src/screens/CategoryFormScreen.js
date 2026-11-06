@@ -1,14 +1,13 @@
 import React, { useState, useEffect } from 'react';
-import {
-  View, Text, StyleSheet, KeyboardAvoidingView, Platform,
-  ScrollView, Alert, TouchableOpacity,
-} from 'react-native';
+import { View, Text, StyleSheet, KeyboardAvoidingView, Platform, ScrollView, TouchableOpacity } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import api from '../services/api';
 import Input from '../components/Input';
 import Button from '../components/Button';
 import DismissKeyboard from '../components/DismissKeyboard';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
+import { appAlert } from '../utils/alert';
+import useSubmitGuard from '../hooks/useSubmitGuard';
 
 const STORAGE_OPTIONS = ['shop', 'warehouse'];
 
@@ -45,6 +44,7 @@ export default function CategoryFormScreen({ route, navigation }) {
     return Object.keys(e).length === 0;
   };
 
+  const guardSubmit = useSubmitGuard();
   const handleSubmit = async () => {
     if (!validate()) return;
     setLoading(true);
@@ -64,7 +64,7 @@ export default function CategoryFormScreen({ route, navigation }) {
       }
       navigation.goBack();
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to save category');
+      appAlert('Error', err.message || 'Failed to save category');
     } finally {
       setLoading(false);
     }
@@ -115,7 +115,7 @@ export default function CategoryFormScreen({ route, navigation }) {
           )}
 
           <View style={styles.actions}>
-            <Button title={isEditing ? 'Update Category' : 'Create Category'} onPress={handleSubmit} loading={loading} />
+            <Button title={isEditing ? 'Update Category' : 'Create Category'} onPress={guardSubmit(handleSubmit)} loading={loading} />
           </View>
         </ScrollView>
       </KeyboardAvoidingView>

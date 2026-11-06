@@ -1,17 +1,14 @@
 import React, { useState, useCallback } from 'react';
-import {
-  View, Text, StyleSheet, FlatList, TouchableOpacity, ScrollView,
-  RefreshControl, Alert, Platform, Modal, TextInput, ActivityIndicator, KeyboardAvoidingView,
-} from 'react-native';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, ScrollView, RefreshControl, Platform, Modal, TextInput, ActivityIndicator, KeyboardAvoidingView } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
+import { appAlert } from '../utils/alert';
 
 const confirm = (title, msg, onOk) => {
-  if (Platform.OS === 'web') { if (window.confirm(`${title}\n${msg}`)) onOk(); }
-  else Alert.alert(title, msg, [{ text: 'Cancel', style: 'cancel' }, { text: 'OK', onPress: onOk }]);
+  appAlert(title, msg, [{ text: 'Cancel', style: 'cancel' }, { text: 'OK', onPress: onOk }]);
 };
 
 const STATUS_COLORS = {
@@ -60,7 +57,7 @@ export default function SalaryAdvancesScreen() {
   const handleRequest = async () => {
     const amt = parseFloat(amount);
     if (!amt || amt <= 0) {
-      Alert.alert('Error', 'Enter a valid amount.');
+      appAlert('Error', 'Enter a valid amount.');
       return;
     }
     setActionLoading(true);
@@ -71,7 +68,7 @@ export default function SalaryAdvancesScreen() {
       setReason('');
       await fetchData();
     } catch (e) {
-      Alert.alert('Error', e.message || 'Failed to request advance.');
+      appAlert('Error', e.message || 'Failed to request advance.');
     } finally {
       setActionLoading(false);
     }
@@ -84,7 +81,7 @@ export default function SalaryAdvancesScreen() {
         await api.approveSalaryAdvance(id);
         await fetchData();
       } catch (e) {
-        Alert.alert('Error', e.message || 'Failed to approve.');
+        appAlert('Error', e.message || 'Failed to approve.');
       } finally {
         setActionLoading(false);
       }
@@ -98,7 +95,7 @@ export default function SalaryAdvancesScreen() {
         await api.rejectSalaryAdvance(id);
         await fetchData();
       } catch (e) {
-        Alert.alert('Error', e.message || 'Failed to reject.');
+        appAlert('Error', e.message || 'Failed to reject.');
       } finally {
         setActionLoading(false);
       }
@@ -112,7 +109,7 @@ export default function SalaryAdvancesScreen() {
         await api.repaySalaryAdvance(adv.id, { amount: adv.amount - adv.repaid_amount });
         await fetchData();
       } catch (e) {
-        Alert.alert('Error', e.message || 'Failed to record repayment.');
+        appAlert('Error', e.message || 'Failed to record repayment.');
       } finally {
         setActionLoading(false);
       }

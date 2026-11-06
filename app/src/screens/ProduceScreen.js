@@ -1,16 +1,12 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import {
-  View, Text, StyleSheet, FlatList, TextInput,
-  TouchableOpacity, Alert, ScrollView, ActivityIndicator, Modal,
-  KeyboardAvoidingView, Platform,
-} from 'react-native';
+import { View, Text, StyleSheet, FlatList, TextInput, TouchableOpacity, ScrollView, ActivityIndicator, Modal, KeyboardAvoidingView, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import { formatTime } from '../utils/datetime';
-import { showAlert } from '../utils/alert';
+import { showAlert, appAlert } from '../utils/alert';
 import { printProductTag } from '../utils/productTag';
 import { printHtml } from '../utils/printHelpers';
 
@@ -90,7 +86,7 @@ export default function ProduceScreen({ navigation }) {
   const handleProduce = async () => {
     if (!selectedProduct) return;
     const qty = parseInt(quantity) || 0;
-    if (qty <= 0) { Alert.alert('Invalid', 'Enter a valid quantity'); return; }
+    if (qty <= 0) { appAlert('Invalid', 'Enter a valid quantity'); return; }
 
     setProducing(true);
     try {
@@ -102,7 +98,7 @@ export default function ProduceScreen({ navigation }) {
       });
 
       if (res.success) {
-        Alert.alert(
+        appAlert(
           'Produced!',
           `${qty}x ${selectedProduct.name} added to display stock.\nReady qty: ${res.data.ready_qty}`
         );
@@ -113,7 +109,7 @@ export default function ProduceScreen({ navigation }) {
         fetchRecentLogs();
       }
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to produce');
+      appAlert('Error', err.message || 'Failed to produce');
     } finally {
       setProducing(false);
     }
@@ -517,8 +513,8 @@ export default function ProduceScreen({ navigation }) {
                           const filtered = allMaterialsList.filter(
                             (mat) => !customMaterials.some((qm, qi) => qi !== idx && qm.material_id === mat.id)
                           );
-                          if (filtered.length === 0) { Alert.alert('No materials', 'No materials available'); return; }
-                          Alert.alert('Select Material', '', filtered.map((mat) => ({
+                          if (filtered.length === 0) { appAlert('No materials', 'No materials available'); return; }
+                          appAlert('Select Material', '', filtered.map((mat) => ({
                             text: `${mat.name}${mat.stock_quantity != null ? ` (${mat.stock_quantity})` : ''}`,
                             onPress: () => selectCustomMaterial(idx, mat),
                           })).concat([{ text: 'Cancel', style: 'cancel' }]));

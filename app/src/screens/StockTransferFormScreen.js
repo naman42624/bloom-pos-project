@@ -1,13 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import {
-  View, Text, StyleSheet, KeyboardAvoidingView, Platform,
-  ScrollView, Alert, TouchableOpacity,
-} from 'react-native';
+import { View, Text, StyleSheet, KeyboardAvoidingView, Platform, ScrollView, TouchableOpacity } from 'react-native';
 import api from '../services/api';
 import Input from '../components/Input';
 import Button from '../components/Button';
 import DismissKeyboard from '../components/DismissKeyboard';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
+import { appAlert } from '../utils/alert';
+import useSubmitGuard from '../hooks/useSubmitGuard';
 
 export default function StockTransferFormScreen({ navigation }) {
   const [materials, setMaterials] = useState([]);
@@ -48,6 +47,7 @@ export default function StockTransferFormScreen({ navigation }) {
     return Object.keys(e).length === 0;
   };
 
+  const guardSubmit = useSubmitGuard();
   const handleSubmit = async () => {
     if (!validate()) return;
     setLoading(true);
@@ -59,10 +59,10 @@ export default function StockTransferFormScreen({ navigation }) {
         quantity: parseFloat(quantity),
         notes: notes.trim() || undefined,
       });
-      Alert.alert('Success', 'Transfer initiated');
+      appAlert('Success', 'Transfer initiated');
       navigation.goBack();
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to create transfer');
+      appAlert('Error', err.message || 'Failed to create transfer');
     } finally { setLoading(false); }
   };
 
@@ -111,7 +111,7 @@ export default function StockTransferFormScreen({ navigation }) {
           <Input label="Notes (optional)" value={notes} onChangeText={setNotes} placeholder="Transfer notes" multiline />
 
           <View style={styles.actions}>
-            <Button title="Initiate Transfer" onPress={handleSubmit} loading={loading} />
+            <Button title="Initiate Transfer" onPress={guardSubmit(handleSubmit)} loading={loading} />
           </View>
         </ScrollView>
       </KeyboardAvoidingView>

@@ -1,20 +1,11 @@
 import React, { useCallback, useMemo, useState } from 'react';
-import {
-  ActivityIndicator,
-  Platform,
-  FlatList,
-  RefreshControl,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
-  Alert,
-} from 'react-native';
+import { ActivityIndicator, Platform, FlatList, RefreshControl, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 
 import api from '../services/api';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
+import { appAlert } from '../utils/alert';
 
 function contextLabel(context) {
   if (context === 'checkout') return 'Quick Checkout';
@@ -35,7 +26,7 @@ export default function SaleDraftsScreen({ navigation, route }) {
       const res = await api.getSaleDrafts(params);
       setDrafts(res?.data || []);
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to load drafts');
+      appAlert('Error', err.message || 'Failed to load drafts');
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -64,18 +55,11 @@ export default function SaleDraftsScreen({ navigation, route }) {
         await api.deleteSaleDraft(draftId);
         setDrafts((prev) => prev.filter((d) => d.id !== draftId));
       } catch (err) {
-        Alert.alert('Error', err.message || 'Failed to delete draft');
+        appAlert('Error', err.message || 'Failed to delete draft');
       }
     };
 
-    if (Platform.OS === 'web') {
-      if (typeof window !== 'undefined' && window.confirm('This draft will be permanently removed.')) {
-        performDelete();
-      }
-      return;
-    }
-
-    Alert.alert('Delete Draft', 'This draft will be permanently removed.', [
+        appAlert('Delete Draft', 'This draft will be permanently removed.', [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Delete',

@@ -1,9 +1,5 @@
-import React, { useState, useCallback, useMemo, useEffect } from 'react';
-import {
-  View, Text, StyleSheet, FlatList, SectionList, TouchableOpacity,
-  ActivityIndicator, RefreshControl, Alert, ScrollView, Modal, TextInput, Platform, Image,
-  useWindowDimensions, Animated,
-} from 'react-native';
+import React, { useState, useCallback, useMemo, useEffect, useRef } from 'react';
+import { View, Text, StyleSheet, FlatList, SectionList, TouchableOpacity, ActivityIndicator, RefreshControl, ScrollView, Modal, TextInput, Platform, Image, useWindowDimensions, Animated } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import api from '../services/api';
@@ -15,6 +11,7 @@ import {
   minutesUntilShopDateTime, minutesSinceServerDate
 } from '../utils/datetime';
 import ImageModal from '../components/ImageModal';
+import { appAlert } from '../utils/alert';
 
 
 
@@ -589,86 +586,76 @@ export default function ProductionQueueScreen({ navigation, route }) {
     );
   };
 
-  const handlePickTask = (task) => {
-    const msg = `Pick up: ${Number(task.quantity)}x ${task.product_name}?`;
-    const onConfirm = async () => {
-      try {
-        await api.pickTask(task.id);
-        fetchTasks();
-      } catch (err) {
-        if (Platform.OS === 'web') {
-          window.alert('Error: ' + (err.message || 'Failed'));
-        } else {
-          Alert.alert('Error', err.message || 'Failed');
-        }
-      }
-    };
+  // D39: Pick / Start / Done act at once on screen, with "Undo" for 5 seconds
+  // instead of an "Are you sure?" box. Nothing is sent to the server until
+  // the 5 seconds are up (or the florist leaves this screen, or taps another
+  // task), so Undo never has to put stock back: Done is the step that uses
+  // up materials, and it has not happened yet.
+  const UNDO_MS = 5000;
+  const TASK_STEPS = {
+    pick: { from: 'pending', to: 'assigned', call: (id) => api.pickTask(id), done: 'Picked up' },
+    start: { from: 'assigned', to: 'in_progress', call: (id) => api.startTask(id), done: 'Started' },
+    complete: { from: 'in_progress', to: 'completed', call: (id) => api.completeTask(id), done: 'Done' },
+  };
+  const taskName = (t) => t.product_name || t.item_product_name || 'item';
+  const [pendingStep, setPendingStep] = useState(null);
+  const pendingRef = useRef(null);
 
-    if (Platform.OS === 'web') {
-      setTimeout(() => {
-        if (window.confirm(msg)) onConfirm();
-      }, 50);
-    } else {
-      Alert.alert('Pick Task', msg, [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Pick Up', onPress: onConfirm },
-      ]);
+  const sendStep = useCallback(async (step) => {
+    try {
+      await TASK_STEPS[step.kind].call(step.task.id);
+    } catch (err) {
+      appAlert(
+        'Not saved',
+        `${taskName(step.task)}: ${err.message || 'the change did not save.'}\n\nThe list has been refreshed. Check the task and tap again if needed.`
+      );
+    } finally {
+      fetchTasks();
     }
+  }, [fetchTasks]);
+
+  // Send the waiting step now (timer ran out, another task was tapped, or the
+  // screen is being left).
+  const flushStep = useCallback(() => {
+    const step = pendingRef.current;
+    if (!step) return;
+    clearTimeout(step.timer);
+    pendingRef.current = null;
+    setPendingStep(null);
+    sendStep(step);
+  }, [sendStep]);
+
+  const queueStep = (task, kind) => {
+    if (pendingRef.current) flushStep();
+    const cfg = TASK_STEPS[kind];
+    const step = { task, kind, prevStatus: task.status };
+    step.timer = setTimeout(() => {
+      if (pendingRef.current === step) flushStep();
+    }, UNDO_MS);
+    pendingRef.current = step;
+    setPendingStep(step);
+    setTasks((list) => list.map((t) => (t.id === task.id ? { ...t, status: cfg.to } : t)));
   };
 
-  const handleStartTask = (task) => {
-    const msg = `Start making ${Number(task.quantity)}x ${task.product_name}?`;
-    const onConfirm = async () => {
-      try {
-        await api.startTask(task.id);
-        fetchTasks();
-      } catch (err) {
-        if (Platform.OS === 'web') {
-          window.alert('Error: ' + (err.message || 'Failed'));
-        } else {
-          Alert.alert('Error', err.message || 'Failed');
-        }
-      }
-    };
-
-    if (Platform.OS === 'web') {
-      setTimeout(() => {
-        if (window.confirm(msg)) onConfirm();
-      }, 50);
-    } else {
-      Alert.alert('Start Task', msg, [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Start', onPress: onConfirm },
-      ]);
-    }
+  const undoStep = () => {
+    const step = pendingRef.current;
+    if (!step) return;
+    clearTimeout(step.timer);
+    pendingRef.current = null;
+    setPendingStep(null);
+    setTasks((list) => list.map((t) => (t.id === step.task.id ? { ...t, status: step.prevStatus } : t)));
   };
 
-  const handleCompleteTask = (task) => {
-    const msg = `Done making ${Number(task.quantity)}x ${task.product_name}?\n\nMaterials will be deducted.`;
-    const onConfirm = async () => {
-      try {
-        await api.completeTask(task.id);
-        fetchTasks();
-      } catch (err) {
-        if (Platform.OS === 'web') {
-          window.alert('Error: ' + (err.message || 'Failed'));
-        } else {
-          Alert.alert('Error', err.message || 'Failed');
-        }
-      }
-    };
+  // Leaving the screen saves the waiting step straight away
+  useFocusEffect(useCallback(() => () => flushStep(), [flushStep]));
+  useEffect(() => () => {
+    const step = pendingRef.current;
+    if (step) { clearTimeout(step.timer); pendingRef.current = null; TASK_STEPS[step.kind].call(step.task.id).catch(() => {}); }
+  }, []);
 
-    if (Platform.OS === 'web') {
-      setTimeout(() => {
-        if (window.confirm(msg)) onConfirm();
-      }, 50);
-    } else {
-      Alert.alert('Complete Task', msg, [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Complete', style: 'default', onPress: onConfirm },
-      ]);
-    }
-  };
+  const handlePickTask = (task) => queueStep(task, 'pick');
+  const handleStartTask = (task) => queueStep(task, 'start');
+  const handleCompleteTask = (task) => queueStep(task, 'complete');
 
   const openAssignModal = async (task) => {
     setAssignTask(task);
@@ -698,7 +685,7 @@ export default function ProductionQueueScreen({ navigation, route }) {
       setAssignOrderTasks([]);
       if (viewMode === 'tasks') fetchTasks();
       else fetchOrders();
-    } catch (err) { Alert.alert('Error', err.message || 'Failed to assign'); }
+    } catch (err) { appAlert('Error', err.message || 'Failed to assign'); }
   };
 
   const handleOrderStatus = (order, nextStatus, label) => {
@@ -708,24 +695,14 @@ export default function ProductionQueueScreen({ navigation, route }) {
         await api.updateOrderStatus(order.id, nextStatus);
         fetchOrders();
       } catch (err) {
-        if (Platform.OS === 'web') {
-          window.alert('Error: ' + (err.message || 'Failed'));
-        } else {
-          Alert.alert('Error', err.message || 'Failed');
-        }
+        appAlert('Error', err.message || 'Failed');
       }
     };
 
-    if (Platform.OS === 'web') {
-      setTimeout(() => {
-        if (window.confirm(msg)) onConfirm();
-      }, 50);
-    } else {
-      Alert.alert(label, msg, [
-        { text: 'Cancel', style: 'cancel' },
-        { text: label, onPress: onConfirm },
-      ]);
-    }
+    appAlert(label, msg, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: label, onPress: onConfirm },
+    ]);
   };
 
   const renderItemImage = (imageUrl) => {
@@ -1406,12 +1383,46 @@ export default function ProductionQueueScreen({ navigation, route }) {
           />
         )}
       </View>
+
+      {pendingStep && (
+        <View style={styles.undoWrap} pointerEvents="box-none">
+        <View style={styles.undoBar} accessibilityLiveRegion="polite">
+          <Ionicons name="checkmark-circle" size={24} color={Colors.white} />
+          <Text style={styles.undoText} numberOfLines={2}>
+            {TASK_STEPS[pendingStep.kind].done}: {Number(pendingStep.task.quantity)}x {taskName(pendingStep.task)}
+          </Text>
+          <TouchableOpacity
+            style={styles.undoBtn}
+            onPress={undoStep}
+            accessibilityRole="button"
+            accessibilityLabel="Undo"
+          >
+            <Ionicons name="arrow-undo" size={20} color={Colors.primary} />
+            <Text style={styles.undoBtnText}>Undo</Text>
+          </TouchableOpacity>
+        </View>
+        </View>
+      )}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: Colors.background, flexDirection: 'row' },
+  undoWrap: { position: 'absolute', left: Spacing.md, right: Spacing.md, bottom: Spacing.md, alignItems: 'center' },
+  undoBar: {
+    width: '100%',
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
+    backgroundColor: Colors.text, borderRadius: BorderRadius.md,
+    paddingVertical: Spacing.sm, paddingLeft: Spacing.md, paddingRight: Spacing.sm,
+    maxWidth: 560,
+  },
+  undoText: { flex: 1, color: Colors.white, fontSize: FontSize.md, fontWeight: '600' },
+  undoBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 6, minHeight: 48, paddingHorizontal: Spacing.md,
+    backgroundColor: Colors.white, borderRadius: BorderRadius.md,
+  },
+  undoBtnText: { color: Colors.primary, fontSize: FontSize.md, fontWeight: '700' },
   mainView: { flex: 1 },
   sidebar: {
     width: 320,

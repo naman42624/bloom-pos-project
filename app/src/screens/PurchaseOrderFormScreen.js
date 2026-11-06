@@ -1,8 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import {
-  View, Text, StyleSheet, KeyboardAvoidingView, Platform,
-  ScrollView, Alert, TouchableOpacity, TextInput,
-} from 'react-native';
+import { View, Text, StyleSheet, KeyboardAvoidingView, Platform, ScrollView, TouchableOpacity, TextInput } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
@@ -14,6 +11,8 @@ import DismissKeyboard from '../components/DismissKeyboard';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 
 import DateTimePickerModal from '../components/DateTimePickerModal';
+import { appAlert } from '../utils/alert';
+import useSubmitGuard from '../hooks/useSubmitGuard';
 
 export default function PurchaseOrderFormScreen({ route, navigation }) {
   const { settings } = useAuth();
@@ -64,7 +63,7 @@ export default function PurchaseOrderFormScreen({ route, navigation }) {
         );
       }
     } catch (err) {
-      Alert.alert('Error', 'Failed to load form data');
+      appAlert('Error', 'Failed to load form data');
     }
   };
 
@@ -115,6 +114,7 @@ export default function PurchaseOrderFormScreen({ route, navigation }) {
     return Object.keys(e).length === 0;
   };
 
+  const guardSubmit = useSubmitGuard();
   const handleSubmit = async () => {
     if (!validate()) return;
     setLoading(true);
@@ -140,7 +140,7 @@ export default function PurchaseOrderFormScreen({ route, navigation }) {
       }
       navigation.goBack();
     } catch (err) {
-      Alert.alert('Error', err.message || `Failed to ${isEditing ? 'update' : 'create'} order`);
+      appAlert('Error', err.message || `Failed to ${isEditing ? 'update' : 'create'} order`);
     } finally { setLoading(false); }
   };
 
@@ -315,7 +315,7 @@ export default function PurchaseOrderFormScreen({ route, navigation }) {
           })}
 
           <View style={styles.actions}>
-            <Button title={isEditing ? 'Update Order' : 'Create Order'} onPress={handleSubmit} loading={loading} />
+            <Button title={isEditing ? 'Update Order' : 'Create Order'} onPress={guardSubmit(handleSubmit)} loading={loading} />
           </View>
         </ScrollView>
       </KeyboardAvoidingView>

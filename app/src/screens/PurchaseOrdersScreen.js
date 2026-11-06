@@ -1,14 +1,12 @@
 import React, { useState, useCallback } from 'react';
-import {
-  View, Text, StyleSheet, FlatList, TouchableOpacity,
-  RefreshControl, Alert,
-} from 'react-native';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, RefreshControl } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import { formatDate } from '../utils/datetime';
+import { appAlert } from '../utils/alert';
 
 const STATUS_CONFIG = {
   pending: { color: Colors.warning, icon: 'time-outline' },
@@ -33,7 +31,7 @@ export default function PurchaseOrdersScreen({ navigation }) {
       const res = await api.getPurchaseOrders(params);
       setOrders(res.data || []);
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to load orders');
+      appAlert('Error', err.message || 'Failed to load orders');
     } finally { setLoading(false); setRefreshing(false); }
   }, [statusFilter]);
 

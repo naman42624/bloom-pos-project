@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { View, Text, SectionList, TouchableOpacity, StyleSheet, Alert, Platform, ActivityIndicator, Modal, TextInput, KeyboardAvoidingView, ScrollView } from 'react-native';
+import { View, Text, SectionList, TouchableOpacity, StyleSheet, Platform, ActivityIndicator, Modal, TextInput, KeyboardAvoidingView, ScrollView } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '../context/AuthContext';
@@ -9,6 +9,7 @@ import {
   parseServerDate, formatDateTime, formatShopDateLabel,
   getShopNow, getShopTodayStr, getShopTomorrowStr, DEFAULT_TZ
 } from '../utils/datetime';
+import { appAlert } from '../utils/alert';
 
 
 const PICKUP_TABS = [
@@ -91,7 +92,7 @@ export default function PickupOrdersScreen({ navigation }) {
       fetchOrders();
     } catch (err) {
       const msg = err.message || 'Failed to update';
-      Platform.OS === 'web' ? window.alert(msg) : Alert.alert('Error', msg);
+      appAlert('Error', msg);
     } finally {
       setActionLoading(null);
     }
@@ -104,7 +105,7 @@ export default function PickupOrdersScreen({ navigation }) {
       // pickup/:saleId/picked-up — counter_staff extended in 2026-09-01,
       // same precedent as refund/cancel (same trust as manager).
       if (!isManagerOrOwner && user?.role !== 'counter_staff') {
-        Alert.alert('Permission', 'Only manager/owner/counter staff can confirm pickup with pending payment.');
+        appAlert('Permission', 'Only manager/owner/counter staff can confirm pickup with pending payment.');
         return;
       }
       setSelectedOrder(order);
@@ -123,7 +124,7 @@ export default function PickupOrdersScreen({ navigation }) {
       fetchOrders();
     } catch (err) {
       const msg = err.message || 'Failed to update';
-      Platform.OS === 'web' ? window.alert(msg) : Alert.alert('Error', msg);
+      appAlert('Error', msg);
     } finally {
       setActionLoading(null);
     }
@@ -143,7 +144,7 @@ export default function PickupOrdersScreen({ navigation }) {
       fetchOrders();
     } catch (err) {
       const msg = err.message || 'Failed to confirm pickup';
-      Platform.OS === 'web' ? window.alert(msg) : Alert.alert('Error', msg);
+      appAlert('Error', msg);
     } finally {
       setActionLoading(null);
     }

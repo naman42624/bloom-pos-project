@@ -1,21 +1,12 @@
 import React, { useState } from 'react';
-import {
-  View,
-  Text,
-  StyleSheet,
-  KeyboardAvoidingView,
-  Platform,
-  ScrollView,
-  TouchableOpacity,
-  Alert,
-  Image,
-} from 'react-native';
+import { View, Text, StyleSheet, KeyboardAvoidingView, Platform, ScrollView, TouchableOpacity, Image } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../context/AuthContext';
 import Input from '../components/Input';
 import Button from '../components/Button';
 import DismissKeyboard from '../components/DismissKeyboard';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
+import { appAlert } from '../utils/alert';
 
 export default function LoginScreen({ navigation }) {
   const { login } = useAuth();
@@ -41,7 +32,7 @@ export default function LoginScreen({ navigation }) {
     try {
       await login(phone.trim(), password);
     } catch (err) {
-      Alert.alert('Login Failed', err.message || 'Please check your credentials.');
+      appAlert('Login Failed', err.message || 'Please check your credentials.');
     } finally {
       setLoading(false);
     }

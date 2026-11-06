@@ -1,14 +1,12 @@
 import React, { useState, useCallback } from 'react';
-import {
-  View, Text, StyleSheet, ScrollView, TouchableOpacity,
-  RefreshControl, Alert,
-} from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, RefreshControl } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import { Platform } from 'react-native';
+import { appAlert } from '../utils/alert';
 
 export default function CategoryDetailScreen({ route, navigation }) {
   const { user } = useAuth();
@@ -25,17 +23,13 @@ export default function CategoryDetailScreen({ route, navigation }) {
             await api.deleteCategory(categoryId);
             navigation.goBack();
           } catch (err) {
-            Alert.alert('Error', err.message || 'Failed to delete category');
+            appAlert('Error', err.message || 'Failed to delete category');
           }
         };
-        if (Platform.OS === 'web') {
-          if (window.confirm('Deactivate this category?')) doDelete();
-        } else {
-          Alert.alert('Confirm', 'Deactivate this category?', [
-            { text: 'Cancel', style: 'cancel' },
-            { text: 'Deactivate', style: 'destructive', onPress: doDelete },
-          ]);
-        }
+        appAlert('Confirm', 'Deactivate this category?', [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Deactivate', style: 'destructive', onPress: doDelete },
+        ]);
       };
     try {
       const [catRes, matRes] = await Promise.all([
@@ -45,7 +39,7 @@ export default function CategoryDetailScreen({ route, navigation }) {
       setCategory(catRes.data);
       setMaterials(matRes.data || []);
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to load category');
+      appAlert('Error', err.message || 'Failed to load category');
     } finally {
       setLoading(false);
       setRefreshing(false);

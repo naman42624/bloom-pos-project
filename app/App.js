@@ -9,6 +9,7 @@ import SlipScreen from './src/screens/SlipScreen';
 import OrderRequestScreen from './src/screens/OrderRequestScreen';
 import PricePageScreen from './src/screens/PricePageScreen';
 import JoinScreen from './src/screens/JoinScreen';
+import DialogHost from './src/components/DialogHost';
 
 // Web-only: a customer opens this link from a WhatsApp message in their
 // phone's browser, never inside the staff app itself (which has no
@@ -66,7 +67,18 @@ function getJoinToken() {
   return match ? match[1] : null;
 }
 
+// Every page, staff app and public pages alike, shares one pop-up host
+// (components/DialogHost.js): on web all pop-ups are the app's own dialog.
 export default function App() {
+  return (
+    <>
+      <AppContent />
+      <DialogHost />
+    </>
+  );
+}
+
+function AppContent() {
   const [joinToken, setJoinToken] = useState(getJoinToken);
 
   const priceCode = getPriceCode();

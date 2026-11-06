@@ -1,14 +1,12 @@
 import React, { useState, useCallback } from 'react';
-import {
-  View, Text, StyleSheet, FlatList, TouchableOpacity, Pressable,
-  RefreshControl, Alert, ScrollView, Platform,
-} from 'react-native';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, Pressable, RefreshControl, ScrollView, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import { formatDate } from '../utils/datetime';
+import { appAlert } from '../utils/alert';
 
 const STATUS_CONFIG = {
   initiated: { color: Colors.info, icon: 'arrow-forward-circle-outline' },
@@ -31,17 +29,15 @@ export default function StockTransfersScreen({ navigation }) {
       const res = await api.getStockTransfers(params);
       setTransfers(res.data || []);
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to load transfers');
+      appAlert('Error', err.message || 'Failed to load transfers');
     } finally { setLoading(false); setRefreshing(false); }
   }, [statusFilter]);
 
   useFocusEffect(useCallback(() => { fetchTransfers(); }, [fetchTransfers]));
 
   const handleReceive = async (transfer) => {
-    const confirmed = Platform.OS === 'web'
-      ? window.confirm(`Receive ${transfer.quantity} ${transfer.unit} of ${transfer.material_name}?`)
-      : await new Promise((resolve) =>
-          Alert.alert('Receive Transfer', `Receive ${transfer.quantity} ${transfer.unit} of ${transfer.material_name}?`, [
+    const confirmed = await new Promise((resolve) =>
+          appAlert('Receive Transfer', `Receive ${transfer.quantity} ${transfer.unit} of ${transfer.material_name}?`, [
             { text: 'Cancel', onPress: () => resolve(false), style: 'cancel' },
             { text: 'Receive', onPress: () => resolve(true) },
           ])
@@ -50,14 +46,12 @@ export default function StockTransfersScreen({ navigation }) {
     try {
       await api.receiveStockTransfer(transfer.id);
       fetchTransfers();
-    } catch (err) { Alert.alert('Error', err.message); }
+    } catch (err) { appAlert('Error', err.message); }
   };
 
   const handleCancel = async (transfer) => {
-    const confirmed = Platform.OS === 'web'
-      ? window.confirm('Are you sure? Stock will be returned to source.')
-      : await new Promise((resolve) =>
-          Alert.alert('Cancel Transfer', 'Are you sure? Stock will be returned to source.', [
+    const confirmed = await new Promise((resolve) =>
+          appAlert('Cancel Transfer', 'Are you sure? Stock will be returned to source.', [
             { text: 'No', onPress: () => resolve(false), style: 'cancel' },
             { text: 'Yes, Cancel', onPress: () => resolve(true), style: 'destructive' },
           ])
@@ -66,7 +60,7 @@ export default function StockTransfersScreen({ navigation }) {
     try {
       await api.cancelStockTransfer(transfer.id);
       fetchTransfers();
-    } catch (err) { Alert.alert('Error', err.message); }
+    } catch (err) { appAlert('Error', err.message); }
   };
 
   const statusFilters = [

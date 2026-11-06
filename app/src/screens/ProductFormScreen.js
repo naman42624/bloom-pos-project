@@ -1,15 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
-import {
-  View, Text, StyleSheet, ScrollView, TextInput,
-  TouchableOpacity, Alert, KeyboardAvoidingView, Platform,
-  Modal, Image, Switch,
-} from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TextInput, TouchableOpacity, KeyboardAvoidingView, Platform, Modal, Image, Switch } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
-import { showAlert } from '../utils/alert';
+import { showAlert, appAlert } from '../utils/alert';
 import useSubmitGuard from '../hooks/useSubmitGuard';
 
 const MAX_SIZES = 6; // PUT /products/:id/options allows at most 6
@@ -201,7 +197,7 @@ export default function ProductFormScreen({ route, navigation }) {
     try {
       const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (status !== 'granted') {
-        Alert.alert('Permission Required', 'Please allow photo library access to add a product image.');
+        appAlert('Permission Required', 'Please allow photo library access to add a product image.');
         return;
       }
       const result = await ImagePicker.launchImageLibraryAsync({
@@ -213,7 +209,7 @@ export default function ProductFormScreen({ route, navigation }) {
         setDraftImageUri(result.assets[0].uri);
       }
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to select image');
+      appAlert('Error', err.message || 'Failed to select image');
     }
   };
 

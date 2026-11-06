@@ -1,14 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import {
-  View, Text, StyleSheet, KeyboardAvoidingView, Platform,
-  ScrollView, Alert, TouchableOpacity,
-} from 'react-native';
+import { View, Text, StyleSheet, KeyboardAvoidingView, Platform, ScrollView, TouchableOpacity } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import api from '../services/api';
 import Input from '../components/Input';
 import Button from '../components/Button';
 import DismissKeyboard from '../components/DismissKeyboard';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
+import { appAlert } from '../utils/alert';
 
 export default function StockAdjustScreen({ navigation }) {
   const [materials, setMaterials] = useState([]);
@@ -65,10 +63,10 @@ export default function StockAdjustScreen({ navigation }) {
         quantity: parseFloat(quantity),
         notes: notes.trim() || undefined,
       });
-      Alert.alert('Success', 'Stock adjusted successfully');
+      appAlert('Success', 'Stock adjusted successfully');
       navigation.goBack();
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to adjust stock');
+      appAlert('Error', err.message || 'Failed to adjust stock');
     } finally { setLoading(false); }
   };
 
