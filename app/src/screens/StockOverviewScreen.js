@@ -1,13 +1,11 @@
 import React, { useState, useCallback } from 'react';
-import {
-  View, Text, StyleSheet, FlatList, TouchableOpacity,
-  RefreshControl, Alert, ScrollView,
-} from 'react-native';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, RefreshControl, ScrollView } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
+import { appAlert } from '../utils/alert';
 
 const QUICK_LINKS = [
   { label: 'Categories', icon: 'folder-open', screen: 'Categories', color: '#9C27B0' },
@@ -46,7 +44,7 @@ export default function StockOverviewScreen({ navigation }) {
       setStock(stockRes.data || []);
       setLocations(locRes.data?.locations || locRes.data || []);
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to load stock');
+      appAlert('Error', err.message || 'Failed to load stock');
     } finally { setLoading(false); setRefreshing(false); }
   }, [selectedLocation]);
 

@@ -1,8 +1,5 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
-import {
-  View, Text, FlatList, TouchableOpacity, StyleSheet, Alert,
-  Platform, Modal, ScrollView, ActivityIndicator, Animated, Linking,
-} from 'react-native';
+import { View, Text, FlatList, TouchableOpacity, StyleSheet, Platform, Modal, ScrollView, ActivityIndicator, Animated, Linking } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '../context/AuthContext';
@@ -12,6 +9,7 @@ import { formatDate } from '../utils/datetime';
 import { waLink } from '../utils/contact';
 import useRegisterStatus from '../hooks/useRegisterStatus';
 import RegisterStatusBanner from '../components/RegisterStatusBanner';
+import { appAlert } from '../utils/alert';
 
 const fmt = (n) => Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 });
 
@@ -191,7 +189,7 @@ export default function SettlementsScreen({ navigation, route }) {
       const sel = selection[pid] || new Set();
       deliveryIds = [...sel];
       if (deliveryIds.length === 0) {
-        Alert.alert('No deliveries selected', 'Select at least one delivery to settle.');
+        appAlert('No deliveries selected', 'Select at least one delivery to settle.');
         return;
       }
       amount = deliveries
@@ -234,11 +232,11 @@ export default function SettlementsScreen({ navigation, route }) {
       } else {
         msg = `₹${fmt(confirmData.amount)} settled and added to cash register.`;
       }
-      Platform.OS === 'web' ? window.alert(msg) : Alert.alert('✓ Settled', msg);
+      appAlert('✓ Settled', msg);
       fetchData(selectedLocation);
     } catch (err) {
       const msg = err.message || 'Settlement failed';
-      Platform.OS === 'web' ? window.alert(msg) : Alert.alert('Error', msg);
+      appAlert('Error', msg);
     } finally {
       setSettling(false);
     }

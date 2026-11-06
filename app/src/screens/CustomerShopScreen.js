@@ -1,15 +1,12 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import {
-  View, Text, StyleSheet, FlatList, TouchableOpacity,
-  TextInput, Alert, Platform, ScrollView, Modal,
-  ActivityIndicator, KeyboardAvoidingView,
-} from 'react-native';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, TextInput, Platform, ScrollView, Modal, ActivityIndicator, KeyboardAvoidingView } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import DateTimePickerModal from '../components/DateTimePickerModal';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
+import { appAlert } from '../utils/alert';
 
 export default function CustomerShopScreen({ navigation }) {
   const { user } = useAuth();
@@ -105,11 +102,11 @@ export default function CustomerShopScreen({ navigation }) {
   const handlePlaceOrder = async () => {
     if (cart.length === 0) return;
     if (!selectedLocation) {
-      Alert.alert('Error', 'Please select a shop location');
+      appAlert('Error', 'Please select a shop location');
       return;
     }
     if (orderType === 'delivery' && !deliveryAddress.trim()) {
-      Alert.alert('Error', 'Please enter a delivery address');
+      appAlert('Error', 'Please enter a delivery address');
       return;
     }
 
@@ -138,13 +135,13 @@ export default function CustomerShopScreen({ navigation }) {
         setSenderMessage('');
         setScheduledDate('');
         setScheduledTime('');
-        Alert.alert('Order Placed!', `Order #${res.data.sale_number}\nTotal: ₹${Number(res.data.grand_total).toFixed(0)}\n\nYou can track it in My Orders.`, [
+        appAlert('Order Placed!', `Order #${res.data.sale_number}\nTotal: ₹${Number(res.data.grand_total).toFixed(0)}\n\nYou can track it in My Orders.`, [
           { text: 'View Orders', onPress: () => navigation.navigate('MyOrders') },
           { text: 'OK' },
         ]);
       }
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to place order');
+      appAlert('Error', err.message || 'Failed to place order');
     } finally {
       setSubmitting(false);
     }

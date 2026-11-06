@@ -1,19 +1,12 @@
 import React, { useState } from 'react';
-import {
-  View,
-  Text,
-  StyleSheet,
-  KeyboardAvoidingView,
-  Platform,
-  ScrollView,
-  Alert,
-} from 'react-native';
+import { View, Text, StyleSheet, KeyboardAvoidingView, Platform, ScrollView } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../context/AuthContext';
 import Input from '../components/Input';
 import Button from '../components/Button';
 import DismissKeyboard from '../components/DismissKeyboard';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
+import { appAlert } from '../utils/alert';
 
 export default function SetupScreen({ navigation }) {
   const { ownerSetup } = useAuth();
@@ -50,7 +43,7 @@ export default function SetupScreen({ navigation }) {
         shopName: businessName.trim(),
       });
     } catch (err) {
-      Alert.alert('Setup Failed', err.message || 'Please try again.');
+      appAlert('Setup Failed', err.message || 'Please try again.');
     } finally {
       setLoading(false);
     }

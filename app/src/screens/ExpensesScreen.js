@@ -1,9 +1,5 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import {
-  View, Text, StyleSheet, FlatList, TextInput,
-  TouchableOpacity, Alert, ScrollView, Modal, ActivityIndicator,
-  KeyboardAvoidingView, Platform,
-} from 'react-native';
+import { View, Text, StyleSheet, FlatList, TextInput, TouchableOpacity, ScrollView, Modal, ActivityIndicator, KeyboardAvoidingView, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect, useNavigation, useRoute } from '@react-navigation/native';
 import { useAuth } from '../context/AuthContext';
@@ -12,6 +8,8 @@ import { getShopTodayStr, formatTime } from '../utils/datetime';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import useRegisterStatus from '../hooks/useRegisterStatus';
 import RegisterStatusBanner from '../components/RegisterStatusBanner';
+import { appAlert } from '../utils/alert';
+import useSubmitGuard from '../hooks/useSubmitGuard';
 
 const EXPENSE_CATEGORIES = [
   { key: 'supplies', label: 'Supplies', icon: 'cart' },
@@ -256,12 +254,13 @@ export default function ExpensesScreen() {
     }
   };
 
+  const guardSubmit = useSubmitGuard();
   const handleAdd = async () => {
     const amt = parseFloat(amount) || 0;
-    if (amt <= 0) { Alert.alert('Invalid', 'Enter a valid amount'); return; }
-    if (!description.trim()) { Alert.alert('Required', 'Enter a description'); return; }
+    if (amt <= 0) { appAlert('Invalid', 'Enter a valid amount'); return; }
+    if (!description.trim()) { appAlert('Required', 'Enter a description'); return; }
     if (category === 'salary' && !salaryEmployee) {
-      Alert.alert('Required', 'Select which employee this salary payment is for.');
+      appAlert('Required', 'Select which employee this salary payment is for.');
       return;
     }
 
@@ -284,14 +283,14 @@ export default function ExpensesScreen() {
       setSalaryEmployee(null);
       fetchExpenses();
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to add expense');
+      appAlert('Error', err.message || 'Failed to add expense');
     } finally {
       setSubmitting(false);
     }
   };
 
   const handleDelete = (expense) => {
-    Alert.alert('Delete Expense', `Delete ₹${Number(expense.amount || 0).toFixed(0)} — ${expense.description}?`, [
+    appAlert('Delete Expense', `Delete ₹${Number(expense.amount || 0).toFixed(0)} — ${expense.description}?`, [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Delete', style: 'destructive',
@@ -300,7 +299,7 @@ export default function ExpensesScreen() {
             await api.deleteExpense(expense.id);
             fetchExpenses();
           } catch (err) {
-            Alert.alert('Error', err.message || 'Failed to delete');
+            appAlert('Error', err.message || 'Failed to delete');
           }
         },
       },
@@ -545,7 +544,7 @@ export default function ExpensesScreen() {
 
                 <TouchableOpacity
                   style={[styles.submitBtn, submitting && { opacity: 0.6 }]}
-                  onPress={handleAdd}
+                  onPress={guardSubmit(handleAdd)}
                   disabled={submitting}
                 >
                   {submitting ? (

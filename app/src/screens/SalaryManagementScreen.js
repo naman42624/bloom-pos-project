@@ -1,8 +1,5 @@
 import React, { useState, useCallback, useMemo } from 'react';
-import {
-  View, Text, StyleSheet, ScrollView, TouchableOpacity,
-  RefreshControl, Alert, Modal, TextInput, ActivityIndicator, Platform, KeyboardAvoidingView,
-} from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, RefreshControl, Modal, TextInput, ActivityIndicator, Platform, KeyboardAvoidingView } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '../context/AuthContext';
@@ -10,6 +7,7 @@ import api from '../services/api';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import { formatDate } from '../utils/datetime';
 import DateTimePickerModal from '../components/DateTimePickerModal';
+import { appAlert } from '../utils/alert';
 
 const SALARY_TYPES = [
   { label: 'Monthly', value: 'monthly' },
@@ -115,7 +113,7 @@ export default function SalaryManagementScreen() {
 
   const handleSave = async () => {
     if (!editUser || !amount || Number(amount) <= 0) {
-      Alert.alert('Error', 'Please enter a valid salary amount.');
+      appAlert('Error', 'Please enter a valid salary amount.');
       return;
     }
     setSaving(true);
@@ -129,7 +127,7 @@ export default function SalaryManagementScreen() {
       setModal(false);
       await fetchData();
     } catch (e) {
-      Alert.alert('Error', e.message || 'Failed to save salary.');
+      appAlert('Error', e.message || 'Failed to save salary.');
     } finally {
       setSaving(false);
     }
@@ -142,7 +140,7 @@ export default function SalaryManagementScreen() {
       setHistory(res.data || []);
       setHistoryModal(true);
     } catch (e) {
-      Alert.alert('Error', e.message || 'Failed to load history.');
+      appAlert('Error', e.message || 'Failed to load history.');
     }
   };
 
@@ -178,7 +176,7 @@ export default function SalaryManagementScreen() {
 
   const handleCalculatePayroll = async (datesOverride) => {
     if (!periodStart || !periodEnd) {
-      Alert.alert('Error', 'Please enter period dates.');
+      appAlert('Error', 'Please enter period dates.');
       return;
     }
     const confirmedDates = datesOverride !== undefined ? datesOverride : confirmedHalfDays;
@@ -192,7 +190,7 @@ export default function SalaryManagementScreen() {
       });
       setPayrollCalc(res.data);
     } catch (e) {
-      Alert.alert('Error', e.message || 'Failed to calculate.');
+      appAlert('Error', e.message || 'Failed to calculate.');
     } finally {
       setPayrollCalculating(false);
     }
@@ -275,23 +273,19 @@ export default function SalaryManagementScreen() {
           payment_reference: paymentRef,
         });
         setPayrollModal(false);
-        Alert.alert('Success', `Salary of ${formatCurrency(Math.max(0, finalNet))} disbursed.`);
+        appAlert('Success', `Salary of ${formatCurrency(Math.max(0, finalNet))} disbursed.`);
         fetchPayrollHistory();
       } catch (e) {
-        Alert.alert('Error', e.message || 'Failed to disburse.');
+        appAlert('Error', e.message || 'Failed to disburse.');
       } finally {
         setSaving(false);
       }
     };
 
-    if (Platform.OS === 'web') {
-      if (window.confirm(`Disburse ${formatCurrency(Math.max(0, finalNet))} to ${payrollCalc.user.name}?`)) doDisburse();
-    } else {
-      Alert.alert('Confirm Payment', `Disburse ${formatCurrency(Math.max(0, finalNet))} to ${payrollCalc.user.name}?`, [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Pay', onPress: doDisburse },
-      ]);
-    }
+    appAlert('Confirm Payment', `Disburse ${formatCurrency(Math.max(0, finalNet))} to ${payrollCalc.user.name}?`, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Pay', onPress: doDisburse },
+    ]);
   };
 
   const fetchPayrollHistory = async () => {

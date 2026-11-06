@@ -1,13 +1,11 @@
 import React, { useState, useCallback } from 'react';
-import {
-  View, Text, StyleSheet, ScrollView, TouchableOpacity,
-  Alert, ActivityIndicator, TextInput, Platform,
-} from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, TextInput, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
+import { appAlert } from '../utils/alert';
 
 const DATA_SECTIONS = [
   { key: 'staff', label: 'Staff / Users', icon: 'people', endpoint: 'users', roleFilter: true },
@@ -77,7 +75,7 @@ export default function DataManagementScreen({ navigation }) {
       }
       setSectionData(prev => ({ ...prev, [section.key]: Array.isArray(data) ? data : [] }));
     } catch (e) {
-      Alert.alert('Error', e.message || 'Failed to load data');
+      appAlert('Error', e.message || 'Failed to load data');
     } finally {
       setLoading(prev => ({ ...prev, [section.key]: false }));
     }
@@ -96,7 +94,7 @@ export default function DataManagementScreen({ navigation }) {
 
   const handleDelete = (section, item) => {
     const itemName = item.name || item.sale_number || `#${item.id}`;
-    Alert.alert(
+    appAlert(
       'Delete Confirmation',
       `Are you sure you want to delete "${itemName}"?\n\nThis action cannot be undone.`,
       [
@@ -111,9 +109,9 @@ export default function DataManagementScreen({ navigation }) {
                 ...prev,
                 [section.key]: (prev[section.key] || []).filter(i => i.id !== item.id),
               }));
-              Alert.alert('Deleted', `${itemName} has been deleted.`);
+              appAlert('Deleted', `${itemName} has been deleted.`);
             } catch (e) {
-              Alert.alert('Error', e.message || 'Failed to delete');
+              appAlert('Error', e.message || 'Failed to delete');
             } finally {
               setDeleting(null);
             }
@@ -125,11 +123,8 @@ export default function DataManagementScreen({ navigation }) {
 
   const handleReset = () => {
     if (resetText !== 'RESET') {
-      if (Platform.OS === 'web') {
-        window.alert('Type "RESET" in the text field to confirm data reset.');
-      } else {
-        Alert.alert('Confirmation Required', 'Type "RESET" in the text field to confirm data reset.');
-      }
+      appAlert('Confirmation Required', 'Type "RESET" in the text field to confirm data reset.');
+    
       return;
     }
 
@@ -139,41 +134,25 @@ export default function DataManagementScreen({ navigation }) {
         await api.request('/sales/admin/reset', { method: 'POST', body: JSON.stringify({ confirm: true }) });
         setResetText('');
         setSectionData({});
-        if (Platform.OS === 'web') {
-          window.alert('Reset Complete - All transactional data has been deleted.');
-        } else {
-          Alert.alert('Reset Complete', 'All transactional data has been deleted.');
-        }
+        appAlert('Reset Complete', 'All transactional data has been deleted.');
       } catch (e) {
-        if (Platform.OS === 'web') {
-          window.alert('Error: ' + (e.message || 'Failed to reset'));
-        } else {
-          Alert.alert('Error', e.message || 'Failed to reset');
-        }
+        appAlert('Error', e.message || 'Failed to reset');
       } finally {
         setResetting(false);
       }
     };
 
-    if (Platform.OS === 'web') {
-      // Use browser confirm for web
-      if (window.confirm('⚠️ DANGER: Reset All Data\n\nThis will permanently delete ALL sales, orders, deliveries, production tasks, payments, attendance records, and settlements.\n\nProducts, materials, locations, and staff will be kept.\n\nThis CANNOT be undone!\n\nClick OK to proceed.')) {
-        confirmReset();
-      }
-    } else {
-      // Use React Native Alert for mobile
-      Alert.alert(
-        '⚠️ DANGER: Reset All Data',
-        'This will permanently delete ALL sales, orders, deliveries, production tasks, payments, attendance records, and settlements.\n\nProducts, materials, locations, and staff will be kept.\n\nThis CANNOT be undone!',
-        [
-          { text: 'Cancel', style: 'cancel' },
-          {
-            text: 'Reset Everything', style: 'destructive',
-            onPress: confirmReset,
-          },
-        ]
-      );
-    }
+    appAlert(
+      '⚠️ DANGER: Reset All Data',
+      'This will permanently delete ALL sales, orders, deliveries, production tasks, payments, attendance records, and settlements.\n\nProducts, materials, locations, and staff will be kept.\n\nThis CANNOT be undone!',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Reset Everything', style: 'destructive',
+          onPress: confirmReset,
+        },
+      ]
+    );
   };
 
   const renderItem = (section, item) => {

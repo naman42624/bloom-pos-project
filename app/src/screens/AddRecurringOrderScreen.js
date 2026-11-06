@@ -1,14 +1,12 @@
 import React, { useState, useCallback, useEffect } from 'react';
-import {
-  View, Text, StyleSheet, ScrollView, TextInput,
-  TouchableOpacity, Alert, Platform, ActivityIndicator,
-  FlatList, KeyboardAvoidingView,
-} from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TextInput, TouchableOpacity, Platform, ActivityIndicator, FlatList, KeyboardAvoidingView } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import DateTimePickerModal from '../components/DateTimePickerModal';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
+import { appAlert } from '../utils/alert';
+import useSubmitGuard from '../hooks/useSubmitGuard';
 
 const FREQ_OPTIONS = [
   { key: 'daily', label: 'Daily', icon: 'today' },
@@ -115,7 +113,7 @@ export default function AddRecurringOrderScreen({ route, navigation }) {
         }
       }
     } catch (err) {
-      Alert.alert('Error', err.message);
+      appAlert('Error', err.message);
     } finally {
       setLoading(false);
     }
@@ -181,18 +179,19 @@ export default function AddRecurringOrderScreen({ route, navigation }) {
     setSelectedDays(prev => prev.includes(day) ? prev.filter(d => d !== day) : [...prev, day]);
   };
 
+  const guardSubmit = useSubmitGuard();
   const handleSubmit = async () => {
-    if (!customerId) return Alert.alert('Required', 'Please select a customer');
-    if (!locationId) return Alert.alert('Required', 'Please select a location');
-    if (items.length === 0) return Alert.alert('Required', 'Please add at least one item');
-    if (!startDate) return Alert.alert('Required', 'Please select a start date');
-    if (orderType === 'delivery' && !deliveryAddress) return Alert.alert('Required', 'Please enter delivery address');
+    if (!customerId) return appAlert('Required', 'Please select a customer');
+    if (!locationId) return appAlert('Required', 'Please select a location');
+    if (items.length === 0) return appAlert('Required', 'Please add at least one item');
+    if (!startDate) return appAlert('Required', 'Please select a start date');
+    if (orderType === 'delivery' && !deliveryAddress) return appAlert('Required', 'Please enter delivery address');
 
     let custom_days = null;
     if (frequency === 'custom') {
       custom_days = customDates.length > 0 ? customDates : (selectedDays.length > 0 ? selectedDays : null);
       if (!custom_days || custom_days.length === 0) {
-        return Alert.alert('Required', 'Please select custom days or dates');
+        return appAlert('Required', 'Please select custom days or dates');
       }
     }
 
@@ -216,14 +215,14 @@ export default function AddRecurringOrderScreen({ route, navigation }) {
     try {
       if (editId) {
         await api.updateRecurringOrder(editId, data);
-        Alert.alert('Updated', 'Recurring order updated');
+        appAlert('Updated', 'Recurring order updated');
       } else {
         await api.createRecurringOrder(data);
-        Alert.alert('Created', 'Recurring order created');
+        appAlert('Created', 'Recurring order created');
       }
       navigation.goBack();
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed');
+      appAlert('Error', err.message || 'Failed');
     } finally {
       setSubmitting(false);
     }
@@ -459,7 +458,7 @@ export default function AddRecurringOrderScreen({ route, navigation }) {
         </View>
 
         {/* Submit */}
-        <TouchableOpacity style={styles.submitBtn} onPress={handleSubmit} disabled={submitting}>
+        <TouchableOpacity style={styles.submitBtn} onPress={guardSubmit(handleSubmit)} disabled={submitting}>
           {submitting ? (
             <ActivityIndicator color={Colors.white} />
           ) : (

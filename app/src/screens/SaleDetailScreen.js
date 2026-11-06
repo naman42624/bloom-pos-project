@@ -22,6 +22,7 @@ import StageBadge from '../components/StageBadge';
 import DeliveryChecklist from '../components/DeliveryChecklist';
 import DeliveryActionsPanel from '../components/delivery/DeliveryActionsPanel';
 import { formatMoney, STAFF_ROLE_LABELS, ASSIGNABLE_STAFF_ROLES } from '../constants/orderDisplay';
+import useSubmitGuard from '../hooks/useSubmitGuard';
 
 // Duplicated locally (rather than imported from OrdersInboxScreen) to avoid
 // coupling this detail screen's import graph to an inbox screen.
@@ -391,6 +392,7 @@ export default function SaleDetailScreen({ route, navigation }) {
     setEditModalVisible(true);
   };
 
+  const guardSubmit = useSubmitGuard();
   const handleSaveEdit = async () => {
     setSavingEdit(true);
     try {
@@ -602,12 +604,7 @@ export default function SaleDetailScreen({ route, navigation }) {
       }
     };
 
-    // The 50ms defer is web-only and pre-existing, kept as-is: window.confirm
-    // blocks synchronously, and firing it straight out of the tap handler ate
-    // the press. Native has never needed it.
-    const ask = () => showConfirm(label, msg, onConfirm, { confirmLabel: label });
-    if (Platform.OS === 'web') setTimeout(ask, 50);
-    else ask();
+    showConfirm(label, msg, onConfirm, { confirmLabel: label });
   };
 
   // One-tap dispatch for sale.display_stage.nextAction (server/utils/order-stage.js)
@@ -1774,7 +1771,7 @@ export default function SaleDetailScreen({ route, navigation }) {
             { backgroundColor: Colors.success, alignSelf: 'stretch', marginHorizontal: 0, marginTop: Spacing.sm, minHeight: 44 },
             quickActionLoading && { opacity: 0.6 },
           ]}
-          onPress={handleQuickAction}
+          onPress={guardSubmit(handleQuickAction)}
           disabled={quickActionLoading}
         >
           {quickActionLoading ? (
@@ -2001,7 +1998,7 @@ export default function SaleDetailScreen({ route, navigation }) {
               </Text>
             )}
 
-            <TouchableOpacity style={styles.confirmBtn} onPress={handleConvert}>
+            <TouchableOpacity style={styles.confirmBtn} onPress={guardSubmit(handleConvert)}>
               <Ionicons name="swap-horizontal" size={20} color="#fff" />
               <Text style={styles.confirmBtnText}>Convert Order</Text>
             </TouchableOpacity>
@@ -2138,7 +2135,7 @@ export default function SaleDetailScreen({ route, navigation }) {
 
             <TouchableOpacity
               style={[styles.confirmBtn, confirmingPickup && { opacity: 0.6 }]}
-              onPress={handleConfirmPickupPayment}
+              onPress={guardSubmit(handleConfirmPickupPayment)}
               disabled={confirmingPickup}
             >
               {confirmingPickup ? (
@@ -2250,7 +2247,7 @@ export default function SaleDetailScreen({ route, navigation }) {
 
               <TouchableOpacity
                 style={[styles.confirmBtn, savingEdit && { opacity: 0.6 }]}
-                onPress={handleSaveEdit}
+                onPress={guardSubmit(handleSaveEdit)}
                 disabled={savingEdit}
               >
                 {savingEdit ? (
@@ -2310,7 +2307,7 @@ export default function SaleDetailScreen({ route, navigation }) {
 
             <TouchableOpacity
               style={[styles.confirmBtn, savingItemEdit && { opacity: 0.6 }]}
-              onPress={handleSaveItemEdit}
+              onPress={guardSubmit(handleSaveItemEdit)}
               disabled={savingItemEdit}
             >
               {savingItemEdit ? (

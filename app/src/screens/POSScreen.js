@@ -1,15 +1,13 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import {
-  View, Text, StyleSheet, FlatList, TextInput, Image,
-  TouchableOpacity, Alert, Platform, ScrollView, Modal, ActivityIndicator,
-  KeyboardAvoidingView, useWindowDimensions
-} from 'react-native';
+import { View, Text, StyleSheet, FlatList, TextInput, Image, TouchableOpacity, Platform, ScrollView, Modal, ActivityIndicator, KeyboardAvoidingView, useWindowDimensions } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import ImageModal from '../components/ImageModal';
+import { appAlert } from '../utils/alert';
+import useSubmitGuard from '../hooks/useSubmitGuard';
 
 
 export default function POSScreen({ navigation, route }) {
@@ -257,14 +255,10 @@ export default function POSScreen({ navigation, route }) {
   const clearCart = () => {
     if (cart.length === 0) return;
     const doClear = () => setCart([]);
-    if (Platform.OS === 'web') {
-      if (window.confirm('Clear entire cart?')) doClear();
-    } else {
-      Alert.alert('Clear Cart', 'Remove all items?', [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Clear', style: 'destructive', onPress: doClear },
-      ]);
-    }
+    appAlert('Clear Cart', 'Remove all items?', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Clear', style: 'destructive', onPress: doClear },
+    ]);
   };
 
   // Shelf prices include GST, so the cart total is just price x quantity
@@ -273,10 +267,11 @@ export default function POSScreen({ navigation, route }) {
   const grandTotal = subtotal;
   const itemCount = cart.reduce((s, c) => s + c.quantity, 0);
 
+  const guardSubmit = useSubmitGuard();
   const handleQuickAdd = async () => {
-    if (!qaName.trim()) { Alert.alert('Required', 'Enter product name'); return; }
+    if (!qaName.trim()) { appAlert('Required', 'Enter product name'); return; }
     const price = parseFloat(qaPrice) || 0;
-    if (price <= 0) { Alert.alert('Required', 'Enter a valid price'); return; }
+    if (price <= 0) { appAlert('Required', 'Enter a valid price'); return; }
     setQaSubmitting(true);
     try {
       const res = await api.createProduct({
@@ -304,7 +299,7 @@ export default function POSScreen({ navigation, route }) {
         fetchProducts(search);
       }
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to create product');
+      appAlert('Error', err.message || 'Failed to create product');
     } finally {
       setQaSubmitting(false);
     }
@@ -336,11 +331,11 @@ export default function POSScreen({ navigation, route }) {
 
   const goToCheckout = () => {
     if (cart.length === 0) {
-      Alert.alert('Empty Cart', 'Add items before checkout');
+      appAlert('Empty Cart', 'Add items before checkout');
       return;
     }
     if (!selectedLocation) {
-      Alert.alert('Location', 'Please select a location');
+      appAlert('Location', 'Please select a location');
       return;
     }
 
@@ -364,13 +359,13 @@ export default function POSScreen({ navigation, route }) {
       const res = await api.getSaleDrafts(params);
       const latest = (res?.data || [])[0];
       if (!latest) {
-        Alert.alert('No Drafts', 'No saved drafts were found for this location.');
+        appAlert('No Drafts', 'No saved drafts were found for this location.');
         return;
       }
 
       navigation.navigate('QuickCheckout', { draftId: latest.id });
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to load latest draft');
+      appAlert('Error', err.message || 'Failed to load latest draft');
     } finally {
       setResumingDraft(false);
     }
@@ -1030,8 +1025,8 @@ export default function POSScreen({ navigation, route }) {
                             const filtered = allMaterialsList.filter(
                               (mat) => !qaMaterials.some((qm, qi) => qi !== idx && qm.material_id === mat.id)
                             );
-                            if (filtered.length === 0) { Alert.alert('No materials', 'All materials already added'); return; }
-                            Alert.alert('Select Material', '', filtered.map((mat) => ({
+                            if (filtered.length === 0) { appAlert('No materials', 'All materials already added'); return; }
+                            appAlert('Select Material', '', filtered.map((mat) => ({
                               text: mat.name,
                               onPress: () => selectQaMaterial(idx, mat),
                             })).concat([{ text: 'Cancel', style: 'cancel' }]));
@@ -1046,8 +1041,8 @@ export default function POSScreen({ navigation, route }) {
                             const filtered = allMaterialsList.filter(
                               (mat) => !qaMaterials.some((qm, qi) => qi !== idx && qm.material_id === mat.id)
                             );
-                            if (filtered.length === 0) { Alert.alert('No materials', 'No materials available'); return; }
-                            Alert.alert('Select Material', '', filtered.map((mat) => ({
+                            if (filtered.length === 0) { appAlert('No materials', 'No materials available'); return; }
+                            appAlert('Select Material', '', filtered.map((mat) => ({
                               text: mat.name,
                               onPress: () => selectQaMaterial(idx, mat),
                             })).concat([{ text: 'Cancel', style: 'cancel' }]));
@@ -1073,7 +1068,7 @@ export default function POSScreen({ navigation, route }) {
 
                 <TouchableOpacity
                   style={[styles.qaSubmitBtn, qaSubmitting && { opacity: 0.6 }]}
-                  onPress={handleQuickAdd}
+                  onPress={guardSubmit(handleQuickAdd)}
                   disabled={qaSubmitting}
                 >
                   {qaSubmitting ? (

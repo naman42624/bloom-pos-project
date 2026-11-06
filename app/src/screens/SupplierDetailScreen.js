@@ -1,14 +1,12 @@
 import React, { useState, useCallback } from 'react';
-import {
-  View, Text, StyleSheet, ScrollView, TouchableOpacity,
-  RefreshControl, Alert, Linking, Modal, TextInput, Platform,
-} from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, RefreshControl, Linking, Modal, TextInput, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import { formatDate } from '../utils/datetime';
+import { appAlert } from '../utils/alert';
 
 export default function SupplierDetailScreen({ route, navigation }) {
   const { user } = useAuth();
@@ -31,7 +29,7 @@ export default function SupplierDetailScreen({ route, navigation }) {
       const res = await api.getSupplier(supplierId);
       setSupplier(res.data);
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to load supplier');
+      appAlert('Error', err.message || 'Failed to load supplier');
     } finally { setLoading(false); setRefreshing(false); }
   }, [supplierId]);
 
@@ -46,12 +44,12 @@ export default function SupplierDetailScreen({ route, navigation }) {
       setLinkPrice('');
       setShowLinkModal(true);
     } catch (err) {
-      Alert.alert('Error', 'Failed to load materials');
+      appAlert('Error', 'Failed to load materials');
     }
   };
 
   const handleLinkMaterial = async () => {
-    if (!selectedMaterialId) { Alert.alert('Select', 'Please select a material'); return; }
+    if (!selectedMaterialId) { appAlert('Select', 'Please select a material'); return; }
     setLinking(true);
     try {
       const data = { material_id: selectedMaterialId };
@@ -60,15 +58,13 @@ export default function SupplierDetailScreen({ route, navigation }) {
       setShowLinkModal(false);
       fetchData();
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to link material');
+      appAlert('Error', err.message || 'Failed to link material');
     } finally { setLinking(false); }
   };
 
   const handleUnlinkMaterial = async (materialId, materialName) => {
-    const confirmed = Platform.OS === 'web'
-      ? window.confirm(`Remove ${materialName} from this supplier?`)
-      : await new Promise((resolve) =>
-          Alert.alert('Unlink Material', `Remove ${materialName} from this supplier?`, [
+    const confirmed = await new Promise((resolve) =>
+          appAlert('Unlink Material', `Remove ${materialName} from this supplier?`, [
             { text: 'Cancel', onPress: () => resolve(false), style: 'cancel' },
             { text: 'Unlink', onPress: () => resolve(true), style: 'destructive' },
           ])
@@ -77,7 +73,7 @@ export default function SupplierDetailScreen({ route, navigation }) {
     try {
       await api.unlinkSupplierMaterial(supplierId, materialId);
       fetchData();
-    } catch (err) { Alert.alert('Error', err.message || 'Failed to unlink'); }
+    } catch (err) { appAlert('Error', err.message || 'Failed to unlink'); }
   };
 
   const statusColor = (status) => {

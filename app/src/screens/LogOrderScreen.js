@@ -18,6 +18,7 @@ import useSubmitGuard from '../hooks/useSubmitGuard';
 import OldDuesCard, { EMPTY_DUES, duesAmountError, takeNowSummary } from '../components/OldDuesCard';
 import CollectDuesSheet from '../components/CollectDuesSheet';
 import OpenRegisterSheet from '../components/OpenRegisterSheet';
+import { appAlert } from '../utils/alert';
 
 const CHANNELS = [
   { key: 'whatsapp', label: 'WhatsApp', icon: 'logo-whatsapp' },
@@ -33,18 +34,10 @@ const PAYMENT_METHODS = [
   { key: 'upi', label: 'UPI', icon: 'phone-portrait-outline' },
 ];
 
-// Alert.alert() is a silent no-op on web in this Expo app (see PROGRESS.md bug B2.11) —
-// it neither shows a dialog nor fires onPress. Every single-button "OK" alert in this
-// screen should go through this helper instead. Multi-button confirms (e.g. the register
-// guard below) still use Alert.alert directly but must carry their own web branch —
-// see DeliveryDetailScreen.js / QuickCheckoutScreen.js for the established pattern.
+// One-button alert with an optional handler once it is dismissed (utils/alert.js
+// shows the app's own dialog on web).
 function showAlert(title, message, onDismiss) {
-  if (Platform.OS === 'web') {
-    window.alert(message ? `${title}\n\n${message}` : title);
-    if (onDismiss) onDismiss();
-  } else {
-    Alert.alert(title, message, onDismiss ? [{ text: 'OK', onPress: onDismiss }] : undefined);
-  }
+  appAlert(title, message, onDismiss ? [{ text: 'OK', onPress: onDismiss }] : undefined);
 }
 
 export default function LogOrderScreen({ navigation, route }) {

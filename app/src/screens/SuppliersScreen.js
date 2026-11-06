@@ -1,13 +1,11 @@
 import React, { useState, useCallback } from 'react';
-import {
-  View, Text, StyleSheet, FlatList, TouchableOpacity,
-  RefreshControl, Alert, TextInput, Linking,
-} from 'react-native';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, RefreshControl, TextInput, Linking } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
+import { appAlert } from '../utils/alert';
 
 export default function SuppliersScreen({ navigation }) {
   const { user } = useAuth();
@@ -23,7 +21,7 @@ export default function SuppliersScreen({ navigation }) {
       const res = await api.getSuppliers(params);
       setSuppliers(res.data || []);
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to load suppliers');
+      appAlert('Error', err.message || 'Failed to load suppliers');
     } finally {
       setLoading(false);
       setRefreshing(false);

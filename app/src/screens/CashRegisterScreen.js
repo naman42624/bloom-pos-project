@@ -1,8 +1,5 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
-import {
-  View, Text, StyleSheet, ScrollView, TextInput,
-  TouchableOpacity, Alert, ActivityIndicator, Platform,
-} from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TextInput, TouchableOpacity, ActivityIndicator, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import api from '../services/api';
@@ -10,7 +7,7 @@ import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius, Shadows, TouchTarget } from '../constants/theme';
 import { isRegisterStale } from '../hooks/useRegisterStatus';
 import { formatDateLabel } from '../utils/datetime';
-import { showAlert, showConfirm } from '../utils/alert';
+import { showAlert, showConfirm, appAlert } from '../utils/alert';
 import { buildQuickSalePayload, amountError, TOPUP_LABEL } from '../utils/quickSale';
 import { METHOD_COLOR } from '../components/quickSale/QuickSaleRoll';
 import useSubmitGuard from '../hooks/useSubmitGuard';
@@ -275,7 +272,7 @@ export default function CashRegisterScreen({ navigation, route }) {
   const handleOpen = async () => {
     const balance = parseFloat(openingBalance);
     if (isNaN(balance) || balance < 0) {
-      Alert.alert('Invalid', 'Enter a valid opening balance');
+      appAlert('Invalid', 'Enter a valid opening balance');
       return;
     }
     setSubmitting(true);
@@ -286,12 +283,12 @@ export default function CashRegisterScreen({ navigation, route }) {
         setIsOpen(true);
         setOpeningBalance('');
         fetchStatus(selectedLocation);
-        Alert.alert('Opened', 'Cash register opened successfully');
+        appAlert('Opened', 'Cash register opened successfully');
       } else {
-        Alert.alert('Error', res.message);
+        appAlert('Error', res.message);
       }
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to open register');
+      appAlert('Error', err.message || 'Failed to open register');
     } finally { setSubmitting(false); }
   };
 

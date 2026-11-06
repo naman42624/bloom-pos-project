@@ -1,71 +1,61 @@
 import { Alert, Platform } from 'react-native';
 
 /**
- * Cross-platform replacement for Alert.alert.
+ * Pop-ups for the whole app (rewritten 2026-11-06, A5/D36).
  *
- * react-native-web ships `class Alert { static alert() {} }` — a literal no-op.
- * Every Alert.alert in this app is therefore silent in a browser, which is where
- * the shop actually runs it. Staff tapping a blocked action saw nothing at all:
- * no error, no reason, no next step. See
- * docs/superpowers/specs/2026-09-01-dashboard-stage-ui-redesign-design.md §6.
+ * react-native-web's Alert.alert is a no-op, so every Alert.alert was silent
+ * in a browser, which is where the shop runs the app. The first fix used
+ * window.alert / window.confirm: visible, but they freeze the page and can
+ * only say OK (or OK / Cancel), so any pop-up with a real choice did nothing.
  *
- * Native keeps the real Alert. Web falls back to the browser's own dialogs,
- * which are ugly but visible — and visible beats elegant for a message telling
- * someone why the till would not accept something.
+ * Now, on web, every pop-up is the app's own dialog (components/DialogHost.js,
+ * mounted in App.js) with all of its buttons. Native keeps the system Alert.
  *
- * `buttons` is handed straight to Alert on native. On web a window.alert has
- * only ONE outcome — the person dismisses it — so a handler is auto-fired only
- * when there is exactly one button and therefore nothing to guess about.
+ *   appAlert(title, message, buttons?, options?)   same arguments as Alert.alert
+ *   showAlert(title, message, buttons?)             the same, kept for callers
+ *   showConfirm(title, message, onConfirm, { confirmLabel, cancelLabel, destructive })
  *
- * A two-button alert is a QUESTION, and this helper cannot answer it: on web
- * nobody was ever offered the choice. Do not pass one here. Guessing is not
- * safe in either direction — the handler sits on the Cancel button about as
- * often as on the action, so guessing runs something nobody agreed to, and not
- * guessing silently drops the action. Use showConfirm for anything with a
- * choice, and leave three-or-more-button dialogs and text prompts on
- * Alert.alert until there is a real in-app dialog component.
+ * Like the system Alert, these return at once; a button's onPress runs when
+ * it is tapped. Code that has to wait for the answer goes in onPress.
  */
-export function showAlert(title, message, buttons) {
-  if (Platform.OS !== 'web') {
-    Alert.alert(title, message, buttons);
-    return;
-  }
-  const text = [title, message].filter(Boolean).join('\n\n');
-  window.alert(text);
 
-  // Exactly one button is the only unambiguous shape: it is also the only
-  // outcome a one-button native Alert could have produced, so firing it keeps
-  // web and native identical. Callers that refresh or navigate after an alert
-  // still do so. Anything else runs nothing, and says why.
-  const list = Array.isArray(buttons) ? buttons.filter(Boolean) : [];
-  if (list.length === 1) {
-    const only = list[0];
-    if (only.style !== 'cancel' && typeof only.onPress === 'function') only.onPress();
-    return;
-  }
-  if (list.length > 1) {
-    console.warn(
-      '[showAlert] ' + list.length + ' buttons were passed, so no handler ran on web. '
-      + 'A choice belongs in showConfirm(title, message, onConfirm, options).'
-    );
-  }
+let listener = null;
+const pending = [];
+
+// DialogHost registers here. Pop-ups raised before it mounts are kept and
+// shown as soon as it does.
+export function subscribeDialogs(fn) {
+  listener = fn;
+  while (pending.length) fn(pending.shift());
+  return () => { if (listener === fn) listener = null; };
 }
 
-/**
- * Destructive/confirming variant. Native uses a two-button Alert; web uses
- * window.confirm. `onConfirm` runs only on a positive answer.
- */
+function normalizeButtons(buttons) {
+  const list = Array.isArray(buttons) ? buttons.filter(Boolean) : [];
+  if (list.length === 0) return [{ text: 'OK' }];
+  return list.map((b) => ({ ...b, text: b.text || 'OK' }));
+}
+
+export function appAlert(title, message, buttons, options) {
+  if (Platform.OS !== 'web') {
+    Alert.alert(title, message, buttons, options);
+    return;
+  }
+  const dialog = { title: title || '', message: message || '', buttons: normalizeButtons(buttons) };
+  if (listener) listener(dialog);
+  else if (typeof window !== 'undefined' && typeof document !== 'undefined') pending.push(dialog);
+}
+
+export function showAlert(title, message, buttons) {
+  appAlert(title, message, buttons);
+}
+
 export function showConfirm(title, message, onConfirm, options) {
   const confirmLabel = (options && options.confirmLabel) || 'OK';
   const cancelLabel = (options && options.cancelLabel) || 'Cancel';
   const destructive = !!(options && options.destructive);
-
-  if (Platform.OS !== 'web') {
-    Alert.alert(title, message, [
-      { text: cancelLabel, style: 'cancel' },
-      { text: confirmLabel, style: destructive ? 'destructive' : 'default', onPress: onConfirm },
-    ]);
-    return;
-  }
-  if (window.confirm([title, message].filter(Boolean).join('\n\n'))) onConfirm();
+  appAlert(title, message, [
+    { text: cancelLabel, style: 'cancel', onPress: options && options.onCancel },
+    { text: confirmLabel, style: destructive ? 'destructive' : 'default', onPress: onConfirm },
+  ]);
 }

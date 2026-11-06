@@ -1,13 +1,12 @@
 import React, { useState, useCallback } from 'react';
-import {
-  View, Text, StyleSheet, ScrollView, RefreshControl, ActivityIndicator, TouchableOpacity, Alert, Platform,
-} from 'react-native';
+import { View, Text, StyleSheet, ScrollView, RefreshControl, ActivityIndicator, TouchableOpacity, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 import { parseServerDate, formatTime as formatServerTime, formatTimeString } from '../utils/datetime';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
+import { appAlert } from '../utils/alert';
 
 function formatTime(iso) {
   if (!iso) return '--:--';
@@ -113,14 +112,10 @@ function normalizePresentRows(rows = []) {
 }
 
 const confirmAction = (title, msg, onOk) => {
-  if (Platform.OS === 'web') {
-    if (window.confirm(`${title}\n${msg}`)) onOk();
-  } else {
-    Alert.alert(title, msg, [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'OK', onPress: onOk }
-    ]);
-  }
+  appAlert(title, msg, [
+    { text: 'Cancel', style: 'cancel' },
+    { text: 'OK', onPress: onOk }
+  ]);
 };
 
 export default function StaffAttendanceScreen() {
@@ -145,11 +140,7 @@ export default function StaffAttendanceScreen() {
       });
       await fetchData();
     } catch (e) {
-      if (Platform.OS === 'web') {
-        window.alert(e.message || 'Failed to clock in staff.');
-      } else {
-        Alert.alert('Error', e.message || 'Failed to clock in staff.');
-      }
+      appAlert('Error', e.message || 'Failed to clock in staff.');
     } finally {
       setActionLoading(false);
     }
@@ -162,11 +153,7 @@ export default function StaffAttendanceScreen() {
         await api.clockOut({ user_id: staffId, method: 'manual' });
         await fetchData();
       } catch (e) {
-        if (Platform.OS === 'web') {
-          window.alert(e.message || 'Failed to clock out staff.');
-        } else {
-          Alert.alert('Error', e.message || 'Failed to clock out staff.');
-        }
+        appAlert('Error', e.message || 'Failed to clock out staff.');
       } finally {
         setActionLoading(false);
       }

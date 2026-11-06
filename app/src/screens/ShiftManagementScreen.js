@@ -1,20 +1,18 @@
 import React, { useState, useCallback } from 'react';
-import {
-  View, Text, StyleSheet, ScrollView, TouchableOpacity,
-  RefreshControl, Alert, Modal, TextInput, ActivityIndicator, Platform, KeyboardAvoidingView,
-} from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, RefreshControl, Modal, TextInput, ActivityIndicator, Platform, KeyboardAvoidingView } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import DateTimePickerModal from '../components/DateTimePickerModal';
+import { appAlert } from '../utils/alert';
+import useSubmitGuard from '../hooks/useSubmitGuard';
 
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
 const confirm = (title, msg, onOk) => {
-  if (Platform.OS === 'web') { if (window.confirm(`${title}\n${msg}`)) onOk(); }
-  else Alert.alert(title, msg, [{ text: 'Cancel', style: 'cancel' }, { text: 'OK', onPress: onOk }]);
+  appAlert(title, msg, [{ text: 'Cancel', style: 'cancel' }, { text: 'OK', onPress: onOk }]);
 };
 
 // 'HH:MM' -> Date (today's date, with that hour/minute set). Returns null for
@@ -148,24 +146,25 @@ export default function ShiftManagementScreen() {
     setTimePickerTarget(null);
   };
 
+  const guardSubmit = useSubmitGuard();
   const handleSave = async () => {
     if (!selectedUser || !selectedLocation) {
-      Alert.alert('Error', 'Please select staff member and location.');
+      appAlert('Error', 'Please select staff member and location.');
       return;
     }
     const timeRe = /^\d{2}:\d{2}$/;
     if (!timeRe.test(shiftStart) || !timeRe.test(shiftEnd)) {
-      Alert.alert('Error', 'Times must be in HH:MM format.');
+      appAlert('Error', 'Times must be in HH:MM format.');
       return;
     }
     if (isSplitShift) {
       if (shiftSegments.length < 2) {
-        Alert.alert('Error', 'Split shift requires at least 2 segments.');
+        appAlert('Error', 'Split shift requires at least 2 segments.');
         return;
       }
       for (const seg of shiftSegments) {
         if (!timeRe.test(seg.start) || !timeRe.test(seg.end)) {
-          Alert.alert('Error', 'All segment times must be in HH:MM format.');
+          appAlert('Error', 'All segment times must be in HH:MM format.');
           return;
         }
       }
@@ -184,7 +183,7 @@ export default function ShiftManagementScreen() {
       setModal(false);
       await fetchData();
     } catch (e) {
-      Alert.alert('Error', e.message || 'Failed to save shift.');
+      appAlert('Error', e.message || 'Failed to save shift.');
     } finally {
       setSaving(false);
     }
@@ -196,7 +195,7 @@ export default function ShiftManagementScreen() {
         await api.deleteShift(shift.id);
         await fetchData();
       } catch (e) {
-        Alert.alert('Error', e.message || 'Failed to delete.');
+        appAlert('Error', e.message || 'Failed to delete.');
       }
     });
   };
@@ -437,7 +436,7 @@ export default function ShiftManagementScreen() {
               <TouchableOpacity style={styles.cancelBtn} onPress={() => setModal(false)}>
                 <Text style={styles.cancelBtnText}>Cancel</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.saveBtn} onPress={handleSave} disabled={saving}>
+              <TouchableOpacity style={styles.saveBtn} onPress={guardSubmit(handleSave)} disabled={saving}>
                 <Text style={styles.saveBtnText}>{saving ? 'Saving...' : 'Save'}</Text>
               </TouchableOpacity>
             </View>

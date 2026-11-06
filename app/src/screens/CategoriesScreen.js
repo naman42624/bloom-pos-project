@@ -1,13 +1,11 @@
 import React, { useState, useCallback } from 'react';
-import {
-  View, Text, StyleSheet, FlatList, TouchableOpacity,
-  RefreshControl, Alert,
-} from 'react-native';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, RefreshControl } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
+import { appAlert } from '../utils/alert';
 
 export default function CategoriesScreen({ navigation }) {
   const { user } = useAuth();
@@ -20,7 +18,7 @@ export default function CategoriesScreen({ navigation }) {
       const response = await api.getCategories();
       setCategories(response.data || []);
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to load categories');
+      appAlert('Error', err.message || 'Failed to load categories');
     } finally {
       setLoading(false);
       setRefreshing(false);

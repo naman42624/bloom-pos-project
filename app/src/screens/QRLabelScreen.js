@@ -1,11 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import {
-  View, Text, StyleSheet, Image, TouchableOpacity, Alert,
-  ActivityIndicator, Share, Platform, ScrollView,
-} from 'react-native';
+import { View, Text, StyleSheet, Image, TouchableOpacity, ActivityIndicator, Share, Platform, ScrollView } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import api from '../services/api';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
+import { appAlert } from '../utils/alert';
 
 export default function QRLabelScreen({ route }) {
   const { productId } = route.params;
@@ -18,7 +16,7 @@ export default function QRLabelScreen({ route }) {
         const res = await api.getProductQR(productId, 400);
         setQrData(res.data);
       } catch (err) {
-        Alert.alert('Error', err.message || 'Failed to generate QR code');
+        appAlert('Error', err.message || 'Failed to generate QR code');
       } finally {
         setLoading(false);
       }

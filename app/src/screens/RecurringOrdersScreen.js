@@ -1,12 +1,10 @@
 import React, { useState, useCallback } from 'react';
-import {
-  View, Text, StyleSheet, FlatList, TouchableOpacity, Alert,
-  Modal, TextInput, ScrollView, ActivityIndicator,
-} from 'react-native';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, Modal, TextInput, ScrollView, ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import api from '../services/api';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
+import { appAlert } from '../utils/alert';
 
 const FREQ_LABELS = { daily: 'Daily', weekly: 'Weekly', monthly: 'Monthly', custom: 'Custom' };
 const FREQ_ICONS = { daily: 'today', weekly: 'calendar', monthly: 'calendar-outline', custom: 'options' };
@@ -21,7 +19,7 @@ export default function RecurringOrdersScreen({ navigation }) {
       const res = await api.getRecurringOrders();
       setOrders(res.data || []);
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to load recurring orders');
+      appAlert('Error', err.message || 'Failed to load recurring orders');
     } finally {
       setLoading(false);
     }
@@ -34,12 +32,12 @@ export default function RecurringOrdersScreen({ navigation }) {
       await api.updateRecurringOrder(order.id, { is_active: !order.is_active });
       loadOrders();
     } catch (err) {
-      Alert.alert('Error', err.message);
+      appAlert('Error', err.message);
     }
   };
 
   const deleteOrder = (order) => {
-    Alert.alert('Delete', `Delete recurring order for ${order.customer_name}?`, [
+    appAlert('Delete', `Delete recurring order for ${order.customer_name}?`, [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Delete', style: 'destructive',
@@ -47,7 +45,7 @@ export default function RecurringOrdersScreen({ navigation }) {
           try {
             await api.deleteRecurringOrder(order.id);
             loadOrders();
-          } catch (err) { Alert.alert('Error', err.message); }
+          } catch (err) { appAlert('Error', err.message); }
         },
       },
     ]);

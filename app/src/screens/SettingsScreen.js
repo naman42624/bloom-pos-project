@@ -1,17 +1,5 @@
 import React, { useState, useCallback, useRef } from 'react';
-import {
-  View,
-  Text,
-  StyleSheet,
-  ScrollView,
-  TextInput,
-  Alert,
-  RefreshControl,
-  Switch,
-  Image,
-  Platform,
-  TouchableOpacity,
-} from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TextInput, RefreshControl, Switch, Image, Platform, TouchableOpacity } from 'react-native';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
@@ -20,7 +8,7 @@ import { useAuth } from '../context/AuthContext';
 import Button from '../components/Button';
 import DismissKeyboard from '../components/DismissKeyboard';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
-import { showAlert } from '../utils/alert';
+import { showAlert, appAlert } from '../utils/alert';
 
 // '' / not a number / outside 0-100 → a plain message, else null.
 function helperLimitProblem(value) {
@@ -148,7 +136,7 @@ export default function SettingsScreen() {
       setSettings(response.data?.settings || {});
       setEditedValues({});
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to load settings');
+      appAlert('Error', err.message || 'Failed to load settings');
     } finally {
       setLoading(false);
     }
@@ -178,9 +166,9 @@ export default function SettingsScreen() {
       await api.updateSettings(editedValues);
       await fetchSettings();
       if (refreshSettings) await refreshSettings();
-      Alert.alert('Success', 'Settings updated');
+      appAlert('Success', 'Settings updated');
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to save settings');
+      appAlert('Error', err.message || 'Failed to save settings');
     } finally {
       setSaving(false);
     }
@@ -204,7 +192,7 @@ export default function SettingsScreen() {
       }));
       if (refreshSettings) await refreshSettings();
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to update preference');
+      appAlert('Error', err.message || 'Failed to update preference');
     }
   };
 
@@ -241,7 +229,7 @@ export default function SettingsScreen() {
   const handlePickQrImage = async () => {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (status !== 'granted') {
-      Alert.alert('Permission Required', 'Please allow photo library access to upload the QR code.');
+      appAlert('Permission Required', 'Please allow photo library access to upload the QR code.');
       return;
     }
     const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.8 });
@@ -263,7 +251,7 @@ export default function SettingsScreen() {
       const uploadRes = await api.uploadGenericImage(formData);
       handleChange('upi_qr_image_url', uploadRes.url);
     } catch (err) {
-      Alert.alert('Error', err.message || 'Could not upload the image');
+      appAlert('Error', err.message || 'Could not upload the image');
     } finally {
       setUploadingQr(false);
     }

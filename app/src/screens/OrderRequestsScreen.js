@@ -1,15 +1,12 @@
 import React, { useCallback, useState } from 'react';
-import {
-  View, Text, StyleSheet, FlatList, TouchableOpacity, Modal, TextInput,
-  Alert, ActivityIndicator, RefreshControl, Platform, Linking,
-} from 'react-native';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, Modal, TextInput, ActivityIndicator, RefreshControl, Platform, Linking } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import api from '../services/api';
 import Button from '../components/Button';
 import useSubmitGuard from '../hooks/useSubmitGuard';
-import { showAlert } from '../utils/alert';
+import { showAlert, appAlert } from '../utils/alert';
 import { buildMessage } from '../utils/contact';
 import { Colors, Spacing, FontSize, BorderRadius } from '../constants/theme';
 
@@ -41,7 +38,7 @@ export default function OrderRequestsScreen({ navigation }) {
       const res = await api.getOrderRequests({ status: currentStatus });
       setRequests(res.data.requests || []);
     } catch (err) {
-      Alert.alert('Error', err.message || 'Could not load order requests');
+      appAlert('Error', err.message || 'Could not load order requests');
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -112,7 +109,7 @@ export default function OrderRequestsScreen({ navigation }) {
       setDeclineReason('');
       fetchRequests(status);
     } catch (err) {
-      Alert.alert('Error', err.message || 'Could not decline this request');
+      appAlert('Error', err.message || 'Could not decline this request');
     } finally {
       setDeclining(false);
     }

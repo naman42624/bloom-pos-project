@@ -1,8 +1,5 @@
 import React, { useState, useCallback, useEffect } from 'react';
-import {
-  View, Text, StyleSheet, ScrollView, TouchableOpacity,
-  RefreshControl, Alert, Modal, TextInput, Platform, KeyboardAvoidingView, Linking,
-} from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, RefreshControl, Modal, TextInput, Platform, KeyboardAvoidingView, Linking } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
@@ -11,9 +8,10 @@ import { waLink, buildMessage } from '../utils/contact';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import { formatDate as formatTimestampDate } from '../utils/datetime';
-import { showConfirm, showAlert } from '../utils/alert';
+import { showConfirm, showAlert, appAlert } from '../utils/alert';
 import DateTimePickerModal from '../components/DateTimePickerModal';
 import { writeOffLabel, writeOffProblem } from '../utils/writeOff';
+import useSubmitGuard from '../hooks/useSubmitGuard';
 
 export default function CustomerDetailScreen({ route, navigation }) {
   const { user, activeLocation, locations: assignedLocations } = useAuth();
@@ -49,9 +47,9 @@ export default function CustomerDetailScreen({ route, navigation }) {
     try {
       const res = await api.getOrderRequestLink(customer.id);
       await Clipboard.setStringAsync(res.data.url);
-      Alert.alert('Copied', 'Order link copied — paste it into a WhatsApp chat or message.');
+      appAlert('Copied', 'Order link copied — paste it into a WhatsApp chat or message.');
     } catch (err) {
-      Alert.alert('Error', err.message || 'Could not get the order link');
+      appAlert('Error', err.message || 'Could not get the order link');
     } finally {
       setLinkLoading(false);
     }
@@ -83,7 +81,7 @@ export default function CustomerDetailScreen({ route, navigation }) {
       }
     } catch (err) {
       if (popup) popup.close();
-      Alert.alert('Error', err.message || 'Could not get the order link');
+      appAlert('Error', err.message || 'Could not get the order link');
     } finally {
       setLinkLoading(false);
     }
@@ -131,7 +129,7 @@ export default function CustomerDetailScreen({ route, navigation }) {
       const res = await api.getCustomer(customerId);
       setCustomer(res.data);
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to load customer');
+      appAlert('Error', err.message || 'Failed to load customer');
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -159,6 +157,7 @@ export default function CustomerDetailScreen({ route, navigation }) {
     }
   }, [showCreditModal, activeLocation, locations]);
 
+  const guardSubmit = useSubmitGuard();
   const handleRecordPayment = async () => {
     const totalPayments = payments.reduce((sum, p) => sum + (parseFloat(p.amount) || 0), 0);
     const woAmount = parseFloat(writeOffAmount) || 0;
@@ -166,8 +165,8 @@ export default function CustomerDetailScreen({ route, navigation }) {
 
     const woProblem = writeOffProblem(user?.role, woAmount);
     if (woProblem) return showAlert('Write-off too big', woProblem);
-    if (totalReduction <= 0) return Alert.alert('Error', 'Enter a valid amount');
-    if (totalReduction > customer.credit_balance + 0.01) return Alert.alert('Error', 'Amount exceeds outstanding balance.');
+    if (totalReduction <= 0) return appAlert('Error', 'Enter a valid amount');
+    if (totalReduction > customer.credit_balance + 0.01) return appAlert('Error', 'Amount exceeds outstanding balance.');
 
     setCreditLoading(true);
     try {
@@ -187,13 +186,13 @@ export default function CustomerDetailScreen({ route, navigation }) {
       setCreditNotes('');
       fetchData();
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to record payment');
+      appAlert('Error', err.message || 'Failed to record payment');
     } finally { setCreditLoading(false); }
   };
 
   const handleAddPreviousDue = async () => {
     const amount = parseFloat(dueAmount);
-    if (!amount || amount <= 0) return Alert.alert('Error', 'Enter a valid amount');
+    if (!amount || amount <= 0) return appAlert('Error', 'Enter a valid amount');
     setDueLoading(true);
     try {
       await api.addPreviousDue(customerId, {
@@ -207,12 +206,12 @@ export default function CustomerDetailScreen({ route, navigation }) {
       setDueNotes('');
       fetchData();
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to add previous due');
+      appAlert('Error', err.message || 'Failed to add previous due');
     } finally { setDueLoading(false); }
   };
 
   const handleAddSpecialDate = async () => {
-    if (!dateLabel.trim() || !dateValue.trim()) return Alert.alert('Error', 'Enter label and date');
+    if (!dateLabel.trim() || !dateValue.trim()) return appAlert('Error', 'Enter label and date');
     setDateLoading(true);
     try {
       await api.addSpecialDate(customerId, { label: dateLabel.trim(), date: dateValue.trim() });
@@ -221,7 +220,7 @@ export default function CustomerDetailScreen({ route, navigation }) {
       setDateValue('');
       fetchData();
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to add special date');
+      appAlert('Error', err.message || 'Failed to add special date');
     } finally { setDateLoading(false); }
   };
 
@@ -230,13 +229,13 @@ export default function CustomerDetailScreen({ route, navigation }) {
       try {
         await api.deleteSpecialDate(customerId, id);
         fetchData();
-      } catch (err) { Alert.alert('Error', err.message); }
+      } catch (err) { appAlert('Error', err.message); }
     };
     showConfirm('Remove Date', `Remove "${label}"?`, doDelete, { confirmLabel: 'Remove', destructive: true });
   };
 
   const handleAddAddress = async () => {
-    if (!addrLine1.trim()) return Alert.alert('Error', 'Address line 1 is required');
+    if (!addrLine1.trim()) return appAlert('Error', 'Address line 1 is required');
     setAddrLoading(true);
     try {
       await api.addCustomerAddress(customerId, {
@@ -250,7 +249,7 @@ export default function CustomerDetailScreen({ route, navigation }) {
       setAddrLine1(''); setAddrLine2(''); setAddrCity(''); setAddrPincode('');
       fetchData();
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to add address');
+      appAlert('Error', err.message || 'Failed to add address');
     } finally { setAddrLoading(false); }
   };
 
@@ -259,7 +258,7 @@ export default function CustomerDetailScreen({ route, navigation }) {
       try {
         await api.deleteCustomerAddress(customerId, id);
         fetchData();
-      } catch (err) { Alert.alert('Error', err.message); }
+      } catch (err) { appAlert('Error', err.message); }
     };
     showConfirm('Delete Address', `Delete "${label}" address?`, doDelete, { confirmLabel: 'Delete', destructive: true });
   };
@@ -640,7 +639,7 @@ export default function CustomerDetailScreen({ route, navigation }) {
               <TextInput style={styles.modalInput} value={creditNotes} onChangeText={setCreditNotes}
                 placeholder="Payment notes" placeholderTextColor={Colors.textLight} />
               <TouchableOpacity style={[styles.submitBtn, creditLoading && { opacity: 0.6 }, { marginTop: Spacing.lg }]}
-                onPress={handleRecordPayment} disabled={creditLoading}>
+                onPress={guardSubmit(handleRecordPayment)} disabled={creditLoading}>
                 <Text style={styles.submitText}>{creditLoading ? 'Recording...' : 'Record Payment'}</Text>
               </TouchableOpacity>
             </View>
@@ -716,7 +715,7 @@ export default function CustomerDetailScreen({ route, navigation }) {
 
               <TouchableOpacity 
                 style={[styles.submitBtn, { backgroundColor: Colors.warning, marginTop: Spacing.sm, height: 50, borderRadius: BorderRadius.md, elevation: 2, shadowColor: Colors.warning, shadowOffset: {width:0, height:2}, shadowOpacity: 0.2, shadowRadius: 4 }, dueLoading && { opacity: 0.7 }]}
-                onPress={handleAddPreviousDue} 
+                onPress={guardSubmit(handleAddPreviousDue)} 
                 disabled={dueLoading}
               >
                 <Ionicons name="save-outline" size={18} color={Colors.white} style={{ marginRight: 8 }} />
@@ -754,7 +753,7 @@ export default function CustomerDetailScreen({ route, navigation }) {
             <TextInput style={styles.modalInput} value={dateValue} onChangeText={setDateValue}
               placeholder="e.g. 03-15" placeholderTextColor={Colors.textLight} keyboardType="numbers-and-punctuation" />
             <TouchableOpacity style={[styles.submitBtn, dateLoading && { opacity: 0.6 }]}
-              onPress={handleAddSpecialDate} disabled={dateLoading}>
+              onPress={guardSubmit(handleAddSpecialDate)} disabled={dateLoading}>
               <Text style={styles.submitText}>{dateLoading ? 'Adding...' : 'Add Date'}</Text>
             </TouchableOpacity>
           </View>
@@ -794,7 +793,7 @@ export default function CustomerDetailScreen({ route, navigation }) {
               <TextInput style={styles.modalInput} value={addrPincode} onChangeText={setAddrPincode}
                 placeholder="Pincode" placeholderTextColor={Colors.textLight} keyboardType="number-pad" />
               <TouchableOpacity style={[styles.submitBtn, addrLoading && { opacity: 0.6 }]}
-                onPress={handleAddAddress} disabled={addrLoading}>
+                onPress={guardSubmit(handleAddAddress)} disabled={addrLoading}>
                 <Text style={styles.submitText}>{addrLoading ? 'Adding...' : 'Add Address'}</Text>
               </TouchableOpacity>
             </ScrollView>
