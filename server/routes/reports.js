@@ -88,6 +88,10 @@ router.get('/sales-summary', authenticate, authorize('owner', 'manager'), async 
       GROUP BY p.method
       ORDER BY total DESC
     `).all(...params);
+    // Write-offs (money let go, utils/write-off.js) are not a payment method:
+    // their own total, taken off net below. The bills stay as issued.
+    const writtenOffTotal = paymentMethods.filter((r) => r.method === 'write_off').reduce((t, r) => t + Number(r.total || 0), 0);
+    const moneyMethods = paymentMethods.filter((r) => r.method !== 'write_off');
 
     // Top products
     const topProducts = await db.prepare(`
@@ -145,9 +149,9 @@ router.get('/sales-summary', authenticate, authorize('owner', 'manager'), async 
       success: true,
       data: {
         period: { from: dateFrom, to: dateTo },
-        totals: { ...totals, ...refunds, ...expenses, net_revenue: totals.total_revenue - (refunds.refund_total || 0) - (expenses.total_expenses || 0)  },
+        totals: { ...totals, ...refunds, ...expenses, written_off: writtenOffTotal, net_revenue: totals.total_revenue - (refunds.refund_total || 0) - writtenOffTotal - (expenses.total_expenses || 0)  },
         breakdown,
-        paymentMethods,
+        paymentMethods: moneyMethods,
         topProducts,
         byLocation,
       },
@@ -452,6 +456,20 @@ router.get('/dashboard', authenticate, authorize('owner', 'manager'), async (req
     // This month
     const monthStart = `${today.slice(0, 8)}01`;
 
+    // Write-offs on today's sales (same rule as the Sales Report)
+    const todayWrittenOff = await db.prepare(`
+      SELECT COALESCE(SUM(p.amount), 0) as total
+      FROM payments p JOIN sales s ON p.sale_id = s.id
+      WHERE p.method = 'write_off' AND date(${shopTime('s.created_at')}) = ? AND s.status != 'cancelled' ${locFilter}
+    `).get(today, ...locParams);
+
+    // Refunds on today's sales, same rule as the Sales Report's refunds
+    const todayRefunds = await db.prepare(`
+      SELECT COALESCE(SUM(r.amount), 0) as total
+      FROM refunds r JOIN sales s ON r.sale_id = s.id
+      WHERE date(${shopTime('s.created_at')}) = ? AND s.status != 'cancelled' ${locFilter}
+    `).get(today, ...locParams);
+
     // Run all independent dashboard queries in parallel
     const [
       todaySales,
@@ -524,7 +542,9 @@ router.get('/dashboard', authenticate, authorize('owner', 'manager'), async (req
     res.json({
       success: true,
       data: {
-        today: { ...todaySales, expenses: todayExpenses.total, net: todaySales.revenue - todayExpenses.total },
+        // Net is worked out exactly as the Sales Report's Net Revenue:
+        // revenue - refunds - written off (on today's sales) - expenses.
+        today: { ...todaySales, expenses: todayExpenses.total, refunds: todayRefunds.total, written_off: todayWrittenOff.total, net: Number(todaySales.revenue) - Number(todayRefunds.total) - Number(todayWrittenOff.total) - Number(todayExpenses.total) },
         yesterday: yesterdaySales,
         week: weekSales,
         month: monthSales,

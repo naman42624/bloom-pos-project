@@ -12,6 +12,7 @@ import { resolveItemLineTotal } from '../utils/lineTotal';
 import { printSaleBill, printCreditNote } from '../utils/printHelpers';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
+import { writeOffLabel, writeOffProblem } from '../utils/writeOff';
 import { formatDateTime, formatCardDateTime, isToday } from '../utils/datetime';
 import { Image } from 'react-native';
 import ImageModal from '../components/ImageModal';
@@ -280,6 +281,10 @@ export default function SaleDetailScreen({ route, navigation }) {
   // changed, so a name/phone edit never rewrites the payments (a helper's
   // held cash cannot be rewritten at all, and a split payment would merge).
   const editInitialMethod = useRef(null);
+  // A sale paid in parts (e.g. cash + UPI): one method per part, amounts
+  // kept. A single method choice used to turn the whole paid amount into
+  // that one method, losing the split.
+  const [editPaymentRows, setEditPaymentRows] = useState([]);
   const [savingEdit, setSavingEdit] = useState(false);
 
   // Item price/quantity edit
@@ -375,9 +380,13 @@ export default function SaleDetailScreen({ route, navigation }) {
     setEditCustomerName(sale.customer_name || sale.customer_display_name || '');
     setEditCustomerPhone(sale.customer_phone || sale.customer_display_phone || '');
     setEditPaymentStatus(sale.payment_status || 'pending');
-    const firstMethod = sale.payments && sale.payments[0] ? sale.payments[0].method : 'cash';
+    const moneyPayments = (sale.payments || []).filter((p) => p.method !== 'write_off');
+    const firstMethod = moneyPayments[0] ? moneyPayments[0].method : 'cash';
     setEditPaymentMethod(firstMethod);
     editInitialMethod.current = firstMethod;
+    setEditPaymentRows((sale.payments || []).filter((p) => p.method !== 'write_off').map((p) => ({
+      method: p.method, initial: p.method, amount: Number(p.amount || 0), reference_number: p.reference_number || null,
+    })));
     setEditError(null);
     setEditModalVisible(true);
   };
@@ -386,7 +395,8 @@ export default function SaleDetailScreen({ route, navigation }) {
     setSavingEdit(true);
     try {
       // Calculate current paid amount to retain the amount but change the method
-      const currentPaid = (sale.payments || []).reduce((sum, p) => sum + Number(p.amount || 0), 0);
+      // Money lines only: a write-off line is kept as it is by the server
+      const currentPaid = (sale.payments || []).filter((p) => p.method !== 'write_off').reduce((sum, p) => sum + Number(p.amount || 0), 0);
 
       const payload = {
         customer_name: editCustomerName,
@@ -394,7 +404,12 @@ export default function SaleDetailScreen({ route, navigation }) {
         payment_status: editPaymentStatus,
       };
 
-      if (currentPaid > 0) {
+      if (editPaymentRows.length > 1) {
+        // Split payment: each part keeps its amount, only its method changes
+        if (editPaymentRows.some((r) => r.method !== r.initial)) {
+          payload.payments = editPaymentRows.map((r) => ({ method: r.method, amount: r.amount, reference_number: r.reference_number }));
+        }
+      } else if (currentPaid > 0) {
         // Just replacing the method of the existing payments, and only when
         // the method was actually changed
         if (editPaymentMethod !== editInitialMethod.current) payload.payments = [{ method: editPaymentMethod, amount: currentPaid }];
@@ -610,6 +625,17 @@ export default function SaleDetailScreen({ route, navigation }) {
     try {
       await api.advanceOrder(nextAction);
       fetchSale();
+      // Say it worked: a handed-over order used to change silently, so staff
+      // could not tell whether the tap had done anything.
+      const DONE = {
+        'Confirm Pickup': 'Picked up. The order is done.',
+        'Mark Delivered': 'Marked as delivered.',
+        'Mark Picked Up': 'The rider has it. It is out for delivery.',
+        'Mark Ready': 'Marked as ready.',
+        'Start Preparing': 'Marked as being prepared.',
+        Complete: 'The order is done.',
+      };
+      showAlert('Done', DONE[nextAction.label] || 'Order updated.');
     } catch (err) {
       const msg = err.message || 'Unable to update this order.';
       showAlert('Order Update', msg);
@@ -621,6 +647,11 @@ export default function SaleDetailScreen({ route, navigation }) {
   const handleConfirmPickupPayment = async () => {
     const totalPayments = pickupPayments.reduce((sum, p) => sum + (parseFloat(p.amount) || 0), 0);
     const woAmount = parseFloat(pickupWriteOffAmount) || 0;
+    const woProblem = writeOffProblem(user?.role, woAmount);
+    if (woProblem) {
+      showAlert('Write-off too big', woProblem);
+      return;
+    }
     const totalReduction = totalPayments + woAmount;
 
     if (totalReduction <= 0) {
@@ -1463,9 +1494,9 @@ export default function SaleDetailScreen({ route, navigation }) {
         <Text style={styles.sectionTitle}>Payments</Text>
         {(sale.payments || []).map((p, idx) => (
           <View key={idx} style={styles.paymentRow}>
-            <Ionicons name={p.method === 'cash' ? 'cash' : p.method === 'card' ? 'card' : 'phone-portrait'} size={18} color={Colors.primary} />
+            <Ionicons name={p.method === 'write_off' ? 'remove-circle-outline' : p.method === 'cash' ? 'cash' : p.method === 'card' ? 'card' : 'phone-portrait'} size={18} color={p.method === 'write_off' ? Colors.textSecondary : Colors.primary} />
             <View style={{ flex: 1, marginLeft: Spacing.sm }}>
-              <Text style={styles.payMethod}>{p.method?.toUpperCase()}</Text>
+              <Text style={styles.payMethod}>{p.method === 'write_off' ? 'WRITTEN OFF' : p.method?.toUpperCase()}</Text>
               {p.reference_number ? <Text style={styles.payRef}>Ref: {p.reference_number}</Text> : null}
             </View>
             <Text style={styles.payAmount}>₹{Number(p.amount || 0).toFixed(2)}</Text>
@@ -2101,7 +2132,7 @@ export default function SaleDetailScreen({ route, navigation }) {
                 <Text style={{ color: Colors.primary, marginLeft: 4, fontWeight: '600', fontSize: FontSize.sm }}>Add Split Payment</Text>
               </TouchableOpacity>
 
-              <Text style={styles.fieldLabel}>Write-off Amount (Optional)</Text>
+              <Text style={styles.fieldLabel}>{writeOffLabel(user?.role)}</Text>
               <TextInput style={styles.modalInput} value={pickupWriteOffAmount} onChangeText={setPickupWriteOffAmount} keyboardType="numeric" placeholder="₹ Small discrepancy amount" />
             </ScrollView>
 
@@ -2159,6 +2190,33 @@ export default function SaleDetailScreen({ route, navigation }) {
                 keyboardType="phone-pad"
               />
 
+              {editPaymentRows.length > 1 ? (
+                <>
+                  <Text style={styles.fieldLabel}>Paid in {editPaymentRows.length} parts — pick how each part was paid</Text>
+                  {editPaymentRows.map((row, idx) => (
+                    <View key={idx} style={{ marginBottom: Spacing.sm }}>
+                      <Text style={{ fontSize: FontSize.md, fontWeight: '700', color: Colors.text, marginBottom: 4 }}>
+                        {`₹${row.amount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+                      </Text>
+                      <View style={styles.chipRow}>
+                        {PAYMENT_METHODS.map(m => (
+                          <TouchableOpacity
+                            key={m.key}
+                            style={[styles.methodChip, row.method === m.key && styles.methodChipActive]}
+                            onPress={() => setEditPaymentRows((rows) => rows.map((r, i) => (i === idx ? { ...r, method: m.key } : r)))}
+                            accessibilityRole="button"
+                            accessibilityState={{ selected: row.method === m.key }}
+                          >
+                            <Ionicons name={m.icon} size={16} color={row.method === m.key ? '#fff' : Colors.textSecondary} />
+                            <Text style={[styles.methodChipText, row.method === m.key && styles.methodChipTextActive]}>{m.label}</Text>
+                          </TouchableOpacity>
+                        ))}
+                      </View>
+                    </View>
+                  ))}
+                </>
+              ) : (
+              <>
               <Text style={styles.fieldLabel}>Payment Method</Text>
               <View style={styles.chipRow}>
                 {PAYMENT_METHODS.map(m => (
@@ -2172,6 +2230,8 @@ export default function SaleDetailScreen({ route, navigation }) {
                   </TouchableOpacity>
                 ))}
               </View>
+              </>
+              )}
 
               <Text style={styles.fieldLabel}>Payment Status</Text>
               <View style={styles.chipRow}>

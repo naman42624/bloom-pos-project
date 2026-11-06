@@ -210,6 +210,7 @@ export default function CollectDuesSheet({ visible, customer, locationId, onClos
             onPress={submit}
             disabled={!!error || saving}
             accessibilityRole="button"
+            accessibilityState={{ disabled: !!error || saving }}
             style={{
               marginTop: Spacing.lg, minHeight: 56, borderRadius: BorderRadius.md, alignItems: 'center', justifyContent: 'center',
               backgroundColor: error ? Colors.border : Colors.success,
@@ -217,8 +218,11 @@ export default function CollectDuesSheet({ visible, customer, locationId, onClos
           >
             {saving
               ? <ActivityIndicator color={Colors.white} />
-              : <Text style={{ color: Colors.white, fontSize: FontSize.lg, fontWeight: '800' }}>
-                  {withOrder ? 'Add' : 'Collect'} ₹{error ? money(due) : money(amt)}{method === 'upi' ? ' (UPI)' : ''}{withOrder ? ' to this order' : ''}
+              : <Text style={{ color: error ? Colors.textSecondary : Colors.white, fontSize: FontSize.lg, fontWeight: '800' }}>
+                  {/* A disabled button never shows an amount it would not take */}
+                  {error
+                    ? 'Fix the amount above'
+                    : `${withOrder ? 'Add' : 'Collect'} ₹${money(amt)}${method === 'upi' ? ' (UPI)' : ''}${withOrder ? ' to this order' : ''}`}
                 </Text>}
           </TouchableOpacity>
           </>

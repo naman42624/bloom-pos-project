@@ -82,7 +82,7 @@ const esc = (value) => String(value ?? '')
 
 const rupees = (n) => `₹${Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
 
-const METHOD_LABELS = { cash: 'Cash', upi: 'UPI', card: 'Card', bank_transfer: 'Bank', credit: 'Credit' };
+const METHOD_LABELS = { cash: 'Cash', upi: 'UPI', card: 'Card', bank_transfer: 'Bank', credit: 'Credit', write_off: 'Written off' };
 
 // Same rule SaleDetailScreen shows on screen: paid = sum of payment rows
 // (a rider's COD collection is recorded as one too), balance = total − paid.

@@ -11,6 +11,7 @@ const { authenticate, authorize } = require('../middleware/auth');
 const { safeParseJSON } = require('../utils/json');
 const { hasOpenRegister, lockOpenRegister, registerClosedError, REGISTER_CLOSED_MESSAGE } = require('../utils/register-guard');
 const { generateOrderRequestToken, buildOrderRequestUrl } = require('../utils/order-request-token');
+const { writeOffError, recordWriteOff } = require('../utils/write-off');
 
 // ─── GET /api/customers ─────────────────────────────────────
 // List all customers (users with role='customer') + any unique phones from sales
@@ -636,6 +637,13 @@ router.post(
         return res.status(400).json({ success: false, message: 'Total amount must be greater than 0' });
       }
 
+      // Same write-off limits as Add Payment (utils/write-off.js): staff only
+      // for small change. The "not more than owed" part is the check below.
+      if (woAmount > 0) {
+        const woErr = writeOffError(req.user.role, Math.round(woAmount * 100), Number.MAX_SAFE_INTEGER);
+        if (woErr) return res.status(403).json({ success: false, message: woErr });
+      }
+
       if (totalReduction > customer.credit_balance + 0.01) {
         return res.status(400).json({ success: false, message: `Total reduction (₹${totalReduction}) exceeds outstanding balance (₹${customer.credit_balance})` });
       }
@@ -705,8 +713,8 @@ router.post(
           }
 
           if (woAmount > 0) {
-            await db.prepare('UPDATE sales SET discount_amount = COALESCE(discount_amount, 0) + ?, grand_total = GREATEST(0, grand_total - ?) WHERE id = ?')
-              .run(woAmount, woAmount, sale_id);
+            // Its own line, never a change to the bill (utils/write-off.js)
+            await recordWriteOff(db, sale_id, woAmount, req.user.id, `Credit-${lastInsertId}`);
           }
 
           // Recalculate sale payment status
@@ -741,7 +749,7 @@ router.post(
             // Allocate write-off first
             if (remainingWo > 0.01 && saleUnpaid > 0.01) {
               const allocWo = Math.min(saleUnpaid, remainingWo);
-              await db.prepare('UPDATE sales SET discount_amount = COALESCE(discount_amount, 0) + ?, grand_total = GREATEST(0, grand_total - ?) WHERE id = ?').run(allocWo, allocWo, s.id);
+              await recordWriteOff(db, s.id, allocWo, req.user.id, `Credit-${lastInsertId}`);
               remainingWo -= allocWo;
               totalRemaining -= allocWo;
               saleUnpaid -= allocWo;

@@ -528,6 +528,18 @@ check('NEW: GET /register/sessions lists every session for a given date, not jus
 async function cleanup() {
   if (createdExpenseIds.length === 0 && createdRegisterIds.length === 0 && createdSaleIds.length === 0) return;
   const db = await getDb();
+  // Only the settlements this run's own deliveries are in. It used to delete
+  // every settlement with no items left, which could remove rows this script
+  // never made.
+  const ownSettlementIds = new Set();
+  for (const saleId of createdSaleIds) {
+    try {
+      const rows = await db.prepare('SELECT DISTINCT settlement_id FROM delivery_settlement_items WHERE delivery_id IN (SELECT id FROM deliveries WHERE sale_id = ?)').all(saleId);
+      rows.forEach((r) => ownSettlementIds.add(Number(r.settlement_id)));
+    } catch (err) {
+      console.error(`   (cleanup warning: settlements of sale ${saleId}: ${err.message})`);
+    }
+  }
   for (const saleId of createdSaleIds) {
     try {
       await db.prepare('DELETE FROM delivery_settlement_items WHERE delivery_id IN (SELECT id FROM deliveries WHERE sale_id = ?)').run(saleId);
@@ -543,7 +555,9 @@ async function cleanup() {
     }
   }
   try {
-    await db.prepare('DELETE FROM delivery_settlements WHERE id NOT IN (SELECT DISTINCT settlement_id FROM delivery_settlement_items)').run();
+    for (const id of ownSettlementIds) {
+      await db.prepare('DELETE FROM delivery_settlements WHERE id = ? AND NOT EXISTS (SELECT 1 FROM delivery_settlement_items WHERE settlement_id = ?)').run(id, id);
+    }
   } catch (err) {
     console.error(`   (cleanup warning: orphaned settlements: ${err.message})`);
   }

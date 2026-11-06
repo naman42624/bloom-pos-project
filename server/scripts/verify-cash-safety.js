@@ -276,6 +276,167 @@ check('register open: two taps open one register', async () => {
   assert(codes[0] === 201 && codes[1] === 409, `codes ${codes}`);
 });
 
+// ── Checkout fixes (2026-11-06) ─────────────────────────────────────────
+// A manager with an approval PIN at Test Loc, and one at another shop only.
+const TEST_PIN = String(1000 + Math.floor(Math.random() * 8999));
+async function managerWithPin(ownerToken, locationIds) {
+  staffN += 1;
+  const phone = '7' + String(Date.now()).slice(-8) + String(staffN % 10);
+  const { body } = await api('POST', '/users', ownerToken, {
+    name: `CashSafety manager ${staffN}`, phone, password: 'testpass123', role: 'manager', location_ids: locationIds,
+  });
+  const id = body.data.id || body.data.user?.id;
+  createdUserIds.push(id);
+  const { hashPin } = require('../utils/pin');
+  const db = await getDb();
+  const code = String(90000 + Math.floor(Math.random() * 9999));
+  await db.prepare('UPDATE users SET employee_code = ?, pin_hash = ? WHERE id = ?').run(code, await hashPin(TEST_PIN), id);
+  return { id, code };
+}
+const discounted = (token, pct, override) => sale(token, {
+  amount: 100, method: 'upi', paid: false,
+  extra: { discount_type: 'percentage', discount_value: pct, ...(override ? { discount_override: override } : {}) },
+});
+
+check('discount over the counter limit: 403 with a code, not 500', async () => {
+  const owner = await loginOwner();
+  const staff = await counterStaff(owner.token);
+  const r = await discounted(staff.token, 25);
+  assert(r.status === 403 && r.body.code === 'DISCOUNT_NEEDS_OK', `${r.status} ${JSON.stringify(r.body)}`);
+  assert(/Ask a manager or the owner/.test(r.body.message), r.body.message);
+});
+
+check('discount: a manager PIN OKs up to the owner limit, wrong PIN / other shop / too big refused', async () => {
+  const owner = await loginOwner();
+  const staff = await counterStaff(owner.token);
+  const mgr = await managerWithPin(owner.token, [LOC]);
+  const other = await managerWithPin(owner.token, [1]);
+  const wrong = await discounted(staff.token, 25, { employee_code: mgr.code, pin: TEST_PIN === '1111' ? '2222' : '1111' });
+  assert(wrong.status === 401 && wrong.body.code === 'DISCOUNT_PIN', `wrong pin ${wrong.status} ${JSON.stringify(wrong.body)}`);
+  const otherShop = await discounted(staff.token, 25, { employee_code: other.code, pin: TEST_PIN });
+  assert(otherShop.status === 403 && otherShop.body.code === 'DISCOUNT_APPROVER', `other shop ${otherShop.status} ${JSON.stringify(otherShop.body)}`);
+  const ok = await discounted(staff.token, 25, { employee_code: mgr.code, pin: TEST_PIN });
+  assert(ok.status === 201, `ok ${ok.status} ${JSON.stringify(ok.body)}`);
+  const db = await getDb();
+  const row = await db.prepare('SELECT discount_approved_by, discount_percentage FROM sales WHERE id = ?').get(ok.body.data.id);
+  assert(Number(row.discount_approved_by) === mgr.id && Number(row.discount_percentage) === 25, JSON.stringify(row));
+  const tooBig = await discounted(staff.token, 35, { employee_code: mgr.code, pin: TEST_PIN });
+  assert(tooBig.status === 403 && tooBig.body.code === 'DISCOUNT_NEEDS_OWNER', `too big ${tooBig.status} ${JSON.stringify(tooBig.body)}`);
+});
+
+check('write-off: staff at most Rs 10, nobody more than is due', async () => {
+  const owner = await loginOwner();
+  const staff = await counterStaff(owner.token);
+  const s1 = await sale(staff.token, { amount: 100, method: 'upi', paid: false });
+  const id = s1.body.data.id;
+  const big = await api('POST', `/sales/${id}/payments`, staff.token, { payments: [{ method: 'upi', amount: 80 }], write_off_amount: 20 });
+  assert(big.status === 403, `staff 20 ${big.status} ${JSON.stringify(big.body)}`);
+  const over = await api('POST', `/sales/${id}/payments`, owner.token, { payments: [], write_off_amount: 150 });
+  assert(over.status === 400, `owner over due ${over.status} ${JSON.stringify(over.body)}`);
+  const small = await api('POST', `/sales/${id}/payments`, staff.token, { payments: [{ method: 'upi', amount: 95 }], write_off_amount: 5 });
+  assert(small.status === 200 || small.status === 201, `staff 5 ${small.status} ${JSON.stringify(small.body)}`);
+  const db = await getDb();
+  const row = await db.prepare('SELECT payment_status FROM sales WHERE id = ?').get(id);
+  assert(row.payment_status === 'paid', JSON.stringify(row));
+});
+
+check('refund lowers total spent once; cancelling after it takes off only the rest', async () => {
+  const owner = await loginOwner();
+  const phone = '6' + String(Date.now()).slice(-9);
+  const mk = (amount) => sale(owner.token, { amount, method: 'upi', extra: { customer_name: 'CashSafety buyer', customer_phone: phone } });
+  const a = await mk(100);
+  const b = await mk(50);
+  const db = await getDb();
+  const custId = (await db.prepare('SELECT customer_id FROM sales WHERE id = ?').get(b.body.data.id)).customer_id;
+  assert(custId, 'no customer on the sale');
+  createdUserIds.push(Number(custId));
+  const spent = async () => r2((await db.prepare('SELECT total_spent FROM users WHERE id = ?').get(custId)).total_spent);
+  assert(await spent() === 150, `start ${await spent()}`);
+  const ref = await api('POST', `/sales/${b.body.data.id}/refund`, owner.token, { amount: 50, reason: 'check', refund_method: 'upi' });
+  assert(ref.status === 200 || ref.status === 201, `refund ${ref.status} ${JSON.stringify(ref.body)}`);
+  assert(await spent() === 100, `after refund ${await spent()}`);
+  const cancel = await api('PUT', `/sales/${b.body.data.id}/cancel`, owner.token, { reason: 'check' });
+  assert(cancel.status === 200, `cancel ${cancel.status} ${JSON.stringify(cancel.body)}`);
+  assert(await spent() === 100, `after cancel ${await spent()} (refund taken off twice)`);
+  assert(a.status === 201, 'first sale');
+});
+
+check('dashboard net = revenue - refunds - expenses (same as Sales Report)', async () => {
+  const owner = await loginOwner();
+  const r = await api('GET', `/reports/dashboard?location_id=${LOC}`, owner.token);
+  const t = r.body.data.today;
+  assert(t.refunds !== undefined, JSON.stringify(t));
+  assert(r2(t.net) === r2(Number(t.revenue) - Number(t.refunds) - Number(t.written_off) - Number(t.expenses)), JSON.stringify(t));
+});
+
+check('an undone quick sale shows as "Cancelled (undone)"', async () => {
+  const { computeOrderStage } = require('../utils/order-stage');
+  const st = computeOrderStage({ status: 'cancelled', undone_at: new Date().toISOString(), order_type: 'walk_in' }, 'owner');
+  assert(st.label === 'Cancelled (undone)', st.label);
+  const plain = computeOrderStage({ status: 'cancelled', order_type: 'walk_in' }, 'owner');
+  assert(plain.label === 'Cancelled', plain.label);
+});
+
+check('write-off never changes the bill: own line, order settled, GST as issued', async () => {
+  const owner = await loginOwner();
+  const staff = await counterStaff(owner.token);
+  const db = await getDb();
+  const mk = async () => {
+    const r = await sale(staff.token, { amount: 118, method: 'upi', paid: false, extra: { items: [{ product_name: 'GST write-off item', quantity: 1, unit_price: 118, tax_rate: 18 }] } });
+    assert(r.status === 201, `sale ${r.status} ${JSON.stringify(r.body)}`);
+    return r.body.data.id;
+  };
+  const billOf = async (id) => db.prepare('SELECT invoice_number, grand_total, tax_total, discount_amount, taxable_total, cgst_total, sgst_total, round_off, payment_status FROM sales WHERE id = ?').get(id);
+  const same = (a, b) => ['invoice_number', 'grand_total', 'tax_total', 'discount_amount', 'taxable_total', 'cgst_total', 'sgst_total', 'round_off'].every((k) => String(a[k]) === String(b[k]));
+
+  const id = await mk();
+  const before = await billOf(id);
+  const pay = await api('POST', `/sales/${id}/payments`, staff.token, { payments: [{ method: 'upi', amount: 113 }], write_off_amount: 5 });
+  assert(pay.status === 200 || pay.status === 201, `pay ${pay.status} ${JSON.stringify(pay.body)}`);
+  const after = await billOf(id);
+  assert(same(before, after), `bill changed: ${JSON.stringify(before)} -> ${JSON.stringify(after)}`);
+  assert(after.payment_status === 'paid' && r2(after.grand_total) === 118, JSON.stringify(after));
+  const lines = await db.prepare('SELECT method, amount FROM payments WHERE sale_id = ? ORDER BY id').all(id);
+  assert(lines.length === 2 && lines[1].method === 'write_off' && r2(lines[1].amount) === 5, JSON.stringify(lines));
+
+  const ref = await api('POST', `/sales/${id}/refund`, owner.token, { amount: 118, reason: 'check', refund_method: 'upi' });
+  assert(ref.status === 400 && /113/.test(ref.body.message), `refund ceiling ${ref.status} ${JSON.stringify(ref.body)}`);
+  const ref2 = await api('POST', `/sales/${id}/refund`, owner.token, { amount: 113, reason: 'check', refund_method: 'upi' });
+  assert(ref2.status === 200 || ref2.status === 201, `refund 113 ${ref2.status} ${JSON.stringify(ref2.body)}`);
+  const cancel = await api('PUT', `/sales/${id}/cancel`, owner.token, { reason: 'check' });
+  assert(cancel.status === 200, `cancel after refunding the money ${cancel.status} ${JSON.stringify(cancel.body)}`);
+
+  const id3 = await mk();
+  await api('POST', `/sales/${id3}/payments`, staff.token, { payments: [{ method: 'upi', amount: 113 }], write_off_amount: 5 });
+  const sneak = await api('PUT', `/sales/${id3}`, staff.token, { payments: [{ method: 'write_off', amount: 118 }] });
+  assert(sneak.status === 400, `write_off via edit ${sneak.status} ${JSON.stringify(sneak.body)}`);
+  const sw = await api('PUT', `/sales/${id3}`, staff.token, { payments: [{ method: 'card', amount: 113 }] });
+  assert(sw.status === 200, `method change ${sw.status} ${JSON.stringify(sw.body)}`);
+  const l3 = await db.prepare('SELECT method, amount FROM payments WHERE sale_id = ? ORDER BY method').all(id3);
+  assert(l3.length === 2 && l3.some((p) => p.method === 'card' && r2(p.amount) === 113) && l3.some((p) => p.method === 'write_off' && r2(p.amount) === 5), JSON.stringify(l3));
+  assert((await billOf(id3)).payment_status === 'paid', 'still paid after edit');
+
+  const id2 = await mk();
+  const b0 = await billOf(id2);
+  await api('POST', `/sales/${id2}/payments`, owner.token, { payments: [{ method: 'upi', amount: 100 }] });
+  const res = await api('POST', `/sales/${id2}/resolve-balance`, owner.token, { action: 'write_off' });
+  assert(res.status === 200, `resolve ${res.status} ${JSON.stringify(res.body)}`);
+  const b = await billOf(id2);
+  assert(same(b0, b) && b.payment_status === 'paid', `${JSON.stringify(b0)} -> ${JSON.stringify(b)}`);
+});
+
+check('report: write-offs are their own line and come off net', async () => {
+  const owner = await loginOwner();
+  const r = await api('GET', `/reports/sales-summary?location_id=${LOC}`, owner.token);
+  assert(r.status === 200, `${r.status} ${JSON.stringify(r.body).slice(0, 200)}`);
+  const t = r.body.data.totals;
+  assert(t.written_off !== undefined, JSON.stringify(t));
+  assert(!r.body.data.paymentMethods.some((m) => m.method === 'write_off'), 'write_off listed as a payment method');
+  assert(r2(t.net_revenue) === r2(Number(t.total_revenue) - Number(t.refund_total || 0) - Number(t.written_off) - Number(t.total_expenses || 0)), JSON.stringify(t));
+  const d = (await api('GET', `/reports/dashboard?location_id=${LOC}`, owner.token)).body.data.today;
+  assert(r2(d.net) === r2(Number(d.revenue) - Number(d.refunds) - Number(d.written_off) - Number(d.expenses)), JSON.stringify(d));
+});
+
 async function cleanup() {
   const db = await getDb();
   // Close any register this run left open (only ones it opened are deleted below)

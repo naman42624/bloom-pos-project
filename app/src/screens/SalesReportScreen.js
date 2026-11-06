@@ -167,6 +167,9 @@ export default function SalesReportScreen() {
           <View style={styles.finRow}><Text style={styles.finLabel}>GST inside delivery charges</Text><Text style={styles.finValue}>{fmt(t.total_delivery_tax || 0)}</Text></View>
         )}
         <View style={styles.finRow}><Text style={styles.finLabel}>Refunds</Text><Text style={[styles.finValue, { color: Colors.error }]}>-{fmt(t.refund_total || 0)}</Text></View>
+        {Number(t.written_off || 0) > 0 && (
+          <View style={styles.finRow}><Text style={styles.finLabel}>Written off (bills unchanged)</Text><Text style={[styles.finValue, { color: Colors.error }]}>-{fmt(t.written_off || 0)}</Text></View>
+        )}
         <View style={styles.finRow}><Text style={styles.finLabel}>Expenses</Text><Text style={[styles.finValue, { color: Colors.error }]}>-{fmt(t.total_expenses || 0)}</Text></View>
         <View style={[styles.finRow, styles.finTotal]}><Text style={[styles.finLabel, { fontWeight: '700' }]}>Net Revenue</Text><Text style={[styles.finValue, { fontWeight: '700', color: '#4CAF50' }]}>{fmt(t.net_revenue || 0)}</Text></View>
       </View>

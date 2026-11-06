@@ -324,7 +324,7 @@ export default function DeliveryDetailScreen({ route, navigation }) {
             <Text style={[styles.sectionTitle, { fontSize: FontSize.sm }]}>Payment History</Text>
             {delivery.payments.map((p, i) => (
               <View key={i} style={styles.paymentRow}>
-                <Text style={styles.cardText}>{p.method?.toUpperCase()}</Text>
+                <Text style={styles.cardText}>{p.method === 'write_off' ? 'WRITTEN OFF' : p.method?.toUpperCase()}</Text>
                 <Text style={styles.cardText}>₹{Number(p.amount).toFixed(0)}</Text>
                 <Text style={[styles.cardText, { fontSize: FontSize.xs }]}>{formatDate(p.created_at)}</Text>
               </View>

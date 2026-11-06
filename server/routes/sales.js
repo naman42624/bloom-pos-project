@@ -15,6 +15,8 @@ const { slipUrl } = require('../utils/slip-token');
 const { reverseSaleEffects } = require('../utils/sale-reversal');
 const { assertValidSeller } = require('../utils/seller');
 const { helperSaleGate, answerClientRefConflict } = require('../utils/helper-sale');
+const { verifyApprovalPin } = require('../utils/approval-pin');
+const { writeOffError, recordWriteOff, WRITE_OFF_METHOD } = require('../utils/write-off');
 const { listBags, readCashMode, lockBag } = require('../utils/helper-bags');
 const QRCode = require('qrcode');
 const { getChecklistForSale, setCheck, loadSaleForChecks } = require('../utils/load-checks');
@@ -408,7 +410,9 @@ router.get('/today-summary', authenticate, async (req, res, next) => {
       GROUP BY p.method
     `).all(...params);
 
-    res.json({ success: true, data: { ...summary, paymentBreakdown } });
+    // Write-offs are money let go, not a way of paying: shown on their own
+    const written_off = paymentBreakdown.filter((r) => r.method === 'write_off').reduce((t, r) => t + Number(r.total || 0), 0);
+    res.json({ success: true, data: { ...summary, written_off, paymentBreakdown: paymentBreakdown.filter((r) => r.method !== 'write_off') } });
   } catch (err) { next(err); }
 });
 
@@ -1322,8 +1326,18 @@ router.put('/:id', authenticate, authorize('owner', 'manager', 'employee', 'coun
     // payments by created_at >= sessionStart); preserving the original
     // timestamp keeps it correctly out of that later window.
     if (payments && Array.isArray(payments)) {
+      // Only money methods can be edited here. Write-off lines are kept
+      // exactly as they are (a write-off is never edited into a payment or
+      // back), and none can be added this way past the write-off limit.
+      if (payments.some((p) => !['cash', 'card', 'upi'].includes(p && p.method))) {
+        const e = new Error('Pick Cash, Card or UPI for each payment.');
+        e.statusCode = 400;
+        throw e;
+      }
       // Re-read under the lock (rows in the transaction's shape)
-      const lockedOldPayments = await db.prepare('SELECT * FROM payments WHERE sale_id = ?').all(saleId);
+      const allLockedPayments = await db.prepare('SELECT * FROM payments WHERE sale_id = ?').all(saleId);
+      const lockedOldPayments = allLockedPayments.filter((p) => p.method !== WRITE_OFF_METHOD);
+      const writtenOff = allLockedPayments.filter((p) => p.method === WRITE_OFF_METHOD).reduce((t, p) => t + (Number(p.amount) || 0), 0);
       const sumByMethod = (rows) => rows.reduce((acc, p) => {
         const m = p.method === 'cash' || p.method === 'card' || p.method === 'upi' ? p.method : 'cash';
         acc[m] = (acc[m] || 0) + Number(p.amount || 0);
@@ -1349,7 +1363,7 @@ router.put('/:id', authenticate, authorize('owner', 'manager', 'employee', 'coun
       // day has none yet, since a closed one stops the edit above, so no
       // session counted these payments.)
       if (changed && openRegister && lockedOldPayments.length > 0) {
-        const fromClosedSession = await db.prepare('SELECT 1 AS x FROM payments WHERE sale_id = ? AND created_at < ? LIMIT 1')
+        const fromClosedSession = await db.prepare("SELECT 1 AS x FROM payments WHERE sale_id = ? AND method != 'write_off' AND created_at < ? LIMIT 1")
           .get(saleId, openRegister.opening_time || openRegister.opened_at);
         if (fromClosedSession) {
           const e = new Error("This payment was counted when the register was closed, so it can't be changed here. Use Refund on the sale instead.");
@@ -1368,7 +1382,7 @@ router.put('/:id', authenticate, authorize('owner', 'manager', 'employee', 'coun
         ? lockedOldPayments.reduce((earliest, p) => (p.created_at < earliest ? p.created_at : earliest), lockedOldPayments[0].created_at)
         : nowLocal();
 
-      await db.prepare('DELETE FROM payments WHERE sale_id = ?').run(saleId);
+      await db.prepare('DELETE FROM payments WHERE sale_id = ? AND method != ?').run(saleId, WRITE_OFF_METHOD);
       const insertPayment = db.prepare('INSERT INTO payments (sale_id, method, amount, reference_number, received_by, created_at) VALUES (?, ?, ?, ?, ?, ?)');
       for (const pmt of payments) {
         await insertPayment.run(saleId, pmt.method, pmt.amount, pmt.reference_number || null, req.user.id, preservedCreatedAt);
@@ -1376,8 +1390,9 @@ router.put('/:id', authenticate, authorize('owner', 'manager', 'employee', 'coun
 
       // The paid total changed (e.g. an unpaid order marked paid). Item edits
       // below redo status, dues and COD from the new total themselves.
-      const oldPaid = lockedOldPayments.reduce((t, p) => t + (Number(p.amount) || 0), 0);
-      const newPaid = payments.reduce((t, p) => t + (Number(p.amount) || 0), 0);
+      // Settled amounts: money plus any write-off, as everywhere else
+      const oldPaid = lockedOldPayments.reduce((t, p) => t + (Number(p.amount) || 0), 0) + writtenOff;
+      const newPaid = payments.reduce((t, p) => t + (Number(p.amount) || 0), 0) + writtenOff;
       if (!(items && Array.isArray(items))) {
         const cur = await db.prepare('SELECT grand_total, order_type, sender_customer_id, customer_id, is_credit_sale FROM sales WHERE id = ?').get(saleId);
         const gt = Number(cur.grand_total) || 0;
@@ -1921,6 +1936,36 @@ router.post(
         return res.status(400).json({ success: false, message: REGISTER_CLOSED_MESSAGE });
       }
 
+      // Counter staff / employee discount over their limit: a manager or the
+      // owner OKs it on the spot with their approver code + PIN
+      // (discount_override, same shape as a helper sale). Checked here, before
+      // the sale transaction: the PIN check saves its try count with its own
+      // write, which a rolled-back transaction would undo. Whether the discount
+      // really needs it, and whether this approver's limit covers it, is
+      // decided inside, once the bill is worked out.
+      let staffDiscountApprover = null;
+      const override = req.body.discount_override;
+      if (['counter_staff', 'employee'].includes(req.user.role) && override && typeof override === 'object' && override.employee_code && override.pin) {
+        const code = String(override.employee_code).trim();
+        const who = await db.prepare("SELECT id, role, is_active FROM users WHERE employee_code = ? AND role IN ('manager', 'owner')").get(code);
+        if (!who || !Number(who.is_active)) {
+          return res.status(403).json({ success: false, code: 'DISCOUNT_APPROVER', message: "That code isn't a manager or the owner. Ask a manager or the owner to type their own code and PIN." });
+        }
+        // A manager must work at this shop (checked before the PIN, so a
+        // wrong-shop manager does not use up a try); the owner works anywhere
+        if (who.role === 'manager') {
+          const link = await db.prepare('SELECT 1 AS ok FROM user_locations WHERE user_id = ? AND location_id = ?').get(who.id, location_id);
+          if (!link) return res.status(403).json({ success: false, code: 'DISCOUNT_APPROVER', message: "That manager doesn't work at this shop. Ask a manager from this shop or the owner." });
+        }
+        try {
+          const approver = await verifyApprovalPin(await getAsyncDb(), code, String(override.pin));
+          staffDiscountApprover = { id: approver.id, role: approver.role };
+        } catch (e) {
+          if (e && e.pinCheck) return res.status(e.status || 401).json({ success: false, code: 'DISCOUNT_PIN', message: e.message });
+          throw e;
+        }
+      }
+
       const createSale = () => withMoneyTx(async (db) => {
         // Locks first (order: helper bag, then register). A helper's held cash
         // sale takes the bag lock so a handover can't count around it; any
@@ -2047,18 +2092,24 @@ router.post(
               throw e;
             }
             discountApprovedBy = req.helperSale.approvedBy;
-          } else if (effectivePct > ownerThreshold) {
-            // Only owner can approve
-            if (req.user.role !== 'owner') {
-              throw new Error(`Discount of ${effectivePct.toFixed(1)}% exceeds owner threshold (${ownerThreshold}%). Only an owner can apply this discount.`);
-            }
-            discountApprovedBy = req.user.id;
           } else if (effectivePct > mgrThreshold) {
-            // Manager or owner can approve
-            if (req.user.role !== 'owner' && req.user.role !== 'manager') {
-              throw new Error(`Discount of ${effectivePct.toFixed(1)}% exceeds manager threshold (${mgrThreshold}%). A manager or owner must apply this discount.`);
+            // Above the counter limit: the caller's own role, or the manager /
+            // owner who typed their PIN, must cover it. Owner: any discount;
+            // manager: up to the owner threshold.
+            const covers = (role) => role === 'owner' || (role === 'manager' && effectivePct <= ownerThreshold);
+            const needOwner = effectivePct > ownerThreshold;
+            if (covers(req.user.role)) {
+              discountApprovedBy = req.user.id;
+            } else if (staffDiscountApprover && covers(staffDiscountApprover.role)) {
+              discountApprovedBy = staffDiscountApprover.id;
+            } else {
+              const e = new Error(needOwner
+                ? `${effectivePct.toFixed(1)}% off is more than ${ownerThreshold}%. Only the owner can OK this. Ask the owner to type their code and PIN, or lower the discount.`
+                : `${effectivePct.toFixed(1)}% off is more than the ${mgrThreshold}% you can give. Ask a manager or the owner to type their code and PIN, or lower the discount.`);
+              e.statusCode = 403;
+              e.code = staffDiscountApprover ? 'DISCOUNT_NEEDS_OWNER' : 'DISCOUNT_NEEDS_OK';
+              throw e;
             }
-            discountApprovedBy = req.user.id;
           }
         }
 
@@ -2620,6 +2671,14 @@ router.post(
         // Never take more than is still due: extra money would leave the
         // customer's dues and the drawer out of step.
         const paidBefore = Number((await db.prepare('SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE sale_id = ?').get(sale.id)).total) || 0;
+        // A write-off makes money due simply disappear, so it is capped: never
+        // more than is still due, and staff only for small change.
+        const woPaise = Math.round((Number(write_off_amount) || 0) * 100);
+        const dueBeforeP = Math.round((Number(locked.grand_total) - paidBefore) * 100);
+        if (woPaise > 0) {
+          const woErr = writeOffError(req.user.role, woPaise, dueBeforeP);
+          if (woErr) { const e = new Error(woErr); e.statusCode = woErr.startsWith('Only') ? 403 : 400; throw e; }
+        }
         const dueNow = Math.round((Number(locked.grand_total) - paidBefore - (Number(write_off_amount) || 0)) * 100) / 100;
         const payingNow = Math.round(paymentList.reduce((t, p) => t + (Number(p.amount) || 0), 0) * 100) / 100;
         if (payingNow > Math.max(0, dueNow) + 0.009) {
@@ -2649,8 +2708,8 @@ router.post(
 
         // Apply write_off_amount if provided
         if (write_off_amount > 0) {
-          await db.prepare('UPDATE sales SET discount_amount = COALESCE(discount_amount, 0) + ?, grand_total = GREATEST(0, grand_total - ?) WHERE id = ?')
-            .run(write_off_amount, write_off_amount, sale.id);
+          // Its own line, never a change to the bill (utils/write-off.js)
+          await recordWriteOff(db, sale.id, write_off_amount, req.user.id);
           
           // Dues sit on the sender for a delivery (same rule as sale creation)
           const writeOffCustomerId = (sale.order_type === 'delivery' && sale.sender_customer_id) ? sale.sender_customer_id : sale.customer_id;
@@ -2723,7 +2782,9 @@ router.put(
       // so a plain paidCount>0 check would block cancel forever, even
       // right after the sale was fully refunded. Compare what was paid
       // against what's already been refunded instead.
-      const paymentTotal = Number(db.prepare('SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE sale_id = ?').get(sale.id).total);
+      // Money actually taken: a write-off line was never received, so there
+      // is nothing of it to give back (utils/write-off.js)
+      const paymentTotal = Number(db.prepare(`SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE sale_id = ? AND method != 'write_off'`).get(sale.id).total);
       const refundTotal = Number(db.prepare('SELECT COALESCE(SUM(amount), 0) as total FROM refunds WHERE sale_id = ?').get(sale.id).total);
       const unrefundedBalance = paymentTotal - refundTotal;
       if (unrefundedBalance > 0.01) {
@@ -2758,9 +2819,12 @@ router.put(
         if (!lockedSale || lockedSale.status === 'cancelled') {
           const e = new Error('Sale already cancelled'); e.statusCode = 400; throw e;
         }
+        // paidNow (write-off lines too) settles dues in the reversal below;
+        // only money actually taken has to be refunded first
         const paidNow = Number((await db.prepare('SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE sale_id = ?').get(sale.id)).total);
+        const takenNow = Number((await db.prepare("SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE sale_id = ? AND method != 'write_off'").get(sale.id)).total);
         const refundedNow = Number((await db.prepare('SELECT COALESCE(SUM(amount), 0) as total FROM refunds WHERE sale_id = ?').get(sale.id)).total);
-        if (paidNow - refundedNow > 0.01) {
+        if (takenNow - refundedNow > 0.01) {
           const e = new Error('This sale has an unrefunded balance — refund it first, then cancel.'); e.statusCode = 400; throw e;
         }
         await db.prepare("UPDATE sales SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(req.params.id);
@@ -3419,7 +3483,8 @@ router.post(
       // row is ever allowed per sale (see the `existing` check above), so
       // there's no prior refund to net out here — paymentTotal alone is the
       // real ceiling.
-      const paymentTotal = Number(db.prepare('SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE sale_id = ?').get(req.params.id).total);
+      // A write-off line is not money taken, so it can never be refunded
+      const paymentTotal = Number(db.prepare("SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE sale_id = ? AND method != 'write_off'").get(req.params.id).total);
       if (Number(amount) > paymentTotal) {
         return res.status(400).json({ success: false, message: `Refund amount cannot exceed what was actually paid (₹${paymentTotal.toFixed(2)}).` });
       }
@@ -3466,6 +3531,14 @@ router.post(
         ).run(req.params.id, amount, reason, req.user.id, req.user.id, refund_method, creditNote ? creditNote.number : null);
 
         await db.prepare("UPDATE sales SET payment_status = 'refunded', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(req.params.id);
+
+        // Money given back is no longer money spent: lower the customer's
+        // total_spent by it (dues customer, as at creation). Cancelling the
+        // sale later takes off only the rest (utils/sale-reversal.js).
+        const refundCustomerId = (sale.order_type === 'delivery' && sale.sender_customer_id) ? sale.sender_customer_id : sale.customer_id;
+        if (refundCustomerId) {
+          await db.prepare('UPDATE users SET total_spent = GREATEST(0, total_spent - ?), updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(amount, refundCustomerId);
+        }
 
         // A cash refund is cash leaving today's drawer, whatever day the sale
         // was. It is recorded once, as this refund row: close subtracts cash
@@ -3777,8 +3850,9 @@ router.post('/:id/resolve-balance', authenticate, authorize('owner', 'manager'),
         return { status: 200, body: { success: true, message: 'Converted to Credit Sale successfully' } };
       }
 
-      await db.prepare('UPDATE sales SET discount_amount = COALESCE(discount_amount, 0) + ?, grand_total = grand_total - ?, payment_status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
-        .run(balanceDue, balanceDue, 'paid', sale.id);
+      // Its own line, never a change to the bill (utils/write-off.js)
+      await recordWriteOff(db, sale.id, balanceDue, req.user.id);
+      await db.prepare("UPDATE sales SET payment_status = 'paid', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(sale.id);
       // Dues sit on the sender for a delivery (same rule as sale creation)
       const duesCustomerId = (sale.order_type === 'delivery' && sale.sender_customer_id) ? sale.sender_customer_id : sale.customer_id;
       if (duesCustomerId) {

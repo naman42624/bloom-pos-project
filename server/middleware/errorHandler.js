@@ -14,6 +14,9 @@ function errorHandler(err, req, res, _next) {
   res.status(statusCode).json({
     success: false,
     message,
+    // A machine-readable reason the app can act on (e.g. DISCOUNT_NEEDS_OK
+    // shows "Ask a manager"). Only set on deliberate, non-500 errors.
+    ...(err.code && statusCode !== 500 && typeof err.code === 'string' && /^[A-Z_]+$/.test(err.code) && { code: err.code }),
     ...(process.env.NODE_ENV === 'development' && { stack: err.stack }),
   });
 }

@@ -42,7 +42,10 @@ function formatItemsSummary(items) {
 
 function formatAmount(value) {
   const n = Number(value) || 0;
-  return `₹${n.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
+  // Whole rupees stay short; an amount with paise shows them (₹401.40 used
+  // to show as ₹401, not matching the bill)
+  const whole = Math.round(n * 100) % 100 === 0;
+  return `₹${n.toLocaleString('en-IN', whole ? { maximumFractionDigits: 0 } : { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
 export default function OrdersInboxScreen({ navigation, route }) {

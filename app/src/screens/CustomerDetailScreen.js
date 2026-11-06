@@ -11,8 +11,9 @@ import { waLink, buildMessage } from '../utils/contact';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import { formatDate as formatTimestampDate } from '../utils/datetime';
-import { showConfirm } from '../utils/alert';
+import { showConfirm, showAlert } from '../utils/alert';
 import DateTimePickerModal from '../components/DateTimePickerModal';
+import { writeOffLabel, writeOffProblem } from '../utils/writeOff';
 
 export default function CustomerDetailScreen({ route, navigation }) {
   const { user, activeLocation, locations: assignedLocations } = useAuth();
@@ -163,6 +164,8 @@ export default function CustomerDetailScreen({ route, navigation }) {
     const woAmount = parseFloat(writeOffAmount) || 0;
     const totalReduction = totalPayments + woAmount;
 
+    const woProblem = writeOffProblem(user?.role, woAmount);
+    if (woProblem) return showAlert('Write-off too big', woProblem);
     if (totalReduction <= 0) return Alert.alert('Error', 'Enter a valid amount');
     if (totalReduction > customer.credit_balance + 0.01) return Alert.alert('Error', 'Amount exceeds outstanding balance.');
 
@@ -620,7 +623,7 @@ export default function CustomerDetailScreen({ route, navigation }) {
                 <Text style={{ color: Colors.primary, marginLeft: 4, fontWeight: '600', fontSize: FontSize.sm }}>Add Split Payment</Text>
               </TouchableOpacity>
 
-              <Text style={styles.fieldLabel}>Write-off Amount (Optional)</Text>
+              <Text style={styles.fieldLabel}>{writeOffLabel(user?.role)}</Text>
               <TextInput style={styles.modalInput} value={writeOffAmount} onChangeText={setWriteOffAmount}
                 keyboardType="decimal-pad" placeholder="₹ Small discrepancy amount" placeholderTextColor={Colors.textLight} />
 

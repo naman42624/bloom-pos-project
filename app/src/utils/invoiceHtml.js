@@ -11,6 +11,9 @@ const esc = (value) => String(value ?? '')
 
 const money = (n) => (Math.round((Number(n) || 0) * 100) / 100).toFixed(2);
 const METHOD = { cash: 'Cash', upi: 'UPI', card: 'Card', bank_transfer: 'Bank', credit: 'Credit' };
+// A write-off is money let go, never a payment: it gets its own line and the
+// bill above it stays exactly as issued.
+const payLine = (p) => (p.method === 'write_off' ? 'Written off' : `Paid: ${METHOD[p.method] || p.method}`);
 
 function formatWhen(value) {
   const d = value instanceof Date ? value : (value ? new Date(String(value).replace(' ', 'T')) : null);
@@ -88,7 +91,7 @@ export function buildInvoiceHtml(v) {
 
   const tail = [
     isTax ? '<div class="small">Prices include GST. Reverse charge: No</div>' : '',
-    (v.payments || []).length ? `<div class="gap"></div>${v.payments.map((p) => row(`Paid: ${esc(METHOD[p.method] || p.method)}`, money(p.amount))).join('')}` : '',
+    (v.payments || []).length ? `<div class="gap"></div>${v.payments.map((p) => row(esc(payLine(p)), money(p.amount))).join('')}` : '',
     v.due > 0.009 ? row('BALANCE DUE', money(v.due), 'b') : '',
     v.terms ? `<div class="gap"></div><div class="small">${esc(v.terms)}</div>` : '',
     v.footer ? `<div class="c gap">${esc(v.footer)}</div>` : '',

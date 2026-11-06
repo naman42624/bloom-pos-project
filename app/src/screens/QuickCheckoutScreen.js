@@ -17,6 +17,7 @@ import { showAlert } from '../utils/alert';
 import CollectDuesSheet from '../components/CollectDuesSheet';
 import OpenRegisterSheet from '../components/OpenRegisterSheet';
 import OldDuesCard, { EMPTY_DUES, duesAmountError, takeNowSummary } from '../components/OldDuesCard';
+import DiscountApprovalModal from '../components/DiscountApprovalModal';
 import api from '../services/api';
 import { computeBill, splitInclusive, toPaise } from '../utils/gst';
 import useBillSettings from '../hooks/useBillSettings';
@@ -215,6 +216,17 @@ export default function QuickCheckoutScreen({ navigation, route }) {
   useEffect(() => { if (items.length === 0) setDuesCollect(EMPTY_DUES); }, [items.length]);
   const [skipAssignment, setSkipAssignment] = useState(true);
   const [submitErrors, setSubmitErrors] = useState([]);
+  // A "Please fix" list is about what was on screen at that tap. Once staff
+  // change any of it, the old list is stale: clear it (it used to stay up
+  // after the problem was already fixed).
+  useEffect(() => {
+    setSubmitErrors((cur) => (cur.length ? [] : cur));
+  }, [items, discountValue, discountType, paymentMethod, payments, enableSplitPayment, paymentMode, advanceAmount, orderType, duesCollect]);
+  // Discount above the counter limit: a manager or the owner OKs it with
+  // their code + PIN (DiscountApprovalModal). { message, error } while open;
+  // the code + PIN ride on the next try only.
+  const [discountOk, setDiscountOk] = useState(null);
+  const discountOverrideRef = useRef(null);
   const [savingDraft, setSavingDraft] = useState(false);
   const [draftPickerVisible, setDraftPickerVisible] = useState(false);
   const [draftsLoading, setDraftsLoading] = useState(false);
@@ -1472,8 +1484,13 @@ export default function QuickCheckoutScreen({ navigation, route }) {
         };
       }
 
+      const override = discountOverrideRef.current;
+      discountOverrideRef.current = null;
+      if (override) saleData.discount_override = override;
+
       const res = await api.createSale(saleData);
       if (res.success) {
+        setDiscountOk(null);
         setSoldBy(null);
         setSubmitErrors([]);
         if (activeDraftId) {
@@ -1577,6 +1594,12 @@ export default function QuickCheckoutScreen({ navigation, route }) {
         : [];
       const fallbackMessage = err?.message || 'Failed to place order';
       const messages = backendErrors.length > 0 ? backendErrors : [fallbackMessage];
+      if (typeof err?.code === 'string' && err.code.startsWith('DISCOUNT_') && ['counter_staff', 'employee'].includes(user?.role)) {
+        // Needs (another) approval, or the code / PIN was wrong: on the pad
+        setDiscountOk((cur) => (cur ? { ...cur, error: fallbackMessage } : { message: fallbackMessage, error: '' }));
+        return;
+      }
+      setDiscountOk(null);
       setSubmitErrors(messages);
       Alert.alert('Error', messages[0]);
     } finally {
@@ -1865,7 +1888,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
           </View>
           <View style={styles.fieldRow}>
             <View style={styles.fieldHalf}>
-              <Text style={styles.label}>{needsDelivery ? 'Customer / Sender Phone *' : 'Phone *'}</Text>
+              <Text style={styles.label}>{needsDelivery ? 'Customer / Sender Phone *' : paymentMode === 'credit' ? 'Phone *' : 'Phone (optional)'}</Text>
               <TextInput
                 style={styles.input}
                 value={customerPhone}
@@ -1889,7 +1912,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
               )}
             </View>
             <View style={styles.fieldHalf}>
-              <Text style={styles.label}>{needsDelivery ? 'Customer / Sender Name *' : 'Name *'}</Text>
+              <Text style={styles.label}>{needsDelivery ? 'Customer / Sender Name *' : 'Name (optional)'}</Text>
               <TextInput
                 style={styles.input}
                 value={customerName}
@@ -2782,6 +2805,19 @@ export default function QuickCheckoutScreen({ navigation, route }) {
             </TouchableOpacity>
           </View>
 
+          <DiscountApprovalModal
+            visible={!!discountOk}
+            message={discountOk?.message}
+            error={discountOk?.error}
+            discountText={discountType === 'percentage' ? `${discountValue}% off` : `₹${discountValue} off`}
+            busy={submitting}
+            onApprove={(code, pin) => {
+              discountOverrideRef.current = { employee_code: code, pin };
+              setDiscountOk((cur) => (cur ? { ...cur, error: '' } : cur));
+              guardSubmit(handlePlaceOrder)();
+            }}
+            onCancel={() => { discountOverrideRef.current = null; setDiscountOk(null); }}
+          />
           {submitErrors.length > 0 && (
             <View style={styles.submitErrorsBox}>
               <Text style={styles.submitErrorsTitle}>Please fix the following before submitting:</Text>

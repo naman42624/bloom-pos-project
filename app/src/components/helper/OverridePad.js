@@ -4,12 +4,30 @@
 // request and is never kept: the parent clears it after every try.
 //
 // <OverridePad discountText="15% off" busy error onApprove={(code, pin) => …} onCancel />
+// approver="manager" words it for counter staff asking a manager or the owner
+// (Quick Checkout); the default "counter" is the helper phone.
 import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, TextInput, TouchableOpacity, StyleSheet, ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors, FontSize, Spacing, BorderRadius } from '../../constants/theme';
 
-export default function OverridePad({ discountText, busy, error, onApprove, onCancel }) {
+const WORDS = {
+  counter: {
+    title: 'Ask counter to approve',
+    body: 'Hand the phone to someone at the counter.',
+    who: "the counter person's",
+    a11y: "Counter person's",
+  },
+  manager: {
+    title: 'Ask a manager to approve',
+    body: 'Ask a manager or the owner to type their own code and PIN.',
+    who: "the manager's",
+    a11y: "Manager's",
+  },
+};
+
+export default function OverridePad({ discountText, busy, error, onApprove, onCancel, approver = 'counter' }) {
+  const w = WORDS[approver] || WORDS.counter;
   const [code, setCode] = useState('');
   const [pin, setPin] = useState('');
   const [localError, setLocalError] = useState('');
@@ -23,7 +41,7 @@ export default function OverridePad({ discountText, busy, error, onApprove, onCa
   const submit = () => {
     if (busy) return;
     const c = code.trim();
-    if (!c) { setLocalError('Type the counter person\'s code first.'); return; }
+    if (!c) { setLocalError(`Type ${w.who} code first.`); return; }
     if (!/^\d{4}$/.test(pin)) { setLocalError('Type their 4-digit PIN.'); return; }
     setLocalError('');
     const p = pin;
@@ -38,9 +56,9 @@ export default function OverridePad({ discountText, busy, error, onApprove, onCa
       <View style={styles.iconCircle}>
         <Ionicons name="shield-checkmark" size={36} color={Colors.primary} />
       </View>
-      <Text style={styles.title}>Ask counter to approve</Text>
+      <Text style={styles.title}>{w.title}</Text>
       <Text style={styles.body}>
-        Hand the phone to someone at the counter.{discountText ? ` They are approving ${discountText}.` : ''}
+        {w.body}{discountText ? ` They are approving ${discountText}.` : ''}
       </Text>
 
       <Text style={styles.label}>Their code</Text>
@@ -54,7 +72,7 @@ export default function OverridePad({ discountText, busy, error, onApprove, onCa
         onSubmitEditing={() => pinRef.current && pinRef.current.focus()}
         placeholder="e.g. 1001"
         placeholderTextColor={Colors.textLight}
-        accessibilityLabel="Counter person's employee code"
+        accessibilityLabel={`${w.a11y} employee code`}
         autoComplete="off"
       />
 
@@ -69,7 +87,7 @@ export default function OverridePad({ discountText, busy, error, onApprove, onCa
         maxLength={4}
         onSubmitEditing={submit}
         returnKeyType="done"
-        accessibilityLabel="Counter person's 4-digit PIN"
+        accessibilityLabel={`${w.a11y} 4-digit PIN`}
         autoComplete="off"
         textContentType="oneTimeCode"
       />

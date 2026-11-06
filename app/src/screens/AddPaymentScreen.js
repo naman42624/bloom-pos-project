@@ -7,6 +7,8 @@ import { Ionicons } from '@expo/vector-icons';
 import api from '../services/api';
 import { showAlert } from '../utils/alert';
 import useSubmitGuard from '../hooks/useSubmitGuard';
+import { useAuth } from '../context/AuthContext';
+import { writeOffLabel, writeOffProblem } from '../utils/writeOff';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 
 const PAYMENT_METHODS = [
@@ -17,6 +19,7 @@ const PAYMENT_METHODS = [
 
 export default function AddPaymentScreen({ route, navigation }) {
   const { saleId, due } = route.params;
+  const { user } = useAuth();
   const [payments, setPayments] = useState([{ method: 'cash', amount: String(due || 0), reference_number: '' }]);
   const [writeOffAmount, setWriteOffAmount] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -41,6 +44,11 @@ export default function AddPaymentScreen({ route, navigation }) {
     const woAmount = parseFloat(writeOffAmount) || 0;
     const totalReduction = totalPayments + woAmount;
 
+    const woProblem = writeOffProblem(user?.role, woAmount);
+    if (woProblem) {
+      showAlert('Write-off too big', woProblem);
+      return;
+    }
     if (totalReduction <= 0 || totalReduction > due + 0.01) {
       showAlert('Check the amount', totalReduction <= 0
         ? 'Type how much the customer is paying.'
@@ -137,7 +145,7 @@ export default function AddPaymentScreen({ route, navigation }) {
 
         <View style={styles.divider} />
 
-        <Text style={styles.label}>Write-off Amount (Optional)</Text>
+        <Text style={styles.label}>{writeOffLabel(user?.role)}</Text>
         <TextInput
           style={styles.input}
           value={writeOffAmount}
