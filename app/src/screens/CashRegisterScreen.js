@@ -327,7 +327,15 @@ export default function CashRegisterScreen({ navigation, route }) {
         setActualCash('');
         setClosingNotes('');
         fetchStatus(selectedLocation);
-        showAlert('Closed', 'Register closed. Discrepancy: ₹' + Number(res.data.discrepancy || 0).toFixed(2));
+        // discrepancy = expected - counted: above 0 the drawer was short,
+        // below 0 it had extra. Say which, never a bare signed number.
+        const diffPaise = Math.round(Number(res.data.discrepancy || 0) * 100);
+        const diffText = `₹${(Math.abs(diffPaise) / 100).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+        showAlert('Register closed', diffPaise === 0
+          ? 'The cash matched exactly.'
+          : diffPaise > 0
+            ? `The drawer was ${diffText} short.`
+            : `The drawer had ${diffText} extra.`);
       } else {
         showAlert('Could not close', res.message || 'The register did not close. Please tap Close Register again.');
       }
