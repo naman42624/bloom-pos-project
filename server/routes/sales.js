@@ -704,11 +704,23 @@ router.get('/register/status', authenticate, async (req, res, next) => {
       pendingCodDeliveries = Number(codRow?.count || 0);
     } catch (_) { /* non-critical — don't fail the whole status response */ }
 
+    // The last counted close at this shop on any day: Open Register starts
+    // from that count (the cash left in the drawer), not from blank.
+    const lastCloseRow = await db.prepare(`
+      SELECT actual_cash, closed_at FROM cash_registers
+      WHERE location_id = ? AND closed_at IS NOT NULL AND actual_cash IS NOT NULL
+      ORDER BY closed_at DESC, id DESC LIMIT 1
+    `).get(location_id);
+    const last_close = lastCloseRow
+      ? { actual_cash: Math.round((Number(lastCloseRow.actual_cash) || 0) * 100) / 100, closed_at: lastCloseRow.closed_at }
+      : null;
+
     res.json({
       success: true,
       data: register || null,
       isOpen: !!register && !register.closed_at,
       todaySessions,
+      last_close,
       pendingCodTotal,
       pendingCodDeliveries,
     });

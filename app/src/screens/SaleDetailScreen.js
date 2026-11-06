@@ -134,12 +134,18 @@ export default function SaleDetailScreen({ route, navigation }) {
         headerLeft: () => null, // Hide back button if we want to force "Done"
         headerRight: () => (
           <TouchableOpacity
-            onPress={() => navigation.navigate('POS', { screen: 'POSHome', params: { clearCart: true } })}
-
-
-            style={{ marginRight: 10, backgroundColor: Colors.primary, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20 }}
+            // Back to the Quick Checkout under this screen (a fresh one: the
+            // order was placed with a reset), not a second copy on top
+            onPress={() => navigation.popTo('QuickCheckout')}
+            accessibilityRole="button"
+            accessibilityLabel="Done, back to Quick Checkout"
+            style={{
+              marginRight: 10, backgroundColor: Colors.primary, minHeight: 44, minWidth: 96,
+              paddingHorizontal: 20, borderRadius: 22, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+            }}
           >
-            <Text style={{ color: Colors.white, fontWeight: 'bold', fontSize: 13 }}>Done</Text>
+            <Ionicons name="checkmark" size={20} color={Colors.white} />
+            <Text style={{ color: Colors.white, fontWeight: 'bold', fontSize: FontSize.md }}>Done</Text>
           </TouchableOpacity>
         ),
       });

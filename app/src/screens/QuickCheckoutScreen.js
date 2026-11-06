@@ -1573,7 +1573,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
           CommonActions.reset({
             index: 1,
             routes: [
-              { name: 'POSHome', params: { clearCart: true } },
+              { name: 'QuickCheckout' },
               { name: 'SaleDetail', params: { saleId: res.data.id, fromCheckout: true } },
             ],
           })
@@ -1930,9 +1930,9 @@ export default function QuickCheckoutScreen({ navigation, route }) {
             </View>
           </View>
           {customerHistory && (
-            <View style={styles.customerHint}>
-              <Ionicons name="person-circle" size={16} color={Colors.primary} />
-              <Text style={styles.customerHintText}>
+            <View style={[styles.customerHint, customerId && styles.customerHintRegistered]}>
+              <Ionicons name="person-circle" size={16} color={customerId ? Colors.success : Colors.primary} />
+              <Text style={[styles.customerHintText, customerId && styles.customerHintTextRegistered]}>
                 {historyLine(customerId ? '✓ Registered' : 'Returning', 'customer', customerHistory)}
               </Text>
             </View>
@@ -2054,9 +2054,9 @@ export default function QuickCheckoutScreen({ navigation, route }) {
                     </View>
                   </View>
                   {receiverHistory && (
-                    <View style={styles.customerHint}>
-                      <Ionicons name="person-circle" size={16} color={Colors.primary} />
-                      <Text style={styles.customerHintText}>
+                    <View style={[styles.customerHint, receiverId && styles.customerHintRegistered]}>
+                      <Ionicons name="person-circle" size={16} color={receiverId ? Colors.success : Colors.primary} />
+                      <Text style={[styles.customerHintText, receiverId && styles.customerHintTextRegistered]}>
                         {historyLine(receiverId ? '✓ Registered' : 'Returning', 'receiver', receiverHistory)}
                       </Text>
                     </View>
@@ -3320,6 +3320,8 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.primary + '10', padding: 10, borderRadius: BorderRadius.md, marginTop: Spacing.sm,
   },
   customerHintText: { fontSize: 12, color: Colors.text, flex: 1 },
+  customerHintRegistered: { backgroundColor: Colors.successLight, borderWidth: 1, borderColor: Colors.success },
+  customerHintTextRegistered: { fontWeight: '600' },
 
   draftActionsRow: {
     flexDirection: 'row',
