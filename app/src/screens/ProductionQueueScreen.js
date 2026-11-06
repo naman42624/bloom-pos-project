@@ -447,13 +447,22 @@ export default function ProductionQueueScreen({ navigation, route }) {
     return Array.from(dateSet).sort();
   }, [tasks, orders, extractDatePart]);
 
+  // The Pick / Start / Done step waiting to be sent (see queueStep below)
+  const pendingRef = useRef(null);
+
   const fetchTasks = useCallback(async () => {
     try {
       const params = {};
       if (selectedLocation) params.location_id = selectedLocation;
       if (statusFilter) params.status = statusFilter;
       const res = await api.getProductionTasks(params);
-      setTasks(res.data || []);
+      // A step still waiting out its 5 seconds keeps showing on its card
+      // (the server does not have it yet)
+      const waiting = pendingRef.current;
+      const list = res.data || [];
+      setTasks(waiting
+        ? list.map((t) => (t.id === waiting.task.id ? { ...t, status: waiting.toStatus } : t))
+        : list);
     } catch (err) {
       console.error('Failed to fetch tasks:', err);
     } finally {
@@ -599,7 +608,6 @@ export default function ProductionQueueScreen({ navigation, route }) {
   };
   const taskName = (t) => t.product_name || t.item_product_name || 'item';
   const [pendingStep, setPendingStep] = useState(null);
-  const pendingRef = useRef(null);
 
   const sendStep = useCallback(async (step) => {
     try {
@@ -628,7 +636,7 @@ export default function ProductionQueueScreen({ navigation, route }) {
   const queueStep = (task, kind) => {
     if (pendingRef.current) flushStep();
     const cfg = TASK_STEPS[kind];
-    const step = { task, kind, prevStatus: task.status };
+    const step = { task, kind, prevStatus: task.status, toStatus: cfg.to };
     step.timer = setTimeout(() => {
       if (pendingRef.current === step) flushStep();
     }, UNDO_MS);
