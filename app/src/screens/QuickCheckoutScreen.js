@@ -32,13 +32,24 @@ import {
   blankLine, bomToLineMaterials, productLineFields, buildScannedLine, mergeScannedLine, isBlankLine, formatRupees,
   sheetModeFor,
 } from '../utils/scanAddLine';
+import { requestToForm } from '../utils/orderRequestPrefill';
 
-// Quick sale | Full order switch, remembered on this device. Missing or
-// unreadable storage means Full order. Opening a specific order (a draft, a
-// POS cart, a customer) always lands on Full order.
+// Quick sale | Counter order | Phone & online, remembered on this device
+// ('full' is Counter order). Missing or unreadable storage means Counter
+// order. Opening a specific order (a draft, a POS cart, a customer) lands on
+// Counter order; an approved order request or the Orders "+" lands on Phone &
+// online (D44: this replaces the separate Log Order screen).
 const CHECKOUT_MODE_KEY = '@petal_checkout_mode';
 const FORCE_FULL_PARAMS = ['draftId', 'prefillCart', 'prefillToken', 'prefillCustomer'];
-const opensSpecificOrder = (params) => !!params && FORCE_FULL_PARAMS.some((k) => params[k] != null);
+const FORCE_ONLINE_PARAMS = ['prefillRequest', 'newOnlineOrder'];
+const opensOnlineOrder = (params) => !!params && FORCE_ONLINE_PARAMS.some((k) => params[k] != null);
+const opensSpecificOrder = (params) => !!params
+  && (opensOnlineOrder(params) || FORCE_FULL_PARAMS.some((k) => params[k] != null));
+// After an order, Sale Details' Done comes back to the mode it was made in
+// (returnMode, set by the reset after placing it), whatever is remembered.
+const returnModeFor = (params) => (params && ['quick', 'full', 'online'].includes(params.returnMode) ? params.returnMode : null);
+const forcedModeFor = (params) => (opensOnlineOrder(params) ? 'online'
+  : (opensSpecificOrder(params) ? 'full' : returnModeFor(params)));
 
 
 // Where the order came from. Starts on Walk-in for every new sale.
@@ -49,6 +60,19 @@ const CHANNELS = [
   { key: 'website', label: 'Website', icon: 'globe' },
   { key: 'email', label: 'Email', icon: 'mail' },
 ];
+// Phone & online mode: no Walk-in. An order from a delivery app is "Other app",
+// with the app's name typed once and remembered (sales.channel_detail).
+const ONLINE_CHANNELS = [
+  { key: 'whatsapp', label: 'WhatsApp', icon: 'logo-whatsapp' },
+  { key: 'phone', label: 'Phone', icon: 'call' },
+  { key: 'website', label: 'Website', icon: 'globe' },
+  { key: 'email', label: 'Email', icon: 'mail' },
+  { key: 'other_app', label: 'Other app', icon: 'apps' },
+];
+const KNOWN_CHANNELS = ['walk_in', 'whatsapp', 'phone', 'website', 'email', 'other_app'];
+const ONLINE_ORDER_TYPES = ['delivery', 'pickup', 'pre_order'];
+const LAST_ONLINE_CHANNEL_KEY = '@petal_last_online_channel';
+const LAST_OTHER_APP_KEY = '@petal_last_other_app';
 
 const ORDER_TYPES = [
   { key: 'walk_in', label: 'Walk-in', icon: 'person', color: '#4CAF50' },
@@ -74,38 +98,69 @@ export default function QuickCheckoutScreen({ navigation, route }) {
   const { width } = useWindowDimensions();
   const isNarrowMobile = width < 380;
 
-  // ── Quick sale | Full order ──
-  const [checkoutMode, setCheckoutMode] = useState(() => (opensSpecificOrder(route.params) ? 'full' : null));
+  // ── Quick sale | Counter order ('full') | Phone & online ('online') ──
+  const [checkoutMode, setCheckoutMode] = useState(() => forcedModeFor(route.params));
+  const checkoutModeRef = useRef(checkoutMode);
+  checkoutModeRef.current = checkoutMode;
+  // Last channel / app name used for a phone or online order on this device
+  const lastOnlineRef = useRef({ channel: 'whatsapp', app: '' });
   const [quickHelpSignal, setQuickHelpSignal] = useState(0);
-  const forcedFullRef = useRef(opensSpecificOrder(route.params));
+  const forcedFullRef = useRef(!!forcedModeFor(route.params));
+  // Remembered mode and last online channel / app, read once. Anything that
+  // applies Phone & online defaults on arrival waits for this first.
+  const prefsLoadedRef = useRef(null);
+  if (!prefsLoadedRef.current) {
+    prefsLoadedRef.current = (async () => {
+      let stored = null; let ch = null; let app = null;
+      try {
+        [stored, ch, app] = await Promise.all([
+          AsyncStorage.getItem(CHECKOUT_MODE_KEY),
+          AsyncStorage.getItem(LAST_ONLINE_CHANNEL_KEY),
+          AsyncStorage.getItem(LAST_OTHER_APP_KEY),
+        ]);
+      } catch { /* defaults */ }
+      lastOnlineRef.current = {
+        channel: ONLINE_CHANNELS.some((c) => c.key === ch) ? ch : 'whatsapp',
+        app: (app || '').slice(0, 60),
+      };
+      return stored;
+    })();
+  }
   useEffect(() => {
-    if (forcedFullRef.current) return;
     let cancelled = false;
     (async () => {
-      let stored = null;
-      try { stored = await AsyncStorage.getItem(CHECKOUT_MODE_KEY); } catch { stored = null; }
-      if (cancelled || forcedFullRef.current) return;
-      setCheckoutMode(stored === 'quick' ? 'quick' : 'full');
+      const stored = await prefsLoadedRef.current;
+      if (cancelled) return;
+      if (forcedFullRef.current) {
+        // Back from Done in Phone & online: start on that mode's defaults
+        if (returnModeFor(route.params) === 'online' && !opensSpecificOrder(route.params)) applyModeDefaults('online');
+        return;
+      }
+      const m = stored === 'quick' || stored === 'online' ? stored : 'full';
+      setCheckoutMode(m);
+      if (m === 'online') applyModeDefaults('online');
     })();
     return () => { cancelled = true; };
   }, []);
   useEffect(() => {
-    if (opensSpecificOrder(route.params)) {
+    const forced = forcedModeFor(route.params);
+    if (forced) {
       forcedFullRef.current = true;
-      setCheckoutMode('full');
+      setCheckoutMode(forced);
     }
-  }, [route.params?.draftId, route.params?.prefillCart, route.params?.prefillToken, route.params?.prefillCustomer]);
+  }, [route.params?.draftId, route.params?.prefillCart, route.params?.prefillToken, route.params?.prefillCustomer, route.params?.prefillRequest, route.params?.newOnlineOrder]);
   // 'saving' | 'failed' | null, reported by the quick sale panel. Leaving Quick
   // sale is blocked until every line has saved, so nothing fails out of sight.
   const [quickBusy, setQuickBusy] = useState(null);
   const [modeBlockMsg, setModeBlockMsg] = useState('');
   useEffect(() => { if (!quickBusy) setModeBlockMsg(''); }, [quickBusy]);
   const chooseCheckoutMode = useCallback((m) => {
-    if (m === 'full' && checkoutMode === 'quick' && quickBusy) {
+    if (m !== 'quick' && checkoutMode === 'quick' && quickBusy) {
       setModeBlockMsg(quickBusy === 'saving' ? 'Wait — a sale is still saving' : 'A sale did not save — tap it to try again first');
       return;
     }
     setModeBlockMsg('');
+    if (m !== checkoutMode) applyModeDefaults(m);
     setCheckoutMode(m);
     AsyncStorage.setItem(CHECKOUT_MODE_KEY, m).catch(() => {});
   }, [checkoutMode, quickBusy]);
@@ -139,6 +194,12 @@ export default function QuickCheckoutScreen({ navigation, route }) {
   const [locations, setLocations] = useState([]);
   const [selectedLocation, setSelectedLocation] = useState(null);
   const [channel, setChannel] = useState('walk_in');
+  // channel 'other_app': which app ("Swiggy")
+  const [channelDetail, setChannelDetail] = useState('');
+  // Approve on an order request: the request this order is for (POST /sales
+  // marks it approved). Its 'website' channel is not remembered as the last one.
+  const [sourceOrderRequestId, setSourceOrderRequestId] = useState(null);
+  const channelFromRequestRef = useRef(false);
   const [showDuesSheet, setShowDuesSheet] = useState(false);
   const [showOpenRegister, setShowOpenRegister] = useState(false);
 
@@ -194,7 +255,23 @@ export default function QuickCheckoutScreen({ navigation, route }) {
   const [paymentReference, setPaymentReference] = useState(''); // Legacy single reference
   const [payments, setPayments] = useState([{ method: 'cash', amount: '', reference: '' }]);
   const [enableSplitPayment, setEnableSplitPayment] = useState(false);
-  const [paymentMode, setPaymentMode] = useState('pay_now'); // 'pay_now', 'cod', 'credit', 'partial'
+  const [paymentMode, setPaymentMode] = useState('pay_now'); // 'pay_now', 'cod', 'credit', 'partial', 'later' (Phone & online: not paid yet)
+
+  // What each mode starts with. Only the starting values move; anything staff
+  // already picked for this order (a pickup, a WhatsApp tag, Credit) stays.
+  // Phone & online: delivery, the last online channel, Not paid yet.
+  // Counter order: Walk-in channel, Pay Now.
+  const applyModeDefaults = useCallback((m) => {
+    if (m === 'online') {
+      setOrderType((t) => (t === 'walk_in' ? 'delivery' : t));
+      setChannel((c) => (c === 'walk_in' ? lastOnlineRef.current.channel : c));
+      setChannelDetail((d) => d || lastOnlineRef.current.app);
+      setPaymentMode((pm) => (pm === 'pay_now' || pm === 'cod' ? 'later' : pm));
+    } else if (m === 'full') {
+      setChannel('walk_in');
+      setPaymentMode((pm) => (pm === 'later' ? 'pay_now' : pm));
+    }
+  }, []);
   const [advanceAmount, setAdvanceAmount] = useState('');
 
   // Submitting
@@ -861,6 +938,8 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     skipAssignment,
     assignedTo,
     duesCollect,
+    channelDetail,
+    sourceOrderRequestId,
   }), [
     routeId,
     uploadedVoiceNotes,
@@ -897,6 +976,8 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     skipAssignment,
     assignedTo,
     duesCollect,
+    channelDetail,
+    sourceOrderRequestId,
   ]);
 
   const applyDraftPayload = useCallback((payload, draftId = null) => {
@@ -908,7 +989,12 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     setScheduledDate(p.scheduledDate || '');
     setScheduledTime(p.scheduledTime || '');
     setOrderType(p.orderType || 'walk_in');
-    setChannel(CHANNELS.some((c) => c.key === p.channel) ? p.channel : 'walk_in');
+    const draftChannel = KNOWN_CHANNELS.includes(p.channel) ? p.channel : 'walk_in';
+    setChannel(draftChannel);
+    setChannelDetail(p.channelDetail || '');
+    setSourceOrderRequestId(p.sourceOrderRequestId || null);
+    // A phone / online order comes back in Phone & online
+    if (draftChannel !== 'walk_in' || p.paymentMode === 'later') setCheckoutMode('online');
     setPreOrderType(p.preOrderType || 'pickup');
     setSelectedLocation(p.selectedLocation || null);
     setUseCustomerAsSender(p.useCustomerAsSender !== false);
@@ -1061,7 +1147,12 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     setSubmitErrors([]);
     setPendingAttachments([]);
     setUploadedVoiceNotes([]);
-  }, []);
+    setChannelDetail('');
+    setSourceOrderRequestId(null);
+    channelFromRequestRef.current = false;
+    // A new order in Phone & online starts on that mode's defaults again
+    applyModeDefaults(checkoutModeRef.current);
+  }, [applyModeDefaults]);
 
   const handleNewSale = useCallback(async () => {
     const hasAnyData = items.length > 0 || customerName.trim() || customerPhone.trim() || orderNotes.trim();
@@ -1115,6 +1206,79 @@ export default function QuickCheckoutScreen({ navigation, route }) {
       selectCustomer({ id: pc.id, name: pc.name, phone: pc.phone });
     })();
   }, [route.params?.prefillCustomer]);
+
+  // Orders "+" (newOnlineOrder) and Approve on an order request
+  // (prefillRequest): a fresh Phone & online order. An order already in
+  // progress here is saved as a draft first, the same as New Sale.
+  const requestAppliedRef = useRef(null);
+  useEffect(() => {
+    const token = route.params?.newOnlineOrder || route.params?.prefillRequestToken;
+    const req = route.params?.prefillRequest || null;
+    if (!token || requestAppliedRef.current === token) return;
+    requestAppliedRef.current = token;
+    navigation.setParams({ newOnlineOrder: undefined, prefillRequest: undefined, prefillRequestToken: undefined });
+    (async () => {
+      checkoutModeRef.current = 'online';
+      setCheckoutMode('online');
+      await prefsLoadedRef.current;
+      const hasAnyData = items.length > 0 || customerName.trim() || customerPhone.trim() || orderNotes.trim();
+      if (hasAnyData) {
+        const cleared = await handleNewSale();
+        if (!cleared) return;
+      } else {
+        resetForm();
+      }
+      if (!req) return;
+
+      const v = requestToForm(req);
+      channelFromRequestRef.current = true;
+      setSourceOrderRequestId(v.sourceOrderRequestId);
+      setOrderType(v.orderType);
+      setChannel(v.channel);
+      setPaymentMode('later');
+      setScheduledDate(v.scheduledDate);
+      setScheduledTime(v.scheduledTime);
+      if (v.customer) {
+        if (v.customer.id) selectCustomer({ id: v.customer.id, name: v.customer.name, phone: v.customer.phone });
+        else { setCustomerName(v.customer.name); setCustomerPhone(v.customer.phone); }
+      }
+      const notes = [v.notes];
+      if (v.orderType === 'delivery') {
+        setCustomerAddress(v.address);
+        if (v.receiver) {
+          setSenderSameAsReceiver(false);
+          setReceiverName(v.receiver.name);
+          setReceiverPhone(v.receiver.phone);
+        } else {
+          // "This order is for me"
+          setSenderSameAsReceiver(true);
+        }
+        setSenderMessage(v.cardMessage);
+      } else if (v.cardMessage) {
+        notes.unshift(`Card message: ${v.cardMessage}`);
+      }
+      setOrderNotes(notes.filter(Boolean).join('\n'));
+
+      // Catalog items at today's price; a custom item, or one no longer sold,
+      // comes in with no price so the form asks for it.
+      const lines = [];
+      for (const it of v.items) {
+        if (it.productId) {
+          try {
+            const { full, materials } = await loadFullProduct(it.productId);
+            if (full.is_active === false || full.is_active === 0) throw new Error('inactive');
+            lines.push({ ...blankLine(), ...productLineFields(full, { materials, locationId: selectedLocation }), quantity: String(it.quantity) });
+            continue;
+          } catch {
+            lines.push({ ...blankLine(), name: `${it.name || 'Item'} (no longer sold - check with the customer)`, quantity: String(it.quantity) });
+            continue;
+          }
+        }
+        lines.push({ ...blankLine(), name: it.name, quantity: String(it.quantity) });
+      }
+      setItems(lines);
+    })();
+  }, [route.params?.newOnlineOrder, route.params?.prefillRequestToken]);
 
   const handleSaveDraft = useCallback(async () => {
     if (savingDraft || submitting) return;
@@ -1436,6 +1600,8 @@ export default function QuickCheckoutScreen({ navigation, route }) {
         location_id: selectedLocation,
         order_type: orderType,
         channel,
+        channel_detail: channel === 'other_app' ? (channelDetail.trim() || null) : null,
+        ...(sourceOrderRequestId ? { source_order_request_id: sourceOrderRequestId } : {}),
         customer_id: needsDelivery ? (customerId || null) : customerId,
         customer_name: needsDelivery ? (effectiveCustomerName || null) : (customerName.trim() || null),
         customer_phone: needsDelivery ? (effectiveCustomerPhone || null) : (customerPhone.trim() || null),
@@ -1488,6 +1654,14 @@ export default function QuickCheckoutScreen({ navigation, route }) {
       if (res.success) {
         setDiscountOk(null);
         setSoldBy(null);
+        // Next phone or online order starts on the same channel (and app name)
+        if (checkoutModeRef.current === 'online' && ONLINE_CHANNELS.some((c) => c.key === channel) && !channelFromRequestRef.current) {
+          lastOnlineRef.current = { channel, app: channel === 'other_app' ? channelDetail.trim() : lastOnlineRef.current.app };
+          AsyncStorage.setItem(LAST_ONLINE_CHANNEL_KEY, channel).catch(() => {});
+          if (channel === 'other_app' && channelDetail.trim()) AsyncStorage.setItem(LAST_OTHER_APP_KEY, channelDetail.trim()).catch(() => {});
+        }
+        channelFromRequestRef.current = false;
+        setSourceOrderRequestId(null);
         setSubmitErrors([]);
         if (activeDraftId) {
           try {
@@ -1573,7 +1747,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
           CommonActions.reset({
             index: 1,
             routes: [
-              { name: 'QuickCheckout' },
+              { name: 'QuickCheckout', params: { returnMode: checkoutModeRef.current } },
               { name: 'SaleDetail', params: { saleId: res.data.id, fromCheckout: true } },
             ],
           })
@@ -1653,7 +1827,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     >
       <View style={styles.modeBar}>
         <View style={styles.modeSwitch} accessibilityRole="tablist">
-          {[['quick', 'Quick sale'], ['full', 'Full order']].map(([m, label]) => {
+          {[['quick', 'Quick sale'], ['full', 'Counter order'], ['online', 'Phone & online']].map(([m, label]) => {
             const on = checkoutMode === m;
             return (
               <TouchableOpacity
@@ -1688,9 +1862,10 @@ export default function QuickCheckoutScreen({ navigation, route }) {
         />
       )}
 
-      {/* Full order stays mounted while hidden, so switching back keeps the cart. */}
+      {/* Counter order / Phone & online share one form. It stays mounted while
+          Quick sale shows, so switching back keeps the cart. */}
       <ScrollView
-        style={[styles.container, checkoutMode !== 'full' && { display: 'none' }]}
+        style={[styles.container, (checkoutMode !== 'full' && checkoutMode !== 'online') && { display: 'none' }]}
         contentContainerStyle={[styles.content, { alignSelf: 'center', maxWidth: 800, width: '100%' }]}
         keyboardShouldPersistTaps="handled"
       >
@@ -1756,7 +1931,9 @@ export default function QuickCheckoutScreen({ navigation, route }) {
             <Text style={styles.sectionTitle}>Order Type</Text>
           </View>
           <View style={[styles.orderTypeRow, { marginBottom: 2 }]}>
-            {ORDER_TYPES.map(t => (
+            {(checkoutMode === 'online'
+              ? ONLINE_ORDER_TYPES.map((k) => ORDER_TYPES.find((t) => t.key === k))
+              : ORDER_TYPES).map(t => (
               <TouchableOpacity
                 key={t.key}
                 style={[
@@ -1785,7 +1962,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
           <View style={{ marginTop: Spacing.sm }}>
             <Text style={styles.label}>Where did this order come from?</Text>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: Spacing.xs }}>
-              {CHANNELS.map((c) => {
+              {(checkoutMode === 'online' ? ONLINE_CHANNELS : CHANNELS).map((c) => {
                 const on = channel === c.key;
                 return (
                   <TouchableOpacity
@@ -1801,6 +1978,20 @@ export default function QuickCheckoutScreen({ navigation, route }) {
                 );
               })}
             </ScrollView>
+            {channel === 'other_app' && (
+              <View style={{ marginTop: Spacing.sm }}>
+                <Text style={styles.label}>Which app?</Text>
+                <TextInput
+                  style={styles.input}
+                  value={channelDetail}
+                  onChangeText={(t) => setChannelDetail(t.slice(0, 60))}
+                  placeholder="e.g. Swiggy"
+                  placeholderTextColor={Colors.textLight}
+                  maxLength={60}
+                  accessibilityLabel="Which app the order came from"
+                />
+              </View>
+            )}
           </View>
           {locations.length > 1 && (
             <View style={{ marginTop: Spacing.sm }}>
@@ -2562,8 +2753,11 @@ export default function QuickCheckoutScreen({ navigation, route }) {
           <Text style={styles.label}>Payment Mode</Text>
           <View style={[styles.orderTypeRow, { flexWrap: 'wrap', gap: 8 }]}>
             {[
+              // Phone & online: nothing taken now. On a delivery the rider
+              // collects it (the same as COD); on a pickup, at the counter.
+              { key: 'later', label: 'Not paid yet', icon: 'hourglass-outline', hidden: checkoutMode !== 'online' || orderType === 'walk_in' },
               { key: 'pay_now', label: 'Pay Now', icon: 'cash-outline' },
-              { key: 'cod', label: 'COD', icon: 'bicycle-outline', hidden: !needsDelivery },
+              { key: 'cod', label: 'COD', icon: 'bicycle-outline', hidden: !needsDelivery || checkoutMode === 'online' },
               { key: 'credit', label: 'Credit', icon: 'time-outline' },
               { key: 'partial', label: 'Partial', icon: 'pie-chart-outline', hidden: orderType === 'walk_in' },
             ].filter(m => !m.hidden).map(m => (
@@ -2683,6 +2877,17 @@ export default function QuickCheckoutScreen({ navigation, route }) {
                 />
               )}
             </>
+          )}
+
+          {paymentMode === 'later' && (
+            <View style={[styles.customerHint, { backgroundColor: Colors.warning + '15' }]}>
+              <Ionicons name="information-circle" size={16} color={Colors.warning} />
+              <Text style={styles.customerHintText}>
+                {needsDelivery
+                  ? `Not paid yet. The rider collects ₹${Number(totals.finalTotal).toFixed(0)} on delivery unless it is paid before.`
+                  : `Not paid yet. Collect ₹${Number(totals.finalTotal).toFixed(0)} when the order is picked up.`}
+              </Text>
+            </View>
           )}
 
           {paymentMode === 'cod' && (

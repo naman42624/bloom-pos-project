@@ -46,7 +46,7 @@ try {
 
   // Task 1: Add channel and priority constraints to sales table
   try { db.prepare("ALTER TABLE sales DROP CONSTRAINT IF EXISTS sales_channel_check").run(); } catch { }
-  try { db.prepare("ALTER TABLE sales ADD CONSTRAINT sales_channel_check CHECK(channel IS NULL OR channel IN ('whatsapp','email','website','walk_in','phone'))").run(); } catch { }
+  try { db.prepare("ALTER TABLE sales ADD CONSTRAINT sales_channel_check CHECK(channel IS NULL OR channel IN ('whatsapp','email','website','walk_in','phone','other_app'))").run(); } catch { }
   try { db.prepare("ALTER TABLE sales DROP CONSTRAINT IF EXISTS sales_priority_check").run(); } catch { }
   try { db.prepare("ALTER TABLE sales ADD CONSTRAINT sales_priority_check CHECK(priority IS NULL OR priority IN ('normal','rush'))").run(); } catch { }
 } catch (e) { console.log('Sales migration note:', e.message); }
@@ -1850,7 +1850,9 @@ router.post(
   [
     body('location_id').isInt().withMessage('Location is required'),
     body('order_type').isIn(['walk_in', 'pickup', 'delivery', 'pre_order']),
-    body('channel').optional({ nullable: true }).isIn(['whatsapp', 'email', 'website', 'walk_in', 'phone']),
+    body('channel').optional({ nullable: true }).isIn(['whatsapp', 'email', 'website', 'walk_in', 'phone', 'other_app']),
+    // Which app an 'other_app' order came from ("Swiggy"), typed by staff
+    body('channel_detail').optional({ nullable: true }).isString().isLength({ max: 60 }).withMessage('Keep the app name under 60 letters'),
     body('priority').optional({ nullable: true }).isIn(['normal', 'rush']),
     body('items').isArray({ min: 1 }).withMessage('At least one item is required'),
     body('items.*.product_id').optional({ nullable: true }).isInt(),
@@ -1901,7 +1903,7 @@ router.post(
 
       const db = getDb();
       const {
-        location_id, order_type, channel, priority, items, payments,
+        location_id, order_type, channel, channel_detail, priority, items, payments,
         customer_id: customer_id_from_body, customer_name, customer_phone,
         sender_customer_id: sender_customer_id_from_body,
         receiver_customer_id: receiver_customer_id_from_body,
@@ -2299,8 +2301,8 @@ router.post(
             sender_name, sender_phone, receiver_name, receiver_phone, sender_message,
             created_by, created_at, is_credit_sale, vendor_name, entry_mode, sold_by, client_ref,
             bill_version, round_off, delivery_tax, delivery_tax_rate, taxable_total, cgst_total, sgst_total,
-            invoice_number, invoice_fy, buyer_gstin, buyer_legal_name)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            invoice_number, invoice_fy, buyer_gstin, buyer_legal_name, channel_detail)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           saleNumber, location_id, customer_id || null, saleCustomerName || null, saleCustomerPhone || null,
           subtotal, taxTotal, discountAmount, discount_type || null, discountPercentage, discountApprovedBy,
@@ -2315,7 +2317,8 @@ router.post(
           req.helperSale ? req.helperSale.clientRef : null,
           2, bill.roundOffP / 100, bill.delivery.taxP / 100, bill.delivery.amountP > 0 ? bill.delivery.taxRate : null,
           bill.taxableP / 100, bill.cgstP / 100, bill.sgstP / 100,
-          invoice.number, invoice.fy, buyerGstin, buyerGstin ? (String(req.body.buyer_legal_name || '').trim().slice(0, 150) || null) : null
+          invoice.number, invoice.fy, buyerGstin, buyerGstin ? (String(req.body.buyer_legal_name || '').trim().slice(0, 150) || null) : null,
+          channel === 'other_app' ? (String(channel_detail || '').trim().slice(0, 60) || null) : null
         );
         const saleId = saleResult.lastInsertRowid;
 

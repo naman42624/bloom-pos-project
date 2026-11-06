@@ -24,9 +24,7 @@ import DeliveryActionsPanel from '../components/delivery/DeliveryActionsPanel';
 import { formatMoney, STAFF_ROLE_LABELS, ASSIGNABLE_STAFF_ROLES } from '../constants/orderDisplay';
 import useSubmitGuard from '../hooks/useSubmitGuard';
 
-// Duplicated locally (rather than imported from OrdersInboxScreen) to avoid
-// coupling this detail screen's import graph to an inbox screen.
-const CHANNEL_ICONS = { whatsapp: 'logo-whatsapp', email: 'mail', website: 'globe', walk_in: 'walk', phone: 'call' };
+import { CHANNEL_ICONS, channelLabel } from '../utils/channels';
 
 const PAYMENT_STATUS_COLORS = {
   paid: Colors.success,
@@ -1054,7 +1052,7 @@ export default function SaleDetailScreen({ route, navigation }) {
             {sale.channel ? (
               <View style={styles.channelBadge}>
                 <Ionicons name={CHANNEL_ICONS[sale.channel] || 'ellipse'} size={12} color={Colors.textSecondary} />
-                <Text style={styles.channelBadgeText}>{sale.channel.replace('_', ' ').toUpperCase()}</Text>
+                <Text style={styles.channelBadgeText}>{channelLabel(sale.channel, sale.channel_detail).toUpperCase()}</Text>
               </View>
             ) : null}
             {sale.priority === 'rush' ? (
