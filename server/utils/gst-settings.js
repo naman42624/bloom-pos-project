@@ -22,4 +22,15 @@ async function readGstSettings(db) {
   };
 }
 
-module.exports = { readGstSettings, cleanHsn, GSTIN_RE };
+// Quick sale typed amounts: name on the bill and HSN (always billed at 0%)
+const QUICK_DEFAULT_LABEL = 'Fresh Flowers';
+const QUICK_DEFAULT_HSN = '0603';
+async function readQuickSaleBill(db) {
+  const rows = await db.prepare("SELECT key, value FROM settings WHERE key IN ('quick_sale_label', 'quick_sale_hsn')").all();
+  const m = {};
+  for (const r of rows) m[r.key] = r.value;
+  const label = String(m.quick_sale_label || '').trim();
+  return { label: label || QUICK_DEFAULT_LABEL, hsn: cleanHsn(m.quick_sale_hsn) || QUICK_DEFAULT_HSN };
+}
+
+module.exports = { readGstSettings, readQuickSaleBill, cleanHsn, GSTIN_RE, QUICK_DEFAULT_LABEL, QUICK_DEFAULT_HSN };

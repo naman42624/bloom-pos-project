@@ -28,6 +28,16 @@ function normalizeBillSettings(st) {
     if (raw && !cleanHsn(raw)) return 'HSN and SAC codes are 4 to 8 numbers, like 0603.';
     st[k] = raw;
   }
+  if (has('quick_sale_hsn')) {
+    const raw = String(st.quick_sale_hsn || '').replace(/\s/g, '');
+    if (!cleanHsn(raw)) return 'The HSN code is 4 to 8 numbers, like 0603.';
+    st.quick_sale_hsn = raw;
+  }
+  if (has('quick_sale_label')) {
+    const v = String(st.quick_sale_label || '').trim().slice(0, 30);
+    if (!v) return 'Type the name the bill shows, like Fresh Flowers.';
+    st.quick_sale_label = v;
+  }
   for (const k of ['invoice_prefix', 'credit_note_prefix']) {
     if (!has(k)) continue;
     const raw = String(st[k] || '').trim();

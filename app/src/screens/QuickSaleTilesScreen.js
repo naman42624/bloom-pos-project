@@ -61,12 +61,17 @@ export default function QuickSaleTilesScreen({ navigation }) {
   const [labelPrice, setLabelPrice] = useState('');
   const [labelError, setLabelError] = useState('');
 
+  // Typed amounts: the name on the bill and its HSN (always billed at 0% GST)
+  const [billLabel, setBillLabel] = useState('Fresh Flowers');
+  const [billHsn, setBillHsn] = useState('0603');
+  const [billError, setBillError] = useState('');
+
   const full = tiles.length >= MAX_TILES;
 
   // Snapshot of the last loaded/saved list, to tell whether there are unsaved changes.
   const [savedSnap, setSavedSnap] = useState('[]');
-  const snapOf = (list) => JSON.stringify(list.map((t) => (t.type === 'product'
-    ? [t.type, t.product_id] : [t.type, t.label, t.price])));
+  const snapOf = (list, label = billLabel, hsn = billHsn) => JSON.stringify([label.trim(), hsn.trim(), ...list.map((t) => (t.type === 'product'
+    ? [t.type, t.product_id] : [t.type, t.label, t.price]))]);
   const dirty = snapOf(tiles) !== savedSnap;
   const dirtyRef = useRef(false);
   dirtyRef.current = dirty;
@@ -79,8 +84,12 @@ export default function QuickSaleTilesScreen({ navigation }) {
       const data = res.data || res;
       const list = (data.tiles || []).map(fromServerTile);
       setSource(data.source === 'owner' ? 'owner' : 'suggested');
+      const label = data.default_label || 'Fresh Flowers';
+      const hsn = data.hsn || '0603';
+      setBillLabel(label);
+      setBillHsn(hsn);
       setTiles(list);
-      setSavedSnap(snapOf(list));
+      setSavedSnap(snapOf(list, label, hsn));
     } catch (err) {
       if (!silent) setLoadError('Could not load the buttons. Check your connection and tap Try again.');
     } finally {
@@ -168,6 +177,11 @@ export default function QuickSaleTilesScreen({ navigation }) {
   });
 
   const persist = async (list) => {
+    const label = billLabel.trim();
+    const hsn = billHsn.replace(/\s/g, '');
+    if (!label) { setBillError('Type the name the bill shows, like Fresh Flowers.'); return false; }
+    if (!/^[0-9]{4,8}$/.test(hsn)) { setBillError('The HSN code is 4 to 8 numbers, like 0603.'); return false; }
+    setBillError('');
     setSaving(true);
     try {
       const payload = list.map((t) => (t.type === 'product'
@@ -175,13 +189,13 @@ export default function QuickSaleTilesScreen({ navigation }) {
         : { type: 'label', label: t.label, price: t.price }));
       // Empty list saves '' so the screen goes back to suggested buttons.
       const value = payload.length ? JSON.stringify(payload) : '';
-      await api.updateSettings({ quick_sale_tiles: value });
+      await api.updateSettings({ quick_sale_tiles: value, quick_sale_label: label, quick_sale_hsn: hsn });
       // Saved: the draft is now the saved list (no leave prompt), then refresh quietly.
       setTiles(list);
-      setSavedSnap(snapOf(list));
+      setSavedSnap(snapOf(list, label, hsn));
       setSaving(false);
       showAlert('Saved', payload.length
-        ? 'Your buttons are saved. Counter staff will see them on the Quick sale screen.'
+        ? 'Your buttons and bill name are saved. Counter staff will see them on the Quick sale screen.'
         : 'Your own buttons were removed. Suggested buttons will be shown again.');
       await load(true);
       return true;
@@ -309,6 +323,33 @@ export default function QuickSaleTilesScreen({ navigation }) {
       />
       {!!labelError && <Text style={styles.error}>{labelError}</Text>}
       <Button title="Add this button" onPress={addLabel} disabled={full} variant="outline" style={{ marginTop: Spacing.md }} />
+
+      <Text style={styles.section}>Typed amounts on the bill</Text>
+      <Text style={styles.intro}>
+        When staff type an amount, the bill shows this name with this HSN code, at 0% GST.
+        The named amounts above use the same HSN code.
+      </Text>
+      <Text style={styles.label}>Name on the bill</Text>
+      <TextInput
+        style={styles.input}
+        value={billLabel}
+        onChangeText={(v) => { setBillLabel(v); setBillError(''); }}
+        placeholder="Fresh Flowers"
+        placeholderTextColor={Colors.textLight}
+        maxLength={30}
+        accessibilityLabel="Name on the bill for typed amounts"
+      />
+      <Text style={[styles.label, { marginTop: Spacing.sm }]}>HSN code</Text>
+      <TextInput
+        style={styles.input}
+        value={billHsn}
+        onChangeText={(v) => { setBillHsn(v.replace(/\D/g, '').slice(0, 8)); setBillError(''); }}
+        keyboardType="number-pad"
+        placeholder="0603"
+        placeholderTextColor={Colors.textLight}
+        accessibilityLabel="HSN code for typed amounts"
+      />
+      {!!billError && <Text style={styles.error}>{billError}</Text>}
 
       <Button title="Save" onPress={handleSave} loading={saving} style={{ marginTop: Spacing.xl }} />
       {tiles.length > 0 && (

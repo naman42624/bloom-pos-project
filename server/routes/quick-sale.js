@@ -4,6 +4,7 @@ const { todayStr, shopDayRangeUtc } = require('../utils/time');
 const { authenticate, authorize } = require('../middleware/auth');
 const { reverseSaleEffects } = require('../utils/sale-reversal');
 const { lockBag } = require('../utils/helper-bags');
+const { readQuickSaleBill } = require('../utils/gst-settings');
 
 const router = express.Router();
 
@@ -244,6 +245,8 @@ router.get('/tiles', authenticate, authorize(...ROLES), async (req, res, next) =
     if (!locationId) return res.status(400).json({ success: false, message: 'Pick a shop location first' });
     const db = await getDb();
 
+    // Name and HSN on the bill for a typed amount (owner sets them with the buttons)
+    const bill = await readQuickSaleBill(db);
     let configured = null;
     const setting = await db.prepare("SELECT value FROM settings WHERE key = 'quick_sale_tiles'").get();
     if (setting && setting.value) {
@@ -271,7 +274,7 @@ router.get('/tiles', authenticate, authorize(...ROLES), async (req, res, next) =
           tiles.push({ key: `l${i}`, type: 'label', product_id: null, label, price });
         }
       }
-      return res.json({ success: true, data: { source: 'owner', tiles } });
+      return res.json({ success: true, data: { source: 'owner', tiles, default_label: bill.label, hsn: bill.hsn } });
     }
 
     const top = await db.prepare(`
@@ -289,6 +292,8 @@ router.get('/tiles', authenticate, authorize(...ROLES), async (req, res, next) =
       success: true,
       data: {
         source: 'suggested',
+        default_label: bill.label,
+        hsn: bill.hsn,
         tiles: top.map((p) => ({ key: `p${p.id}`, type: 'product', product_id: p.id, label: p.name, price: Number(p.selling_price) })),
       },
     });

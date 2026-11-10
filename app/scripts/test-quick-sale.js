@@ -41,7 +41,7 @@ test('payload for label', () => {
     items: [{ product_name: 'Bouquet', quantity: 1, unit_price: 1200 }],
     payments: [{ method: 'cash', amount: 1200 }],
   });
-  assert.strictEqual(q.buildQuickSalePayload({ locationId: 4, method: 'upi', amount: 50 }).items[0].product_name, 'Counter sale');
+  assert.strictEqual(q.buildQuickSalePayload({ locationId: 4, method: 'upi', amount: 50 }).items[0].product_name, 'Fresh Flowers');
 });
 
 test('payload for product', () => {
@@ -58,7 +58,7 @@ test('payload for topup', () => {
 
 test('constants', () => {
   assert.strictEqual(q.MAX_QUICK_AMOUNT, 100000);
-  assert.strictEqual(q.DEFAULT_QUICK_LABEL, 'Counter sale');
+  assert.strictEqual(q.DEFAULT_QUICK_LABEL, 'Fresh Flowers');
   assert.deepStrictEqual(q.QUICK_LABELS, ['Fresh Flowers', 'Bouquet', 'Bunch', 'Box', 'Basket', 'Vase', 'Garland', 'Arrangement']);
 });
 

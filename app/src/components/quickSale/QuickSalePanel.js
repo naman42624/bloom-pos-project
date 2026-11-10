@@ -58,6 +58,7 @@ export default function QuickSalePanel({ locationId, navigation, helpSignal = 0,
   const [tiles, setTiles] = useState([]);
   const [tilesSource, setTilesSource] = useState(null);
   const [tilesState, setTilesState] = useState('loading'); // loading | ready | error
+  const [defaultLabel, setDefaultLabel] = useState(DEFAULT_QUICK_LABEL);
   const [roll, setRoll] = useState({ entries: [], totals: { cash: 0, upi: 0, count: 0 } });
   const [rollError, setRollError] = useState(false);
   const [registerOpen, setRegisterOpen] = useState(null); // null = not known yet
@@ -94,6 +95,7 @@ export default function QuickSalePanel({ locationId, navigation, helpSignal = 0,
       const res = await api.getQuickTiles(locationRef.current);
       setTiles(res?.data?.tiles || []);
       setTilesSource(res?.data?.source || null);
+      if (res?.data?.default_label) setDefaultLabel(res.data.default_label);
       setTilesState('ready');
     } catch {
       setTilesState((s) => (s === 'ready' ? 'ready' : 'error'));
@@ -241,7 +243,7 @@ export default function QuickSalePanel({ locationId, navigation, helpSignal = 0,
     const err = amountError(amount);
     if (err) { setAmountErr(err); amountRef.current && amountRef.current.focus(); return; }
     if (!tapGuardRef.current('add')) return;
-    const label = chip || DEFAULT_QUICK_LABEL;
+    const label = chip || defaultLabel;
     const payload = buildQuickSalePayload({ locationId, method, amount, label });
     record(payload, { label, amount: payload.payments[0].amount, method });
     setAmount('');
@@ -455,7 +457,7 @@ export default function QuickSalePanel({ locationId, navigation, helpSignal = 0,
             {!!amountErr && <Text style={styles.amountErr}>{amountErr}</Text>}
 
             <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={styles.chips}>
-              {QUICK_LABELS.map((l) => {
+              {QUICK_LABELS.filter((l) => l !== defaultLabel).map((l) => {
                 const on = chip === l;
                 return (
                   <TouchableOpacity

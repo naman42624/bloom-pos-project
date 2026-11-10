@@ -48,7 +48,9 @@ const SETTING_LABELS = {
 // Edited on their own screen (BillSettingsScreen), not in this list
 const BILL_KEYS = ['bill_round_off', 'bill_legal_name', 'bill_pan', 'bill_terms', 'bill_show_fields', 'receipt_footer',
   'gst_delivery_rate', 'gst_delivery_sac', 'gst_default_rate', 'gst_default_hsn', 'gst_number',
-  'invoice_series_mode', 'invoice_prefix', 'credit_note_prefix'];
+  'invoice_series_mode', 'invoice_prefix', 'credit_note_prefix',
+  // Edited with the Quick sale buttons
+  'quick_sale_label', 'quick_sale_hsn'];
 
 const CASH_MODE_OPTIONS = [
   {
