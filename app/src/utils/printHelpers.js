@@ -105,7 +105,34 @@ export const computeSlipMoney = (sale) => {
 // Shop copy: the money state is the first thing on the slip and impossible to
 // miss — the person handing the order over must know at a glance whether to
 // collect anything, and how much.
+//
+// A delivery challan travels with the order and the recipient signs it, so it
+// never shows what the sender paid: paid and credit orders print no amounts,
+// and an unpaid one prints only what to collect (2026-11-10).
+const deliveryMoneyBlock = (money) => {
+  if (money.state === 'paid') {
+    return `
+      <div style="border:3px solid #2E7D32;background:#E8F5E9;border-radius:8px;padding:8px 12px;margin:6px 0 8px;">
+        <div style="font-size:22px;font-weight:800;color:#2E7D32;letter-spacing:1px;">PAID</div>
+        <div style="font-size:11px;color:#2E7D32;font-weight:600;">Nothing to collect</div>
+      </div>`;
+  }
+  if (money.state === 'credit') {
+    return `
+      <div style="border:3px solid #6A1B9A;background:#F3E5F5;border-radius:8px;padding:8px 12px;margin:6px 0 8px;">
+        <div style="font-size:20px;font-weight:800;color:#6A1B9A;letter-spacing:1px;">DO NOT COLLECT</div>
+        <div style="font-size:11px;color:#4A148C;font-weight:600;">Nothing to collect from the recipient</div>
+      </div>`;
+  }
+  return `
+    <div style="border:3px solid #C62828;background:#FFEBEE;border-radius:8px;padding:8px 12px;margin:6px 0 8px;display:flex;justify-content:space-between;align-items:center;">
+      <div style="font-size:13px;font-weight:800;color:#C62828;letter-spacing:1px;">COLLECT ON DELIVERY</div>
+      <div style="font-size:26px;font-weight:900;color:#C62828;line-height:1;">${rupees(money.balance)}</div>
+    </div>`;
+};
+
 const shopMoneyBlock = (money, isDelivery) => {
+  if (isDelivery) return deliveryMoneyBlock(money);
   const breakdown = Object.entries(money.byMethod).map(([m, a]) => `${esc(m)} ${rupees(a)}`).join(' · ');
   if (money.state === 'paid') {
     return `
