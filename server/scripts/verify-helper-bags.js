@@ -1231,8 +1231,10 @@ check('staff sales report includes bag columns', async () => {
     assert(near(row.handed_over, 890), `handed_over ${row.handed_over}`);
     assert(near(row.short_over, -10), `short_over ${row.short_over}`);
     assert(row.reveals === 2, `reveals ${row.reveals} (previews and handovers are not reveals)`);
+    // Bag figures only on rows with bag history: helpers, and since C32
+    // anyone who was one (has_bag)
     for (const r of rep.body.data.rows) {
-      if (r.role === 'helper') continue;
+      if (r.role === 'helper' || r.has_bag) continue;
       for (const k of ['floats', 'cash_collected', 'handed_over', 'short_over', 'reveals']) {
         assert(r[k] == null, `non-helper ${r.user_id} (${r.role}) has ${k}=${r[k]}`);
       }

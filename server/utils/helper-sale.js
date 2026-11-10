@@ -6,6 +6,7 @@
 // payment in cash and/or UPI, and a discount within the helper limit or OKed
 // by a counter/manager/owner code + PIN. Everything the client sends beyond
 // that is dropped.
+const jwt = require('jsonwebtoken');
 const { getDb: getSyncDb } = require('../config/database');
 const { verifyApprovalPin, approverMaxDiscountPct, APPROVER_ROLES } = require('./approval-pin');
 const { normalizeDateFields } = require('./normalizeDates');
@@ -246,22 +247,23 @@ async function normalizeHelperSale(db, body, user) {
   };
 }
 
-// Within the helper limit: no approver. Over it: a counter/manager/owner
-// code + PIN whose own limit covers the discount. The PIN check reserves its
-// try with its own committed write, so this runs before any sale transaction.
-async function checkHelperDiscount(db, { pct, override, locationId }) {
-  if (!(pct > 0)) return { approvedBy: null };
-  const settings = await readSettings(db, ['discount_helper_threshold', 'discount_manager_threshold', 'discount_owner_threshold']);
-  // A helper never gets more than counter staff, whatever the setting says
+// Counter staff limit and helper limit (A2, 2026-11-07: 25 / 20 by default).
+// A helper never gets more than counter staff, whatever the setting says.
+const DEFAULT_COUNTER_LIMIT = 25;
+const DEFAULT_HELPER_LIMIT = 20;
+const LIMIT_KEYS = ['discount_helper_threshold', 'discount_manager_threshold', 'discount_owner_threshold'];
+function helperLimitFrom(settings) {
   const num = (v, d) => (Number.isFinite(parseFloat(v)) ? parseFloat(v) : d);
-  const counterLimit = num(settings.discount_manager_threshold, 20);
-  const limit = Math.min(num(settings.discount_helper_threshold, counterLimit), counterLimit);
-  if (pct <= limit + 1e-9) return { approvedBy: null };
+  const counterLimit = num(settings.discount_manager_threshold, DEFAULT_COUNTER_LIMIT);
+  return Math.min(num(settings.discount_helper_threshold, Math.min(DEFAULT_HELPER_LIMIT, counterLimit)), counterLimit);
+}
+async function helperDiscountLimit(db) {
+  return helperLimitFrom(await readSettings(db, LIMIT_KEYS));
+}
 
-  const code = override && typeof override === 'object' ? override.employee_code : null;
-  const pin = override && typeof override === 'object' ? override.pin : null;
-  if (!code || !pin) fail(403, MSG.NEEDS_OK);
-
+// A counter/manager/owner code + PIN whose own limit covers pct, at this
+// shop (the owner anywhere). Returns the approver's id.
+async function approverFor(db, { pct, code, pin, locationId, settings }) {
   // The approver must work at this shop (the owner anywhere). Checked before
   // the PIN so a wrong-shop approver does not use up a try. An unknown or
   // non-approver code falls through to verifyApprovalPin, which answers as usual.
@@ -276,7 +278,86 @@ async function checkHelperDiscount(db, { pct, override, locationId }) {
 
   const approver = await verifyApprovalPin(db, String(code), String(pin));
   if (approverMaxDiscountPct(approver.role, settings) + 1e-9 < pct) fail(403, MSG.NEEDS_MANAGER);
-  return { approvedBy: approver.id };
+  return approver.id;
+}
+
+// A1 (2026-11-07): the counter approves the discount before the helper takes
+// money. POST /api/sales/helper-discount-ok checks the code + PIN once and
+// answers with this short-lived approval, tied to the helper, the shop, the
+// basket number and the largest % approved. The sale then sends it instead
+// of the PIN.
+const APPROVAL_AUDIENCE = 'helper-discount-ok';
+const APPROVAL_MINUTES = 15;
+function signDiscountApproval({ approverId, helperId, locationId, clientRef, pct }) {
+  return jwt.sign(
+    { approver_id: approverId, helper_id: helperId, location_id: Number(locationId), client_ref: clientRef, pct },
+    process.env.JWT_SECRET,
+    { audience: APPROVAL_AUDIENCE, expiresIn: `${APPROVAL_MINUTES}m` }
+  );
+}
+function readDiscountApproval(token) {
+  try {
+    return jwt.verify(String(token), process.env.JWT_SECRET, { audience: APPROVAL_AUDIENCE });
+  } catch (_) {
+    return null;
+  }
+}
+
+// Within the helper limit: no approver. Over it: an approval from
+// POST /helper-discount-ok for this helper, shop and basket covering the %,
+// or (older app) a counter/manager/owner code + PIN sent with the sale. The
+// PIN check reserves its try with its own committed write, so this runs
+// before any sale transaction.
+async function checkHelperDiscount(db, { pct, override, locationId, helperId, clientRef }) {
+  if (!(pct > 0)) return { approvedBy: null };
+  const settings = await readSettings(db, LIMIT_KEYS);
+  if (pct <= helperLimitFrom(settings) + 1e-9) return { approvedBy: null };
+
+  const o = override && typeof override === 'object' ? override : {};
+  if (o.approval_token) {
+    const ok = readDiscountApproval(o.approval_token);
+    const fits = ok
+      && Number(ok.helper_id) === Number(helperId)
+      && Number(ok.location_id) === Number(locationId)
+      && ok.client_ref === clientRef
+      && pct <= Number(ok.pct) + 1e-9;
+    if (!fits) fail(403, MSG.NEEDS_OK);
+    const still = await db.prepare('SELECT is_active FROM users WHERE id = ?').get(ok.approver_id);
+    if (!still || !Number(still.is_active)) fail(403, MSG.NEEDS_OK);
+    return { approvedBy: Number(ok.approver_id) };
+  }
+
+  if (!o.employee_code || !o.pin) fail(403, MSG.NEEDS_OK);
+  const approvedBy = await approverFor(db, { pct, code: o.employee_code, pin: o.pin, locationId, settings });
+  return { approvedBy };
+}
+
+// POST /api/sales/helper-discount-ok body: { location_id, client_ref,
+// discount_pct, employee_code, pin }. Answers { needed: false } when the %
+// is within the helper limit, else { needed: true, approval_token, pct,
+// expires_in_minutes } or a 403 with the reason (wrong PIN, wrong shop,
+// needs a manager).
+async function approveHelperDiscount(db, user, body) {
+  const b = body || {};
+  const clientRef = validClientRef(b.client_ref);
+  if (!clientRef) fail(400, MSG.NO_CLIENT_REF);
+  const locationId = parseInt(b.location_id, 10);
+  if (!Number.isInteger(locationId)) fail(400, MSG.WRONG_SHOP);
+  const link = await db.prepare('SELECT 1 AS ok FROM user_locations WHERE user_id = ? AND location_id = ?').get(user.id, locationId);
+  if (!link) fail(403, MSG.WRONG_SHOP);
+  const pct = Math.round(Number(b.discount_pct) * 100) / 100;
+  if (!Number.isFinite(pct) || pct <= 0 || pct > 100) fail(400, MSG.BAD_DISCOUNT);
+
+  const settings = await readSettings(db, LIMIT_KEYS);
+  if (pct <= helperLimitFrom(settings) + 1e-9) return { needed: false };
+  if (!b.employee_code || !b.pin) fail(400, 'Type the code and the 4-digit PIN.');
+  const approverId = await approverFor(db, { pct, code: b.employee_code, pin: b.pin, locationId, settings });
+  return {
+    needed: true,
+    pct,
+    approval_token: signDiscountApproval({ approverId, helperId: user.id, locationId, clientRef, pct }),
+    expires_in_minutes: APPROVAL_MINUTES,
+  };
 }
 
 // Express middleware, placed before the POST /api/sales validators. Does
@@ -302,6 +383,8 @@ function helperSaleGate(getAsyncDb) {
         pct: normalized.discountPct,
         override: req.body && req.body.discount_override,
         locationId: normalized.body.location_id,
+        helperId: req.user.id,
+        clientRef,
       });
 
       req.body = normalized.body;
@@ -340,6 +423,8 @@ module.exports = {
   helperSaleGate,
   normalizeHelperSale,
   checkHelperDiscount,
+  approveHelperDiscount,
+  helperDiscountLimit,
   answerClientRefConflict,
   isClientRefConflict,
   HELPER_SALE_MESSAGES: MSG,

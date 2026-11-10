@@ -1,9 +1,13 @@
 // Take payment (spec §9.2) for the helper's Sell screen.
 //
 // Steps: choose (total, Discount ▸, CASH / UPI, Part cash part UPI ▸,
-// Customer phone ▸) -> cash | upi | split -> success. Over the helper's
-// discount limit the server answers "This discount needs the counter's OK."
-// and the step offers "Ask counter to approve" -> OverridePad.
+// Customer phone ▸) -> cash | upi | split -> success. A discount over the
+// helper's limit (shopInfo.helper_discount_limit) blocks Cash and UPI until
+// the counter approves it on OverridePad (A1, 2026-11-07): the code + PIN go
+// to POST /sales/helper-discount-ok once and the sale sends the approval it
+// answers with. If the server still answers "This discount needs the
+// counter's OK." (limit changed, approval expired) the step offers
+// "Ask counter to approve" and the sale is sent again once approved.
 //
 // The sale goes to POST /api/sales with the basket's client_ref, so a retry
 // after a dropped answer returns the same sale instead of making a second
@@ -147,6 +151,7 @@ export default function TakePaymentSheet({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null); // { text, kind: 'network' | 'needsOk' | 'unfinished' | 'other' }
   const [overrideError, setOverrideError] = useState('');
+  const [approval, setApproval] = useState(null); // { token, pct } from the counter's OK
   const [sale, setSale] = useState(null);
   const [duplicate, setDuplicate] = useState(false);
   const [autoLeft, setAutoLeft] = useState(null);
@@ -171,6 +176,7 @@ export default function TakePaymentSheet({
     setSaving(false);
     setError(null);
     setOverrideError('');
+    setApproval(null);
     setSale(null);
     setDuplicate(false);
     setAutoLeft(null);
@@ -192,6 +198,11 @@ export default function TakePaymentSheet({
 
   const totals = useMemo(() => basketTotal(basket, discount), [basket, discount]);
   const total = totals.total;
+  const discountLimit = Number.isFinite(Number(shopInfo?.helper_discount_limit)) && shopInfo?.helper_discount_limit != null
+    ? Number(shopInfo.helper_discount_limit) : null;
+  const overLimit = discountLimit != null && !totals.error && totals.discountPct > discountLimit + 1e-9;
+  const approved = overLimit && !!approval && totals.discountPct <= approval.pct + 1e-9;
+  const needsApproval = overLimit && !approved;
 
   // A hidden sheet never moves on by itself.
   useEffect(() => { if (!visible) setAutoLeft(null); }, [visible]);
@@ -232,15 +243,18 @@ export default function TakePaymentSheet({
     setOtherText('');
   };
 
+  // override: only when sent from the approval pad. The counter's earlier
+  // OK (approval) goes with every sale it covers.
   const submit = async (payments, override) => {
     lastPayments.current = payments;
     setSaving(true);
     setError(null);
     if (override) setOverrideError('');
     basketAtSave.current = basket;
+    const sendOverride = override || (approved && approval.token ? { approval_token: approval.token } : null);
     try {
       const res = await api.createSale(toSalePayload(basket, {
-        locationId, payments, discount, override, clientRef,
+        locationId, payments, discount, override: sendOverride, clientRef,
       }));
       const saved = res?.data || null;
       setSale(saved);
@@ -266,6 +280,8 @@ export default function TakePaymentSheet({
         if (override) setOverrideError(OVERRIDE_NET);
         else setError({ kind: 'network', text: SAVE_FAILED });
       } else if (status === 403 && message === NEEDS_OK && !override) {
+        // The OK expired or the limit changed: ask again
+        setApproval(null);
         setError({ kind: 'needsOk', text: message });
       } else if (status === 409 && err?.code === SALE_UNDONE) {
         // The earlier sale of this basket was undone: new basket number,
@@ -305,9 +321,39 @@ export default function TakePaymentSheet({
     await submit(ps);
   });
   const retry = guard(async () => { if (lastPayments.current) await submit(lastPayments.current); });
+  // The counter's code + PIN are checked once; the answer is an approval
+  // for this basket. From a payment step (the server asked for the OK while
+  // saving) the sale is sent again with it; from the first step the helper
+  // goes back there with Cash and UPI open.
   const approve = guard(async (code, pin) => {
-    if (!lastPayments.current) return;
-    await submit(lastPayments.current, { employee_code: code, pin });
+    const fromPayment = payStepRef.current !== 'choose' && !!lastPayments.current;
+    setSaving(true);
+    setOverrideError('');
+    let appr = null;
+    try {
+      const res = await api.helperDiscountOk({
+        location_id: locationId, client_ref: clientRef, discount_pct: totals.discountPct,
+        employee_code: code, pin,
+      });
+      const d = res?.data || {};
+      // needed false: the shop's limit was raised since this screen loaded;
+      // no approval token, the sale goes as within the limit
+      appr = d.needed ? { token: d.approval_token, pct: Number(d.pct) } : { token: null, pct: totals.discountPct };
+      setApproval(appr);
+      setError(null);
+    } catch (err) {
+      setSaving(false);
+      if (onAccessEnded && onAccessEnded(err)) return;
+      const status = err?.status || 0;
+      setOverrideError(status === 0 || status >= 500 ? OVERRIDE_NET : (err?.message || OVERRIDE_NET));
+      return;
+    }
+    setSaving(false);
+    if (fromPayment) {
+      await submit(lastPayments.current, appr && appr.token ? { approval_token: appr.token } : null);
+    } else {
+      setStep('choose');
+    }
   });
 
   const askCounter = () => {
@@ -329,7 +375,7 @@ export default function TakePaymentSheet({
     printHtml(billHtml(sale, shopInfo?.shop_name), `Bill ${sale?.sale_number || ''}`.trim());
   };
 
-  const discountBlocked = !!totals.error;
+  const discountBlocked = !!totals.error || needsApproval;
   const qrUrl = shopInfo?.upi_qr_image_url ? api.getMediaUrl(shopInfo.upi_qr_image_url) : null;
 
   // ── Pieces ──
@@ -487,6 +533,34 @@ export default function TakePaymentSheet({
         {totals.error ? (
           <View style={styles.errorBox}><Ionicons name="alert-circle" size={22} color={Colors.error} /><Text style={styles.errorText}>{totals.error}</Text></View>
         ) : null}
+        {needsApproval ? (
+          <View style={styles.warnBox} accessibilityLiveRegion="polite">
+            <Ionicons name="shield-outline" size={24} color={Colors.warning} />
+            <Text style={styles.errorText}>
+              {`${discountLabel(discount)} is more than you can give (${discountLimit}%). Ask the counter to approve it before you take money.`}
+            </Text>
+          </View>
+        ) : null}
+        {needsApproval ? (
+          <TouchableOpacity
+            style={styles.primary}
+            onPress={askCounter}
+            activeOpacity={0.8}
+            accessibilityRole="button"
+            accessibilityLabel="Ask counter to approve"
+          >
+            <Ionicons name="shield-checkmark" size={28} color={Colors.white} />
+            <Text style={styles.primaryText}>Ask counter to approve</Text>
+          </TouchableOpacity>
+        ) : null}
+        {approved ? (
+          <View style={styles.okBox} accessibilityLiveRegion="polite">
+            <Ionicons name="checkmark-circle" size={24} color={Colors.success} />
+            <Text style={styles.errorText}>
+              {approval.token ? `Discount approved by the counter. Take ${formatRupees(total)}.` : `This discount is allowed now. Take ${formatRupees(total)}.`}
+            </Text>
+          </View>
+        ) : null}
         {errorBox}
 
         {registerOpen === false ? (
@@ -522,9 +596,10 @@ export default function TakePaymentSheet({
         </View>
 
         <TouchableOpacity
-          style={styles.rowBtn}
+          style={[styles.rowBtn, discountBlocked && styles.disabled]}
           onPress={() => goStep('split')}
           disabled={discountBlocked}
+          accessibilityState={{ disabled: discountBlocked }}
           activeOpacity={0.7}
           accessibilityRole="button"
           accessibilityLabel="Part cash, part UPI"
@@ -836,6 +911,10 @@ const styles = StyleSheet.create({
   qr: { width: 300, height: 300, maxWidth: '100%', backgroundColor: Colors.white, borderRadius: BorderRadius.md },
   errorBox: {
     flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.sm, backgroundColor: Colors.errorLight,
+    borderRadius: BorderRadius.md, padding: Spacing.md, marginTop: Spacing.md,
+  },
+  okBox: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.sm, backgroundColor: Colors.successLight,
     borderRadius: BorderRadius.md, padding: Spacing.md, marginTop: Spacing.md,
   },
   warnBox: {

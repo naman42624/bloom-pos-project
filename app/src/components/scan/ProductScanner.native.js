@@ -16,7 +16,8 @@ import { Colors } from '../../constants/theme';
 
 const SCANNER_SETTINGS = { barcodeTypes: ['qr'] };
 
-export default function ProductScanner({ onCode, paused = false, children, style }) {
+// copy: optional SCANNER_COPY overrides for this screen (see ProductScanner.js).
+export default function ProductScanner({ onCode, paused = false, children, style, copy }) {
   const [permission, requestPermission] = useCameraPermissions();
   const [torchOn, setTorchOn] = useState(false);
   const onCodeRef = useRef(onCode);
@@ -58,7 +59,7 @@ export default function ProductScanner({ onCode, paused = false, children, style
   if (!permission) {
     body = <ScannerMessage loading text={SCANNER_COPY.starting} />;
   } else if (!permission.granted) {
-    body = <ScannerMessage icon="lock-closed-outline" text={SCANNER_COPY.blockedNative} onRetry={retry} />;
+    body = <ScannerMessage icon="lock-closed-outline" text={(copy && copy.blockedNative) || SCANNER_COPY.blockedNative} onRetry={retry} />;
   } else if (!paused) {
     body = (
       <>

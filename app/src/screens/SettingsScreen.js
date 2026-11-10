@@ -24,6 +24,8 @@ const SETTING_LABELS = {
   currency: 'Currency',
   discount_approval_threshold: 'Discount Approval Threshold (%)',
   discount_helper_threshold: 'Helper discount limit %',
+  discount_manager_threshold: 'Counter staff discount limit %',
+  discount_owner_threshold: 'Manager discount limit %',
   max_refund_without_approval: 'Max Refund Without Approval (₹)',
   geofence_default_radius: 'Default Geofence Radius (m)',
   attendance_geofence_enabled: 'Geofence Attendance (1=on, 0=off)',
@@ -176,7 +178,7 @@ export default function SettingsScreen() {
 
   const hasChanges = Object.keys(editedValues).length > 0;
   const sortedKeys = Object.keys(settings)
-    .filter((k) => !PREFERENCE_SETTINGS.some((p) => p.key === k) && k !== 'helper_cash_mode' && !BILL_KEYS.includes(k))
+    .filter((k) => !PREFERENCE_SETTINGS.some((p) => p.key === k) && k !== 'helper_cash_mode' && k !== 'discount_limits_v2' && !BILL_KEYS.includes(k))
     // One "Bill and GST" row stands for every bill setting
     .concat(settings.bill_round_off ? ['bill_round_off'] : [])
     .sort();
@@ -427,7 +429,7 @@ export default function SettingsScreen() {
               if (!isOwner) return null;
               const counterLimit = (editedValues.discount_manager_threshold !== undefined
                 ? editedValues.discount_manager_threshold
-                : settings.discount_manager_threshold?.value) || '20';
+                : settings.discount_manager_threshold?.value) || '25';
               return (
                 <View key={key} style={styles.settingRow}>
                   <Text style={styles.settingLabel}>{SETTING_LABELS[key]}</Text>

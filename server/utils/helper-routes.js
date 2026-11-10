@@ -12,6 +12,7 @@ const HELPER_ROUTES = [
   ['POST', /^\/api\/products\/scan\/?$/, 'scanning'],
   ['GET', /^\/api\/settings\/shop-info\/?$/, 'shop name and UPI QR'],
   ['POST', /^\/api\/sales\/?$/, 'helper sale'],
+  ['POST', /^\/api\/sales\/helper-discount-ok\/?$/, 'counter OKs a discount before payment (A1)'],
   ['GET', /^\/api\/sales\/register\/status\/?$/, 'register open hint'],
   ['POST', /^\/api\/quick-sale\/\d+\/undo\/?$/, 'undo own sale'],
   ['GET', /^\/api\/quick-sale\/my-sales\/?$/, 'own sales today'],

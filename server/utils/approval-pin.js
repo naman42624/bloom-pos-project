@@ -111,7 +111,7 @@ function pct(settings, key, fallback) {
 function approverMaxDiscountPct(role, settings) {
   if (role === 'owner') return Infinity;
   if (role === 'manager') return pct(settings, 'discount_owner_threshold', '30');
-  if (role === 'counter_staff' || role === 'employee') return pct(settings, 'discount_manager_threshold', '20');
+  if (role === 'counter_staff' || role === 'employee') return pct(settings, 'discount_manager_threshold', '25');
   return 0;
 }
 

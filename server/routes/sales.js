@@ -14,7 +14,7 @@ const { buildTrackingUrl } = require('../utils/tracking-token');
 const { slipUrl } = require('../utils/slip-token');
 const { reverseSaleEffects } = require('../utils/sale-reversal');
 const { assertValidSeller } = require('../utils/seller');
-const { helperSaleGate, answerClientRefConflict } = require('../utils/helper-sale');
+const { helperSaleGate, answerClientRefConflict, approveHelperDiscount } = require('../utils/helper-sale');
 const { verifyApprovalPin } = require('../utils/approval-pin');
 const { writeOffError, recordWriteOff, WRITE_OFF_METHOD } = require('../utils/write-off');
 const { listBags, readCashMode, lockBag } = require('../utils/helper-bags');
@@ -1837,6 +1837,23 @@ router.put('/:id(\\d+)/pickup-checks/:saleItemId(\\d+)', authenticate, authorize
   }
 });
 
+// ─── POST /api/sales/helper-discount-ok ──────────────────────
+// A1: the counter OKs a helper's over-limit discount before money is taken.
+// Checks the counter person's code + PIN once and answers with a short-lived
+// approval the helper's sale sends instead of the PIN (utils/helper-sale.js).
+router.post('/helper-discount-ok', authenticate, authorize('helper'), async (req, res, next) => {
+  try {
+    const db = await getAsyncDb();
+    const data = await approveHelperDiscount(db, req.user, req.body);
+    res.json({ success: true, data });
+  } catch (err) {
+    if (err.helperSale || err.pinCheck) {
+      return res.status(err.status).json({ success: false, message: err.message });
+    }
+    next(err);
+  }
+});
+
 // ─── POST /api/sales ─────────────────────────────────────────
 // Creates a completed sale with items and payments in one transaction.
 // A helper's request is first rebuilt by helperSaleGate (utils/helper-sale.js):
@@ -2091,7 +2108,7 @@ router.post(
 
           // Enforce discount thresholds
           const mgrThreshold = parseFloat(
-            (await db.prepare("SELECT value FROM settings WHERE key = 'discount_manager_threshold'").get() || {}).value || '20'
+            (await db.prepare("SELECT value FROM settings WHERE key = 'discount_manager_threshold'").get() || {}).value || '25'
           );
           const ownerThreshold = parseFloat(
             (await db.prepare("SELECT value FROM settings WHERE key = 'discount_owner_threshold'").get() || {}).value || '30'

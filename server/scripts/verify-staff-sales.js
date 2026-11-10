@@ -176,8 +176,9 @@ check('orders and amount per seller', async () => {
   assert(b.topup_count === 1 && Math.abs(b.topup_total - 60) < 0.01, `B top-up ${b.topup_count}/${b.topup_total}`);
   assert(a.discount_count === 1 && Math.abs(a.discount_total - 10) < 0.01, `A discount ${a.discount_count}/${a.discount_total}`);
   assert(a.override_count === 1 && b.override_count === 0, `override ${a.override_count}/${b.override_count}`);
-  // Cash bag figures belong to helper rows only (verify-helper-bags.js checks their values)
-  for (const row of r.body.data.rows.filter((x) => x.role !== 'helper')) {
+  // Cash bag figures only on rows with bag history (helpers, and past
+  // helpers since C32); verify-helper-bags.js checks their values
+  for (const row of r.body.data.rows.filter((x) => x.role !== 'helper' && !x.has_bag)) {
     for (const k of ['floats', 'cash_collected', 'handed_over', 'short_over', 'reveals']) {
       assert(row[k] == null, `non-helper ${row.user_id} has ${k}=${row[k]}`);
     }
@@ -241,8 +242,29 @@ check('per-person sales list', async () => {
   for (const k of ['sale_number', 'created_at', 'grand_total', 'status', 'order_type', 'customer_name']) assert(k in row, `missing ${k}`);
 });
 
+// C32 (2026-11-07): bag figures follow the bag history, not the current role.
+// A helper later made counter staff keeps past floats on the report.
+const createdMovementIds = [];
+check('bag figures stay for someone who is no longer a helper', async () => {
+  const owner = await loginOwner();
+  const id = await createUser(owner.token, 'counter_staff', [TEST_LOCATION_ID]);
+  const db = await getDb();
+  const row = await db.prepare(`INSERT INTO staff_cash_movements
+      (location_id, staff_id, type, expected_amount, counted_amount, settled_amount, difference, is_final, recorded_by, note)
+    VALUES (?, ?, 'float_out', 250, 250, 250, 0, 1, ?, 'verify-staff-sales C32') RETURNING id`).get(TEST_LOCATION_ID, id, owner.id);
+  createdMovementIds.push(row.id);
+  const res = await report(owner.token, `&from=${TODAY}&to=${TODAY}`);
+  const r = rowOf(res, id);
+  assert(r, 'no report row for a past helper with only bag activity');
+  assert(r.has_bag === true && Number(r.floats) === 250, `bag figures: ${JSON.stringify(r)}`);
+  assert(r.role === 'counter_staff', `role ${r.role}`);
+});
+
 async function cleanup() {
   const db = await getDb();
+  for (const id of createdMovementIds) {
+    try { await db.prepare('DELETE FROM staff_cash_movements WHERE id = ?').run(id); } catch (err) { console.error(`   (cleanup warning: movement ${id}: ${err.message})`); }
+  }
   for (const id of createdSaleIds) {
     try {
       await db.prepare('DELETE FROM production_tasks WHERE sale_id = ?').run(id);

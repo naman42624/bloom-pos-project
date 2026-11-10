@@ -165,7 +165,7 @@ export default function StaffSalesScreen({ navigation }) {
               />
               <Line label="Undone" value={`${r.undone_count ?? 0} · ${money(r.undone_total ?? 0)}`} />
               <Line label="Booked at close" value={`${r.topup_count ?? 0} · ${money(r.topup_total ?? 0)}`} />
-              {r.role === 'helper' && r.floats != null && (
+              {(r.has_bag || r.role === 'helper') && r.floats != null && (
                 <View style={styles.bagBlock}>
                   <Text style={styles.bagTitle}>Cash bag</Text>
                   <Line label="Change float given" value={money(r.floats ?? 0)} />

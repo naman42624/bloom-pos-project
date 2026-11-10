@@ -78,12 +78,16 @@ export function basketTotal(basket, discount) {
     { roundOff: false }
   );
   if (bill.error) {
-    return { subtotal: bill.itemsGross, discount: 0, total: round2(bill.itemsGross), error: DISCOUNT_TOO_BIG };
+    return { subtotal: bill.itemsGross, discount: 0, total: round2(bill.itemsGross), discountPct: 0, error: DISCOUNT_TOO_BIG };
   }
+  // Discount % the same way the server measures it against the limits
+  const d = discount && Number(discount.value) > 0 ? discount : null;
+  const discountPct = !d ? 0 : (d.type === 'percentage' ? Number(d.value) : Math.round(bill.discountPct * 100) / 100);
   return {
     subtotal: bill.itemsGross,
     discount: bill.discount,
     total: bill.payable,
+    discountPct,
     error: null,
   };
 }
@@ -112,7 +116,9 @@ export function toSalePayload(basket, { locationId, payments, discount, override
     body.discount_type = discount.type;
     body.discount_value = Number(discount.value);
   }
-  if (override && override.employee_code && override.pin) {
+  if (override && override.approval_token) {
+    body.discount_override = { approval_token: String(override.approval_token) };
+  } else if (override && override.employee_code && override.pin) {
     body.discount_override = { employee_code: String(override.employee_code), pin: String(override.pin) };
   }
   return body;

@@ -298,10 +298,13 @@ const discounted = (token, pct, override) => sale(token, {
   extra: { discount_type: 'percentage', discount_value: pct, ...(override ? { discount_override: override } : {}) },
 });
 
+// Just over the counter staff limit (25% since A2, 2026-11-07), under the manager's 30%
+const OVER_COUNTER = 26;
+
 check('discount over the counter limit: 403 with a code, not 500', async () => {
   const owner = await loginOwner();
   const staff = await counterStaff(owner.token);
-  const r = await discounted(staff.token, 25);
+  const r = await discounted(staff.token, OVER_COUNTER);
   assert(r.status === 403 && r.body.code === 'DISCOUNT_NEEDS_OK', `${r.status} ${JSON.stringify(r.body)}`);
   assert(/Ask a manager or the owner/.test(r.body.message), r.body.message);
 });
@@ -311,15 +314,15 @@ check('discount: a manager PIN OKs up to the owner limit, wrong PIN / other shop
   const staff = await counterStaff(owner.token);
   const mgr = await managerWithPin(owner.token, [LOC]);
   const other = await managerWithPin(owner.token, [1]);
-  const wrong = await discounted(staff.token, 25, { employee_code: mgr.code, pin: TEST_PIN === '1111' ? '2222' : '1111' });
+  const wrong = await discounted(staff.token, OVER_COUNTER, { employee_code: mgr.code, pin: TEST_PIN === '1111' ? '2222' : '1111' });
   assert(wrong.status === 401 && wrong.body.code === 'DISCOUNT_PIN', `wrong pin ${wrong.status} ${JSON.stringify(wrong.body)}`);
-  const otherShop = await discounted(staff.token, 25, { employee_code: other.code, pin: TEST_PIN });
+  const otherShop = await discounted(staff.token, OVER_COUNTER, { employee_code: other.code, pin: TEST_PIN });
   assert(otherShop.status === 403 && otherShop.body.code === 'DISCOUNT_APPROVER', `other shop ${otherShop.status} ${JSON.stringify(otherShop.body)}`);
-  const ok = await discounted(staff.token, 25, { employee_code: mgr.code, pin: TEST_PIN });
+  const ok = await discounted(staff.token, OVER_COUNTER, { employee_code: mgr.code, pin: TEST_PIN });
   assert(ok.status === 201, `ok ${ok.status} ${JSON.stringify(ok.body)}`);
   const db = await getDb();
   const row = await db.prepare('SELECT discount_approved_by, discount_percentage FROM sales WHERE id = ?').get(ok.body.data.id);
-  assert(Number(row.discount_approved_by) === mgr.id && Number(row.discount_percentage) === 25, JSON.stringify(row));
+  assert(Number(row.discount_approved_by) === mgr.id && Number(row.discount_percentage) === OVER_COUNTER, JSON.stringify(row));
   const tooBig = await discounted(staff.token, 35, { employee_code: mgr.code, pin: TEST_PIN });
   assert(tooBig.status === 403 && tooBig.body.code === 'DISCOUNT_NEEDS_OWNER', `too big ${tooBig.status} ${JSON.stringify(tooBig.body)}`);
 });

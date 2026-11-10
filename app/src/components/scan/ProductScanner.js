@@ -50,7 +50,9 @@ const ICONS = {
   failed: 'alert-circle-outline',
 };
 
-export default function ProductScanner({ onCode, paused = false, children, style }) {
+// copy: optional { noCamera, unsupported, ... } overriding SCANNER_COPY
+// words for this screen (the helper Sell screen points to Find by name, A7).
+export default function ProductScanner({ onCode, paused = false, children, style, copy }) {
   const videoRef = useRef(null);
   const trackRef = useRef(null);
   const onCodeRef = useRef(onCode);
@@ -249,7 +251,7 @@ export default function ProductScanner({ onCode, paused = false, children, style
       {failed && !paused ? (
         <ScannerMessage
           icon={ICONS[status] || ICONS.failed}
-          text={SCANNER_COPY[status] || SCANNER_COPY.failed}
+          text={(copy && copy[status]) || SCANNER_COPY[status] || SCANNER_COPY.failed}
           onRetry={status === 'unsupported' ? undefined : retry}
         />
       ) : null}

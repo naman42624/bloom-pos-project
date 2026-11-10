@@ -427,7 +427,7 @@ check('manager can be given an approval PIN', async () => {
   const ok = await overrideOutcome(code, '1357');
   assert(ok.status === 200 && ok.user.id === mgr.id && ok.user.role === 'manager', `override: ${JSON.stringify(ok)}`);
   assert(approverMaxDiscountPct('manager', { discount_owner_threshold: '30' }) === 30, 'manager limit');
-  assert(approverMaxDiscountPct('counter_staff', {}) === 20, 'counter default limit');
+  assert(approverMaxDiscountPct('counter_staff', {}) === 25, 'counter default limit (A2)');
   assert(approverMaxDiscountPct('employee', { discount_manager_threshold: '15' }) === 15, 'employee limit');
   assert(approverMaxDiscountPct('owner', {}) === Infinity, 'owner limit');
   assert(approverMaxDiscountPct('helper', {}) === 0, 'helper is no approver');
@@ -808,7 +808,7 @@ async function counterLimits() {
   const db = await getDb();
   const rows = await db.prepare("SELECT key, value FROM settings WHERE key IN ('discount_manager_threshold', 'discount_owner_threshold')").all();
   const m = Object.fromEntries(rows.map((r) => [r.key, parseFloat(r.value)]));
-  return { manager: m.discount_manager_threshold || 20, owner: m.discount_owner_threshold || 30 };
+  return { manager: m.discount_manager_threshold || 25, owner: m.discount_owner_threshold || 30 };
 }
 
 let sellCtx = null;
@@ -967,6 +967,53 @@ check('override by manager ok and recorded in discount_approved_by', async () =>
   assert(w.status === 401 && w.body?.message === "That PIN didn't match. 4 tries left.", `wrong pin: ${w.status} ${JSON.stringify(w.body)}`);
   // Nothing in the response carries PIN data
   assert(!JSON.stringify(r.body).includes('pin_hash'), 'pin_hash in response');
+});
+
+// A1 (2026-11-07): the counter approves before money is taken, and the sale
+// carries that approval instead of the PIN.
+check('A1: counter approves the discount first; the sale uses the approval', async () => {
+  const { owner, helper, fixed } = await sellSetup();
+  await setHelperLimit(10);
+  const cs = await makeStaff(owner.token, 'counter_staff');
+  await api('PUT', `/users/${cs.id}/pin`, owner.token, { pin: '2468' });
+  const info = await api('GET', '/settings/shop-info', helper.token);
+  assert(info.status === 200 && Number(info.body.data.helper_discount_limit) === 10, `shop-info limit: ${JSON.stringify(info.body)}`);
+  const ref = newRef();
+  const ok = (body) => api('POST', '/sales/helper-discount-ok', helper.token, { location_id: TEST_LOCATION_ID, client_ref: ref, ...body });
+  const within = await ok({ discount_pct: 5 });
+  assert(within.status === 200 && within.body.data.needed === false, `within limit: ${within.status} ${JSON.stringify(within.body)}`);
+  const wrong = await ok({ discount_pct: 15, employee_code: cs.employee_code, pin: '0000' });
+  assert(wrong.status === 401, `wrong PIN: ${wrong.status} ${JSON.stringify(wrong.body)}`);
+  const good = await ok({ discount_pct: 15, employee_code: cs.employee_code, pin: '2468' });
+  assert(good.status === 200 && good.body.data.needed === true && good.body.data.approval_token, `approve: ${good.status} ${JSON.stringify(good.body)}`);
+  assert(!JSON.stringify(good.body).includes('2468'), 'PIN echoed back');
+  const token = good.body.data.approval_token;
+  const body = { items: [{ product_id: fixed.id, quantity: 1, unit_price: 1000 }], discount_type: 'percentage', discount_value: 15, payments: [{ method: 'upi', amount: 850 }] };
+  // Another basket cannot use it
+  const other = await sell(helper.token, { ...body, discount_override: { approval_token: token } });
+  assert(other.status === 403 && other.body?.message === NEEDS_OK, `other basket: ${other.status} ${JSON.stringify(other.body)}`);
+  // A bigger discount than approved is refused
+  const bigger = await sell(helper.token, { ...body, client_ref: ref, discount_value: 16, payments: [{ method: 'upi', amount: 840 }], discount_override: { approval_token: token } });
+  assert(bigger.status === 403 && bigger.body?.message === NEEDS_OK, `bigger: ${bigger.status} ${JSON.stringify(bigger.body)}`);
+  // A made-up approval is refused
+  const fake = await sell(helper.token, { ...body, client_ref: ref, discount_override: { approval_token: 'x.y.z' } });
+  assert(fake.status === 403 && fake.body?.message === NEEDS_OK, `fake: ${fake.status} ${JSON.stringify(fake.body)}`);
+  // The basket it was given for goes through, approved by the counter person
+  const sold = await sell(helper.token, { ...body, client_ref: ref, discount_override: { approval_token: token } });
+  assert(sold.status === 201 && sold.body.data.discount_approved_by === cs.id && Number(sold.body.data.grand_total) === 850, `sale: ${sold.status} ${JSON.stringify(sold.body)}`);
+  // Only helpers use this route
+  const csLogin = await api('POST', '/auth/staff-login', null, { employee_code: cs.employee_code, pin: '2468' });
+  const byCounter = await api('POST', '/sales/helper-discount-ok', csLogin.body.data?.token || csLogin.body.token, { location_id: TEST_LOCATION_ID, client_ref: newRef(), discount_pct: 15 });
+  assert(byCounter.status === 403, `counter staff on the helper route: ${byCounter.status}`);
+});
+
+// A2 (2026-11-07): counter staff 25% by default, helper 20%
+check('A2: default limits are counter 25%, helper never above counter', async () => {
+  assert(approverMaxDiscountPct('counter_staff', {}) === 25, 'counter default');
+  assert(approverMaxDiscountPct('manager', {}) === 30, 'manager default');
+  const db = await getDb();
+  const marker = await db.prepare("SELECT value FROM settings WHERE key = 'discount_limits_v2'").get();
+  assert(marker && marker.value === 'done', 'run-once marker missing');
 });
 
 check('override wrong PIN 5 times locks the approver', async () => {
