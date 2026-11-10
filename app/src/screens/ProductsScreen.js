@@ -252,6 +252,8 @@ export default function ProductsScreen({ navigation }) {
           <TouchableOpacity
             style={[styles.chip, selectedType === item.key && styles.chipActive]}
             onPress={() => setSelectedType(item.key)}
+            accessibilityRole="button"
+            accessibilityState={{ selected: selectedType === item.key }}
           >
             <Text style={[styles.chipText, selectedType === item.key && styles.chipTextActive]}>
               {item.label}
@@ -315,6 +317,8 @@ export default function ProductsScreen({ navigation }) {
                   key={loc.id}
                   style={[styles.modalChip, adjustLocationId === loc.id && styles.modalChipActive]}
                   onPress={() => setAdjustLocationId(loc.id)}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: adjustLocationId === loc.id }}
                 >
                   <Text style={[styles.modalChipText, adjustLocationId === loc.id && styles.modalChipTextActive]}>
                     {loc.name}
@@ -333,8 +337,10 @@ export default function ProductsScreen({ navigation }) {
                   key={t.key}
                   style={[styles.modalChip, adjustReasonType === t.key && styles.modalChipActive]}
                   onPress={() => setAdjustReasonType(t.key)}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: adjustReasonType === t.key }}
                 >
-                  <Ionicons name={t.icon} size={13} color={adjustReasonType === t.key ? Colors.white : Colors.textSecondary} />
+                  <Ionicons name={t.icon} size={16} color={adjustReasonType === t.key ? Colors.white : Colors.textSecondary} />
                   <Text style={[styles.modalChipText, adjustReasonType === t.key && styles.modalChipTextActive]}>{t.label}</Text>
                 </TouchableOpacity>
               ))}
@@ -383,11 +389,12 @@ const styles = StyleSheet.create({
   chipStrip: { flexGrow: 0, flexShrink: 0 },
   chipList: { paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm, gap: Spacing.sm },
   chip: {
-    paddingHorizontal: Spacing.md, paddingVertical: Spacing.xs + 2, borderRadius: BorderRadius.full,
+    minHeight: 48, justifyContent: 'center',
+    paddingHorizontal: Spacing.lg, borderRadius: BorderRadius.full,
     backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.border,
   },
   chipActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
-  chipText: { fontSize: FontSize.sm, color: Colors.textSecondary, fontWeight: '500' },
+  chipText: { fontSize: FontSize.md, color: Colors.textSecondary, fontWeight: '600' },
   chipTextActive: { color: Colors.white },
   listContent: { padding: Spacing.md, paddingBottom: 100 },
   card: {
@@ -438,20 +445,20 @@ const styles = StyleSheet.create({
   modalTitle: { fontSize: FontSize.md, fontWeight: '700', color: Colors.text },
   modalLabel: { fontSize: FontSize.sm, color: Colors.text, fontWeight: '600', marginTop: Spacing.md, marginBottom: Spacing.xs },
   currentStockText: { fontSize: FontSize.xs, color: Colors.textSecondary, marginBottom: Spacing.xs },
-  modalChipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.xs },
+  modalChipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm },
   modalChip: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 5,
+    gap: Spacing.xs,
+    minHeight: 48,
     borderWidth: 1,
     borderColor: Colors.border,
     borderRadius: BorderRadius.full,
     paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.xs + 1,
     backgroundColor: Colors.background,
   },
   modalChipActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
-  modalChipText: { fontSize: FontSize.xs, color: Colors.textSecondary, fontWeight: '600' },
+  modalChipText: { fontSize: FontSize.sm, color: Colors.textSecondary, fontWeight: '600' },
   modalChipTextActive: { color: Colors.white },
   modalInput: {
     borderWidth: 1,
