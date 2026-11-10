@@ -4,7 +4,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '../../constants/theme';
 import { FONT_FAMILY, formatMoney } from '../../constants/orderDisplay';
 import { TYPE_ICONS } from '../../constants/orderStages';
-import { formatCardDateTime, minutesSinceServerDate, minutesUntilShopDateTime } from '../../utils/datetime';
+import { formatCardDateTime, formatTimeString, getShopTodayStr, minutesSinceServerDate, minutesUntilShopDateTime } from '../../utils/datetime';
 import { waLink, buildMessage } from '../../utils/contact';
 import StageBadge from '../StageBadge';
 import { printOrderSlip, canPrintOrderSlip } from '../../utils/printHelpers';
@@ -209,7 +209,15 @@ function getOrderSla(order, timezone) {
     if (mins > 10) return { level: 'soon', text: `${formatWaitDuration(mins)} waiting` };
     return null;
   }
-  if (!order.scheduled_date || !order.scheduled_time) return null;
+  if (!order.scheduled_date) return null;
+  if (!order.scheduled_time) {
+    // Date only ("any time"): late once that whole day has passed.
+    const date = String(order.scheduled_date).slice(0, 10);
+    const today = getShopTodayStr(timezone);
+    if (date >= today) return null;
+    const days = Math.round((Date.parse(today) - Date.parse(date)) / 86400000);
+    return { level: 'late', text: days === 1 ? '1 day late' : `${days} days late` };
+  }
   const remaining = minutesUntilShopDateTime(order.scheduled_date, order.scheduled_time, timezone);
   if (remaining == null) return null;
   if (remaining < 0) return { level: 'late', text: `${formatWaitDuration(Math.abs(remaining))} late` };
@@ -364,6 +372,47 @@ function getPreparerLine(tasks, viewerId) {
   return { text: who, actionWord: 'change' };
 }
 
+// The order type in words next to its icon: an icon alone was confusing.
+const TYPE_WORDS = { delivery: 'Delivery', pickup: 'Pickup', walk_in: 'Walk-in', pre_order: 'Pre-order' };
+
+function addDays(ymd, n) {
+  const [y, m, d] = ymd.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d + n));
+  return dt.toISOString().slice(0, 10);
+}
+
+/**
+ * The line staff read first: when this order is due (2026-11-10).
+ * "Today, 4:00 PM" / "Tomorrow · any time" / "8 Nov, 11:00 AM". A walk-in
+ * has no booked time, so it says how long the customer has been waiting.
+ */
+export function getWhenText(order, timezone) {
+  if (order.order_type === 'walk_in') {
+    const mins = minutesSinceServerDate(order.created_at, timezone);
+    if (mins == null) return 'Now';
+    return mins < 1 ? 'Just now' : `Waiting ${formatWaitDuration(mins)}`;
+  }
+  if (!order.scheduled_date) return 'No date set';
+  const date = String(order.scheduled_date).slice(0, 10);
+  const today = getShopTodayStr(timezone);
+  let day;
+  if (date === today) day = 'Today';
+  else if (date === addDays(today, 1)) day = 'Tomorrow';
+  else if (date === addDays(today, -1)) day = 'Yesterday';
+  else day = formatCardDateTime(date, null, timezone);
+  const hasTime = order.scheduled_time && /^\d{1,2}:\d{2}/.test(String(order.scheduled_time));
+  return hasTime ? `${day}, ${formatTimeString(order.scheduled_time)}` : `${day} · any time`;
+}
+
+/** "2× Red roses, 1× Bouquet, +2 more" — the first three lines. */
+export function getItemsText(items) {
+  const list = Array.isArray(items) ? items : [];
+  if (list.length === 0) return '';
+  const shown = list.slice(0, 3).map((it) => `${Number(it.quantity) || 1}× ${it.product_name || 'Item'}`);
+  const more = list.length - shown.length;
+  return more > 0 ? `${shown.join(', ')}, +${more} more` : shown.join(', ');
+}
+
 export default function OrderCard({
   order,
   tasks,
@@ -413,7 +462,15 @@ export default function OrderCard({
   // so every other card keeps the progress line it has always had.
   const showTaskProgress = !!taskProgress && deadEnd?.kind !== 'finish_tasks';
   const contactPhone = order.customer_phone || order.receiver_phone;
-  const showSchedule = order.scheduled_date && order.order_type !== 'walk_in';
+  const whenText = getWhenText(order, timezone);
+  const itemsText = getItemsText(order.items);
+  const showAddress = !!order.delivery_address
+    && (order.order_type === 'delivery' || (order.delivery_id != null && order.delivery_status !== 'cancelled'));
+  const receiverName = order.receiver_name || order.receiver_display_name;
+  const noDate = order.order_type !== 'walk_in' && !order.scheduled_date;
+  const whenColor = sla?.level === 'late' ? Colors.error
+    : sla?.level === 'soon' ? Colors.warning
+      : noDate ? Colors.textSecondary : Colors.text;
 
   // ── Who is making this? (Task 15) ──
   //
@@ -459,15 +516,41 @@ export default function OrderCard({
   return (
     <TouchableOpacity style={styles.card} onPress={onOpen} activeOpacity={0.85}>
       <View style={styles.headerRow}>
-        <Ionicons
-          name={TYPE_ICONS[order.order_type] || 'receipt-outline'}
-          size={16}
-          color={Colors.textSecondary}
-        />
-        <Text style={styles.orderNumber} numberOfLines={1}>#{order.sale_number}</Text>
+        <View style={styles.typeTag}>
+          <Ionicons
+            name={TYPE_ICONS[order.order_type] || 'receipt-outline'}
+            size={15}
+            color={Colors.textSecondary}
+          />
+          <Text style={styles.typeText}>{TYPE_WORDS[order.order_type] || 'Order'}</Text>
+        </View>
         <View style={{ flex: 1 }} />
         <StageBadge stage={order.display_stage} size="sm" />
       </View>
+
+      {/* When it is due comes first and largest: it decides what to do next. */}
+      <View>
+        <Text style={[styles.whenText, noDate && styles.whenTextQuiet, { color: whenColor }]} numberOfLines={1}>{whenText}</Text>
+        {sla && order.order_type !== 'walk_in' && (
+          <Text style={[styles.whenSla, { color: whenColor }]}>{sla.text}</Text>
+        )}
+      </View>
+
+      {showAddress && (
+        <View style={styles.addressRow}>
+          <Ionicons name="location-outline" size={15} color={Colors.textSecondary} style={{ marginTop: 1 }} />
+          <View style={{ flex: 1 }}>
+            <Text style={styles.addressText} numberOfLines={2}>{order.delivery_address}</Text>
+            {!!receiverName && <Text style={styles.receiverText} numberOfLines={1}>To: {receiverName}</Text>}
+          </View>
+        </View>
+      )}
+
+      {!!itemsText && (
+        <Text style={styles.itemsText} numberOfLines={2}>{itemsText}</Text>
+      )}
+
+      <View style={styles.divider} />
 
       <View style={styles.customerRow}>
         <Text style={styles.customer} numberOfLines={1}>{order.customer_name || 'Guest'}</Text>
@@ -512,22 +595,15 @@ export default function OrderCard({
         )}
       </View>
 
-      <Text style={styles.amount}>{formatMoney(order.grand_total)}</Text>
+      <View style={styles.amountRow}>
+        <Text style={styles.amount}>{formatMoney(order.grand_total)}</Text>
+        <View style={{ flex: 1 }} />
+        <Text style={styles.orderNumber} numberOfLines={1}>#{order.sale_number}</Text>
+      </View>
 
-      {(sla || payment) && (
+      {/* The wait or lateness is already in the time line at the top. */}
+      {payment && (
         <View style={styles.warningRow}>
-          {sla && (
-            <View style={[styles.warnPill, sla.level === 'late' ? styles.warnPillLate : styles.warnPillSoon]}>
-              <Ionicons
-                name="alert-circle-outline"
-                size={12}
-                color={sla.level === 'late' ? Colors.error : Colors.warning}
-              />
-              <Text style={[styles.warnText, { color: sla.level === 'late' ? Colors.error : Colors.warning }]}>
-                {sla.text}
-              </Text>
-            </View>
-          )}
           {payment && (
             <View style={[styles.warnPill, payment.level === 'late' ? styles.warnPillLate : styles.warnPillSoon]}>
               <Ionicons
@@ -543,13 +619,8 @@ export default function OrderCard({
         </View>
       )}
 
-      {(showSchedule || showTaskProgress) && (
-        <Text style={styles.metaLine} numberOfLines={1}>
-          {[
-            showSchedule ? formatCardDateTime(order.scheduled_date, order.scheduled_time, timezone) : null,
-            showTaskProgress ? taskProgress : null,
-          ].filter(Boolean).join('  ·  ')}
-        </Text>
+      {showTaskProgress && (
+        <Text style={styles.metaLine} numberOfLines={1}>{taskProgress}</Text>
       )}
 
       {/* Who is making this — only on a card that is actually being prepared.
@@ -662,14 +733,28 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   headerRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  orderNumber: { fontSize: 14, fontWeight: '800', color: Colors.text, fontFamily: FONT_FAMILY },
+  typeTag: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6, backgroundColor: '#F3F4F6',
+  },
+  typeText: { fontSize: 13, fontWeight: '700', color: Colors.textSecondary, fontFamily: FONT_FAMILY },
+  whenText: { fontSize: 18, fontWeight: '800', fontFamily: FONT_FAMILY },
+  whenTextQuiet: { fontSize: 15, fontWeight: '600' },
+  whenSla: { fontSize: 12, fontWeight: '700', fontFamily: FONT_FAMILY, marginTop: 1 },
+  addressRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 5 },
+  addressText: { fontSize: 14, color: Colors.text, fontFamily: FONT_FAMILY },
+  receiverText: { fontSize: 13, color: Colors.textSecondary, fontFamily: FONT_FAMILY, marginTop: 1 },
+  itemsText: { fontSize: 14, color: Colors.text, fontWeight: '600', fontFamily: FONT_FAMILY },
+  divider: { height: 1, backgroundColor: '#F0F0F0', marginVertical: 2 },
+  amountRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  orderNumber: { fontSize: 12, color: Colors.textLight, fontFamily: FONT_FAMILY, flexShrink: 1 },
   customerRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   customer: { fontSize: 14, color: Colors.textSecondary, flexShrink: 1, fontFamily: FONT_FAMILY },
   contactBtn: { width: 26, height: 26, borderRadius: 13, alignItems: 'center', justifyContent: 'center' },
   // Last item in customerRow: -9 right/vertical, -3 left so the hit area
   // stops short of the WhatsApp button across the 6px gap.
   printHit: { width: 44, height: 44, marginVertical: -9, marginLeft: -3, marginRight: -9, alignItems: 'center', justifyContent: 'center' },
-  amount: { fontSize: 17, fontWeight: '800', color: Colors.text, fontFamily: FONT_FAMILY },
+  amount: { fontSize: 16, fontWeight: '800', color: Colors.text, fontFamily: FONT_FAMILY },
   warningRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
   warnPill: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6 },
   warnPillLate: { backgroundColor: Colors.error + '15' },
