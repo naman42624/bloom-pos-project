@@ -23,6 +23,9 @@ require('../config/database').getDb();
 const API_BASE = process.env.API_BASE_URL || 'http://localhost:3001/api';
 const TEST_LOCATION_ID = 4; // "Test Loc"
 
+// A6: only registers this run opened are ever closed
+const { assertOwnRegister, refuseIfRegisterOpen } = require('./lib/verify-harness');
+const ownRegisterIds = [];
 const checks = [];
 const createdUserIds = [];
 const createdShiftIds = [];
@@ -338,10 +341,11 @@ check('POST /staff/payroll/disburse (cash) requires an open register, writes a l
   assert(blocked.status === 400, `Expected 400 with no open register, got ${blocked.status}`);
 
   const initialStatus = await api('GET', `/sales/register/status?location_id=${TEST_LOCATION_ID}`, owner.token);
-  if (initialStatus.body?.isOpen) {
+  if (assertOwnRegister(initialStatus.body, ownRegisterIds)) {
     await api('PUT', '/sales/register/close', owner.token, { location_id: TEST_LOCATION_ID, actual_cash: Number(initialStatus.body.data.expected_cash) || 0 });
   }
-  await api('POST', '/sales/register/open', owner.token, { location_id: TEST_LOCATION_ID, opening_balance: 1000 });
+  const opened1000 = await api('POST', '/sales/register/open', owner.token, { location_id: TEST_LOCATION_ID, opening_balance: 1000 });
+  if (opened1000.body?.data?.id) ownRegisterIds.push(opened1000.body.data.id);
   const before = await api('GET', `/sales/register/status?location_id=${TEST_LOCATION_ID}`, owner.token);
   const expectedBefore = Number(before.body.data.expected_cash);
 
@@ -447,10 +451,11 @@ check('PUT /attendance/salary-advance/:id/approve requires an open register and 
   assert(blocked.status === 400, `Expected 400 with no open register, got ${blocked.status}`);
 
   const initialStatus = await api('GET', `/sales/register/status?location_id=${TEST_LOCATION_ID}`, owner.token);
-  if (initialStatus.body?.isOpen) {
+  if (assertOwnRegister(initialStatus.body, ownRegisterIds)) {
     await api('PUT', '/sales/register/close', owner.token, { location_id: TEST_LOCATION_ID, actual_cash: Number(initialStatus.body.data.expected_cash) || 0 });
   }
-  await api('POST', '/sales/register/open', owner.token, { location_id: TEST_LOCATION_ID, opening_balance: 5000 });
+  const opened5000 = await api('POST', '/sales/register/open', owner.token, { location_id: TEST_LOCATION_ID, opening_balance: 5000 });
+  if (opened5000.body?.data?.id) ownRegisterIds.push(opened5000.body.data.id);
   const before = await api('GET', `/sales/register/status?location_id=${TEST_LOCATION_ID}`, owner.token);
   const expectedBefore = Number(before.body.data.expected_cash);
 
@@ -1457,10 +1462,14 @@ async function cleanup() {
 
 async function main() {
   assertLocalTarget();
+  await refuseIfRegisterOpen(TEST_LOCATION_ID);
   let pass = 0, fail = 0;
   for (const { name, fn } of checks) {
     try { await fn(); console.log(`✅ ${name}`); pass++; }
-    catch (err) { console.log(`❌ ${name}`); console.log(`   ${err.message}`); fail++; }
+    catch (err) {
+      console.log(`❌ ${name}`); console.log(`   ${err.message}`); fail++;
+      if (err.foreignRegister) { console.log('\nStopped: nothing else was run.'); break; }
+    }
   }
   await cleanup();
   console.log(`\n${pass}/${pass + fail} checks passed`);

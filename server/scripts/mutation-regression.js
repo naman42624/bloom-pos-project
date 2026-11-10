@@ -46,8 +46,6 @@ const bodyOverrides = {
     items: [{ product_id: 1, quantity: 1, unit_price: 100 }],
     payments: [{ method: 'cash', amount: 100 }],
   },
-  'POST /api/sales/register/open': { location_id: 1, opening_balance: 1000 },
-  'PUT /api/sales/register/close': { location_id: 1, actual_cash: 1000, closing_notes: 'mutation test close' },
   'POST /api/expenses': {
     location_id: 1,
     category: 'other',
@@ -128,9 +126,16 @@ async function loginOwner() {
   return json.data.token;
 }
 
+// A6 (2026-11-10): this script runs against a real shop (location 1). It never
+// opens or closes a register there - that is someone's real cash drawer.
+const SKIP_REGISTER_KEYS = new Set(['POST /api/sales/register/open', 'PUT /api/sales/register/close']);
+
 async function runCase(endpoint, token) {
   const key = `${endpoint.method} ${endpoint.fullPath}`;
   const targetPath = safePath(endpoint.fullPath);
+  if (SKIP_REGISTER_KEYS.has(key)) {
+    return { ...endpoint, targetPath, status: 'SKIPPED', ok: true, message: 'Skipped: never opens or closes a real shop register' };
+  }
 
   const headers = { 'Content-Type': 'application/json' };
   if (shouldSendAuth(endpoint.fullPath)) headers.Authorization = `Bearer ${token}`;

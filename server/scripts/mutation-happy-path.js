@@ -162,14 +162,12 @@ async function main() {
   expectStatus('Register status before run', regStatusBefore, [200]);
   markStep(steps, 'Register status before run', 'GET /api/sales/register/status', regStatusBefore);
 
+  // A6: never close a register this run did not open - it may be someone's
+  // real drawer. Stop and say what to do instead.
   if (regStatusBefore.payload?.isOpen && regStatusBefore.payload?.data?.id) {
-    const preCloseRes = await http('PUT', '/api/sales/register/close', token, {
-      location_id: locationId,
-      actual_cash: Number(regStatusBefore.payload?.data?.expected_cash || 0),
-      closing_notes: `Pre-close by happy-path ${runTag}`,
-    });
-    expectStatus('Pre-close existing register', preCloseRes, [200]);
-    markStep(steps, 'Pre-close existing register', 'PUT /api/sales/register/close', preCloseRes);
+    const reg = regStatusBefore.payload.data;
+    throw new Error(`Location ${locationId} already has register #${reg.id} open${reg.opened_by_name ? ` (opened by ${reg.opened_by_name})` : ''}. `
+      + 'This run only closes registers it opened itself. Close it in the app (Cash Register), then run again.');
   }
 
   const openRegRes = await http('POST', '/api/sales/register/open', token, {

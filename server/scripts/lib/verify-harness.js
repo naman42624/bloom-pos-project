@@ -59,9 +59,34 @@ async function loginOwner() {
   return { token: body.data.token, id: body.data.user.id, role: body.data.user.role };
 }
 
-async function ensureClosed(token, locationId) {
+// A6 (2026-11-10): tests only ever close or use a register they opened. A
+// register someone else opened at the test shop stops the run with this
+// message instead of being closed (or sold into) by the test.
+function foreignRegisterMessage(reg) {
+  const who = reg && reg.opened_by_name ? ` by ${reg.opened_by_name}` : '';
+  const when = reg && reg.opened_at
+    ? ` at ${new Date(reg.opened_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })}`
+    : '';
+  return `Test Loc already has register #${reg && reg.id} open (opened${who}${when}). `
+    + 'These tests only close registers they opened themselves. Close it in the app (Cash Register), then run the tests again.';
+}
+
+// Status body of GET /sales/register/status. Throws when a register is open
+// that is not in ownIds; returns true when one of ownIds is open.
+function assertOwnRegister(statusBody, ownIds) {
+  if (!statusBody || !statusBody.isOpen) return false;
+  const reg = statusBody.data || {};
+  if (!(ownIds || []).includes(reg.id)) {
+    const err = new Error(foreignRegisterMessage(reg));
+    err.foreignRegister = true;
+    throw err;
+  }
+  return true;
+}
+
+async function ensureClosed(token, locationId, ownIds = createdRegisterIds) {
   const { body } = await api('GET', `/sales/register/status?location_id=${locationId}`, token);
-  if (!body?.isOpen) return;
+  if (!assertOwnRegister(body, ownIds)) return;
   await api('PUT', '/sales/register/close', token, { location_id: locationId, actual_cash: Number(body.data.expected_cash) || 0 });
 }
 
@@ -80,8 +105,18 @@ async function closeRegisterWith(token, locationId, actualCash) {
 }
 
 // Runs every registered check, then the caller's cleanup, then exits.
+async function refuseIfRegisterOpen(locationId = TEST_LOCATION_ID) {
+  const owner = await loginOwner();
+  const { body } = await api('GET', `/sales/register/status?location_id=${locationId}`, owner.token);
+  if (body && body.isOpen) {
+    console.log(foreignRegisterMessage(body.data));
+    process.exit(1);
+  }
+}
+
 async function run({ cleanup } = {}) {
   assertLocalTarget();
+  await refuseIfRegisterOpen();
   let pass = 0, fail = 0;
   for (const { name, fn } of checks) {
     try {
@@ -92,6 +127,7 @@ async function run({ cleanup } = {}) {
       console.log(`FAIL ${name}`);
       console.log(`   ${err.message}`);
       fail++;
+      if (err.foreignRegister) { console.log('\nStopped: nothing else was run.'); break; }
     }
   }
   if (cleanup) {
@@ -109,4 +145,4 @@ async function run({ cleanup } = {}) {
   process.exit(fail > 0 ? 1 : 0);
 }
 
-module.exports = { check, checks, api, loginOwner, ensureClosed, openRegister, closeRegisterWith, assert, assertLocalTarget, run, getDb, TEST_LOCATION_ID, createdRegisterIds };
+module.exports = { check, checks, api, loginOwner, ensureClosed, assertOwnRegister, foreignRegisterMessage, refuseIfRegisterOpen, openRegister, closeRegisterWith, assert, assertLocalTarget, run, getDb, TEST_LOCATION_ID, createdRegisterIds };

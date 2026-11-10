@@ -18,6 +18,7 @@ const OTHER_LOCATION_ID = 1; // "Main Shop" — for cross-location isolation che
 
 const checks = [];
 const createdRegisterIds = [];
+const { assertOwnRegister, refuseIfRegisterOpen } = require('./lib/verify-harness');
 const createdExpenseIds = [];
 const createdSaleIds = [];
 
@@ -70,7 +71,7 @@ async function loginOwner() {
 
 async function ensureClosed(token, locationId) {
   const { body } = await api('GET', `/sales/register/status?location_id=${locationId}`, token);
-  if (!body?.isOpen) return;
+  if (!assertOwnRegister(body, createdRegisterIds)) return;
   await api('PUT', '/sales/register/close', token, { location_id: locationId, actual_cash: Number(body.data.expected_cash) || 0 });
 }
 
@@ -576,6 +577,7 @@ async function cleanup() {
 
 async function main() {
   assertLocalTarget();
+  await refuseIfRegisterOpen(TEST_LOCATION_ID);
   let pass = 0, fail = 0;
   for (const { name, fn } of checks) {
     try {
@@ -586,6 +588,7 @@ async function main() {
       console.log(`❌ ${name}`);
       console.log(`   ${err.message}`);
       fail++;
+      if (err.foreignRegister) { console.log('\nStopped: nothing else was run.'); break; }
     }
   }
   await cleanup();
