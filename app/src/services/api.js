@@ -2,6 +2,7 @@
  * BloomCart POS — API Service
  */
 import { Platform } from 'react-native';
+import { friendlyMessage, NETWORK_MESSAGE } from '../utils/friendlyError';
 
 // const LAN_IP = '159.89.173.40';
 
@@ -60,16 +61,19 @@ class ApiService {
 
     try {
       const response = await fetch(url, { ...options, headers });
-      const data = await response.json();
+      // A proxy error page (502/504 from Nginx) is HTML, not JSON
+      const data = await response.json().catch(() => ({}));
 
       if (!response.ok) {
-        throw {
+        const failure = {
           status: response.status,
-          message: data.message || 'Something went wrong',
+          message: data.message || '',
           errors: data.errors,
           code: data.code,
           body: data,
         };
+        // D45: staff see what happened and what to do (utils/friendlyError.js)
+        throw { ...failure, raw_message: failure.message, message: friendlyMessage(failure) };
       }
 
       return data;
@@ -77,7 +81,8 @@ class ApiService {
       if (error.status) throw error;
       throw {
         status: 0,
-        message: 'Network error. Please check your connection.',
+        raw_message: String((error && error.message) || error || ''),
+        message: NETWORK_MESSAGE,
       };
     }
   }
@@ -353,8 +358,8 @@ class ApiService {
     if (this.token) headers['Authorization'] = `Bearer ${this.token}`;
 
     const response = await fetch(url, { method: 'POST', headers, body: formData });
-    const data = await response.json();
-    if (!response.ok) throw { status: response.status, message: data.message || 'Upload failed' };
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw { status: response.status, raw_message: data.message, errors: data.errors, message: friendlyMessage({ status: response.status, message: data.message || 'Upload failed', errors: data.errors }) };
     return data;
   }
 
@@ -513,8 +518,8 @@ class ApiService {
     if (this.token) headers['Authorization'] = `Bearer ${this.token}`;
 
     const response = await fetch(url, { method: 'POST', headers, body: formData });
-    const data = await response.json();
-    if (!response.ok) throw { status: response.status, message: data.message || 'Upload failed' };
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw { status: response.status, raw_message: data.message, errors: data.errors, message: friendlyMessage({ status: response.status, message: data.message || 'Upload failed', errors: data.errors }) };
     return data;
   }
 
@@ -524,8 +529,8 @@ class ApiService {
       headers: this.token ? { Authorization: `Bearer ${this.token}` } : {},
       body: formData,
     });
-    const data = await response.json();
-    if (!response.ok) throw { status: response.status, message: data.message || 'Upload failed' };
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw { status: response.status, raw_message: data.message, errors: data.errors, message: friendlyMessage({ status: response.status, message: data.message || 'Upload failed', errors: data.errors }) };
     return data;
   }
 
@@ -610,8 +615,8 @@ class ApiService {
     if (this.token) headers['Authorization'] = `Bearer ${this.token}`;
 
     const response = await fetch(url, { method: 'POST', headers, body: formData });
-    const data = await response.json();
-    if (!response.ok) throw { status: response.status, message: data.message || 'Upload failed' };
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw { status: response.status, raw_message: data.message, errors: data.errors, message: friendlyMessage({ status: response.status, message: data.message || 'Upload failed', errors: data.errors }) };
     return data;
   }
 

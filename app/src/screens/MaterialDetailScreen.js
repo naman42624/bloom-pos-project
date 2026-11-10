@@ -1,8 +1,5 @@
 import React, { useState, useCallback } from 'react';
-import {
-  View, Text, StyleSheet, ScrollView, TouchableOpacity,
-  RefreshControl, Alert, Modal, TextInput, Platform, Image,
-} from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, RefreshControl, Modal, TextInput, Platform, Image } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import * as ImagePicker from 'expo-image-picker';
@@ -10,6 +7,7 @@ import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import { formatDate } from '../utils/datetime';
+import { appAlert } from '../utils/alert';
 
 const TXN_CONFIG = {
   purchase: { icon: 'arrow-down-circle', color: Colors.success, label: 'Purchase', sign: '+' },
@@ -44,17 +42,13 @@ export default function MaterialDetailScreen({ route, navigation }) {
         await api.deleteMaterial(materialId);
         navigation.goBack();
       } catch (err) {
-        Alert.alert('Error', err.message || 'Failed to delete material');
+        appAlert('Error', err.message || 'Failed to delete material');
       }
     };
-    if (Platform.OS === 'web') {
-      if (window.confirm('Deactivate this material?')) doDelete();
-    } else {
-      Alert.alert('Confirm', 'Deactivate this material?', [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Deactivate', style: 'destructive', onPress: doDelete },
-      ]);
-    }
+    appAlert('Confirm', 'Deactivate this material?', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Deactivate', style: 'destructive', onPress: doDelete },
+    ]);
   };
 
   const fetchData = useCallback(async () => {
@@ -66,7 +60,7 @@ export default function MaterialDetailScreen({ route, navigation }) {
       setMaterial(matRes.data);
       setTransactions(txnRes.data || []);
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to load material');
+      appAlert('Error', err.message || 'Failed to load material');
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -84,12 +78,12 @@ export default function MaterialDetailScreen({ route, navigation }) {
       setLinkPrice('');
       setShowLinkModal(true);
     } catch (err) {
-      Alert.alert('Error', 'Failed to load suppliers');
+      appAlert('Error', 'Failed to load suppliers');
     }
   };
 
   const handleLinkSupplier = async () => {
-    if (!selectedSupplierId) { Alert.alert('Select', 'Please select a supplier'); return; }
+    if (!selectedSupplierId) { appAlert('Select', 'Please select a supplier'); return; }
     setLinking(true);
     try {
       const data = { material_id: materialId };
@@ -98,15 +92,13 @@ export default function MaterialDetailScreen({ route, navigation }) {
       setShowLinkModal(false);
       fetchData();
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to link supplier');
+      appAlert('Error', err.message || 'Failed to link supplier');
     } finally { setLinking(false); }
   };
 
   const handleUnlinkSupplier = async (supplierId, supplierName) => {
-    const confirmed = Platform.OS === 'web'
-      ? window.confirm(`Remove ${supplierName} from this material?`)
-      : await new Promise((resolve) =>
-          Alert.alert('Unlink Supplier', `Remove ${supplierName} from this material?`, [
+    const confirmed = await new Promise((resolve) =>
+          appAlert('Unlink Supplier', `Remove ${supplierName} from this material?`, [
             { text: 'Cancel', onPress: () => resolve(false), style: 'cancel' },
             { text: 'Unlink', onPress: () => resolve(true), style: 'destructive' },
           ])
@@ -115,7 +107,7 @@ export default function MaterialDetailScreen({ route, navigation }) {
     try {
       await api.unlinkSupplierMaterial(supplierId, materialId);
       fetchData();
-    } catch (err) { Alert.alert('Error', err.message || 'Failed to unlink'); }
+    } catch (err) { appAlert('Error', err.message || 'Failed to unlink'); }
   };
 
   const formatTxnDate = (dateStr) => {
@@ -132,35 +124,35 @@ export default function MaterialDetailScreen({ route, navigation }) {
     const pickFromGallery = async () => {
       try {
         const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-        if (status !== 'granted') { Alert.alert('Permission Required', 'Please allow access.'); return; }
+        if (status !== 'granted') { appAlert('Permission Required', 'Please allow access.'); return; }
         const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.8, allowsEditing: true });
         if (result.canceled) return;
         setUploadingImage(true);
         await api.uploadMaterialImage(materialId, result.assets[0].uri);
         fetchData();
       } catch (err) {
-        Alert.alert('Error', err.message || 'Failed to upload image');
+        appAlert('Error', err.message || 'Failed to upload image');
       } finally { setUploadingImage(false); }
     };
 
     const takePhoto = async () => {
       try {
         const { status } = await ImagePicker.requestCameraPermissionsAsync();
-        if (status !== 'granted') { Alert.alert('Permission Required', 'Please allow camera access.'); return; }
+        if (status !== 'granted') { appAlert('Permission Required', 'Please allow camera access.'); return; }
         const result = await ImagePicker.launchCameraAsync({ quality: 0.8, allowsEditing: true });
         if (result.canceled) return;
         setUploadingImage(true);
         await api.uploadMaterialImage(materialId, result.assets[0].uri);
         fetchData();
       } catch (err) {
-        Alert.alert('Error', err.message || 'Failed to upload image');
+        appAlert('Error', err.message || 'Failed to upload image');
       } finally { setUploadingImage(false); }
     };
 
     if (Platform.OS === 'web') {
       pickFromGallery();
     } else {
-      Alert.alert('Add Image', 'Choose a source', [
+      appAlert('Add Image', 'Choose a source', [
         { text: 'Camera', onPress: takePhoto },
         { text: 'Gallery', onPress: pickFromGallery },
         { text: 'Cancel', style: 'cancel' },

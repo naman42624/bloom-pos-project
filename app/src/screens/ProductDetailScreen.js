@@ -1,14 +1,13 @@
 import React, { useState, useCallback, useMemo } from 'react';
-import {
-  View, Text, StyleSheet, ScrollView, TouchableOpacity,
-  RefreshControl, Alert, Modal, TextInput, Platform, Image, KeyboardAvoidingView,
-} from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, RefreshControl, Modal, TextInput, Platform, Image, KeyboardAvoidingView } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import * as ImagePicker from 'expo-image-picker';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
+import { appAlert } from '../utils/alert';
+import useSubmitGuard from '../hooks/useSubmitGuard';
 
 const TYPE_LABELS = {
   standard: 'Standard',
@@ -59,7 +58,7 @@ export default function ProductDetailScreen({ route, navigation }) {
       setProduct(productRes.data);
       setLocations(locationRes.data?.locations || locationRes.data || []);
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to load product');
+      appAlert('Error', err.message || 'Failed to load product');
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -76,14 +75,15 @@ export default function ProductDetailScreen({ route, navigation }) {
     setShowQuickAdjust(true);
   };
 
+  const guardSubmit = useSubmitGuard();
   const handleQuickAdjust = async () => {
     const qty = parseFloat(adjustQty) || 0;
     if (!adjustLocationId) {
-      Alert.alert('Location Required', 'Select a location for stock adjustment.');
+      appAlert('Location Required', 'Select a location for stock adjustment.');
       return;
     }
     if (qty <= 0) {
-      Alert.alert('Invalid Quantity', 'Enter a quantity greater than 0.');
+      appAlert('Invalid Quantity', 'Enter a quantity greater than 0.');
       return;
     }
     const isDeduction = adjustType === 'wastage' || adjustType === 'damage';
@@ -99,7 +99,7 @@ export default function ProductDetailScreen({ route, navigation }) {
       setShowQuickAdjust(false);
       fetchData();
     } catch (err) {
-      Alert.alert('Adjustment Failed', err.message || 'Failed to adjust stock.');
+      appAlert('Adjustment Failed', err.message || 'Failed to adjust stock.');
     } finally {
       setAdjusting(false);
     }
@@ -117,18 +117,14 @@ export default function ProductDetailScreen({ route, navigation }) {
         await api.deleteProduct(productId);
         navigation.goBack();
       } catch (err) {
-        Alert.alert('Error', err.message || 'Failed to delete product');
+        appAlert('Error', err.message || 'Failed to delete product');
       }
     };
 
-    if (Platform.OS === 'web') {
-      if (window.confirm('Deactivate this product?')) doDelete();
-    } else {
-      Alert.alert('Confirm', 'Deactivate this product?', [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Deactivate', style: 'destructive', onPress: doDelete },
-      ]);
-    }
+    appAlert('Confirm', 'Deactivate this product?', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Deactivate', style: 'destructive', onPress: doDelete },
+    ]);
   };
 
   const openAddMaterial = async () => {
@@ -141,14 +137,14 @@ export default function ProductDetailScreen({ route, navigation }) {
       setMaterialCost('0');
       setShowAddMaterial(true);
     } catch (err) {
-      Alert.alert('Error', 'Failed to load materials');
+      appAlert('Error', 'Failed to load materials');
     }
   };
 
   const handleAddMaterial = async () => {
-    if (!selectedMaterialId) { Alert.alert('Select', 'Please select a material'); return; }
+    if (!selectedMaterialId) { appAlert('Select', 'Please select a material'); return; }
     const qty = parseFloat(materialQty);
-    if (!qty || qty <= 0) { Alert.alert('Error', 'Quantity must be > 0'); return; }
+    if (!qty || qty <= 0) { appAlert('Error', 'Quantity must be > 0'); return; }
 
     setAddingMaterial(true);
     try {
@@ -160,7 +156,7 @@ export default function ProductDetailScreen({ route, navigation }) {
       setShowAddMaterial(false);
       fetchData();
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to add material');
+      appAlert('Error', err.message || 'Failed to add material');
     } finally {
       setAddingMaterial(false);
     }
@@ -172,18 +168,14 @@ export default function ProductDetailScreen({ route, navigation }) {
         await api.removeProductMaterial(productId, matId);
         fetchData();
       } catch (err) {
-        Alert.alert('Error', err.message || 'Failed to remove material');
+        appAlert('Error', err.message || 'Failed to remove material');
       }
     };
 
-    if (Platform.OS === 'web') {
-      if (window.confirm(`Remove ${matName} from this product?`)) doRemove();
-    } else {
-      Alert.alert('Remove Material', `Remove ${matName}?`, [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Remove', style: 'destructive', onPress: doRemove },
-      ]);
-    }
+    appAlert('Remove Material', `Remove ${matName}?`, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Remove', style: 'destructive', onPress: doRemove },
+    ]);
   };
 
   if (loading || !product) {
@@ -202,7 +194,7 @@ export default function ProductDetailScreen({ route, navigation }) {
     try {
       const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (status !== 'granted') {
-        Alert.alert('Permission Required', 'Please allow access to your photo library.');
+        appAlert('Permission Required', 'Please allow access to your photo library.');
         return;
       }
       const result = await ImagePicker.launchImageLibraryAsync({
@@ -216,7 +208,7 @@ export default function ProductDetailScreen({ route, navigation }) {
       await api.uploadProductImage(productId, result.assets[0].uri, false);
       fetchData();
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to upload image');
+      appAlert('Error', err.message || 'Failed to upload image');
     } finally {
       setUploadingImage(false);
     }
@@ -226,7 +218,7 @@ export default function ProductDetailScreen({ route, navigation }) {
     try {
       const { status } = await ImagePicker.requestCameraPermissionsAsync();
       if (status !== 'granted') {
-        Alert.alert('Permission Required', 'Please allow camera access.');
+        appAlert('Permission Required', 'Please allow camera access.');
         return;
       }
       const result = await ImagePicker.launchCameraAsync({
@@ -239,7 +231,7 @@ export default function ProductDetailScreen({ route, navigation }) {
       await api.uploadProductImage(productId, result.assets[0].uri, false);
       fetchData();
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to upload image');
+      appAlert('Error', err.message || 'Failed to upload image');
     } finally {
       setUploadingImage(false);
     }
@@ -249,7 +241,7 @@ export default function ProductDetailScreen({ route, navigation }) {
     if (Platform.OS === 'web') {
       pickAndUploadImage();
     } else {
-      Alert.alert('Add Image', 'Choose a source', [
+      appAlert('Add Image', 'Choose a source', [
         { text: 'Camera', onPress: takeAndUploadPhoto },
         { text: 'Gallery', onPress: pickAndUploadImage },
         { text: 'Cancel', style: 'cancel' },
@@ -263,17 +255,13 @@ export default function ProductDetailScreen({ route, navigation }) {
         await api.deleteProductImage(productId, imageId);
         fetchData();
       } catch (err) {
-        Alert.alert('Error', err.message || 'Failed to delete image');
+        appAlert('Error', err.message || 'Failed to delete image');
       }
     };
-    if (Platform.OS === 'web') {
-      if (window.confirm('Delete this image?')) doDelete();
-    } else {
-      Alert.alert('Delete Image', 'Remove this image?', [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Delete', style: 'destructive', onPress: doDelete },
-      ]);
-    }
+    appAlert('Delete Image', 'Remove this image?', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Delete', style: 'destructive', onPress: doDelete },
+    ]);
   };
 
   return (
@@ -481,7 +469,7 @@ export default function ProductDetailScreen({ route, navigation }) {
 
             <TouchableOpacity
               style={[styles.modalBtn, addingMaterial && { opacity: 0.6 }]}
-              onPress={handleAddMaterial}
+              onPress={guardSubmit(handleAddMaterial)}
               disabled={addingMaterial}
             >
               <Text style={styles.modalBtnText}>{addingMaterial ? 'Adding...' : 'Add Material'}</Text>
@@ -551,7 +539,7 @@ export default function ProductDetailScreen({ route, navigation }) {
 
             <TouchableOpacity
               style={[styles.modalBtn, adjusting && { opacity: 0.6 }]}
-              onPress={handleQuickAdjust}
+              onPress={guardSubmit(handleQuickAdjust)}
               disabled={adjusting}
             >
               <Text style={styles.modalBtnText}>{adjusting ? 'Applying...' : 'Apply Adjustment'}</Text>

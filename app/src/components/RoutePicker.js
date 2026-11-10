@@ -15,10 +15,10 @@ import { View, Text, TouchableOpacity, TextInput, ScrollView, ActivityIndicator,
 import { Ionicons } from '@expo/vector-icons';
 import api from '../services/api';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
+import { appAlert } from '../utils/alert';
 
 function showError(message) {
-  if (Platform.OS === 'web') window.alert(message);
-  else require('react-native').Alert.alert('Could not add route', message);
+  appAlert('Could not add route', message);
 }
 
 export default function RoutePicker({ value, onChange, locationId }) {

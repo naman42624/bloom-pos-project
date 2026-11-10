@@ -1,11 +1,10 @@
 import React, { useState } from 'react';
-import {
-  View, Text, StyleSheet, ScrollView, TouchableOpacity,
-  TextInput, Alert, KeyboardAvoidingView, Platform,
-} from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, KeyboardAvoidingView, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import api from '../services/api';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
+import { appAlert } from '../utils/alert';
+import useSubmitGuard from '../hooks/useSubmitGuard';
 
 export default function CustomerFormScreen({ route, navigation }) {
   const existing = route.params?.customer;
@@ -19,9 +18,10 @@ export default function CustomerFormScreen({ route, navigation }) {
   const [notes, setNotes] = useState(existing?.notes || '');
   const [saving, setSaving] = useState(false);
 
+  const guardSubmit = useSubmitGuard();
   const handleSave = async () => {
-    if (!name.trim()) return Alert.alert('Error', 'Name is required');
-    if (!phone.trim()) return Alert.alert('Error', 'Phone is required');
+    if (!name.trim()) return appAlert('Error', 'Name is required');
+    if (!phone.trim()) return appAlert('Error', 'Phone is required');
     setSaving(true);
     try {
       const data = {
@@ -39,7 +39,7 @@ export default function CustomerFormScreen({ route, navigation }) {
       }
       navigation.goBack();
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to save customer');
+      appAlert('Error', err.message || 'Failed to save customer');
     } finally {
       setSaving(false);
     }
@@ -91,7 +91,7 @@ export default function CustomerFormScreen({ route, navigation }) {
 
         <TouchableOpacity
           style={[styles.saveBtn, saving && { opacity: 0.6 }]}
-          onPress={handleSave}
+          onPress={guardSubmit(handleSave)}
           disabled={saving}
         >
           <Ionicons name={isEdit ? 'checkmark' : 'person-add'} size={20} color={Colors.white} />

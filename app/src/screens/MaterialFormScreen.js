@@ -1,13 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import {
-  View, Text, StyleSheet, KeyboardAvoidingView, Platform,
-  ScrollView, Alert, TouchableOpacity,
-} from 'react-native';
+import { View, Text, StyleSheet, KeyboardAvoidingView, Platform, ScrollView, TouchableOpacity } from 'react-native';
 import api from '../services/api';
 import Input from '../components/Input';
 import Button from '../components/Button';
 import DismissKeyboard from '../components/DismissKeyboard';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
+import { appAlert } from '../utils/alert';
+import useSubmitGuard from '../hooks/useSubmitGuard';
 
 export default function MaterialFormScreen({ route, navigation }) {
   const existing = route.params?.material;
@@ -53,6 +52,7 @@ export default function MaterialFormScreen({ route, navigation }) {
     return Object.keys(e).length === 0;
   };
 
+  const guardSubmit = useSubmitGuard();
   const handleSubmit = async () => {
     if (!validate()) return;
     setLoading(true);
@@ -72,7 +72,7 @@ export default function MaterialFormScreen({ route, navigation }) {
       }
       navigation.goBack();
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to save material');
+      appAlert('Error', err.message || 'Failed to save material');
     } finally {
       setLoading(false);
     }
@@ -105,7 +105,7 @@ export default function MaterialFormScreen({ route, navigation }) {
           <Input label="Min Stock Alert" value={minStockAlert} onChangeText={setMinStockAlert} keyboardType="number-pad" placeholder="10" />
 
           <View style={styles.actions}>
-            <Button title={isEditing ? 'Update Material' : 'Create Material'} onPress={handleSubmit} loading={loading} />
+            <Button title={isEditing ? 'Update Material' : 'Create Material'} onPress={guardSubmit(handleSubmit)} loading={loading} />
           </View>
         </ScrollView>
       </KeyboardAvoidingView>

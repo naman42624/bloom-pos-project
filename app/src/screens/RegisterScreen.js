@@ -1,20 +1,12 @@
 import React, { useState } from 'react';
-import {
-  View,
-  Text,
-  StyleSheet,
-  KeyboardAvoidingView,
-  Platform,
-  ScrollView,
-  TouchableOpacity,
-  Alert,
-} from 'react-native';
+import { View, Text, StyleSheet, KeyboardAvoidingView, Platform, ScrollView, TouchableOpacity } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../context/AuthContext';
 import Input from '../components/Input';
 import Button from '../components/Button';
 import DismissKeyboard from '../components/DismissKeyboard';
 import { Colors, FontSize, Spacing } from '../constants/theme';
+import { appAlert } from '../utils/alert';
 
 export default function RegisterScreen({ navigation }) {
   const { register } = useAuth();
@@ -48,7 +40,7 @@ export default function RegisterScreen({ navigation }) {
         password,
       });
     } catch (err) {
-      Alert.alert('Registration Failed', err.message || 'Please try again.');
+      appAlert('Registration Failed', err.message || 'Please try again.');
     } finally {
       setLoading(false);
     }

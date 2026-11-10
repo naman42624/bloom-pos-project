@@ -1,15 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import {
-  View,
-  Text,
-  StyleSheet,
-  KeyboardAvoidingView,
-  Platform,
-  ScrollView,
-  Alert,
-  TouchableOpacity,
-  Modal,
-} from 'react-native';
+import { View, Text, StyleSheet, KeyboardAvoidingView, Platform, ScrollView, TouchableOpacity, Modal } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
@@ -19,7 +9,7 @@ import DismissKeyboard from '../components/DismissKeyboard';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import DateTimePickerModal from '../components/DateTimePickerModal';
 import useSubmitGuard from '../hooks/useSubmitGuard';
-import { showAlert, showConfirm } from '../utils/alert';
+import { showAlert, showConfirm, appAlert } from '../utils/alert';
 import { getShopTodayStr, getShopNow } from '../utils/datetime';
 import {
   addDaysStr, dateStrToDate, dateToDateStr, formatWeekdayDayMonth,
@@ -180,7 +170,7 @@ export default function UserFormScreen({ route, navigation }) {
 
   const handleChangeRole = () => {
     if (!selectedNewRole || selectedNewRole === existingUser?.role) {
-      Alert.alert('No Change', 'Please select a different role first.');
+      appAlert('No Change', 'Please select a different role first.');
       return;
     }
     const newRoleLabel = ROLE_LABELS[selectedNewRole] || selectedNewRole;
@@ -190,32 +180,26 @@ export default function UserFormScreen({ route, navigation }) {
       setLoading(true);
       try {
         await api.changeUserRole(existingUser.id, selectedNewRole);
-        Alert.alert(
+        appAlert(
           'Role Updated',
           `${existingUser.name}'s role has been changed from ${currentRoleLabel} to ${newRoleLabel}.`,
           [{ text: 'OK', onPress: () => navigation.goBack() }]
         );
       } catch (err) {
-        Alert.alert('Error', err.message || 'Failed to change role');
+        appAlert('Error', err.message || 'Failed to change role');
       } finally {
         setLoading(false);
       }
     };
 
-    if (Platform.OS === 'web') {
-      if (window.confirm(`Change ${existingUser?.name}'s role from ${currentRoleLabel} to ${newRoleLabel}?\n\nThis will affect their access permissions immediately.`)) {
-        doChange();
-      }
-    } else {
-      Alert.alert(
-        'Change Role?',
-        `Change ${existingUser?.name}'s role from ${currentRoleLabel} to ${newRoleLabel}?\n\nThis will affect their access permissions immediately.`,
-        [
-          { text: 'Cancel', style: 'cancel' },
-          { text: 'Change Role', style: 'destructive', onPress: doChange },
-        ]
-      );
-    }
+    appAlert(
+      'Change Role?',
+      `Change ${existingUser?.name}'s role from ${currentRoleLabel} to ${newRoleLabel}?\n\nThis will affect their access permissions immediately.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Change Role', style: 'destructive', onPress: doChange },
+      ]
+    );
   };
 
   const handleSetPin = () => {
@@ -225,16 +209,16 @@ export default function UserFormScreen({ route, navigation }) {
 
   const submitPin = async () => {
     if (!/^\d{4}$/.test(newPin)) {
-      Alert.alert('Invalid PIN', 'Enter exactly 4 digits.');
+      appAlert('Invalid PIN', 'Enter exactly 4 digits.');
       return;
     }
     setPinSaving(true);
     try {
       await api.setUserPin(existingUser.id, newPin);
       setPinModalVisible(false);
-      Alert.alert('PIN Set', `${existingUser.name}'s PIN has been updated.`);
+      appAlert('PIN Set', `${existingUser.name}'s PIN has been updated.`);
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to set PIN');
+      appAlert('Error', err.message || 'Failed to set PIN');
     } finally {
       setPinSaving(false);
     }
@@ -301,16 +285,16 @@ export default function UserFormScreen({ route, navigation }) {
 
   const handleResetPassword = async () => {
     if (!password || password.length < 6) {
-      Alert.alert('Error', 'Enter a new password (min 6 characters)');
+      appAlert('Error', 'Enter a new password (min 6 characters)');
       return;
     }
     setLoading(true);
     try {
       await api.resetUserPassword(existingUser.id, password);
-      Alert.alert('Success', 'Password has been reset');
+      appAlert('Success', 'Password has been reset');
       setPassword('');
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to reset password');
+      appAlert('Error', err.message || 'Failed to reset password');
     } finally {
       setLoading(false);
     }

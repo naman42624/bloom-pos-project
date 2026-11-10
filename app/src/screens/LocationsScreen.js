@@ -1,18 +1,11 @@
 import React, { useState, useCallback } from 'react';
-import {
-  View,
-  Text,
-  StyleSheet,
-  FlatList,
-  TouchableOpacity,
-  RefreshControl,
-  Alert,
-} from 'react-native';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, RefreshControl } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
+import { appAlert } from '../utils/alert';
 
 export default function LocationsScreen({ navigation }) {
   const { user } = useAuth();
@@ -25,7 +18,7 @@ export default function LocationsScreen({ navigation }) {
       const response = await api.getLocations();
       setLocations(response.data?.locations || []);
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to load locations');
+      appAlert('Error', err.message || 'Failed to load locations');
     } finally {
       setLoading(false);
       setRefreshing(false);

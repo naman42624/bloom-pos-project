@@ -1,14 +1,13 @@
 import React, { useState, useEffect } from 'react';
-import {
-  View, StyleSheet, KeyboardAvoidingView, Platform,
-  ScrollView, Alert,
-} from 'react-native';
+import { View, StyleSheet, KeyboardAvoidingView, Platform, ScrollView } from 'react-native';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import Input from '../components/Input';
 import Button from '../components/Button';
 import DismissKeyboard from '../components/DismissKeyboard';
 import { Colors, Spacing } from '../constants/theme';
+import { appAlert } from '../utils/alert';
+import useSubmitGuard from '../hooks/useSubmitGuard';
 
 export default function SupplierFormScreen({ route, navigation }) {
   const { user } = useAuth();
@@ -56,6 +55,7 @@ export default function SupplierFormScreen({ route, navigation }) {
     return Object.keys(e).length === 0;
   };
 
+  const guardSubmit = useSubmitGuard();
   const handleSubmit = async () => {
     if (!validate()) return;
     setLoading(true);
@@ -75,7 +75,7 @@ export default function SupplierFormScreen({ route, navigation }) {
       }
       navigation.goBack();
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to save supplier');
+      appAlert('Error', err.message || 'Failed to save supplier');
     } finally {
       setLoading(false);
     }
@@ -95,7 +95,7 @@ export default function SupplierFormScreen({ route, navigation }) {
           {canSee('notes') && <Input label="Notes (optional)" value={notes} onChangeText={setNotes} placeholder="Any notes about this supplier" multiline />}
 
           <View style={styles.actions}>
-            <Button title={isEditing ? 'Update Supplier' : 'Add Supplier'} onPress={handleSubmit} loading={loading} />
+            <Button title={isEditing ? 'Update Supplier' : 'Add Supplier'} onPress={guardSubmit(handleSubmit)} loading={loading} />
           </View>
         </ScrollView>
       </KeyboardAvoidingView>

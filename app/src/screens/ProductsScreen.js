@@ -1,14 +1,12 @@
 import React, { useState, useCallback, useEffect } from 'react';
-import {
-  View, Text, StyleSheet, FlatList, TouchableOpacity,
-  RefreshControl, Alert, TextInput, Image, Modal, ActivityIndicator,
-} from 'react-native';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, RefreshControl, TextInput, Image, Modal, ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import ImageModal from '../components/ImageModal';
+import { appAlert } from '../utils/alert';
 
 
 const TYPE_LABELS = {
@@ -78,7 +76,7 @@ export default function ProductsScreen({ navigation }) {
       setHasMore(list.length >= limit);
       setPage(nextPage);
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to load products');
+      appAlert('Error', err.message || 'Failed to load products');
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -120,11 +118,11 @@ export default function ProductsScreen({ navigation }) {
     const qty = parseFloat(adjustQty) || 0;
     if (!adjustProduct) return;
     if (!adjustLocationId) {
-      Alert.alert('Location Required', 'Select a location for this stock adjustment.');
+      appAlert('Location Required', 'Select a location for this stock adjustment.');
       return;
     }
     if (qty <= 0) {
-      Alert.alert('Invalid Quantity', 'Enter a quantity greater than 0.');
+      appAlert('Invalid Quantity', 'Enter a quantity greater than 0.');
       return;
     }
 
@@ -141,7 +139,7 @@ export default function ProductsScreen({ navigation }) {
       setAdjustProduct(null);
       fetchData(1, true);
     } catch (err) {
-      Alert.alert('Adjustment Failed', err.message || 'Could not update product stock.');
+      appAlert('Adjustment Failed', err.message || 'Could not update product stock.');
     } finally {
       setAdjusting(false);
     }

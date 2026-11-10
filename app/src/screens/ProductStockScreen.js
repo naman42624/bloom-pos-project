@@ -1,13 +1,11 @@
 import React, { useState, useCallback } from 'react';
-import {
-  View, Text, StyleSheet, FlatList, TextInput,
-  TouchableOpacity, Alert, ScrollView, Modal, ActivityIndicator, Image
-} from 'react-native';
+import { View, Text, StyleSheet, FlatList, TextInput, TouchableOpacity, ScrollView, Modal, ActivityIndicator, Image } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import api from '../services/api';
 import ImageModal from '../components/ImageModal';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
+import { appAlert } from '../utils/alert';
 
 const ADJUST_TYPES = [
   { key: 'adjustment', label: 'Correction', icon: 'build' },
@@ -109,7 +107,7 @@ export default function ProductStockScreen({ navigation }) {
 
   const handleAdjust = async () => {
     const qty = parseFloat(adjustQty) || 0;
-    if (qty <= 0) { Alert.alert('Invalid', 'Enter a valid quantity'); return; }
+    if (qty <= 0) { appAlert('Invalid', 'Enter a valid quantity'); return; }
 
     if (adjustMode === 'product') {
       // Adjust product_stock directly (finished product inventory)
@@ -122,17 +120,17 @@ export default function ProductStockScreen({ navigation }) {
           adjustment: isDeduction ? -qty : qty,
           reason: adjustNotes || `${adjustType}: ${qty} ${adjustProduct?.name}`,
         });
-        Alert.alert('Done', `Product stock ${isDeduction ? 'decreased' : 'increased'} by ${qty}`);
+        appAlert('Done', `Product stock ${isDeduction ? 'decreased' : 'increased'} by ${qty}`);
         setAdjustProduct(null);
         fetchProducts(search);
       } catch (err) {
-        Alert.alert('Error', err.message || 'Failed to adjust');
+        appAlert('Error', err.message || 'Failed to adjust');
       } finally {
         setSubmitting(false);
       }
     } else {
       // Adjust individual material
-      if (!adjustMaterialId) { Alert.alert('Select', 'Select a material to adjust'); return; }
+      if (!adjustMaterialId) { appAlert('Select', 'Select a material to adjust'); return; }
       setSubmitting(true);
       try {
         await api.adjustStock({
@@ -142,11 +140,11 @@ export default function ProductStockScreen({ navigation }) {
           quantity: qty,
           notes: adjustNotes || `Product stock adjust: ${adjustProduct?.name}`,
         });
-        Alert.alert('Done', 'Stock adjusted');
+        appAlert('Done', 'Stock adjusted');
         setAdjustProduct(null);
         fetchProducts(search);
       } catch (err) {
-        Alert.alert('Error', err.message || 'Failed to adjust');
+        appAlert('Error', err.message || 'Failed to adjust');
       } finally {
         setSubmitting(false);
       }

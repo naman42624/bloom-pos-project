@@ -1,18 +1,15 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
-import {
-  View, Text, StyleSheet, ScrollView, TouchableOpacity,
-  RefreshControl, Alert, Platform, Modal, TextInput, ActivityIndicator, KeyboardAvoidingView,
-} from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, RefreshControl, Platform, Modal, TextInput, ActivityIndicator, KeyboardAvoidingView } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import { formatTime as formatServerTime, parseServerDate, DEFAULT_TZ } from '../utils/datetime';
+import { appAlert } from '../utils/alert';
 
 const confirm = (title, msg, onOk) => {
-  if (Platform.OS === 'web') { if (window.confirm(`${title}\n${msg}`)) onOk(); }
-  else Alert.alert(title, msg, [{ text: 'Cancel', style: 'cancel' }, { text: 'OK', onPress: onOk }]);
+  appAlert(title, msg, [{ text: 'Cancel', style: 'cancel' }, { text: 'OK', onPress: onOk }]);
 };
 
 function formatTime(iso) {
@@ -105,7 +102,7 @@ export default function AttendanceScreen({ navigation }) {
   const handleClockIn = async () => {
     const locationId = selectedLocation?.id || activeLocation?.id || locations[0]?.id;
     if (!locationId) {
-      Alert.alert('Select Location', 'Please select a location to clock in.');
+      appAlert('Select Location', 'Please select a location to clock in.');
       return;
     }
     setActionLoading(true);
@@ -113,7 +110,7 @@ export default function AttendanceScreen({ navigation }) {
       await api.clockIn({ location_id: locationId, method: 'manual' });
       await fetchData();
     } catch (e) {
-      Alert.alert('Error', e.message || 'Failed to clock in.');
+      appAlert('Error', e.message || 'Failed to clock in.');
     } finally {
       setActionLoading(false);
     }
@@ -126,7 +123,7 @@ export default function AttendanceScreen({ navigation }) {
         await api.clockOut({ method: 'manual' });
         await fetchData();
       } catch (e) {
-        Alert.alert('Error', e.message || 'Failed to clock out.');
+        appAlert('Error', e.message || 'Failed to clock out.');
       } finally {
         setActionLoading(false);
       }
@@ -141,7 +138,7 @@ export default function AttendanceScreen({ navigation }) {
         await api.undoAutoClockIn(attendance.id);
         await fetchData();
       } catch (e) {
-        Alert.alert('Error', e.message || 'Failed to undo.');
+        appAlert('Error', e.message || 'Failed to undo.');
       } finally {
         setActionLoading(false);
       }
@@ -160,7 +157,7 @@ export default function AttendanceScreen({ navigation }) {
         // "sent" state locally so the link disappears either way.
       }
     } catch (e) {
-      Alert.alert('Error', e.message || 'Could not send that — try again.');
+      appAlert('Error', e.message || 'Could not send that — try again.');
     } finally {
       setActionLoading(false);
     }
@@ -177,7 +174,7 @@ export default function AttendanceScreen({ navigation }) {
 
   const handleOutdoorRequest = async () => {
     if (!outdoorReason.trim()) {
-      Alert.alert('Error', 'Please enter a reason.');
+      appAlert('Error', 'Please enter a reason.');
       return;
     }
     setActionLoading(true);
@@ -187,7 +184,7 @@ export default function AttendanceScreen({ navigation }) {
       setOutdoorReason('');
       await fetchData();
     } catch (e) {
-      Alert.alert('Error', e.message || 'Failed to request outdoor duty.');
+      appAlert('Error', e.message || 'Failed to request outdoor duty.');
     } finally {
       setActionLoading(false);
     }
@@ -200,7 +197,7 @@ export default function AttendanceScreen({ navigation }) {
       await api.completeOutdoorDuty(activeOutdoor.id);
       await fetchData();
     } catch (e) {
-      Alert.alert('Error', e.message || 'Failed to complete outdoor duty.');
+      appAlert('Error', e.message || 'Failed to complete outdoor duty.');
     } finally {
       setActionLoading(false);
     }
@@ -212,7 +209,7 @@ export default function AttendanceScreen({ navigation }) {
       await api.approveOutdoorDuty(id);
       await fetchData();
     } catch (e) {
-      Alert.alert('Error', e.message || 'Failed to approve.');
+      appAlert('Error', e.message || 'Failed to approve.');
     } finally {
       setActionLoading(false);
     }
@@ -224,7 +221,7 @@ export default function AttendanceScreen({ navigation }) {
       await api.rejectOutdoorDuty(id);
       await fetchData();
     } catch (e) {
-      Alert.alert('Error', e.message || 'Failed to reject.');
+      appAlert('Error', e.message || 'Failed to reject.');
     } finally {
       setActionLoading(false);
     }

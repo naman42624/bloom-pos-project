@@ -1,13 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import {
-  View, Text, StyleSheet, TextInput, TouchableOpacity,
-  Alert, ActivityIndicator, ScrollView, Platform,
-} from 'react-native';
+import { View, Text, StyleSheet, TextInput, TouchableOpacity, ActivityIndicator, ScrollView, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import api from '../services/api';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import useRegisterStatus from '../hooks/useRegisterStatus';
 import RegisterStatusBanner from '../components/RegisterStatusBanner';
+import { appAlert } from '../utils/alert';
 
 const REFUND_METHODS = [
   { key: 'cash', label: 'Cash', icon: 'cash' },
@@ -53,11 +51,8 @@ export default function RefundSaleScreen({ route, navigation }) {
         refund_method: method,
       });
       if (res.success) {
-        if (Platform.OS === 'web') {
-          window.alert(`₹${Number(refundAmt).toFixed(2)} refunded successfully`);
-        } else {
-          Alert.alert('Refunded', `₹${Number(refundAmt).toFixed(2)} refunded successfully`);
-        }
+        appAlert('Refunded', `₹${Number(refundAmt).toFixed(2)} refunded successfully`);
+      
         navigation.goBack();
       } else {
         setError(res.message || 'Refund failed');

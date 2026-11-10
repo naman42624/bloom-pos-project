@@ -1,8 +1,5 @@
 import React, { useState, useCallback, useEffect } from 'react';
-import {
-  View, Text, StyleSheet, FlatList, TouchableOpacity,
-  TextInput, Alert, Modal, Platform, KeyboardAvoidingView, ScrollView, ActivityIndicator
-} from 'react-native';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, TextInput, Modal, Platform, KeyboardAvoidingView, ScrollView, ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -11,7 +8,7 @@ import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import { formatDate as formatTimestampDate } from '../utils/datetime';
-import { showConfirm } from '../utils/alert';
+import { showConfirm, appAlert } from '../utils/alert';
 import DateTimePickerModal from '../components/DateTimePickerModal';
 
 export default function CustomerCreditRecordsScreen({ route, navigation }) {
@@ -91,7 +88,7 @@ export default function CustomerCreditRecordsScreen({ route, navigation }) {
       setCreditBalance(res.credit_balance || 0);
       setOffset(currentOffset + limit);
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to load records');
+      appAlert('Error', err.message || 'Failed to load records');
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -119,7 +116,7 @@ export default function CustomerCreditRecordsScreen({ route, navigation }) {
       const res = await api.request(`/customers/${customerId}/credits?${query}`);
       const data = res.data || [];
 
-      if (!data || data.length === 0) return Alert.alert('Export', 'No data to export.');
+      if (!data || data.length === 0) return appAlert('Export', 'No data to export.');
 
       let totalReceived = 0;
       let totalDue = 0;
@@ -217,19 +214,19 @@ export default function CustomerCreditRecordsScreen({ route, navigation }) {
             UTI: 'public.comma-separated-values-text'
           });
         } else {
-          Alert.alert('Export Successful', `Saved to ${filepath}`);
+          appAlert('Export Successful', `Saved to ${filepath}`);
         }
       }
     } catch (err) {
       console.error('Export Error:', err);
-      Alert.alert('Export Error', err.message || 'An unknown error occurred during export.');
+      appAlert('Export Error', err.message || 'An unknown error occurred during export.');
     }
   };
 
   const handleEditSubmit = async () => {
     if (!editRecord) return;
     const amount = parseFloat(editAmount);
-    if (isNaN(amount) || amount <= 0) return Alert.alert('Error', 'Enter a valid amount');
+    if (isNaN(amount) || amount <= 0) return appAlert('Error', 'Enter a valid amount');
     setEditLoading(true);
     try {
       const isPastDue = editRecord.amount < 0;
@@ -245,20 +242,20 @@ export default function CustomerCreditRecordsScreen({ route, navigation }) {
       setEditRecord(null);
       fetchRecords(true);
     } catch (err) {
-      Alert.alert('Error', err.response?.data?.message || err.message);
+      appAlert('Error', err.response?.data?.message || err.message);
     } finally {
       setEditLoading(false);
     }
   };
 
   const handleDelete = (record) => {
-    if (!isOwner) return Alert.alert('Error', 'Only owners can delete records.');
+    if (!isOwner) return appAlert('Error', 'Only owners can delete records.');
     const doDelete = async () => {
       try {
         await api.request(`/customers/${customerId}/credits/${record.id}`, { method: 'DELETE' });
         fetchRecords(true);
       } catch (err) {
-        Alert.alert('Error', err.response?.data?.message || err.message);
+        appAlert('Error', err.response?.data?.message || err.message);
       }
     };
 
@@ -267,7 +264,7 @@ export default function CustomerCreditRecordsScreen({ route, navigation }) {
 
   const handleAddSubmit = async () => {
     const amount = parseFloat(addAmount);
-    if (isNaN(amount) || amount <= 0) return Alert.alert('Error', 'Enter a valid positive amount');
+    if (isNaN(amount) || amount <= 0) return appAlert('Error', 'Enter a valid positive amount');
     
     setAddLoading(true);
     try {
@@ -299,14 +296,14 @@ export default function CustomerCreditRecordsScreen({ route, navigation }) {
       setAddDate('');
       fetchRecords(true);
     } catch (err) {
-      Alert.alert('Error', err.response?.data?.message || err.message);
+      appAlert('Error', err.response?.data?.message || err.message);
     } finally {
       setAddLoading(false);
     }
   };
 
   const openEditModal = (record) => {
-    if (!isOwner) return Alert.alert('Error', 'Only owners can edit records.');
+    if (!isOwner) return appAlert('Error', 'Only owners can edit records.');
     setEditRecord(record);
     setEditAmount(Math.abs(record.amount).toString());
     setEditMethod(record.method || 'cash');

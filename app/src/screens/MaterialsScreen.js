@@ -1,14 +1,12 @@
 import React, { useState, useCallback } from 'react';
-import {
-  View, Text, StyleSheet, FlatList, TouchableOpacity,
-  RefreshControl, Alert, TextInput, Image,
-} from 'react-native';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, RefreshControl, TextInput, Image } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import ImageModal from '../components/ImageModal';
+import { appAlert } from '../utils/alert';
 
 
 export default function MaterialsScreen({ navigation }) {
@@ -34,7 +32,7 @@ export default function MaterialsScreen({ navigation }) {
       setMaterials(matRes.data || []);
       setCategories(catRes.data || []);
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to load materials');
+      appAlert('Error', err.message || 'Failed to load materials');
     } finally {
       setLoading(false);
       setRefreshing(false);

@@ -1,13 +1,11 @@
 import React, { useState, useCallback } from 'react';
-import {
-  View, Text, StyleSheet, ScrollView, TouchableOpacity,
-  RefreshControl, Alert, TextInput, Platform,
-} from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, RefreshControl, TextInput, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
+import { appAlert } from '../utils/alert';
 
 const STATUS_CONFIG = {
   pending: { color: Colors.warning, label: 'Pending' },
@@ -47,7 +45,7 @@ export default function PurchaseOrderDetailScreen({ route, navigation }) {
       const res = await api.getPurchaseOrder(orderId);
       setOrder(res.data);
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to load order');
+      appAlert('Error', err.message || 'Failed to load order');
     } finally { setLoading(false); setRefreshing(false); }
   }, [orderId]);
 
@@ -80,7 +78,7 @@ export default function PurchaseOrderDetailScreen({ route, navigation }) {
       (i) => !i.received_quantity || parseFloat(i.received_quantity) < 0
     );
     if (invalid) {
-      Alert.alert('Invalid', 'Received quantity cannot be negative');
+      appAlert('Invalid', 'Received quantity cannot be negative');
       return;
     }
 
@@ -94,7 +92,7 @@ export default function PurchaseOrderDetailScreen({ route, navigation }) {
       }));
 
     if (itemsToReceive.length === 0) {
-      Alert.alert('No Items', 'Enter quantity for at least one item to receive');
+      appAlert('No Items', 'Enter quantity for at least one item to receive');
       return;
     }
 
@@ -104,15 +102,13 @@ export default function PurchaseOrderDetailScreen({ route, navigation }) {
       setReceiveMode(false);
       fetchData();
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to receive items');
+      appAlert('Error', err.message || 'Failed to receive items');
     } finally { setSubmitting(false); }
   };
 
   const handleCancel = async () => {
-    const confirmed = Platform.OS === 'web'
-      ? window.confirm('Are you sure you want to cancel this order?')
-      : await new Promise((resolve) =>
-          Alert.alert('Cancel Order', 'Are you sure you want to cancel this order?', [
+    const confirmed = await new Promise((resolve) =>
+          appAlert('Cancel Order', 'Are you sure you want to cancel this order?', [
             { text: 'No', onPress: () => resolve(false), style: 'cancel' },
             { text: 'Yes, Cancel', onPress: () => resolve(true), style: 'destructive' },
           ])
@@ -122,7 +118,7 @@ export default function PurchaseOrderDetailScreen({ route, navigation }) {
       await api.updatePurchaseOrder(orderId, { status: 'cancelled' });
       fetchData();
     } catch (err) {
-      Alert.alert('Error', err.message);
+      appAlert('Error', err.message);
     }
   };
 

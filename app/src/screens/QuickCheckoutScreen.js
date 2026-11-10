@@ -1,9 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo, useLayoutEffect } from 'react';
-import {
-  View, Text, StyleSheet, ScrollView, TextInput, Image,
-  TouchableOpacity, Alert, Platform, Modal, ActivityIndicator,
-  KeyboardAvoidingView, Pressable, useWindowDimensions
-} from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TextInput, Image, TouchableOpacity, Platform, Modal, ActivityIndicator, KeyboardAvoidingView, Pressable, useWindowDimensions } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { useFocusEffect, CommonActions } from '@react-navigation/native';
@@ -13,7 +9,7 @@ import VoiceNoteRecorder from '../components/VoiceNoteRecorder';
 import RoutePicker from '../components/RoutePicker';
 import SavedAddressChips from '../components/SavedAddressChips';
 import AttachmentVoiceRow from '../components/AttachmentVoiceRow';
-import { showAlert } from '../utils/alert';
+import { showAlert, appAlert } from '../utils/alert';
 import CollectDuesSheet from '../components/CollectDuesSheet';
 import OpenRegisterSheet from '../components/OpenRegisterSheet';
 import OldDuesCard, { EMPTY_DUES, duesAmountError, takeNowSummary } from '../components/OldDuesCard';
@@ -1031,7 +1027,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
       const res = await api.getSaleDrafts(params);
       setDrafts(res.data || []);
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to load drafts');
+      appAlert('Error', err.message || 'Failed to load drafts');
     } finally {
       setDraftsLoading(false);
     }
@@ -1145,7 +1141,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     if (savingDraft || submitting) return;
     const hasAnyData = items.length > 0 || customerName.trim() || customerPhone.trim() || orderNotes.trim();
     if (!hasAnyData) {
-      Alert.alert('Nothing to save', 'Add at least one item or customer details before saving draft.');
+      appAlert('Nothing to save', 'Add at least one item or customer details before saving draft.');
       return;
     }
 
@@ -1215,7 +1211,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
       setDraftPickerVisible(false);
       loadDrafts();
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to load draft');
+      appAlert('Error', err.message || 'Failed to load draft');
     }
   }, [items.length, customerName, customerPhone, orderNotes, activeDraftId, selectedLocation, orderType, customerAddress, totals.finalTotal, buildDraftPayloadWithUploads, applyDraftPayload, loadDrafts]);
 
@@ -1225,7 +1221,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
       if (activeDraftId === draftId) setActiveDraftId(null);
       await loadDrafts();
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to delete draft');
+      appAlert('Error', err.message || 'Failed to delete draft');
     }
   }, [activeDraftId, loadDrafts]);
 
@@ -1239,7 +1235,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
         const draft = res.data;
         applyDraftPayload(draft.payload, draft.id);
       } catch (err) {
-        Alert.alert('Error', err.message || 'Failed to load draft');
+        appAlert('Error', err.message || 'Failed to load draft');
       } finally {
         navigation.setParams({ draftId: undefined });
       }
@@ -1591,8 +1587,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
           const noun = failedCount === 1 ? 'attachment' : 'attachments';
           const pronoun = failedCount === 1 ? 'it' : 'them';
           const msg = `The order was placed, but ${failedCount} ${noun} could not be uploaded. You can add ${pronoun} again from the order later.`;
-          if (Platform.OS === 'web') window.alert(msg);
-          else Alert.alert('Attachment not saved', msg);
+          appAlert('Attachment not saved', msg);
         }
 
         navigation.dispatch(
@@ -1607,7 +1602,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
       } else {
         const message = res.message || 'Failed to place order';
         setSubmitErrors([message]);
-        Alert.alert('Error', message);
+        appAlert('Error', message);
       }
     } catch (err) {
       const backendErrors = Array.isArray(err?.errors)
@@ -1622,7 +1617,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
       }
       setDiscountOk(null);
       setSubmitErrors(messages);
-      Alert.alert('Error', messages[0]);
+      appAlert('Error', messages[0]);
     } finally {
       setSubmitting(false);
     }
@@ -1650,7 +1645,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
       if (Platform.OS !== 'web') {
         const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
         if (status !== 'granted') {
-          Alert.alert('Permission Required', 'We need access to your photos to add a product image.');
+          appAlert('Permission Required', 'We need access to your photos to add a product image.');
           return;
         }
       }
@@ -1667,8 +1662,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     } catch (err) {
       console.error('Image picker error:', err);
       const msg = 'Could not open image library';
-      if (Platform.OS === 'web') window.alert(msg);
-      else Alert.alert('Error', msg);
+      appAlert('Could not open photos', msg);
     }
   };
 

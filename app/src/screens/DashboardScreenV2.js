@@ -1,9 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import {
-  ActivityIndicator, Alert, Animated, KeyboardAvoidingView, Modal,
-  Platform, RefreshControl, ScrollView, StyleSheet, Text,
-  TextInput, TouchableOpacity, View, useWindowDimensions,
-} from 'react-native';
+import { ActivityIndicator, Animated, KeyboardAvoidingView, Modal, Platform, RefreshControl, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View, useWindowDimensions } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '../context/AuthContext';
@@ -13,6 +9,8 @@ import { getShopNow, DEFAULT_TZ, minutesSinceServerDate, minutesUntilShopDateTim
 import DateTimePickerModal from '../components/DateTimePickerModal';
 import { printOrderSlip } from '../utils/printHelpers';
 import AttachmentVoiceRow from '../components/AttachmentVoiceRow';
+import { appAlert } from '../utils/alert';
+import useSubmitGuard from '../hooks/useSubmitGuard';
 
 /* ─── PALETTE (derives from existing app theme) ───────────── */
 const P = {
@@ -350,22 +348,23 @@ function DetailPanel({ order, tasks, onClose, onRefresh, navigation, canManage, 
   },[order?.id,order?.order_type]);
 
   const refreshTasks=useCallback(async()=>{if(!order?.id)return;try{const r=await api.getProductionTasks({sale_id:order.id});setLocalTasks(r?.data||[]);}catch{}},[order?.id]);
-  const doStatus=useCallback(async(next)=>{if(!order?.id)return;setActionLoading(true);try{await api.updateOrderStatus(order.id,next);onRefresh?.();onClose();}catch(e){const msg=e?.message||"Failed";Platform.OS==="web"?window.alert(msg):Alert.alert("Error",msg);}finally{setActionLoading(false);}},[order?.id,onRefresh,onClose]);
+  const doStatus=useCallback(async(next)=>{if(!order?.id)return;setActionLoading(true);try{await api.updateOrderStatus(order.id,next);onRefresh?.();onClose();}catch(e){const msg=e?.message||"Failed";appAlert("Error",msg);}finally{setActionLoading(false);}},[order?.id,onRefresh,onClose]);
   const confirmAction=useCallback((next)=>{if(next==='pay'){setShowPayForm(true); setPayAmount(dueAmt > 0 ? dueAmt.toString() : ''); return;}if(confirmStatus===next){setConfirmStatus(null);doStatus(next);}else{setConfirmStatus(next);setTimeout(()=>setConfirmStatus(null),3000);}},[doStatus,confirmStatus]);
 
   const openEmpPicker=useCallback(async(tid)=>{setShowAssign(tid);setEmpLoading(true);try{const r=await api.getUsers();const a=r?.data?.users||r?.data||[];setEmployees(Array.isArray(a)?a.filter(u=>['owner','manager','employee','counter_staff','florist_staff'].includes(u.role)):[]);}catch{setEmployees([]);}finally{setEmpLoading(false);}},[]);
-  const doTaskAssign=useCallback(async(tid,eid)=>{setTaskLoading(p=>({...p,[tid]:true}));try{await api.assignTask(tid,{assigned_to:eid});setShowAssign(null);await refreshTasks();onRefresh?.();}catch(e){const msg=e?.message||"Failed";Platform.OS==="web"?window.alert(msg):Alert.alert("Error",msg);}finally{setTaskLoading(p=>({...p,[tid]:false}));}},[onRefresh,refreshTasks]);
-  const doTaskStart=useCallback(async(tid)=>{setTaskLoading(p=>({...p,[tid]:true}));try{await api.startTask(tid);await refreshTasks();onRefresh?.();}catch(e){const msg=e?.message||"Failed";Platform.OS==="web"?window.alert(msg):Alert.alert("Error",msg);}finally{setTaskLoading(p=>({...p,[tid]:false}));}},[onRefresh,refreshTasks]);
-  const doTaskComplete=useCallback(async(tid)=>{if(confirmTask===tid){setConfirmTask(null);setTaskLoading(p=>({...p,[tid]:true}));try{await api.completeTask(tid);await refreshTasks();onRefresh?.();}catch(e){const msg=e?.message||"Failed";Platform.OS==="web"?window.alert(msg):Alert.alert("Error",msg);}finally{setTaskLoading(p=>({...p,[tid]:false}));}}else{setConfirmTask(tid);setTimeout(()=>setConfirmTask(null),3000);}},[confirmTask,onRefresh,refreshTasks]);
+  const doTaskAssign=useCallback(async(tid,eid)=>{setTaskLoading(p=>({...p,[tid]:true}));try{await api.assignTask(tid,{assigned_to:eid});setShowAssign(null);await refreshTasks();onRefresh?.();}catch(e){const msg=e?.message||"Failed";appAlert("Error",msg);}finally{setTaskLoading(p=>({...p,[tid]:false}));}},[onRefresh,refreshTasks]);
+  const doTaskStart=useCallback(async(tid)=>{setTaskLoading(p=>({...p,[tid]:true}));try{await api.startTask(tid);await refreshTasks();onRefresh?.();}catch(e){const msg=e?.message||"Failed";appAlert("Error",msg);}finally{setTaskLoading(p=>({...p,[tid]:false}));}},[onRefresh,refreshTasks]);
+  const doTaskComplete=useCallback(async(tid)=>{if(confirmTask===tid){setConfirmTask(null);setTaskLoading(p=>({...p,[tid]:true}));try{await api.completeTask(tid);await refreshTasks();onRefresh?.();}catch(e){const msg=e?.message||"Failed";appAlert("Error",msg);}finally{setTaskLoading(p=>({...p,[tid]:false}));}}else{setConfirmTask(tid);setTimeout(()=>setConfirmTask(null),3000);}},[confirmTask,onRefresh,refreshTasks]);
 
   const openPartnerPick=async()=>{setPartnersLoading(true);setShowPartnerPick(true);try{const r=await api.getUsers({role:'delivery_partner',limit:100});const u=r?.data?.users||r?.data||[];setPartners(Array.isArray(u)?u.filter(x=>x.is_active):[]);}catch{setPartners([]);}finally{setPartnersLoading(false);}};
-  const doPartnerAssign=async(pid)=>{if(!delivInfo?.id)return;setDelivActionLoading(true);try{await api.assignDelivery(delivInfo.id,{delivery_partner_id:pid});setShowPartnerPick(false);const r=await api.getSale(order.id);setDelivInfo(r?.data?.delivery||null);onRefresh?.();}catch(e){const msg=e?.message||"Failed";Platform.OS==="web"?window.alert(msg):Alert.alert("Error",msg);}finally{setDelivActionLoading(false);}};
-  const doDelivAction=async(action,data={})=>{if(!delivInfo?.id)return;setDelivActionLoading(true);try{if(action==='pickup')await api.pickupDelivery(delivInfo.id);else if(action==='in_transit')await api.markInTransit(delivInfo.id);else if(action==='deliver')await api.deliverOrder(delivInfo.id,data);else if(action==='fail')await api.failDelivery(delivInfo.id,data);else if(action==='reattempt')await api.reattemptDelivery(delivInfo.id);const r=await api.getSale(order.id);setDelivInfo(r?.data?.delivery||null);onRefresh?.();setShowCodForm(false);setShowFailForm(false);}catch(e){const msg=e?.message||"Failed";Platform.OS==="web"?window.alert(msg):Alert.alert("Error",msg);}finally{setDelivActionLoading(false);}};
-  const handleDeliver=()=>{const data={};if(delivInfo?.cod_amount>0){const a=parseFloat(codAmount);if(isNaN(a)||a<0){Alert.alert('Error','Enter valid COD amount');return;}data.cod_collected=a;data.cod_method=codMethod;}doDelivAction('deliver',data);};
+  const doPartnerAssign=async(pid)=>{if(!delivInfo?.id)return;setDelivActionLoading(true);try{await api.assignDelivery(delivInfo.id,{delivery_partner_id:pid});setShowPartnerPick(false);const r=await api.getSale(order.id);setDelivInfo(r?.data?.delivery||null);onRefresh?.();}catch(e){const msg=e?.message||"Failed";appAlert("Error",msg);}finally{setDelivActionLoading(false);}};
+  const doDelivAction=async(action,data={})=>{if(!delivInfo?.id)return;setDelivActionLoading(true);try{if(action==='pickup')await api.pickupDelivery(delivInfo.id);else if(action==='in_transit')await api.markInTransit(delivInfo.id);else if(action==='deliver')await api.deliverOrder(delivInfo.id,data);else if(action==='fail')await api.failDelivery(delivInfo.id,data);else if(action==='reattempt')await api.reattemptDelivery(delivInfo.id);const r=await api.getSale(order.id);setDelivInfo(r?.data?.delivery||null);onRefresh?.();setShowCodForm(false);setShowFailForm(false);}catch(e){const msg=e?.message||"Failed";appAlert("Error",msg);}finally{setDelivActionLoading(false);}};
+  const guardSubmit = useSubmitGuard();
+  const handleDeliver=()=>{const data={};if(delivInfo?.cod_amount>0){const a=parseFloat(codAmount);if(isNaN(a)||a<0){appAlert('Error','Enter valid COD amount');return;}data.cod_collected=a;data.cod_method=codMethod;}doDelivAction('deliver',data);};
   
   const handleCollectPayment=async()=>{
     const a = parseFloat(payAmount);
-    if(isNaN(a)||a<=0){ Platform.OS==='web'?window.alert('Enter valid amount'):Alert.alert('Error','Enter valid amount'); return; }
+    if(isNaN(a)||a<=0){ appAlert('Error','Enter valid amount'); return; }
     setPayLoading(true);
     try {
       await api.addPaymentToSale(order.id, { amount: a, method: payMethod, location_id: order.location_id });
@@ -375,7 +374,7 @@ function DetailPanel({ order, tasks, onClose, onRefresh, navigation, canManage, 
       // Optional: Close or refresh the panel. The parent list will refresh.
     } catch(e) {
       const msg=e?.message||'Failed';
-      Platform.OS==='web'?window.alert(msg):Alert.alert('Error',msg);
+      appAlert('Error',msg);
     } finally {
       setPayLoading(false);
     }
@@ -388,16 +387,16 @@ function DetailPanel({ order, tasks, onClose, onRefresh, navigation, canManage, 
       await api.resolveSaleBalance(order.id, { action });
       setShowPayForm(false);
       onRefresh?.();
-      Platform.OS==='web'?window.alert('Success!'):Alert.alert('Success','Balance resolved.');
+      appAlert('Success','Balance resolved.');
     } catch(e) {
       const msg=e?.message||'Failed';
-      Platform.OS==='web'?window.alert(msg):Alert.alert('Error',msg);
+      appAlert('Error',msg);
     } finally {
       setPayLoading(false);
     }
   };
 
-  const handleFail=()=>{if(!failReason.trim()){Alert.alert('Error','Enter failure reason');return;}doDelivAction('fail',{failure_reason:failReason.trim()});};
+  const handleFail=()=>{if(!failReason.trim()){appAlert('Error','Enter failure reason');return;}doDelivAction('fail',{failure_reason:failReason.trim()});};
 
   if(!order)return null;
   const st=order.status||'pending';const ot=order.order_type||'walk_in';const sc=STATUS_COLOR[st]||P.textMuted;const isFinal=['completed','cancelled'].includes(st);
@@ -457,8 +456,8 @@ function DetailPanel({ order, tasks, onClose, onRefresh, navigation, canManage, 
               {(delivInfo.status==='picked_up'||delivInfo.status==='in_transit')&&<><Btn label="Delivered" color={P.green} icon="checkmark-circle-outline" onPress={()=>{delivInfo.cod_amount>0?setShowCodForm(true):doDelivAction('deliver');}} loading={delivActionLoading} small/><Btn label="Failed" color={P.red} icon="close-circle-outline" onPress={()=>setShowFailForm(true)} loading={delivActionLoading} small/></>}
               {delivInfo.status==='failed'&&<Btn label="Reattempt" color={P.amber} icon="refresh-outline" onPress={()=>doDelivAction('reattempt')} loading={delivActionLoading} small/>}
             </View>}
-            {showCodForm&&<View style={dp.form}><Text style={dp.pickerTitle}>Collect COD</Text><TextInput style={dp.input} value={codAmount} onChangeText={setCodAmount} placeholder="Amount" placeholderTextColor={P.textMuted} keyboardType="numeric"/><View style={{flexDirection:'row',gap:5}}>{['cash','upi','card'].map(m=><TouchableOpacity key={m} style={[dp.methodChip,codMethod===m&&{backgroundColor:P.pink+'20',borderColor:P.pink}]} onPress={()=>setCodMethod(m)}><Text style={[dp.methodTxt,codMethod===m&&{color:P.pink}]}>{m.toUpperCase()}</Text></TouchableOpacity>)}</View><View style={{flexDirection:'row',gap:6,marginTop:4}}><Btn label="Confirm" color={P.green} icon="checkmark" onPress={handleDeliver} loading={delivActionLoading} small/><TouchableOpacity onPress={()=>setShowCodForm(false)}><Text style={{color:P.textMuted,fontSize:11}}>Cancel</Text></TouchableOpacity></View></View>}
-            {showFailForm&&<View style={dp.form}><Text style={dp.pickerTitle}>Failure Reason</Text><TextInput style={[dp.input,{height:50}]} value={failReason} onChangeText={setFailReason} placeholder="Reason..." placeholderTextColor={P.textMuted} multiline/><View style={{flexDirection:'row',gap:6,marginTop:4}}><Btn label="Confirm" color={P.red} icon="close-circle" onPress={handleFail} loading={delivActionLoading} small/><TouchableOpacity onPress={()=>setShowFailForm(false)}><Text style={{color:P.textMuted,fontSize:11}}>Cancel</Text></TouchableOpacity></View></View>}
+            {showCodForm&&<View style={dp.form}><Text style={dp.pickerTitle}>Collect COD</Text><TextInput style={dp.input} value={codAmount} onChangeText={setCodAmount} placeholder="Amount" placeholderTextColor={P.textMuted} keyboardType="numeric"/><View style={{flexDirection:'row',gap:5}}>{['cash','upi','card'].map(m=><TouchableOpacity key={m} style={[dp.methodChip,codMethod===m&&{backgroundColor:P.pink+'20',borderColor:P.pink}]} onPress={()=>setCodMethod(m)}><Text style={[dp.methodTxt,codMethod===m&&{color:P.pink}]}>{m.toUpperCase()}</Text></TouchableOpacity>)}</View><View style={{flexDirection:'row',gap:6,marginTop:4}}><Btn label="Confirm" color={P.green} icon="checkmark" onPress={guardSubmit(handleDeliver)} loading={delivActionLoading} small/><TouchableOpacity onPress={()=>setShowCodForm(false)}><Text style={{color:P.textMuted,fontSize:11}}>Cancel</Text></TouchableOpacity></View></View>}
+            {showFailForm&&<View style={dp.form}><Text style={dp.pickerTitle}>Failure Reason</Text><TextInput style={[dp.input,{height:50}]} value={failReason} onChangeText={setFailReason} placeholder="Reason..." placeholderTextColor={P.textMuted} multiline/><View style={{flexDirection:'row',gap:6,marginTop:4}}><Btn label="Confirm" color={P.red} icon="close-circle" onPress={guardSubmit(handleFail)} loading={delivActionLoading} small/><TouchableOpacity onPress={()=>setShowFailForm(false)}><Text style={{color:P.textMuted,fontSize:11}}>Cancel</Text></TouchableOpacity></View></View>}
           </>:!delivLoading?<Text style={dp.emptyTxt}>No delivery record</Text>:null}
         </View>}
 
@@ -485,7 +484,7 @@ function DetailPanel({ order, tasks, onClose, onRefresh, navigation, canManage, 
             </View>
             
             <View style={{flexDirection:'row',gap:6,marginTop:8}}>
-              <Btn label="Submit Payment" color={P.green} icon="checkmark" onPress={handleCollectPayment} loading={payLoading} small/>
+              <Btn label="Submit Payment" color={P.green} icon="checkmark" onPress={guardSubmit(handleCollectPayment)} loading={payLoading} small/>
               <TouchableOpacity onPress={()=>setShowPayForm(false)} style={{justifyContent: 'center'}}><Text style={{color:P.textMuted,fontSize:11}}>Cancel</Text></TouchableOpacity>
             </View>
             <View style={{marginTop: 10, paddingTop: 10, borderTopWidth: 1, borderTopColor: P.border}}>
@@ -615,7 +614,7 @@ export default function DashboardScreenV2({ navigation }) {
         setStaffPulse([...presentByUser.values(),...normalizedAbsent].slice(0,10));setReportKPIs(reportsRes?.data||null);
       }
       if(locationList.length>0){const regCalls=await Promise.all(locationList.map(async loc=>{try{const reg=await api.getRegisterStatus(loc.id);return{locationId:loc.id,locationName:loc.name,isOpen:reg?.isOpen===true,register:reg?.data||null,pendingCodTotal:reg?.pendingCodTotal||0};}catch{return{locationId:loc.id,locationName:loc.name,isOpen:false,register:null,pendingCodTotal:0};}}));setRegisters(regCalls);}else setRegisters([]);
-    }catch(err){Alert.alert('Dashboard',err?.message||'Failed to load.');}finally{setLoading(false);setRefreshing(false);}
+    }catch(err){appAlert('Dashboard',err?.message||'Failed to load.');}finally{setLoading(false);setRefreshing(false);}
   },[activeLocation?.id,isOwner,isOwnerOrManager,isStaff,isEmployee,isCounterStaff,isDeliveryPartner,locationScope,dateScope,role]);
 
   useEffect(()=>{if(locationScope!=null)return;if(activeLocation?.id){setLocationScope(activeLocation.id);return;}if(locations.length>0)setLocationScope(locations[0].id);},[locationScope,activeLocation?.id,locations]);
@@ -650,7 +649,7 @@ export default function DashboardScreenV2({ navigation }) {
 
   const totalPendingCod = useMemo(()=>registers.reduce((sum,r)=>sum+Number(r.pendingCodTotal||0),0),[registers]);
 
-  const advanceTask=useCallback(async(task)=>{if(!task?.id||task.status==='completed'||task.status==='cancelled')return;setTaskActionLoading(p=>({...p,[task.id]:true}));try{if(task.status==='pending')await api.pickTask(task.id);else if(task.status==='assigned')await api.startTask(task.id);else if(task.status==='in_progress')await api.completeTask(task.id);await fetchDashboard();}catch(e){const msg=e?.message||"Failed";Platform.OS==="web"?window.alert(msg):Alert.alert("Error",msg);}finally{setTaskActionLoading(p=>({...p,[task.id]:false}));};},[fetchDashboard]);
+  const advanceTask=useCallback(async(task)=>{if(!task?.id||task.status==='completed'||task.status==='cancelled')return;setTaskActionLoading(p=>({...p,[task.id]:true}));try{if(task.status==='pending')await api.pickTask(task.id);else if(task.status==='assigned')await api.startTask(task.id);else if(task.status==='in_progress')await api.completeTask(task.id);await fetchDashboard();}catch(e){const msg=e?.message||"Failed";appAlert("Error",msg);}finally{setTaskActionLoading(p=>({...p,[task.id]:false}));};},[fetchDashboard]);
 
   const handleNavigateToQueue=useCallback((orderType,status)=>{navigation.navigate('ProductionQueue',{applyId:Date.now(),initialViewMode:'orders',initialOrderType:orderType,initialStatus:status||'',initialLocationId:locationScope==='all'?null:(locationScope||activeLocation?.id||null),initialShowFilters:true});},[navigation,activeLocation?.id,locationScope]);
 

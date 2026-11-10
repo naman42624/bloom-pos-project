@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { RecorderButton } from './VoiceNoteRecorder.shared';
+import { appAlert } from '../utils/alert';
 
 const MAX_SECONDS_DEFAULT = 60;
 
@@ -47,7 +48,7 @@ export default function VoiceNoteRecorder({ onRecorded, maxSeconds = MAX_SECONDS
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     } catch (err) {
-      window.alert('Please allow microphone access to record a voice note.');
+      appAlert('Microphone is off', 'Allow the microphone for this page in the browser, then tap record again.');
       return;
     }
     streamRef.current = stream;

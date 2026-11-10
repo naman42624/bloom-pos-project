@@ -16,6 +16,7 @@ import Input from '../components/Input';
 import Button from '../components/Button';
 import DismissKeyboard from '../components/DismissKeyboard';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
+import useSubmitGuard from '../hooks/useSubmitGuard';
 
 export default function LocationFormScreen({ route, navigation }) {
   const existingLocation = route.params?.location;
@@ -87,6 +88,7 @@ export default function LocationFormScreen({ route, navigation }) {
     }
   };
 
+  const guardSubmit = useSubmitGuard();
   const handleSubmit = async () => {
     if (!validate()) return;
     setLoading(true);
@@ -289,7 +291,7 @@ export default function LocationFormScreen({ route, navigation }) {
 
         <Button
           title={isEditing ? 'Update Location' : 'Create Location'}
-          onPress={handleSubmit}
+          onPress={guardSubmit(handleSubmit)}
           loading={loading}
           style={styles.submitButton}
         />
