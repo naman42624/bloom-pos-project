@@ -13,6 +13,7 @@
  */
 require('dotenv').config();
 const { getDb } = require('../config/database-async');
+const { assertOwnRegister, refuseIfRegisterOpen } = require('./lib/verify-harness');
 
 const API_BASE = process.env.API_BASE_URL || 'http://localhost:3001/api';
 const TEST_LOCATION_ID = 4; // "Test Loc" — the project's established scratch location
@@ -99,16 +100,21 @@ async function createCustomer(ownerToken) {
   return { token: loginRes.body.data.token, id: userId, role: 'customer' };
 }
 
+// A6: registers this run opened. A register anyone else opened is never
+// sold into or closed; the run stops with a plain message instead.
+const ownRegisterIds = [];
+
 async function ensureRegisterOpen(ownerToken, locationId) {
   const { body } = await api('GET', `/sales/register/status?location_id=${locationId}`, ownerToken);
-  if (body?.isOpen) return;
+  if (assertOwnRegister(body, ownRegisterIds)) return;
   const openRes = await api('POST', '/sales/register/open', ownerToken, { location_id: locationId, opening_balance: 1000 });
   if (openRes.status !== 200 && openRes.status !== 201) throw new Error(`Could not open register at location ${locationId}: ${JSON.stringify(openRes.body)}`);
+  ownRegisterIds.push(openRes.body.data.id);
 }
 
 async function closeRegister(ownerToken, locationId) {
   const { body } = await api('GET', `/sales/register/status?location_id=${locationId}`, ownerToken);
-  if (!body?.isOpen) return;
+  if (!assertOwnRegister(body, ownRegisterIds)) return;
   const closeRes = await api('PUT', '/sales/register/close', ownerToken, { location_id: locationId, actual_cash: Number(body.data.expected_cash) || 0 });
   if (closeRes.status !== 200) throw new Error(`Could not close register at location ${locationId}: ${JSON.stringify(closeRes.body)}`);
 }
@@ -1673,6 +1679,7 @@ async function cleanup() {
 
 async function main() {
   assertLocalTarget();
+  await refuseIfRegisterOpen(TEST_LOCATION_ID);
   let pass = 0, fail = 0;
   for (const { name, fn } of checks) {
     try {
@@ -1683,7 +1690,12 @@ async function main() {
       console.log(`❌ ${name}`);
       console.log(`   ${err.message}`);
       fail++;
+      if (err.foreignRegister) { console.log('\nStopped: nothing else was run.'); break; }
     }
+  }
+  // Close this run's own register if a check left it open
+  try { await closeRegister((await loginOwner()).token, TEST_LOCATION_ID); } catch (err) {
+    console.error(`   (cleanup warning: ${err.message})`);
   }
   await cleanup();
   console.log(`\n${pass}/${pass + fail} checks passed`);
