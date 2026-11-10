@@ -88,7 +88,9 @@ async function getStageFlags(db) {
 // behavior as before this parameter existed).
 function computeOrderStage(sale, viewerRole, flags = {}) {
   if (sale.status === 'cancelled') {
-    return { key: 'cancelled', label: 'Cancelled', color: STAGE_COLORS.cancelled, nextAction: null };
+    // An undone quick sale keeps its bill number as a cancelled bill (GST
+    // numbers run without gaps); say so, so the number is never a mystery.
+    return { key: 'cancelled', label: sale.undone_at ? 'Cancelled (undone)' : 'Cancelled', color: STAGE_COLORS.cancelled, nextAction: null };
   }
 
   // 'confirmed' is a real first-class status (sales CHECK constraint; written

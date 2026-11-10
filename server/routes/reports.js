@@ -5,6 +5,15 @@ const { getDb: getAsyncDb } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
 const { todayStr: localToday } = require('../utils/time');
 
+// Timestamps are stored in UTC (both DB layers run with timezone=UTC), so
+// date(created_at) gave the UTC day: sales between midnight and 5:30 AM in
+// India counted on the day before, and "Today" showed Rs 0 until 5:30 AM.
+// shopTime(col) is that moment on the shop's own clock (the timezone
+// setting, the same one todayStr() uses), so every day filter and day
+// grouping below uses the shop's day.
+const SHOP_TZ_SQL = "COALESCE((SELECT value FROM settings WHERE key = 'timezone'), 'Asia/Kolkata')";
+const shopTime = (col) => `((${col} AT TIME ZONE 'UTC') AT TIME ZONE ${SHOP_TZ_SQL})`;
+
 function localDateStr(d) {
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 }
@@ -22,11 +31,11 @@ router.get('/sales-summary', authenticate, authorize('owner', 'manager'), async 
     const grouping = group_by || 'day'; // day, week, month
 
     let dateExpr;
-    if (grouping === 'month') dateExpr = "to_char(s.created_at, 'YYYY-MM')";
-    else if (grouping === 'week') dateExpr = "to_char(date_trunc('week', s.created_at), 'IYYY-\"W\"IW')";
-    else dateExpr = "date(s.created_at)";
+    if (grouping === 'month') dateExpr = `to_char(${shopTime('s.created_at')}, 'YYYY-MM')`;
+    else if (grouping === 'week') dateExpr = `to_char(date_trunc('week', ${shopTime('s.created_at')}), 'IYYY-"W"IW')`;
+    else dateExpr = `date(${shopTime('s.created_at')})`;
 
-    let where = "WHERE date(s.created_at) BETWEEN ? AND ? AND s.status != 'cancelled'";
+    let where = `WHERE date(${shopTime('s.created_at')}) BETWEEN ? AND ? AND s.status != 'cancelled'`;
     const params = [dateFrom, dateTo];
 
     if (location_id) {
@@ -43,6 +52,8 @@ router.get('/sales-summary', authenticate, authorize('owner', 'manager'), async 
         COALESCE(SUM(s.tax_total), 0) as total_tax,
         COALESCE(SUM(s.discount_amount), 0) as total_discounts,
         COALESCE(SUM(s.delivery_charges), 0) as total_delivery_charges,
+        COALESCE(SUM(s.round_off), 0) as total_round_off,
+        COALESCE(SUM(s.delivery_tax), 0) as total_delivery_tax,
         COALESCE(AVG(s.grand_total), 0) as avg_order_value,
         COUNT(CASE WHEN s.order_type = 'walk_in' THEN 1 END) as walk_in_count,
         COUNT(CASE WHEN s.order_type = 'pickup' THEN 1 END) as pickup_count,
@@ -77,14 +88,21 @@ router.get('/sales-summary', authenticate, authorize('owner', 'manager'), async 
       GROUP BY p.method
       ORDER BY total DESC
     `).all(...params);
+    // Write-offs (money let go, utils/write-off.js) are not a payment method:
+    // their own total, taken off net below. The bills stay as issued.
+    const writtenOffTotal = paymentMethods.filter((r) => r.method === 'write_off').reduce((t, r) => t + Number(r.total || 0), 0);
+    const moneyMethods = paymentMethods.filter((r) => r.method !== 'write_off');
 
     // Top products
     const topProducts = await db.prepare(`
       SELECT
         si.product_name,
         SUM(si.quantity) as total_qty,
-        -- line_total is 0 on older databases that never computed it, so fall back to quantity x price + tax
-        SUM(CASE WHEN COALESCE(si.line_total, 0) > 0 THEN si.line_total
+        -- GST bills store the amount after the order discount (taxable value + GST).
+        -- Older rows: line_total, which is 0 on older databases that never computed it,
+        -- so fall back to quantity x price + tax
+        SUM(CASE WHEN si.taxable_value IS NOT NULL THEN si.taxable_value + COALESCE(si.tax_amount, 0)
+                 WHEN COALESCE(si.line_total, 0) > 0 THEN si.line_total
                  ELSE si.quantity * si.unit_price + COALESCE(si.tax_amount, 0) END) as total_revenue
       FROM sale_items si
       JOIN sales s ON si.sale_id = s.id
@@ -123,7 +141,7 @@ router.get('/sales-summary', authenticate, authorize('owner', 'manager'), async 
         COALESCE(SUM(e.amount), 0) as total_expenses,
         COUNT(*) as expense_count
       FROM expenses e
-      WHERE date(e.created_at) BETWEEN ? AND ?
+      WHERE date(${shopTime('e.created_at')}) BETWEEN ? AND ?
       ${location_id ? 'AND e.location_id = ?' : ''}
     `).get(...(location_id ? [dateFrom, dateTo, location_id] : [dateFrom, dateTo]));
 
@@ -131,9 +149,9 @@ router.get('/sales-summary', authenticate, authorize('owner', 'manager'), async 
       success: true,
       data: {
         period: { from: dateFrom, to: dateTo },
-        totals: { ...totals, ...refunds, ...expenses, net_revenue: totals.total_revenue - (refunds.refund_total || 0) - (expenses.total_expenses || 0)  },
+        totals: { ...totals, ...refunds, ...expenses, written_off: writtenOffTotal, net_revenue: totals.total_revenue - (refunds.refund_total || 0) - writtenOffTotal - (expenses.total_expenses || 0)  },
         breakdown,
-        paymentMethods,
+        paymentMethods: moneyMethods,
         topProducts,
         byLocation,
       },
@@ -208,7 +226,7 @@ router.get('/inventory', authenticate, authorize('owner', 'manager'), async (req
         COUNT(*) as incidents
       FROM material_transactions mt
       JOIN materials m ON mt.material_id = m.id
-      WHERE mt.type = 'wastage' AND date(mt.created_at) >= (CURRENT_DATE - INTERVAL '30 days')
+      WHERE mt.type = 'wastage' AND date(${shopTime('mt.created_at')}) >= (date(${shopTime('now()::timestamp')}) - INTERVAL '30 days')
       GROUP BY mt.material_id, m.name
       ORDER BY wasted_qty DESC
       LIMIT 10
@@ -248,9 +266,9 @@ router.get('/customer-insights', authenticate, authorize('owner', 'manager'), as
         COUNT(*) as order_count,
         COALESCE(SUM(s.grand_total), 0) as total_spent,
         COALESCE(AVG(s.grand_total), 0) as avg_order,
-        MAX(date(s.created_at)) as last_order_date
+        MAX(date(${shopTime('s.created_at')})) as last_order_date
       FROM sales s
-      WHERE date(s.created_at) BETWEEN ? AND ? AND s.status != 'cancelled' AND s.customer_name IS NOT NULL AND s.customer_name != ''
+      WHERE date(${shopTime('s.created_at')}) BETWEEN ? AND ? AND s.status != 'cancelled' AND s.customer_name IS NOT NULL AND s.customer_name != ''
       GROUP BY COALESCE(s.customer_id::text, s.customer_phone), s.customer_id, s.customer_name, s.customer_phone
       ORDER BY total_spent DESC
       LIMIT ?
@@ -262,9 +280,9 @@ router.get('/customer-insights', authenticate, authorize('owner', 'manager'), as
         s.customer_id, s.customer_name, s.customer_phone,
         COUNT(*) as order_count,
         COALESCE(SUM(s.grand_total), 0) as total_spent,
-        MAX(date(s.created_at)) as last_order_date
+        MAX(date(${shopTime('s.created_at')})) as last_order_date
       FROM sales s
-      WHERE date(s.created_at) BETWEEN ? AND ? AND s.status != 'cancelled' AND s.customer_name IS NOT NULL AND s.customer_name != ''
+      WHERE date(${shopTime('s.created_at')}) BETWEEN ? AND ? AND s.status != 'cancelled' AND s.customer_name IS NOT NULL AND s.customer_name != ''
       GROUP BY COALESCE(s.customer_id::text, s.customer_phone), s.customer_id, s.customer_name, s.customer_phone
       ORDER BY order_count DESC
       LIMIT ?
@@ -279,10 +297,10 @@ router.get('/customer-insights', authenticate, authorize('owner', 'manager'), as
       FROM sales s
       LEFT JOIN (
         SELECT COALESCE(customer_id::text, customer_phone) as ckey, COUNT(*) as cnt
-        FROM sales WHERE date(created_at) < ? AND status != 'cancelled'
+        FROM sales WHERE date(${shopTime('created_at')}) < ? AND status != 'cancelled'
         GROUP BY ckey
       ) prev ON COALESCE(s.customer_id::text, s.customer_phone) = prev.ckey
-      WHERE date(s.created_at) BETWEEN ? AND ? AND s.status != 'cancelled' AND s.customer_name IS NOT NULL AND s.customer_name != ''
+      WHERE date(${shopTime('s.created_at')}) BETWEEN ? AND ? AND s.status != 'cancelled' AND s.customer_name IS NOT NULL AND s.customer_name != ''
       GROUP BY type
     `).all(dateFrom, dateFrom, dateTo);
 
@@ -303,7 +321,7 @@ router.get('/customer-insights', authenticate, authorize('owner', 'manager'), as
     const orderTypes = await db.prepare(`
       SELECT order_type, COUNT(*) as count, COALESCE(SUM(grand_total), 0) as revenue
       FROM sales
-      WHERE date(created_at) BETWEEN ? AND ? AND status != 'cancelled'
+      WHERE date(${shopTime('created_at')}) BETWEEN ? AND ? AND status != 'cancelled'
       GROUP BY order_type
     `).all(dateFrom, dateTo);
 
@@ -348,7 +366,7 @@ router.get('/employee-performance', authenticate, authorize('owner', 'manager'),
         COALESCE(SUM(s.grand_total), 0) as total_revenue,
         COALESCE(AVG(s.grand_total), 0) as avg_sale
       FROM users u
-      LEFT JOIN sales s ON s.created_by = u.id AND date(s.created_at) BETWEEN ? AND ? AND s.status != 'cancelled'
+      LEFT JOIN sales s ON s.created_by = u.id AND date(${shopTime('s.created_at')}) BETWEEN ? AND ? AND s.status != 'cancelled'
       WHERE u.role IN ('owner', 'manager', 'employee', 'counter_staff') ${userFilter}
       GROUP BY u.id
       ORDER BY total_revenue DESC
@@ -361,7 +379,7 @@ router.get('/employee-performance', authenticate, authorize('owner', 'manager'),
         COUNT(pl.id) as items_produced,
         COALESCE(SUM(pl.quantity), 0) as total_qty
       FROM users u
-      LEFT JOIN production_logs pl ON pl.produced_by = u.id AND date(pl.created_at) BETWEEN ? AND ?
+      LEFT JOIN production_logs pl ON pl.produced_by = u.id AND date(${shopTime('pl.created_at')}) BETWEEN ? AND ?
       WHERE u.role IN ('owner', 'manager', 'employee', 'counter_staff') ${userFilter}
       GROUP BY u.id
       ORDER BY total_qty DESC
@@ -394,7 +412,7 @@ router.get('/employee-performance', authenticate, authorize('owner', 'manager'),
           END
         ), 0) as avg_delivery_minutes
       FROM users u
-      LEFT JOIN deliveries d ON d.delivery_partner_id = u.id AND date(d.created_at) BETWEEN ? AND ?
+      LEFT JOIN deliveries d ON d.delivery_partner_id = u.id AND date(${shopTime('d.created_at')}) BETWEEN ? AND ?
       WHERE u.role = 'delivery_partner' ${userFilter}
       GROUP BY u.id
       ORDER BY total_deliveries DESC
@@ -438,6 +456,20 @@ router.get('/dashboard', authenticate, authorize('owner', 'manager'), async (req
     // This month
     const monthStart = `${today.slice(0, 8)}01`;
 
+    // Write-offs on today's sales (same rule as the Sales Report)
+    const todayWrittenOff = await db.prepare(`
+      SELECT COALESCE(SUM(p.amount), 0) as total
+      FROM payments p JOIN sales s ON p.sale_id = s.id
+      WHERE p.method = 'write_off' AND date(${shopTime('s.created_at')}) = ? AND s.status != 'cancelled' ${locFilter}
+    `).get(today, ...locParams);
+
+    // Refunds on today's sales, same rule as the Sales Report's refunds
+    const todayRefunds = await db.prepare(`
+      SELECT COALESCE(SUM(r.amount), 0) as total
+      FROM refunds r JOIN sales s ON r.sale_id = s.id
+      WHERE date(${shopTime('s.created_at')}) = ? AND s.status != 'cancelled' ${locFilter}
+    `).get(today, ...locParams);
+
     // Run all independent dashboard queries in parallel
     const [
       todaySales,
@@ -453,26 +485,26 @@ router.get('/dashboard', authenticate, authorize('owner', 'manager'), async (req
     ] = await Promise.all([
       db.prepare(`
         SELECT COUNT(*) as orders, COALESCE(SUM(grand_total), 0) as revenue
-        FROM sales s WHERE date(s.created_at) = ? AND s.status != 'cancelled' ${locFilter}
+        FROM sales s WHERE date(${shopTime('s.created_at')}) = ? AND s.status != 'cancelled' ${locFilter}
       `).get(today, ...locParams),
       db.prepare(`
         SELECT COUNT(*) as orders, COALESCE(SUM(grand_total), 0) as revenue
-        FROM sales s WHERE date(s.created_at) = ? AND s.status != 'cancelled' ${locFilter}
+        FROM sales s WHERE date(${shopTime('s.created_at')}) = ? AND s.status != 'cancelled' ${locFilter}
       `).get(yesterdayStr, ...locParams),
       db.prepare(`
         SELECT COUNT(*) as orders, COALESCE(SUM(grand_total), 0) as revenue
-        FROM sales s WHERE date(s.created_at) BETWEEN ? AND ? AND s.status != 'cancelled' ${locFilter}
+        FROM sales s WHERE date(${shopTime('s.created_at')}) BETWEEN ? AND ? AND s.status != 'cancelled' ${locFilter}
       `).get(weekStartStr, today, ...locParams),
       db.prepare(`
         SELECT COUNT(*) as orders, COALESCE(SUM(grand_total), 0) as revenue
-        FROM sales s WHERE date(s.created_at) BETWEEN ? AND ? AND s.status != 'cancelled' ${locFilter}
+        FROM sales s WHERE date(${shopTime('s.created_at')}) BETWEEN ? AND ? AND s.status != 'cancelled' ${locFilter}
       `).get(monthStart, today, ...locParams),
       db.prepare(`
         SELECT COUNT(*) as count FROM sales s WHERE s.status IN ('pending', 'preparing') ${locFilter}
       `).get(...locParams),
       db.prepare(`
         SELECT COALESCE(SUM(amount), 0) as total FROM expenses
-        WHERE date(created_at) = ? ${location_id ? 'AND location_id = ?' : ''}
+        WHERE date(${shopTime('created_at')}) = ? ${location_id ? 'AND location_id = ?' : ''}
       `).get(...(location_id ? [today, location_id] : [today])),
       db.prepare(`
         SELECT COUNT(DISTINCT user_id) as count FROM attendance WHERE date = ? AND clock_in IS NOT NULL AND clock_out IS NULL
@@ -491,17 +523,17 @@ router.get('/dashboard', authenticate, authorize('owner', 'manager'), async (req
           COUNT(*) as orders,
           COALESCE(SUM(s.grand_total), 0) as revenue
         FROM sales s
-        WHERE date(s.created_at) = ? AND s.status != 'cancelled' ${locFilter}
+        WHERE date(${shopTime('s.created_at')}) = ? AND s.status != 'cancelled' ${locFilter}
         GROUP BY hour
         ORDER BY hour
       `).all(today, ...locParams),
       db.prepare(`
         SELECT
-          date(s.created_at) as day,
+          date(${shopTime('s.created_at')}) as day,
           COUNT(*) as orders,
           COALESCE(SUM(s.grand_total), 0) as revenue
         FROM sales s
-        WHERE date(s.created_at) >= (?::date - INTERVAL '6 days') AND s.status != 'cancelled' ${locFilter}
+        WHERE date(${shopTime('s.created_at')}) >= (?::date - INTERVAL '6 days') AND s.status != 'cancelled' ${locFilter}
         GROUP BY day
         ORDER BY day
       `).all(today, ...locParams),
@@ -510,7 +542,9 @@ router.get('/dashboard', authenticate, authorize('owner', 'manager'), async (req
     res.json({
       success: true,
       data: {
-        today: { ...todaySales, expenses: todayExpenses.total, net: todaySales.revenue - todayExpenses.total },
+        // Net is worked out exactly as the Sales Report's Net Revenue:
+        // revenue - refunds - written off (on today's sales) - expenses.
+        today: { ...todaySales, expenses: todayExpenses.total, refunds: todayRefunds.total, written_off: todayWrittenOff.total, net: Number(todaySales.revenue) - Number(todayRefunds.total) - Number(todayWrittenOff.total) - Number(todayExpenses.total) },
         yesterday: yesterdaySales,
         week: weekSales,
         month: monthSales,
@@ -543,7 +577,7 @@ router.get('/staff-sales', authenticate, authorize('owner'), async (req, res, ne
     const { from, to, locationId } = staffSalesRange(req);
     const locSql = locationId ? ' AND s.location_id = ?' : '';
     const locParams = locationId ? [locationId] : [];
-    const inPeriod = (col) => `${col} >= ?::date AND ${col} < (?::date + 1)`;
+    const inPeriod = (col) => `${shopTime(col)} >= ?::date AND ${shopTime(col)} < (?::date + 1)`;
 
     const sold = await db.prepare(`
       SELECT COALESCE(s.sold_by, s.created_by) AS user_id,
@@ -692,7 +726,7 @@ router.get('/staff-sales/:userId/sales', authenticate, authorize('owner'), async
       SELECT s.id, s.sale_number, s.created_at, s.grand_total, s.status, s.order_type, s.customer_name
       FROM sales s
       WHERE COALESCE(s.sold_by, s.created_by) = ? AND s.status != 'cancelled' AND COALESCE(s.entry_mode, '') <> 'close_topup'
-        AND s.created_at >= ?::date AND s.created_at < (?::date + 1)${locSql}
+        AND ${shopTime('s.created_at')} >= ?::date AND ${shopTime('s.created_at')} < (?::date + 1)${locSql}
       ORDER BY s.created_at DESC, s.id DESC
     `).all(...params);
     res.json({ success: true, data: rows });

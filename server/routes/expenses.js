@@ -1,10 +1,10 @@
 const express = require('express');
 const { body, validationResult } = require('express-validator');
 const { getDb } = require('../config/database');
-const { getDb: getAsyncDb } = require('../config/database-async');
+const { getDb: getAsyncDb, withMoneyTx } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
 const { todayStr: localToday } = require('../utils/time');
-const { hasOpenRegister, REGISTER_CLOSED_MESSAGE } = require('../utils/register-guard');
+const { hasOpenRegister, lockOpenRegister, registerClosedError, REGISTER_CLOSED_MESSAGE } = require('../utils/register-guard');
 
 const router = express.Router();
 
@@ -122,7 +122,7 @@ router.post(
     body('is_return').optional().isBoolean(),
     body('employee_id').optional({ nullable: true }).isInt(),
   ],
-  (req, res, next) => {
+  async (req, res, next) => {
     try {
       const errors = validationResult(req);
       if (!errors.isEmpty()) return res.status(400).json({ success: false, message: 'Validation failed', errors: errors.array() });
@@ -174,12 +174,14 @@ router.post(
       // Look up the currently open register FIRST so we can store register_id on the expense.
       // This links the expense permanently to its session — critical for correct session-scoped queries
       // and for reversing against the correct register on deletion.
-      const openRegister = payment_method === 'cash'
-        ? db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1').get(location_id)
-        : null;
-      const registerId = openRegister ? openRegister.id : null;
-
       const expense_number = generateExpenseNumber(db, location_id);
+
+      // One transaction with the open register locked: the expense and the
+      // drawer change are saved together, and a close can't land between.
+      const newExpenseId = await withMoneyTx(async (db) => {
+      const openRegister = payment_method === 'cash' ? await lockOpenRegister(db, location_id) : null;
+      if (payment_method === 'cash' && !openRegister) throw registerClosedError();
+      const registerId = openRegister ? openRegister.id : null;
 
       // Only ever stored for the salary category (the category this whole
       // feature is about) — null for everything else, unchanged from today.
@@ -189,12 +191,12 @@ router.post(
       const isReturnInt = is_return ? 1 : 0;
       try {
         if (expense_number) {
-          result = db.prepare(
+          result = await db.prepare(
             `INSERT INTO expenses (expense_number, location_id, category, amount, description, payment_method, expense_date, created_by, is_return, register_id, employee_id)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
           ).run(expense_number, location_id, category, amount, description || '', payment_method, expense_date, req.user.id, isReturnInt, registerId, employeeIdValue);
         } else {
-          result = db.prepare(
+          result = await db.prepare(
             `INSERT INTO expenses (location_id, category, amount, description, payment_method, expense_date, created_by, is_return, register_id, employee_id)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
           ).run(location_id, category, amount, description || '', payment_method, expense_date, req.user.id, isReturnInt, registerId, employeeIdValue);
@@ -203,13 +205,13 @@ router.post(
         const msg = String(err?.message || '').toLowerCase();
         // Fallback if expense_number column doesn't exist (legacy schema)
         if (msg.includes('expense_number')) {
-          result = db.prepare(
+          result = await db.prepare(
             `INSERT INTO expenses (location_id, category, amount, description, payment_method, expense_date, created_by, is_return, register_id, employee_id)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
           ).run(location_id, category, amount, description || '', payment_method, expense_date, req.user.id, isReturnInt, registerId, employeeIdValue);
         // Fallback if register_id column doesn't exist yet (migration pending)
         } else if (msg.includes('register_id')) {
-          result = db.prepare(
+          result = await db.prepare(
             `INSERT INTO expenses (location_id, category, amount, description, payment_method, expense_date, created_by, is_return, employee_id)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
           ).run(location_id, category, amount, description || '', payment_method, expense_date, req.user.id, isReturnInt, employeeIdValue);
@@ -218,14 +220,16 @@ router.post(
         }
       }
 
-      // Update expected_cash on the open register (already found above)
+      // Update expected_cash on the open register (locked above)
       if (openRegister) {
         if (is_return) {
-          db.prepare('UPDATE cash_registers SET expected_cash = expected_cash + ? WHERE id = ?').run(amount, openRegister.id);
+          await db.prepare('UPDATE cash_registers SET expected_cash = expected_cash + ? WHERE id = ?').run(amount, openRegister.id);
         } else {
-          db.prepare('UPDATE cash_registers SET expected_cash = expected_cash - ? WHERE id = ?').run(amount, openRegister.id);
+          await db.prepare('UPDATE cash_registers SET expected_cash = expected_cash - ? WHERE id = ?').run(amount, openRegister.id);
         }
       }
+      return result.lastInsertRowid;
+      });
 
       const expense = db.prepare(`
         SELECT e.*, l.name as location_name, u.name as created_by_name
@@ -233,7 +237,7 @@ router.post(
         JOIN locations l ON e.location_id = l.id
         JOIN users u ON e.created_by = u.id
         WHERE e.id = ?
-      `).get(result.lastInsertRowid);
+      `).get(newExpenseId);
 
       res.status(201).json({ success: true, data: expense });
     } catch (err) {
@@ -243,7 +247,7 @@ router.post(
 );
 
 // ─── DELETE /api/expenses/:id ────────────────────────────────
-router.delete('/:id', authenticate, authorize('owner', 'manager'), (req, res, next) => {
+router.delete('/:id', authenticate, authorize('owner', 'manager'), async (req, res, next) => {
   try {
     const db = getDb();
     const expense = db.prepare('SELECT * FROM expenses WHERE id = ?').get(req.params.id);
@@ -253,11 +257,14 @@ router.delete('/:id', authenticate, authorize('owner', 'manager'), (req, res, ne
     // IMPORTANT: Use expense.register_id to target the exact session the expense belonged to.
     // This prevents reversals from hitting a different (e.g. today's) open register when the
     // expense was recorded in a previous session.
+    await withMoneyTx(async (db) => {
     if (expense.payment_method === 'cash') {
       // Prefer the stored register_id (session-exact). Fall back to current open register
       // only if the expense pre-dates the register_id column (legacy data).
+      // The register row is locked until the delete is saved.
       const registerId = expense.register_id
-        || db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1').get(expense.location_id)?.id;
+        ? (await db.prepare('SELECT id FROM cash_registers WHERE id = ? FOR UPDATE').get(expense.register_id))?.id
+        : (await lockOpenRegister(db, expense.location_id))?.id;
 
       if (registerId) {
         // If the target session is already CLOSED, its discrepancy was
@@ -274,7 +281,7 @@ router.delete('/:id', authenticate, authorize('owner', 'manager'), (req, res, ne
         // delta" even though expected_cash is being changed in the same
         // statement. No-op for an open session (discrepancy isn't set yet).
         const delta = expense.is_return ? -Number(expense.amount) : Number(expense.amount);
-        db.prepare(`
+        await db.prepare(`
           UPDATE cash_registers SET
             expected_cash = expected_cash + ?,
             discrepancy = CASE WHEN closed_at IS NOT NULL THEN (expected_cash + ?) - actual_cash ELSE discrepancy END
@@ -283,7 +290,8 @@ router.delete('/:id', authenticate, authorize('owner', 'manager'), (req, res, ne
       }
     }
 
-    db.prepare('DELETE FROM expenses WHERE id = ?').run(req.params.id);
+    await db.prepare('DELETE FROM expenses WHERE id = ?').run(req.params.id);
+    });
     res.json({ success: true, message: 'Expense deleted' });
   } catch (err) {
     next(err);

@@ -16,8 +16,11 @@ import AttachmentVoiceRow from '../components/AttachmentVoiceRow';
 import { showAlert } from '../utils/alert';
 import CollectDuesSheet from '../components/CollectDuesSheet';
 import OpenRegisterSheet from '../components/OpenRegisterSheet';
-import OldDuesCard, { EMPTY_DUES, duesAmountError } from '../components/OldDuesCard';
+import OldDuesCard, { EMPTY_DUES, duesAmountError, takeNowSummary } from '../components/OldDuesCard';
+import DiscountApprovalModal from '../components/DiscountApprovalModal';
 import api from '../services/api';
+import { computeBill, splitInclusive, toPaise } from '../utils/gst';
+import useBillSettings from '../hooks/useBillSettings';
 import { useAuth } from '../context/AuthContext';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import { getShopNow } from '../utils/datetime';
@@ -70,6 +73,7 @@ function historyLine(kind, who, h) {
 
 export default function QuickCheckoutScreen({ navigation, route }) {
   const { user, settings, activeLocation } = useAuth();
+  const billSettings = useBillSettings();
   const timezone = settings?.timezone?.value || 'Asia/Kolkata';
   const { width } = useWindowDimensions();
   const isNarrowMobile = width < 380;
@@ -178,6 +182,10 @@ export default function QuickCheckoutScreen({ navigation, route }) {
   const [receiverId, setReceiverId] = useState(null);
   const [routeId, setRouteId] = useState(null);
   const [orderNotes, setOrderNotes] = useState('');
+  // Business bill: buyer GSTIN printed on the tax invoice (optional)
+  const [showBuyerGstin, setShowBuyerGstin] = useState(false);
+  const [buyerGstin, setBuyerGstin] = useState('');
+  const [buyerLegalName, setBuyerLegalName] = useState('');
   // Voice notes recorded for this order, uploaded after the sale is created (see
   // handlePlaceOrder). Local file URIs only — never carried into a saved draft.
   const [pendingAttachments, setPendingAttachments] = useState([]);
@@ -229,6 +237,17 @@ export default function QuickCheckoutScreen({ navigation, route }) {
   useEffect(() => { if (items.length === 0) setDuesCollect(EMPTY_DUES); }, [items.length]);
   const [skipAssignment, setSkipAssignment] = useState(true);
   const [submitErrors, setSubmitErrors] = useState([]);
+  // A "Please fix" list is about what was on screen at that tap. Once staff
+  // change any of it, the old list is stale: clear it (it used to stay up
+  // after the problem was already fixed).
+  useEffect(() => {
+    setSubmitErrors((cur) => (cur.length ? [] : cur));
+  }, [items, discountValue, discountType, paymentMethod, payments, enableSplitPayment, paymentMode, advanceAmount, orderType, duesCollect]);
+  // Discount above the counter limit: a manager or the owner OKs it with
+  // their code + PIN (DiscountApprovalModal). { message, error } while open;
+  // the code + PIN ride on the next try only.
+  const [discountOk, setDiscountOk] = useState(null);
+  const discountOverrideRef = useRef(null);
   const [savingDraft, setSavingDraft] = useState(false);
   const [draftPickerVisible, setDraftPickerVisible] = useState(false);
   const [draftsLoading, setDraftsLoading] = useState(false);
@@ -794,43 +813,37 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     return Math.max(0, parseFloat(item?.baseProduct?.tax_percentage) || 0);
   }, []);
 
-  // Calculate totals using net subtotal + separate tax so the summary matches backend totals.
-  const getItemGrossTotal = (item) => {
-    const price = parseFloat(item.price) || 0;
-    const qty = parseInt(item.quantity) || 1;
-    return price * qty;
-  };
+  // HSN shown and sent for a line: typed here, else the product's, else the
+  // owner's default for custom items
+  const resolveItemHsn = (item) => (item.hsn_code != null ? item.hsn_code : (item.baseProduct?.hsn_code || billSettings.default_hsn || ''));
 
-  const getItemNetUnitPrice = (item) => {
-    const grossUnit = parseFloat(item.price) || 0;
-    const taxRate = resolveItemTaxRate(item);
-    if (taxRate <= 0) return grossUnit;
-    return grossUnit * 100 / (100 + taxRate);
-  };
+  // One line before any order discount: shelf price x qty, and the GST inside it
+  const getItemGrossTotal = (item) => (parseFloat(item.price) || 0) * (parseInt(item.quantity) || 1);
+  const getItemTaxAmount = (item) => splitInclusive(toPaise(getItemGrossTotal(item)), resolveItemTaxRate(item)).taxP / 100;
 
-  const getItemNetTotal = (item) => {
-    const qty = parseInt(item.quantity) || 1;
-    return getItemNetUnitPrice(item) * qty;
-  };
-
-  const getItemTaxAmount = (item) => Math.max(0, getItemGrossTotal(item) - getItemNetTotal(item));
-
-  const itemsSubtotal = items.reduce((sum, it) => sum + getItemNetTotal(it), 0);
-
+  // Totals use utils/gst.js, the same file the server uses, so what this
+  // screen shows is exactly what the order saves: shelf prices include GST,
+  // the discount comes off that price, delivery carries GST at the shop's
+  // delivery rate, and the total is rounded when the owner has turned it on.
   const totals = useMemo(() => {
-    const subtotal = itemsSubtotal;
-    const taxTotal = items.reduce((s, it) => {
-      return s + getItemTaxAmount(it);
-    }, 0);
-
+    const needsDel = orderType === 'delivery' || (orderType === 'pre_order' && preOrderType === 'delivery');
     const discVal = parseFloat(discountValue) || 0;
-    const discountAmount = discountType === 'percentage' ? (subtotal * discVal / 100) : discVal;
-    const needsDelivery = orderType === 'delivery' || (orderType === 'pre_order' && preOrderType === 'delivery');
-    const delivery = needsDelivery ? (parseFloat(deliveryCharges) || 0) : 0;
-    const finalTotal = Math.max(0, subtotal - discountAmount) + taxTotal + delivery;
-
-    return { subtotal, taxTotal, discountAmount, delivery, finalTotal };
-  }, [items, discountValue, discountType, orderType, preOrderType, deliveryCharges, itemsSubtotal, resolveItemTaxRate]);
+    const bill = computeBill(
+      items.map((it) => ({ unitPrice: parseFloat(it.price) || 0, qty: parseInt(it.quantity) || 1, taxRate: resolveItemTaxRate(it) })),
+      discVal > 0 ? { type: discountType, value: discVal } : null,
+      { amount: needsDel ? (parseFloat(deliveryCharges) || 0) : 0, taxRate: billSettings.delivery_rate },
+      { roundOff: !!billSettings.round_off }
+    );
+    return {
+      itemsTotal: bill.itemsGross,
+      discountAmount: bill.discount,
+      taxTotal: bill.tax,
+      delivery: bill.delivery.amountP / 100,
+      roundOff: bill.roundOff,
+      finalTotal: bill.payable,
+      billError: bill.error,
+    };
+  }, [items, discountValue, discountType, orderType, preOrderType, deliveryCharges, resolveItemTaxRate, billSettings]);
 
   const needsDelivery = orderType === 'delivery' || (orderType === 'pre_order' && preOrderType === 'delivery');
 
@@ -1031,6 +1044,9 @@ export default function QuickCheckoutScreen({ navigation, route }) {
   );
 
   const resetForm = useCallback(() => {
+    setShowBuyerGstin(false);
+    setBuyerGstin('');
+    setBuyerLegalName('');
     setCustomerName('');
     setCustomerPhone('');
     setCustomerAddress('');
@@ -1238,6 +1254,8 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     }
 
     const validationErrors = [];
+    if (totals.billError) validationErrors.push(`${totals.billError} Lower the discount.`);
+    if (buyerGstin.trim() && buyerGstin.trim().length !== 15) validationErrors.push('The buyer GSTIN needs 15 letters and numbers. Finish it or clear it.');
     setSubmitErrors([]);
 
     if (!selectedLocation) validationErrors.push('Please select a location.');
@@ -1306,7 +1324,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
         // sale mislabeled as fully paid up front, too high overcredited the
         // register with no warning (found in the same audit, 2026-09-04).
         } else if (Math.abs(entered - totals.finalTotal) > 0.01) {
-          validationErrors.push(`Split payments (₹${entered.toFixed(0)}) must add up to the total (₹${totals.finalTotal.toFixed(0)}).`);
+          validationErrors.push(`Split payments (₹${entered.toFixed(2)}) must add up to the total (₹${totals.finalTotal.toFixed(2)}).`);
         }
       }
     }
@@ -1321,7 +1339,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
     if (paymentMode === 'partial' && enableSplitPayment) {
       const splitEntered = payments.reduce((sum, p) => sum + (parseFloat(p.amount) || 0), 0);
       if (Math.abs(splitEntered - partialAdvance) > 0.01) {
-        validationErrors.push(`Split payments (₹${splitEntered.toFixed(0)}) must add up to the advance amount (₹${partialAdvance.toFixed(0)}).`);
+        validationErrors.push(`Split payments (₹${splitEntered.toFixed(2)}) must add up to the advance amount (₹${partialAdvance.toFixed(2)}).`);
       }
     }
 
@@ -1386,24 +1404,10 @@ export default function QuickCheckoutScreen({ navigation, route }) {
 
       // Build cart items
       const cartItems = processedItems.map(item => ({
-        ...(function () {
-          const grossUnit = parseFloat(item.price) || 0;
-          const effectiveTaxRate = resolveItemTaxRate(item);
-          const baseUnit = effectiveTaxRate > 0
-            ? (grossUnit * 100) / (100 + effectiveTaxRate)
-            : grossUnit;
-          const qty = parseInt(item.quantity) || 1;
-          const taxAmount = effectiveTaxRate > 0
-            ? (grossUnit * qty) - (baseUnit * qty)
-            : 0;
-          return {
-            unit_price: Math.round(baseUnit * 10000) / 10000,
-            tax_rate: effectiveTaxRate,
-            tax_amount: Math.round(taxAmount * 100) / 100,
-            line_total: Math.round((baseUnit * qty + taxAmount) * 100) / 100,
-            tax_inclusive: false,
-          };
-        })(),
+        // Shelf price (GST included); the server works out the GST split
+        unit_price: Math.round((parseFloat(item.price) || 0) * 100) / 100,
+        tax_rate: resolveItemTaxRate(item),
+        hsn_code: resolveItemHsn(item) || null,
         product_id: item.baseProduct?.id || null,
         material_id: item.baseMaterial?.id || null,
         product_name: item.name,
@@ -1417,7 +1421,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
         fulfill_from_stock: item.fulfill_from_stock || false,
       }));
 
-      const { subtotal, taxTotal, discountAmount, delivery, finalTotal: finalGrandTotal } = totals;
+      const { discountAmount, delivery, finalTotal: finalGrandTotal } = totals;
       const roundedGrandTotal = Math.round(Number(finalGrandTotal || 0) * 100) / 100;
       const discVal = parseFloat(discountValue) || 0;
 
@@ -1464,6 +1468,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
         discount_value: discVal,
         delivery_charges: delivery,
         notes: orderNotes || null,
+        ...(buyerGstin.trim() ? { buyer_gstin: buyerGstin.trim(), buyer_legal_name: buyerLegalName.trim() || null } : {}),
         delivery_address: needsDelivery ? customerAddress.trim() : null,
         sender_customer_id: needsDelivery ? (useCustomerAsSender ? (effectiveSenderId || null) : null) : null,
         receiver_customer_id: needsDelivery ? (effectiveReceiverId || null) : null,
@@ -1500,8 +1505,13 @@ export default function QuickCheckoutScreen({ navigation, route }) {
         };
       }
 
+      const override = discountOverrideRef.current;
+      discountOverrideRef.current = null;
+      if (override) saleData.discount_override = override;
+
       const res = await api.createSale(saleData);
       if (res.success) {
+        setDiscountOk(null);
         setSoldBy(null);
         setSubmitErrors([]);
         if (activeDraftId) {
@@ -1605,6 +1615,12 @@ export default function QuickCheckoutScreen({ navigation, route }) {
         : [];
       const fallbackMessage = err?.message || 'Failed to place order';
       const messages = backendErrors.length > 0 ? backendErrors : [fallbackMessage];
+      if (typeof err?.code === 'string' && err.code.startsWith('DISCOUNT_') && ['counter_staff', 'employee'].includes(user?.role)) {
+        // Needs (another) approval, or the code / PIN was wrong: on the pad
+        setDiscountOk((cur) => (cur ? { ...cur, error: fallbackMessage } : { message: fallbackMessage, error: '' }));
+        return;
+      }
+      setDiscountOk(null);
       setSubmitErrors(messages);
       Alert.alert('Error', messages[0]);
     } finally {
@@ -1893,7 +1909,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
           </View>
           <View style={styles.fieldRow}>
             <View style={styles.fieldHalf}>
-              <Text style={styles.label}>{needsDelivery ? 'Customer / Sender Phone *' : 'Phone *'}</Text>
+              <Text style={styles.label}>{needsDelivery ? 'Customer / Sender Phone *' : paymentMode === 'credit' ? 'Phone *' : 'Phone (optional)'}</Text>
               <TextInput
                 style={styles.input}
                 value={customerPhone}
@@ -1917,7 +1933,7 @@ export default function QuickCheckoutScreen({ navigation, route }) {
               )}
             </View>
             <View style={styles.fieldHalf}>
-              <Text style={styles.label}>{needsDelivery ? 'Customer / Sender Name *' : 'Name *'}</Text>
+              <Text style={styles.label}>{needsDelivery ? 'Customer / Sender Name *' : 'Name (optional)'}</Text>
               <TextInput
                 style={styles.input}
                 value={customerName}
@@ -2129,6 +2145,43 @@ export default function QuickCheckoutScreen({ navigation, route }) {
             multiline
           />
 
+          {showBuyerGstin ? (
+            <>
+              <Text style={styles.label}>Buyer GSTIN</Text>
+              <TextInput
+                style={styles.input}
+                value={buyerGstin}
+                onChangeText={(t) => setBuyerGstin(t.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 15))}
+                placeholder="15 letters and numbers, like 07ABCDE1234F1Z5"
+                placeholderTextColor={Colors.textLight}
+                autoCapitalize="characters"
+                maxLength={15}
+                accessibilityLabel="Buyer GSTIN"
+              />
+              {buyerGstin.length > 0 && buyerGstin.length < 15 ? (
+                <Text style={styles.billErrorText}>A GSTIN has 15 letters and numbers. {15 - buyerGstin.length} more to go.</Text>
+              ) : null}
+              <Text style={styles.label}>Business name (optional)</Text>
+              <TextInput
+                style={styles.input}
+                value={buyerLegalName}
+                onChangeText={setBuyerLegalName}
+                placeholder="As registered for GST"
+                placeholderTextColor={Colors.textLight}
+              />
+            </>
+          ) : (
+            <TouchableOpacity
+              style={styles.addGstinLink}
+              onPress={() => setShowBuyerGstin(true)}
+              accessibilityRole="button"
+              accessibilityLabel="Business bill, add buyer GSTIN"
+            >
+              <Ionicons name="business-outline" size={20} color={Colors.primary} />
+              <Text style={styles.addGstinText}>Business bill? Add GSTIN</Text>
+            </TouchableOpacity>
+          )}
+
           <Text style={styles.label}>Voice note (optional)</Text>
           <VoiceNoteRecorder
             onRecorded={(uri, durationSeconds) => setPendingAttachments((prev) => [...prev, { uri, type: 'voice_note', durationSeconds }])}
@@ -2324,6 +2377,25 @@ export default function QuickCheckoutScreen({ navigation, route }) {
                     </Text>
                   </View>
                 </View>
+              </View>
+
+              {/* HSN printed on the bill: the product's own, or the shop
+                  default for a custom item. Change it only if it is wrong. */}
+              <View style={styles.fieldRow}>
+                <View style={styles.fieldHalf}>
+                  <Text style={styles.label}>HSN code</Text>
+                  <TextInput
+                    style={styles.input}
+                    value={resolveItemHsn(item)}
+                    onChangeText={(v) => updateItem(idx, 'hsn_code', v.replace(/\D/g, '').slice(0, 8))}
+                    placeholder="Like 0603"
+                    placeholderTextColor={Colors.textLight}
+                    keyboardType="number-pad"
+                    maxLength={8}
+                    accessibilityLabel="HSN code"
+                  />
+                </View>
+                <View style={styles.fieldHalf} />
               </View>
 
               {/* Fulfill From Stock Toggle */}
@@ -2656,21 +2728,25 @@ export default function QuickCheckoutScreen({ navigation, route }) {
 
           <View style={styles.grandTotalBox}>
             <View style={styles.summaryLine}>
-              <Text style={styles.summaryLabel}>Subtotal</Text>
-              <Text style={styles.summaryValue}>₹{Number(totals.subtotal).toFixed(2)}</Text>
+              <Text style={styles.summaryLabel}>Items</Text>
+              <Text style={styles.summaryValue}>₹{Number(totals.itemsTotal).toFixed(2)}</Text>
             </View>
-            <View style={styles.summaryLine}>
-              <Text style={styles.summaryLabel}>Discount</Text>
-              <Text style={styles.summaryValue}>-₹{Number(totals.discountAmount).toFixed(2)}</Text>
-            </View>
-            <View style={styles.summaryLine}>
-              <Text style={styles.summaryLabel}>Tax</Text>
-              <Text style={styles.summaryValue}>₹{Number(totals.taxTotal).toFixed(2)}</Text>
-            </View>
-            {orderType === 'delivery' && (
+            {totals.discountAmount > 0 && (
+              <View style={styles.summaryLine}>
+                <Text style={styles.summaryLabel}>Discount</Text>
+                <Text style={styles.summaryValue}>-₹{Number(totals.discountAmount).toFixed(2)}</Text>
+              </View>
+            )}
+            {needsDelivery && (
               <View style={styles.summaryLine}>
                 <Text style={styles.summaryLabel}>Delivery</Text>
                 <Text style={styles.summaryValue}>+₹{Number(totals.delivery).toFixed(2)}</Text>
+              </View>
+            )}
+            {totals.roundOff !== 0 && (
+              <View style={styles.summaryLine}>
+                <Text style={styles.summaryLabel}>Round off</Text>
+                <Text style={styles.summaryValue}>{totals.roundOff > 0 ? '+' : '-'}₹{Math.abs(totals.roundOff).toFixed(2)}</Text>
               </View>
             )}
             <View style={[styles.divider, { marginVertical: Spacing.sm }]} />
@@ -2678,6 +2754,10 @@ export default function QuickCheckoutScreen({ navigation, route }) {
               <Text style={styles.grandTotalLabel}>Grand Total</Text>
               <Text style={styles.grandTotalValue}>₹{Number(totals.finalTotal).toFixed(2)}</Text>
             </View>
+            <Text style={styles.gstIncludedText}>Includes GST ₹{Number(totals.taxTotal).toFixed(2)}</Text>
+            {totals.billError ? (
+              <Text style={styles.billErrorText}>{totals.billError} Lower the discount to place this order.</Text>
+            ) : null}
           </View>
 
           {duesCollect.enabled && customerId && customerHistory?.credit_balance > 0 && !duesAmountError(customerHistory.credit_balance, duesCollect) && (() => {
@@ -2690,14 +2770,16 @@ export default function QuickCheckoutScreen({ navigation, route }) {
             } else if (paymentMode === 'partial') {
               nowPaid = Math.round((parseFloat(advanceAmount) || 0) * 100) / 100;
             }
-            const method = duesCollect.method === 'upi' ? 'upi' : 'cash';
-            const total = Math.round((nowPaid + dues) * 100) / 100;
+            const orderParts = nowPaid <= 0 ? []
+              : enableSplitPayment
+                ? payments.map((p) => ({ method: p.method, amount: parseFloat(p.amount) || 0 }))
+                : [{ method: paymentMethod, amount: nowPaid }];
+            const take = takeNowSummary(orderParts, dues, duesCollect.method === 'upi' ? 'upi' : 'cash');
             return (
               <View style={{ marginTop: Spacing.sm }}>
                 <Text style={{ fontSize: FontSize.md, color: Colors.textSecondary }}>Old dues: ₹{dues.toFixed(2)}</Text>
-                <Text style={{ fontSize: FontSize.lg, fontWeight: '800', color: Colors.text }}>
-                  Take from customer now: ₹{total.toFixed(2)}{method !== 'cash' ? ` (${method.toUpperCase()})` : ''}
-                </Text>
+                <Text style={{ fontSize: FontSize.lg, fontWeight: '800', color: Colors.text }}>{take.total}</Text>
+                {take.detail ? <Text style={{ fontSize: FontSize.md, fontWeight: '700', color: Colors.text }}>{take.detail}</Text> : null}
               </View>
             );
           })()}
@@ -2744,6 +2826,19 @@ export default function QuickCheckoutScreen({ navigation, route }) {
             </TouchableOpacity>
           </View>
 
+          <DiscountApprovalModal
+            visible={!!discountOk}
+            message={discountOk?.message}
+            error={discountOk?.error}
+            discountText={discountType === 'percentage' ? `${discountValue}% off` : `₹${discountValue} off`}
+            busy={submitting}
+            onApprove={(code, pin) => {
+              discountOverrideRef.current = { employee_code: code, pin };
+              setDiscountOk((cur) => (cur ? { ...cur, error: '' } : cur));
+              guardSubmit(handlePlaceOrder)();
+            }}
+            onCancel={() => { discountOverrideRef.current = null; setDiscountOk(null); }}
+          />
           {submitErrors.length > 0 && (
             <View style={styles.submitErrorsBox}>
               <Text style={styles.submitErrorsTitle}>Please fix the following before submitting:</Text>
@@ -3329,6 +3424,30 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
 
+  addGstinLink: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    minHeight: 48,
+    marginTop: Spacing.sm,
+  },
+  addGstinText: {
+    fontSize: FontSize.md,
+    color: Colors.primary,
+    fontWeight: '600',
+  },
+  gstIncludedText: {
+    fontSize: FontSize.sm,
+    color: Colors.textSecondary,
+    textAlign: 'right',
+    marginTop: Spacing.xs,
+  },
+  billErrorText: {
+    fontSize: FontSize.md,
+    color: Colors.error,
+    fontWeight: '600',
+    marginTop: Spacing.sm,
+  },
   placeOrderBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
     backgroundColor: Colors.success, paddingVertical: Spacing.md,

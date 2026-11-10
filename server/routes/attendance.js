@@ -1,12 +1,12 @@
 const express = require('express');
 const router = express.Router();
 const { getDb } = require('../config/database');
-const { getDb: getAsyncDb } = require('../config/database-async');
+const { getDb: getAsyncDb, withMoneyTx } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
 const { todayStr, nowLocal, parseServerDate, getTimezone } = require('../utils/time');
 const { normalizeSegments, matchSegmentForTime, lateMinutesFor, overtimeMinutesFor, timestampToMinutes, dayAdjustedMinutes, computeShiftWork } = require('../utils/shift-work');
 const { safeParseJSON } = require('../utils/json');
-const { hasOpenRegister, REGISTER_CLOSED_MESSAGE } = require('../utils/register-guard');
+const { hasOpenRegister, lockOpenRegister, REGISTER_CLOSED_MESSAGE } = require('../utils/register-guard');
 
 // All attendance routes require auth
 router.use(authenticate);
@@ -843,7 +843,7 @@ router.put('/salary-advance/:id/repay', authorize('owner', 'manager'), (req, res
 });
 
 // Approve/reject advance
-router.put('/salary-advance/:id/:action', authorize('owner', 'manager'), (req, res) => {
+router.put('/salary-advance/:id/:action', authorize('owner', 'manager'), async (req, res) => {
   try {
     const db = getDb();
     const { id, action } = req.params;
@@ -888,14 +888,23 @@ router.put('/salary-advance/:id/:action', authorize('owner', 'manager'), (req, r
       return res.status(400).json({ success: false, message: `The cash drawer isn't open at this employee's location — open the register first to hand over an advance.` });
     }
 
-    const approveTx = db.transaction(() => {
-      const openRegister = db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1').get(locationId);
-      const advanceUser = db.prepare('SELECT name FROM users WHERE id = ?').get(advance.user_id);
+    // One transaction: the advance row, then the register, locked; re-checked
+    // under the lock so a second tap can't hand the cash out twice.
+    const approveTx = () => withMoneyTx(async (db) => {
+      const current = await db.prepare('SELECT status FROM salary_advances WHERE id = ? FOR UPDATE').get(id);
+      if (!current || current.status !== 'pending') {
+        throw Object.assign(new Error('This advance was already handled. Refresh to see it.'), { statusCode: 409 });
+      }
+      const openRegister = await lockOpenRegister(db, locationId);
+      if (!openRegister) {
+        throw Object.assign(new Error("The cash drawer isn't open at this employee's location — open the register first to hand over an advance."), { statusCode: 400 });
+      }
+      const advanceUser = await db.prepare('SELECT name FROM users WHERE id = ?').get(advance.user_id);
 
       // Expense written first — see Task 9's header note on why write
       // ordering, not db.transaction(), is what protects against a
       // half-done write here.
-      const expenseResult = db.prepare(`
+      const expenseResult = await db.prepare(`
         INSERT INTO expenses (location_id, category, amount, description, payment_method, expense_date, created_by, employee_id, register_id)
         VALUES (?, 'salary', ?, ?, 'cash', ?, ?, ?, ?)
       `).run(
@@ -906,15 +915,15 @@ router.put('/salary-advance/:id/:action', authorize('owner', 'manager'), (req, r
       );
 
       if (openRegister) {
-        db.prepare('UPDATE cash_registers SET expected_cash = expected_cash - ? WHERE id = ?').run(advance.amount, openRegister.id);
+        await db.prepare('UPDATE cash_registers SET expected_cash = expected_cash - ? WHERE id = ?').run(advance.amount, openRegister.id);
       }
 
-      db.prepare('UPDATE salary_advances SET status = ?, approved_by = ? WHERE id = ?').run('approved', req.user.id, id);
+      await db.prepare('UPDATE salary_advances SET status = ?, approved_by = ? WHERE id = ?').run('approved', req.user.id, id);
 
       return expenseResult.lastInsertRowid;
     });
 
-    approveTx();
+    await approveTx();
 
     const updated = db.prepare(`
       SELECT sa.*, u.name as user_name, a.name as approver_name
@@ -924,6 +933,7 @@ router.put('/salary-advance/:id/:action', authorize('owner', 'manager'), (req, r
 
     res.json({ success: true, data: updated });
   } catch (error) {
+    if (error.statusCode) return res.status(error.statusCode).json({ success: false, message: error.message });
     console.error('Approve/reject advance error:', error);
     res.status(500).json({ success: false, message: `Failed to ${req.params.action} advance.` });
   }

@@ -3,6 +3,9 @@
 // DEFAULT 0 because they never computed it). So when the stored value is 0
 // but the item has a price, work it out from quantity × unit price + tax.
 export function resolveItemLineTotal(item) {
+  // GST bills (2026-11-05) store the line's shelf amount (GST included,
+  // before the order discount) in gross_amount
+  if (item && item.gross_amount != null && Number.isFinite(Number(item.gross_amount))) return Number(item.gross_amount);
   const qty = Number(item?.quantity) || 0;
   const unitPrice = Number(item?.unit_price) || 0;
   const base = qty * unitPrice;

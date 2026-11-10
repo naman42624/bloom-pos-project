@@ -10,7 +10,7 @@
  *        initialStaffId, onClose(), onDone({ message, staff_id, amount }),
  *        onRefresh()  (answer lost: the card reloads so staff can see if it went)
  */
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Modal, View, Text, TextInput, TouchableOpacity, ActivityIndicator, KeyboardAvoidingView, Platform, StyleSheet, ScrollView } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import api from '../../services/api';
@@ -18,6 +18,7 @@ import { OpenRegisterForm } from '../OpenRegisterSheet';
 import useSubmitGuard from '../../hooks/useSubmitGuard';
 import { bumpActivity } from '../../hooks/useIdleLock';
 import { parseMoney, cleanMoneyInput, floatDefault, rupees } from '../../utils/helperCash';
+import { newRequestId } from '../../utils/requestId';
 import { Colors, FontSize, Spacing, BorderRadius } from '../../constants/theme';
 
 // No answer from the server: the change may or may not have been given
@@ -59,11 +60,21 @@ export default function GiveFloatSheet({ visible, locationId, helpers, initialSt
   const value = parseMoney(amount);
   const ready = !!helper && value != null && value > 0;
 
+  // Same helper and amount = the same float: a retry reuses the id, so the
+  // server never gives the cash out twice.
+  const reqRef = useRef({ key: null, id: null });
+  const requestIdFor = (key) => {
+    if (reqRef.current.key !== key) reqRef.current = { key, id: newRequestId() };
+    return reqRef.current.id;
+  };
+
   const send = async () => {
     setBusy(true);
     setError('');
     try {
-      const res = await api.giveHelperFloat({ staff_id: helper.staff_id, location_id: locationId, amount: value });
+      const request_id = requestIdFor(`${helper.staff_id}:${value}`);
+      const res = await api.giveHelperFloat({ staff_id: helper.staff_id, location_id: locationId, amount: value, request_id });
+      reqRef.current = { key: null, id: null };
       setBusy(false);
       onDone && onDone({ message: res.message || `Gave ${rupees(value)} to ${helper.name}.`, staff_id: helper.staff_id, amount: value });
       onClose && onClose();

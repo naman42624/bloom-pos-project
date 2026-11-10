@@ -5,12 +5,13 @@
 //   { key, product_id, option_id, name, unit_price, price_mode, tax_rate, qty }
 // tax_rate is the product's tax % (null while it is not known yet).
 //
-// Money maths mirror POST /api/sales for a helper (server/utils/helper-sale.js
-// normalizeHelperSale) step for step, in the same order: prices are tax
-// inclusive, a % discount comes off the PRE-TAX subtotal, tax is added back,
-// then the total is rounded to the paisa. The helper pays exactly this total,
-// and the server refuses a payment that is a paisa off, so the two must agree
-// (10% off ₹1000 at 18% inclusive is ₹915.25, not ₹900).
+// Money maths: utils/gst.js, the same file the server uses for a helper sale
+// (server/utils/helper-sale.js). Prices include GST and the discount comes off
+// that price (10% off ₹1000 is ₹900, whatever the GST). Helper sales are never
+// rounded to the rupee. The helper pays exactly this total and the server
+// refuses a payment a paisa off, so the two must agree.
+
+import { computeBill } from './gst';
 
 const MAX_QTY = 9999;
 export const DISCOUNT_TOO_BIG = "The discount can't be more than the price.";
@@ -70,44 +71,20 @@ export const taxesKnown = (basket) => (basket || []).every((l) => l.tax_rate != 
 // -> { subtotal (what the items add up to), discount (₹ off), total (to pay), error }
 export function basketTotal(basket, discount) {
   const list = Array.isArray(basket) ? basket : [];
-  let gross = 0;
-  let subtotal = 0; // pre-tax, as the server counts it
-  let taxTotal = 0;
-  for (const l of list) {
-    const qty = l.qty;
-    const taxRate = Number(l.tax_rate) || 0;
-    let taxableUnitPrice = Number(l.unit_price) || 0;
-    let taxAmount = 0;
-    gross += taxableUnitPrice * qty;
-    if (taxRate > 0) {
-      const g = taxableUnitPrice * qty;
-      taxAmount = (g * taxRate) / (100 + taxRate);
-      taxableUnitPrice = taxableUnitPrice - (taxableUnitPrice * taxRate) / (100 + taxRate);
-    }
-    subtotal += taxableUnitPrice * qty;
-    taxTotal += taxAmount;
+  const bill = computeBill(
+    list.map((l) => ({ unitPrice: Number(l.unit_price) || 0, qty: l.qty, taxRate: Number(l.tax_rate) || 0 })),
+    discount && Number(discount.value) > 0 ? { type: discount.type, value: Number(discount.value) } : null,
+    null,
+    { roundOff: false }
+  );
+  if (bill.error) {
+    return { subtotal: bill.itemsGross, discount: 0, total: round2(bill.itemsGross), error: DISCOUNT_TOO_BIG };
   }
-
-  let discountAmount = 0;
-  let error = null;
-  const dv = discount ? Number(discount.value) : 0;
-  if (discount && Number.isFinite(dv) && dv > 0) {
-    if (discount.type === 'percentage') {
-      if (dv > 100) error = DISCOUNT_TOO_BIG;
-      else discountAmount = subtotal * dv / 100;
-    } else if (discount.type === 'fixed') {
-      if (dv > subtotal) error = DISCOUNT_TOO_BIG;
-      else discountAmount = dv;
-    }
-  }
-
-  const grossR = round2(gross);
-  const total = Math.round((Math.max(0, subtotal - discountAmount) + taxTotal) * 100) / 100;
   return {
-    subtotal: grossR,
-    discount: discountAmount > 0 ? round2(grossR - total) : 0,
-    total,
-    error,
+    subtotal: bill.itemsGross,
+    discount: bill.discount,
+    total: bill.payable,
+    error: null,
   };
 }
 

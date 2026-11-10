@@ -6,12 +6,12 @@ import {
   KeyboardAvoidingView,
   Platform,
   ScrollView,
-  Alert,
   TouchableOpacity,
   ActivityIndicator,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import api from '../services/api';
+import { showAlert } from '../utils/alert';
 import Input from '../components/Input';
 import Button from '../components/Button';
 import DismissKeyboard from '../components/DismissKeyboard';
@@ -26,6 +26,10 @@ export default function LocationFormScreen({ route, navigation }) {
   const [address, setAddress] = useState('');
   const [phone, setPhone] = useState('');
   const [gstNumber, setGstNumber] = useState('');
+  const [shopState, setShopState] = useState('');
+  const [stateCode, setStateCode] = useState('');
+  const [fssai, setFssai] = useState('');
+  const [invoicePrefix, setInvoicePrefix] = useState('');
   const [latitude, setLatitude] = useState('');
   const [longitude, setLongitude] = useState('');
   const [geofenceRadius, setGeofenceRadius] = useState('50');
@@ -40,6 +44,10 @@ export default function LocationFormScreen({ route, navigation }) {
       setAddress(existingLocation.address || '');
       setPhone(existingLocation.phone || '');
       setGstNumber(existingLocation.gst_number || '');
+      setShopState(existingLocation.state || '');
+      setStateCode(existingLocation.state_code || '');
+      setFssai(existingLocation.fssai_number || '');
+      setInvoicePrefix(existingLocation.invoice_prefix || '');
       setLatitude(existingLocation.latitude != null ? String(existingLocation.latitude) : '');
       setLongitude(existingLocation.longitude != null ? String(existingLocation.longitude) : '');
       setGeofenceRadius(String(existingLocation.geofence_radius || 50));
@@ -64,7 +72,7 @@ export default function LocationFormScreen({ route, navigation }) {
       const loc = await import('expo-location');
       const { status } = await loc.requestForegroundPermissionsAsync();
       if (status !== 'granted') {
-        Alert.alert('Permission Denied', 'Location permission is required to use this feature.');
+        showAlert('Location is off', 'Allow location for this app in your phone settings, or type the coordinates below.');
         return;
       }
       const position = await loc.getCurrentPositionAsync({ accuracy: loc.Accuracy.High });
@@ -73,7 +81,7 @@ export default function LocationFormScreen({ route, navigation }) {
       clearError('latitude');
       clearError('longitude');
     } catch (e) {
-      Alert.alert('Error', 'Could not get current location. Please enter coordinates manually.');
+      showAlert('Could not find you', 'Type the coordinates below instead.');
     } finally {
       setFetchingLocation(false);
     }
@@ -88,7 +96,12 @@ export default function LocationFormScreen({ route, navigation }) {
         type,
         address: address.trim() || undefined,
         phone: phone.trim() || undefined,
-        gst_number: gstNumber.trim() || undefined,
+        // Sent even when empty, so a GSTIN or FSSAI can be cleared
+        gst_number: gstNumber.trim(),
+        state: shopState.trim() || undefined,
+        state_code: stateCode.trim(),
+        fssai_number: fssai.trim(),
+        invoice_prefix: invoicePrefix.trim(),
         latitude: latitude ? Number(latitude) : undefined,
         longitude: longitude ? Number(longitude) : undefined,
         geofence_radius: parseInt(geofenceRadius, 10) || 50,
@@ -102,7 +115,7 @@ export default function LocationFormScreen({ route, navigation }) {
 
       navigation.goBack();
     } catch (err) {
-      Alert.alert('Error', err.message || 'Failed to save location');
+      showAlert('Could not save', err.message || 'The shop was not saved. Check the details and try again.');
     } finally {
       setLoading(false);
     }
@@ -172,13 +185,50 @@ export default function LocationFormScreen({ route, navigation }) {
           leftIcon={<Ionicons name="call-outline" size={20} color={Colors.textSecondary} />}
         />
 
+        {/* Bill details: printed on this shop's tax invoices */}
+        <Text style={styles.sectionTitle}>Bill details</Text>
+        <Text style={styles.sectionDesc}>
+          Printed on this shop's bills. With a GSTIN, bills print as a TAX INVOICE.
+        </Text>
         <Input
-          label="GST Number"
+          label="GSTIN"
           value={gstNumber}
-          onChangeText={setGstNumber}
-          placeholder="Optional"
+          onChangeText={(t) => { setGstNumber(t.toUpperCase()); if (!stateCode && /^\d{2}/.test(t)) setStateCode(t.slice(0, 2)); }}
+          placeholder="Like 07ABCDE1234F1Z5 (leave empty if none)"
           autoCapitalize="characters"
+          maxLength={15}
           leftIcon={<Ionicons name="document-text-outline" size={20} color={Colors.textSecondary} />}
+        />
+        <Input
+          label="State"
+          value={shopState}
+          onChangeText={setShopState}
+          placeholder="Like Delhi"
+          leftIcon={<Ionicons name="map-outline" size={20} color={Colors.textSecondary} />}
+        />
+        <Input
+          label="State code"
+          value={stateCode}
+          onChangeText={(t) => setStateCode(t.replace(/\D/g, '').slice(0, 2))}
+          placeholder="2 numbers, like 07 (filled from the GSTIN)"
+          keyboardType="number-pad"
+          maxLength={2}
+        />
+        <Input
+          label="FSSAI number"
+          value={fssai}
+          onChangeText={(t) => setFssai(t.replace(/\D/g, '').slice(0, 14))}
+          placeholder="Optional, 14 numbers"
+          keyboardType="number-pad"
+          maxLength={14}
+        />
+        <Input
+          label="Bill number start"
+          value={invoicePrefix}
+          onChangeText={(t) => setInvoicePrefix(t.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 5))}
+          placeholder="Optional, like FP1 (each shop needs its own)"
+          autoCapitalize="characters"
+          maxLength={5}
         />
 
         {/* Geolocation Section */}
