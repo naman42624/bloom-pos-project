@@ -6,12 +6,6 @@
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": true,
-    "splash": {
-      "image": "./assets/splash-icon.png",
-      "backgroundColor": "#E91E63",
-      "resizeMode": "contain"
-    },
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.bloomcart.pos",
@@ -71,7 +65,19 @@
           "isAndroidForegroundServiceEnabled": true
         }
       ],
-      "expo-audio"
+      "expo-audio",
+      "expo-font",
+      "expo-sharing",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-icon.png",
+          "backgroundColor": "#E91E63",
+          "resizeMode": "contain"
+        }
+      ],
+      "expo-status-bar",
+      "expo-asset"
     ],
     "extra": {
       "eas": {
