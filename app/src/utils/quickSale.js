@@ -2,7 +2,8 @@
 
 export const QUICK_LABELS = ['Fresh Flowers', 'Bouquet', 'Bunch', 'Box', 'Basket', 'Vase', 'Garland', 'Arrangement'];
 export const MAX_QUICK_AMOUNT = 100000;
-export const DEFAULT_QUICK_LABEL = 'Counter sale';
+// The owner can change it (Quick sale buttons); the server sends it with the tiles
+export const DEFAULT_QUICK_LABEL = 'Fresh Flowers';
 export const TOPUP_LABEL = 'Unrecorded sales (booked at close)';
 
 const NEED_AMOUNT = 'Type the amount first';

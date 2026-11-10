@@ -25,7 +25,7 @@ const router = express.Router();
 
 const { normalizeDateFields } = require('../utils/normalizeDates');
 const { computeBill } = require('../utils/gst');
-const { readGstSettings, cleanHsn, GSTIN_RE } = require('../utils/gst-settings');
+const { readGstSettings, readQuickSaleBill, cleanHsn, GSTIN_RE } = require('../utils/gst-settings');
 const { nextNumber: nextInvoiceNumber } = require('../utils/invoice-number');
 const { planBill, writeBill } = require('../utils/sale-bill');
 const { generateSaleNumber } = require('../utils/sale-number');
@@ -2008,6 +2008,8 @@ router.post(
 
         // Calculate line items — supports both products and raw materials
         const gstCfg = await readGstSettings(db);
+        // Quick sale typed amounts are fresh flowers: 0% GST, the owner set HSN and name
+        const quickCfg = entryMode === 'quick' ? await readQuickSaleBill(db) : null;
         const processedItems = [];
         for (const item of items) processedItems.push(await (async () => {
           let name, unitPrice, taxRate = 0, productId = null, materialId = null, hsn = null;
@@ -2044,10 +2046,14 @@ router.post(
             hsn = cleanHsn(item.hsn_code) || product.hsn_code || null;
           } else {
             // Custom ad-hoc item
-            name = item.product_name || 'Custom Item';
+            name = item.product_name || (quickCfg ? quickCfg.label : 'Custom Item');
             unitPrice = Number(item.unit_price) || 0;
             taxRate = item.tax_rate != null && item.tax_rate !== '' ? Number(item.tax_rate) || 0 : gstCfg.defaultRate;
             hsn = cleanHsn(item.hsn_code);
+            if (quickCfg) {
+              taxRate = 0;
+              hsn = quickCfg.hsn;
+            }
             productId = null;
             materialId = null;
           }

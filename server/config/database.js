@@ -722,6 +722,9 @@ function ensureCoreTables() {
   for (const [k, v, d] of gstSettings) {
     runPsql(`INSERT INTO settings (key, value, description) VALUES ('${k}', '${v}', '${d}') ON CONFLICT (key) DO NOTHING`);
   }
+  // Quick sale typed amounts (2026-11-10): bill name and HSN, always 0% GST
+  runPsql(`INSERT INTO settings (key, value, description) VALUES ('quick_sale_label', 'Fresh Flowers', 'Name on the bill for a Quick sale amount typed with no button picked') ON CONFLICT (key) DO NOTHING`);
+  runPsql(`INSERT INTO settings (key, value, description) VALUES ('quick_sale_hsn', '0603', 'HSN code for Quick sale typed amounts and named-amount buttons (billed at 0% GST)') ON CONFLICT (key) DO NOTHING`);
   runPsql(`INSERT INTO settings (key, value, description) SELECT 'helper_cash_mode', 'register', 'Where helper cash goes: register (straight into the drawer) or bag (each helper holds it until handover)' WHERE NOT EXISTS (SELECT 1 FROM settings WHERE key = 'helper_cash_mode')`);
 
   // Ensure partner_id column exists on delivery_settlements
