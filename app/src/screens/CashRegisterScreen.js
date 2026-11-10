@@ -13,6 +13,7 @@ import { METHOD_COLOR } from '../components/quickSale/QuickSaleRoll';
 import useSubmitGuard from '../hooks/useSubmitGuard';
 import ReceiveCashSheet from '../components/helperCash/ReceiveCashSheet';
 import { closeWarningLines, handoverDoneText } from '../utils/helperCash';
+import { lastCloseFromStatus, lastCloseCashText, lastCloseHint } from '../utils/lastClose';
 
 const formatTime = (timeStr) => {
   if (!timeStr) return '-';
@@ -200,6 +201,9 @@ export default function CashRegisterScreen({ navigation, route }) {
   const [loading, setLoading] = useState(true);
 
   const [openingBalance, setOpeningBalance] = useState('');
+  // Last counted close (any day): fills in the opening cash
+  const [lastClose, setLastClose] = useState(null);
+  const openingTouched = useRef(false);
   const [actualCash, setActualCash] = useState('');
   const [closingNotes, setClosingNotes] = useState('');
   
@@ -258,6 +262,9 @@ export default function CashRegisterScreen({ navigation, route }) {
       setRegister(res.data);
       setIsOpen(res.isOpen);
       setTodaySessions(res.todaySessions || []);
+      const last = res.isOpen ? null : lastCloseFromStatus(res);
+      setLastClose(last);
+      if (!openingTouched.current) setOpeningBalance(lastCloseCashText(last));
       setPendingCodTotal(res.pendingCodTotal || 0);
       setPendingCodDeliveries(res.pendingCodDeliveries || 0);
     } catch {}
@@ -265,6 +272,7 @@ export default function CashRegisterScreen({ navigation, route }) {
 
   const handleLocationChange = (locId) => {
     dropTopup();
+    openingTouched.current = false;
     setSelectedLocation(locId);
     fetchStatus(locId);
   };
@@ -282,6 +290,7 @@ export default function CashRegisterScreen({ navigation, route }) {
         setRegister(res.data);
         setIsOpen(true);
         setOpeningBalance('');
+        openingTouched.current = false;
         fetchStatus(selectedLocation);
         appAlert('Opened', 'Cash register opened successfully');
       } else {
@@ -694,12 +703,16 @@ export default function CashRegisterScreen({ navigation, route }) {
               <TextInput
                 style={styles.inputLarge}
                 value={openingBalance}
-                onChangeText={setOpeningBalance}
+                onChangeText={(t) => { openingTouched.current = true; setOpeningBalance(t); }}
                 placeholder="0.00"
                 placeholderTextColor={Colors.textLight}
                 keyboardType="numeric"
+                accessibilityLabel="Opening cash in the drawer"
               />
             </View>
+            {lastClose != null && (
+              <Text style={styles.prefillHint}>{lastCloseHint(lastClose)}</Text>
+            )}
             <TouchableOpacity style={[styles.btnOpen, submitting && { opacity: 0.6 }]} onPress={handleOpen} disabled={submitting}>
               {submitting ? <ActivityIndicator color={Colors.white} /> : (
                 <Text style={styles.btnOpenText}>Open Register</Text>
@@ -891,6 +904,7 @@ export default function CashRegisterScreen({ navigation, route }) {
 }
 
 const styles = StyleSheet.create({
+  prefillHint: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: -Spacing.xs, marginBottom: Spacing.md },
   container: { flex: 1, backgroundColor: Colors.background },
   content: { padding: Spacing.md, maxWidth: 800, alignSelf: 'center', width: '100%' },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: Colors.background },

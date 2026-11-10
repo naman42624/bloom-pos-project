@@ -1174,6 +1174,8 @@ function ensureCompatibilityColumns() {
   ensureColumn('sales', 'receiver_phone', "VARCHAR(20) DEFAULT ''");
   ensureColumn('sales', 'sender_same_as_receiver', 'INTEGER DEFAULT 0');
   ensureColumn('sales', 'channel', "TEXT");
+  // channel = 'other_app': the app's name as staff typed it ("Swiggy"). NULL otherwise.
+  ensureColumn('sales', 'channel_detail', 'VARCHAR(60)');
   ensureColumn('sales', 'priority', "TEXT DEFAULT 'normal'");
   ensureColumn('sales', 'vendor_name', 'VARCHAR(150)');
   // Quick sale: how a sale was entered (quick, close_topup) and who undid it

@@ -24,6 +24,7 @@ import { Modal, View, Text, TextInput, TouchableOpacity, ActivityIndicator, Keyb
 import { Ionicons } from '@expo/vector-icons';
 import api from '../services/api';
 import useSubmitGuard from '../hooks/useSubmitGuard';
+import { lastCloseFromStatus, lastCloseCashText, lastCloseHint } from '../utils/lastClose';
 import { bumpActivity } from '../hooks/useIdleLock';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 
@@ -55,7 +56,7 @@ export default function OpenRegisterSheet({ visible, locationId, actionLabel = '
 // Mounted fresh each time it is shown, so it starts from a clean slate.
 export function OpenRegisterForm({ locationId, actionLabel = 'place order', onClose, onOpened, onSaveDraft, onBack, backLabel = 'Back' }) {
   const [cash, setCash] = useState('');
-  const [lastCount, setLastCount] = useState(null);
+  const [lastClose, setLastClose] = useState(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
@@ -63,10 +64,10 @@ export function OpenRegisterForm({ locationId, actionLabel = 'place order', onCl
     let cancelled = false;
     if (locationId) {
       api.getRegisterStatus(locationId).then((res) => {
-        const last = (res?.todaySessions || []).find((s) => s.closed_at && s.actual_cash != null);
+        const last = lastCloseFromStatus(res);
         if (!cancelled && last) {
-          setLastCount(Number(last.actual_cash));
-          setCash(money(last.actual_cash));
+          setLastClose(last);
+          setCash(lastCloseCashText(last));
         }
       }).catch(() => {});
     }
@@ -121,12 +122,12 @@ export function OpenRegisterForm({ locationId, actionLabel = 'place order', onCl
             onChangeText={(t) => { setCash(t.replace(/[^0-9.]/g, '')); setError(''); }}
             placeholder="Count the drawer, e.g. 2000"
             placeholderTextColor={Colors.textLight}
-            autoFocus={lastCount == null}
+            autoFocus={lastClose == null}
             accessibilityLabel="Cash in the drawer now"
           />
-          {lastCount != null && !error && (
+          {lastClose != null && !error && (
             <Text style={{ fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: 4 }}>
-              Filled in from the last close today (₹{money(lastCount)}). Change it if the drawer has a different amount.
+              {lastCloseHint(lastClose)}
             </Text>
           )}
           {!!error && <Text style={{ color: Colors.error, fontSize: FontSize.sm, marginTop: 4 }}>{error}</Text>}

@@ -73,7 +73,12 @@ export default function OrderRequestsScreen({ navigation }) {
         return;
       }
     }
-    navigation.navigate('LogOrder', { prefillRequest: prefill, prefillToken: Date.now() });
+    // Quick Checkout's Phone & online mode (it replaced Log Order, D44)
+    navigation.navigate('POS', {
+      screen: 'QuickCheckout',
+      params: { prefillRequest: prefill, prefillRequestToken: Date.now() },
+      pop: true,
+    });
   };
 
   const getOpenLink = async () => (await api.getOpenOrderLink()).data.url;

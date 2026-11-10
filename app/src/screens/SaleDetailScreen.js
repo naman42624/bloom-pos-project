@@ -24,9 +24,7 @@ import DeliveryActionsPanel from '../components/delivery/DeliveryActionsPanel';
 import { formatMoney, STAFF_ROLE_LABELS, ASSIGNABLE_STAFF_ROLES } from '../constants/orderDisplay';
 import useSubmitGuard from '../hooks/useSubmitGuard';
 
-// Duplicated locally (rather than imported from OrdersInboxScreen) to avoid
-// coupling this detail screen's import graph to an inbox screen.
-const CHANNEL_ICONS = { whatsapp: 'logo-whatsapp', email: 'mail', website: 'globe', walk_in: 'walk', phone: 'call' };
+import { CHANNEL_ICONS, channelLabel } from '../utils/channels';
 
 const PAYMENT_STATUS_COLORS = {
   paid: Colors.success,
@@ -134,12 +132,18 @@ export default function SaleDetailScreen({ route, navigation }) {
         headerLeft: () => null, // Hide back button if we want to force "Done"
         headerRight: () => (
           <TouchableOpacity
-            onPress={() => navigation.navigate('POS', { screen: 'POSHome', params: { clearCart: true } })}
-
-
-            style={{ marginRight: 10, backgroundColor: Colors.primary, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20 }}
+            // Back to the Quick Checkout under this screen (a fresh one: the
+            // order was placed with a reset), not a second copy on top
+            onPress={() => navigation.popTo('QuickCheckout')}
+            accessibilityRole="button"
+            accessibilityLabel="Done, back to Quick Checkout"
+            style={{
+              marginRight: 10, backgroundColor: Colors.primary, minHeight: 44, minWidth: 96,
+              paddingHorizontal: 20, borderRadius: 22, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+            }}
           >
-            <Text style={{ color: Colors.white, fontWeight: 'bold', fontSize: 13 }}>Done</Text>
+            <Ionicons name="checkmark" size={20} color={Colors.white} />
+            <Text style={{ color: Colors.white, fontWeight: 'bold', fontSize: FontSize.md }}>Done</Text>
           </TouchableOpacity>
         ),
       });
@@ -1048,7 +1052,7 @@ export default function SaleDetailScreen({ route, navigation }) {
             {sale.channel ? (
               <View style={styles.channelBadge}>
                 <Ionicons name={CHANNEL_ICONS[sale.channel] || 'ellipse'} size={12} color={Colors.textSecondary} />
-                <Text style={styles.channelBadgeText}>{sale.channel.replace('_', ' ').toUpperCase()}</Text>
+                <Text style={styles.channelBadgeText}>{channelLabel(sale.channel, sale.channel_detail).toUpperCase()}</Text>
               </View>
             ) : null}
             {sale.priority === 'rush' ? (

@@ -24,13 +24,13 @@ import CollectCodModal from '../components/orderBoard/CollectCodModal';
 import TaskCompletionModal from '../components/orderBoard/TaskCompletionModal';
 import { resolveDeadEnd } from '../components/orderBoard/OrderCard';
 import { PREP_ROLES, STAFF_ROLE_LABELS } from '../constants/orderDisplay';
+import { CHANNEL_ICONS, channelLabel } from '../utils/channels';
 
 const STATUS_LABELS = { pending: 'Received', confirmed: 'Confirmed', preparing: 'In Preparation', ready: 'Ready', completed: 'Completed', cancelled: 'Cancelled', draft: 'Draft' };
 const ORDER_TYPE_LABELS = { pickup: 'Pickup', delivery: 'Delivery', walk_in: 'Walk-in', pre_order: 'Advance order' };
 const PAYMENT_STATUS_COLORS = { paid: Colors.success, partial: Colors.warning, pending: Colors.error, refunded: Colors.textLight };
-const CHANNEL_ICONS = { whatsapp: 'logo-whatsapp', email: 'mail', website: 'globe', walk_in: 'walk', phone: 'call' };
 const STATUS_FILTERS = [null, 'pending', 'confirmed', 'preparing', 'ready', 'completed', 'cancelled'];
-const CHANNEL_FILTERS = [null, 'whatsapp', 'email', 'website', 'walk_in', 'phone'];
+const CHANNEL_FILTERS = [null, 'whatsapp', 'email', 'website', 'walk_in', 'phone', 'other_app'];
 
 function formatItemsSummary(items) {
   if (!items || items.length === 0) return null;
@@ -647,7 +647,7 @@ export default function OrdersInboxScreen({ navigation, route }) {
           ...(isOwner ? { location_id: list.filters.location_id } : {}),
         }}
         labels={{
-          channel: (v) => `Channel: ${v}`,
+          channel: (v) => `Channel: ${channelLabel(v)}`,
           priority: () => '🔥 Rush only',
           order_type: (v) => `Type: ${ORDER_TYPE_LABELS[v] || v}`,
           filter_date: (v) => `Scheduled: ${v === getShopTodayStr(timezone) ? 'Today' : v === getShopTomorrowStr(timezone) ? 'Tomorrow' : v}`,
@@ -686,7 +686,7 @@ export default function OrdersInboxScreen({ navigation, route }) {
           {
             key: 'channel', label: 'Channel', value: list.filters.channel ?? null,
             onChange: (v) => list.setFilter('channel', v || undefined),
-            options: CHANNEL_FILTERS.map((c) => ({ value: c, label: c || 'Any channel' })),
+            options: CHANNEL_FILTERS.map((c) => ({ value: c, label: c ? channelLabel(c) : 'Any channel' })),
           },
           {
             key: 'rush', label: 'Rush', value: list.filters.priority ?? null,
@@ -846,7 +846,12 @@ export default function OrdersInboxScreen({ navigation, route }) {
         </TouchableOpacity>
       )}
 
-      <TouchableOpacity style={styles.fab} onPress={() => navigation.navigate('LogOrder')}>
+      <TouchableOpacity
+        style={styles.fab}
+        onPress={() => navigation.navigate('POS', { screen: 'QuickCheckout', params: { newOnlineOrder: Date.now() }, pop: true })}
+        accessibilityRole="button"
+        accessibilityLabel="New phone or online order"
+      >
         <Ionicons name="add" size={28} color={Colors.white} />
       </TouchableOpacity>
     </View>
