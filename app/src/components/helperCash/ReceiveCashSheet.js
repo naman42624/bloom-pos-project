@@ -43,6 +43,7 @@ export default function ReceiveCashSheet({ visible, helper, locationId, onClose,
   const [error, setError] = useState('');
   const afterOpen = useRef(null);
   const guard = useSubmitGuard();
+  const reqRef = useRef({ key: null, id: null });
 
   useEffect(() => {
     if (visible) {
@@ -113,8 +114,8 @@ export default function ReceiveCashSheet({ visible, helper, locationId, onClose,
   });
 
   // Same helper, count and choice = the same handover: a retry reuses the
-  // id, so the server never takes the cash in twice.
-  const reqRef = useRef({ key: null, id: null });
+  // id, so the server never takes the cash in twice. (The ref is made at the
+  // top, before the early return: a hook after it crashed the sheet.)
   const send = async (isFinal) => {
     const key = `${helper.staff_id}:${counted}:${isFinal ? 'f' : 'p'}`;
     if (reqRef.current.key !== key) reqRef.current = { key, id: newRequestId() };
