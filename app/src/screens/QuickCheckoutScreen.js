@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo, useLayoutEffect } from 'react';
 import { View, Text, StyleSheet, ScrollView, TextInput, Image, TouchableOpacity, Platform, Modal, ActivityIndicator, KeyboardAvoidingView, Pressable, useWindowDimensions } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
@@ -97,6 +97,27 @@ export default function QuickCheckoutScreen({ navigation, route }) {
   const timezone = settings?.timezone?.value || 'Asia/Kolkata';
   const { width } = useWindowDimensions();
   const isNarrowMobile = width < 380;
+
+  // Add expense from the checkout header (2026-11-07). Before this, staff
+  // had to go Home or open Cash Register and then Expenses. Every role that
+  // sees the POS tab may add expenses (server: owner, manager, employee,
+  // counter_staff). Opens the add form straight away; back returns here.
+  useLayoutEffect(() => {
+    navigation.setOptions({
+      headerRight: () => (
+        <TouchableOpacity
+          onPress={() => navigation.navigate('Expenses', { openAdd: true })}
+          accessibilityRole="button"
+          accessibilityLabel="Add expense"
+          hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+          style={styles.headerExpenseBtn}
+        >
+          <Ionicons name="receipt-outline" size={18} color={Colors.primary} />
+          <Text style={styles.headerExpenseText}>Add expense</Text>
+        </TouchableOpacity>
+      ),
+    });
+  }, [navigation]);
 
   // ── Quick sale | Counter order ('full') | Phone & online ('online') ──
   const [checkoutMode, setCheckoutMode] = useState(() => forcedModeFor(route.params));
@@ -3343,6 +3364,13 @@ const styles = StyleSheet.create({
     flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: Spacing.sm,
     width: '100%', maxWidth: 800, alignSelf: 'center', paddingHorizontal: Spacing.md, paddingTop: Spacing.sm, paddingBottom: Spacing.sm,
   },
+  headerExpenseBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    minHeight: 44, paddingHorizontal: Spacing.md, marginRight: Spacing.sm,
+    borderRadius: BorderRadius.full, borderWidth: 1.5, borderColor: Colors.primary,
+    backgroundColor: Colors.surface,
+  },
+  headerExpenseText: { color: Colors.primary, fontWeight: '700', fontSize: FontSize.md },
   modeSwitch: {
     flexDirection: 'row', flex: 1, minWidth: 240, backgroundColor: Colors.surfaceAlt,
     borderRadius: BorderRadius.md, borderWidth: 1, borderColor: Colors.border, padding: 4, gap: 4,
