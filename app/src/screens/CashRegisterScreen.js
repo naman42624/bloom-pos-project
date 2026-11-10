@@ -198,6 +198,10 @@ export default function CashRegisterScreen({ navigation, route }) {
   selectedLocationRef.current = selectedLocation;
   const [register, setRegister] = useState(null);
   const [isOpen, setIsOpen] = useState(false);
+  // A4: the blind count fixed by an earlier close attempt (moves with floats
+  // and handovers on the server), shown in the close box.
+  const lockedCount = isOpen && register && register.close_count_locked != null && Number.isFinite(Number(register.close_count_locked))
+    ? Number(register.close_count_locked) : null;
   const [loading, setLoading] = useState(true);
 
   const [openingBalance, setOpeningBalance] = useState('');
@@ -261,6 +265,11 @@ export default function CashRegisterScreen({ navigation, route }) {
       const res = await api.getRegisterStatus(locId);
       setRegister(res.data);
       setIsOpen(res.isOpen);
+      // A4: a count already saved by an earlier close attempt goes in the box
+      const locked = res.isOpen && res.data && res.data.close_count_locked != null ? Number(res.data.close_count_locked) : null;
+      if (locked != null && Number.isFinite(locked)) {
+        setActualCash((prev) => (prev === '' ? String(Math.round(locked * 100) / 100) : prev));
+      }
       setTodaySessions(res.todaySessions || []);
       const last = res.isOpen ? null : lastCloseFromStatus(res);
       setLastClose(last);
@@ -733,12 +742,23 @@ export default function CashRegisterScreen({ navigation, route }) {
                 style={styles.inputLarge}
                 value={actualCash}
                 onChangeText={(t) => { setActualCash(t); dropTopup(); setBagWarn(null); }}
-                editable={!(topup && !canManage)}
+                editable={!((topup || lockedCount != null) && !canManage)}
                 placeholder="0.00"
                 placeholderTextColor={Colors.textLight}
                 keyboardType="numeric"
+                accessibilityLabel="Actual cash in drawer"
               />
             </View>
+            {lockedCount != null && (
+              <View style={styles.countSaved}>
+                <Ionicons name="lock-closed" size={18} color={Colors.textSecondary} />
+                <Text style={styles.countSavedText}>
+                  {canManage
+                    ? `Count saved: ${rupees(lockedCount)}. You can change it if the drawer was counted wrong.`
+                    : `Count saved: ${rupees(lockedCount)}. Close with this amount, or ask a manager to close the register.`}
+                </Text>
+              </View>
+            )}
             
             {!!bagNote && (
               <View style={styles.bagNote}>
@@ -904,6 +924,11 @@ export default function CashRegisterScreen({ navigation, route }) {
 }
 
 const styles = StyleSheet.create({
+  countSaved: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.xs,
+    marginTop: Spacing.sm, padding: Spacing.sm, borderRadius: BorderRadius.md, backgroundColor: Colors.background,
+  },
+  countSavedText: { flex: 1, fontSize: FontSize.md, color: Colors.text, lineHeight: 22 },
   prefillHint: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: -Spacing.xs, marginBottom: Spacing.md },
   container: { flex: 1, backgroundColor: Colors.background },
   content: { padding: Spacing.md, maxWidth: 800, alignSelf: 'center', width: '100%' },

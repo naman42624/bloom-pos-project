@@ -164,6 +164,9 @@ export default function MySalesScreen() {
           <Text style={styles.statLabel}>Sales today</Text>
           <Text style={styles.statValue}>{data ? Number(data.count) || 0 : '—'}</Text>
         </View>
+        {/* A8: in bag mode the one hidden cash figure is "Cash you hold now"
+            below; a second masked Cash tile looked like the same number. */}
+        {bag ? null : (
         <TouchableOpacity
           style={[styles.stat, styles.statTap]}
           onPress={reveal}
@@ -175,6 +178,7 @@ export default function MySalesScreen() {
           <Text style={styles.statValue}>{data ? (revealed ? formatRupees(cash) : maskAmount(cash)) : '—'}</Text>
           <Text style={styles.statHint}>{revealed ? 'Hides again soon' : 'Tap to see'}</Text>
         </TouchableOpacity>
+        )}
         <View style={styles.stat}>
           <Text style={styles.statLabel}>UPI</Text>
           <Text style={styles.statValue}>{data ? formatRupees(upi) : '—'}</Text>

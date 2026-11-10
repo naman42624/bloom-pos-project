@@ -697,16 +697,19 @@ router.get('/staff-sales', authenticate, authorize('owner'), async (req, res, ne
       : [];
     const personById = new Map(people.map((u) => [u.id, u]));
 
-    // A helper with bag activity but no sales in the period still gets a row
+    // Anyone with bag activity in the period gets the bag figures and a row,
+    // whatever their role is now (C32, 2026-11-07: a helper later made
+    // counter staff kept their past floats and handovers off the report).
     for (const id of bagByUser.keys()) {
-      if (!byUser.has(id) && (personById.get(id) || {}).role === 'helper') byUser.set(id, blank(id));
+      if (!byUser.has(id)) byUser.set(id, blank(id));
     }
 
     const rows = [...byUser.values()].map((r) => {
       const u = personById.get(r.user_id) || {};
       const net = Math.round((r.amount - r.refunds) * 100) / 100;
-      const bag = u.role === 'helper' ? (bagByUser.get(r.user_id) || bagBlank()) : {};
-      return { ...r, ...bag, name: u.name || `User #${r.user_id}`, role: u.role || null, is_active: u.is_active, net };
+      const hasBag = u.role === 'helper' || bagByUser.has(r.user_id);
+      const bag = hasBag ? (bagByUser.get(r.user_id) || bagBlank()) : {};
+      return { ...r, ...bag, has_bag: hasBag, name: u.name || `User #${r.user_id}`, role: u.role || null, is_active: u.is_active, net };
     }).sort((a, b) => b.net - a.net);
 
     res.json({ success: true, data: { from, to, rows } });

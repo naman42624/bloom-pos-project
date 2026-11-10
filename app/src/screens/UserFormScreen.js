@@ -43,6 +43,10 @@ export default function UserFormScreen({ route, navigation }) {
   const timezone = settings?.timezone?.value || 'Asia/Kolkata';
   const today = getShopTodayStr(timezone);
   const isHelper = isEditing && existingUser?.role === 'helper';
+  // C33: a switched-off helper gets one button that saves and switches them
+  // back on (it used to be Update Staff, which saved the date but left them
+  // off, plus a separate Reactivate Staff).
+  const helperOff = isHelper && !existingUser?.is_active;
 
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
@@ -153,6 +157,7 @@ export default function UserFormScreen({ route, navigation }) {
       if (isEditing) {
         const update = { ...data, location_ids: selectedLocationIds };
         if (isHelper) update.access_until = worksUntil;
+        if (helperOff) update.is_active = 1;
         await api.updateUser(existingUser.id, update);
       } else {
         data.password = password;
@@ -400,9 +405,9 @@ export default function UserFormScreen({ route, navigation }) {
                 })}
               </View>
               {worksUntil && worksUntil < today ? (
-                <Text style={styles.helperHint}>Their access ended. Pick a new date and tap Update Staff to let them work again.</Text>
+                <Text style={styles.helperHint}>{`Their access ended. Pick a new date and tap ${helperOff ? 'Save and let them work again' : 'Update Staff'}.`}</Text>
               ) : (
-                <Text style={styles.helperHint}>They can work all of that day. Tap Update Staff to save a new date.</Text>
+                <Text style={styles.helperHint}>{`They can work all of that day. Tap ${helperOff ? 'Save and let them work again' : 'Update Staff'} to save it.`}</Text>
               )}
               {!!errors.worksUntil && <Text style={styles.fieldError}>{errors.worksUntil}</Text>}
 
@@ -553,16 +558,17 @@ export default function UserFormScreen({ route, navigation }) {
           )}
 
           <Button
-            title={isEditing ? 'Update Staff' : 'Add Staff'}
-            onPress={handleSubmit}
+            title={helperOff ? 'Save and let them work again' : isEditing ? 'Update Staff' : 'Add Staff'}
+            onPress={guardSubmit(handleSubmit)}
             loading={loading}
+            disabled={loading}
             style={styles.submitButton}
           />
 
-          {isEditing && isOwner && (
+          {isEditing && isOwner && !helperOff && (
             <TouchableOpacity
               style={[styles.deactivateBtn, !existingUser.is_active && styles.reactivateBtn]}
-              onPress={handleToggleActive}
+              onPress={guardSubmit(handleToggleActive)}
               disabled={loading}
             >
               <Ionicons

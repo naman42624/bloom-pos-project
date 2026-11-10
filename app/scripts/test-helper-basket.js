@@ -87,26 +87,33 @@ test('basketTotal without discount is the plain sum', () => {
   basket = b.changeQty(basket, basket[0].key, 9); // 10 x 30
   basket = b.addLine(basket, { ...bouquetM, unit_price: 450 });
   basket = b.addLine(basket, { product_id: 5, option_id: null, name: 'Wrapping', unit_price: 50, price_mode: 'fixed', tax_rate: 0 });
-  assert.deepStrictEqual(b.basketTotal(basket, null), { subtotal: 800, discount: 0, total: 800, error: null });
-  assert.deepStrictEqual(b.basketTotal([], null), { subtotal: 0, discount: 0, total: 0, error: null });
+  assert.deepStrictEqual(b.basketTotal(basket, null), { subtotal: 800, discount: 0, total: 800, discountPct: 0, error: null });
+  assert.deepStrictEqual(b.basketTotal([], null), { subtotal: 0, discount: 0, total: 0, discountPct: 0, error: null });
 });
 
 test('basketTotal with a rupee discount', () => {
   let basket = b.addLine([], { ...bouquetM, unit_price: 800 });
-  assert.deepStrictEqual(b.basketTotal(basket, { type: 'fixed', value: 50 }), { subtotal: 800, discount: 50, total: 750, error: null });
+  assert.deepStrictEqual(b.basketTotal(basket, { type: 'fixed', value: 50 }), { subtotal: 800, discount: 50, total: 750, discountPct: 6.25, error: null });
 });
 
 test('basketTotal with a percent discount', () => {
   const basket = b.addLine([], { ...bouquetM, unit_price: 800 });
-  assert.deepStrictEqual(b.basketTotal(basket, { type: 'percentage', value: 10 }), { subtotal: 800, discount: 80, total: 720, error: null });
+  assert.deepStrictEqual(b.basketTotal(basket, { type: 'percentage', value: 10 }), { subtotal: 800, discount: 80, total: 720, discountPct: 10, error: null });
 });
 
 test('basketTotal mirrors the server: % off the GST-inclusive price (10% off ₹1000 at 18% = ₹900)', () => {
   const basket = b.addLine([], { product_id: 9, option_id: null, name: 'Vase', unit_price: 1000, price_mode: 'fixed', tax_rate: 18 });
-  assert.deepStrictEqual(b.basketTotal(basket, null), { subtotal: 1000, discount: 0, total: 1000, error: null });
-  assert.deepStrictEqual(b.basketTotal(basket, { type: 'percentage', value: 10 }), { subtotal: 1000, discount: 100, total: 900, error: null });
+  assert.deepStrictEqual(b.basketTotal(basket, null), { subtotal: 1000, discount: 0, total: 1000, discountPct: 0, error: null });
+  assert.deepStrictEqual(b.basketTotal(basket, { type: 'percentage', value: 10 }), { subtotal: 1000, discount: 100, total: 900, discountPct: 10, error: null });
   // A rupee discount comes straight off
-  assert.deepStrictEqual(b.basketTotal(basket, { type: 'fixed', value: 100 }), { subtotal: 1000, discount: 100, total: 900, error: null });
+  assert.deepStrictEqual(b.basketTotal(basket, { type: 'fixed', value: 100 }), { subtotal: 1000, discount: 100, total: 900, discountPct: 10, error: null });
+});
+
+test('discountPct is measured like the server (A1 limit check)', () => {
+  const basket = b.addLine([], { product_id: 9, option_id: null, name: 'Vase', unit_price: 1000, price_mode: 'fixed', tax_rate: 18 });
+  assert.strictEqual(b.basketTotal(basket, { type: 'fixed', value: 333 }).discountPct, 33.3);
+  assert.strictEqual(b.basketTotal(basket, { type: 'percentage', value: 15 }).discountPct, 15);
+  assert.strictEqual(b.basketTotal(basket, { type: 'fixed', value: 0 }).discountPct, 0);
 });
 
 test('basketTotal mixed tax lines, 15% off (same order of sums as the server)', () => {

@@ -32,11 +32,11 @@ test('over wording, partial not offered', () => {
   assert.strictEqual(r.line, 'Expected ₹1,000 · Counted ₹1,010.5 · Over ₹10.5');
   assert.strictEqual(r.canPartial, false);
 });
-test('exactly right', () => {
+test('exactly right: no "part of it" (A3)', () => {
   const r = c.handoverResult(845, '845.00');
   assert.strictEqual(r.label, 'Exactly right');
   assert.strictEqual(r.kind, 'exact');
-  assert.strictEqual(r.canPartial, true);
+  assert.strictEqual(r.canPartial, false);
   assert.strictEqual(r.remainingIfPartial, 0);
 });
 test('float noise does not leak', () => {

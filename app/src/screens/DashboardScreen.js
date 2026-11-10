@@ -2101,6 +2101,11 @@ export default function DashboardScreen({ navigation }) {
 
               {isOwnerOrManager && renderCustomerRows()}
 
+              {/* E52 (2026-11-07): owner and manager see the helpers' cash
+                  bags too, with Receive cash and Give float (bag mode only;
+                  renders nothing otherwise). */}
+              {isOwnerOrManager && <HelperCashCard locationId={activeLocation?.id} onChanged={fetchDashboard} />}
+
               <View style={{ gap: 12 }}>
                 <OrderKanbanBoard
                   sales={ordersSplit.dueToday}

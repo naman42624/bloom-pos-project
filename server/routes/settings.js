@@ -1,4 +1,5 @@
 const express = require('express');
+const { helperDiscountLimit } = require('../utils/helper-sale');
 const { body, validationResult } = require('express-validator');
 const { getDb } = require('../config/database');
 const { getDb: getAsyncDb } = require('../config/database-async');
@@ -224,7 +225,11 @@ router.get('/shop-info', authorize('owner', 'manager', 'employee', 'counter_staf
     const db = await getAsyncDb();
     const row = await db.prepare("SELECT value FROM settings WHERE key = 'shop_name'").get();
     const qr = await db.prepare("SELECT value FROM settings WHERE key = 'upi_qr_image_url'").get();
-    res.json({ success: true, data: { shop_name: row?.value || null, upi_qr_image_url: qr?.value || null } });
+    const data = { shop_name: row?.value || null, upi_qr_image_url: qr?.value || null };
+    // A1: a helper's phone asks for the counter's OK as soon as a discount
+    // goes over this, before any money is taken.
+    if (req.user.role === 'helper') data.helper_discount_limit = await helperDiscountLimit(db);
+    res.json({ success: true, data });
   } catch (error) {
     next(error);
   }

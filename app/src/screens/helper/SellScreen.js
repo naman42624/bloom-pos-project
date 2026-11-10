@@ -29,6 +29,15 @@ import useSubmitGuard from '../../hooks/useSubmitGuard';
 import ProductScanner from '../../components/scan/ProductScanner';
 import SizeOrPriceSheet from '../../components/scan/SizeOrPriceSheet';
 import { SCANNER_COPY } from '../../components/scan/scanCooldown';
+
+// A7: there is no "Go back" on the Sell screen; Find by name sits right
+// under the camera box.
+const HELPER_SCANNER_COPY = {
+  noCamera: 'No camera on this phone. Tap Find by name below to add items.',
+  unsupported: 'This browser cannot open the camera. Tap Find by name below to add items.',
+  blocked: 'Camera is blocked. Tap the \u{1F512} next to the web address → Camera → Allow, then tap Try again. Or tap Find by name below.',
+  blockedNative: 'Camera is blocked. Allow the camera for this app in your phone Settings, then tap Try again. Or tap Find by name below.',
+};
 import { unlockAudio } from '../../components/scan/scanFeedback';
 import { sheetModeFor, formatRupees } from '../../utils/scanAddLine';
 import {
@@ -488,7 +497,7 @@ export default function SellScreen() {
   return (
     <View style={styles.root}>
       <View style={[styles.camera, { height: cameraHeight }]}>
-        <ProductScanner onCode={handleCode} paused={paused}>
+        <ProductScanner onCode={handleCode} paused={paused} copy={HELPER_SCANNER_COPY}>
           <View style={styles.pillWrap} pointerEvents="none">{pill}</View>
         </ProductScanner>
       </View>

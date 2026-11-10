@@ -633,6 +633,14 @@ function ensureCoreTables() {
   runPsql('CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_created_by_client_ref ON sales(created_by, client_ref) WHERE client_ref IS NOT NULL');
   runPsql(`INSERT INTO settings (key, value, description) SELECT 'discount_helper_threshold', COALESCE((SELECT value FROM settings WHERE key = 'discount_manager_threshold'), '20'), 'Largest discount percent a helper can give without a PIN override' WHERE NOT EXISTS (SELECT 1 FROM settings WHERE key = 'discount_helper_threshold')`);
 
+  // A2 (2026-11-07): counter staff limit 25%, helper limit 20% (owner 30%
+  // for managers unchanged). Runs once, guarded by the discount_limits_v2
+  // marker row, and moves only values still on the old default 20, so a
+  // limit the owner chose is kept and the owner can set 20 again later.
+  runPsql(`INSERT INTO settings (key, value, description) SELECT 'discount_manager_threshold', '25', 'Largest discount percent counter staff can give without a manager' WHERE NOT EXISTS (SELECT 1 FROM settings WHERE key = 'discount_manager_threshold')`);
+  runPsql(`UPDATE settings SET value = '25' WHERE key = 'discount_manager_threshold' AND TRIM(value) = '20' AND NOT EXISTS (SELECT 1 FROM settings WHERE key = 'discount_limits_v2')`);
+  runPsql(`INSERT INTO settings (key, value, description) SELECT 'discount_limits_v2', 'done', 'Marker: counter limit moved from 20 to 25 once' WHERE NOT EXISTS (SELECT 1 FROM settings WHERE key = 'discount_limits_v2')`);
+
   // Helper cash bags (additive). held_by marks a helper cash payment kept in
   // the helper bag instead of the register; staff_cash_movements records
   // floats given out of the register and cash handed back into it.

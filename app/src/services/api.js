@@ -665,6 +665,11 @@ class ApiService {
     return this.request('/sales', { method: 'POST', body: JSON.stringify(data) });
   }
 
+  // A1: counter person's code + PIN OKs a helper's discount before payment
+  helperDiscountOk(data) {
+    return this.request('/sales/helper-discount-ok', { method: 'POST', body: JSON.stringify(data) });
+  }
+
   undoQuickSale(saleId) {
     return this.request(`/quick-sale/${saleId}/undo`, { method: 'POST' });
   }

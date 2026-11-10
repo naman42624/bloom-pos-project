@@ -38,7 +38,7 @@ export function handoverResult(expected, counted) {
     kind,
     label,
     line: `Expected ${rupees(e / 100)} · Counted ${rupees(c / 100)} · ${label}`,
-    canPartial: c > 0 && c <= e,
+    canPartial: c > 0 && c < e, // A3: an exact count has nothing left to keep for later
     remainingIfPartial: Math.max(0, e - c) / 100,
   };
 }
