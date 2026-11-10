@@ -827,6 +827,10 @@ class ApiService {
     return this.request('/expenses', { method: 'POST', body: JSON.stringify(data) });
   }
 
+  updateExpense(id, data) {
+    return this.request(`/expenses/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+  }
+
   deleteExpense(id) {
     return this.request(`/expenses/${id}`, { method: 'DELETE' });
   }

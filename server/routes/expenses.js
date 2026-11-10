@@ -246,54 +246,184 @@ router.post(
   }
 );
 
-// ─── DELETE /api/expenses/:id ────────────────────────────────
-router.delete('/:id', authenticate, authorize('owner', 'manager'), async (req, res, next) => {
-  try {
-    const db = getDb();
-    const expense = db.prepare('SELECT * FROM expenses WHERE id = ?').get(req.params.id);
-    if (!expense) return res.status(404).json({ success: false, message: 'Expense not found' });
+// ─── Changing or removing an expense (2026-11-10) ────────────
+// Counter staff and employees may fix an expense THEY added, only while the
+// register session it belongs to is still open. Owner and manager may change
+// any expense, any time: a closed session gets its difference recalculated
+// (actual_cash is a real count and never changes). Every change is audited.
 
-    // Reverse cash register deduction if applicable.
-    // IMPORTANT: Use expense.register_id to target the exact session the expense belonged to.
-    // This prevents reversals from hitting a different (e.g. today's) open register when the
-    // expense was recorded in a previous session.
-    await withMoneyTx(async (db) => {
-    if (expense.payment_method === 'cash') {
-      // Prefer the stored register_id (session-exact). Fall back to current open register
-      // only if the expense pre-dates the register_id column (legacy data).
-      // The register row is locked until the delete is saved.
-      const registerId = expense.register_id
-        ? (await db.prepare('SELECT id FROM cash_registers WHERE id = ? FOR UPDATE').get(expense.register_id))?.id
-        : (await lockOpenRegister(db, expense.location_id))?.id;
+const EXPENSE_CATEGORIES = ['supplies', 'petty_cash', 'maintenance', 'transport', 'food', 'utilities', 'salary', 'other'];
+const EXPENSE_METHODS = ['cash', 'card', 'upi', 'bank_transfer'];
+const NOT_YOURS_MESSAGE = 'You can only change expenses you added. Ask the owner or manager to change this one.';
+const DAY_CLOSED_MESSAGE = 'This expense is from a register day that is already closed. Ask the owner or manager to change it.';
 
-      if (registerId) {
-        // If the target session is already CLOSED, its discrepancy was
-        // frozen at close time against the expected_cash that existed
-        // then — adjusting expected_cash here without also recomputing
-        // discrepancy left a closed session's own historical record
-        // internally inconsistent (expected_cash says one thing,
-        // discrepancy still reflects the pre-deletion value). actual_cash
-        // is a real physical count from that close and must never change;
-        // discrepancy is just expected_cash - actual_cash recomputed
-        // against the corrected expected_cash. All SET expressions below
-        // read the OLD row (standard SQL UPDATE semantics), so referencing
-        // expected_cash in the discrepancy CASE still means "before this
-        // delta" even though expected_cash is being changed in the same
-        // statement. No-op for an open session (discrepancy isn't set yet).
-        const delta = expense.is_return ? -Number(expense.amount) : Number(expense.amount);
-        await db.prepare(`
-          UPDATE cash_registers SET
-            expected_cash = expected_cash + ?,
-            discrepancy = CASE WHEN closed_at IS NOT NULL THEN (expected_cash + ?) - actual_cash ELSE discrepancy END
-          WHERE id = ?
-        `).run(delta, delta, registerId);
-      }
+function httpError(status, message) {
+  const e = new Error(message);
+  e.statusCode = status;
+  return e;
+}
+
+// What an expense did to the drawer: cash out (or back in for a return).
+function drawerEffect(exp) {
+  if (exp.payment_method !== 'cash') return 0;
+  const amt = Number(exp.amount) || 0;
+  return exp.is_return ? amt : -amt;
+}
+
+// expected_cash moves by delta; a closed session also gets its difference
+// recalculated against the new expected cash (same rule as before for delete).
+async function moveDrawer(tx, registerId, delta) {
+  if (!registerId || Math.abs(delta) < 0.005) return;
+  await tx.prepare(`
+    UPDATE cash_registers SET
+      expected_cash = expected_cash + ?,
+      discrepancy = CASE WHEN closed_at IS NOT NULL THEN (expected_cash + ?) - actual_cash ELSE discrepancy END
+    WHERE id = ?
+  `).run(delta, delta, registerId);
+}
+
+// Locks the expense and the shop's open register, then checks who may touch it.
+async function loadForChange(tx, expenseId, user) {
+  const expense = await tx.prepare('SELECT * FROM expenses WHERE id = ? FOR UPDATE').get(expenseId);
+  if (!expense) throw httpError(404, 'This expense was not found. It may have been removed already — pull down to refresh.');
+  const openRegister = await lockOpenRegister(tx, expense.location_id);
+  const isBoss = user.role === 'owner' || user.role === 'manager';
+  if (!isBoss) {
+    if (Number(expense.created_by) !== Number(user.id)) throw httpError(403, NOT_YOURS_MESSAGE);
+    const inOpenSession = !!openRegister && (expense.register_id
+      ? Number(expense.register_id) === Number(openRegister.id)
+      : new Date(expense.created_at) >= new Date(openRegister.opened_at));
+    if (!inOpenSession) throw httpError(403, DAY_CLOSED_MESSAGE);
+  }
+  // The session this expense's cash belongs to. Old rows saved before
+  // register_id existed fall back to the open register, as delete always did.
+  let oldRegisterId = null;
+  if (expense.payment_method === 'cash') {
+    if (expense.register_id) {
+      const r = await tx.prepare('SELECT id FROM cash_registers WHERE id = ? FOR UPDATE').get(expense.register_id);
+      oldRegisterId = r ? r.id : null;
+    } else if (openRegister) {
+      oldRegisterId = openRegister.id;
     }
+  }
+  return { expense, openRegister, oldRegisterId };
+}
 
-    await db.prepare('DELETE FROM expenses WHERE id = ?').run(req.params.id);
+async function auditExpense(tx, expenseId, userId, action, before, after) {
+  await tx.prepare(`
+    INSERT INTO audit_logs (entity_type, entity_id, user_id, action, previous_state, new_state, created_at)
+    VALUES ('expense', ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+  `).run(expenseId, userId, action, JSON.stringify(before), after ? JSON.stringify(after) : null);
+}
+
+const pickAudit = (e) => ({
+  amount: Number(e.amount), category: e.category, description: e.description, payment_method: e.payment_method,
+  expense_date: e.expense_date, is_return: e.is_return ? 1 : 0, employee_id: e.employee_id || null,
+  register_id: e.register_id || null, created_by: e.created_by,
+});
+
+// ─── PUT /api/expenses/:id ───────────────────────────────────
+router.put(
+  '/:id',
+  authenticate,
+  authorize('owner', 'manager', 'employee', 'counter_staff'),
+  [
+    body('category').optional().isIn(EXPENSE_CATEGORIES),
+    body('amount').optional().isFloat({ min: 0.01, max: 10000000 }),
+    body('description').optional({ nullable: true }).trim(),
+    body('payment_method').optional().isIn(EXPENSE_METHODS),
+    body('expense_date').optional().matches(/^\d{4}-\d{2}-\d{2}$/),
+    body('is_return').optional().isBoolean(),
+    body('employee_id').optional({ nullable: true }).isInt(),
+  ],
+  async (req, res, next) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({ success: false, message: 'Check the amount, type and date, then save again.', errors: errors.array() });
+      }
+      const expenseId = Number(req.params.id);
+
+      const updated = await withMoneyTx(async (tx) => {
+        const { expense, openRegister, oldRegisterId } = await loadForChange(tx, expenseId, req.user);
+        const has = (k) => Object.prototype.hasOwnProperty.call(req.body, k);
+        const nv = {
+          category: has('category') ? req.body.category : expense.category,
+          amount: has('amount') ? Math.round(Number(req.body.amount) * 100) / 100 : Number(expense.amount),
+          description: has('description') ? (req.body.description || '') : (expense.description || ''),
+          payment_method: has('payment_method') ? req.body.payment_method : expense.payment_method,
+          expense_date: has('expense_date') ? req.body.expense_date : expense.expense_date,
+          is_return: has('is_return') ? (req.body.is_return ? 1 : 0) : (expense.is_return ? 1 : 0),
+          employee_id: has('employee_id') ? (req.body.employee_id || null) : (expense.employee_id || null),
+        };
+        if (nv.category !== 'salary') nv.employee_id = null;
+        if (nv.category === 'salary' && !nv.employee_id) throw httpError(400, 'Select which employee this salary payment is for.');
+        if (nv.category === 'salary') {
+          const covering = await tx.prepare(
+            'SELECT period_start, period_end FROM salary_payments WHERE user_id = ? AND status != ? AND period_start <= ? AND period_end >= ?'
+          ).get(nv.employee_id, 'cancelled', nv.expense_date, nv.expense_date);
+          if (covering) {
+            throw httpError(400, `This employee was already paid via Salaries & Payroll for ${covering.period_start} to ${covering.period_end} — that period covers this date. Check Payroll History, or use a different date if this is a separate payment.`);
+          }
+        }
+
+        // Drawer: take the old effect off its session, put the new one on.
+        const oldEffect = oldRegisterId ? drawerEffect(expense) : 0;
+        const newEffect = drawerEffect(nv);
+        let newRegisterId = null;
+        if (nv.payment_method === 'cash') {
+          newRegisterId = (expense.payment_method === 'cash' && oldRegisterId) ? oldRegisterId : (openRegister ? openRegister.id : null);
+          if (!newRegisterId) throw registerClosedError();
+        }
+        if (oldRegisterId && oldRegisterId === newRegisterId) {
+          await moveDrawer(tx, oldRegisterId, newEffect - oldEffect);
+        } else {
+          await moveDrawer(tx, oldRegisterId, -oldEffect);
+          await moveDrawer(tx, newRegisterId, newEffect);
+        }
+
+        await tx.prepare(`
+          UPDATE expenses SET category = ?, amount = ?, description = ?, payment_method = ?, expense_date = ?,
+            is_return = ?, employee_id = ?, register_id = ?
+          WHERE id = ?
+        `).run(nv.category, nv.amount, nv.description, nv.payment_method, nv.expense_date,
+          nv.is_return, nv.employee_id, newRegisterId, expenseId);
+
+        const after = { ...expense, ...nv, register_id: newRegisterId };
+        await auditExpense(tx, expenseId, req.user.id, 'expense_edit', pickAudit(expense), pickAudit(after));
+        return after;
+      });
+
+      const db = getDb();
+      const expense = db.prepare(`
+        SELECT e.*, l.name as location_name, u.name as created_by_name
+        FROM expenses e
+        JOIN locations l ON e.location_id = l.id
+        JOIN users u ON e.created_by = u.id
+        WHERE e.id = ?
+      `).get(expenseId) || updated;
+      res.json({ success: true, data: expense });
+    } catch (err) {
+      if (err.statusCode) return res.status(err.statusCode).json({ success: false, message: err.message });
+      next(err);
+    }
+  }
+);
+
+// ─── DELETE /api/expenses/:id ────────────────────────────────
+router.delete('/:id', authenticate, authorize('owner', 'manager', 'employee', 'counter_staff'), async (req, res, next) => {
+  try {
+    const expenseId = Number(req.params.id);
+    await withMoneyTx(async (tx) => {
+      const { expense, oldRegisterId } = await loadForChange(tx, expenseId, req.user);
+      // Put the cash back on the session it came out of.
+      await moveDrawer(tx, oldRegisterId, -drawerEffect(expense));
+      await tx.prepare('DELETE FROM expenses WHERE id = ?').run(expenseId);
+      await auditExpense(tx, expenseId, req.user.id, 'expense_delete', pickAudit(expense), null);
     });
-    res.json({ success: true, message: 'Expense deleted' });
+    res.json({ success: true, message: 'Expense removed' });
   } catch (err) {
+    if (err.statusCode) return res.status(err.statusCode).json({ success: false, message: err.message });
     next(err);
   }
 });

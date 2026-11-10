@@ -67,6 +67,8 @@ export default function ExpensesScreen() {
   const [paymentMethod, setPaymentMethod] = useState('cash');
   const [isReturn, setIsReturn] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  // The expense being changed (null = adding a new one). Same form as Add.
+  const [editing, setEditing] = useState(null);
 
   // Salary-category money-safety fix (2026-09-19): POST /expenses now
   // requires employee_id whenever category === 'salary' (server/routes/
@@ -255,6 +257,66 @@ export default function ExpensesScreen() {
   };
 
   const guardSubmit = useSubmitGuard();
+  const isBoss = user?.role === 'owner' || user?.role === 'manager';
+
+  // Who may change an expense (the server checks the same rule): owner and
+  // manager any; staff only their own, while its register session is open.
+  const canChange = (item) => {
+    if (isBoss) return true;
+    if (Number(item.created_by) !== Number(user?.id)) return false;
+    if (!registerStatus.isOpen) return false;
+    return !item.register_id || Number(item.register_id) === Number(registerStatus.register?.id);
+  };
+
+  const resetForm = () => {
+    setAmount(''); setDescription(''); setCategory('petty_cash'); setPaymentMethod('cash'); setIsReturn(false);
+    setSalaryEmployee(null);
+    setEditing(null);
+  };
+
+  const closeForm = () => { setShowAdd(false); resetForm(); };
+
+  const openEdit = (item) => {
+    autoMovedOffCash.current = false;
+    setEditing(item);
+    setAmount(String(Number(item.amount || 0)));
+    setDescription(item.description || '');
+    setCategory(item.category || 'other');
+    setPaymentMethod(item.payment_method || 'cash');
+    setIsReturn(!!item.is_return);
+    setSalaryEmployee(item.employee_id ? { id: item.employee_id, name: item.employee_name || '' } : null);
+    setShowAdd(true);
+  };
+
+  const handleSave = async () => {
+    if (!editing) return handleAdd();
+    const amt = parseFloat(amount) || 0;
+    if (amt <= 0) { appAlert('Check the amount', 'Type the amount in rupees, more than 0.'); return; }
+    if (!description.trim()) { appAlert('Add a note', 'Write what this expense was for.'); return; }
+    if (category === 'salary' && !salaryEmployee) {
+      appAlert('Pick the employee', 'Select which employee this salary payment is for.');
+      return;
+    }
+    setSubmitting(true);
+    try {
+      await api.updateExpense(editing.id, {
+        category,
+        amount: amt,
+        description: description.trim(),
+        payment_method: paymentMethod,
+        is_return: isReturn,
+        employee_id: category === 'salary' ? salaryEmployee.id : null,
+      });
+      closeForm();
+      fetchExpenses();
+      registerStatus.refetch();
+    } catch (err) {
+      appAlert('Could not save', err.message || 'The change was not saved. Check the connection and try again.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   const handleAdd = async () => {
     const amt = parseFloat(amount) || 0;
     if (amt <= 0) { appAlert('Invalid', 'Enter a valid amount'); return; }
@@ -278,9 +340,7 @@ export default function ExpensesScreen() {
         is_return: isReturn,
         employee_id: category === 'salary' ? salaryEmployee.id : undefined,
       });
-      setShowAdd(false);
-      setAmount(''); setDescription(''); setCategory('petty_cash'); setPaymentMethod('cash'); setIsReturn(false);
-      setSalaryEmployee(null);
+      closeForm();
       fetchExpenses();
     } catch (err) {
       appAlert('Error', err.message || 'Failed to add expense');
@@ -290,16 +350,21 @@ export default function ExpensesScreen() {
   };
 
   const handleDelete = (expense) => {
-    appAlert('Delete Expense', `Delete ₹${Number(expense.amount || 0).toFixed(0)} — ${expense.description}?`, [
-      { text: 'Cancel', style: 'cancel' },
+    const cashNote = expense.payment_method === 'cash'
+      ? (expense.is_return ? ' The cash is taken back off the register.' : ' The cash is put back on the register.')
+      : '';
+    appAlert('Remove this expense?', `₹${Number(expense.amount || 0).toFixed(0)} — ${expense.description}.${cashNote}`, [
+      { text: 'Keep it', style: 'cancel' },
       {
-        text: 'Delete', style: 'destructive',
+        text: 'Remove', style: 'destructive',
         onPress: async () => {
           try {
             await api.deleteExpense(expense.id);
+            closeForm();
             fetchExpenses();
+            registerStatus.refetch();
           } catch (err) {
-            appAlert('Error', err.message || 'Failed to delete');
+            appAlert('Could not remove', err.message || 'The expense was not removed. Check the connection and try again.');
           }
         },
       },
@@ -356,9 +421,17 @@ export default function ExpensesScreen() {
               <Ionicons name="arrow-undo-outline" size={16} color={Colors.textSecondary} />
             </TouchableOpacity>
           )}
-          <TouchableOpacity onPress={() => handleDelete(item)} style={styles.iconBtn}>
-            <Ionicons name="trash-outline" size={16} color={Colors.error} />
-          </TouchableOpacity>
+          {canChange(item) && (
+            <TouchableOpacity
+              onPress={() => openEdit(item)}
+              style={styles.changeBtn}
+              accessibilityRole="button"
+              accessibilityLabel={`Change expense ${item.description}`}
+            >
+              <Ionicons name="create-outline" size={16} color={Colors.primary} />
+              <Text style={styles.changeBtnText}>Change</Text>
+            </TouchableOpacity>
+          )}
         </View>
       </View>
     </View>
@@ -400,7 +473,7 @@ export default function ExpensesScreen() {
           <Text style={styles.summaryLabel}>Today's Expenses</Text>
           <Text style={styles.summaryAmount}>₹{total.toFixed(0)}</Text>
         </View>
-        <TouchableOpacity style={styles.addBtn} onPress={() => setShowAdd(true)}>
+        <TouchableOpacity style={styles.addBtn} onPress={() => { resetForm(); setShowAdd(true); }}>
           <Ionicons name="add" size={22} color={Colors.white} />
           <Text style={styles.addBtnText}>Add</Text>
         </TouchableOpacity>
@@ -425,8 +498,8 @@ export default function ExpensesScreen() {
           <View style={styles.modalOverlay}>
             <View style={styles.modalCard}>
               <View style={styles.modalHeader}>
-                <Text style={styles.modalTitle}>Add Expense</Text>
-                <TouchableOpacity onPress={() => setShowAdd(false)}>
+                <Text style={styles.modalTitle}>{editing ? 'Change Expense' : 'Add Expense'}</Text>
+                <TouchableOpacity onPress={closeForm} accessibilityRole="button" accessibilityLabel="Close" style={styles.closeBtn}>
                   <Ionicons name="close" size={24} color={Colors.text} />
                 </TouchableOpacity>
               </View>
@@ -518,7 +591,10 @@ export default function ExpensesScreen() {
                     // open register to log it against, instead of letting
                     // the whole form fill in and fail at submit
                     // (2026-09-04 audit).
-                    const disabled = m.key === 'cash' && !registerStatus.loading && !registerStatus.isOpen;
+                    // Changing an expense that was already cash keeps its own
+                    // session, so Cash stays available for it.
+                    const keepsCash = editing && editing.payment_method === 'cash';
+                    const disabled = m.key === 'cash' && !keepsCash && !registerStatus.loading && !registerStatus.isOpen;
                     const active = paymentMethod === m.key;
                     return (
                       <TouchableOpacity
@@ -536,7 +612,7 @@ export default function ExpensesScreen() {
                 {!registerStatus.loading && !registerStatus.isOpen && (
                   <Text style={styles.fieldHint}>Open the register to log a cash expense.</Text>
                 )}
-                {paymentMethod === 'cash' && registerStatus.isOpen && (
+                {!editing && paymentMethod === 'cash' && registerStatus.isOpen && (
                   <Text style={styles.fieldHint}>
                     Adding to the session opened {formatTime(registerStatus.register?.opening_time || registerStatus.register?.opened_at)}.
                   </Text>
@@ -544,18 +620,29 @@ export default function ExpensesScreen() {
 
                 <TouchableOpacity
                   style={[styles.submitBtn, submitting && { opacity: 0.6 }]}
-                  onPress={guardSubmit(handleAdd)}
+                  onPress={guardSubmit(handleSave)}
                   disabled={submitting}
                 >
                   {submitting ? (
                     <ActivityIndicator color={Colors.white} />
                   ) : (
                     <>
-                      <Ionicons name={isReturn ? "arrow-undo" : "add-circle"} size={18} color={Colors.white} />
-                      <Text style={styles.submitBtnText}>{isReturn ? "Save Return" : "Add Expense"}</Text>
+                      <Ionicons name={editing ? 'checkmark-circle' : isReturn ? 'arrow-undo' : 'add-circle'} size={18} color={Colors.white} />
+                      <Text style={styles.submitBtnText}>{editing ? 'Save Changes' : isReturn ? 'Save Return' : 'Add Expense'}</Text>
                     </>
                   )}
                 </TouchableOpacity>
+                {editing && (
+                  <TouchableOpacity
+                    style={styles.removeBtn}
+                    onPress={() => handleDelete(editing)}
+                    disabled={submitting}
+                    accessibilityRole="button"
+                  >
+                    <Ionicons name="trash-outline" size={18} color={Colors.error} />
+                    <Text style={styles.removeBtnText}>Remove this expense</Text>
+                  </TouchableOpacity>
+                )}
               </ScrollView>
             </View>
           </View>
@@ -615,6 +702,17 @@ const styles = StyleSheet.create({
   cardIconReturn: { backgroundColor: Colors.success + '12' },
   actionRow: { flexDirection: 'row', gap: Spacing.md, marginTop: 4 },
   iconBtn: { padding: 4 },
+  changeBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 4, minHeight: 44, paddingHorizontal: Spacing.sm,
+    borderRadius: BorderRadius.md, borderWidth: 1, borderColor: Colors.primary,
+  },
+  changeBtnText: { color: Colors.primary, fontWeight: '700', fontSize: FontSize.sm },
+  closeBtn: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
+  removeBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    minHeight: 48, marginTop: Spacing.sm, marginBottom: Spacing.sm,
+  },
+  removeBtnText: { color: Colors.error, fontWeight: '600', fontSize: FontSize.md },
 
   empty: { alignItems: 'center', paddingTop: 80 },
   emptyText: { color: Colors.textLight, marginTop: Spacing.sm, fontSize: FontSize.sm },
