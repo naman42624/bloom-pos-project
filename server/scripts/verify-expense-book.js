@@ -451,6 +451,91 @@ check('given_to_display falls back to the typed name', async () => {
   assert(row && row.given_to_display === 'Ramu', 'display ' + (row && row.given_to_display));
 });
 
+// ── Task 5: period summary and item history ──
+const { previousRange, changePct } = require('../utils/expense-book');
+const { todayStr: shopToday } = require('../utils/time');
+
+check('previousRange and changePct', async () => {
+  const r = previousRange('2026-11-01', '2026-11-13');
+  assert(r.from === '2026-10-19' && r.to === '2026-10-31', JSON.stringify(r));
+  assert(changePct(110, 100) === 10, 'pct');
+  assert(changePct(50, 0) === null, 'null pct');
+});
+
+let sumFx = null;
+async function summaryFixtures() {
+  if (sumFx) return sumFx;
+  const db = await getDb();
+  const X = await track(await resolveItem(db, { item_name: 'VerifyEB SumX', category: 'supplies', userId: OWNER_ID }));
+  const Z = await track(await resolveItem(db, { item_name: 'VerifyEB SumZ', category: 'supplies', userId: OWNER_ID }));
+  const mk = async (date, amount, item, desc, ret = 0, cat = 'supplies') => {
+    const r = await db.prepare(`INSERT INTO expenses (location_id, category, amount, description, payment_method, expense_date, created_by, item_id, is_return)
+      VALUES (?, ?, ?, ?, 'upi', ?, ?, ?, ?) RETURNING id`).get(TEST_LOCATION_ID, cat, amount, desc, date, OWNER_ID, item, ret);
+    createdExpenseIds.push(r.id);
+    return r.id;
+  };
+  await mk('2024-03-12', 300, X.id, 'VerifyEB x spend');
+  await mk('2024-03-13', 50, X.id, 'VerifyEB x return', 1);
+  await mk('2024-03-05', 200, X.id, 'VerifyEB x prev');
+  await mk('2024-03-14', 70, Z.id, 'VerifyEB z only');
+  await mk('2024-03-15', 40, null, 'VerifyEB no item');
+  sumFx = { X, Z };
+  return sumFx;
+}
+const SUM_Q = `from=2024-03-11&to=2024-03-20&location_id=${TEST_LOCATION_ID}`;
+
+check('summary compares with the previous period, nets returns, groups old rows', async () => {
+  const { X, Z } = await summaryFixtures();
+  const r = await api('GET', `/expenses/summary-by-item?${SUM_Q}`, ownerT());
+  assert(r.status === 200, 'status ' + r.status);
+  const d = r.body.data || r.body;
+  const sup = d.categories.find((c) => c.category === 'supplies');
+  const x = sup.items.find((i) => i.item_id === X.id);
+  assert(x.amount === 250 && x.previous_amount === 200 && x.change_pct === 25, JSON.stringify(x));
+  const z = sup.items.find((i) => i.item_id === Z.id);
+  assert(z.amount === 70 && z.change_pct === null, JSON.stringify(z));
+  const old = d.older.find((o) => o.category === 'supplies');
+  assert(old && old.amount >= 40 && old.count >= 1, JSON.stringify(d.older));
+  const sum = d.categories.reduce((a, c) => a + c.amount, 0) + d.older.reduce((a, o) => a + o.amount, 0);
+  assert(Math.abs(sum - d.total) < 0.005, `total ${d.total} vs parts ${sum}`);
+  assert(d.previous_total >= 200 && typeof d.total === 'number', 'totals');
+  assert(typeof d.unsorted_count === 'number' && d.unsorted_count >= 1, 'unsorted_count');
+  for (let i = 1; i < d.categories.length; i += 1) assert(d.categories[i - 1].amount >= d.categories[i].amount, 'not sorted');
+});
+
+check('item history gives 6 months and includes merged items', async () => {
+  const db = await getDb();
+  const X = await track(await resolveItem(db, { item_name: 'VerifyEB HistX', category: 'other', userId: OWNER_ID }));
+  const Y = await track(await resolveItem(db, { item_name: 'VerifyEB HistY', category: 'other', userId: OWNER_ID }));
+  await db.prepare('UPDATE expense_items SET merged_into = ? WHERE id = ?').run(X.id, Y.id);
+  const today = shopToday();
+  const mk = async (date, amount, item, desc) => {
+    const r = await db.prepare(`INSERT INTO expenses (location_id, category, amount, description, payment_method, expense_date, created_by, item_id)
+      VALUES (?, 'other', ?, ?, 'upi', ?, ?, ?) RETURNING id`).get(TEST_LOCATION_ID, amount, desc, date, OWNER_ID, item);
+    createdExpenseIds.push(r.id);
+    return r.id;
+  };
+  const here = await mk(today, 100, X.id, 'VerifyEB hist here');
+  const merged = await mk(shopToday(new Date(Date.now() - 62 * 86400000)), 30, Y.id, 'VerifyEB hist merged');
+  const r = await api('GET', `/expenses/items/${X.id}/history?months=6`, ownerT());
+  assert(r.status === 200, 'status ' + r.status);
+  const d = r.body.data || r.body;
+  assert(d.item.id === X.id, 'item');
+  assert(d.months.length === 6, 'months ' + d.months.length);
+  assert(d.months[5].month === today.slice(0, 7) && d.months[5].amount === 100, JSON.stringify(d.months[5]));
+  assert(d.months.reduce((a, m) => a + m.amount, 0) === 130, 'month sum ' + JSON.stringify(d.months));
+  const ids = d.entries.map((e) => e.id);
+  assert(ids.includes(here) && ids.includes(merged), 'entries ' + ids);
+  assert('item_name' in d.entries[0] && 'created_by_name' in d.entries[0], 'row shape');
+  assert(d.months.filter((m) => m.amount === 0).length >= 3, 'zero months kept');
+});
+
+check('counter staff cannot read the summary or item history', async () => {
+  const a = await api('GET', `/expenses/summary-by-item?${SUM_Q}`, counterT());
+  const b = await api('GET', `/expenses/items/1/history`, counterT());
+  assert(a.status === 403 && b.status === 403, `${a.status} ${b.status}`);
+});
+
 async function cleanup() {
   const db = await getDb();
   for (const id of createdExpenseIds) {

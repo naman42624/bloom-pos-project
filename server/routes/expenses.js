@@ -10,6 +10,8 @@ const {
   GIVEN_TO_ROLES, GIVEN_TO_INVALID_MESSAGE,
 } = require('../utils/expense-items');
 
+const { previousRange, changePct, round2, lastMonths, SIGNED_AMOUNT, EXPENSE_ROW_SELECT, normalizeExpenseRow } = require('../utils/expense-book');
+
 const router = express.Router();
 
 function hasExpenseNumberColumn(db) {
@@ -66,18 +68,7 @@ router.get('/', authenticate, authorize('owner', 'manager', 'employee', 'counter
     // register_opened_at/register_closed_at let the client show which
     // session an expense belongs to (multiple sessions a day are normal).
     // LEFT JOIN: a cash expense with no register still returns, with null.
-    let sql = `
-      SELECT e.*, l.name as location_name, u.name as created_by_name,
-             ei.name as item_name, gu.name as given_to_user_name,
-             cr.opening_time as register_opened_at, cr.opened_at as register_opened_at_fallback,
-             cr.closed_at as register_closed_at
-      FROM expenses e
-      JOIN locations l ON e.location_id = l.id
-      JOIN users u ON e.created_by = u.id
-      LEFT JOIN expense_items ei ON ei.id = e.item_id
-      LEFT JOIN users gu ON gu.id = e.given_to_user_id
-      LEFT JOIN cash_registers cr ON cr.id = e.register_id
-      WHERE 1=1
+    let sql = `${EXPENSE_ROW_SELECT}      WHERE 1=1
     `;
     const params = [];
 
@@ -118,16 +109,7 @@ router.get('/', authenticate, authorize('owner', 'manager', 'employee', 'counter
     let truncated = false;
     if (isBoss && expenses.length > CAP) { truncated = true; expenses = expenses.slice(0, CAP); }
 
-    const normalizedExpenses = expenses.map((expense) => {
-      const { register_opened_at_fallback, given_to_user_name, ...rest } = expense;
-      return {
-        ...rest,
-        amount: Number(expense.amount) || 0,
-        is_return: !!expense.is_return,
-        register_opened_at: expense.register_opened_at || register_opened_at_fallback || null,
-        given_to_display: given_to_user_name || expense.given_to_name || null,
-      };
-    });
+    const normalizedExpenses = expenses.map(normalizeExpenseRow);
 
     // Calculate totals using numeric amounts so the client always receives numbers.
     const total = normalizedExpenses.reduce((sum, expense) => sum + (expense.is_return ? -expense.amount : expense.amount), 0);
@@ -211,6 +193,127 @@ async function rememberAfterSave(itemId, saved) {
     console.error('expense item remember failed:', err.message);
   }
 }
+
+// ─── GET /api/expenses/summary-by-item ───────────────────────
+// Owner/manager: spend per category and item for a period, next to the
+// same-length period just before it. Rows with no item stay grouped by category.
+const BOSS_ONLY = [authenticate, authorize('owner', 'manager')];
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+async function sumByItem(db, from, to, locationId) {
+  const params = [from, to];
+  let loc = '';
+  if (locationId) { loc = ' AND e.location_id = ?'; params.push(locationId); }
+  // Rows of a merged item count under the item it was merged into.
+  const rows = await db.prepare(`
+    SELECT e.category, COALESCE(ei.merged_into, e.item_id) AS item_id,
+           SUM(${SIGNED_AMOUNT}) AS amount, COUNT(*) AS n
+      FROM expenses e LEFT JOIN expense_items ei ON ei.id = e.item_id
+     WHERE e.expense_date >= ? AND e.expense_date <= ?${loc}
+     GROUP BY e.category, COALESCE(ei.merged_into, e.item_id)
+  `).all(...params);
+  return rows.map((r) => ({ category: r.category, item_id: r.item_id == null ? null : Number(r.item_id), amount: Number(r.amount) || 0, count: Number(r.n) || 0 }));
+}
+
+router.get('/summary-by-item', ...BOSS_ONLY, async (req, res, next) => {
+  try {
+    const { from, to } = req.query;
+    if (!DATE_RE.test(String(from || '')) || !DATE_RE.test(String(to || '')) || from > to) {
+      return res.status(400).json({ success: false, message: 'Pick the dates to look at.' });
+    }
+    const locationId = req.query.location_id ? Number(req.query.location_id) : null;
+    const db = await getAsyncDb();
+    const prev = previousRange(from, to);
+    const [cur, before] = await Promise.all([sumByItem(db, from, to, locationId), sumByItem(db, prev.from, prev.to, locationId)]);
+
+    const prevByKey = new Map();
+    let previousTotal = 0;
+    const prevCat = new Map();
+    for (const r of before) {
+      previousTotal += r.amount;
+      prevByKey.set(`${r.category}|${r.item_id}`, r.amount);
+      prevCat.set(r.category, (prevCat.get(r.category) || 0) + r.amount);
+    }
+
+    const ids = [...new Set(cur.filter((r) => r.item_id != null).map((r) => r.item_id))];
+    const names = new Map();
+    if (ids.length) {
+      const found = await db.prepare(`SELECT id, name FROM expense_items WHERE id IN (${ids.map(() => '?').join(',')})`).all(...ids);
+      found.forEach((i) => names.set(Number(i.id), i.name));
+    }
+
+    let total = 0;
+    const cats = new Map();
+    const olderMap = new Map();
+    for (const r of cur) {
+      total += r.amount;
+      if (r.item_id == null) {
+        const o = olderMap.get(r.category) || { category: r.category, amount: 0, count: 0 };
+        o.amount += r.amount; o.count += r.count;
+        olderMap.set(r.category, o);
+        continue;
+      }
+      const c = cats.get(r.category) || { category: r.category, amount: 0, items: [] };
+      const prevAmt = prevByKey.get(`${r.category}|${r.item_id}`) || 0;
+      c.amount += r.amount;
+      c.items.push({ item_id: r.item_id, name: names.get(r.item_id) || 'Item', amount: round2(r.amount), previous_amount: round2(prevAmt), change_pct: changePct(r.amount, prevAmt) });
+      cats.set(r.category, c);
+    }
+    const categories = [...cats.values()].map((c) => {
+      const prevAmt = prevCat.get(c.category) || 0;
+      c.items.sort((a, b) => b.amount - a.amount);
+      return { category: c.category, amount: round2(c.amount), previous_amount: round2(prevAmt), change_pct: changePct(c.amount, prevAmt), items: c.items };
+    }).sort((a, b) => b.amount - a.amount);
+    const older = [...olderMap.values()].map((o) => ({ ...o, amount: round2(o.amount) })).sort((a, b) => b.amount - a.amount);
+
+    const uParams = [];
+    let uLoc = '';
+    if (locationId) { uLoc = ' AND location_id = ?'; uParams.push(locationId); }
+    const un = await db.prepare(`SELECT COUNT(*) AS c FROM expenses WHERE item_id IS NULL AND category <> 'salary'${uLoc}`).get(...uParams);
+
+    res.json({ success: true, data: { total: round2(total), previous_total: round2(previousTotal), change_pct: changePct(total, previousTotal), categories, older, unsorted_count: Number(un.c) || 0 } });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── GET /api/expenses/items/:id/history ─────────────────────
+// Owner/manager: one item's monthly spend (last N months, empty months as 0)
+// and its entries, including items that were merged into it.
+router.get('/items/:id/history', ...BOSS_ONLY, async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) return res.status(404).json({ success: false, message: 'That item was not found.' });
+    const db = await getAsyncDb();
+    const item = await db.prepare('SELECT id, name, category, is_active, merged_into FROM expense_items WHERE id = ?').get(id);
+    if (!item) return res.status(404).json({ success: false, message: 'That item was not found.' });
+
+    const months = Math.min(Math.max(parseInt(req.query.months, 10) || 6, 1), 24);
+    const today = localToday();
+    const keys = lastMonths(today, months);
+    const windowStart = `${keys[0]}-01`;
+    const { from, to, location_id, given_to_user_id } = req.query;
+    const start = DATE_RE.test(String(from || '')) ? from : windowStart;
+    const end = DATE_RE.test(String(to || '')) ? to : today;
+
+    let where = ' WHERE (e.item_id = ? OR e.item_id IN (SELECT id FROM expense_items WHERE merged_into = ?)) AND e.expense_date >= ? AND e.expense_date <= ?';
+    const params = [id, id, start, end];
+    if (location_id) { where += ' AND e.location_id = ?'; params.push(Number(location_id)); }
+    if (given_to_user_id) { where += ' AND e.given_to_user_id = ?'; params.push(Number(given_to_user_id)); }
+
+    const monthRows = await db.prepare(`
+      SELECT to_char(e.expense_date, 'YYYY-MM') AS month, SUM(${SIGNED_AMOUNT}) AS amount
+        FROM expenses e${where}
+       GROUP BY 1
+    `).all(...params);
+    const byMonth = new Map(monthRows.map((r) => [r.month, Number(r.amount) || 0]));
+    const entries = (await db.prepare(`${EXPENSE_ROW_SELECT}${where} ORDER BY e.expense_date DESC, e.created_at DESC LIMIT 500`).all(...params)).map(normalizeExpenseRow);
+
+    res.json({ success: true, data: { item, months: keys.map((m) => ({ month: m, amount: round2(byMonth.get(m) || 0) })), entries } });
+  } catch (err) {
+    next(err);
+  }
+});
 
 // ─── GET /api/expenses/people ────────────────────────────────
 // The "Given to" chips: active staff and riders linked to the shop, plus the
