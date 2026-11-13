@@ -207,6 +207,69 @@ router.get('/people', authenticate, authorize('owner', 'manager', 'employee', 'c
   }
 });
 
+// ─── GET /api/expenses/suggest ───────────────────────────────
+// Quick-pick chips (pinned first, then this shop's most used in the last 30
+// days) and type-ahead when q is given. Never hidden or merged items.
+router.get('/suggest', authenticate, authorize('owner', 'manager', 'employee', 'counter_staff'), async (req, res, next) => {
+  try {
+    const locationId = Number(req.query.location_id);
+    if (!Number.isInteger(locationId) || locationId <= 0) {
+      return res.status(400).json({ success: false, message: 'Pick a shop first.' });
+    }
+    const db = await getAsyncDb();
+    const since = new Date(Date.now() - 29 * 86400000);
+    const sinceStr = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(since);
+    const cols = `i.id, i.name, i.category, i.usual_amount, i.last_given_to_user_id, i.last_given_to_name, gu.name AS last_user_name`;
+    const base = `FROM expense_items i LEFT JOIN users gu ON gu.id = i.last_given_to_user_id WHERE i.is_active = TRUE AND i.merged_into IS NULL`;
+    const useCount = `(SELECT COUNT(*) FROM expenses e WHERE e.item_id = i.id AND e.location_id = ? AND e.expense_date >= ?)`;
+    const q = nameKey(req.query.q);
+    let rows;
+    if (q) {
+      const like = q.replace(/[\\%_]/g, (c) => '\\' + c);
+      rows = await db.prepare(`
+        SELECT ${cols}, ${useCount} AS uses
+        ${base} AND i.name_key LIKE ? ESCAPE '\\'
+        ORDER BY (i.name_key LIKE ? ESCAPE '\\') DESC, uses DESC, i.name ASC
+        LIMIT 8
+      `).all(locationId, sinceStr, `%${like}%`, `${like}%`);
+    } else {
+      const pinned = await db.prepare(`
+        SELECT ${cols} ${base} AND i.pinned = TRUE
+        ORDER BY i.pin_order ASC NULLS LAST, i.name ASC LIMIT 8
+      `).all();
+      rows = pinned;
+      if (rows.length < 8) {
+        const skip = rows.map(() => '?').join(', ');
+        const used = await db.prepare(`
+          SELECT ${cols}, ${useCount} AS uses
+          ${base} AND i.pinned IS NOT TRUE ${rows.length ? `AND i.id NOT IN (${skip})` : ''}
+          AND ${useCount} > 0
+          ORDER BY uses DESC, i.name ASC LIMIT ?
+        `).all(locationId, sinceStr, ...rows.map((r) => r.id), locationId, sinceStr, 8 - rows.length);
+        rows = rows.concat(used);
+      }
+    }
+    res.json({
+      success: true,
+      data: rows.map((r) => ({
+        id: Number(r.id),
+        name: r.name,
+        category: r.category,
+        usual_amount: r.usual_amount == null ? null : Number(r.usual_amount),
+        last_given_to: (r.last_given_to_user_id || r.last_given_to_name)
+          ? {
+              user_id: r.last_given_to_user_id ? Number(r.last_given_to_user_id) : null,
+              name: r.last_given_to_name || null,
+              display_name: r.last_given_to_user_id ? (r.last_user_name || r.last_given_to_name) : r.last_given_to_name,
+            }
+          : null,
+      })),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // ─── POST /api/expenses ──────────────────────────────────────
 router.post(
   '/',

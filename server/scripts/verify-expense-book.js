@@ -280,6 +280,93 @@ check('florist staff still cannot add an expense', async () => {
   assert(r.status === 403, `status ${r.status}`);
 });
 
+// ── Task 3: quick suggestions and type-ahead ──
+async function mkItem(db, name, cols = {}) {
+  const row = await db.prepare(
+    'INSERT INTO expense_items (name, name_key, category, pinned, pin_order, is_active, merged_into, usual_amount) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id'
+  ).get(name, nameKey(name), 'other', !!cols.pinned, cols.pin_order == null ? null : cols.pin_order, cols.is_active === false ? false : true, cols.merged_into || null, cols.usual_amount == null ? null : cols.usual_amount);
+  createdItemIds.push(row.id);
+  return row.id;
+}
+async function useItem(db, itemId, times, locationId) {
+  for (let i = 0; i < times; i++) {
+    const r = await db.prepare(
+      "INSERT INTO expenses (location_id, category, description, amount, payment_method, expense_date, item_id, created_by) VALUES (?, 'other', 'VerifyEB use', 10, 'upi', ?, ?, ?) RETURNING id"
+    ).get(locationId, shopDay(-1), itemId, OWNER_ID);
+    createdExpenseIds.push(r.id);
+  }
+}
+
+let sg = null;
+async function suggestFixture() {
+  if (sg) return sg;
+  const db = await getDb();
+  const mergedTarget = await mkItem(db, 'VerifyEB Pe Target');
+  sg = {
+    p1: await mkItem(db, 'VerifyEB Pe Pin One', { pinned: true, pin_order: -2 }),
+    p2: await mkItem(db, 'VerifyEB Pe Pin Two', { pinned: true, pin_order: -3 }),
+    f: await mkItem(db, 'VerifyEB Pe Often'),
+    contains: await mkItem(db, 'VerifyEB Xx Pe Inside', { usual_amount: 75 }),
+    g: await mkItem(db, 'VerifyEB Pe Other Shop'),
+    h: await mkItem(db, 'VerifyEB Pe Hidden', { is_active: false }),
+    m: await mkItem(db, 'VerifyEB Pe Merged', { merged_into: mergedTarget }),
+  };
+  await useItem(db, sg.f, 3, TEST_LOCATION_ID);
+  await useItem(db, sg.contains, 1, TEST_LOCATION_ID);
+  await useItem(db, sg.g, 5, 3);
+  return sg;
+}
+
+check('suggest: empty q gives pinned by pin order, then used items; not other shop, hidden or merged', async () => {
+  const f = await suggestFixture();
+  const r = await api('GET', `/expenses/suggest?location_id=${TEST_LOCATION_ID}`, tokenFor(COUNTER_ID));
+  assert(r.status === 200, `status ${r.status} ${JSON.stringify(r.body)}`);
+  const ids = r.body.data.map((x) => x.id);
+  assert(ids[0] === f.p2 && ids[1] === f.p1, 'pinned order: ' + ids.slice(0, 3).join(','));
+  assert(ids.indexOf(f.f) >= 2, 'used item missing or before pinned');
+  for (const bad of [f.g, f.h, f.m]) assert(!ids.includes(bad), 'unexpected item ' + bad);
+  assert(ids.length <= 8, 'more than 8');
+  const one = r.body.data[0];
+  assert(['id', 'name', 'category', 'usual_amount', 'last_given_to'].every((k) => k in one), 'shape ' + Object.keys(one));
+});
+
+check('suggest: type-ahead puts prefix matches before contains matches, none hidden or merged', async () => {
+  const f = await suggestFixture();
+  const r = await api('GET', `/expenses/suggest?location_id=${TEST_LOCATION_ID}&q=${encodeURIComponent('verifyeb pe')}`, tokenFor(COUNTER_ID));
+  assert(r.status === 200, `status ${r.status}`);
+  const ids = r.body.data.map((x) => x.id);
+  assert(ids.includes(f.f) && ids.includes(f.contains), 'matches missing');
+  assert(!ids.includes(f.h) && !ids.includes(f.m), 'hidden or merged shown');
+  assert(ids.indexOf(f.f) < ids.indexOf(f.contains), 'prefix not before contains');
+  const c = r.body.data.find((x) => x.id === f.contains);
+  assert(Number(c.usual_amount) === 75, 'usual_amount ' + c.usual_amount);
+});
+
+check('suggest: a wildcard in q is taken literally; at most 8; location required', async () => {
+  const db = await getDb();
+  for (let i = 0; i < 10; i++) await mkItem(db, 'VerifyEB Many ' + i);
+  const r = await api('GET', `/expenses/suggest?location_id=${TEST_LOCATION_ID}&q=verifyeb`, tokenFor(OWNER_ID));
+  assert(r.status === 200 && r.body.data.length === 8, 'len ' + (r.body.data && r.body.data.length));
+  const w = await api('GET', `/expenses/suggest?location_id=${TEST_LOCATION_ID}&q=%25`, tokenFor(OWNER_ID));
+  assert(w.status === 200 && w.body.data.length === 0, 'wildcard matched ' + (w.body.data && w.body.data.length));
+  const n = await api('GET', '/expenses/suggest', tokenFor(OWNER_ID));
+  assert(n.status === 400 && n.body.message === 'Pick a shop first.', `no shop ${n.status}`);
+});
+
+check('suggest: last_given_to shows the user name or the free name; helpers refused', async () => {
+  const f = await suggestFixture();
+  const rider = await ensureRider();
+  const db = await getDb();
+  await db.prepare('UPDATE expense_items SET last_given_to_user_id = ? WHERE id = ?').run(rider, f.p1);
+  await db.prepare("UPDATE expense_items SET last_given_to_name = 'VerifyEB Plumber2' WHERE id = ?").run(f.p2);
+  const r = await api('GET', `/expenses/suggest?location_id=${TEST_LOCATION_ID}`, tokenFor(COUNTER_ID));
+  const a = r.body.data.find((x) => x.id === f.p1), b = r.body.data.find((x) => x.id === f.p2);
+  assert(a.last_given_to && a.last_given_to.user_id === rider && a.last_given_to.display_name === 'VerifyEB Rider', JSON.stringify(a.last_given_to));
+  assert(b.last_given_to && b.last_given_to.name === 'VerifyEB Plumber2' && b.last_given_to.display_name === 'VerifyEB Plumber2', JSON.stringify(b.last_given_to));
+  const h = await api('GET', `/expenses/suggest?location_id=${TEST_LOCATION_ID}`, tokenFor(HELPER_ID));
+  assert(h.status === 403, 'helper ' + h.status);
+});
+
 async function cleanup() {
   const db = await getDb();
   for (const id of createdExpenseIds) {
