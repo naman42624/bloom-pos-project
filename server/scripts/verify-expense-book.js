@@ -467,6 +467,7 @@ async function summaryFixtures() {
   if (sumFx) return sumFx;
   const db = await getDb();
   const X = await track(await resolveItem(db, { item_name: 'VerifyEB SumX', category: 'supplies', userId: OWNER_ID }));
+  const W = await track(await resolveItem(db, { item_name: 'VerifyEB SumW', category: 'supplies', userId: OWNER_ID }));
   const Z = await track(await resolveItem(db, { item_name: 'VerifyEB SumZ', category: 'supplies', userId: OWNER_ID }));
   const mk = async (date, amount, item, desc, ret = 0, cat = 'supplies') => {
     const r = await db.prepare(`INSERT INTO expenses (location_id, category, amount, description, payment_method, expense_date, created_by, item_id, is_return)
@@ -479,13 +480,15 @@ async function summaryFixtures() {
   await mk('2024-03-05', 200, X.id, 'VerifyEB x prev');
   await mk('2024-03-14', 70, Z.id, 'VerifyEB z only');
   await mk('2024-03-15', 40, null, 'VerifyEB no item');
-  sumFx = { X, Z };
+  await mk('2024-03-06', 100, null, 'VerifyEB prev no item');
+  await mk('2024-03-07', 60, W.id, 'VerifyEB w prev only');
+  sumFx = { X, Z, W };
   return sumFx;
 }
 const SUM_Q = `from=2024-03-11&to=2024-03-20&location_id=${TEST_LOCATION_ID}`;
 
 check('summary compares with the previous period, nets returns, groups old rows', async () => {
-  const { X, Z } = await summaryFixtures();
+  const { X, Z, W } = await summaryFixtures();
   const r = await api('GET', `/expenses/summary-by-item?${SUM_Q}`, ownerT());
   assert(r.status === 200, 'status ' + r.status);
   const d = r.body.data || r.body;
@@ -495,7 +498,11 @@ check('summary compares with the previous period, nets returns, groups old rows'
   const z = sup.items.find((i) => i.item_id === Z.id);
   assert(z.amount === 70 && z.change_pct === null, JSON.stringify(z));
   const old = d.older.find((o) => o.category === 'supplies');
-  assert(old && old.amount >= 40 && old.count >= 1, JSON.stringify(d.older));
+  assert(old && old.amount === 40 && old.count === 1 && old.previous_amount === 100 && old.change_pct === -60, JSON.stringify(d.older));
+  const w = sup.items.find((i) => i.item_id === W.id);
+  assert(w && w.amount === 0 && w.previous_amount === 60 && w.change_pct === -100, JSON.stringify(w));
+  assert(sup.items[sup.items.length - 1].item_id === W.id, 'previous-only item not last');
+  assert(sup.amount === 320 && sup.previous_amount === 260 && sup.change_pct === 23.1, JSON.stringify({ a: sup.amount, p: sup.previous_amount, c: sup.change_pct }));
   const sum = d.categories.reduce((a, c) => a + c.amount, 0) + d.older.reduce((a, o) => a + o.amount, 0);
   assert(Math.abs(sum - d.total) < 0.005, `total ${d.total} vs parts ${sum}`);
   assert(d.previous_total >= 200 && typeof d.total === 'number', 'totals');
@@ -528,6 +535,14 @@ check('item history gives 6 months and includes merged items', async () => {
   assert(ids.includes(here) && ids.includes(merged), 'entries ' + ids);
   assert('item_name' in d.entries[0] && 'created_by_name' in d.entries[0], 'row shape');
   assert(d.months.filter((m) => m.amount === 0).length >= 3, 'zero months kept');
+});
+
+check('non-numeric location or person gives a plain 400, not a 500', async () => {
+  const a = await api('GET', `/expenses/summary-by-item?from=2024-03-11&to=2024-03-20&location_id=abc`, ownerT());
+  const b = await api('GET', `/expenses/items/1/history?location_id=abc`, ownerT());
+  const c = await api('GET', `/expenses/items/1/history?given_to_user_id=abc`, ownerT());
+  assert(a.status === 400 && b.status === 400 && c.status === 400, `${a.status} ${b.status} ${c.status}`);
+  assert(a.body.message === 'Pick a shop first.', a.body.message);
 });
 
 check('counter staff cannot read the summary or item history', async () => {

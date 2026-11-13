@@ -222,20 +222,27 @@ router.get('/summary-by-item', ...BOSS_ONLY, async (req, res, next) => {
       return res.status(400).json({ success: false, message: 'Pick the dates to look at.' });
     }
     const locationId = req.query.location_id ? Number(req.query.location_id) : null;
+    if (locationId !== null && (!Number.isInteger(locationId) || locationId <= 0)) {
+      return res.status(400).json({ success: false, message: 'Pick a shop first.' });
+    }
     const db = await getAsyncDb();
     const prev = previousRange(from, to);
     const [cur, before] = await Promise.all([sumByItem(db, from, to, locationId), sumByItem(db, prev.from, prev.to, locationId)]);
 
-    const prevByKey = new Map();
-    let previousTotal = 0;
-    const prevCat = new Map();
-    for (const r of before) {
-      previousTotal += r.amount;
-      prevByKey.set(`${r.category}|${r.item_id}`, r.amount);
-      prevCat.set(r.category, (prevCat.get(r.category) || 0) + r.amount);
-    }
+    // One row per category and item over both periods, so an item that
+    // stopped being bought still shows (amount 0, previous_amount X).
+    const rows = new Map();
+    const put = (r, field) => {
+      const key = `${r.category}|${r.item_id}`;
+      const row = rows.get(key) || { category: r.category, item_id: r.item_id, amount: 0, previous_amount: 0, count: 0 };
+      row[field] += r.amount;
+      if (field === 'amount') row.count += r.count;
+      rows.set(key, row);
+    };
+    cur.forEach((r) => put(r, 'amount'));
+    before.forEach((r) => put(r, 'previous_amount'));
 
-    const ids = [...new Set(cur.filter((r) => r.item_id != null).map((r) => r.item_id))];
+    const ids = [...new Set([...rows.values()].filter((r) => r.item_id != null).map((r) => r.item_id))];
     const names = new Map();
     if (ids.length) {
       const found = await db.prepare(`SELECT id, name FROM expense_items WHERE id IN (${ids.map(() => '?').join(',')})`).all(...ids);
@@ -243,28 +250,28 @@ router.get('/summary-by-item', ...BOSS_ONLY, async (req, res, next) => {
     }
 
     let total = 0;
+    let previousTotal = 0;
     const cats = new Map();
-    const olderMap = new Map();
-    for (const r of cur) {
+    const older = [];
+    for (const r of rows.values()) {
       total += r.amount;
+      previousTotal += r.previous_amount;
       if (r.item_id == null) {
-        const o = olderMap.get(r.category) || { category: r.category, amount: 0, count: 0 };
-        o.amount += r.amount; o.count += r.count;
-        olderMap.set(r.category, o);
+        older.push({ category: r.category, amount: round2(r.amount), previous_amount: round2(r.previous_amount), change_pct: changePct(r.amount, r.previous_amount), count: r.count });
         continue;
       }
-      const c = cats.get(r.category) || { category: r.category, amount: 0, items: [] };
-      const prevAmt = prevByKey.get(`${r.category}|${r.item_id}`) || 0;
+      const c = cats.get(r.category) || { category: r.category, amount: 0, previous_amount: 0, items: [] };
       c.amount += r.amount;
-      c.items.push({ item_id: r.item_id, name: names.get(r.item_id) || 'Item', amount: round2(r.amount), previous_amount: round2(prevAmt), change_pct: changePct(r.amount, prevAmt) });
+      c.previous_amount += r.previous_amount;
+      c.items.push({ item_id: r.item_id, name: names.get(r.item_id) || 'Item', amount: round2(r.amount), previous_amount: round2(r.previous_amount), change_pct: changePct(r.amount, r.previous_amount) });
       cats.set(r.category, c);
     }
-    const categories = [...cats.values()].map((c) => {
-      const prevAmt = prevCat.get(c.category) || 0;
-      c.items.sort((a, b) => b.amount - a.amount);
-      return { category: c.category, amount: round2(c.amount), previous_amount: round2(prevAmt), change_pct: changePct(c.amount, prevAmt), items: c.items };
-    }).sort((a, b) => b.amount - a.amount);
-    const older = [...olderMap.values()].map((o) => ({ ...o, amount: round2(o.amount) })).sort((a, b) => b.amount - a.amount);
+    const byAmount = (a, b) => (b.amount - a.amount) || (b.previous_amount - a.previous_amount);
+    const categories = [...cats.values()].map((c) => ({
+      category: c.category, amount: round2(c.amount), previous_amount: round2(c.previous_amount),
+      change_pct: changePct(c.amount, c.previous_amount), items: c.items.sort(byAmount),
+    })).sort(byAmount);
+    older.sort(byAmount);
 
     const uParams = [];
     let uLoc = '';
@@ -284,6 +291,10 @@ router.get('/items/:id/history', ...BOSS_ONLY, async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     if (!Number.isInteger(id) || id <= 0) return res.status(404).json({ success: false, message: 'That item was not found.' });
+    const q0 = req.query;
+    if ((q0.location_id && !Number.isInteger(Number(q0.location_id))) || (q0.given_to_user_id && !Number.isInteger(Number(q0.given_to_user_id)))) {
+      return res.status(400).json({ success: false, message: q0.location_id && !Number.isInteger(Number(q0.location_id)) ? 'Pick a shop first.' : 'Pick who it was given to again.' });
+    }
     const db = await getAsyncDb();
     const item = await db.prepare('SELECT id, name, category, is_active, merged_into FROM expense_items WHERE id = ?').get(id);
     if (!item) return res.status(404).json({ success: false, message: 'That item was not found.' });
