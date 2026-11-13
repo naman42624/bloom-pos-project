@@ -54,3 +54,25 @@ export function givenToText(row) {
   const name = row && row.given_to_display;
   return name && String(name).trim() ? `given to ${String(name).trim()}` : null;
 }
+
+// Same number of days, ending the day before `from` (matches the server's
+// previousRange in server/utils/expense-book.js, which the % compares to).
+export function previousRange(from, to) {
+  const days = Math.round((toUtc(to) - toUtc(from)) / DAY) + 1;
+  const prevTo = toUtc(from).getTime() - DAY;
+  return { from: toStr(new Date(prevTo - (days - 1) * DAY)), to: toStr(new Date(prevTo)) };
+}
+
+// "13 Nov", "9–13 Nov", "28 Oct – 3 Nov", "28 Dec 2025 – 3 Jan 2026".
+export function rangeLabel(from, to) {
+  const a = toUtc(from);
+  const b = toUtc(to || from);
+  const day = (d) => d.getUTCDate();
+  const mon = (d) => MONTHS[d.getUTCMonth()];
+  if (from === (to || from)) return `${day(a)} ${mon(a)}`;
+  if (a.getUTCFullYear() !== b.getUTCFullYear()) {
+    return `${day(a)} ${mon(a)} ${a.getUTCFullYear()} – ${day(b)} ${mon(b)} ${b.getUTCFullYear()}`;
+  }
+  if (a.getUTCMonth() === b.getUTCMonth()) return `${day(a)}–${day(b)} ${mon(b)}`;
+  return `${day(a)} ${mon(a)} – ${day(b)} ${mon(b)}`;
+}

@@ -55,6 +55,18 @@ test('givenToText', () => {
   assert.strictEqual(e.givenToText(null), null);
 });
 
+test('previousRange', () => {
+  assert.deepStrictEqual(e.previousRange('2026-11-01', '2026-11-13'), { from: '2026-10-19', to: '2026-10-31' });
+  assert.deepStrictEqual(e.previousRange('2026-11-13', '2026-11-13'), { from: '2026-11-12', to: '2026-11-12' });
+  assert.deepStrictEqual(e.previousRange('2026-10-01', '2026-10-31'), { from: '2026-08-31', to: '2026-09-30' });
+});
+test('rangeLabel', () => {
+  assert.strictEqual(e.rangeLabel('2026-11-13', '2026-11-13'), '13 Nov');
+  assert.strictEqual(e.rangeLabel('2026-11-09', '2026-11-13'), '9–13 Nov');
+  assert.strictEqual(e.rangeLabel('2026-10-28', '2026-11-03'), '28 Oct – 3 Nov');
+  assert.strictEqual(e.rangeLabel('2025-12-28', '2026-01-03'), '28 Dec 2025 – 3 Jan 2026');
+});
+
 let failed = 0;
 for (const t of tests) {
   try { t.fn(); console.log('ok   ' + t.name); } catch (err) { failed++; console.log('FAIL ' + t.name + ': ' + err.message); }
