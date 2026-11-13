@@ -793,6 +793,30 @@ check('assigning sets item_id only, skips assigned and salary rows, and audits',
   assert(Number(au.c) >= 1, 'no audit row');
 });
 
+check('assign-items refuses salary and invalid categories, changing nothing', async () => {
+  const fx = await sortFixtures();
+  const db = await getDb();
+  const row = await db.prepare(`INSERT INTO expenses (location_id, category, amount, description, payment_method, expense_date, created_by)
+    VALUES (?, 'other', 3, 'VerifyEB guard row', 'upi', ?, ?) RETURNING id`).get(TEST_LOCATION_ID, dayAgo(41), OWNER_ID);
+  createdExpenseIds.push(row.id);
+  const salItem = await track(await resolveItem(db, { item_name: 'VerifyEB Salary Item', category: 'salary', userId: OWNER_ID }));
+  const calls = [
+    [{ expense_id: row.id, item_name: 'VerifyEB Sneaky', category: 'salary' }],
+    [{ expense_id: row.id, item_id: salItem.id }],
+    [{ expense_id: row.id, item_name: 'VerifyEB Junk', category: 'x'.repeat(80) }],
+  ];
+  for (const assignments of calls) {
+    const r = await api('POST', '/expenses/assign-items', ownerT(), { assignments });
+    assert(r.status === 400, 'status ' + r.status + ' ' + JSON.stringify(r.body));
+  }
+  const after = await db.prepare('SELECT item_id FROM expenses WHERE id = ?').get(row.id);
+  assert(after.item_id == null, 'row changed');
+  const made = await db.prepare("SELECT COUNT(*) AS c FROM expense_items WHERE name_key IN ('verifyeb sneaky','verifyeb junk')").get();
+  assert(Number(made.c) === 0, 'items created');
+  const neg = await api('GET', '/expenses/unsorted?limit=-5', ownerT());
+  assert(neg.status === 200, 'negative limit ' + neg.status);
+});
+
 check('a manager gets 403 on unsorted and assign-items', async () => {
   const a = await api('GET', '/expenses/unsorted', managerT());
   const b = await api('POST', '/expenses/assign-items', managerT(), { assignments: [] });

@@ -643,12 +643,13 @@ function suggestItem(items, description) {
 router.get('/unsorted', ...OWNER_ONLY, async (req, res, next) => {
   try {
     const db = await getAsyncDb();
-    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 200);
+    const asked = parseInt(req.query.limit, 10);
+    const limit = Math.min(asked > 0 ? asked : 50, 200);
     const rows = await db.prepare(
       `${EXPENSE_ROW_SELECT}      WHERE e.item_id IS NULL AND e.category <> 'salary'
       ORDER BY e.expense_date DESC, e.created_at DESC, e.id DESC LIMIT ${limit}`
     ).all();
-    const items = await db.prepare('SELECT id, name, name_key FROM expense_items WHERE is_active = TRUE AND merged_into IS NULL').all();
+    const items = await db.prepare('SELECT id, name, name_key FROM expense_items WHERE is_active = TRUE AND merged_into IS NULL AND category <> \'salary\'').all();
     const data = rows.map(normalizeExpenseRow).map((r) => ({ ...r, suggested_item: suggestItem(items, r.description) }));
     res.json({ success: true, data });
   } catch (err) {
@@ -670,6 +671,10 @@ router.post('/assign-items', ...OWNER_ONLY, async (req, res, next) => {
       const id = Number(a && a.expense_id);
       if (!Number.isInteger(id) || id <= 0 || seen.has(id)) return res.status(400).json({ success: false, message: 'Pick the entries to sort again.' });
       seen.add(id);
+      if (a.category != null && a.category !== '') {
+        if (!EXPENSE_CATEGORIES.includes(a.category)) return res.status(400).json({ success: false, message: NO_CATEGORY_MESSAGE });
+        if (a.category === 'salary') return res.status(400).json({ success: false, message: SALARY_ITEM_MESSAGE });
+      }
     }
     const out = await withMoneyTx(async (tx) => {
       const skipped = [];
@@ -682,6 +687,7 @@ router.post('/assign-items', ...OWNER_ONLY, async (req, res, next) => {
           item_id: a.item_id ? Number(a.item_id) : null, item_name: a.item_name,
           category: a.category || row.category, userId: req.user.id,
         });
+        if (item.category === 'salary') throw httpError(400, SALARY_ITEM_MESSAGE);
         await tx.prepare('UPDATE expenses SET item_id = ? WHERE id = ? AND item_id IS NULL').run(item.id, id);
         done.push({ expense_id: id, item_id: Number(item.id) });
       }
