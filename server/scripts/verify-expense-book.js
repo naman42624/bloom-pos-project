@@ -301,15 +301,15 @@ let sg = null;
 async function suggestFixture() {
   if (sg) return sg;
   const db = await getDb();
-  const mergedTarget = await mkItem(db, 'VerifyEB Pe Target');
+  const mergedTarget = await mkItem(db, 'VerifyEB Zq Target');
   sg = {
-    p1: await mkItem(db, 'VerifyEB Pe Pin One', { pinned: true, pin_order: -2 }),
-    p2: await mkItem(db, 'VerifyEB Pe Pin Two', { pinned: true, pin_order: -3 }),
-    f: await mkItem(db, 'VerifyEB Pe Often'),
-    contains: await mkItem(db, 'VerifyEB Xx Pe Inside', { usual_amount: 75 }),
-    g: await mkItem(db, 'VerifyEB Pe Other Shop'),
-    h: await mkItem(db, 'VerifyEB Pe Hidden', { is_active: false }),
-    m: await mkItem(db, 'VerifyEB Pe Merged', { merged_into: mergedTarget }),
+    p1: await mkItem(db, 'VerifyEB Zq Pin One', { pinned: true, pin_order: -2 }),
+    p2: await mkItem(db, 'VerifyEB Zq Pin Two', { pinned: true, pin_order: -3 }),
+    f: await mkItem(db, 'VerifyEB Zq Often'),
+    contains: await mkItem(db, 'VerifyEB Xx Zq Inside', { usual_amount: 75 }),
+    g: await mkItem(db, 'VerifyEB Zq Other Shop'),
+    h: await mkItem(db, 'VerifyEB Zq Hidden', { is_active: false }),
+    m: await mkItem(db, 'VerifyEB Zq Merged', { merged_into: mergedTarget }),
   };
   await useItem(db, sg.f, 3, TEST_LOCATION_ID);
   await useItem(db, sg.contains, 1, TEST_LOCATION_ID);
@@ -332,7 +332,7 @@ check('suggest: empty q gives pinned by pin order, then used items; not other sh
 
 check('suggest: type-ahead puts prefix matches before contains matches, none hidden or merged', async () => {
   const f = await suggestFixture();
-  const r = await api('GET', `/expenses/suggest?location_id=${TEST_LOCATION_ID}&q=${encodeURIComponent('verifyeb pe')}`, tokenFor(COUNTER_ID));
+  const r = await api('GET', `/expenses/suggest?location_id=${TEST_LOCATION_ID}&q=${encodeURIComponent('verifyeb zq')}`, tokenFor(COUNTER_ID));
   assert(r.status === 200, `status ${r.status}`);
   const ids = r.body.data.map((x) => x.id);
   assert(ids.includes(f.f) && ids.includes(f.contains), 'matches missing');
