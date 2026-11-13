@@ -108,6 +108,178 @@ check('rememberOnItem stores usual amount and last given-to', async () => {
   assert(Number(r.usual_amount) === 123.5 && r.last_given_to_name === 'VerifyEB Bob', JSON.stringify(r));
 });
 
+// ── Task 2: add and change with item, note, photo, Given to, back-dating ──
+const OWNER_ID = 7777, COUNTER_ID = 7778, CUSTOMER_ID = 7779, HELPER_ID = 6783;
+const GIVEN_TO_COPY = "That person can't be picked here. Tap Given to and pick again.";
+const DATE_COPY = 'Only the owner or a manager can enter an expense for another day.';
+const createdUserIds = [];
+let riderId = null;
+
+function shopDay(offsetDays = 0) {
+  const d = new Date(Date.now() + offsetDays * 86400000);
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
+}
+
+async function ensureRider() {
+  if (riderId) return riderId;
+  const db = await getDb();
+  const row = await db.prepare(
+    "INSERT INTO users (phone, password, name, role, is_active) VALUES (?, 'x', 'VerifyEB Rider', 'delivery_partner', 1) RETURNING id"
+  ).get('9' + String(Date.now()).slice(-9));
+  riderId = row.id;
+  createdUserIds.push(riderId);
+  await db.prepare('INSERT INTO user_locations (user_id, location_id) VALUES (?, ?)').run(riderId, TEST_LOCATION_ID);
+  return riderId;
+}
+
+async function addExpense(token, body) {
+  const r = await api('POST', '/expenses', token, { location_id: TEST_LOCATION_ID, expense_date: shopDay(), ...body });
+  if (r.body && r.body.data && r.body.data.id) createdExpenseIds.push(r.body.data.id);
+  if (r.body && r.body.data && r.body.data.item_id && !createdItemIds.includes(r.body.data.item_id)) createdItemIds.push(r.body.data.item_id);
+  return r;
+}
+
+let teaItemId = null;
+check('counter staff adds by item name: 201, item_name and description are the item', async () => {
+  const r = await addExpense(tokenFor(COUNTER_ID), { item_name: 'VerifyEB Tea', category: 'food', amount: 60, payment_method: 'upi' });
+  assert(r.status === 201, `status ${r.status} ${JSON.stringify(r.body)}`);
+  assert(r.body.data.item_name === 'VerifyEB Tea', 'item_name ' + r.body.data.item_name);
+  assert(r.body.data.description === 'VerifyEB Tea', 'description ' + r.body.data.description);
+  assert(r.body.data.item_id, 'no item_id');
+  teaItemId = r.body.data.item_id;
+});
+
+check('the same name in other case reuses the item', async () => {
+  const r = await addExpense(tokenFor(COUNTER_ID), { item_name: 'verifyeb tea', amount: 40, payment_method: 'upi' });
+  assert(r.status === 201, `status ${r.status} ${JSON.stringify(r.body)}`);
+  assert(r.body.data.item_id === teaItemId, `item ${r.body.data.item_id} vs ${teaItemId}`);
+  assert(r.body.data.category === 'food', 'category did not default to the item: ' + r.body.data.category);
+});
+
+check('a note is added to the description and kept on its own', async () => {
+  const r = await addExpense(tokenFor(COUNTER_ID), { item_name: 'VerifyEB Tea', amount: 50, payment_method: 'upi', note: 'for Sharma wedding' });
+  assert(r.status === 201, `status ${r.status} ${JSON.stringify(r.body)}`);
+  assert(r.body.data.description === 'VerifyEB Tea — for Sharma wedding', 'description ' + r.body.data.description);
+  assert(r.body.data.note === 'for Sharma wedding', 'note ' + r.body.data.note);
+});
+
+check('Given to a rider at the shop is saved and remembered on the item', async () => {
+  const rider = await ensureRider();
+  const r = await addExpense(tokenFor(COUNTER_ID), { item_name: 'VerifyEB Petrol2', category: 'transport', amount: 200, payment_method: 'upi', given_to_user_id: rider });
+  assert(r.status === 201, `status ${r.status} ${JSON.stringify(r.body)}`);
+  assert(r.body.data.given_to_user_id === rider, 'given_to_user_id ' + r.body.data.given_to_user_id);
+  assert(r.body.data.given_to_display === 'VerifyEB Rider', 'display ' + r.body.data.given_to_display);
+  const db = await getDb();
+  const it = await db.prepare('SELECT last_given_to_user_id, usual_amount FROM expense_items WHERE id = ?').get(r.body.data.item_id);
+  assert(it.last_given_to_user_id === rider, 'item last_given_to ' + it.last_given_to_user_id);
+  assert(Number(it.usual_amount) === 200, 'usual_amount ' + it.usual_amount);
+});
+
+check('Given to a customer is refused with the plain copy', async () => {
+  const r = await addExpense(tokenFor(COUNTER_ID), { item_name: 'VerifyEB Tea', amount: 10, payment_method: 'upi', given_to_user_id: CUSTOMER_ID });
+  assert(r.status === 400, `status ${r.status}`);
+  assert(r.body.message === GIVEN_TO_COPY, 'copy: ' + r.body.message);
+});
+
+check('both Given to fields: only the user id is kept', async () => {
+  const rider = await ensureRider();
+  const r = await addExpense(tokenFor(COUNTER_ID), { item_name: 'VerifyEB Tea', amount: 15, payment_method: 'upi', given_to_user_id: rider, given_to_name: 'VerifyEB Someone' });
+  assert(r.status === 201, `status ${r.status} ${JSON.stringify(r.body)}`);
+  assert(r.body.data.given_to_user_id === rider && r.body.data.given_to_name == null, JSON.stringify(r.body.data));
+});
+
+check('a free Given to name is saved and shown', async () => {
+  const r = await addExpense(tokenFor(COUNTER_ID), { item_name: 'VerifyEB Tea', amount: 15, payment_method: 'upi', given_to_name: 'VerifyEB Plumber' });
+  assert(r.status === 201, `status ${r.status}`);
+  assert(r.body.data.given_to_name === 'VerifyEB Plumber' && r.body.data.given_to_display === 'VerifyEB Plumber', JSON.stringify(r.body.data));
+});
+
+check('counter staff cannot enter another day; the owner can', async () => {
+  const y = shopDay(-1);
+  const r = await addExpense(tokenFor(COUNTER_ID), { item_name: 'VerifyEB Tea', amount: 20, payment_method: 'upi', expense_date: y });
+  assert(r.status === 403, `staff status ${r.status}`);
+  assert(r.body.message === DATE_COPY, 'copy: ' + r.body.message);
+  const o = await addExpense(tokenFor(OWNER_ID), { item_name: 'VerifyEB Tea', amount: 20, payment_method: 'upi', expense_date: y });
+  assert(o.status === 201, `owner status ${o.status} ${JSON.stringify(o.body)}`);
+  assert(o.body.data.expense_date === y, 'date ' + o.body.data.expense_date);
+});
+
+check('a description-only add (old app) still works with no item', async () => {
+  const r = await addExpense(tokenFor(COUNTER_ID), { category: 'other', amount: 25, payment_method: 'upi', description: 'VerifyEB old client' });
+  assert(r.status === 201, `status ${r.status} ${JSON.stringify(r.body)}`);
+  assert(r.body.data.item_id === null, 'item_id ' + r.body.data.item_id);
+  assert(r.body.data.description === 'VerifyEB old client', 'description ' + r.body.data.description);
+});
+
+check('a photo must be a local upload path', async () => {
+  const bad = await addExpense(tokenFor(COUNTER_ID), { item_name: 'VerifyEB Tea', amount: 5, payment_method: 'upi', photo_url: 'https://evil.example/x.png' });
+  assert(bad.status === 400, `bad status ${bad.status}`);
+  const good = await addExpense(tokenFor(COUNTER_ID), { item_name: 'VerifyEB Tea', amount: 5, payment_method: 'upi', photo_url: '/uploads/x.png' });
+  assert(good.status === 201, `good status ${good.status} ${JSON.stringify(good.body)}`);
+  assert(good.body.data.photo_url === '/uploads/x.png', 'photo ' + good.body.data.photo_url);
+});
+
+check('an empty item name is refused with the plain copy', async () => {
+  const r = await addExpense(tokenFor(COUNTER_ID), { item_name: '   ', category: 'food', amount: 5, payment_method: 'upi' });
+  assert(r.status === 400, `status ${r.status}`);
+  assert(r.body.message === 'Type what this was for, like Petrol.', 'copy: ' + r.body.message);
+});
+
+check('PUT (owner) changes item, note and Given to; counter staff cannot move the date', async () => {
+  const add = await addExpense(tokenFor(COUNTER_ID), { item_name: 'VerifyEB Tea', amount: 30, payment_method: 'upi' });
+  const id = add.body.data.id;
+  const r = await api('PUT', `/expenses/${id}`, tokenFor(OWNER_ID), { item_name: 'VerifyEB Snacks', category: 'food', note: 'evening', given_to_name: 'VerifyEB Boy' });
+  assert(r.status === 200, `status ${r.status} ${JSON.stringify(r.body)}`);
+  if (r.body.data.item_id && !createdItemIds.includes(r.body.data.item_id)) createdItemIds.push(r.body.data.item_id);
+  assert(r.body.data.item_name === 'VerifyEB Snacks' && r.body.data.description === 'VerifyEB Snacks — evening', JSON.stringify(r.body.data));
+  assert(r.body.data.given_to_display === 'VerifyEB Boy', 'display ' + r.body.data.given_to_display);
+  const d = await api('PUT', `/expenses/${id}`, tokenFor(COUNTER_ID), { expense_date: shopDay(-2) });
+  assert(d.status === 403 && d.body.message === DATE_COPY, `date move ${d.status} ${d.body && d.body.message}`);
+});
+
+check('Review Focus 2: back-dating a closed-session cash expense keeps its register and totals', async () => {
+  const owner = tokenFor(OWNER_ID);
+  const st = await api('GET', `/sales/register/status?location_id=${TEST_LOCATION_ID}`, owner);
+  assert(!(st.body && st.body.isOpen), 'Test Loc already has a register open; close it in the app first.');
+  const op = await api('POST', '/sales/register/open', owner, { location_id: TEST_LOCATION_ID, opening_balance: 500 });
+  assert(op.status === 201, `open ${op.status} ${JSON.stringify(op.body)}`);
+  const regId = op.body.data.id;
+  createdRegisterIds.push(regId);
+  const add = await addExpense(owner, { item_name: 'VerifyEB Cash', category: 'other', amount: 100, payment_method: 'cash' });
+  assert(add.status === 201 && add.body.data.register_id === regId, `add ${add.status} ${JSON.stringify(add.body)}`);
+  const cl = await api('PUT', '/sales/register/close', owner, { location_id: TEST_LOCATION_ID, actual_cash: 390 });
+  assert(cl.status === 200, `close ${cl.status} ${JSON.stringify(cl.body)}`);
+  const db = await getDb();
+  const before = await db.prepare('SELECT expected_cash, discrepancy FROM cash_registers WHERE id = ?').get(regId);
+  const back = shopDay(-3);
+  const r = await api('PUT', `/expenses/${add.body.data.id}`, owner, { expense_date: back });
+  assert(r.status === 200, `put ${r.status} ${JSON.stringify(r.body)}`);
+  assert(r.body.data.expense_date === back, 'date ' + r.body.data.expense_date);
+  assert(r.body.data.register_id === regId, 'register moved to ' + r.body.data.register_id);
+  const after = await db.prepare('SELECT expected_cash, discrepancy FROM cash_registers WHERE id = ?').get(regId);
+  assert(Number(after.expected_cash) === Number(before.expected_cash), `expected_cash ${before.expected_cash} -> ${after.expected_cash}`);
+  assert(Number(after.discrepancy) === Number(before.discrepancy), `discrepancy ${before.discrepancy} -> ${after.discrepancy}`);
+});
+
+check('GET /people: staff and riders of the shop, id/name/role only; helpers refused', async () => {
+  const rider = await ensureRider();
+  const r = await api('GET', `/expenses/people?location_id=${TEST_LOCATION_ID}`, tokenFor(COUNTER_ID));
+  assert(r.status === 200, `status ${r.status} ${JSON.stringify(r.body)}`);
+  const rows = r.body.data;
+  assert(Array.isArray(rows), 'not a list');
+  assert(rows.some((p) => p.id === rider), 'rider missing');
+  assert(rows.some((p) => p.id === 8447 && p.role === 'florist_staff'), 'florist missing');
+  assert(!rows.some((p) => p.id === CUSTOMER_ID || p.role === 'customer' || p.role === 'helper'), 'customer or helper listed');
+  for (const p of rows) assert(Object.keys(p).sort().join(',') === 'id,name,role', 'extra fields: ' + Object.keys(p).join(','));
+  const h = await api('GET', `/expenses/people?location_id=${TEST_LOCATION_ID}`, tokenFor(HELPER_ID));
+  assert(h.status === 403, `helper status ${h.status}`);
+});
+
+check('florist staff still cannot add an expense', async () => {
+  const r = await addExpense(tokenFor(8447), { item_name: 'VerifyEB Tea', amount: 5, payment_method: 'upi' });
+  assert(r.status === 403, `status ${r.status}`);
+});
+
 async function cleanup() {
   const db = await getDb();
   for (const id of createdExpenseIds) {
@@ -115,6 +287,13 @@ async function cleanup() {
   }
   for (const id of createdRegisterIds) {
     try { await db.prepare('DELETE FROM cash_registers WHERE id = ?').run(id); } catch (e) { console.error('cleanup register', id, e.message); }
+  }
+  for (const id of createdUserIds) {
+    try {
+      await db.prepare('UPDATE expense_items SET last_given_to_user_id = NULL WHERE last_given_to_user_id = ?').run(id);
+      await db.prepare('DELETE FROM user_locations WHERE user_id = ?').run(id);
+      await db.prepare('DELETE FROM users WHERE id = ?').run(id);
+    } catch (e) { console.error('cleanup user', id, e.message); }
   }
   try {
     await db.prepare("UPDATE expenses SET item_id = NULL WHERE item_id IN (SELECT id FROM expense_items WHERE name LIKE 'VerifyEB%')").run();

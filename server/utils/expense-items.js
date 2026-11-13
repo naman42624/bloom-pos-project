@@ -60,4 +60,36 @@ async function rememberOnItem(db, itemId, { amount, given_to_user_id, given_to_n
   ).run(amount == null ? null : amount, given_to_user_id || null, given_to_name || null, itemId);
 }
 
-module.exports = { nameKey, resolveItem, rememberOnItem };
+// Who may be picked as "Given to" on an expense.
+const GIVEN_TO_ROLES = ['owner', 'manager', 'employee', 'counter_staff', 'florist_staff', 'delivery_partner'];
+const GIVEN_TO_INVALID_MESSAGE = "That person can't be picked here. Tap Given to and pick again.";
+
+// Active staff or rider linked to the shop, or the owner (any shop).
+// Throws 400 with the plain copy otherwise.
+async function assertGivenTo(db, userId, locationId) {
+  const id = Number(userId);
+  if (!Number.isInteger(id) || id <= 0) throw httpError(400, GIVEN_TO_INVALID_MESSAGE);
+  const user = await db.prepare('SELECT id, role, is_active FROM users WHERE id = ?').get(id);
+  if (!user || !Number(user.is_active) || !GIVEN_TO_ROLES.includes(user.role)) throw httpError(400, GIVEN_TO_INVALID_MESSAGE);
+  if (user.role === 'owner') return;
+  const link = await db.prepare('SELECT 1 AS ok FROM user_locations WHERE user_id = ? AND location_id = ?').get(id, locationId);
+  if (!link) throw httpError(400, GIVEN_TO_INVALID_MESSAGE);
+}
+
+// A photo must be a file from POST /api/upload, never an outside link.
+function isLocalUploadPath(url) {
+  return typeof url === 'string' && /^\/uploads\/[A-Za-z0-9._\-/]+$/.test(url) && !url.includes('..') && !url.includes('//');
+}
+
+// description = item name, plus " — note" when there is a note.
+function composeDescription(base, note) {
+  const b = String(base || '').trim();
+  const n = String(note || '').trim();
+  if (!n) return b;
+  return b ? `${b} — ${n}` : n;
+}
+
+module.exports = {
+  nameKey, resolveItem, rememberOnItem, assertGivenTo, isLocalUploadPath, composeDescription,
+  GIVEN_TO_ROLES, GIVEN_TO_INVALID_MESSAGE,
+};

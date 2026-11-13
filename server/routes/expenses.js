@@ -5,6 +5,10 @@ const { getDb: getAsyncDb, withMoneyTx } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
 const { todayStr: localToday } = require('../utils/time');
 const { hasOpenRegister, lockOpenRegister, registerClosedError, REGISTER_CLOSED_MESSAGE } = require('../utils/register-guard');
+const {
+  nameKey, resolveItem, rememberOnItem, assertGivenTo, isLocalUploadPath, composeDescription,
+  GIVEN_TO_ROLES, GIVEN_TO_INVALID_MESSAGE,
+} = require('../utils/expense-items');
 
 const router = express.Router();
 
@@ -107,6 +111,102 @@ router.get('/', authenticate, authorize('owner', 'manager', 'employee', 'counter
   }
 });
 
+// ─── Expense book helpers (2026-11-13) ───────────────────────
+const NO_ITEM_MESSAGE = 'Type what this was for, like Petrol.';
+const NO_AMOUNT_MESSAGE = 'Type how much was paid.';
+const NO_CATEGORY_MESSAGE = 'Pick what kind of expense this is.';
+const OTHER_DAY_MESSAGE = 'Only the owner or a manager can enter an expense for another day.';
+const BAD_PHOTO_MESSAGE = 'That photo could not be used. Take the photo again.';
+const isBossRole = (role) => role === 'owner' || role === 'manager';
+
+// Plain-language message for the first failed field.
+function validationMessage(errors, fallback) {
+  const first = errors.array()[0] || {};
+  if (first.path === 'amount') return NO_AMOUNT_MESSAGE;
+  if (first.path === 'category') return NO_CATEGORY_MESSAGE;
+  if (first.path === 'expense_date') return 'Check the date, then save again.';
+  if (first.path === 'given_to_user_id') return GIVEN_TO_INVALID_MESSAGE;
+  if (first.path === 'photo_url') return BAD_PHOTO_MESSAGE;
+  return fallback;
+}
+
+const extraFieldRules = [
+  body('item_id').optional({ nullable: true }).isInt({ min: 1 }),
+  body('item_name').optional({ nullable: true }).isString().isLength({ max: 80 }),
+  body('note').optional({ nullable: true }).isString().isLength({ max: 500 }),
+  body('photo_url').optional({ nullable: true }).isString(),
+  body('given_to_user_id').optional({ nullable: true }).isInt({ min: 1 }),
+  body('given_to_name').optional({ nullable: true }).isString(),
+];
+
+// "Given to": at most one of user id / free name; the user id wins.
+function readGivenTo(b) {
+  const userId = b.given_to_user_id ? Number(b.given_to_user_id) : null;
+  const name = userId ? null : (String(b.given_to_name || '').trim().replace(/\s+/g, ' ').slice(0, 80) || null);
+  return { given_to_user_id: userId, given_to_name: name };
+}
+
+// One saved expense with the names the app shows.
+async function loadExpenseRow(db, id) {
+  const row = await db.prepare(`
+    SELECT e.*, l.name as location_name, u.name as created_by_name,
+           ei.name as item_name, gu.name as given_to_user_name
+    FROM expenses e
+    JOIN locations l ON e.location_id = l.id
+    JOIN users u ON e.created_by = u.id
+    LEFT JOIN expense_items ei ON ei.id = e.item_id
+    LEFT JOIN users gu ON gu.id = e.given_to_user_id
+    WHERE e.id = ?
+  `).get(id);
+  if (!row) return row;
+  const { given_to_user_name, ...rest } = row;
+  return {
+    ...rest,
+    amount: Number(row.amount) || 0,
+    item_id: row.item_id == null ? null : Number(row.item_id),
+    given_to_user_id: row.given_to_user_id == null ? null : Number(row.given_to_user_id),
+    register_id: row.register_id == null ? null : Number(row.register_id),
+    given_to_display: given_to_user_name || row.given_to_name || null,
+  };
+}
+
+// After a save: the item remembers the amount and who it was given to.
+// Never fails the request; the expense is already saved.
+async function rememberAfterSave(itemId, saved) {
+  if (!itemId) return;
+  try {
+    const db = await getAsyncDb();
+    await rememberOnItem(db, itemId, saved);
+  } catch (err) {
+    console.error('expense item remember failed:', err.message);
+  }
+}
+
+// ─── GET /api/expenses/people ────────────────────────────────
+// The "Given to" chips: active staff and riders linked to the shop, plus the
+// owner. Needs a login (unlike /auth/staff-roster), so rider names stay private.
+router.get('/people', authenticate, authorize('owner', 'manager', 'employee', 'counter_staff'), async (req, res, next) => {
+  try {
+    const locationId = Number(req.query.location_id);
+    if (!Number.isInteger(locationId) || locationId <= 0) {
+      return res.status(400).json({ success: false, message: 'Pick a shop first.' });
+    }
+    const db = await getAsyncDb();
+    const roles = GIVEN_TO_ROLES.map(() => '?').join(', ');
+    const people = await db.prepare(`
+      SELECT u.id, u.name, u.role
+      FROM users u
+      WHERE u.is_active = 1
+        AND u.role IN (${roles})
+        AND (u.role = 'owner' OR EXISTS (SELECT 1 FROM user_locations ul WHERE ul.user_id = u.id AND ul.location_id = ?))
+      ORDER BY u.name ASC
+    `).all(...GIVEN_TO_ROLES, locationId);
+    res.json({ success: true, data: people.map((p) => ({ id: Number(p.id), name: p.name, role: p.role })) });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // ─── POST /api/expenses ──────────────────────────────────────
 router.post(
   '/',
@@ -114,21 +214,55 @@ router.post(
   authorize('owner', 'manager', 'employee', 'counter_staff'),
   [
     body('location_id').isInt(),
-    body('category').isIn(['supplies', 'petty_cash', 'maintenance', 'transport', 'food', 'utilities', 'salary', 'other']),
-    body('amount').isFloat({ min: 0.01 }),
-    body('description').optional().trim(),
+    // Optional when an item is given: the item's category is used.
+    body('category').optional({ nullable: true }).isIn(['supplies', 'petty_cash', 'maintenance', 'transport', 'food', 'utilities', 'salary', 'other']),
+    body('amount').isFloat({ min: 0.01, max: 10000000 }),
+    body('description').optional({ nullable: true }).trim(),
     body('payment_method').isIn(['cash', 'card', 'upi', 'bank_transfer']),
-    body('expense_date').notEmpty(),
+    body('expense_date').optional({ nullable: true }).matches(/^\d{4}-\d{2}-\d{2}$/),
     body('is_return').optional().isBoolean(),
     body('employee_id').optional({ nullable: true }).isInt(),
+    ...extraFieldRules,
   ],
   async (req, res, next) => {
     try {
       const errors = validationResult(req);
-      if (!errors.isEmpty()) return res.status(400).json({ success: false, message: 'Validation failed', errors: errors.array() });
+      if (!errors.isEmpty()) return res.status(400).json({ success: false, message: validationMessage(errors, 'Validation failed'), errors: errors.array() });
 
       const db = getDb();
-      const { location_id, category, amount, description, payment_method, expense_date, is_return, employee_id } = req.body;
+      const { location_id, amount, description, payment_method, is_return, employee_id } = req.body;
+      const expense_date = req.body.expense_date || localToday();
+      const note = String(req.body.note || '').trim() || null;
+      const photo_url = req.body.photo_url || null;
+      const givenTo = readGivenTo(req.body);
+      const has = (k) => Object.prototype.hasOwnProperty.call(req.body, k);
+      const wantsItem = !!req.body.item_id || has('item_name');
+
+      // Checks that need no item come first, so a refused save never
+      // creates an item.
+      if (!isBossRole(req.user.role) && expense_date !== localToday()) {
+        return res.status(403).json({ success: false, message: OTHER_DAY_MESSAGE });
+      }
+      if (!req.body.item_id && has('item_name') && !nameKey(req.body.item_name)) {
+        return res.status(400).json({ success: false, message: NO_ITEM_MESSAGE });
+      }
+      if (!wantsItem && !req.body.category) {
+        return res.status(400).json({ success: false, message: NO_CATEGORY_MESSAGE });
+      }
+      if (photo_url && !isLocalUploadPath(photo_url)) {
+        return res.status(400).json({ success: false, message: BAD_PHOTO_MESSAGE });
+      }
+      const adb = await getAsyncDb();
+      if (givenTo.given_to_user_id) await assertGivenTo(adb, givenTo.given_to_user_id, location_id);
+
+      // Category: as sent, else the item's. A new name without a category is
+      // refused by resolveItem. With a category sent, salary checks run
+      // before the item is resolved; otherwise the existing item decides it.
+      let item = null;
+      if (wantsItem && !req.body.category) {
+        item = await resolveItem(adb, { item_id: req.body.item_id, item_name: req.body.item_name, category: null, userId: req.user.id });
+      }
+      const category = req.body.category || item.category;
 
       // A "Salary" category expense logged through this general route has no
       // structural connection to the payroll system otherwise — no employee,
@@ -171,6 +305,15 @@ router.post(
         return res.status(400).json({ success: false, message: REGISTER_CLOSED_MESSAGE });
       }
 
+      // The item is an ordinary write, made before the money transaction.
+      // Only when one was sent: a description-only save (older app, or a
+      // salary row) stays without an item.
+      if (wantsItem && !item) {
+        item = await resolveItem(adb, { item_id: req.body.item_id, item_name: req.body.item_name, category, userId: req.user.id });
+      }
+      const itemId = item ? item.id : null;
+      const finalDescription = composeDescription(item ? item.name : (description || ''), note);
+
       // Look up the currently open register FIRST so we can store register_id on the expense.
       // This links the expense permanently to its session — critical for correct session-scoped queries
       // and for reversing against the correct register on deletion.
@@ -187,34 +330,30 @@ router.post(
       // feature is about) — null for everything else, unchanged from today.
       const employeeIdValue = category === 'salary' ? employee_id : null;
 
-      let result;
       const isReturnInt = is_return ? 1 : 0;
+      const cols = {
+        expense_number, location_id, category, amount, description: finalDescription, payment_method, expense_date,
+        created_by: req.user.id, is_return: isReturnInt, register_id: registerId, employee_id: employeeIdValue,
+        item_id: itemId, note, photo_url,
+        given_to_user_id: givenTo.given_to_user_id, given_to_name: givenTo.given_to_name,
+      };
+      if (!expense_number) delete cols.expense_number;
+      const insert = (c) => {
+        const keys = Object.keys(c);
+        return db.prepare(`INSERT INTO expenses (${keys.join(', ')}) VALUES (${keys.map(() => '?').join(', ')})`).run(...keys.map((k) => c[k]));
+      };
+      let result;
       try {
-        if (expense_number) {
-          result = await db.prepare(
-            `INSERT INTO expenses (expense_number, location_id, category, amount, description, payment_method, expense_date, created_by, is_return, register_id, employee_id)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-          ).run(expense_number, location_id, category, amount, description || '', payment_method, expense_date, req.user.id, isReturnInt, registerId, employeeIdValue);
-        } else {
-          result = await db.prepare(
-            `INSERT INTO expenses (location_id, category, amount, description, payment_method, expense_date, created_by, is_return, register_id, employee_id)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-          ).run(location_id, category, amount, description || '', payment_method, expense_date, req.user.id, isReturnInt, registerId, employeeIdValue);
-        }
+        result = await insert(cols);
       } catch (err) {
         const msg = String(err?.message || '').toLowerCase();
-        // Fallback if expense_number column doesn't exist (legacy schema)
+        // Fallbacks for legacy schemas missing expense_number / register_id.
         if (msg.includes('expense_number')) {
-          result = await db.prepare(
-            `INSERT INTO expenses (location_id, category, amount, description, payment_method, expense_date, created_by, is_return, register_id, employee_id)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-          ).run(location_id, category, amount, description || '', payment_method, expense_date, req.user.id, isReturnInt, registerId, employeeIdValue);
-        // Fallback if register_id column doesn't exist yet (migration pending)
+          delete cols.expense_number;
+          result = await insert(cols);
         } else if (msg.includes('register_id')) {
-          result = await db.prepare(
-            `INSERT INTO expenses (location_id, category, amount, description, payment_method, expense_date, created_by, is_return, employee_id)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-          ).run(location_id, category, amount, description || '', payment_method, expense_date, req.user.id, isReturnInt, employeeIdValue);
+          delete cols.register_id;
+          result = await insert(cols);
         } else {
           throw err;
         }
@@ -231,16 +370,12 @@ router.post(
       return result.lastInsertRowid;
       });
 
-      const expense = db.prepare(`
-        SELECT e.*, l.name as location_name, u.name as created_by_name
-        FROM expenses e
-        JOIN locations l ON e.location_id = l.id
-        JOIN users u ON e.created_by = u.id
-        WHERE e.id = ?
-      `).get(newExpenseId);
+      await rememberAfterSave(itemId, { amount: Math.round(Number(amount) * 100) / 100, ...givenTo });
 
+      const expense = await loadExpenseRow(adb, newExpenseId);
       res.status(201).json({ success: true, data: expense });
     } catch (err) {
+      if (err.statusCode) return res.status(err.statusCode).json({ success: false, message: err.message });
       next(err);
     }
   }
@@ -320,6 +455,8 @@ const pickAudit = (e) => ({
   amount: Number(e.amount), category: e.category, description: e.description, payment_method: e.payment_method,
   expense_date: e.expense_date, is_return: e.is_return ? 1 : 0, employee_id: e.employee_id || null,
   register_id: e.register_id || null, created_by: e.created_by,
+  item_id: e.item_id || null, note: e.note || null, photo_url: e.photo_url || null,
+  given_to_user_id: e.given_to_user_id || null, given_to_name: e.given_to_name || null,
 });
 
 // ─── PUT /api/expenses/:id ───────────────────────────────────
@@ -335,27 +472,76 @@ router.put(
     body('expense_date').optional().matches(/^\d{4}-\d{2}-\d{2}$/),
     body('is_return').optional().isBoolean(),
     body('employee_id').optional({ nullable: true }).isInt(),
+    ...extraFieldRules,
   ],
   async (req, res, next) => {
     try {
       const errors = validationResult(req);
       if (!errors.isEmpty()) {
-        return res.status(400).json({ success: false, message: 'Check the amount, type and date, then save again.', errors: errors.array() });
+        return res.status(400).json({ success: false, message: validationMessage(errors, 'Check the amount, type and date, then save again.'), errors: errors.array() });
       }
       const expenseId = Number(req.params.id);
+      const has = (k) => Object.prototype.hasOwnProperty.call(req.body, k);
+      const isBoss = isBossRole(req.user.role);
+      const adb = await getAsyncDb();
+
+      // Checks before the item is resolved, so a refused change never
+      // creates an item. The transaction below checks again under locks.
+      const current = await adb.prepare('SELECT id, location_id, created_by, expense_date, item_id, note, description FROM expenses WHERE id = ?').get(expenseId);
+      if (!current) return res.status(404).json({ success: false, message: 'This expense was not found. It may have been removed already — pull down to refresh.' });
+      if (!isBoss && Number(current.created_by) !== Number(req.user.id)) {
+        return res.status(403).json({ success: false, message: NOT_YOURS_MESSAGE });
+      }
+      if (!isBoss && has('expense_date') && req.body.expense_date !== current.expense_date) {
+        return res.status(403).json({ success: false, message: OTHER_DAY_MESSAGE });
+      }
+      const wantsItem = !!req.body.item_id || has('item_name');
+      if (!req.body.item_id && has('item_name') && !nameKey(req.body.item_name)) {
+        return res.status(400).json({ success: false, message: NO_ITEM_MESSAGE });
+      }
+      if (has('photo_url') && req.body.photo_url && !isLocalUploadPath(req.body.photo_url)) {
+        return res.status(400).json({ success: false, message: BAD_PHOTO_MESSAGE });
+      }
+      const touchesGivenTo = has('given_to_user_id') || has('given_to_name');
+      const givenTo = touchesGivenTo ? readGivenTo(req.body) : null;
+      if (givenTo && givenTo.given_to_user_id) await assertGivenTo(adb, givenTo.given_to_user_id, current.location_id);
+
+      // The item is an ordinary write, made before the money transaction.
+      let item = null;
+      if (wantsItem) {
+        item = await resolveItem(adb, { item_id: req.body.item_id, item_name: req.body.item_name, category: req.body.category || null, userId: req.user.id });
+      } else if (current.item_id && has('note')) {
+        item = await adb.prepare('SELECT * FROM expense_items WHERE id = ?').get(current.item_id);
+      }
 
       const updated = await withMoneyTx(async (tx) => {
         const { expense, openRegister, oldRegisterId } = await loadForChange(tx, expenseId, req.user);
-        const has = (k) => Object.prototype.hasOwnProperty.call(req.body, k);
         const nv = {
-          category: has('category') ? req.body.category : expense.category,
+          category: has('category') ? req.body.category : (wantsItem ? item.category : expense.category),
           amount: has('amount') ? Math.round(Number(req.body.amount) * 100) / 100 : Number(expense.amount),
           description: has('description') ? (req.body.description || '') : (expense.description || ''),
           payment_method: has('payment_method') ? req.body.payment_method : expense.payment_method,
           expense_date: has('expense_date') ? req.body.expense_date : expense.expense_date,
           is_return: has('is_return') ? (req.body.is_return ? 1 : 0) : (expense.is_return ? 1 : 0),
           employee_id: has('employee_id') ? (req.body.employee_id || null) : (expense.employee_id || null),
+          item_id: wantsItem ? item.id : (expense.item_id || null),
+          note: has('note') ? (String(req.body.note || '').trim() || null) : (expense.note || null),
+          photo_url: has('photo_url') ? (req.body.photo_url || null) : (expense.photo_url || null),
+          given_to_user_id: givenTo ? givenTo.given_to_user_id : (expense.given_to_user_id || null),
+          given_to_name: givenTo ? givenTo.given_to_name : (expense.given_to_name || null),
         };
+        // description stays "item name — note" whenever an item or the note changes.
+        if (wantsItem || has('note')) {
+          let base;
+          if (item) base = item.name;
+          else if (has('description')) base = req.body.description || '';
+          else {
+            const oldSuffix = expense.note ? ` — ${expense.note}` : '';
+            const d = expense.description || '';
+            base = oldSuffix && d.endsWith(oldSuffix) ? d.slice(0, -oldSuffix.length) : d;
+          }
+          nv.description = composeDescription(base, nv.note);
+        }
         if (nv.category !== 'salary') nv.employee_id = null;
         if (nv.category === 'salary' && !nv.employee_id) throw httpError(400, 'Select which employee this salary payment is for.');
         if (nv.category === 'salary') {
@@ -368,6 +554,8 @@ router.put(
         }
 
         // Drawer: take the old effect off its session, put the new one on.
+        // Only amount, method or return change the effect; a date move
+        // leaves register_id and the drawer as they are.
         const oldEffect = oldRegisterId ? drawerEffect(expense) : 0;
         const newEffect = drawerEffect(nv);
         let newRegisterId = null;
@@ -384,24 +572,30 @@ router.put(
 
         await tx.prepare(`
           UPDATE expenses SET category = ?, amount = ?, description = ?, payment_method = ?, expense_date = ?,
-            is_return = ?, employee_id = ?, register_id = ?
+            is_return = ?, employee_id = ?, register_id = ?,
+            item_id = ?, note = ?, photo_url = ?, given_to_user_id = ?, given_to_name = ?
           WHERE id = ?
         `).run(nv.category, nv.amount, nv.description, nv.payment_method, nv.expense_date,
-          nv.is_return, nv.employee_id, newRegisterId, expenseId);
+          nv.is_return, nv.employee_id, newRegisterId,
+          nv.item_id, nv.note, nv.photo_url, nv.given_to_user_id, nv.given_to_name, expenseId);
 
         const after = { ...expense, ...nv, register_id: newRegisterId };
         await auditExpense(tx, expenseId, req.user.id, 'expense_edit', pickAudit(expense), pickAudit(after));
         return after;
       });
 
-      const db = getDb();
-      const expense = db.prepare(`
-        SELECT e.*, l.name as location_name, u.name as created_by_name
-        FROM expenses e
-        JOIN locations l ON e.location_id = l.id
-        JOIN users u ON e.created_by = u.id
-        WHERE e.id = ?
-      `).get(expenseId) || updated;
+      // The item remembers this save only when it is the latest entry for
+      // the item, so fixing an old row never overwrites newer usual values.
+      if (updated.item_id && (wantsItem || has('amount') || touchesGivenTo)) {
+        const latest = await adb.prepare('SELECT id FROM expenses WHERE item_id = ? ORDER BY created_at DESC, id DESC LIMIT 1').get(updated.item_id);
+        if (latest && Number(latest.id) === expenseId) {
+          await rememberAfterSave(updated.item_id, {
+            amount: updated.amount, given_to_user_id: updated.given_to_user_id, given_to_name: updated.given_to_name,
+          });
+        }
+      }
+
+      const expense = (await loadExpenseRow(adb, expenseId)) || updated;
       res.json({ success: true, data: expense });
     } catch (err) {
       if (err.statusCode) return res.status(err.statusCode).json({ success: false, message: err.message });
