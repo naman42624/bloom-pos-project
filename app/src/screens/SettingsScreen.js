@@ -274,6 +274,22 @@ export default function SettingsScreen() {
         <Text style={styles.loadingText}>Loading settings...</Text>
       ) : (
         <>
+          {/* ─── Expense items (Owner only): pins, rename, merge, sort old entries ─── */}
+          {isOwner && (
+            <TouchableOpacity
+              style={[styles.settingRow, { flexDirection: 'row', alignItems: 'center', minHeight: 56 }]}
+              onPress={() => navigation.navigate('ExpenseItems')}
+              accessibilityRole="button"
+              accessibilityLabel="Expense items"
+            >
+              <View style={{ flex: 1 }}>
+                <Text style={styles.settingLabel}>Expense items</Text>
+                <Text style={styles.settingDesc}>Pin the items staff pick most, fix names, merge spellings and sort older entries</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={22} color={Colors.textSecondary} />
+            </TouchableOpacity>
+          )}
+
           {/* ─── Preferences Section (Owner only) ─── */}
           {isOwner && PREFERENCE_SETTINGS.some((p) => settings[p.key] !== undefined) && (
             <View style={styles.prefSection}>

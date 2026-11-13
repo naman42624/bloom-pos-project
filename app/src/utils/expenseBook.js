@@ -109,3 +109,48 @@ export function comparisonRange(key, from, to) {
   }
   return previousRange(from, to);
 }
+
+// '2026-11' → 'Nov'; adds the year when it is not the year of `todayStr`
+// ('Dec 2025'), so a strip that crosses a new year stays clear.
+export function monthLabel(key, todayStr) {
+  const [y, m] = String(key).split('-').map(Number);
+  if (!y || !m) return '';
+  const thisYear = todayStr ? Number(String(todayStr).slice(0, 4)) : y;
+  return y === thisYear ? MONTHS[m - 1] : `${MONTHS[m - 1]} ${y}`;
+}
+
+// The whole of month '2026-10' as a range, ending today for the current month.
+export function monthRange(key, todayStr) {
+  const [y, m] = String(key).split('-').map(Number);
+  const from = toStr(new Date(Date.UTC(y, m - 1, 1)));
+  let to = toStr(new Date(Date.UTC(y, m, 0)));
+  if (todayStr && to > todayStr) to = todayStr;
+  return { from, to };
+}
+
+// Pinned list helpers for the owner's Expense items screen. Each returns a
+// new array of ids, which is sent whole to PUT /expenses/items/pins.
+export function movePin(ids, index, dir) {
+  const j = index + dir;
+  if (index < 0 || index >= ids.length || j < 0 || j >= ids.length) return ids.slice();
+  const next = ids.slice();
+  [next[index], next[j]] = [next[j], next[index]];
+  return next;
+}
+export function unpin(ids, id) {
+  return ids.filter((x) => Number(x) !== Number(id));
+}
+export function addPin(ids, id) {
+  return ids.some((x) => Number(x) === Number(id)) ? ids.slice() : ids.concat(Number(id));
+}
+
+// "1 entry" / "12 entries".
+export function entriesText(n) {
+  const c = Number(n) || 0;
+  return `${c} ${c === 1 ? 'entry' : 'entries'}`;
+}
+
+// The merge confirm (owner): names both items and how many entries move.
+export function mergeConfirmText(fromName, intoName, count) {
+  return `Move ${entriesText(count)} from "${fromName}" into "${intoName}"? "${fromName}" will be hidden.`;
+}

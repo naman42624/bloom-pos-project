@@ -81,6 +81,30 @@ test('comparisonRange', () => {
   assert.deepStrictEqual(c('custom', '2026-11-01', '2026-11-13'), { from: '2026-10-19', to: '2026-10-31' });
 });
 
+test('monthLabel', () => {
+  assert.strictEqual(e.monthLabel('2026-11', '2026-11-14'), 'Nov');
+  assert.strictEqual(e.monthLabel('2025-12', '2026-01-04'), 'Dec 2025');
+});
+test('monthRange', () => {
+  assert.deepStrictEqual(e.monthRange('2026-10', '2026-11-14'), { from: '2026-10-01', to: '2026-10-31' });
+  assert.deepStrictEqual(e.monthRange('2026-11', '2026-11-14'), { from: '2026-11-01', to: '2026-11-14' });
+  assert.deepStrictEqual(e.monthRange('2028-02', '2028-05-01'), { from: '2028-02-01', to: '2028-02-29' });
+});
+test('pin list helpers', () => {
+  assert.deepStrictEqual(e.movePin([1, 2, 3], 0, 1), [2, 1, 3]);
+  assert.deepStrictEqual(e.movePin([1, 2, 3], 2, -1), [1, 3, 2]);
+  assert.deepStrictEqual(e.movePin([1, 2, 3], 0, -1), [1, 2, 3]);
+  assert.deepStrictEqual(e.movePin([1, 2, 3], 2, 1), [1, 2, 3]);
+  assert.deepStrictEqual(e.unpin([1, 2, 3], 2), [1, 3]);
+  assert.deepStrictEqual(e.addPin([1, 2], 3), [1, 2, 3]);
+  assert.deepStrictEqual(e.addPin([1, 2], 2), [1, 2]);
+});
+test('merge confirm text', () => {
+  assert.strictEqual(e.mergeConfirmText('pertrol', 'Petrol', 12),
+    'Move 12 entries from "pertrol" into "Petrol"? "pertrol" will be hidden.');
+  assert.strictEqual(e.mergeConfirmText('a', 'B', 1), 'Move 1 entry from "a" into "B"? "a" will be hidden.');
+});
+
 let failed = 0;
 for (const t of tests) {
   try { t.fn(); console.log('ok   ' + t.name); } catch (err) { failed++; console.log('FAIL ' + t.name + ': ' + err.message); }

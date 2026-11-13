@@ -443,6 +443,21 @@ export default function ExpenseSummaryView({
           <Ionicons name="list" size={20} color={Colors.primary} />
           <Text style={styles.seeAllText}>See all entries</Text>
         </TouchableOpacity>
+
+        {isOwner && (
+          <TouchableOpacity
+            style={styles.itemsLink}
+            onPress={() => navigation.navigate('ExpenseItems')}
+            accessibilityRole="button"
+          >
+            <Ionicons name="pricetags-outline" size={22} color={Colors.primary} />
+            <View style={styles.flex}>
+              <Text style={styles.itemsLinkTitle}>Expense items</Text>
+              <Text style={styles.headerSub}>Pin, rename or merge items</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={20} color={Colors.textSecondary} />
+          </TouchableOpacity>
+        )}
       </ScrollView>
       {picker}
     </View>
@@ -516,6 +531,12 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.surface,
   },
   seeAllText: { fontSize: FontSize.md, fontWeight: '700', color: Colors.primary },
+  itemsLink: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, minHeight: 56, marginTop: Spacing.md,
+    padding: Spacing.md, borderRadius: BorderRadius.md, backgroundColor: Colors.surface,
+    borderWidth: 1, borderColor: Colors.border,
+  },
+  itemsLinkTitle: { fontSize: FontSize.md, fontWeight: '700', color: Colors.text },
 
   backRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs, minHeight: 44, marginBottom: Spacing.sm },
   backText: { fontSize: FontSize.md, color: Colors.primary, fontWeight: '600' },
