@@ -645,6 +645,8 @@ check('PUT /items/pins sets the suggest order', async () => {
   const s = await api('GET', `/expenses/suggest?location_id=${TEST_LOCATION_ID}`, ownerT());
   const ids = s.body.data.map((i) => i.id);
   assert(ids.indexOf(b.id) === 0 && ids.indexOf(a.id) === 1, 'order ' + ids);
+  const au = await (await getDb()).prepare("SELECT id, new_state FROM audit_logs WHERE entity_type = 'expense_item' AND entity_id = 0 AND action = 'expense_item_pins' AND user_id = ? ORDER BY id DESC LIMIT 1").get(OWNER_ID);
+  assert(au && JSON.stringify(au.new_state.ids) === JSON.stringify([b.id, a.id]), 'pins audit ' + JSON.stringify(au));
   const r2 = await api('PUT', '/expenses/items/pins', ownerT(), { ids: [a.id] });
   assert(r2.status === 200, 'status ' + r2.status);
   const row = await (await getDb()).prepare('SELECT pinned FROM expense_items WHERE id = ?').get(b.id);
@@ -668,7 +670,8 @@ check('merge A into B moves rows, marks A merged and hidden, returns moved', asy
   assert(a.merged_into === B.id && a.is_active === false, JSON.stringify(a));
   const rows = await db.prepare('SELECT item_id, category, description FROM expenses WHERE id IN (?, ?) ORDER BY id').all(e1, e2);
   assert(rows.every((x) => x.item_id === B.id && x.category === 'supplies' && x.description.startsWith('VerifyEB mg a')), JSON.stringify(rows));
-  assert(await auditCount(A.id, 'expense_item_merge') === 1, 'no merge audit');
+  const ma = await db.prepare("SELECT new_state FROM audit_logs WHERE entity_type = 'expense_item' AND entity_id = ? AND action = 'expense_item_merge'").all(A.id);
+  assert(ma.length === 1 && ma[0].new_state.moved === 2 && ma[0].new_state.merged_into === B.id, 'merge audit ' + JSON.stringify(ma));
   mergeFx = { A, B, C, all: [e1, e2, e3] };
 });
 
@@ -699,6 +702,22 @@ check('merge refuses itself, a merged item and a hidden item', async () => {
   assert(c.merged_into == null && c.is_active === true, 'C changed by a refused merge');
 });
 
+check('merge across the salary line is refused both ways, nothing moves', async () => {
+  const S = await newItem('VerifyEB MgSalary', 'salary');
+  const N = await newItem('VerifyEB MgNonSal', 'other');
+  const es = await rawExpense(S.id, 'salary', 'VerifyEB mg sal row');
+  const en = await rawExpense(N.id, 'other', 'VerifyEB mg non row');
+  const into = await api('POST', `/expenses/items/${N.id}/merge`, ownerT(), { into_id: S.id });
+  const out = await api('POST', `/expenses/items/${S.id}/merge`, ownerT(), { into_id: N.id });
+  assert(into.status === 400 && into.body.message === SALARY_COPY, `into salary ${into.status} ${into.body && into.body.message}`);
+  assert(out.status === 400 && out.body.message === SALARY_COPY, `out of salary ${out.status} ${out.body && out.body.message}`);
+  const db = await getDb();
+  const rows = await db.prepare('SELECT id, item_id FROM expenses WHERE id IN (?, ?) ORDER BY id').all(es, en);
+  assert(rows[0].item_id === S.id && rows[1].item_id === N.id, 'rows moved ' + JSON.stringify(rows));
+  const items = await db.prepare('SELECT merged_into FROM expense_items WHERE id IN (?, ?)').all(S.id, N.id);
+  assert(items.every((i) => i.merged_into == null), 'item marked merged');
+});
+
 check('a manager gets 403 on every owner item tool', async () => {
   const t = managerT();
   const rs = [
@@ -726,6 +745,7 @@ async function cleanup() {
     } catch (e) { console.error('cleanup user', id, e.message); }
   }
   try {
+    await db.prepare("DELETE FROM audit_logs WHERE entity_type = 'expense_item' AND entity_id = 0 AND action = 'expense_item_pins' AND user_id = ?").run(OWNER_ID);
     await db.prepare("DELETE FROM audit_logs WHERE entity_type = 'expense_item' AND entity_id IN (SELECT id FROM expense_items WHERE name LIKE '%VerifyEB%')").run();
     await db.prepare("UPDATE expenses SET item_id = NULL WHERE item_id IN (SELECT id FROM expense_items WHERE name LIKE '%VerifyEB%')").run();
     await db.prepare("UPDATE expense_items SET merged_into = NULL WHERE name LIKE '%VerifyEB%'").run();

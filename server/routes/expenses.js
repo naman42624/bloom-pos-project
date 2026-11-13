@@ -491,10 +491,13 @@ router.put('/items/pins', ...OWNER_ONLY, async (req, res, next) => {
         ).all(...ids);
         if (found.length !== ids.length) throw httpError(400, 'One of these items was merged or removed. Pull down to refresh, then pin again.');
       }
+      const before = await tx.prepare('SELECT id FROM expense_items WHERE pinned = TRUE ORDER BY pin_order ASC NULLS LAST, id ASC FOR UPDATE').all();
       await tx.prepare('UPDATE expense_items SET pinned = FALSE, pin_order = NULL, updated_at = CURRENT_TIMESTAMP WHERE pinned = TRUE').run();
       for (let i = 0; i < ids.length; i += 1) {
         await tx.prepare('UPDATE expense_items SET pinned = TRUE, pin_order = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(i + 1, ids[i]);
       }
+      // The pin list is shop-wide, not one item, so entity_id is 0.
+      await auditItem(tx, 0, req.user.id, 'expense_item_pins', { ids: before.map((r) => Number(r.id)) }, { ids });
     });
     res.json({ success: true, data: { ids } });
   } catch (err) {
@@ -601,6 +604,8 @@ router.post('/items/:id/merge', ...OWNER_ONLY, async (req, res, next) => {
       if (!source) throw httpError(404, ITEM_NOT_FOUND_MESSAGE);
       if (source.merged_into) throw httpError(400, 'This item was already merged. Pull down to refresh.');
       if (!target || target.merged_into || target.is_active === false) throw httpError(400, MERGE_TARGET_MESSAGE);
+      // Salary stays apart: rows merged across would change kind for future entries.
+      if ((source.category === 'salary') !== (target.category === 'salary')) throw httpError(400, SALARY_ITEM_MESSAGE);
 
       const moved = (await tx.prepare('UPDATE expenses SET item_id = ? WHERE item_id = ?').run(intoId, sourceId)).changes;
       // Items already merged into the source now point at the target (never chained).
