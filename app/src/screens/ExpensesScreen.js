@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, FlatList, TextInput, TouchableOpacity, ScrollView, Modal, ActivityIndicator, KeyboardAvoidingView, Platform } from 'react-native';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, ScrollView } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect, useNavigation, useRoute } from '@react-navigation/native';
 import { useAuth } from '../context/AuthContext';
@@ -8,31 +8,7 @@ import { getShopTodayStr, formatTime } from '../utils/datetime';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import useRegisterStatus from '../hooks/useRegisterStatus';
 import RegisterStatusBanner from '../components/RegisterStatusBanner';
-import { appAlert } from '../utils/alert';
-import useSubmitGuard from '../hooks/useSubmitGuard';
-
-const EXPENSE_CATEGORIES = [
-  { key: 'supplies', label: 'Supplies', icon: 'cart' },
-  { key: 'petty_cash', label: 'Petty Cash', icon: 'cash' },
-  { key: 'maintenance', label: 'Maintenance', icon: 'construct' },
-  { key: 'transport', label: 'Transport', icon: 'car' },
-  { key: 'food', label: 'Food', icon: 'fast-food' },
-  { key: 'utilities', label: 'Utilities', icon: 'flash' },
-  { key: 'salary', label: 'Salary', icon: 'people' },
-  { key: 'other', label: 'Other', icon: 'ellipsis-horizontal' },
-];
-
-const PAYMENT_METHODS = [
-  { key: 'cash', label: 'Cash', icon: 'cash' },
-  { key: 'card', label: 'Card', icon: 'card' },
-  { key: 'upi', label: 'UPI', icon: 'phone-portrait' },
-];
-
-// Who a "Salary" category expense can be logged against — matches
-// ShiftManagementScreen.js's own staff-picker filter exactly (owner
-// excluded on purpose, same as there: owner isn't paid a wage through
-// either screen).
-const PAYROLL_ROLES = ['manager', 'employee', 'counter_staff', 'florist_staff', 'delivery_partner'];
+import AddExpenseSheet, { EXPENSE_CATEGORIES } from '../components/expenses/AddExpenseSheet';
 
 export default function ExpensesScreen() {
   const navigation = useNavigation();
@@ -45,49 +21,31 @@ export default function ExpensesScreen() {
   const [locations, setLocations] = useState([]);
   // Cash Register passes its shop, so an expense lands on the drawer staff
   // were just looking at.
-  const [selectedLocation, setSelectedLocation] = useState(route.params?.locationId || null);
+  const [selectedLocation, setSelectedLocation] = useState(route.params?.locationId || activeLocation?.id || null);
   const [loading, setLoading] = useState(true);
 
-  // Add modal
-  const [showAdd, setShowAdd] = useState(false);
+  // The Add / Change expense sheet (components/expenses/AddExpenseSheet.js).
+  // sheet = null (closed) | { expense } (change) | { initial } (add, maybe pre-filled)
+  const [sheet, setSheet] = useState(null);
+  // Brief "Saved ₹200 Petrol" line after a save; there is no app-wide toast.
+  const [toast, setToast] = useState('');
+  const toastTimer = useRef(null);
+  useEffect(() => () => clearTimeout(toastTimer.current), []);
 
-  // Dashboard's "Add Expense" quick action (2026-09-13, staff-ux fix — the
-  // path had crept to 3 taps: open Cash Register, tap Expenses, tap Add
-  // Expense) navigates straight here with openAdd:true so the form is ready
-  // to fill in immediately instead of landing on the list first. Runs once
-  // on mount, not via useFocusEffect — this screen unmounts on back
-  // navigation like any other stack screen, so a plain mount-time check
-  // can't re-fire from a stale param on refocus.
+  // Quick Checkout's header button and the dashboard's "Add Expense" action
+  // navigate here with { openAdd: true } so the sheet is ready at once. The
+  // param is cleared after use, so going back and forth never reopens it.
   useEffect(() => {
-    if (route.params?.openAdd) setShowAdd(true);
-  }, []);
-  const [amount, setAmount] = useState('');
-  const [description, setDescription] = useState('');
-  const [category, setCategory] = useState('petty_cash');
-  const [paymentMethod, setPaymentMethod] = useState('cash');
-  const [isReturn, setIsReturn] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
-  // The expense being changed (null = adding a new one). Same form as Add.
-  const [editing, setEditing] = useState(null);
-
-  // Salary-category money-safety fix (2026-09-19): POST /expenses now
-  // requires employee_id whenever category === 'salary' (server/routes/
-  // expenses.js) — this screen had no picker at all, so selecting Salary
-  // was a guaranteed 400 with no way to supply the now-required field.
-  const [staffList, setStaffList] = useState([]);
-  const [staffListLoaded, setStaffListLoaded] = useState(false);
-  const [salaryEmployee, setSalaryEmployee] = useState(null);
-  // Soft, informational-only context (not a blocking check — the backend's
-  // precise period-overlap block already handles the hard case server-side).
-  const [recentPayrollPayment, setRecentPayrollPayment] = useState(null);
-  const [recentSalaryExpense, setRecentSalaryExpense] = useState(null);
+    if (route.params?.openAdd) {
+      setSheet({});
+      navigation.setParams({ openAdd: undefined });
+    }
+  }, [route.params?.openAdd]);
 
   // Was the one confirmed gap in the register-awareness pattern: this
   // screen let someone fill in a whole cash expense and only found out at
-  // submit that there was nowhere for it to go (server's plain-language
-  // REGISTER_CLOSED_MESSAGE, but reactive — staff-ux-checklist wants it
-  // caught before that). Same hook/banner the Dashboard's cash-sale flow
-  // already had; this was the screen that never got it (2026-09-04 audit).
+  // submit that there was nowhere for it to go. The sheet now disables Cash
+  // up front with "Open the register to pay cash" (2026-09-04 audit).
   const registerStatus = useRegisterStatus(selectedLocation);
 
   // useRegisterStatus refetches on locationId change, not on focus — without
@@ -98,26 +56,6 @@ export default function ExpensesScreen() {
       registerStatus.refetch();
     }, [registerStatus.refetch])
   );
-
-  // Cash defaults to selected (see paymentMethod's initial state) — if the
-  // register turns out closed, move off it automatically rather than
-  // leaving a disabled option sitting selected. Only fires when it would
-  // actually change something, so it never fights a deliberate choice of
-  // card/UPI.
-  // When the register is open again (another shop picked, or it was opened),
-  // go back to Cash, but only if this screen moved off it, never over a
-  // choice staff made. UPI, not card: the shop takes UPI, rarely cards.
-  const autoMovedOffCash = useRef(false);
-  useEffect(() => {
-    if (registerStatus.loading) return;
-    if (!registerStatus.isOpen && paymentMethod === 'cash') {
-      autoMovedOffCash.current = true;
-      setPaymentMethod('upi');
-    } else if (registerStatus.isOpen && autoMovedOffCash.current) {
-      autoMovedOffCash.current = false;
-      if (paymentMethod === 'upi') setPaymentMethod('cash');
-    }
-  }, [registerStatus.loading, registerStatus.isOpen, paymentMethod]);
 
   useFocusEffect(
     useCallback(() => {
@@ -130,104 +68,6 @@ export default function ExpensesScreen() {
       if (selectedLocation) fetchExpenses();
     }, [selectedLocation])
   );
-
-  // Lazily fetch the staff picker's options the first time "Salary" is
-  // selected — not on every mount, since most expenses aren't salary.
-  //
-  // Role-aware on purpose, not a single mirrored call: GET /users
-  // (api.getUsers) is owner/manager-only (server/routes/users.js,
-  // authorize('owner','manager')). This screen is also reachable by
-  // employee/counter_staff (POS tab), for whom that call 403s —
-  // ShiftManagementScreen.js's identical unfiltered api.getUsers() call is
-  // the brief's suggested reference, but that screen is ALSO reachable by
-  // those same two roles via the Attendance tab and silently ends up with
-  // three empty lists for them today (Promise.all rejects, caught, nothing
-  // set) — a real, pre-existing, unfixed gap elsewhere in this codebase,
-  // not something to newly replicate on a money-adjacent flow here.
-  //
-  // owner/manager: api.getUsers() (matches ShiftManagementScreen.js exactly).
-  // employee/counter_staff: GET /production/assignable-staff — the same
-  // endpoint SaleDetailScreen's assign-task picker uses for this exact
-  // "non-owner/manager needs a staff list" need, and unlike GET
-  // /auth/staff-roster it has no employee_code filter (staff-roster would
-  // silently drop this shop's employee-role accounts — confirmed bug,
-  // see SaleDetailScreen.js's Task 17 comment). assignable-staff is itself
-  // owner/manager/counter_staff-only, so 'employee' still 403s on it —
-  // falls back to staff-roster rather than leaving the picker empty (a
-  // dead end with no explanation, which staff-ux-checklist #6 rules out).
-  useEffect(() => {
-    if (category !== 'salary' || staffList.length > 0) return;
-    const isOwnerOrManager = user?.role === 'owner' || user?.role === 'manager';
-
-    const load = async () => {
-      if (isOwnerOrManager) {
-        // limit:100 (the endpoint's max, server/routes/users.js) — without
-        // it this defaults to limit=20/page and silently truncates past 20
-        // total users, dropping real staff from the picker with no
-        // indication anything was cut off (found live in review, 2026-09-19:
-        // 5 real accounts incl. all 3 delivery_partner rows missing in the
-        // current dev DB).
-        const res = await api.getUsers({ limit: 100 });
-        return (res.data?.users || []).filter((u) => PAYROLL_ROLES.includes(u.role) && u.is_active);
-      }
-      try {
-        const res = await api.getAssignableStaff(selectedLocation);
-        return (res.staff || []).filter((u) => PAYROLL_ROLES.includes(u.role));
-      } catch {
-        const res = await api.getStaffRoster(selectedLocation);
-        return res.data?.staff || [];
-      }
-    };
-
-    load()
-      .then(setStaffList)
-      .catch(() => setStaffList([]))
-      .finally(() => setStaffListLoaded(true));
-  }, [category]);
-
-  // Soft, informational context once an employee is picked — NOT a
-  // blocking check (the backend's precise period-overlap rule already
-  // hard-blocks the exact case server-side; a raw expense has no period
-  // concept to check precisely, so this is awareness, not a rule).
-  useEffect(() => {
-    if (!salaryEmployee) {
-      setRecentPayrollPayment(null);
-      setRecentSalaryExpense(null);
-      return;
-    }
-    let cancelled = false;
-    // GET /staff/payroll/history ignores a passed user_id for anyone but
-    // 'owner' — it force-filters to the CALLER's own records instead
-    // (server/routes/staff-management.js, 'Get payment history': `if
-    // (req.user.role !== 'owner') { where.push('sp.user_id = ?');
-    // params.push(req.user.id); }`). Calling it as manager/employee/
-    // counter_staff to look up a DIFFERENT person would silently show the
-    // CALLER's own payroll history mislabeled as salaryEmployee's — worse
-    // than showing nothing. Only trust it when the caller is owner (real
-    // org-wide read) or is looking up themselves (the forced self-filter
-    // happens to already be correct in that case).
-    const canReadTheirPayroll = user?.role === 'owner' || salaryEmployee.id === user?.id;
-    Promise.all([
-      canReadTheirPayroll
-        ? api.getPayrollHistory({ user_id: salaryEmployee.id, limit: 3 }).catch(() => ({ data: { payments: [] } }))
-        : Promise.resolve({ data: { payments: [] } }),
-      api.getExpenses({ category: 'salary', employee_id: salaryEmployee.id }).catch(() => ({ data: [] })),
-    ]).then(([payrollRes, expensesRes]) => {
-      if (cancelled) return;
-      const payments = (payrollRes.data?.payments || []).filter((p) => p.status !== 'cancelled');
-      payments.sort((a, b) => String(b.period_end || '').localeCompare(String(a.period_end || '')));
-      setRecentPayrollPayment(payments[0] || null);
-
-      // GET /expenses (res.data is the array directly, not res.data.expenses
-      // — confirmed against server/routes/expenses.js and this screen's own
-      // fetchExpenses above) already scopes to this employee_id server-side.
-      const salaryExpenses = (expensesRes.data || [])
-        .slice()
-        .sort((a, b) => String(b.expense_date || '').localeCompare(String(a.expense_date || '')));
-      setRecentSalaryExpense(salaryExpenses[0] || null);
-    });
-    return () => { cancelled = true; };
-  }, [salaryEmployee]);
 
   const fetchLocations = async () => {
     try {
@@ -256,7 +96,6 @@ export default function ExpensesScreen() {
     }
   };
 
-  const guardSubmit = useSubmitGuard();
   const isBoss = user?.role === 'owner' || user?.role === 'manager';
 
   // Who may change an expense (the server checks the same rule): owner and
@@ -268,116 +107,29 @@ export default function ExpensesScreen() {
     return !item.register_id || Number(item.register_id) === Number(registerStatus.register?.id);
   };
 
-  const resetForm = () => {
-    setAmount(''); setDescription(''); setCategory('petty_cash'); setPaymentMethod('cash'); setIsReturn(false);
-    setSalaryEmployee(null);
-    setEditing(null);
-  };
+  const openEdit = (item) => setSheet({ expense: item });
 
-  const closeForm = () => { setShowAdd(false); resetForm(); };
+  const handleInitiateReturn = (expense) => setSheet({
+    initial: {
+      is_return: true,
+      item_id: expense.item_id || null,
+      item_name: expense.item_name || null,
+      description: expense.item_name ? null : expense.description,
+      category: expense.category,
+      amount: expense.amount,
+      payment_method: 'cash',
+    },
+  });
 
-  const openEdit = (item) => {
-    autoMovedOffCash.current = false;
-    setEditing(item);
-    setAmount(String(Number(item.amount || 0)));
-    setDescription(item.description || '');
-    setCategory(item.category || 'other');
-    setPaymentMethod(item.payment_method || 'cash');
-    setIsReturn(!!item.is_return);
-    setSalaryEmployee(item.employee_id ? { id: item.employee_id, name: item.employee_name || '' } : null);
-    setShowAdd(true);
-  };
-
-  const handleSave = async () => {
-    if (!editing) return handleAdd();
-    const amt = parseFloat(amount) || 0;
-    if (amt <= 0) { appAlert('Check the amount', 'Type the amount in rupees, more than 0.'); return; }
-    if (!description.trim()) { appAlert('Add a note', 'Write what this expense was for.'); return; }
-    if (category === 'salary' && !salaryEmployee) {
-      appAlert('Pick the employee', 'Select which employee this salary payment is for.');
-      return;
+  const handleSaved = (result) => {
+    setSheet(null);
+    fetchExpenses();
+    registerStatus.refetch();
+    if (result?.message) {
+      setToast(result.message);
+      clearTimeout(toastTimer.current);
+      toastTimer.current = setTimeout(() => setToast(''), 4000);
     }
-    setSubmitting(true);
-    try {
-      await api.updateExpense(editing.id, {
-        category,
-        amount: amt,
-        description: description.trim(),
-        payment_method: paymentMethod,
-        is_return: isReturn,
-        employee_id: category === 'salary' ? salaryEmployee.id : null,
-      });
-      closeForm();
-      fetchExpenses();
-      registerStatus.refetch();
-    } catch (err) {
-      appAlert('Could not save', err.message || 'The change was not saved. Check the connection and try again.');
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  const handleAdd = async () => {
-    const amt = parseFloat(amount) || 0;
-    if (amt <= 0) { appAlert('Invalid', 'Enter a valid amount'); return; }
-    if (!description.trim()) { appAlert('Required', 'Enter a description'); return; }
-    if (category === 'salary' && !salaryEmployee) {
-      appAlert('Required', 'Select which employee this salary payment is for.');
-      return;
-    }
-
-    setSubmitting(true);
-    try {
-      const today = getShopTodayStr(timezone);
-      await api.createExpense({
-
-        location_id: selectedLocation,
-        category,
-        amount: amt,
-        description: description.trim(),
-        payment_method: paymentMethod,
-        expense_date: today,
-        is_return: isReturn,
-        employee_id: category === 'salary' ? salaryEmployee.id : undefined,
-      });
-      closeForm();
-      fetchExpenses();
-    } catch (err) {
-      appAlert('Error', err.message || 'Failed to add expense');
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  const handleDelete = (expense) => {
-    const cashNote = expense.payment_method === 'cash'
-      ? (expense.is_return ? ' The cash is taken back off the register.' : ' The cash is put back on the register.')
-      : '';
-    appAlert('Remove this expense?', `₹${Number(expense.amount || 0).toFixed(0)} — ${expense.description}.${cashNote}`, [
-      { text: 'Keep it', style: 'cancel' },
-      {
-        text: 'Remove', style: 'destructive',
-        onPress: async () => {
-          try {
-            await api.deleteExpense(expense.id);
-            closeForm();
-            fetchExpenses();
-            registerStatus.refetch();
-          } catch (err) {
-            appAlert('Could not remove', err.message || 'The expense was not removed. Check the connection and try again.');
-          }
-        },
-      },
-    ]);
-  };
-
-  const handleInitiateReturn = (expense) => {
-    setIsReturn(true);
-    setCategory(expense.category);
-    setDescription(`Return: ${expense.description}`);
-    setPaymentMethod('cash');
-    setAmount(String(expense.amount || ''));
-    setShowAdd(true);
   };
 
   const getCatIcon = (cat) => {
@@ -417,7 +169,13 @@ export default function ExpensesScreen() {
         </Text>
         <View style={styles.actionRow}>
           {!item.is_return && item.payment_method === 'cash' && (
-            <TouchableOpacity onPress={() => handleInitiateReturn(item)} style={styles.iconBtn}>
+            <TouchableOpacity
+              onPress={() => handleInitiateReturn(item)}
+              style={styles.iconBtn}
+              hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+              accessibilityRole="button"
+              accessibilityLabel={`Record money coming back for ${item.description}`}
+            >
               <Ionicons name="arrow-undo-outline" size={16} color={Colors.textSecondary} />
             </TouchableOpacity>
           )}
@@ -466,6 +224,13 @@ export default function ExpensesScreen() {
         </View>
       )}
 
+      {!!toast && (
+        <View style={styles.toast} accessibilityLiveRegion="polite">
+          <Ionicons name="checkmark-circle" size={20} color={Colors.success} />
+          <Text style={styles.toastText}>{toast}</Text>
+        </View>
+      )}
+
       {/* Today's total */}
       <View style={styles.summaryCard}>
         <Ionicons name="wallet" size={24} color={Colors.primary} />
@@ -473,7 +238,12 @@ export default function ExpensesScreen() {
           <Text style={styles.summaryLabel}>Today's Expenses</Text>
           <Text style={styles.summaryAmount}>₹{total.toFixed(0)}</Text>
         </View>
-        <TouchableOpacity style={styles.addBtn} onPress={() => { resetForm(); setShowAdd(true); }}>
+        <TouchableOpacity
+          style={styles.addBtn}
+          onPress={() => setSheet({})}
+          accessibilityRole="button"
+          accessibilityLabel="Add expense"
+        >
           <Ionicons name="add" size={22} color={Colors.white} />
           <Text style={styles.addBtnText}>Add</Text>
         </TouchableOpacity>
@@ -492,162 +262,18 @@ export default function ExpensesScreen() {
         }
       />
 
-      {/* Add Expense Modal */}
-      <Modal visible={showAdd} transparent animationType="slide">
-        <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-          <View style={styles.modalOverlay}>
-            <View style={styles.modalCard}>
-              <View style={styles.modalHeader}>
-                <Text style={styles.modalTitle}>{editing ? 'Change Expense' : 'Add Expense'}</Text>
-                <TouchableOpacity onPress={closeForm} accessibilityRole="button" accessibilityLabel="Close" style={styles.closeBtn}>
-                  <Ionicons name="close" size={24} color={Colors.text} />
-                </TouchableOpacity>
-              </View>
-
-              <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
-                <View style={styles.typeToggle}>
-                  <TouchableOpacity
-                    style={[styles.typeBtn, !isReturn && styles.typeBtnActiveOut]}
-                    onPress={() => setIsReturn(false)}
-                  >
-                    <Text style={[styles.typeBtnText, !isReturn && styles.typeBtnTextActive]}>Expense Out</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[styles.typeBtn, isReturn && styles.typeBtnActiveIn]}
-                    onPress={() => setIsReturn(true)}
-                  >
-                    <Text style={[styles.typeBtnText, isReturn && styles.typeBtnTextActive]}>Return In</Text>
-                  </TouchableOpacity>
-                </View>
-
-                <Text style={styles.fieldLabel}>Amount (₹) *</Text>
-                <TextInput
-                  style={styles.input}
-                  value={amount}
-                  onChangeText={setAmount}
-                  placeholder="0"
-                  placeholderTextColor={Colors.textLight}
-                  keyboardType="numeric"
-                  autoFocus
-                />
-
-                <Text style={styles.fieldLabel}>Description *</Text>
-                <TextInput
-                  style={styles.input}
-                  value={description}
-                  onChangeText={setDescription}
-                  placeholder="What was this expense for?"
-                  placeholderTextColor={Colors.textLight}
-                />
-
-                <Text style={styles.fieldLabel}>Category</Text>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: Spacing.xs, paddingBottom: Spacing.xs }}>
-                  {EXPENSE_CATEGORIES.map((cat) => (
-                    <TouchableOpacity
-                      key={cat.key}
-                      style={[styles.chip, category === cat.key && styles.chipActive]}
-                      onPress={() => setCategory(cat.key)}
-                    >
-                      <Ionicons name={cat.icon} size={14} color={category === cat.key ? Colors.white : Colors.textSecondary} />
-                      <Text style={[styles.chipText, category === cat.key && styles.chipTextActive]}>{cat.label}</Text>
-                    </TouchableOpacity>
-                  ))}
-                </ScrollView>
-
-                {category === 'salary' && (
-                  <View style={{ marginTop: Spacing.sm }}>
-                    <Text style={styles.fieldLabel}>Which employee is this for?</Text>
-                    <View style={styles.chipRow}>
-                      {staffList.map((u) => (
-                        <TouchableOpacity
-                          key={u.id}
-                          style={[styles.chip, salaryEmployee?.id === u.id && styles.chipActive]}
-                          onPress={() => setSalaryEmployee(u)}
-                        >
-                          <Text style={[styles.chipText, salaryEmployee?.id === u.id && styles.chipTextActive]}>{u.name}</Text>
-                        </TouchableOpacity>
-                      ))}
-                    </View>
-                    {staffListLoaded && staffList.length === 0 && (
-                      <Text style={styles.fieldHint}>No staff found here — log this from Salary Management instead, or check Staff under More.</Text>
-                    )}
-                    {(recentPayrollPayment || recentSalaryExpense) && (
-                      <View style={styles.salaryContextNote}>
-                        <Ionicons name="information-circle-outline" size={16} color={Colors.textLight} />
-                        <Text style={styles.salaryContextNoteText}>
-                          {recentPayrollPayment && `Last paid via Payroll: ${recentPayrollPayment.period_start} to ${recentPayrollPayment.period_end}. `}
-                          {recentSalaryExpense && `Last salary expense logged: ₹${Number(recentSalaryExpense.amount || 0).toFixed(0)} on ${recentSalaryExpense.expense_date}.`}
-                        </Text>
-                      </View>
-                    )}
-                  </View>
-                )}
-
-                <Text style={styles.fieldLabel}>Payment Method</Text>
-                <View style={styles.chipRow}>
-                  {PAYMENT_METHODS.map((m) => {
-                    // Prevent, not just react to, the one confirmed gap this
-                    // screen had: Cash disabled outright when there's no
-                    // open register to log it against, instead of letting
-                    // the whole form fill in and fail at submit
-                    // (2026-09-04 audit).
-                    // Changing an expense that was already cash keeps its own
-                    // session, so Cash stays available for it.
-                    const keepsCash = editing && editing.payment_method === 'cash';
-                    const disabled = m.key === 'cash' && !keepsCash && !registerStatus.loading && !registerStatus.isOpen;
-                    const active = paymentMethod === m.key;
-                    return (
-                      <TouchableOpacity
-                        key={m.key}
-                        style={[styles.chip, active && styles.chipActive, disabled && styles.chipDisabled]}
-                        onPress={() => { autoMovedOffCash.current = false; setPaymentMethod(m.key); }}
-                        disabled={disabled}
-                      >
-                        <Ionicons name={m.icon} size={14} color={active ? Colors.white : disabled ? Colors.textLight : Colors.textSecondary} />
-                        <Text style={[styles.chipText, active && styles.chipTextActive, disabled && { color: Colors.textLight }]}>{m.label}</Text>
-                      </TouchableOpacity>
-                    );
-                  })}
-                </View>
-                {!registerStatus.loading && !registerStatus.isOpen && (
-                  <Text style={styles.fieldHint}>Open the register to log a cash expense.</Text>
-                )}
-                {!editing && paymentMethod === 'cash' && registerStatus.isOpen && (
-                  <Text style={styles.fieldHint}>
-                    Adding to the session opened {formatTime(registerStatus.register?.opening_time || registerStatus.register?.opened_at)}.
-                  </Text>
-                )}
-
-                <TouchableOpacity
-                  style={[styles.submitBtn, submitting && { opacity: 0.6 }]}
-                  onPress={guardSubmit(handleSave)}
-                  disabled={submitting}
-                >
-                  {submitting ? (
-                    <ActivityIndicator color={Colors.white} />
-                  ) : (
-                    <>
-                      <Ionicons name={editing ? 'checkmark-circle' : isReturn ? 'arrow-undo' : 'add-circle'} size={18} color={Colors.white} />
-                      <Text style={styles.submitBtnText}>{editing ? 'Save Changes' : isReturn ? 'Save Return' : 'Add Expense'}</Text>
-                    </>
-                  )}
-                </TouchableOpacity>
-                {editing && (
-                  <TouchableOpacity
-                    style={styles.removeBtn}
-                    onPress={() => handleDelete(editing)}
-                    disabled={submitting}
-                    accessibilityRole="button"
-                  >
-                    <Ionicons name="trash-outline" size={18} color={Colors.error} />
-                    <Text style={styles.removeBtnText}>Remove this expense</Text>
-                  </TouchableOpacity>
-                )}
-              </ScrollView>
-            </View>
-          </View>
-        </KeyboardAvoidingView>
-      </Modal>
+      <AddExpenseSheet
+        visible={!!sheet}
+        locationId={selectedLocation}
+        registerOpen={registerStatus.isOpen}
+        registerLoading={registerStatus.loading}
+        register={registerStatus.register}
+        expense={sheet?.expense || null}
+        initial={sheet?.initial || null}
+        onClose={() => setSheet(null)}
+        onSaved={handleSaved}
+        onRegisterOpened={registerStatus.refetch}
+      />
     </View>
   );
 }
@@ -676,6 +302,12 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.primary, paddingHorizontal: Spacing.md,
     paddingVertical: Spacing.xs + 2, borderRadius: BorderRadius.md,
   },
+  toast: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
+    marginHorizontal: Spacing.md, marginTop: Spacing.sm, padding: Spacing.sm,
+    borderRadius: BorderRadius.md, backgroundColor: Colors.successLight,
+  },
+  toastText: { flex: 1, fontSize: FontSize.md, fontWeight: '600', color: Colors.text },
   addBtnText: { color: Colors.white, fontWeight: '600', fontSize: FontSize.sm },
 
   list: { paddingHorizontal: Spacing.md, paddingBottom: 40 },
