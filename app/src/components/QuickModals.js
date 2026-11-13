@@ -492,6 +492,8 @@ export function OrderQuickModal({
               if (onRefresh) onRefresh();
             }}
             canManage={canManage}
+            showAddressAbove={!!order.delivery_address}
+            showScheduleAbove={!!order.scheduled_date}
           />
         )}
 
@@ -696,6 +698,8 @@ function DeliverySection({
   onRefreshDelivery: onRefresh,
   canManage,
   isPartner = false,
+  showAddressAbove = false,
+  showScheduleAbove = false,
 }) {
   const [actionLoading, setActionLoading] = useState(false);
   const [confirmingConversion, setConfirmingConversion] = useState(null);
@@ -888,9 +892,12 @@ function DeliverySection({
             )}
           </View>
 
-          {/* Key info */}
+          {/* Key info. Address and scheduled time are already in the order
+              details above, so they are not repeated here (2026-11-10). */}
+          {(delivery.partner_name || (delivery.cod_amount > 0 && codRemaining > 0 && codRemaining < Number(delivery.cod_amount)) || delivery.failure_reason
+            || (!showAddressAbove && delivery.delivery_address) || (!showScheduleAbove && delivery.scheduled_date)) ? (
           <View style={styles.detailsCard}>
-            {delivery.delivery_address ? (
+            {!showAddressAbove && delivery.delivery_address ? (
               <SectionRow label="Address" value={delivery.delivery_address} />
             ) : null}
             {delivery.partner_name ? (
@@ -899,20 +906,22 @@ function DeliverySection({
                 value={`${delivery.partner_name}${delivery.partner_phone ? ' • ' + delivery.partner_phone : ''}`}
               />
             ) : null}
-            {delivery.scheduled_date ? (
+            {!showScheduleAbove && delivery.scheduled_date ? (
               <SectionRow
                 label="Scheduled"
                 value={formatDateTime(delivery.scheduled_date, delivery.scheduled_time)}
                 color="#6366F1"
               />
             ) : null}
-            {delivery.cod_amount > 0 && codRemaining > 0 && (
+            {/* Only when part was already collected; otherwise the COD pill says it */}
+            {delivery.cod_amount > 0 && codRemaining > 0 && codRemaining < Number(delivery.cod_amount) && (
               <SectionRow label="COD Remaining" value={formatMoney(codRemaining)} color="#E11D48" />
             )}
             {delivery.failure_reason ? (
               <SectionRow label="Failure Reason" value={delivery.failure_reason} color="#E11D48" />
             ) : null}
           </View>
+          ) : null}
 
           {canManage && !isFinal && (
             <View style={{ flexDirection: 'row', gap: 8, marginHorizontal: 20, marginBottom: 16 }}>
