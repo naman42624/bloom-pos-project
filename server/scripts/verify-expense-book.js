@@ -305,7 +305,7 @@ async function suggestFixture() {
   sg = {
     p1: await mkItem(db, 'VerifyEB Zq Pin One', { pinned: true, pin_order: -2 }),
     p2: await mkItem(db, 'VerifyEB Zq Pin Two', { pinned: true, pin_order: -3 }),
-    f: await mkItem(db, 'VerifyEB Zq Often'),
+    f: await mkItem(db, 'Zq VerifyEB Often'),
     contains: await mkItem(db, 'VerifyEB Xx Zq Inside', { usual_amount: 75 }),
     g: await mkItem(db, 'VerifyEB Zq Other Shop'),
     h: await mkItem(db, 'VerifyEB Zq Hidden', { is_active: false }),
@@ -332,7 +332,7 @@ check('suggest: empty q gives pinned by pin order, then used items; not other sh
 
 check('suggest: type-ahead puts prefix matches before contains matches, none hidden or merged', async () => {
   const f = await suggestFixture();
-  const r = await api('GET', `/expenses/suggest?location_id=${TEST_LOCATION_ID}&q=${encodeURIComponent('verifyeb zq')}`, tokenFor(COUNTER_ID));
+  const r = await api('GET', `/expenses/suggest?location_id=${TEST_LOCATION_ID}&q=${encodeURIComponent('zq')}`, tokenFor(COUNTER_ID));
   assert(r.status === 200, `status ${r.status}`);
   const ids = r.body.data.map((x) => x.id);
   assert(ids.includes(f.f) && ids.includes(f.contains), 'matches missing');
@@ -383,9 +383,9 @@ async function cleanup() {
     } catch (e) { console.error('cleanup user', id, e.message); }
   }
   try {
-    await db.prepare("UPDATE expenses SET item_id = NULL WHERE item_id IN (SELECT id FROM expense_items WHERE name LIKE 'VerifyEB%')").run();
-    await db.prepare("UPDATE expense_items SET merged_into = NULL WHERE name LIKE 'VerifyEB%'").run();
-    await db.prepare("DELETE FROM expense_items WHERE name LIKE 'VerifyEB%'").run();
+    await db.prepare("UPDATE expenses SET item_id = NULL WHERE item_id IN (SELECT id FROM expense_items WHERE name LIKE '%VerifyEB%')").run();
+    await db.prepare("UPDATE expense_items SET merged_into = NULL WHERE name LIKE '%VerifyEB%'").run();
+    await db.prepare("DELETE FROM expense_items WHERE name LIKE '%VerifyEB%'").run();
   } catch (e) { console.error('cleanup items:', e.message); }
 }
 
