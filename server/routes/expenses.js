@@ -623,6 +623,77 @@ router.post('/items/:id/merge', ...OWNER_ONLY, async (req, res, next) => {
   }
 });
 
+// ─── Sort old entries into items (owner only) ────────────────
+// Suggestion: the exact name key of the description, else the item whose key is
+// the longest prefix of it (ending on a word boundary, so tea never matches teak).
+function suggestItem(items, description) {
+  const key = nameKey(description);
+  if (!key) return null;
+  let best = null;
+  for (const it of items) {
+    const k = it.name_key;
+    if (!k) continue;
+    if (k === key) return { id: Number(it.id), name: it.name };
+    if (key.startsWith(k) && key[k.length] === ' ' && (!best || k.length > best.k.length)) best = { k, id: Number(it.id), name: it.name };
+  }
+  return best ? { id: best.id, name: best.name } : null;
+}
+
+// GET /api/expenses/unsorted?limit=50: rows with no item (not salary), newest first.
+router.get('/unsorted', ...OWNER_ONLY, async (req, res, next) => {
+  try {
+    const db = await getAsyncDb();
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 200);
+    const rows = await db.prepare(
+      `${EXPENSE_ROW_SELECT}      WHERE e.item_id IS NULL AND e.category <> 'salary'
+      ORDER BY e.expense_date DESC, e.created_at DESC, e.id DESC LIMIT ${limit}`
+    ).all();
+    const items = await db.prepare('SELECT id, name, name_key FROM expense_items WHERE is_active = TRUE AND merged_into IS NULL').all();
+    const data = rows.map(normalizeExpenseRow).map((r) => ({ ...r, suggested_item: suggestItem(items, r.description) }));
+    res.json({ success: true, data });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/expenses/assign-items { assignments: [{ expense_id, item_id | item_name, category? }] }
+// One transaction; sets item_id only. Salary rows and rows that already have an
+// item are skipped. One audit row per call (entity_id 0).
+router.post('/assign-items', ...OWNER_ONLY, async (req, res, next) => {
+  try {
+    const list = req.body && req.body.assignments;
+    if (!Array.isArray(list) || list.length === 0 || list.length > 200) {
+      return res.status(400).json({ success: false, message: 'Pick at least one entry to sort.' });
+    }
+    const seen = new Set();
+    for (const a of list) {
+      const id = Number(a && a.expense_id);
+      if (!Number.isInteger(id) || id <= 0 || seen.has(id)) return res.status(400).json({ success: false, message: 'Pick the entries to sort again.' });
+      seen.add(id);
+    }
+    const out = await withMoneyTx(async (tx) => {
+      const skipped = [];
+      const done = [];
+      for (const a of list) {
+        const id = Number(a.expense_id);
+        const row = await tx.prepare('SELECT id, category, item_id FROM expenses WHERE id = ? FOR UPDATE').get(id);
+        if (!row || row.item_id || row.category === 'salary') { skipped.push(id); continue; }
+        const item = await resolveItem(tx, {
+          item_id: a.item_id ? Number(a.item_id) : null, item_name: a.item_name,
+          category: a.category || row.category, userId: req.user.id,
+        });
+        await tx.prepare('UPDATE expenses SET item_id = ? WHERE id = ? AND item_id IS NULL').run(item.id, id);
+        done.push({ expense_id: id, item_id: Number(item.id) });
+      }
+      if (done.length) await auditItem(tx, 0, req.user.id, 'expense_assign_items', { expense_ids: done.map((d) => d.expense_id), item_id: null }, { assignments: done });
+      return { assigned: done.length, skipped };
+    });
+    res.json({ success: true, data: out });
+  } catch (err) {
+    sendItemError(res, next, err);
+  }
+});
+
 // ─── POST /api/expenses ──────────────────────────────────────
 router.post(
   '/',

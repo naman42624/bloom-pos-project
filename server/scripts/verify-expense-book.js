@@ -729,6 +729,76 @@ check('a manager gets 403 on every owner item tool', async () => {
   assert(rs.every((r) => r.status === 403), rs.map((r) => r.status).join(' '));
 });
 
+// ── Task 7: sort old entries into items ──
+let sortFx = null;
+async function sortFixtures() {
+  if (sortFx) return sortFx;
+  const db = await getDb();
+  const item = await track(await resolveItem(db, { item_name: 'VerifyEB Petrol', category: 'transport', userId: OWNER_ID }));
+  const teak = await track(await resolveItem(db, { item_name: 'VerifyEB Tea', category: 'food', userId: OWNER_ID }));
+  const mk = async (desc, cat) => {
+    const r = await db.prepare(`INSERT INTO expenses (location_id, category, amount, description, payment_method, expense_date, created_by)
+      VALUES (?, ?, 7.5, ?, 'upi', ?, ?) RETURNING id`).get(TEST_LOCATION_ID, cat, desc, dayAgo(40), OWNER_ID);
+    createdExpenseIds.push(r.id);
+    return r.id;
+  };
+  sortFx = {
+    item, teak,
+    exact: await mk('verifyeb petrol', 'transport'),
+    prefix: await mk('VerifyEB Petrol Nov', 'transport'),
+    word: await mk('VerifyEB Teakwood', 'other'),
+    plain: await mk('VerifyEB mystery', 'other'),
+    salary: await mk('VerifyEB salary row', 'salary'),
+  };
+  return sortFx;
+}
+
+check('unsorted rows carry exact and prefix suggestions, never salary', async () => {
+  const fx = await sortFixtures();
+  const r = await api('GET', '/expenses/unsorted?limit=200', ownerT());
+  assert(r.status === 200 && Array.isArray(r.body.data), 'status ' + r.status);
+  const by = (id) => r.body.data.find((x) => Number(x.id) === id);
+  assert(by(fx.exact) && by(fx.exact).suggested_item && by(fx.exact).suggested_item.id === fx.item.id, 'exact ' + JSON.stringify(by(fx.exact)));
+  assert(by(fx.prefix).suggested_item && by(fx.prefix).suggested_item.name === 'VerifyEB Petrol', 'prefix');
+  assert(by(fx.word) && by(fx.word).suggested_item === null, 'word boundary: ' + JSON.stringify(by(fx.word).suggested_item));
+  assert(by(fx.plain) && by(fx.plain).suggested_item === null, 'plain');
+  assert(!by(fx.salary), 'salary row listed');
+  assert(r.body.data.every((x) => x.item_id == null && x.category !== 'salary'), 'sorted/salary rows leaked');
+});
+
+check('assigning sets item_id only, skips assigned and salary rows, and audits', async () => {
+  const fx = await sortFixtures();
+  const db = await getDb();
+  const before = await db.prepare('SELECT amount, expense_date, category, description, register_id FROM expenses WHERE id = ?').get(fx.exact);
+  const r = await api('POST', '/expenses/assign-items', ownerT(), { assignments: [
+    { expense_id: fx.exact, item_id: fx.item.id },
+    { expense_id: fx.plain, item_name: 'VerifyEB Mystery Thing' },
+    { expense_id: fx.salary, item_id: fx.item.id },
+  ] });
+  assert(r.status === 200 && r.body.data.assigned === 2, JSON.stringify(r.body));
+  assert(r.body.data.skipped.map(Number).join() === String(fx.salary), 'skipped ' + JSON.stringify(r.body.data.skipped));
+  const after = await db.prepare('SELECT amount, expense_date, category, description, register_id, item_id FROM expenses WHERE id = ?').get(fx.exact);
+  assert(Number(after.item_id) === fx.item.id, 'item not set');
+  for (const k of Object.keys(before)) assert(String(before[k]) === String(after[k]), k + ' changed');
+  const made = await db.prepare("SELECT ei.id, ei.category FROM expenses e JOIN expense_items ei ON ei.id = e.item_id WHERE e.id = ?").get(fx.plain);
+  assert(made && made.category === 'other', 'new item category ' + JSON.stringify(made));
+  await track(made);
+  const sal = await db.prepare('SELECT item_id FROM expenses WHERE id = ?').get(fx.salary);
+  assert(sal.item_id == null, 'salary assigned');
+  const again = await api('POST', '/expenses/assign-items', ownerT(), { assignments: [{ expense_id: fx.exact, item_id: fx.teak.id }] });
+  assert(again.body.data.assigned === 0 && again.body.data.skipped.map(Number).join() === String(fx.exact), 'reassign ' + JSON.stringify(again.body));
+  const still = await db.prepare('SELECT item_id FROM expenses WHERE id = ?').get(fx.exact);
+  assert(Number(still.item_id) === fx.item.id, 'overwritten');
+  const au = await db.prepare("SELECT COUNT(*) AS c FROM audit_logs WHERE action = 'expense_assign_items' AND user_id = ?").get(OWNER_ID);
+  assert(Number(au.c) >= 1, 'no audit row');
+});
+
+check('a manager gets 403 on unsorted and assign-items', async () => {
+  const a = await api('GET', '/expenses/unsorted', managerT());
+  const b = await api('POST', '/expenses/assign-items', managerT(), { assignments: [] });
+  assert(a.status === 403 && b.status === 403, `${a.status} ${b.status}`);
+});
+
 async function cleanup() {
   const db = await getDb();
   for (const id of createdExpenseIds) {
@@ -745,6 +815,7 @@ async function cleanup() {
     } catch (e) { console.error('cleanup user', id, e.message); }
   }
   try {
+    await db.prepare("DELETE FROM audit_logs WHERE entity_type = 'expense_item' AND entity_id = 0 AND action = 'expense_assign_items' AND user_id = ?").run(OWNER_ID);
     await db.prepare("DELETE FROM audit_logs WHERE entity_type = 'expense_item' AND entity_id = 0 AND action = 'expense_item_pins' AND user_id = ?").run(OWNER_ID);
     await db.prepare("DELETE FROM audit_logs WHERE entity_type = 'expense_item' AND entity_id IN (SELECT id FROM expense_items WHERE name LIKE '%VerifyEB%')").run();
     await db.prepare("UPDATE expenses SET item_id = NULL WHERE item_id IN (SELECT id FROM expense_items WHERE name LIKE '%VerifyEB%')").run();
