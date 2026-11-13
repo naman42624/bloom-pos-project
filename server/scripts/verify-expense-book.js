@@ -510,6 +510,26 @@ check('summary compares with the previous period, nets returns, groups old rows'
   for (let i = 1; i < d.categories.length; i += 1) assert(d.categories[i - 1].amount >= d.categories[i].amount, 'not sorted');
 });
 
+check('summary honours prev_from/prev_to and refuses a bad pair', async () => {
+  const { X, W } = await summaryFixtures();
+  const r = await api('GET', `/expenses/summary-by-item?${SUM_Q}&prev_from=2024-03-06&prev_to=2024-03-10`, ownerT());
+  assert(r.status === 200, 'status ' + r.status);
+  const d = r.body.data || r.body;
+  const sup = d.categories.find((c) => c.category === 'supplies');
+  const x = sup.items.find((i) => i.item_id === X.id);
+  const w = sup.items.find((i) => i.item_id === W.id);
+  // 2024-03-05 (X 200) is outside the given comparison period.
+  assert(x.amount === 250 && x.previous_amount === 0 && x.change_pct === null, JSON.stringify(x));
+  assert(w && w.previous_amount === 60, JSON.stringify(w));
+  const old = d.older.find((o) => o.category === 'supplies');
+  assert(old && old.previous_amount === 100, JSON.stringify(d.older));
+  const one = await api('GET', `/expenses/summary-by-item?${SUM_Q}&prev_from=2024-03-06`, ownerT());
+  const back = await api('GET', `/expenses/summary-by-item?${SUM_Q}&prev_from=2024-03-10&prev_to=2024-03-06`, ownerT());
+  const junk = await api('GET', `/expenses/summary-by-item?${SUM_Q}&prev_from=abc&prev_to=2024-03-06`, ownerT());
+  assert(one.status === 400 && back.status === 400 && junk.status === 400, `${one.status} ${back.status} ${junk.status}`);
+  assert(one.body.message === 'Pick the dates to compare with.', one.body.message);
+});
+
 check('item history gives 6 months and includes merged items', async () => {
   const db = await getDb();
   const X = await track(await resolveItem(db, { item_name: 'VerifyEB HistX', category: 'other', userId: OWNER_ID }));

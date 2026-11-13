@@ -39,6 +39,11 @@ export default function ExpensesScreen() {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
+  // Which shop + day the rows on screen belong to; rows from another day are
+  // hidden (not shown under the new day's title) until the new list lands.
+  const [loadedKey, setLoadedKey] = useState('');
+  const dayKey = `${selectedLocation}|${day}`;
+  const fresh = loadedKey === dayKey;
   const reqId = useRef(0);
 
   // Owner/manager view refreshes when this changes (after a save).
@@ -100,6 +105,7 @@ export default function ExpensesScreen() {
 
   const fetchExpenses = async () => {
     const id = ++reqId.current;
+    const key = `${selectedLocation}|${day}`;
     try {
       setLoading(true);
       setLoadError(false);
@@ -110,6 +116,7 @@ export default function ExpensesScreen() {
         amount: Number(expense.amount) || 0,
       })));
       setTotal(Number(res.total || 0));
+      setLoadedKey(key);
     } catch {
       if (id === reqId.current) setLoadError(true);
     } finally {
@@ -125,7 +132,12 @@ export default function ExpensesScreen() {
     if (Number(item.created_by) !== Number(user?.id)) return false;
     if (String(item.expense_date || '').slice(0, 10) !== today) return false;
     if (!registerStatus.isOpen) return false;
-    return !item.register_id || Number(item.register_id) === Number(registerStatus.register?.id);
+    if (item.register_id) return Number(item.register_id) === Number(registerStatus.register?.id);
+    // No register on the row (UPI): the server allows it only if it was
+    // saved during the open session (expenses.js loadForChange).
+    const openedAt = registerStatus.register?.opened_at || registerStatus.register?.opening_time;
+    if (!openedAt || !item.created_at) return true;
+    return new Date(item.created_at) >= new Date(openedAt);
   };
 
   const openChange = (item) => setSheet({ expense: item });
@@ -238,21 +250,25 @@ export default function ExpensesScreen() {
           </ScrollView>
 
           <FlatList
-            data={loadError ? [] : expenses}
+            data={loadError || !fresh ? [] : expenses}
             keyExtractor={(item) => String(item.id)}
             renderItem={({ item }) => (
               <ExpenseRow
                 expense={item}
                 canChange={canChange(item)}
                 onChange={openChange}
-                onReturn={day === today ? handleInitiateReturn : undefined}
+                onReturn={canChange(item) ? handleInitiateReturn : undefined}
               />
             )}
             contentContainerStyle={styles.list}
             ListHeaderComponent={
               <View style={styles.summaryCard}>
                 <Text style={styles.summaryLabel}>{dayTitle}</Text>
-                <Text style={styles.summaryAmount}>{rupees(total)}</Text>
+                {fresh ? (
+                  <Text style={styles.summaryAmount}>{rupees(total)}</Text>
+                ) : (
+                  <Text style={styles.summaryLoading}>{loadError ? ' ' : 'Loading…'}</Text>
+                )}
                 {day !== today && (
                   <Text style={styles.summaryHint}>Only today's own entries can be changed.</Text>
                 )}
@@ -329,6 +345,7 @@ const styles = StyleSheet.create({
   },
   summaryLabel: { fontSize: FontSize.sm, color: Colors.textSecondary, fontWeight: '600' },
   summaryAmount: { fontSize: FontSize.xl, fontWeight: '700', color: Colors.text, fontVariant: ['tabular-nums'] },
+  summaryLoading: { fontSize: FontSize.xl, color: Colors.textSecondary },
   summaryHint: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: Spacing.xs },
 
   list: { paddingHorizontal: Spacing.md, paddingBottom: Spacing.xxl },

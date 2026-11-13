@@ -18,7 +18,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import api from '../../services/api';
 import { Colors, FontSize, Spacing, BorderRadius } from '../../constants/theme';
-import { periodRange, changeLabel, previousRange, rangeLabel } from '../../utils/expenseBook';
+import { periodRange, changeLabel, comparisonRange, rangeLabel } from '../../utils/expenseBook';
 import DateTimePickerModal from '../DateTimePickerModal';
 import ExpenseRow from './ExpenseRow';
 import { EXPENSE_CATEGORIES, categoryLabel, rupees } from './AddExpenseSheet';
@@ -46,6 +46,17 @@ function Change({ pct, big = false }) {
   const c = changeLabel(pct);
   return (
     <Text style={[big ? styles.changeBig : styles.change, { color: TONE_COLOR[c.tone] }]}>{c.text}</Text>
+  );
+}
+
+// The change, plus "was ₹X" whenever there was spending before, so the
+// owner sees both numbers (a stopped item reads "₹0 ▼ 100% was ₹600").
+function ChangeCol({ pct, previous }) {
+  return (
+    <View style={styles.itemChange}>
+      <Change pct={pct} />
+      {Number(previous) > 0 && <Text style={styles.was}>was {rupees(previous)}</Text>}
+    </View>
   );
 }
 
@@ -85,19 +96,29 @@ export default function ExpenseSummaryView({
   const [mode, setMode] = useState('summary'); // 'summary' | 'list'
 
   const [summary, setSummary] = useState(null);
+  // Which request the data on screen belongs to. When the period, shop or
+  // kind changes, the old numbers are hidden (not shown under the new label)
+  // until the new answer lands. A refresh of the same view keeps them.
+  const [loadedKey, setLoadedKey] = useState('');
   const [rows, setRows] = useState([]);
   const [truncated, setTruncated] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const reqId = useRef(0);
 
-  // List filters. Category and search go to the server; the rest filter the
-  // loaded rows.
+  // List filters. Kind (category) goes to the server; Cash/UPI, Added by,
+  // Given to and search filter the loaded rows (at most 500).
   const [category, setCategory] = useState(null);
   const [method, setMethod] = useState(null);
   const [addedBy, setAddedBy] = useState(null);
   const [givenTo, setGivenTo] = useState(null);
   const [search, setSearch] = useState('');
+
+  // Compared with: same days last month, last week, yesterday, the month
+  // before, or (picked dates) the same number of days just before.
+  const prev = comparisonRange(period === 'custom' ? 'custom' : period, from, to);
+  const viewKey = [mode, from, to, prev.from, prev.to, locationParam || ALL, mode === 'list' ? (category || '') : ''].join('|');
+  const fresh = loadedKey === viewKey;
 
   const load = useCallback(async () => {
     const id = ++reqId.current;
@@ -105,9 +126,12 @@ export default function ExpenseSummaryView({
     setError('');
     try {
       if (mode === 'summary') {
-        const res = await api.getExpenseSummaryByItem({ from, to, location_id: locationParam });
+        const res = await api.getExpenseSummaryByItem({
+          from, to, prev_from: prev.from, prev_to: prev.to, location_id: locationParam,
+        });
         if (id !== reqId.current) return;
         setSummary(res.data || null);
+        setLoadedKey(viewKey);
       } else {
         const params = { start_date: from, end_date: to };
         if (locationParam) params.location_id = locationParam;
@@ -116,13 +140,14 @@ export default function ExpenseSummaryView({
         if (id !== reqId.current) return;
         setRows((res.data || []).map((r) => ({ ...r, amount: Number(r.amount) || 0 })));
         setTruncated(!!res.truncated);
+        setLoadedKey(viewKey);
       }
     } catch {
       if (id === reqId.current) setError(LOAD_FAILED);
     } finally {
       if (id === reqId.current) setLoading(false);
     }
-  }, [mode, from, to, locationParam, category]);
+  }, [viewKey]);
 
   useFocusEffect(useCallback(() => { load(); }, [load, refreshKey]));
 
@@ -132,7 +157,8 @@ export default function ExpenseSummaryView({
   };
 
   const onPickedDate = (d) => {
-    const str = fromDate(d);
+    let str = fromDate(d);
+    if (str > todayStr) str = todayStr; // no future days
     if (picking === 'from') {
       setPickFrom(str);
       setPicking('to');
@@ -167,7 +193,6 @@ export default function ExpenseSummaryView({
   const periodLabel = period === 'custom'
     ? rangeLabel(from, to)
     : (PERIODS.find((p) => p.key === period) || {}).label;
-  const prev = previousRange(from, to);
 
   const openItem = (itemId) => navigation.navigate('ExpenseItem', { itemId, from, to, locationId: locationParam });
 
@@ -215,6 +240,7 @@ export default function ExpenseSummaryView({
       mode="date"
       value={pickerValue}
       title={picking === 'to' ? 'Last day' : 'First day'}
+      maximumDate={toDate(todayStr)}
       onConfirm={onPickedDate}
       onCancel={() => setPicking(null)}
     />
@@ -230,15 +256,19 @@ export default function ExpenseSummaryView({
 
         <View style={styles.headerCard}>
           <Text style={styles.headerLabel}>{periodLabel} · {rangeLabel(from, to)}</Text>
-          {truncated ? (
+          {!fresh ? (
+            <Text style={styles.headerLoading}>Loading…</Text>
+          ) : truncated ? (
             <Text style={styles.truncated}>{TRUNCATED_MESSAGE}</Text>
           ) : (
             <Text style={styles.headerTotal}>{rupees(shownTotal)}</Text>
           )}
-          <Text style={styles.headerSub}>
-            {shown.length} {shown.length === 1 ? 'entry' : 'entries'}
-            {truncated ? ` shown, ${rupees(shownTotal)}` : ''}
-          </Text>
+          {fresh && (
+            <Text style={styles.headerSub}>
+              {shown.length} {shown.length === 1 ? 'entry' : 'entries'}
+              {truncated ? ` shown, ${rupees(shownTotal)}` : ''}
+            </Text>
+          )}
         </View>
 
         <TextInput
@@ -292,7 +322,7 @@ export default function ExpenseSummaryView({
       <View style={styles.flex}>
         {topBar}
         <FlatList
-          data={error ? [] : shown}
+          data={error || !fresh ? [] : shown}
           keyExtractor={(r) => String(r.id)}
           renderItem={({ item }) => (
             <ExpenseRow expense={item} canChange onChange={onChangeExpense} onReturn={onReturn} showDate />
@@ -313,7 +343,7 @@ export default function ExpenseSummaryView({
   }
 
   // ── Summary ──
-  const s = summary;
+  const s = fresh ? summary : null;
   const hasAny = s && ((s.categories || []).length > 0 || (s.older || []).length > 0);
 
   return (
@@ -325,7 +355,11 @@ export default function ExpenseSummaryView({
             <Text style={styles.headerLabel}>{periodLabel} · {rangeLabel(from, to)}</Text>
             {loading && <ActivityIndicator size="small" color={Colors.primary} />}
           </View>
-          <Text style={styles.headerTotal}>{rupees(s ? s.total : 0)}</Text>
+          {s ? (
+            <Text style={styles.headerTotal}>{rupees(s.total)}</Text>
+          ) : (
+            <Text style={styles.headerLoading}>{error ? ' ' : 'Loading…'}</Text>
+          )}
           {s && (
             <View style={styles.headerCompare}>
               <Change pct={s.change_pct} big />
@@ -366,6 +400,7 @@ export default function ExpenseSummaryView({
               <View style={styles.catRight}>
                 <Text style={styles.catAmount}>{rupees(c.amount)}</Text>
                 <Change pct={c.change_pct} />
+                {Number(c.previous_amount) > 0 && <Text style={styles.was}>was {rupees(c.previous_amount)}</Text>}
               </View>
             </View>
             {(c.items || []).map((it) => (
@@ -378,7 +413,7 @@ export default function ExpenseSummaryView({
               >
                 <Text style={styles.itemName}>{it.name}</Text>
                 <Text style={styles.itemAmount}>{rupees(it.amount)}</Text>
-                <View style={styles.itemChange}><Change pct={it.change_pct} /></View>
+                <ChangeCol pct={it.change_pct} previous={it.previous_amount} />
                 <Ionicons name="chevron-forward" size={18} color={Colors.textLight} />
               </TouchableOpacity>
             ))}
@@ -398,7 +433,7 @@ export default function ExpenseSummaryView({
                   <Text style={styles.olderCount}>  {o.count} {o.count === 1 ? 'entry' : 'entries'}</Text>
                 </Text>
                 <Text style={styles.itemAmount}>{rupees(o.amount)}</Text>
-                <View style={styles.itemChange}><Change pct={o.change_pct} /></View>
+                <ChangeCol pct={o.change_pct} previous={o.previous_amount} />
               </View>
             ))}
           </View>
@@ -442,6 +477,8 @@ const styles = StyleSheet.create({
   headerLabel: { fontSize: FontSize.sm, color: Colors.textSecondary, fontWeight: '600' },
   headerTotal: { fontSize: FontSize.xxl, fontWeight: '700', color: Colors.text, marginTop: Spacing.xs, fontVariant: ['tabular-nums'] },
   headerCompare: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', marginTop: Spacing.xs },
+  headerLoading: { fontSize: FontSize.xl, color: Colors.textSecondary, marginTop: Spacing.xs },
+  was: { fontSize: FontSize.xs, color: Colors.textSecondary, fontVariant: ['tabular-nums'] },
   headerSub: { fontSize: FontSize.sm, color: Colors.textSecondary },
   truncated: { fontSize: FontSize.md, color: Colors.warning, fontWeight: '600', marginTop: Spacing.xs },
   change: { fontSize: FontSize.sm, fontWeight: '700' },
@@ -469,7 +506,7 @@ const styles = StyleSheet.create({
   },
   itemName: { flex: 1, fontSize: FontSize.md, color: Colors.text },
   itemAmount: { fontSize: FontSize.md, fontWeight: '600', color: Colors.text, fontVariant: ['tabular-nums'] },
-  itemChange: { minWidth: 64, alignItems: 'flex-end' },
+  itemChange: { minWidth: 80, alignItems: 'flex-end' },
   olderHint: { fontSize: FontSize.sm, color: Colors.textSecondary, marginBottom: Spacing.xs },
   olderCount: { fontSize: FontSize.sm, color: Colors.textSecondary },
 

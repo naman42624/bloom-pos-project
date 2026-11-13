@@ -76,3 +76,36 @@ export function rangeLabel(from, to) {
   if (a.getUTCMonth() === b.getUTCMonth()) return `${day(a)}–${day(b)} ${mon(b)}`;
   return `${day(a)} ${mon(a)} – ${day(b)} ${mon(b)}`;
 }
+
+// The period a chip is compared with (owner-approved, 2026-11-13):
+//   month       1..D this month  → 1..D last month (D clamped to its last day)
+//   last_month  whole month      → the whole month before it
+//   week        Mon..today       → last Mon..same weekday
+//   today                        → yesterday
+//   anything else (Pick dates)   → the same number of days just before
+export function comparisonRange(key, from, to) {
+  const f = toUtc(from);
+  const t = toUtc(to);
+  if (key === 'month') {
+    const y = f.getUTCFullYear();
+    const m = f.getUTCMonth();
+    const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate();
+    return {
+      from: toStr(new Date(Date.UTC(y, m - 1, 1))),
+      to: toStr(new Date(Date.UTC(y, m - 1, Math.min(t.getUTCDate(), lastDay)))),
+    };
+  }
+  if (key === 'last_month') {
+    const y = f.getUTCFullYear();
+    const m = f.getUTCMonth();
+    return { from: toStr(new Date(Date.UTC(y, m - 1, 1))), to: toStr(new Date(Date.UTC(y, m, 0))) };
+  }
+  if (key === 'week') {
+    return { from: toStr(new Date(f.getTime() - 7 * DAY)), to: toStr(new Date(t.getTime() - 7 * DAY)) };
+  }
+  if (key === 'today') {
+    const y = toStr(new Date(f.getTime() - DAY));
+    return { from: y, to: y };
+  }
+  return previousRange(from, to);
+}

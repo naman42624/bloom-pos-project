@@ -67,6 +67,20 @@ test('rangeLabel', () => {
   assert.strictEqual(e.rangeLabel('2025-12-28', '2026-01-03'), '28 Dec 2025 – 3 Jan 2026');
 });
 
+test('comparisonRange', () => {
+  const c = e.comparisonRange;
+  assert.deepStrictEqual(c('month', '2026-11-01', '2026-11-13'), { from: '2026-10-01', to: '2026-10-13' });
+  assert.deepStrictEqual(c('month', '2026-03-01', '2026-03-31'), { from: '2026-02-01', to: '2026-02-28' });
+  assert.deepStrictEqual(c('month', '2028-03-01', '2028-03-30'), { from: '2028-02-01', to: '2028-02-29' });
+  assert.deepStrictEqual(c('month', '2026-01-01', '2026-01-31'), { from: '2025-12-01', to: '2025-12-31' });
+  assert.deepStrictEqual(c('last_month', '2026-10-01', '2026-10-31'), { from: '2026-09-01', to: '2026-09-30' });
+  assert.deepStrictEqual(c('last_month', '2026-01-01', '2026-01-31'), { from: '2025-12-01', to: '2025-12-31' });
+  assert.deepStrictEqual(c('week', '2026-11-09', '2026-11-13'), { from: '2026-11-02', to: '2026-11-06' });
+  assert.deepStrictEqual(c('today', '2026-11-13', '2026-11-13'), { from: '2026-11-12', to: '2026-11-12' });
+  assert.deepStrictEqual(c('today', '2026-03-01', '2026-03-01'), { from: '2026-02-28', to: '2026-02-28' });
+  assert.deepStrictEqual(c('custom', '2026-11-01', '2026-11-13'), { from: '2026-10-19', to: '2026-10-31' });
+});
+
 let failed = 0;
 for (const t of tests) {
   try { t.fn(); console.log('ok   ' + t.name); } catch (err) { failed++; console.log('FAIL ' + t.name + ': ' + err.message); }

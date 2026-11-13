@@ -225,8 +225,19 @@ router.get('/summary-by-item', ...BOSS_ONLY, async (req, res, next) => {
     if (locationId !== null && (!Number.isInteger(locationId) || locationId <= 0)) {
       return res.status(400).json({ success: false, message: 'Pick a shop first.' });
     }
+    // Optional comparison period (the app sends "same days last month" etc.).
+    // Both or neither; when absent, the same number of days just before.
+    const { prev_from: pf, prev_to: pt } = req.query;
+    let prev;
+    if (pf !== undefined || pt !== undefined) {
+      if (!DATE_RE.test(String(pf || '')) || !DATE_RE.test(String(pt || '')) || pf > pt) {
+        return res.status(400).json({ success: false, message: 'Pick the dates to compare with.' });
+      }
+      prev = { from: pf, to: pt };
+    } else {
+      prev = previousRange(from, to);
+    }
     const db = await getAsyncDb();
-    const prev = previousRange(from, to);
     const [cur, before] = await Promise.all([sumByItem(db, from, to, locationId), sumByItem(db, prev.from, prev.to, locationId)]);
 
     // One row per category and item over both periods, so an item that
