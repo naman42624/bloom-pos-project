@@ -45,7 +45,7 @@ test('lastSevenDays', () => {
   assert.strictEqual(d.length, 7);
   assert.deepStrictEqual(d[0], { date: '2026-11-13', label: 'Today' });
   assert.deepStrictEqual(d[1], { date: '2026-11-12', label: 'Yesterday' });
-  assert.deepStrictEqual(d[2], { date: '2026-11-11', label: 'Tue 11 Nov' });
+  assert.deepStrictEqual(d[2], { date: '2026-11-11', label: 'Wed 11 Nov' });
   assert.deepStrictEqual(d[6], { date: '2026-11-07', label: 'Sat 7 Nov' });
 });
 test('givenToText', () => {
