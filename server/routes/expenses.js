@@ -217,8 +217,7 @@ router.get('/suggest', authenticate, authorize('owner', 'manager', 'employee', '
       return res.status(400).json({ success: false, message: 'Pick a shop first.' });
     }
     const db = await getAsyncDb();
-    const since = new Date(Date.now() - 29 * 86400000);
-    const sinceStr = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(since);
+    const sinceStr = localToday(new Date(Date.now() - 29 * 86400000));
     const cols = `i.id, i.name, i.category, i.usual_amount, i.last_given_to_user_id, i.last_given_to_name, gu.name AS last_user_name`;
     const base = `FROM expense_items i LEFT JOIN users gu ON gu.id = i.last_given_to_user_id WHERE i.is_active = TRUE AND i.merged_into IS NULL`;
     const useCount = `(SELECT COUNT(*) FROM expenses e WHERE e.item_id = i.id AND e.location_id = ? AND e.expense_date >= ?)`;

@@ -323,7 +323,7 @@ check('suggest: empty q gives pinned by pin order, then used items; not other sh
   assert(r.status === 200, `status ${r.status} ${JSON.stringify(r.body)}`);
   const ids = r.body.data.map((x) => x.id);
   assert(ids[0] === f.p2 && ids[1] === f.p1, 'pinned order: ' + ids.slice(0, 3).join(','));
-  assert(ids.indexOf(f.f) >= 2, 'used item missing or before pinned');
+  assert(ids.includes(f.f) && ids.indexOf(f.f) > ids.indexOf(f.p1) && ids.indexOf(f.f) > ids.indexOf(f.p2), 'used item missing or before pinned');
   for (const bad of [f.g, f.h, f.m]) assert(!ids.includes(bad), 'unexpected item ' + bad);
   assert(ids.length <= 8, 'more than 8');
   const one = r.body.data[0];
