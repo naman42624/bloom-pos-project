@@ -59,53 +59,83 @@ function generateExpenseNumber(db, locationId) {
 router.get('/', authenticate, authorize('owner', 'manager', 'employee', 'counter_staff'), async (req, res, next) => {
   try {
     const db = await getAsyncDb();
-    const { location_id, category, start_date, end_date, employee_id } = req.query;
+    const { location_id, category, start_date, end_date, employee_id, item_id, created_by, given_to_user_id } = req.query;
+    const q = String(req.query.q || '').trim().slice(0, 80);
+    const isBoss = isBossRole(req.user.role);
 
     // register_opened_at/register_closed_at let the client show which
-    // session an expense belongs to — added because multiple sessions in
-    // one day are a real, regular occurrence at this shop, and expenses
-    // already stored the right register_id with nothing surfacing it
-    // (2026-09-04 cash-register/expense audit). LEFT JOIN: a cash expense
-    // recorded with no register open at all (legacy data, or the
-    // register_id column not existing yet — see hasExpenseNumberColumn's
-    // sibling fallback in POST /) still returns the expense, just with
-    // both fields null.
+    // session an expense belongs to (multiple sessions a day are normal).
+    // LEFT JOIN: a cash expense with no register still returns, with null.
     let sql = `
       SELECT e.*, l.name as location_name, u.name as created_by_name,
+             ei.name as item_name, gu.name as given_to_user_name,
              cr.opening_time as register_opened_at, cr.opened_at as register_opened_at_fallback,
              cr.closed_at as register_closed_at
       FROM expenses e
       JOIN locations l ON e.location_id = l.id
       JOIN users u ON e.created_by = u.id
+      LEFT JOIN expense_items ei ON ei.id = e.item_id
+      LEFT JOIN users gu ON gu.id = e.given_to_user_id
       LEFT JOIN cash_registers cr ON cr.id = e.register_id
       WHERE 1=1
     `;
     const params = [];
 
-    if (location_id) { sql += ' AND e.location_id = ?'; params.push(location_id); }
+    let effectiveStart = start_date || null;
+    let limitedToDays = null;
+    if (!isBoss) {
+      // Staff see only their own shops (a shop they are not linked to is
+      // quietly ignored) and only the last 7 days including today.
+      limitedToDays = 7;
+      const mine = (await db.prepare('SELECT location_id FROM user_locations WHERE user_id = ?').all(req.user.id)).map((r) => Number(r.location_id));
+      const wanted = location_id ? Number(location_id) : null;
+      const allowed = wanted && mine.includes(wanted) ? [wanted] : mine;
+      if (allowed.length === 0) { sql += ' AND 1=0'; }
+      else { sql += ` AND e.location_id IN (${allowed.map(() => '?').join(',')})`; params.push(...allowed); }
+      const floor = localToday(new Date(Date.now() - 6 * 86400000));
+      if (!effectiveStart || effectiveStart < floor) effectiveStart = floor;
+    } else if (location_id) {
+      sql += ' AND e.location_id = ?'; params.push(location_id);
+    }
     if (category) { sql += ' AND e.category = ?'; params.push(category); }
-    if (start_date) { sql += ' AND e.expense_date >= ?'; params.push(start_date); }
+    if (effectiveStart) { sql += ' AND e.expense_date >= ?'; params.push(effectiveStart); }
     if (end_date) { sql += ' AND e.expense_date <= ?'; params.push(end_date); }
     if (employee_id) { sql += ' AND e.employee_id = ?'; params.push(employee_id); }
+    if (item_id) { sql += ' AND e.item_id = ?'; params.push(Number(item_id)); }
+    if (created_by) { sql += ' AND e.created_by = ?'; params.push(Number(created_by)); }
+    if (given_to_user_id) { sql += ' AND e.given_to_user_id = ?'; params.push(Number(given_to_user_id)); }
+    if (q) {
+      const like = `%${q.toLowerCase().replace(/[\\%_]/g, (c) => '\\' + c)}%`;
+      sql += " AND (LOWER(COALESCE(e.description, '')) LIKE ? ESCAPE '\\' OR LOWER(COALESCE(ei.name, '')) LIKE ? ESCAPE '\\' OR LOWER(COALESCE(e.note, '')) LIKE ? ESCAPE '\\')";
+      params.push(like, like, like);
+    }
 
-    sql += ' ORDER BY e.expense_date DESC, e.created_at DESC';
+    const CAP = 500;
+    sql += ` ORDER BY e.expense_date DESC, e.created_at DESC`;
+    if (isBoss) sql += ` LIMIT ${CAP + 1}`;
 
-    const expenses = await db.prepare(sql).all(...params);
+    let expenses = await db.prepare(sql).all(...params);
+    let truncated = false;
+    if (isBoss && expenses.length > CAP) { truncated = true; expenses = expenses.slice(0, CAP); }
 
     const normalizedExpenses = expenses.map((expense) => {
-      const { register_opened_at_fallback, ...rest } = expense;
+      const { register_opened_at_fallback, given_to_user_name, ...rest } = expense;
       return {
         ...rest,
         amount: Number(expense.amount) || 0,
         is_return: !!expense.is_return,
         register_opened_at: expense.register_opened_at || register_opened_at_fallback || null,
+        given_to_display: given_to_user_name || expense.given_to_name || null,
       };
     });
 
     // Calculate totals using numeric amounts so the client always receives numbers.
     const total = normalizedExpenses.reduce((sum, expense) => sum + (expense.is_return ? -expense.amount : expense.amount), 0);
 
-    res.json({ success: true, data: normalizedExpenses, total });
+    const extra = {};
+    if (limitedToDays) extra.limited_to_days = limitedToDays;
+    if (truncated) extra.truncated = true;
+    res.json({ success: true, data: normalizedExpenses, total, ...extra });
   } catch (err) {
     next(err);
   }

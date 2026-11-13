@@ -367,6 +367,90 @@ check('suggest: last_given_to shows the user name or the free name; helpers refu
   assert(h.status === 403, 'helper ' + h.status);
 });
 
+// ── Task 4: list filters and the staff 7-day limit ──
+const dayAgo = (n) => require('../utils/time').todayStr(new Date(Date.now() - n * 86400000));
+let listFx = null;
+async function listFixtures() {
+  if (listFx) return listFx;
+  const db = await getDb();
+  const item = await track(await resolveItem(db, { item_name: 'VerifyEB ListItem', category: 'other', userId: OWNER_ID }));
+  const mk = async (loc, date, desc, extra = {}) => {
+    const r = await db.prepare(`INSERT INTO expenses (location_id, category, amount, description, payment_method, expense_date, created_by, item_id, note, given_to_user_id, given_to_name)
+      VALUES (?, 'other', 5, ?, 'upi', ?, ?, ?, ?, ?, ?) RETURNING id`)
+      .get(loc, desc, date, extra.by || OWNER_ID, extra.item || null, extra.note || null, extra.givenUser || null, extra.givenName || null);
+    createdExpenseIds.push(r.id);
+    return r.id;
+  };
+  listFx = {
+    item,
+    recent: await mk(TEST_LOCATION_ID, dayAgo(2), 'VerifyEB recent', { item: item.id, givenUser: 8117, by: COUNTER_ID }),
+    old: await mk(TEST_LOCATION_ID, dayAgo(20), 'VerifyEB old backdated', { note: 'paid to Sharma ji' }),
+    edge: await mk(TEST_LOCATION_ID, dayAgo(6), 'VerifyEB edge', { givenName: 'Ramu' }),
+    cut: await mk(TEST_LOCATION_ID, dayAgo(7), 'VerifyEB cut'),
+    other: await mk(3, dayAgo(1), 'VerifyEB other shop'),
+  };
+  return listFx;
+}
+const ownerT = () => tokenFor(OWNER_ID);
+const counterT = () => tokenFor(COUNTER_ID);
+
+check('staff list is limited to the last 7 days and says so', async () => {
+  const fx = await listFixtures();
+  const r = await api('GET', `/expenses?start_date=${dayAgo(30)}&location_id=${TEST_LOCATION_ID}&q=VerifyEB`, counterT());
+  assert(r.status === 200, 'status ' + r.status);
+  assert(r.body.limited_to_days === 7, 'limited_to_days ' + r.body.limited_to_days);
+  const ids = r.body.data.map((x) => x.id);
+  assert(r.body.data.every((x) => String(x.expense_date).slice(0, 10) >= dayAgo(6)), 'older row leaked');
+  assert(ids.includes(fx.recent) && ids.includes(fx.edge), 'missing in-window rows');
+  assert(!ids.includes(fx.old) && !ids.includes(fx.cut), 'old rows present');
+});
+
+check('staff asking for a shop they are not linked to see only their own shops', async () => {
+  const fx = await listFixtures();
+  const r = await api('GET', `/expenses?location_id=3&q=VerifyEB`, counterT());
+  assert(r.status === 200, 'status ' + r.status);
+  assert(r.body.data.every((x) => Number(x.location_id) === TEST_LOCATION_ID), 'other shop rows');
+  assert(!r.body.data.some((x) => x.id === fx.other), 'other shop fixture leaked');
+});
+
+check('owner gets the back-dated row and no staff limit', async () => {
+  const fx = await listFixtures();
+  const r = await api('GET', `/expenses?start_date=${dayAgo(30)}&q=VerifyEB`, ownerT());
+  assert(r.body.limited_to_days === undefined, 'limited_to_days set for owner');
+  const ids = r.body.data.map((x) => x.id);
+  assert(ids.includes(fx.old) && ids.includes(fx.other), 'owner missing rows');
+});
+
+check('item_id and given_to_user_id filters return only matching rows', async () => {
+  const fx = await listFixtures();
+  const a = await api('GET', `/expenses?item_id=${fx.item.id}`, ownerT());
+  assert(a.body.data.length === 1 && a.body.data[0].id === fx.recent, 'item filter rows ' + a.body.data.length);
+  assert(a.body.data[0].item_name === 'VerifyEB ListItem', 'item_name ' + a.body.data[0].item_name);
+  assert(a.body.data[0].created_by_name, 'created_by_name missing');
+  const b = await api('GET', `/expenses?given_to_user_id=8117`, ownerT());
+  assert(b.body.data.length >= 1 && b.body.data.every((x) => Number(x.given_to_user_id) === 8117), 'given_to filter');
+  assert(b.body.data.every((x) => x.given_to_display), 'given_to_display missing');
+  const c = await api('GET', `/expenses?created_by=${COUNTER_ID}&q=VerifyEB%20recent`, ownerT());
+  assert(c.body.data.length === 1 && c.body.data[0].id === fx.recent, 'created_by filter');
+});
+
+check('q finds the note row and the item name, ignoring case', async () => {
+  const fx = await listFixtures();
+  const a = await api('GET', `/expenses?q=sharma`, ownerT());
+  assert(a.body.data.some((x) => x.id === fx.old), 'note not found');
+  const b = await api('GET', `/expenses?q=verifyeb%20listitem`, ownerT());
+  assert(b.body.data.some((x) => x.id === fx.recent), 'item name not found');
+  const w = await api('GET', `/expenses?q=%25`, ownerT());
+  assert(w.body.data.length === 0 || w.body.data.every((x) => /%/.test(`${x.description}${x.note}${x.item_name}`)), 'wildcard not escaped');
+});
+
+check('given_to_display falls back to the typed name', async () => {
+  const fx = await listFixtures();
+  const r = await api('GET', `/expenses?q=VerifyEB%20edge`, ownerT());
+  const row = r.body.data.find((x) => x.id === fx.edge);
+  assert(row && row.given_to_display === 'Ramu', 'display ' + (row && row.given_to_display));
+});
+
 async function cleanup() {
   const db = await getDb();
   for (const id of createdExpenseIds) {
