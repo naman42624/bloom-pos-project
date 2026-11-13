@@ -413,6 +413,211 @@ router.get('/suggest', authenticate, authorize('owner', 'manager', 'employee', '
   }
 });
 
+// ─── Owner item tools: list, change, pin order, merge ────────
+// Owner only. Literal paths, so they sit before every '/:id' route.
+const OWNER_ONLY = [authenticate, authorize('owner')];
+const SALARY_ITEM_MESSAGE = "Salary items can't be moved to another kind. Use Payroll for salary.";
+const MERGE_TARGET_MESSAGE = 'Pick a different item to merge into.';
+const ITEM_NOT_FOUND_MESSAGE = 'That item was not found. Pull down to refresh.';
+
+const itemOut = (r) => ({
+  id: Number(r.id),
+  name: r.name,
+  category: r.category,
+  usual_amount: r.usual_amount == null ? null : Number(r.usual_amount),
+  pinned: !!r.pinned,
+  pin_order: r.pin_order == null ? null : Number(r.pin_order),
+  is_active: r.is_active !== false,
+  merged_into: r.merged_into == null ? null : Number(r.merged_into),
+  ...(r.use_count !== undefined ? { use_count: Number(r.use_count) || 0 } : {}),
+});
+const pickItemAudit = (r) => ({
+  name: r.name, category: r.category, usual_amount: r.usual_amount == null ? null : Number(r.usual_amount),
+  pinned: !!r.pinned, pin_order: r.pin_order == null ? null : Number(r.pin_order),
+  is_active: r.is_active !== false, merged_into: r.merged_into == null ? null : Number(r.merged_into),
+});
+
+async function auditItem(tx, itemId, userId, action, before, after) {
+  await tx.prepare(`
+    INSERT INTO audit_logs (entity_type, entity_id, user_id, action, previous_state, new_state, created_at)
+    VALUES ('expense_item', ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+  `).run(itemId, userId, action, JSON.stringify(before), after ? JSON.stringify(after) : null);
+}
+
+function sendItemError(res, next, err) {
+  if (err && err.statusCode) return res.status(err.statusCode).json({ success: false, message: err.message });
+  return next(err);
+}
+
+// GET /api/expenses/items?q=&include_hidden=
+router.get('/items', ...OWNER_ONLY, async (req, res, next) => {
+  try {
+    const db = await getAsyncDb();
+    const params = [];
+    let where = ' WHERE 1=1';
+    const showHidden = ['1', 'true'].includes(String(req.query.include_hidden || '').toLowerCase());
+    if (!showHidden) where += ' AND i.is_active = TRUE AND i.merged_into IS NULL';
+    const q = nameKey(req.query.q);
+    if (q) {
+      where += " AND i.name_key LIKE ? ESCAPE '\\'";
+      params.push(`%${q.replace(/[\\%_]/g, (c) => '\\' + c)}%`);
+    }
+    const rows = await db.prepare(`
+      SELECT i.id, i.name, i.category, i.usual_amount, i.pinned, i.pin_order, i.is_active, i.merged_into,
+             (SELECT COUNT(*) FROM expenses e WHERE e.item_id = i.id) AS use_count
+        FROM expense_items i${where}
+       ORDER BY i.pinned DESC NULLS LAST, i.pin_order ASC NULLS LAST, i.name ASC
+       LIMIT 500
+    `).all(...params);
+    res.json({ success: true, data: rows.map(itemOut) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// PUT /api/expenses/items/pins { ids: [...] }: the full pinned list, in order.
+// Items left out of the list are unpinned.
+router.put('/items/pins', ...OWNER_ONLY, async (req, res, next) => {
+  try {
+    const raw = req.body && req.body.ids;
+    const ids = Array.isArray(raw) ? raw.map(Number) : null;
+    if (!ids || ids.length > 50 || ids.some((n) => !Number.isInteger(n) || n <= 0) || new Set(ids).size !== ids.length) {
+      return res.status(400).json({ success: false, message: 'Pick the items to pin again.' });
+    }
+    await withMoneyTx(async (tx) => {
+      if (ids.length) {
+        const found = await tx.prepare(
+          `SELECT id FROM expense_items WHERE id IN (${ids.map(() => '?').join(',')}) AND merged_into IS NULL FOR UPDATE`
+        ).all(...ids);
+        if (found.length !== ids.length) throw httpError(400, 'One of these items was merged or removed. Pull down to refresh, then pin again.');
+      }
+      await tx.prepare('UPDATE expense_items SET pinned = FALSE, pin_order = NULL, updated_at = CURRENT_TIMESTAMP WHERE pinned = TRUE').run();
+      for (let i = 0; i < ids.length; i += 1) {
+        await tx.prepare('UPDATE expense_items SET pinned = TRUE, pin_order = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(i + 1, ids[i]);
+      }
+    });
+    res.json({ success: true, data: { ids } });
+  } catch (err) {
+    sendItemError(res, next, err);
+  }
+});
+
+// PUT /api/expenses/items/:id: name, category (+ move_past), usual_amount,
+// pinned, pin_order, is_active.
+router.put('/items/:id', ...OWNER_ONLY, async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) return res.status(404).json({ success: false, message: ITEM_NOT_FOUND_MESSAGE });
+    const b = req.body || {};
+    const has = (k) => Object.prototype.hasOwnProperty.call(b, k);
+    const changes = {};
+    if (has('name')) {
+      const display = String(b.name == null ? '' : b.name).trim().replace(/\s+/g, ' ');
+      if (!display) return res.status(400).json({ success: false, message: 'Type what this was for, like Petrol.' });
+      if (display.length > 80) return res.status(400).json({ success: false, message: 'Make the name shorter (80 letters at most).' });
+      changes.name = display;
+    }
+    if (has('category')) {
+      if (!EXPENSE_CATEGORIES.includes(b.category)) return res.status(400).json({ success: false, message: NO_CATEGORY_MESSAGE });
+      changes.category = b.category;
+    }
+    if (has('usual_amount')) {
+      const n = b.usual_amount === null || b.usual_amount === '' ? null : Number(b.usual_amount);
+      if (n !== null && (!Number.isFinite(n) || n < 0 || n > 10000000)) return res.status(400).json({ success: false, message: NO_AMOUNT_MESSAGE });
+      changes.usual_amount = n === null ? null : round2(n);
+    }
+    for (const k of ['pinned', 'is_active']) {
+      if (has(k)) {
+        if (typeof b[k] !== 'boolean') return res.status(400).json({ success: false, message: 'Something on this item could not be saved. Try again.' });
+        changes[k] = b[k];
+      }
+    }
+    if (has('pin_order')) {
+      const n = b.pin_order === null ? null : Number(b.pin_order);
+      if (n !== null && !Number.isInteger(n)) return res.status(400).json({ success: false, message: 'Something on this item could not be saved. Try again.' });
+      changes.pin_order = n;
+    }
+    const movePast = b.move_past === true;
+
+    const result = await withMoneyTx(async (tx) => {
+      const item = await tx.prepare('SELECT * FROM expense_items WHERE id = ? FOR UPDATE').get(id);
+      if (!item) throw httpError(404, ITEM_NOT_FOUND_MESSAGE);
+      if (item.merged_into) throw httpError(400, 'This item was merged into another one. Change that item instead.');
+      if (changes.name !== undefined) {
+        const key = nameKey(changes.name);
+        const other = await tx.prepare('SELECT id, name FROM expense_items WHERE name_key = ? AND id <> ?').get(key, id);
+        if (other) throw httpError(400, `There is already an item called ${other.name}. Merge them instead.`);
+        changes.name_key = key;
+      }
+      const categoryChanges = changes.category !== undefined && changes.category !== item.category;
+      if (categoryChanges && (item.category === 'salary' || changes.category === 'salary')) throw httpError(400, SALARY_ITEM_MESSAGE);
+      if (!categoryChanges) delete changes.category;
+
+      const cols = Object.keys(changes);
+      if (cols.length) {
+        await tx.prepare(
+          `UPDATE expense_items SET ${cols.map((c) => `${c} = ?`).join(', ')}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`
+        ).run(...cols.map((c) => changes[c]), id);
+      }
+      const after = await tx.prepare('SELECT * FROM expense_items WHERE id = ?').get(id);
+      if (cols.length) await auditItem(tx, id, req.user.id, 'expense_item_update', pickItemAudit(item), pickItemAudit(after));
+
+      // Past rows follow the new category only when asked. Salary rows never move.
+      let recategorised = 0;
+      if (categoryChanges && movePast) {
+        const moved = await tx.prepare(
+          "UPDATE expenses SET category = ? WHERE item_id = ? AND category <> 'salary' AND category <> ?"
+        ).run(after.category, id, after.category);
+        recategorised = moved.changes;
+        await auditItem(tx, id, req.user.id, 'expense_item_recategorise',
+          { category: item.category }, { category: after.category, recategorised });
+      }
+      return { item: after, recategorised };
+    });
+    res.json({ success: true, data: { ...itemOut(result.item), recategorised: result.recategorised } });
+  } catch (err) {
+    if (err && err.code === '23505') {
+      return res.status(400).json({ success: false, message: 'There is already an item with that name. Merge them instead.' });
+    }
+    sendItemError(res, next, err);
+  }
+});
+
+// POST /api/expenses/items/:id/merge { into_id }: one transaction.
+// Moves item_id only; category and description on the rows stay as they are.
+router.post('/items/:id/merge', ...OWNER_ONLY, async (req, res, next) => {
+  try {
+    const sourceId = Number(req.params.id);
+    const intoId = Number(req.body && req.body.into_id);
+    if (!Number.isInteger(sourceId) || sourceId <= 0) return res.status(404).json({ success: false, message: ITEM_NOT_FOUND_MESSAGE });
+    if (!Number.isInteger(intoId) || intoId <= 0 || intoId === sourceId) {
+      return res.status(400).json({ success: false, message: MERGE_TARGET_MESSAGE });
+    }
+    const out = await withMoneyTx(async (tx) => {
+      // Lock both items in id order so two merges cannot deadlock.
+      const locked = await tx.prepare('SELECT * FROM expense_items WHERE id IN (?, ?) ORDER BY id FOR UPDATE').all(sourceId, intoId);
+      const source = locked.find((r) => Number(r.id) === sourceId);
+      const target = locked.find((r) => Number(r.id) === intoId);
+      if (!source) throw httpError(404, ITEM_NOT_FOUND_MESSAGE);
+      if (source.merged_into) throw httpError(400, 'This item was already merged. Pull down to refresh.');
+      if (!target || target.merged_into || target.is_active === false) throw httpError(400, MERGE_TARGET_MESSAGE);
+
+      const moved = (await tx.prepare('UPDATE expenses SET item_id = ? WHERE item_id = ?').run(intoId, sourceId)).changes;
+      // Items already merged into the source now point at the target (never chained).
+      const repointed = (await tx.prepare('UPDATE expense_items SET merged_into = ?, updated_at = CURRENT_TIMESTAMP WHERE merged_into = ?').run(intoId, sourceId)).changes;
+      await tx.prepare(
+        'UPDATE expense_items SET merged_into = ?, is_active = FALSE, pinned = FALSE, pin_order = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?'
+      ).run(intoId, sourceId);
+      await auditItem(tx, sourceId, req.user.id, 'expense_item_merge',
+        pickItemAudit(source), { merged_into: intoId, into_name: target.name, moved, repointed });
+      return { moved, repointed, into: target };
+    });
+    res.json({ success: true, data: { moved: out.moved, repointed: out.repointed, into_id: intoId, into_name: out.into.name } });
+  } catch (err) {
+    sendItemError(res, next, err);
+  }
+});
+
 // ─── POST /api/expenses ──────────────────────────────────────
 router.post(
   '/',
