@@ -589,8 +589,8 @@ function SheetBody({
             />
           </View>
           {methods.map((m) => {
-            const disabled = cashLocked ? !active : (m.key === 'cash' && cashDisabled);
             const active = paymentMethod === m.key;
+            const disabled = cashLocked ? !active : (m.key === 'cash' && cashDisabled);
             return (
               <TouchableOpacity
                 key={m.key}
