@@ -96,6 +96,10 @@ router.get('/', authenticate, authorize('owner', 'manager', 'employee', 'counter
     if (item_id) { sql += ' AND e.item_id = ?'; params.push(Number(item_id)); }
     if (created_by) { sql += ' AND e.created_by = ?'; params.push(Number(created_by)); }
     if (given_to_user_id) { sql += ' AND e.given_to_user_id = ?'; params.push(Number(given_to_user_id)); }
+    if (!isBoss && (q || employee_id || given_to_user_id)) {
+      // A search or filter must not reveal what a hidden salary row says.
+      sql += " AND (e.category <> 'salary' OR e.employee_id = ?)"; params.push(req.user.id);
+    }
     if (q) {
       const like = `%${q.toLowerCase().replace(/[\\%_]/g, (c) => '\\' + c)}%`;
       sql += " AND (LOWER(COALESCE(e.description, '')) LIKE ? ESCAPE '\\' OR LOWER(COALESCE(ei.name, '')) LIKE ? ESCAPE '\\' OR LOWER(COALESCE(e.note, '')) LIKE ? ESCAPE '\\')";
@@ -110,7 +114,7 @@ router.get('/', authenticate, authorize('owner', 'manager', 'employee', 'counter
     let truncated = false;
     if (isBoss && expenses.length > CAP) { truncated = true; expenses = expenses.slice(0, CAP); }
 
-    const normalizedExpenses = expenses.map(normalizeExpenseRow);
+    const normalizedExpenses = expenses.map(normalizeExpenseRow).map((r) => (isBoss ? r : hideSalaryNames(r, req.user.id)));
 
     // Calculate totals using numeric amounts so the client always receives numbers.
     const total = normalizedExpenses.reduce((sum, expense) => sum + (expense.is_return ? -expense.amount : expense.amount), 0);
@@ -139,6 +143,24 @@ const SALARY_ROW_MESSAGE = "Salary entries can't be changed to another kind, and
 const FIELD_FALLBACK_MESSAGE = 'Check the amount, type and date, then save again.';
 const BAD_PHOTO_MESSAGE = 'That photo could not be used. Take the photo again.';
 const isBossRole = (role) => role === 'owner' || role === 'manager';
+// Counter staff never log a Salary expense; they use Salary advance instead.
+const SALARY_ADVANCE_MESSAGE = 'Use Salary advance for money given to staff.';
+// Other people's salary rows, as counter staff see them: no names at all.
+function hideSalaryNames(row, viewerId) {
+  if (row.category !== 'salary' || Number(row.employee_id) === Number(viewerId)) return row;
+  return {
+    ...row,
+    description: 'Salary advance',
+    note: null,
+    item_id: null,
+    item_name: null,
+    employee_id: null,
+    employee_name: null,
+    given_to_user_id: null,
+    given_to_name: null,
+    given_to_display: null,
+  };
+}
 
 // Plain-language message for the first failed field.
 function validationMessage(errors, fallback) {
@@ -853,6 +875,9 @@ router.post(
         item = await resolveItem(adb, { item_id: req.body.item_id, item_name: req.body.item_name, category: null, userId: req.user.id });
       }
       const category = req.body.category || item.category;
+      if (!isBossRole(req.user.role) && category === 'salary') {
+        return res.status(400).json({ success: false, message: SALARY_ADVANCE_MESSAGE });
+      }
 
       // A "Salary" category expense logged through this general route has no
       // structural connection to the payroll system otherwise — no employee,
@@ -1089,6 +1114,9 @@ router.put(
       }
       if (!isBoss && has('expense_date') && req.body.expense_date !== current.expense_date) {
         return res.status(403).json({ success: false, message: OTHER_DAY_MESSAGE });
+      }
+      if (!isBoss && (current.category === 'salary' || req.body.category === 'salary')) {
+        return res.status(400).json({ success: false, message: SALARY_ADVANCE_MESSAGE });
       }
       const wantsItem = !!req.body.item_id || has('item_name');
       if (!req.body.item_id && has('item_name') && !nameKey(req.body.item_name)) {
