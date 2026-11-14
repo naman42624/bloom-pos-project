@@ -18,9 +18,15 @@ const checks = [];
 const createdItemIds = [];
 const createdExpenseIds = [];
 const createdRegisterIds = [];
+const createdAuditIds = []; // shop-wide audit rows (entity_id 0) this run made
+const createdSalaryPaymentIds = [];
+let itemIdFloor = null; // items with an id at or below this existed before the run
+let pinSnapshot = null; // the real pin list, restored after the pins checks
 
 function check(name, fn) { checks.push({ name, fn }); }
 function assert(cond, msg) { if (!cond) throw new Error(msg); }
+// A check that needs Test Loc's register throws this when someone else's is open.
+function skip(msg) { const e = new Error(msg); e.skip = true; return e; }
 
 function assertLocalTarget() {
   const isLocal = (u) => { try { const h = new URL(u).hostname; return h === 'localhost' || h === '127.0.0.1'; } catch { return false; } };
@@ -132,6 +138,35 @@ async function ensureRider() {
   return riderId;
 }
 
+// Opens a register at Test Loc for this run. Someone else's open register
+// is never touched: the check is skipped instead.
+async function openOwnRegister(owner) {
+  const st = await api('GET', `/sales/register/status?location_id=${TEST_LOCATION_ID}`, owner);
+  if (st.body && st.body.isOpen) {
+    const id = st.body.data && st.body.data.id;
+    if (createdRegisterIds.includes(id)) return id;
+    throw skip(`Test Loc register #${id} is open and is not this run's; skipped.`);
+  }
+  const op = await api('POST', '/sales/register/open', owner, { location_id: TEST_LOCATION_ID, opening_balance: 500 });
+  assert(op.status === 201, `open ${op.status} ${JSON.stringify(op.body)}`);
+  createdRegisterIds.push(op.body.data.id);
+  return op.body.data.id;
+}
+async function closeOwnRegister(owner, regId) {
+  const st = await api('GET', `/sales/register/status?location_id=${TEST_LOCATION_ID}`, owner);
+  if (!(st.body && st.body.isOpen && st.body.data.id === regId)) return;
+  await api('PUT', '/sales/register/close', owner, { location_id: TEST_LOCATION_ID, actual_cash: Number(st.body.data.expected_cash) || 0 });
+}
+// Runs fn and records the shop-wide audit rows (entity_id 0) it wrote.
+async function trackAudits(action, fn) {
+  const db = await getDb();
+  const before = Number((await db.prepare('SELECT COALESCE(MAX(id), 0) AS m FROM audit_logs').get()).m);
+  const out = await fn();
+  const rows = await db.prepare('SELECT id FROM audit_logs WHERE id > ? AND action = ? AND entity_id = 0 AND user_id = ?').all(before, action, OWNER_ID);
+  rows.forEach((r) => createdAuditIds.push(Number(r.id)));
+  return out;
+}
+
 async function addExpense(token, body) {
   const r = await api('POST', '/expenses', token, { location_id: TEST_LOCATION_ID, expense_date: shopDay(), ...body });
   if (r.body && r.body.data && r.body.data.id) createdExpenseIds.push(r.body.data.id);
@@ -239,12 +274,7 @@ check('PUT (owner) changes item, note and Given to; counter staff cannot move th
 
 check('Review Focus 2: back-dating a closed-session cash expense keeps its register and totals', async () => {
   const owner = tokenFor(OWNER_ID);
-  const st = await api('GET', `/sales/register/status?location_id=${TEST_LOCATION_ID}`, owner);
-  assert(!(st.body && st.body.isOpen), 'Test Loc already has a register open; close it in the app first.');
-  const op = await api('POST', '/sales/register/open', owner, { location_id: TEST_LOCATION_ID, opening_balance: 500 });
-  assert(op.status === 201, `open ${op.status} ${JSON.stringify(op.body)}`);
-  const regId = op.body.data.id;
-  createdRegisterIds.push(regId);
+  const regId = await openOwnRegister(owner);
   const add = await addExpense(owner, { item_name: 'VerifyEB Cash', category: 'other', amount: 100, payment_method: 'cash' });
   assert(add.status === 201 && add.body.data.register_id === regId, `add ${add.status} ${JSON.stringify(add.body)}`);
   const cl = await api('PUT', '/sales/register/close', owner, { location_id: TEST_LOCATION_ID, actual_cash: 390 });
@@ -657,21 +687,43 @@ check('salary rows are never moved; moving to or from salary is refused', async 
   assert(bad.status === 400, 'bad category ' + bad.status);
 });
 
+async function snapshotPins() {
+  if (pinSnapshot) return pinSnapshot;
+  const rows = await (await getDb()).prepare('SELECT id, pin_order FROM expense_items WHERE pinned = TRUE AND id <= ? ORDER BY pin_order ASC NULLS LAST, id ASC').all(itemIdFloor);
+  pinSnapshot = rows.map((r) => ({ id: Number(r.id), pin_order: r.pin_order == null ? null : Number(r.pin_order) }));
+  return pinSnapshot;
+}
+// Puts the real pin list back exactly as it was before the run.
+async function restorePins() {
+  if (!pinSnapshot) return;
+  const db = await getDb();
+  await db.prepare('UPDATE expense_items SET pinned = FALSE, pin_order = NULL WHERE pinned = TRUE AND id > ?').run(itemIdFloor);
+  for (const p of pinSnapshot) await db.prepare('UPDATE expense_items SET pinned = TRUE, pin_order = ? WHERE id = ?').run(p.pin_order, p.id);
+  const kept = pinSnapshot.map((p) => p.id);
+  await db.prepare(`UPDATE expense_items SET pinned = FALSE, pin_order = NULL WHERE pinned = TRUE AND id <= ?${kept.length ? ` AND id NOT IN (${kept.map(() => '?').join(',')})` : ''}`).run(itemIdFloor, ...kept);
+}
+const putPins = (ids) => trackAudits('expense_item_pins', () => api('PUT', '/expenses/items/pins', ownerT(), { ids }));
+
 check('PUT /items/pins sets the suggest order', async () => {
+  const real = (await snapshotPins()).map((p) => p.id).slice(0, 40);
   const a = await newItem('VerifyEB PinA');
   const b = await newItem('VerifyEB PinB');
-  const r = await api('PUT', '/expenses/items/pins', ownerT(), { ids: [b.id, a.id] });
+  const r = await putPins([b.id, a.id, ...real]);
   assert(r.status === 200, `status ${r.status} ${JSON.stringify(r.body)}`);
   const s = await api('GET', `/expenses/suggest?location_id=${TEST_LOCATION_ID}`, ownerT());
   const ids = s.body.data.map((i) => i.id);
   assert(ids.indexOf(b.id) === 0 && ids.indexOf(a.id) === 1, 'order ' + ids);
   const au = await (await getDb()).prepare("SELECT id, new_state FROM audit_logs WHERE entity_type = 'expense_item' AND entity_id = 0 AND action = 'expense_item_pins' AND user_id = ? ORDER BY id DESC LIMIT 1").get(OWNER_ID);
-  assert(au && JSON.stringify(au.new_state.ids) === JSON.stringify([b.id, a.id]), 'pins audit ' + JSON.stringify(au));
-  const r2 = await api('PUT', '/expenses/items/pins', ownerT(), { ids: [a.id] });
+  assert(au && JSON.stringify(au.new_state.ids) === JSON.stringify([b.id, a.id, ...real]), 'pins audit ' + JSON.stringify(au));
+  const r2 = await putPins([a.id, ...real]);
   assert(r2.status === 200, 'status ' + r2.status);
   const row = await (await getDb()).prepare('SELECT pinned FROM expense_items WHERE id = ?').get(b.id);
   assert(row.pinned === false, 'b still pinned after leaving the list');
-  await api('PUT', '/expenses/items/pins', ownerT(), { ids: [] });
+  await restorePins();
+  const now = await (await getDb()).prepare('SELECT id, pin_order FROM expense_items WHERE pinned = TRUE ORDER BY pin_order ASC NULLS LAST, id ASC').all();
+  const want = pinSnapshot.map((p) => `${p.id}:${p.pin_order}`).join(',');
+  const got = now.map((p) => `${Number(p.id)}:${p.pin_order == null ? null : Number(p.pin_order)}`).join(',');
+  assert(got === want, `real pins not restored: ${got} vs ${want}`);
 });
 
 let mergeFx = null;
@@ -790,11 +842,11 @@ check('assigning sets item_id only, skips assigned and salary rows, and audits',
   const fx = await sortFixtures();
   const db = await getDb();
   const before = await db.prepare('SELECT amount, expense_date, category, description, register_id FROM expenses WHERE id = ?').get(fx.exact);
-  const r = await api('POST', '/expenses/assign-items', ownerT(), { assignments: [
+  const r = await trackAudits('expense_assign_items', () => api('POST', '/expenses/assign-items', ownerT(), { assignments: [
     { expense_id: fx.exact, item_id: fx.item.id },
     { expense_id: fx.plain, item_name: 'VerifyEB Mystery Thing' },
     { expense_id: fx.salary, item_id: fx.item.id },
-  ] });
+  ] }));
   assert(r.status === 200 && r.body.data.assigned === 2, JSON.stringify(r.body));
   assert(r.body.data.skipped.map(Number).join() === String(fx.salary), 'skipped ' + JSON.stringify(r.body.data.skipped));
   const after = await db.prepare('SELECT amount, expense_date, category, description, register_id, item_id FROM expenses WHERE id = ?').get(fx.exact);
@@ -805,7 +857,7 @@ check('assigning sets item_id only, skips assigned and salary rows, and audits',
   await track(made);
   const sal = await db.prepare('SELECT item_id FROM expenses WHERE id = ?').get(fx.salary);
   assert(sal.item_id == null, 'salary assigned');
-  const again = await api('POST', '/expenses/assign-items', ownerT(), { assignments: [{ expense_id: fx.exact, item_id: fx.teak.id }] });
+  const again = await trackAudits('expense_assign_items', () => api('POST', '/expenses/assign-items', ownerT(), { assignments: [{ expense_id: fx.exact, item_id: fx.teak.id }] }));
   assert(again.body.data.assigned === 0 && again.body.data.skipped.map(Number).join() === String(fx.exact), 'reassign ' + JSON.stringify(again.body));
   const still = await db.prepare('SELECT item_id FROM expenses WHERE id = ?').get(fx.exact);
   assert(Number(still.item_id) === fx.item.id, 'overwritten');
@@ -843,43 +895,252 @@ check('a manager gets 403 on unsorted and assign-items', async () => {
   assert(a.status === 403 && b.status === 403, `${a.status} ${b.status}`);
 });
 
+// ── Final fix wave (2026-11-14) ──
+const OLD_CASH_COPY = "This cash was paid on a register day that is already closed, so its amount, Cash or UPI and return can't be changed. You can still change what it was for, the note, the photo, who got it and the date.";
+const PAST_DAY_CASH_COPY = "Past days don't change today's drawer. For an earlier day, pick UPI.";
+const SALARY_ROW_COPY = "Salary entries can't be changed to another kind, and other entries can't be changed to Salary. Remove it and add it again instead.";
+const DAY_CLOSED_COPY = 'This expense is from a register day that is already closed. Ask the owner or manager to change it.';
+
+async function rawRow(cols) {
+  const db = await getDb();
+  const c = {
+    location_id: TEST_LOCATION_ID, category: 'other', amount: 10, description: 'VerifyEB raw', payment_method: 'upi',
+    expense_date: shopDay(), created_by: OWNER_ID, ...cols,
+  };
+  const daysAgo = c.created_days_ago;
+  delete c.created_days_ago;
+  const keys = Object.keys(c);
+  const at = daysAgo ? `, created_at` : '';
+  const atVal = daysAgo ? `, CURRENT_TIMESTAMP - INTERVAL '${Number(daysAgo)} days'` : '';
+  const r = await db.prepare(`INSERT INTO expenses (${keys.join(', ')}${at}) VALUES (${keys.map(() => '?').join(', ')}${atVal}) RETURNING id`).get(...keys.map((k) => c[k]));
+  createdExpenseIds.push(r.id);
+  return r.id;
+}
+async function regRow(id) {
+  return (await getDb()).prepare('SELECT expected_cash, discrepancy FROM cash_registers WHERE id = ?').get(id);
+}
+async function previewExpected(owner) {
+  const p = await api('PUT', '/sales/register/close', owner, { location_id: TEST_LOCATION_ID, actual_cash: 0, preview: true });
+  assert(p.status === 200 && p.body.data && p.body.data.preview === true, `preview ${p.status} ${JSON.stringify(p.body)}`);
+  return Number(p.body.data.expected_cash);
+}
+
+check('C1/I2: an old cash row with no register stays out of today\'s drawer; past-day cash is refused', async () => {
+  const owner = tokenFor(OWNER_ID);
+  const regId = await openOwnRegister(owner);
+  try {
+    const db = await getDb();
+    const legacy = await rawRow({ payment_method: 'cash', amount: 120, expense_date: shopDay(-2), description: 'VerifyEB legacy cash', created_days_ago: 2 });
+    const staffLegacy = await rawRow({ payment_method: 'cash', amount: 30, expense_date: shopDay(-2), description: 'VerifyEB staff legacy', created_by: COUNTER_ID, created_days_ago: 2 });
+    const reg0 = await regRow(regId);
+    const pre0 = await previewExpected(owner);
+
+    // Item, note, Given to and date change: allowed, no register, no drawer move.
+    const ok = await api('PUT', `/expenses/${legacy}`, owner, { note: 'VerifyEB fixed note', given_to_name: 'VerifyEB Ram', expense_date: shopDay(-3) });
+    assert(ok.status === 200, `edit ${ok.status} ${JSON.stringify(ok.body)}`);
+    assert(ok.body.data.register_id === null, 'register_id set to ' + ok.body.data.register_id);
+    assert(ok.body.data.description === 'VerifyEB legacy cash — VerifyEB fixed note', 'description ' + ok.body.data.description);
+    const reg1 = await regRow(regId);
+    assert(Number(reg1.expected_cash) === Number(reg0.expected_cash), `expected_cash ${reg0.expected_cash} -> ${reg1.expected_cash}`);
+    assert(await previewExpected(owner) === pre0, 'close preview changed');
+
+    // Amount, method or return: refused in plain words, nothing changes.
+    for (const body of [{ amount: 999 }, { payment_method: 'upi' }, { is_return: true }]) {
+      const r = await api('PUT', `/expenses/${legacy}`, owner, body);
+      assert(r.status === 400 && r.body.message === OLD_CASH_COPY, `${JSON.stringify(body)}: ${r.status} ${r.body && r.body.message}`);
+    }
+    const row = await db.prepare('SELECT amount, payment_method, is_return, register_id FROM expenses WHERE id = ?').get(legacy);
+    assert(Number(row.amount) === 120 && row.payment_method === 'cash' && !row.is_return && row.register_id == null, JSON.stringify(row));
+
+    // Staff: refused with the day-closed copy.
+    const st = await api('PUT', `/expenses/${staffLegacy}`, tokenFor(COUNTER_ID), { note: 'VerifyEB x' });
+    assert(st.status === 403 && st.body.message === DAY_CLOSED_COPY, `staff ${st.status} ${st.body && st.body.message}`);
+
+    // Remove: today's drawer is not credited.
+    const del = await api('DELETE', `/expenses/${legacy}`, owner);
+    assert(del.status === 200, 'delete ' + del.status);
+    assert(Number((await regRow(regId)).expected_cash) === Number(reg0.expected_cash), 'delete moved today\'s drawer');
+    assert(await previewExpected(owner) === pre0, 'close preview changed after delete');
+
+    // I2: a new cash expense (or return) for another day is refused; today still works.
+    for (const extra of [{}, { is_return: true }]) {
+      const r = await addExpense(owner, { item_name: 'VerifyEB Petrol Back', category: 'transport', amount: 200, payment_method: 'cash', expense_date: shopDay(-1), ...extra });
+      assert(r.status === 400 && r.body.message === PAST_DAY_CASH_COPY, `past day ${r.status} ${r.body && r.body.message}`);
+    }
+    assert(Number((await regRow(regId)).expected_cash) === Number(reg0.expected_cash), 'past-day cash moved the drawer');
+    const todayCash = await addExpense(owner, { item_name: 'VerifyEB Petrol Back', category: 'transport', amount: 10, payment_method: 'cash' });
+    assert(todayCash.status === 201 && todayCash.body.data.register_id === regId, `today ${todayCash.status} ${JSON.stringify(todayCash.body)}`);
+    assert(Number((await regRow(regId)).expected_cash) === Number(reg0.expected_cash) - 10, 'today cash did not move the drawer');
+
+    // Changing an earlier day's UPI expense to cash is refused too; today's still works.
+    const pastUpi = await rawRow({ amount: 40, expense_date: shopDay(-1), description: 'VerifyEB past upi' });
+    const toCash = await api('PUT', `/expenses/${pastUpi}`, owner, { payment_method: 'cash' });
+    assert(toCash.status === 400 && toCash.body.message === PAST_DAY_CASH_COPY, `past upi->cash ${toCash.status} ${toCash.body && toCash.body.message}`);
+    const todayUpi = await rawRow({ amount: 5, description: 'VerifyEB today upi' });
+    const t2 = await api('PUT', `/expenses/${todayUpi}`, owner, { payment_method: 'cash' });
+    assert(t2.status === 200 && t2.body.data.register_id === regId, `today upi->cash ${t2.status} ${JSON.stringify(t2.body)}`);
+    assert(Number((await regRow(regId)).expected_cash) === Number(reg0.expected_cash) - 15, 'drawer after today upi->cash');
+  } finally {
+    await closeOwnRegister(owner, regId);
+  }
+});
+
+check('I1: saving a note twice on a row with no item never repeats the note', async () => {
+  const owner = tokenFor(OWNER_ID);
+  const add = await addExpense(owner, { category: 'other', description: 'VerifyEB Old Tea', note: 'guests', amount: 12, payment_method: 'upi' });
+  assert(add.status === 201 && add.body.data.description === 'VerifyEB Old Tea — guests', JSON.stringify(add.body));
+  const id = add.body.data.id;
+  // What the app sends: the stored description back, with the note.
+  for (let i = 0; i < 2; i += 1) {
+    const cur = (await api('GET', `/expenses?q=VerifyEB%20Old%20Tea`, owner)).body.data.find((x) => x.id === id);
+    const r = await api('PUT', `/expenses/${id}`, owner, { description: cur.description, note: 'guests', category: 'other', amount: 12 });
+    assert(r.status === 200 && r.body.data.description === 'VerifyEB Old Tea — guests', `save ${i + 1}: ${r.body && r.body.data && r.body.data.description}`);
+  }
+  const n = await api('PUT', `/expenses/${id}`, owner, { description: 'VerifyEB Old Tea — guests', note: 'friends' });
+  assert(n.body.data.description === 'VerifyEB Old Tea — friends', 'new note ' + n.body.data.description);
+  const o = await api('PUT', `/expenses/${id}`, owner, { note: null });
+  assert(o.body.data.description === 'VerifyEB Old Tea', 'note removed ' + o.body.data.description);
+});
+
+check('I3: changing or returning an entry of a hidden item keeps it hidden', async () => {
+  const db = await getDb();
+  const h = await newItem('VerifyEB HideMe', 'other');
+  const row = await rawRow({ item_id: h.id, description: 'VerifyEB HideMe' });
+  await db.prepare('UPDATE expense_items SET is_active = FALSE WHERE id = ?').run(h.id);
+  const r = await api('PUT', `/expenses/${row}`, ownerT(), { item_id: h.id, category: 'other', note: 'VerifyEB n' });
+  assert(r.status === 200, `put ${r.status} ${JSON.stringify(r.body)}`);
+  const ret = await addExpense(ownerT(), { item_id: h.id, amount: 3, payment_method: 'upi', is_return: true });
+  assert(ret.status === 201, `return ${ret.status} ${JSON.stringify(ret.body)}`);
+  const it = await db.prepare('SELECT is_active FROM expense_items WHERE id = ?').get(h.id);
+  assert(it.is_active === false, 'hidden item was shown again');
+});
+
+check('I4: salary rows keep their kind and employee; overlap check only when date or employee changes', async () => {
+  const db = await getDb();
+  const day = shopDay(-40);
+  const sp = await db.prepare(`INSERT INTO salary_payments (user_id, period_start, period_end, net_amount, status, notes)
+    VALUES (?, ?, ?, 1, 'paid', 'VerifyEB covering') RETURNING id`).get(COUNTER_ID, shopDay(-45), shopDay(-35));
+  createdSalaryPaymentIds.push(sp.id);
+  const sal = await rawRow({ category: 'salary', employee_id: COUNTER_ID, expense_date: day, description: 'VerifyEB salary payroll row', amount: 1000 });
+  const plain = await rawRow({ description: 'VerifyEB plain row' });
+  const salItem = await newItem('VerifyEB Wage Item', 'salary');
+  const otherItem = await newItem('VerifyEB NotWage', 'other');
+
+  const note = await api('PUT', `/expenses/${sal}`, ownerT(), { note: 'VerifyEB paid early', given_to_name: 'VerifyEB Raju' });
+  assert(note.status === 200, `note-only edit ${note.status} ${note.body && note.body.message}`);
+  const moveDay = await api('PUT', `/expenses/${sal}`, ownerT(), { expense_date: shopDay(-41) });
+  assert(moveDay.status === 400 && /already paid via Salaries/.test(moveDay.body.message), `date move ${moveDay.status} ${moveDay.body && moveDay.body.message}`);
+
+  const tries = [
+    [sal, { category: 'food' }],
+    [sal, { item_id: otherItem.id, category: 'other' }],
+    [sal, { item_id: otherItem.id }],
+    [plain, { item_id: salItem.id }],
+    [plain, { category: 'salary', employee_id: COUNTER_ID }],
+    [plain, { item_name: 'VerifyEB New Wage', category: 'salary', employee_id: COUNTER_ID }],
+  ];
+  for (const [id, body] of tries) {
+    const r = await api('PUT', `/expenses/${id}`, ownerT(), body);
+    assert(r.status === 400 && r.body.message === SALARY_ROW_COPY, `${id} ${JSON.stringify(body)}: ${r.status} ${r.body && r.body.message}`);
+  }
+  const s = await db.prepare('SELECT category, employee_id, item_id FROM expenses WHERE id = ?').get(sal);
+  assert(s.category === 'salary' && Number(s.employee_id) === COUNTER_ID && s.item_id == null, JSON.stringify(s));
+  const p = await db.prepare('SELECT category, item_id FROM expenses WHERE id = ?').get(plain);
+  assert(p.category === 'other' && p.item_id == null, JSON.stringify(p));
+  const made = await db.prepare("SELECT COUNT(*) AS c FROM expense_items WHERE name_key = 'verifyeb new wage'").get();
+  assert(Number(made.c) === 0, 'refused change created an item');
+});
+
+check('I6: item history months are always the last N months; entries follow from/to', async () => {
+  const db = await getDb();
+  const X = await newItem('VerifyEB HistWin', 'other');
+  const today = shopToday();
+  const old = shopToday(new Date(Date.now() - 62 * 86400000));
+  await rawRow({ item_id: X.id, amount: 100, expense_date: today, description: 'VerifyEB win now' });
+  const oldId = await rawRow({ item_id: X.id, amount: 30, expense_date: old, description: 'VerifyEB win old' });
+  const from = `${today.slice(0, 7)}-01`;
+  const r = await api('GET', `/expenses/items/${X.id}/history?months=6&from=${from}&to=${today}`, ownerT());
+  assert(r.status === 200, 'status ' + r.status);
+  const d = r.body.data;
+  assert(d.months.length === 6 && d.months[5].month === today.slice(0, 7), 'months ' + JSON.stringify(d.months));
+  const om = d.months.find((m) => m.month === old.slice(0, 7));
+  assert(om && om.amount === 30, 'older month not filled: ' + JSON.stringify(d.months));
+  assert(d.months[5].amount === 100, 'this month ' + JSON.stringify(d.months[5]));
+  assert(!d.entries.some((e) => e.id === oldId) && d.entries.length === 1, 'entries not limited to from/to: ' + d.entries.length);
+});
+
+check('M2: a return or a back-dated entry does not change the item\'s usual amount or Given to', async () => {
+  const owner = ownerT();
+  const a = await addExpense(owner, { item_name: 'VerifyEB Usual', category: 'other', amount: 100, payment_method: 'upi', given_to_name: 'VerifyEB Usual Guy' });
+  assert(a.status === 201, 'add ' + a.status);
+  const id = a.body.data.item_id;
+  await addExpense(owner, { item_id: id, amount: 7, payment_method: 'upi', is_return: true, given_to_name: 'VerifyEB Other' });
+  await addExpense(owner, { item_id: id, amount: 8, payment_method: 'upi', expense_date: shopDay(-1), given_to_name: 'VerifyEB Other' });
+  const it = await (await getDb()).prepare('SELECT usual_amount, last_given_to_name FROM expense_items WHERE id = ?').get(id);
+  assert(Number(it.usual_amount) === 100 && it.last_given_to_name === 'VerifyEB Usual Guy', JSON.stringify(it));
+});
+
+check('M5: a bad field on add gets plain copy, not "Validation failed"', async () => {
+  const r = await addExpense(ownerT(), { item_name: 'VerifyEB Tea', amount: 5, payment_method: 'bitcoin' });
+  assert(r.status === 400 && r.body.message === 'Check the amount, type and date, then save again.', `${r.status} ${r.body && r.body.message}`);
+});
+
 async function cleanup() {
   const db = await getDb();
-  for (const id of createdExpenseIds) {
-    try { await db.prepare('DELETE FROM expenses WHERE id = ?').run(id); } catch (e) { console.error('cleanup expense', id, e.message); }
+  const del = async (label, sql, ...args) => {
+    try { await db.prepare(sql).run(...args); } catch (e) { console.error(`cleanup ${label}:`, e.message); }
+  };
+  const inList = (ids) => ids.map(() => '?').join(',');
+  // Expenses this run made, and their audit rows.
+  if (createdExpenseIds.length) {
+    await del('expense audits', `DELETE FROM audit_logs WHERE entity_type = 'expense' AND entity_id IN (${inList(createdExpenseIds)})`, ...createdExpenseIds);
+    for (const id of createdExpenseIds) await del('expense ' + id, 'DELETE FROM expenses WHERE id = ?', id);
   }
-  for (const id of createdRegisterIds) {
-    try { await db.prepare('DELETE FROM cash_registers WHERE id = ?').run(id); } catch (e) { console.error('cleanup register', id, e.message); }
+  for (const id of createdSalaryPaymentIds) await del('salary payment ' + id, 'DELETE FROM salary_payments WHERE id = ?', id);
+  if (createdRegisterIds.length) {
+    await del('register audits', `DELETE FROM audit_logs WHERE entity_type = 'cash_register' AND entity_id IN (${inList(createdRegisterIds)})`, ...createdRegisterIds);
   }
+  for (const id of createdRegisterIds) await del('register ' + id, 'DELETE FROM cash_registers WHERE id = ?', id);
   for (const id of createdUserIds) {
-    try {
-      await db.prepare('UPDATE expense_items SET last_given_to_user_id = NULL WHERE last_given_to_user_id = ?').run(id);
-      await db.prepare('DELETE FROM user_locations WHERE user_id = ?').run(id);
-      await db.prepare('DELETE FROM users WHERE id = ?').run(id);
-    } catch (e) { console.error('cleanup user', id, e.message); }
+    await del('user item refs', 'UPDATE expense_items SET last_given_to_user_id = NULL WHERE last_given_to_user_id = ?', id);
+    await del('user links', 'DELETE FROM user_locations WHERE user_id = ?', id);
+    await del('user ' + id, 'DELETE FROM users WHERE id = ?', id);
   }
-  try {
-    await db.prepare("DELETE FROM audit_logs WHERE entity_type = 'expense_item' AND entity_id = 0 AND action = 'expense_assign_items' AND user_id = ?").run(OWNER_ID);
-    await db.prepare("DELETE FROM audit_logs WHERE entity_type = 'expense_item' AND entity_id = 0 AND action = 'expense_item_pins' AND user_id = ?").run(OWNER_ID);
-    await db.prepare("DELETE FROM audit_logs WHERE entity_type = 'expense_item' AND entity_id IN (SELECT id FROM expense_items WHERE name LIKE '%VerifyEB%')").run();
-    await db.prepare("UPDATE expenses SET item_id = NULL WHERE item_id IN (SELECT id FROM expense_items WHERE name LIKE '%VerifyEB%')").run();
-    await db.prepare("UPDATE expense_items SET merged_into = NULL WHERE name LIKE '%VerifyEB%'").run();
-    await db.prepare("DELETE FROM expense_items WHERE name LIKE '%VerifyEB%'").run();
-  } catch (e) { console.error('cleanup items:', e.message); }
+  if (createdAuditIds.length) await del('shop-wide audits', `DELETE FROM audit_logs WHERE id IN (${inList(createdAuditIds)})`, ...createdAuditIds);
+  try { await restorePins(); } catch (e) { console.error('cleanup pins:', e.message); }
+
+  // Items: only ones this run created (id above the floor). An item still used
+  // by a row or an item this run did not make is left alone.
+  const mine = [...new Set(createdItemIds.map(Number))].filter((id) => itemIdFloor !== null && id > itemIdFloor);
+  if (!mine.length) return;
+  await del('item merges', `UPDATE expense_items SET merged_into = NULL WHERE id IN (${inList(mine)})`, ...mine);
+  for (const id of mine) {
+    const usedBy = await db.prepare('SELECT COUNT(*) AS c FROM expenses WHERE item_id = ?').get(id);
+    const mergedIn = await db.prepare('SELECT COUNT(*) AS c FROM expense_items WHERE merged_into = ?').get(id);
+    if (Number(usedBy.c) || Number(mergedIn.c)) { console.error(`cleanup: item ${id} is still used elsewhere; left in place.`); continue; }
+    await del('item audits ' + id, "DELETE FROM audit_logs WHERE entity_type = 'expense_item' AND entity_id = ?", id);
+    await del('item ' + id, 'DELETE FROM expense_items WHERE id = ?', id);
+  }
 }
 
 async function main() {
   assertLocalTarget();
+  itemIdFloor = Number((await (await getDb()).prepare('SELECT COALESCE(MAX(id), 0) AS m FROM expense_items').get()).m);
+  await snapshotPins();
   let pass = 0, fail = 0;
+  const skipped = [];
   try {
     for (const { name, fn } of checks) {
       try { await fn(); console.log(`PASS ${name}`); pass++; }
-      catch (err) { console.log(`FAIL ${name}\n   ${err.message}`); fail++; }
+      catch (err) {
+        if (err.skip) { console.log(`SKIP ${name}\n   ${err.message}`); skipped.push(name); continue; }
+        console.log(`FAIL ${name}\n   ${err.message}`); fail++;
+      }
     }
   } finally {
     await cleanup();
   }
-  console.log(`\n${pass}/${pass + fail} checks passed`);
+  console.log(`\n${pass}/${pass + fail} checks passed${skipped.length ? `, ${skipped.length} skipped (register in use)` : ''}`);
   process.exit(fail > 0 ? 1 : 0);
 }
 

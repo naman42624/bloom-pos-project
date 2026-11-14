@@ -33,7 +33,9 @@ async function resolveItem(db, { item_id, item_name, category, userId } = {}) {
   if (item_id) {
     const found = await db.prepare('SELECT * FROM expense_items WHERE id = ?').get(item_id);
     if (!found) throw httpError(400, 'That expense item was not found. Pick it again from the list.');
-    return activate(db, await followMerge(db, found));
+    // By id (Change, Record a return) a hidden item stays hidden; only a
+    // typed name brings it back (spec 5.1 step 3).
+    return followMerge(db, found);
   }
 
   const key = nameKey(item_name);
@@ -81,6 +83,16 @@ function isLocalUploadPath(url) {
   return typeof url === 'string' && /^\/uploads\/[A-Za-z0-9._\-/]+$/.test(url) && !url.includes('..') && !url.includes('//');
 }
 
+// The description without a trailing " — note" (when it ends with it).
+function stripNote(description, note) {
+  const d = String(description || '');
+  const n = String(note || '').trim();
+  if (!n) return d;
+  const suffix = ` — ${n}`;
+  if (d.endsWith(suffix)) return d.slice(0, -suffix.length);
+  return d === n ? '' : d;
+}
+
 // description = item name, plus " — note" when there is a note.
 function composeDescription(base, note) {
   const b = String(base || '').trim();
@@ -90,6 +102,6 @@ function composeDescription(base, note) {
 }
 
 module.exports = {
-  nameKey, resolveItem, rememberOnItem, assertGivenTo, isLocalUploadPath, composeDescription,
+  nameKey, resolveItem, rememberOnItem, assertGivenTo, isLocalUploadPath, composeDescription, stripNote,
   GIVEN_TO_ROLES, GIVEN_TO_INVALID_MESSAGE,
 };

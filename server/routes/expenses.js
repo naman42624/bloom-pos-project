@@ -6,7 +6,7 @@ const { authenticate, authorize } = require('../middleware/auth');
 const { todayStr: localToday } = require('../utils/time');
 const { hasOpenRegister, lockOpenRegister, registerClosedError, REGISTER_CLOSED_MESSAGE } = require('../utils/register-guard');
 const {
-  nameKey, resolveItem, rememberOnItem, assertGivenTo, isLocalUploadPath, composeDescription,
+  nameKey, resolveItem, rememberOnItem, assertGivenTo, isLocalUploadPath, composeDescription, stripNote,
   GIVEN_TO_ROLES, GIVEN_TO_INVALID_MESSAGE,
 } = require('../utils/expense-items');
 
@@ -128,6 +128,14 @@ const NO_ITEM_MESSAGE = 'Type what this was for, like Petrol.';
 const NO_AMOUNT_MESSAGE = 'Type how much was paid.';
 const NO_CATEGORY_MESSAGE = 'Pick what kind of expense this is.';
 const OTHER_DAY_MESSAGE = 'Only the owner or a manager can enter an expense for another day.';
+// Cash for an earlier day would come out of today's drawer and leave today's
+// close over (2026-11-14 ruling: earlier days are UPI only).
+const PAST_DAY_CASH_MESSAGE = "Past days don't change today's drawer. For an earlier day, pick UPI.";
+// An old cash expense with no register session (saved before register_id, or
+// from a session that is gone) never moves into today's drawer.
+const OLD_CASH_MESSAGE = "This cash was paid on a register day that is already closed, so its amount, Cash or UPI and return can't be changed. You can still change what it was for, the note, the photo, who got it and the date.";
+const SALARY_ROW_MESSAGE = "Salary entries can't be changed to another kind, and other entries can't be changed to Salary. Remove it and add it again instead.";
+const FIELD_FALLBACK_MESSAGE = 'Check the amount, type and date, then save again.';
 const BAD_PHOTO_MESSAGE = 'That photo could not be used. Take the photo again.';
 const isBossRole = (role) => role === 'owner' || role === 'manager';
 
@@ -296,8 +304,9 @@ router.get('/summary-by-item', ...BOSS_ONLY, async (req, res, next) => {
 });
 
 // ─── GET /api/expenses/items/:id/history ─────────────────────
-// Owner/manager: one item's monthly spend (last N months, empty months as 0)
-// and its entries, including items that were merged into it.
+// Owner/manager: one item's monthly spend (always the last N shop months,
+// empty months as 0) and its entries for from..to, including items that were
+// merged into it.
 router.get('/items/:id/history', ...BOSS_ONLY, async (req, res, next) => {
   try {
     const id = Number(req.params.id);
@@ -318,18 +327,25 @@ router.get('/items/:id/history', ...BOSS_ONLY, async (req, res, next) => {
     const start = DATE_RE.test(String(from || '')) ? from : windowStart;
     const end = DATE_RE.test(String(to || '')) ? to : today;
 
-    let where = ' WHERE (e.item_id = ? OR e.item_id IN (SELECT id FROM expense_items WHERE merged_into = ?)) AND e.expense_date >= ? AND e.expense_date <= ?';
-    const params = [id, id, start, end];
-    if (location_id) { where += ' AND e.location_id = ?'; params.push(Number(location_id)); }
-    if (given_to_user_id) { where += ' AND e.given_to_user_id = ?'; params.push(Number(given_to_user_id)); }
+    // Month totals always cover the last N months (shop, person filters
+    // apply); the entry list follows from..to.
+    const whereFor = (a, b) => {
+      let w = ' WHERE (e.item_id = ? OR e.item_id IN (SELECT id FROM expense_items WHERE merged_into = ?)) AND e.expense_date >= ? AND e.expense_date <= ?';
+      const p = [id, id, a, b];
+      if (location_id) { w += ' AND e.location_id = ?'; p.push(Number(location_id)); }
+      if (given_to_user_id) { w += ' AND e.given_to_user_id = ?'; p.push(Number(given_to_user_id)); }
+      return { w, p };
+    };
+    const strip = whereFor(windowStart, today);
+    const list = whereFor(start, end);
 
     const monthRows = await db.prepare(`
       SELECT to_char(e.expense_date, 'YYYY-MM') AS month, SUM(${SIGNED_AMOUNT}) AS amount
-        FROM expenses e${where}
+        FROM expenses e${strip.w}
        GROUP BY 1
-    `).all(...params);
+    `).all(...strip.p);
     const byMonth = new Map(monthRows.map((r) => [r.month, Number(r.amount) || 0]));
-    const entries = (await db.prepare(`${EXPENSE_ROW_SELECT}${where} ORDER BY e.expense_date DESC, e.created_at DESC LIMIT 500`).all(...params)).map(normalizeExpenseRow);
+    const entries = (await db.prepare(`${EXPENSE_ROW_SELECT}${list.w} ORDER BY e.expense_date DESC, e.created_at DESC LIMIT 500`).all(...list.p)).map(normalizeExpenseRow);
 
     res.json({ success: true, data: { item, months: keys.map((m) => ({ month: m, amount: round2(byMonth.get(m) || 0) })), entries } });
   } catch (err) {
@@ -731,7 +747,7 @@ router.post(
   async (req, res, next) => {
     try {
       const errors = validationResult(req);
-      if (!errors.isEmpty()) return res.status(400).json({ success: false, message: validationMessage(errors, 'Validation failed'), errors: errors.array() });
+      if (!errors.isEmpty()) return res.status(400).json({ success: false, message: validationMessage(errors, FIELD_FALLBACK_MESSAGE), errors: errors.array() });
 
       const db = getDb();
       const { location_id, amount, description, payment_method, is_return, employee_id } = req.body;
@@ -744,8 +760,12 @@ router.post(
 
       // Checks that need no item come first, so a refused save never
       // creates an item.
-      if (!isBossRole(req.user.role) && expense_date !== localToday()) {
+      const isToday = expense_date === localToday();
+      if (!isBossRole(req.user.role) && !isToday) {
         return res.status(403).json({ success: false, message: OTHER_DAY_MESSAGE });
+      }
+      if (payment_method === 'cash' && !isToday) {
+        return res.status(400).json({ success: false, message: PAST_DAY_CASH_MESSAGE });
       }
       if (!req.body.item_id && has('item_name') && !nameKey(req.body.item_name)) {
         return res.status(400).json({ success: false, message: NO_ITEM_MESSAGE });
@@ -874,7 +894,10 @@ router.post(
       return result.lastInsertRowid;
       });
 
-      await rememberAfterSave(itemId, { amount: Math.round(Number(amount) * 100) / 100, ...givenTo });
+      // A return or an earlier day's entry is not the usual amount or person.
+      if (!is_return && isToday) {
+        await rememberAfterSave(itemId, { amount: Math.round(Number(amount) * 100) / 100, ...givenTo });
+      }
 
       const expense = await loadExpenseRow(adb, newExpenseId);
       res.status(201).json({ success: true, data: expense });
@@ -934,14 +957,16 @@ async function loadForChange(tx, expenseId, user) {
       : new Date(expense.created_at) >= new Date(openRegister.opened_at));
     if (!inOpenSession) throw httpError(403, DAY_CLOSED_MESSAGE);
   }
-  // The session this expense's cash belongs to. Old rows saved before
-  // register_id existed fall back to the open register, as delete always did.
+  // The session this expense's cash belongs to. An old row saved before
+  // register_id existed belongs to the open register only when it was made
+  // after that register opened (the same test as the staff check above).
+  // Otherwise it has no session: it never moves into today's drawer.
   let oldRegisterId = null;
   if (expense.payment_method === 'cash') {
     if (expense.register_id) {
       const r = await tx.prepare('SELECT id FROM cash_registers WHERE id = ? FOR UPDATE').get(expense.register_id);
       oldRegisterId = r ? r.id : null;
-    } else if (openRegister) {
+    } else if (openRegister && new Date(expense.created_at) >= new Date(openRegister.opened_at)) {
       oldRegisterId = openRegister.id;
     }
   }
@@ -982,7 +1007,7 @@ router.put(
     try {
       const errors = validationResult(req);
       if (!errors.isEmpty()) {
-        return res.status(400).json({ success: false, message: validationMessage(errors, 'Check the amount, type and date, then save again.'), errors: errors.array() });
+        return res.status(400).json({ success: false, message: validationMessage(errors, FIELD_FALLBACK_MESSAGE), errors: errors.array() });
       }
       const expenseId = Number(req.params.id);
       const has = (k) => Object.prototype.hasOwnProperty.call(req.body, k);
@@ -991,7 +1016,7 @@ router.put(
 
       // Checks before the item is resolved, so a refused change never
       // creates an item. The transaction below checks again under locks.
-      const current = await adb.prepare('SELECT id, location_id, created_by, expense_date, item_id, note, description FROM expenses WHERE id = ?').get(expenseId);
+      const current = await adb.prepare('SELECT id, location_id, created_by, expense_date, item_id, note, description, category FROM expenses WHERE id = ?').get(expenseId);
       if (!current) return res.status(404).json({ success: false, message: 'This expense was not found. It may have been removed already — pull down to refresh.' });
       if (!isBoss && Number(current.created_by) !== Number(req.user.id)) {
         return res.status(403).json({ success: false, message: NOT_YOURS_MESSAGE });
@@ -1003,6 +1028,12 @@ router.put(
       if (!req.body.item_id && has('item_name') && !nameKey(req.body.item_name)) {
         return res.status(400).json({ success: false, message: NO_ITEM_MESSAGE });
       }
+      // Salary rows stay salary (payroll links them by employee); other rows
+      // never become salary here (spec 7). Checked again under the lock.
+      const crossesSalary = (cat) => (cat === 'salary') !== (current.category === 'salary');
+      if (has('category') && req.body.category && crossesSalary(req.body.category)) {
+        return res.status(400).json({ success: false, message: SALARY_ROW_MESSAGE });
+      }
       if (has('photo_url') && req.body.photo_url && !isLocalUploadPath(req.body.photo_url)) {
         return res.status(400).json({ success: false, message: BAD_PHOTO_MESSAGE });
       }
@@ -1013,8 +1044,15 @@ router.put(
       // The item is an ordinary write, made before the money transaction.
       let item = null;
       if (wantsItem) {
+        // An existing item is checked before a new name is made, so a refused
+        // change never creates an item.
+        if (!req.body.item_id) {
+          const known = await adb.prepare('SELECT category FROM expense_items WHERE name_key = ?').get(nameKey(req.body.item_name));
+          if (known && crossesSalary(known.category)) return res.status(400).json({ success: false, message: SALARY_ROW_MESSAGE });
+        }
         item = await resolveItem(adb, { item_id: req.body.item_id, item_name: req.body.item_name, category: req.body.category || null, userId: req.user.id });
-      } else if (current.item_id && has('note')) {
+        if (crossesSalary(item.category)) return res.status(400).json({ success: false, message: SALARY_ROW_MESSAGE });
+      } else if (current.item_id && (has('note') || has('description'))) {
         item = await adb.prepare('SELECT * FROM expense_items WHERE id = ?').get(current.item_id);
       }
 
@@ -1034,21 +1072,25 @@ router.put(
           given_to_user_id: givenTo ? givenTo.given_to_user_id : (expense.given_to_user_id || null),
           given_to_name: givenTo ? givenTo.given_to_name : (expense.given_to_name || null),
         };
-        // description stays "item name — note" whenever an item or the note changes.
-        if (wantsItem || has('note')) {
+        // description is always rebuilt as "item name — note" (or the old
+        // text without its note, for a row with no item); never appended to.
+        if (wantsItem || has('note') || has('description')) {
           let base;
           if (item) base = item.name;
-          else if (has('description')) base = req.body.description || '';
-          else {
-            const oldSuffix = expense.note ? ` — ${expense.note}` : '';
-            const d = expense.description || '';
-            base = oldSuffix && d.endsWith(oldSuffix) ? d.slice(0, -oldSuffix.length) : d;
-          }
+          else if (has('description')) base = stripNote(req.body.description || '', expense.note);
+          else base = stripNote(expense.description || '', expense.note);
           nv.description = composeDescription(base, nv.note);
+        }
+        const wasSalary = expense.category === 'salary';
+        if ((nv.category === 'salary') !== wasSalary || (wantsItem && (item.category === 'salary') !== wasSalary)) {
+          throw httpError(400, SALARY_ROW_MESSAGE);
         }
         if (nv.category !== 'salary') nv.employee_id = null;
         if (nv.category === 'salary' && !nv.employee_id) throw httpError(400, 'Select which employee this salary payment is for.');
-        if (nv.category === 'salary') {
+        // The payroll overlap check runs only when the date or the employee
+        // changes; otherwise it would find the row's own payment.
+        const salaryMoved = nv.expense_date !== expense.expense_date || Number(nv.employee_id) !== Number(expense.employee_id);
+        if (nv.category === 'salary' && salaryMoved) {
           const covering = await tx.prepare(
             'SELECT period_start, period_end FROM salary_payments WHERE user_id = ? AND status != ? AND period_start <= ? AND period_end >= ?'
           ).get(nv.employee_id, 'cancelled', nv.expense_date, nv.expense_date);
@@ -1060,18 +1102,32 @@ router.put(
         // Drawer: take the old effect off its session, put the new one on.
         // Only amount, method or return change the effect; a date move
         // leaves register_id and the drawer as they are.
-        const oldEffect = oldRegisterId ? drawerEffect(expense) : 0;
-        const newEffect = drawerEffect(nv);
+        const wasCash = expense.payment_method === 'cash';
         let newRegisterId = null;
-        if (nv.payment_method === 'cash') {
-          newRegisterId = (expense.payment_method === 'cash' && oldRegisterId) ? oldRegisterId : (openRegister ? openRegister.id : null);
-          if (!newRegisterId) throw registerClosedError();
-        }
-        if (oldRegisterId && oldRegisterId === newRegisterId) {
-          await moveDrawer(tx, oldRegisterId, newEffect - oldEffect);
+        if (wasCash && !oldRegisterId) {
+          // Old cash with no session: only changes that move no cash.
+          const sameCash = nv.payment_method === 'cash' && Math.abs(drawerEffect(nv) - drawerEffect(expense)) < 0.005;
+          if (!sameCash) throw httpError(400, OLD_CASH_MESSAGE);
+          newRegisterId = expense.register_id || null;
         } else {
-          await moveDrawer(tx, oldRegisterId, -oldEffect);
-          await moveDrawer(tx, newRegisterId, newEffect);
+          const oldEffect = oldRegisterId ? drawerEffect(expense) : 0;
+          const newEffect = drawerEffect(nv);
+          if (nv.payment_method === 'cash') {
+            if (wasCash && oldRegisterId) {
+              newRegisterId = oldRegisterId;
+            } else {
+              // Newly cash: it comes out of today's open drawer, so only for today.
+              if (nv.expense_date !== localToday()) throw httpError(400, PAST_DAY_CASH_MESSAGE);
+              newRegisterId = openRegister ? openRegister.id : null;
+              if (!newRegisterId) throw registerClosedError();
+            }
+          }
+          if (oldRegisterId && oldRegisterId === newRegisterId) {
+            await moveDrawer(tx, oldRegisterId, newEffect - oldEffect);
+          } else {
+            await moveDrawer(tx, oldRegisterId, -oldEffect);
+            await moveDrawer(tx, newRegisterId, newEffect);
+          }
         }
 
         await tx.prepare(`
