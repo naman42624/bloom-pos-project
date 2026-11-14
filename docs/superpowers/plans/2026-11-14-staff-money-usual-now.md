@@ -1,142 +1,208 @@
-# Staff money, Usual now and calmer add sheet — Implementation Plan
+# Calmer add sheet, Usual now, and staff money — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Salary advances and shopping money handed out at the counter (with limits, PIN, settling and payroll), a 1-tap "Usual now" line that learns each item's usual gap, and a calmer Notion-style add sheet.
+**Goal:** PR A: a faster, calmer add sheet with a time-aware "Usual now" and 1-tap add. PR B: salary advances and shopping money at the counter (limits, PIN, settling, payroll), own-pocket spending with "Shop owes", and the register/close lines that keep the drawer explainable.
 
-**Architecture:** Server first: one additive table pair (`staff_money_out`, `staff_money_settles`), advances written into the existing `salary_advances` through one shared helper, drawer maths added to `computeRegisterClose` the same way helper floats are, settle bills stored as expenses with `payment_method = 'shopping_money'` so no drawer query ever counts them. Then the app: the add sheet is rebuilt from small row components, with advance/shopping modes, a Money with staff card and settle screen, My money, owner settings and the payroll tick.
+**Architecture:** Server first in each PR, then the app. Advances stay in `salary_advances` through one shared helper; shopping money, its settles, and what the shop owes get their own additive tables; every non-drawer expense uses a `payment_method` other than `'cash'` (`shopping_money`, `own_pocket`) so no drawer query can count it; drawer movements (hand-out, change back, pay back) join `computeRegisterClose` the way helper floats do.
 
-**Tech Stack:** Express + `pg` (async layer `server/config/database-async.js`, `withMoneyTx`), schema patches in `server/config/database.js`; Expo / React Native + React Navigation.
+**Tech Stack:** Express + `pg` (async layer, `withMoneyTx`), schema patches in `server/config/database.js`; Expo / React Native + React Navigation.
 
-**Spec:** `docs/superpowers/specs/2026-11-14-staff-money-usual-now-design.md`
+**Spec:** `docs/superpowers/specs/2026-11-14-staff-money-usual-now-design.md` (revised after the product review in `.superpowers/sdd/2026-11-14-staff-money/product-review.md`).
 
 ## Global Constraints
 
-- Schema additive only (`ensureColumn`, `CREATE TABLE IF NOT EXISTS`, settings seeded only if missing). Read the `db-migration-safety` skill before Task 1. No apostrophe inside any SQL `--` comment.
-- New code uses the async layer (`getAsyncDb`, `withMoneyTx`); don't add new sync `getDb()` use.
-- Settings keys and defaults: `advance_daily_limit` = `500`, `shopping_money_daily_limit` = `1000`, `shopping_money_late_days` = `3`.
-- Settle bills: `payment_method = 'shopping_money'`, `money_out_id` set. Nothing else writes that method.
-- PIN approvers: active `manager` linked to the shop (`user_locations`) or `owner`; approver ≠ recipient; owner as giver never needs a PIN. Checked with `server/utils/approval-pin.js` `checkCodeAndPin` (employee code + PIN), never inside a transaction that rolls back.
-- Helpers stay default-denied: do not add any new route to `server/utils/helper-routes.js`.
-- Lock order inside money transactions: the money-out row (`FOR UPDATE`) first, then `lockOpenRegister`. Same order everywhere.
-- Copy is fixed by spec §4.7; use `showAlert`/`showConfirm`, never `Alert.alert`; double-tap guard `useSubmitGuard` on Give, Settle and Usual now Add.
-- Notion look: plain rows, 1 px dividers (`Colors.border`), grey secondary text (`Colors.textSecondary`), one pink primary button per screen, tap targets ≥ 44 px.
-- Tests never close or touch a register they did not open; never touch registers 83 or 4383.
+- Schema additive only; read the `db-migration-safety` skill before any schema task. No apostrophe inside a SQL `--` comment.
+- New server code uses `getAsyncDb` / `withMoneyTx`; no new sync `getDb()` use.
+- Names on screen exactly as spec §3: Salary advance · Shopping money · Shopping money out · "<Name> is back — what did he buy?" / Done · Take from pay · Own pocket · Shop owes / Pay back · Usual now · Often.
+- Settings and defaults: `advance_daily_limit` 500, `advance_monthly_limit` 2000, `shopping_money_daily_limit` 1000, `shopping_money_late_days` 3.
+- Non-drawer methods: `shopping_money` (settle bills, shopping write-offs) and `own_pocket` (own-pocket expenses). Only the routes named in this plan write them.
+- PIN: approver chosen by id from `GET /api/staff-money/approvers`; verified with `approval-pin.js` `checkCodeAndPin` using that user's `employee_code`, roles `['manager','owner']`, manager must be linked to the shop, approver ≠ recipient; never inside a transaction that can roll back.
+- Lock order in money transactions: the money row (`staff_money_out` / `shop_owes` / `salary_advances`) `FOR UPDATE` first, then `lockOpenRegister`.
+- Helpers stay default-denied; nothing new in `server/utils/helper-routes.js`.
+- Copy from spec §5.10; `showAlert`/`showConfirm` only; `useSubmitGuard` on Give, Done, Pay back, Usual now Add.
+- Look: plain rows, 1 px `Colors.border` dividers, `Colors.textSecondary` secondary text, one pink primary button per screen, targets ≥ 44 px.
+- Tests close only registers they opened; never touch registers 83 or 4383; cleanup by created ids only.
 - Commits end with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
 
 ## Review Focus
 
-1. **The same hand-out settled twice at once** (two counters tap Settle): the second must get 409 "Already settled — refresh", never a double change-return into the drawer. → Task 3 test `settle twice in parallel: one wins, drawer moves once`.
-2. **Change returned into a different register session than the hand-out came from** (handed out yesterday, settled today): close of today's session counts the change in; yesterday's closed session is not touched. → Task 3 test `change returned next day lands in today's session only`.
-3. **Limit counts across paths:** an approved in-app request today plus a counter advance must add up against the same daily limit. → Task 2 test `approved request counts toward today's limit`.
-4. **Usual now Undo after the register closed in between** (add at 18:59, close at 19:00, Undo at 19:00:05): removal must follow piece 1's remove rules (refuse plainly), not silently move cash. → Task 9 test `undo after close shows the remove-refused message`.
-5. **Payroll tick on a hand-out partly settled since calculate:** the converted advance must be the remainder at disburse time, not the stale figure. → Task 4 test `take-from-pay uses the remainder at disburse time`.
+1. **Two counters settle the same shopping money at once** → only one Done lands, drawer moves once. (Task B3 test `two settles at once`.)
+2. **Change brought back on a later day** → counted in that day's open session; the closed session of the hand-out is untouched. (Task B3 test `change back next day`.)
+3. **An approved in-app advance request today plus a counter advance** → both count toward the same day and month limits. (Task B2 test `request counts toward limits`.)
+4. **Usual now Undo after the register closed in between** → plain refusal from the server, nothing moves. (Task A4 test `undo after close`.)
+5. **Payroll paid after part of the ticked shopping money was settled** → Pay refused with "tap Calculate again", never an underpayment. (Task B5 test `stale take-from-pay refused`.)
 
 ---
 
-### Task 1: Schema, settings and the staff-money helper module
+## PR A — calmer add sheet and Usual now
+
+### Task A1: Usual now / Often ranking on the server
 
 **Files:**
-- Modify: `server/config/database.js` (new tables, columns, settings)
-- Create: `server/utils/staff-money.js`
-- Test: `server/scripts/verify-staff-money.js` (new suite; same harness style as `verify-expense-book.js`: login via `VERIFY_OWNER_*`, seed throwaway staff at Test Loc, cleanup by created ids only)
+- Create: `server/utils/usual-now.js`
+- Modify: `server/routes/expenses.js` (`GET /suggest` without `q`)
+- Test: `server/scripts/verify-usual-now.js` (new; pure checks + one route check)
 
 **Interfaces:**
 - Produces:
-  - Tables `staff_money_out(id, location_id, user_id, amount NUMERIC(12,2), payment_method TEXT, register_id, given_by, approved_by, note TEXT, status TEXT DEFAULT 'open', settled_amount NUMERIC(12,2) DEFAULT 0, returned_amount NUMERIC(12,2) DEFAULT 0, created_at TIMESTAMP DEFAULT NOW(), closed_at TIMESTAMP)` and `staff_money_settles(id, money_out_id, bills_amount, returned_amount, returned_method, register_id, settled_by, created_at)`, with the indexes in spec §5.
-  - Columns `expenses.money_out_id`, `salary_advances.given_by`, `source`, `payment_method`, `location_id`.
-  - `staff-money.js` exports:
-    - `getLimits(db) -> { advance: number, shopping: number, lateDays: number }`
-    - `todayTotal(db, { kind: 'advance'|'shopping', userId }) -> number` (shop-local today; advances count `salary_advances` with status approved/repaid dated today, any source; shopping counts `staff_money_out` not `removed` created today)
-    - `needsPin({ giverId, giverRole, recipientId, amount, todaySoFar, limit }) -> null | 'self' | 'over_limit'` (pure)
-    - `checkApprover(db, { code, pin, locationId, recipientId }) -> approver user row` (throws 401/403 with spec copy)
-    - `remaining(row) -> number` = `amount − settled_amount − returned_amount`, whole paise
-    - `isLate(row, lateDays, now) -> boolean`
+  - `findSlots(localMinutes: number[]) -> [{ start, end, count }]` (minutes since local midnight; entries within 120 min chain into one slot; keep slots with count ≥ 3).
+  - `rankSuggestions(items, nowLocal) -> { usual_now: Item[], often: Item[] }`. Input item `{ id, pinned, pin_order, uses30, entries: [{ at: Date (shop-local), amount, method, created_by }], last_given_to }`. Rules spec §5.7: usual now when now ∈ [slot.start − 60, slot.end + 120] for a real slot, no entry today inside that slot window, and day-gap rule met (median days between entry days; usual day when days since last entry ≥ 0.8 × gap or gap ≤ 1). Often = pinned (by `pin_order`) then `uses30`, excluding usual-now items and anything with an entry in the last 120 min. `usual_now` ≤ 3, total ≤ 8.
+  - `commonAmount(entries) -> number` (mode; tie → most recent).
+  - Route response: `{ usual_now: [...], often: [...] }` alongside the existing `data` (kept for older app builds); each item gains `common_amount`, `my_last_method` (`'cash'|'upi'|null`, the caller's own last entry for that item), `last_given_to` with `present_today: boolean` (open attendance today).
 
-- [ ] **Step 1: Write failing tests** in `verify-staff-money.js`: `schema: staff_money_out and staff_money_settles exist with the spec columns`; `settings seeded: 500 / 1000 / 3`; `needsPin: self -> 'self'; owner giver -> null; 300 after 300 with limit 500 -> 'over_limit'; 200 after 300 -> null`; `remaining: 500 − 300 − 150 = 50`.
-- [ ] **Step 2: Run** `node server/scripts/verify-staff-money.js` — expect FAIL (missing table/module).
-- [ ] **Step 3: Implement** the patches and `server/utils/staff-money.js`. `checkApprover` calls `checkCodeAndPin(db, code, pin, { roles: ['manager','owner'], wrongPinMessage: "That PIN didn't match. Try again or ask the manager.", inactiveAsUnknown: true })`, then refuses an approver who is the recipient (403 "Someone else must confirm money for themselves.") and a manager not linked to `locationId` (403 "That manager isn't linked to this shop.").
-- [ ] **Step 4: Run** the suite — expect PASS; restart the API so boot patches run, re-run.
-- [ ] **Step 5: Commit** `feat(staff-money): schema, settings and limit/PIN helpers`.
+- [ ] **Step 1: Write failing tests:** `tea at ~11:00 and ~16:00 daily: at 11:05 after an 11:00 entry → not usual; at 15:30 → usual`; `tea with no entry yet today at 10:30 → usual`; `petrol every 3 days, last yesterday → not usual, still in often`; `item added 30 min ago → in neither list`; `often never empty when items exist`; `commonAmount [50,50,60] → 50; [50,60] → most recent`; `route: my_last_method is the caller's, not another user's`.
+- [ ] **Step 2: Run** `node server/scripts/verify-usual-now.js` — expect FAIL.
+- [ ] **Step 3: Implement** with one query per request over the shop's last 60 days of `cash`/`upi` expenses with an item, converted to shop-local time (`localToday` helpers already in `expenses.js`).
+- [ ] **Step 4: Run** this suite and `verify-expense-book.js` — expect PASS.
+- [ ] **Step 5: Commit** `feat(expenses): Usual now learns time-of-day slots`.
 
-### Task 2: Give a salary advance at the counter
+### Task A2: Salary kind and privacy on the server
 
 **Files:**
-- Create: `server/routes/staff-money.js` (mounted at `/api/staff-money` in `server/server.js`)
-- Create: `server/utils/advance-payout.js`
-- Modify: `server/routes/attendance.js` (approve branch of `PUT /salary-advance/:id/:action` calls the shared helper)
+- Modify: `server/routes/expenses.js` (`POST /`, `PUT /:id`, `GET /`)
+- Test: `server/scripts/verify-expense-book.js` (add checks)
+
+**Interfaces:**
+- Produces: `POST`/`PUT` with `category: 'salary'` from `employee` / `counter_staff` → 400 "Use Salary advance for money given to staff."; `GET /` for those roles maps every salary row whose `employee_id` ≠ caller to `{ description: 'Salary advance', employee_id: null, employee_name: null, given_to_*: null }`.
+
+- [ ] **Step 1: Write failing tests:** `counter staff salary add refused with the copy`; `manager salary add still works`; `counter staff list shows another person's advance as "Salary advance" with no name`; `counter staff sees own advance with name`.
+- [ ] **Step 2: Run** — expect FAIL. **Step 3: Implement.** **Step 4: Run** `verify-expense-book.js`, `verify-register-expenses.js`, `verify-attendance-payroll.js` — expect PASS.
+- [ ] **Step 5: Commit** `feat(expenses): counter staff use Salary advance; salary names private`.
+
+### Task A3: The add sheet
+
+**Files:**
+- Create: `app/src/components/expenses/SheetRow.js` (label left grey, value right, chevron, `disabled` + `hint`)
+- Create: `app/src/components/expenses/OptionList.js` (plain modal list with optional search)
+- Create: `app/src/components/expenses/MethodSwitch.js` (inline segmented `Cash | UPI` now; Task B7 adds `Own pocket`)
+- Create: `app/src/components/expenses/RecentPeople.js` (3 inline chips + "More ›" → `OptionList` with "Someone else (type a name)")
+- Modify: `app/src/components/expenses/AddExpenseSheet.js` (layout spec §4.1; keep every piece-1 rule: item resolve, register-closed Cash, back-dating UPI-only, old-cash locks, salary line, unsaved check, `useSubmitGuard`), `GivenToPicker.js` (replaced by `RecentPeople`; delete if unused), `ExpenseRow.js` (§4.8 plain style; labels for `shopping_money` / `own_pocket` arrive in B7)
+- Test: `app/scripts/test-expense-book.js` stays green; new pure tests in `app/scripts/test-usual-now.js` for `pickDefaults(item, me)` in `app/src/utils/expenseBook.js`
+
+**Interfaces:**
+- Consumes: A1 response.
+- Produces: `pickDefaults(item, { userId }) -> { amount, method, givenTo }` (amount = `common_amount`; method = `my_last_method || 'cash'`; givenTo = `last_given_to` only if `present_today`). `AddExpenseSheet` gains prop `mode: 'expense'|'advance'|'shopping'` (default `'expense'`) and `prefill` (used by A4).
+
+- [ ] **Step 1: Write failing tests** for `pickDefaults` (absent person not pre-filled; own method beats another user's; no method → cash).
+- [ ] **Step 2: Implement** the components and the sheet; Kind list hides Salary for `employee`/`counter_staff`.
+- [ ] **Step 3: Run** app tests + babel-check touched files — expect PASS.
+- [ ] **Step 4: On-screen** (desktop + 375 px; counter staff and manager): Tea in 3 taps; method shown on each suggestion; Cash disabled with Open register when closed; Change on an old register-less cash row still locked; salary not in Kind for counter staff.
+- [ ] **Step 5: Commit** `feat(expenses-app): calmer add sheet with Usual now and inline Cash/UPI`.
+
+### Task A4: Usual now 1-tap line
+
+**Files:**
+- Create: `app/src/components/expenses/UsualNowLine.js` (with an exported pure `undoReducer`)
+- Modify: `app/src/screens/ExpensesScreen.js` (day list; owner summary when the period is Today)
+- Test: `app/scripts/test-usual-now.js`
+
+**Interfaces:**
+- Consumes: A1 `usual_now`, A3 `pickDefaults`, existing `api.createExpense` / `api.deleteExpense`.
+
+- [ ] **Step 1: Write failing tests** for `undoReducer`: `add → showing 15 s`; `undo success → gone`; `undo after close` (server refusal) `→ shows the server message, row stays`; `second add tap while saving ignored`.
+- [ ] **Step 2: Implement:** ≤ 3 rows, method + person shown, `+ Add` saves, large bar "Added Tea ₹50 · Cash — Undo" for 15 s; name tap opens the sheet with `prefill`; Cash line + closed register → "Open register".
+- [ ] **Step 3: Run** tests + babel-check; on-screen add, undo, fast double tap (one entry).
+- [ ] **Step 4: Commit** `feat(expenses-app): Usual now 1-tap line with Undo`.
+
+### Task A5: PR A regression and notes
+
+- [ ] **Step 1: Run** every `server/scripts/verify-*.js` and `app/scripts/test-*.js` (env as in CLAUDE.md; `verify-gst-sales` fails only while `bill_round_off` is on).
+- [ ] **Step 2: Write** the CLAUDE.md entry for PR A (under sub-project 4, after the expense book).
+- [ ] **Step 3: Commit** `docs: calmer add sheet and Usual now shipped`. Stop: the controller asks the user before pushing / opening PR A.
+
+---
+
+## PR B — staff money
+
+### Task B1: Schema, settings, helper module
+
+**Files:**
+- Modify: `server/config/database.js` (spec §7 tables, columns, settings, indexes: `staff_money_out (location_id,status)`, `(user_id,status)`; `staff_money_settles (register_id)`, `(money_out_id)`; `shop_owes (user_id,status)`; `shop_owes_payments (register_id)`)
+- Create: `server/utils/staff-money.js`
+- Test: `server/scripts/verify-staff-money.js` (new; harness like `verify-expense-book.js`)
+
+**Interfaces:**
+- Produces:
+  - `getLimits(db) -> { advanceDay, advanceMonth, shoppingDay, lateDays }`
+  - `totals(db, { userId }) -> { advanceToday, advanceMonth, shoppingToday, advancesUnpaid, shoppingHeld, owed }` (shop-local day/month; advances count status `approved`/`repaid`, any source)
+  - `needsPin({ giver, recipientId, kind, amount, totals, limits }) -> null | 'self' | 'over_day' | 'over_month'` (pure; owner → null; manager self → null; counter staff/employee self → `'self'`)
+  - `checkApprover(db, { approverId, pin, locationId, recipientId }) -> user` (throws spec copy)
+  - `remaining(row) -> number` (whole paise)
+
+- [ ] **Step 1: Write failing tests:** tables/columns/settings exist with defaults; `needsPin` table of cases (owner none; manager self none; staff self 'self'; 300 after 300 with day 500 → 'over_day'; 100 with month total 1950 of 2000 → 'over_month'); `remaining` 500 − 300 − 150 = 50.
+- [ ] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** after an API restart — PASS.
+- [ ] **Step 5: Commit** `feat(staff-money): schema, settings and limit/PIN helpers`.
+
+### Task B2: Salary advance at the counter
+
+**Files:**
+- Create: `server/routes/staff-money.js` (mounted `/api/staff-money` in `server/server.js`), `server/utils/advance-payout.js`
+- Modify: `server/routes/attendance.js` (approve branch uses the helper), `server/routes/expenses.js` (`DELETE /:id`, `PUT /:id` on a row linked from `salary_advances.expense_id`)
 - Test: `server/scripts/verify-staff-money.js`
 
 **Interfaces:**
-- Consumes: Task 1 `staff-money.js`.
+- Consumes: B1.
 - Produces:
-  - `payAdvance(tx, { userId, amount, method, locationId, givenBy, approvedBy, source, advanceId = null }) -> { advanceId, expenseId }` — inside the caller's `withMoneyTx`: inserts (or, with `advanceId`, approves) the `salary_advances` row, writes the `salary` expense (`employee_id`, `register_id`, description `Salary advance — <name>`), and for cash locks the open register and lowers `expected_cash`. Throws 400 `REGISTER_CLOSED` copy "Open the register to give cash — or pick UPI." when cash and no open register.
-  - `POST /api/staff-money/advance` body `{ location_id, user_id, amount, payment_method: 'cash'|'upi', note?, approver_code?, approver_pin? }` → 201 `{ success, data: { advance_id, expense_id, amount, user_name } }`. Roles: owner, manager, employee, counter_staff. 409 with `{ needs_pin: 'self'|'over_limit', message }` when a PIN is needed and missing.
+  - `payAdvance(tx, { userId, amount, method, locationId, givenBy, approvedBy, source, advanceId? }) -> { advanceId, expenseId }` (inside the caller's `withMoneyTx`; cash: `lockOpenRegister`, `expected_cash` down; 400 "Open the register to give cash — or pick UPI.").
+  - `GET /people?location_id=` → `[{ id, name, role, recent_rank }]` (active staff and riders linked to the shop; owner/manager/employee/counter_staff can call).
+  - `GET /approvers?location_id=` → `[{ id, name, role }]` with `pin_hash` set (owner + linked managers).
+  - `POST /advance` `{ location_id, user_id, amount, payment_method, note?, approver_id?, approver_pin? }` → 201 `{ data: { advance_id, expense_id, unpaid_after } }`; 409 `{ needs_pin, message }`.
+  - Owner notification (`notifyByRole({ roles: ['owner'], ... })`) on manager-self and on any PIN-approved amount.
 
-- [ ] **Step 1: Write failing tests:** `advance under the limit: 201, salary_advances approved source=counter, salary expense with register_id, drawer down by 300`; `UPI advance: no register change`; `over the limit without PIN: 409 needs_pin=over_limit with the spec copy`; `self without PIN: 409 needs_pin=self`; `self with own PIN refused 403`; `manager PIN not linked to shop refused 403`; `owner PIN allows over-limit; approved_by = owner`; `approved request counts toward today's limit` (Review Focus 3); `helper and florist get 403`; `cash with register closed: 400 with the spec copy` (use a location whose register the test controls); `approving an in-app request still works and writes the same expense shape` (regression for the shared helper).
-- [ ] **Step 2: Run** — expect FAIL.
-- [ ] **Step 3: Implement** `advance-payout.js`, the route (PIN check outside the transaction, then `withMoneyTx` → `payAdvance`), and switch the attendance approve branch to `payAdvance` with `advanceId`.
-- [ ] **Step 4: Run** the suite plus `verify-attendance-payroll.js`, `verify-register-expenses.js`, `verify-cash-safety.js` — expect PASS.
-- [ ] **Step 5: Commit** `feat(staff-money): give a salary advance at the counter`.
+- [ ] **Step 1: Write failing tests:** under limits → advance approved `source='counter'`, salary expense with `register_id`, drawer −300; UPI → no drawer change; `over_day`, `over_month` and `self` → 409 with spec copy; approver = recipient 403; manager not linked 403; owner PIN passes and is `approved_by`; manager self → 201 and an owner notification row; `request counts toward limits` (RF3); helper/florist 403; removing the advance's expense → advance `cancelled`, drawer back, audit row; changing its amount → advance amount follows; changing its employee → refused; removing after payroll deducted it → refused; approving an in-app request still writes the same expense shape.
+- [ ] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** this suite + `verify-attendance-payroll`, `verify-register-expenses`, `verify-cash-safety`, `verify-expense-book` — PASS.
+- [ ] **Step 5: Commit** `feat(staff-money): salary advance at the counter`.
 
-### Task 3: Shopping money: hand out, settle, remove, list, and the drawer maths
+### Task B3: Shopping money and the drawer lines
 
 **Files:**
 - Modify: `server/routes/staff-money.js`
-- Modify: `server/utils/register-close.js` (`computeRegisterClose` adds `shoppingOut`, `shoppingIn`)
-- Modify: `server/routes/sales.js` (register status running figures ~L637-680, history ~L953-971, closed-session inferred expenses), `server/routes/deliveries.js` (pickup overwrite: include the same two terms beside `helper_floats`)
+- Modify: `server/utils/register-close.js` (`computeRegisterClose` returns `shoppingOutTotal`, `shoppingInTotal`, `owesPaidTotal`; `expectedCash` − out + in − owesPaid), `server/routes/sales.js` (register status running figures, history rows, closed-session inferred expenses), `server/routes/deliveries.js` (pickup overwrite)
 - Test: `server/scripts/verify-staff-money.js`
 
 **Interfaces:**
-- Consumes: Task 1 helpers; Task 2 PIN/limit flow (same body fields, 409 `needs_pin`).
+- Consumes: B1, B2 PIN/limit flow.
 - Produces:
-  - `POST /api/staff-money/shopping` body as the advance route → 201 `{ data: { id, amount, user_name } }`.
-  - `POST /api/staff-money/:id/settle` body `{ bills: [{ item_id?, item_name?, description?, category?, amount }], returned_amount, returned_method: 'cash'|'upi', final: boolean }` → `{ data: { remaining, status } }`. Bills reuse piece 1's `resolveItem`; each becomes an expense (`payment_method='shopping_money'`, `money_out_id`, `given_to_user_id` = holder, `location_id` of the hand-out, `expense_date` today). Refuse `bills + returned > remaining` with "<Name> only has ₹<left> left — check the change amount." `final: true` with remaining 0 → `status='settled'`.
-  - `DELETE /api/staff-money/:id` (owner/manager): only while `settled_amount = 0 AND returned_amount = 0` and, for cash, its register still open; sets `status='removed'`. Otherwise 409 plain copy.
-  - `GET /api/staff-money/open?location_id=` → `[{ id, user_id, user_name, amount, remaining, created_at, given_by_name, late }]`, oldest first.
-  - `GET /api/staff-money/mine` → `{ advances_this_month: [...], holding: [...] }` (any authenticated role except helper/customer).
-  - `computeRegisterClose` return gains `shoppingOutTotal`, `shoppingInTotal`; `expectedCash` subtracts out, adds in. Register status/history carry `shopping_out`, `shopping_in`.
-  - Removing a settle bill expense (existing `DELETE /api/expenses/:id`) with `money_out_id`: adds its amount back to the hand-out's remaining (`settled_amount −= amount`, `status='open'`), no drawer move.
+  - `POST /shopping` (same body as `/advance`) → 201 `{ data: { id } }`.
+  - `POST /:id/settle` `{ bills: [{ item_id?, item_name?, description?, category?, amount }], change_back, change_method, final }` → `{ data: { remaining, status, owes_id? } }`. Bills → expenses (`shopping_money`, `money_out_id`, Given to = holder). Bills beyond what is left → `shop_owes` row for the excess (`source='overspend'`, `money_out_id`). `change_back` > what is left after bills → 400 "<Name> only has ₹<x> left — check the change amount."
+  - `DELETE /:id` (giver in the same open session, or owner/manager; nothing settled) → `removed`, cash back.
+  - `POST /:id/write-off` (owner) `{ reason }` → remainder as a `shopping_money` expense "Shopping money written off — <name>", status `written_off`.
+  - `GET /open?location_id=` → `{ shopping: [{ id, user_id, user_name, remaining, created_at, given_by_name, late }], owes: [...] }`; `GET /history?...`; `GET /mine`.
+  - Register status/history fields `shopping_out`, `shopping_in`, `owes_paid`; close preview carries `shopping_still_out: [{ user_name, remaining }]` for the shop.
+  - `DELETE /api/expenses/:id` on a settle bill → amount back as still held (`settled_amount −= amount`, status `open`), no drawer move.
 
-- [ ] **Step 1: Write failing tests:** `hand-out 500 cash: drawer down 500, no expense row`; `part settle 300 bills + 0 change: remaining 200, status open, bill expenses have payment_method shopping_money`; `full settle with 200 cash change: drawer up 200, status settled, net drawer −300`; `change more than remaining: 400 with the spec copy`; `settle twice in parallel: one wins, drawer moves once` (RF1); `change returned next day lands in today's session only` (RF2: insert the hand-out with a back-dated `created_at` and a closed register id, settle into the test's open register); `close preview equals opening + sales − expenses − out + in`; `register status running expected_cash matches close preview`; `shopping_money expenses never counted in any drawer query` (a settle bill with `register_id IS NULL` and `created_at` inside the session leaves `expected_cash` unchanged); `remove unsettled hand-out with register open: drawer back up`; `remove after a part settle: 409`; `deleting a settle bill reopens that amount, drawer unchanged`; `open list marks late after 3 days`; `mine shows own holding only`; `helper 403 on every new route`.
-- [ ] **Step 2: Run** — expect FAIL.
-- [ ] **Step 3: Implement.** Settle takes `SELECT … FROM staff_money_out WHERE id=? FOR UPDATE` first, re-checks remaining, then `lockOpenRegister` only when returning cash. `shoppingOut` = `SUM(amount)` of `staff_money_out` with `register_id = R AND payment_method='cash' AND status <> 'removed'`; `shoppingIn` = `SUM(returned_amount)` of `staff_money_settles` with `register_id = R AND returned_method='cash'`. Running `expected_cash` moves with each hand-out, change-return and removal, as helper floats do; a locked blind count (`close_count_locked`) shifts by the same cash.
-- [ ] **Step 4: Run** this suite plus every register suite: `verify-register-expenses`, `verify-cash-safety`, `verify-helper-bags`, `verify-quick-sale`, `verify-order-flows`, `verify-expense-book` — expect PASS.
-- [ ] **Step 5: Commit** `feat(staff-money): shopping money hand-out, settle and drawer maths`.
+- [ ] **Step 1: Write failing tests:** hand-out 500 cash → drawer −500, no expense; part settle 300 → remaining 200, bills are `shopping_money`; Done with 200 cash change → drawer +200, settled, net −300; overspend 620 on 500 → owes 120; no bills, change only → OK; change too high → 400 copy; `two settles at once` (RF1); `change back next day` (RF2: back-date the hand-out and its register, settle into the test's open register); close preview = status running figure; a `shopping_money` bill with NULL `register_id` inside the session leaves `expected_cash` unchanged; giver removes own typo in the same session; other counter staff cannot; remove after part settle → 409; deleting a settle bill reopens that amount; write-off; late after 3 days; helper 403 on every new route; audit rows present.
+- [ ] **Step 2: Run** — FAIL. **Step 3: Implement** (settle: `staff_money_out` row `FOR UPDATE`, re-check, then `lockOpenRegister` only for cash change). **Step 4: Run** this suite + all register suites (`verify-register-expenses`, `verify-cash-safety`, `verify-helper-bags`, `verify-quick-sale`, `verify-order-flows`, `verify-expense-book`) — PASS.
+- [ ] **Step 5: Commit** `feat(staff-money): shopping money, settle and drawer lines`.
 
-### Task 4: Payroll — open shopping money and "Take from pay"
+### Task B4: Own pocket and Shop owes
+
+**Files:**
+- Modify: `server/routes/expenses.js` (`POST /` and `PUT /:id` accept `payment_method: 'own_pocket'` + `paid_by_user_id`; never `register_id`; creates/updates the `shop_owes` row; `DELETE` removes its open amount, refused once part was paid back), `server/routes/staff-money.js` (owes routes)
+- Test: `server/scripts/verify-staff-money.js`
+
+**Interfaces:**
+- Produces: `POST /owes/:id/pay-back` `{ amount, method }` (cash needs the open register; `shop_owes_payments` row with `register_id`; `expected_cash` down), `POST /owes/:id/keep` (owner, own line only → `kept`), `POST /owes/:id/write-off` (owner).
+
+- [ ] **Step 1: Write failing tests:** own-pocket expense → no drawer change, owes row for that person; counter staff can mark own pocket for self or a named colleague; pay back 850 cash → drawer −850, status paid; part pay back; owner keep → kept; staff cannot keep; remove own-pocket expense before pay back → owes gone; after part pay back → refused; `own_pocket` rows never counted by drawer queries.
+- [ ] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** this suite + `verify-expense-book` + register suites — PASS.
+- [ ] **Step 5: Commit** `feat(staff-money): own pocket and Shop owes`.
+
+### Task B5: Payroll — Take from pay
 
 **Files:**
 - Modify: `server/routes/staff-management.js` (`POST /payroll/calculate`, `POST /payroll/disburse`)
 - Test: `server/scripts/verify-staff-money.js`
 
 **Interfaces:**
-- Consumes: Task 1 `remaining`; Task 2 `payAdvance` is **not** used (no cash moves); insert the advance row directly with `source='shopping_money'`, `status='approved'`, `payment_method=NULL`.
-- Produces: calculate response `calculation.open_shopping_money: [{ id, amount_left, created_at }]`, `calculation.open_shopping_total`; disburse accepts `take_shopping_money_ids: number[]`.
+- Produces: calculate → `calculation.open_shopping_money_total` (0 for riders/no salary); disburse accepts `take_shopping_money: { expected_total }`; mismatch with the current total → 409 "Shopping money changed since you calculated — tap Calculate again."; success → advance `source='shopping_money'` for the remainder, hand-outs `to_salary`, deducted in the same payment.
 
-- [ ] **Step 1: Write failing tests:** `calculate lists open shopping money for that person`; `disburse with take ids: hand-out to_salary, advance created for the remainder, deducted in the same payment`; `take-from-pay uses the remainder at disburse time` (RF5: part-settle between calculate and disburse); `take id of another person refused 400`.
-- [ ] **Step 2: Run** — expect FAIL.
-- [ ] **Step 3: Implement** inside disburse's existing transaction, before the advance-deduction loop: lock each named hand-out, skip ones no longer open, create the advance for `remaining(row)`, set `status='to_salary'`, `closed_at=NOW()`.
-- [ ] **Step 4: Run** this suite and `verify-attendance-payroll.js` — expect PASS.
-- [ ] **Step 5: Commit** `feat(staff-money): open shopping money at payroll with Take from pay`.
+- [ ] **Step 1: Write failing tests:** calculate shows the open total; take-from-pay deducts and closes; `stale take-from-pay refused` (RF5); rider gets 0 and no option.
+- [ ] **Step 2: Run** — FAIL. **Step 3: Implement** inside disburse's transaction before the advance-deduction loop (lock hand-outs `FOR UPDATE`). **Step 4: Run** + `verify-attendance-payroll` — PASS.
+- [ ] **Step 5: Commit** `feat(staff-money): Take from pay at payroll`.
 
-### Task 5: Usual now ranking
-
-**Files:**
-- Create: `server/utils/usual-now.js`
-- Modify: `server/routes/expenses.js` (`GET /suggest` without `q` returns `usual_now` ranking; response items gain `last_payment_method`, `usual_now: boolean`)
-- Test: `server/scripts/verify-staff-money.js` (pure-function checks) and `verify-expense-book.js` (route shape still passes)
-
-**Interfaces:**
-- Produces: `rankUsualNow(items, nowMs) -> items[]` (pure). Each input item: `{ id, pinned, pin_order, uses30, times: number[] }` (epoch ms of this shop's entries, last 60 days, ascending). Rules from spec §4.6: with ≥ 3 entries, `gap = median(consecutive diffs)`; usual now when `now − last ≥ 0.8 × gap`; order by `(now − last) / gap` desc, then `uses30` desc; items with `now − last < 0.8 × gap` are dropped. With < 3 entries: pinned (by `pin_order`) then `uses30`, dropping anything whose last entry is < 2 h ago. Returns at most 8.
-
-- [ ] **Step 1: Write failing tests:** `tea every ~5h, last 5 min ago: not in list`; `tea last 4.5h ago: first`; `petrol every 3 days, last 1 day ago: dropped`; `two entries only: falls back to pins/uses, but dropped when added 1h ago`; `route: suggest without q returns usual_now items with last_payment_method`.
-- [ ] **Step 2: Run** — expect FAIL.
-- [ ] **Step 3: Implement** the pure function and feed it from one query per request (`SELECT item_id, created_at, payment_method FROM expenses WHERE location_id=? AND created_at >= NOW() - INTERVAL '60 days' AND item_id IS NOT NULL AND payment_method IN ('cash','upi') ORDER BY created_at`).
-- [ ] **Step 4: Run** both suites — expect PASS.
-- [ ] **Step 5: Commit** `feat(expenses): Usual now ranking learns each item's usual gap`.
-
-### Task 6: App API methods and pure helpers
+### Task B6: App API and pure helpers
 
 **Files:**
 - Modify: `app/src/services/api.js`
@@ -144,96 +210,47 @@
 - Test: `app/scripts/test-staff-money.js`
 
 **Interfaces:**
-- Produces: `api.giveAdvance(body)`, `api.giveShoppingMoney(body)`, `api.settleShoppingMoney(id, body)`, `api.removeShoppingMoney(id)`, `api.getOpenShoppingMoney(locationId)`, `api.getMyMoney()`; `staffMoney.js`: `leftAfter(remaining, billsTotal, returned) -> number`, `defaultChange(remaining, billsTotal) -> number` (never below 0), `heldLabel(row, now) -> '2 days' | 'today' | '1 day'`, `pinPrompt(needs_pin, limit, kind) -> string` (spec §4.7 copy).
+- Produces: api methods for every B2–B4 route; `staffMoney.js`: `defaultChange(left, bills)` (≥ 0), `overspend(left, bills)` (≥ 0), `stillWith(left, bills, change)`, `heldLabel(createdAt, now)`, `pinMessage(needs_pin, { limits, name })` (spec §5.10 copy).
 
-- [ ] **Step 1: Write failing tests** for each pure function with the spec's numbers (500 − 300 → change 200; over-limit copy contains "₹500 daily advance limit").
-- [ ] **Step 2: Run** `node app/scripts/test-staff-money.js` — expect FAIL.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run** — expect PASS.
-- [ ] **Step 5: Commit** `feat(staff-money-app): api methods and helpers`.
+- [ ] **Step 1: Write failing tests** with spec numbers (500/300 → change 200; 500/620 → overspend 120; month copy names the person). **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** — PASS. **Step 5: Commit** `feat(staff-money-app): api and helpers`.
 
-### Task 7: Notion-style add sheet
+### Task B7: Salary advance, Shopping money and Own pocket in the sheet
 
 **Files:**
-- Create: `app/src/components/expenses/SheetRow.js` (label left grey, value right, chevron; `onPress`; `disabled` + `hint`)
-- Create: `app/src/components/expenses/OptionList.js` (plain modal list with optional search; reuse in Given to, Kind, Paid by)
-- Modify: `app/src/components/expenses/AddExpenseSheet.js` (layout per spec §3.1; keep every piece-1 rule: item resolve, register-closed Cash handling, back-dating UPI-only, old-cash locks, salary line, unsaved check, `useSubmitGuard`)
-- Modify: `app/src/components/expenses/GivenToPicker.js` (becomes a row + `OptionList`, "Someone else (type a name)")
-- Modify: `app/src/components/expenses/ExpenseRow.js` (spec §3.7 plain style: thin divider, grey second line; shows "Shopping money · <name>" for `payment_method='shopping_money'`)
-- Test: `app/scripts/test-expense-book.js` (existing 14 stay green); on-screen check
+- Create: `app/src/components/expenses/MoneyToStaffForm.js`, `app/src/components/expenses/ApproverPin.js` (pick a name from `/approvers` → PIN; empty-list help copy; lockout note)
+- Modify: `AddExpenseSheet.js` (two links; typed "advance"/"shopping"; "<Name> is back? ›" hint), `MethodSwitch.js` (`Own pocket` + "Whose?" chips), `ExpenseRow.js` (labels "Shopping money · Ramesh", "Own pocket · Owner")
+- Test: app tests + on-screen
 
-**Interfaces:**
-- Consumes: Task 5 `usual_now`, `last_payment_method` on suggest items.
-- Produces: `AddExpenseSheet` prop additions `mode: 'expense'|'advance'|'shopping'` (default `'expense'`; Task 8 fills the other two) and `onSettleInstead(holderRow)`.
+- [ ] **Step 1: Implement** (Who from `/people`; unpaid/held line under Note; 409 `needs_pin` → `ApproverPin`, resend).
+- [ ] **Step 2: Run** app tests + babel-check.
+- [ ] **Step 3: On-screen:** ₹300 advance in 5 taps; ₹600 asks PIN (pick name); counter staff self asks PIN; own-pocket expense shows in Shop owes; UPI works with register closed.
+- [ ] **Step 4: Commit** `feat(staff-money-app): advance, shopping money and own pocket in the add sheet`.
 
-- [ ] **Step 1: Restructure** the sheet into: Usual now list (≤ 5 rows, tap fills item/amount/given-to/kind and Cash/UPI from `last_payment_method`) → What was it for / Amount → rows Paid by, Given to, Kind, Date (owner/manager), Note / bill photo → two plain links → "Save ₹X".
-- [ ] **Step 2: Run** `node app/scripts/test-expense-book.js` and babel-check the touched files — expect PASS.
-- [ ] **Step 3: On-screen** (desktop + 375 px, as counter staff and manager): Tea in 3 taps; Change on an old register-less cash row still shows its lock; register-closed Cash shows Open Register inline.
-- [ ] **Step 4: Commit** `feat(expenses-app): Notion-style add sheet with Usual now suggestions`.
-
-### Task 8: Salary advance and Cash for shopping modes
+### Task B8: Shopping money out card, "is back", Pay back, history
 
 **Files:**
-- Create: `app/src/components/expenses/MoneyToStaffForm.js` (Who row, Amount, Paid by, Note, PIN box, "Give advance ₹X" / "Give ₹X for shopping")
-- Modify: `app/src/components/expenses/AddExpenseSheet.js` (two links + typed "advance"/"shopping" surface them; Given to on a holder shows "<Name> has ₹X shopping money — Settle it instead ›")
-- Test: `app/scripts/test-staff-money.js` (pure parts); on-screen check
+- Create: `app/src/components/expenses/ShoppingMoneyCard.js`, `app/src/screens/ShoppingMoneyBackScreen.js`, `app/src/screens/ShoppingMoneyHistoryScreen.js`
+- Modify: `app/src/screens/DashboardScreen.js` (counter/employee and owner/manager branches), `app/src/screens/ExpensesScreen.js` (top), `app/src/navigation/MainNavigator.js` (every stack with `Expenses`)
+- Test: app tests + on-screen
 
-**Interfaces:**
-- Consumes: Task 6 api + `pinPrompt`; Task 2/3 409 `needs_pin`.
+- [ ] **Step 1: Implement** spec §4.4 and §4.7 (history, owner write-off with reason, Keep as my money on the owner's own line).
+- [ ] **Step 2: Run** app tests + babel-check.
+- [ ] **Step 3: On-screen:** 500 out → back with 300 bills + 200 change → card clears; overspend → Shop owes 120 → Pay back cash; part settle keeps the line; red after the late days (seeded old row).
+- [ ] **Step 4: Commit** `feat(staff-money-app): shopping money card, is-back screen, pay back and history`.
 
-- [ ] **Step 1: Implement** the form; on 409 `needs_pin` show the PIN box with `pinPrompt` copy and resend with `approver_code`/`approver_pin`; Who list from `GET /auth/staff-roster?location_id=` plus riders (`GET /deliveries/partners`), "Me" included.
-- [ ] **Step 2: Run** app tests + babel-check — expect PASS.
-- [ ] **Step 3: On-screen:** ₹300 advance to someone else in 5 taps; ₹600 shows the PIN box; self advance asks PIN; UPI with register closed works; Cash with register closed shows Open Register.
-- [ ] **Step 4: Commit** `feat(staff-money-app): salary advance and cash for shopping in the add sheet`.
-
-### Task 9: "Usual now" 1-tap line on Expenses
+### Task B9: Register lines, close note, My money, settings, payroll tick, deactivate warning
 
 **Files:**
-- Create: `app/src/components/expenses/UsualNowLine.js`
-- Modify: `app/src/screens/ExpensesScreen.js` (day list for staff/managers; owner summary when period is Today)
-- Test: `app/scripts/test-staff-money.js`; on-screen
+- Modify: `app/src/screens/CashRegisterScreen.js` (session lines "Shopping money given", "Change brought back", "Shop owes paid back"; closed-session expense formula subtracts them as it does helper floats; close screen "₹X still with <name>")
+- Modify: `app/src/screens/ProfileScreen.js` (My money), `app/src/screens/SettingsScreen.js` (four owner settings), `app/src/screens/SalaryManagementScreen.js` (separate Take from pay line; sends `expected_total`; handles the 409), `app/src/screens/UserFormScreen.js` (deactivate warning from `GET /staff-money/open`)
+- Test: on-screen; server suites already cover the maths
 
-**Interfaces:**
-- Consumes: Task 5 suggest; existing `api.createExpense`, `api.deleteExpense`.
+- [ ] **Step 1: Implement.** **Step 2: Babel-check.**
+- [ ] **Step 3: On-screen:** register session lines match the Expenses list; close shows "still with"; My money as counter staff; settings and payroll tick as owner (test employee only); deactivate warning.
+- [ ] **Step 4: Commit** `feat(staff-money-app): register lines, My money, settings and payroll tick`.
 
-- [ ] **Step 1: Write failing test** `undo after close shows the remove-refused message` (RF4) as a pure check of the toast state machine in `UsualNowLine` (extract `undoState` reducer).
-- [ ] **Step 2: Implement:** up to 3 rows, `+ Add` saves at once, toast "Added Tea ₹50 — Undo" for 10 s, Undo calls delete and shows the server's message on refusal; "Open register" instead of Add when that row would be cash and the register is closed.
-- [ ] **Step 3: Run** tests + babel-check; on-screen add + undo, and add twice fast (one entry).
-- [ ] **Step 4: Commit** `feat(expenses-app): Usual now 1-tap line with Undo`.
+### Task B10: PR B regression and notes
 
-### Task 10: Money with staff card and Settle screen
-
-**Files:**
-- Create: `app/src/components/expenses/MoneyWithStaffCard.js`
-- Create: `app/src/screens/SettleShoppingMoneyScreen.js` (registered in every stack that has `Expenses`)
-- Modify: `app/src/screens/DashboardScreen.js` (counter/employee and owner/manager branches), `app/src/screens/ExpensesScreen.js` (top), `app/src/navigation/MainNavigator.js`
-- Test: `app/scripts/test-staff-money.js`; on-screen
-
-**Interfaces:**
-- Consumes: Task 6 api + `defaultChange`, `leftAfter`, `heldLabel`; piece 1 item suggestions for bills.
-
-- [ ] **Step 1: Implement** the card (hidden when empty; red line when `late`) and the settle screen (spec §3.4 layout; "Settle" sends `final: true`, "Save, rest later" sends `final: false`; 409 shows "Already settled — refresh").
-- [ ] **Step 2: Run** tests + babel-check.
-- [ ] **Step 3: On-screen:** hand out ₹500, settle ₹300 bills + ₹200 change, card disappears; part settle keeps the line.
-- [ ] **Step 4: Commit** `feat(staff-money-app): Money with staff card and settle screen`.
-
-### Task 11: My money, owner settings, payroll tick
-
-**Files:**
-- Modify: `app/src/screens/ProfileScreen.js` (My money section)
-- Modify: `app/src/screens/SettingsScreen.js` (owner-only rows for the three settings, saved through the existing settings API)
-- Modify: `app/src/screens/SalaryManagementScreen.js` ("₹X shopping money not settled ☐ Take from pay" in the payroll breakdown; sends `take_shopping_money_ids`; net shown updates)
-- Test: on-screen; `verify-staff-money.js` already covers the server
-
-- [ ] **Step 1: Implement** the three screens' additions.
-- [ ] **Step 2: Babel-check**; on-screen as counter staff (My money), owner (settings, payroll tick with a test employee only).
-- [ ] **Step 3: Commit** `feat(staff-money-app): My money, limit settings and payroll tick`.
-
-### Task 12: Full regression, docs
-
-**Files:**
-- Modify: `CLAUDE.md` (roadmap entry under sub-project 4, like the expense book's)
-
-- [ ] **Step 1: Run** every `server/scripts/verify-*.js` (with `VERIFY_OWNER_*`, `TRACKING_LINK_SECRET`; `verify-order-channel.js` needs `API_BASE_URL` without `/api` and `SMOKE_OWNER_*`) and every `app/scripts/test-*.js`. Expected: all green except `verify-gst-sales` while `bill_round_off` is on (known, unrelated).
-- [ ] **Step 2: Write** the CLAUDE.md entry: what it is, data, routes, money rulings (shopping_money method, lock order, payroll tick), tests, not checked, deploy (server first; leave limits at defaults until every counter device has the app).
-- [ ] **Step 3: Commit** `docs: staff money shipped`.
+- [ ] **Step 1: Run** every server and app suite.
+- [ ] **Step 2: Write** the CLAUDE.md entry for PR B (rulings: non-drawer methods, lock order, payroll stale check, privacy, riders left for piece 3).
+- [ ] **Step 3: Commit** `docs: staff money shipped`. Stop: the controller asks the user before pushing / opening PR B.
