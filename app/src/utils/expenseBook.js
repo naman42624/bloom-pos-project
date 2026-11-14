@@ -154,3 +154,66 @@ export function entriesText(n) {
 export function mergeConfirmText(fromName, intoName, count) {
   return `Move ${entriesText(count)} from "${fromName}" into "${intoName}"? "${fromName}" will be hidden.`;
 }
+
+// ── Usual now (add sheet) ──
+const METHOD_TEXT = { cash: 'Cash', upi: 'UPI' };
+const personOnly = (p) => ({ user_id: p.user_id == null ? null : Number(p.user_id), name: p.name == null ? null : p.name, display_name: p.display_name });
+const personKey = (p) => (p.user_id ? `u${Number(p.user_id)}` : `n${String(p.display_name || p.name || '').trim().replace(/\s+/g, ' ').toLowerCase()}`);
+const positive = (n) => (n != null && Number(n) > 0 ? Number(n) : null);
+
+// What tapping a suggestion fills (spec §5.7): the most common amount, the
+// current user's own last method (else Cash), and the last Given to only when
+// that person is clocked in today. `me` is { userId }; the server already sends
+// only the caller's own method, so no other person's method is ever used.
+// eslint-disable-next-line no-unused-vars
+export function pickDefaults(item, me) {
+  const it = item || {};
+  const method = it.my_last_method === 'cash' || it.my_last_method === 'upi' ? it.my_last_method : 'cash';
+  const p = it.last_given_to;
+  return {
+    amount: positive(it.common_amount) ?? positive(it.usual_amount),
+    method,
+    givenTo: p && p.present_today === true ? personOnly(p) : null,
+  };
+}
+
+// "Cash · Tota Ram": the grey line under a suggestion, exactly what a tap fills.
+export function suggestionLine(item) {
+  const d = pickDefaults(item);
+  const who = d.givenTo ? String(d.givenTo.display_name || d.givenTo.name || '').trim() : '';
+  return [METHOD_TEXT[d.method], who].filter(Boolean).join(' · ');
+}
+
+// Usual now rows, then Often rows without the ones already shown. An older
+// server sends only `data`, shown as Often. Salary items are left out for
+// counter staff (they use Salary advance).
+export function suggestionSections(res, { hideSalary } = {}) {
+  const r = res || {};
+  const keep = (rows) => (Array.isArray(rows) ? rows : []).filter((x) => x && !(hideSalary && x.category === 'salary'));
+  const hasSections = Array.isArray(r.usual_now) || Array.isArray(r.often);
+  const usualNow = hasSections ? keep(r.usual_now) : [];
+  const seen = new Set(usualNow.map((x) => Number(x.id)));
+  const often = keep(hasSections ? r.often : r.data).filter((x) => !seen.has(Number(x.id)) && seen.add(Number(x.id)));
+  return { usualNow, often };
+}
+
+// The 3 Given to chips: people last given money on the suggested items (in
+// list order), then the shop's people list. The chosen person always shows.
+export function recentPeopleChips(items, people, value, max = 3) {
+  const out = [];
+  const seen = new Set();
+  const add = (p) => {
+    if (!p || !String(p.display_name || p.name || '').trim()) return;
+    const k = personKey(p);
+    if (seen.has(k)) return;
+    seen.add(k);
+    out.push(personOnly(p));
+  };
+  (Array.isArray(items) ? items : []).forEach((it) => it && add(it.last_given_to));
+  (Array.isArray(people) ? people : []).forEach((u) => u && add({ user_id: u.id, name: u.name, display_name: u.name }));
+  const chips = out.slice(0, max);
+  if (value && String(value.display_name || value.name || '').trim() && !chips.some((c) => personKey(c) === personKey(value))) {
+    return [personOnly(value)].concat(chips.slice(0, max - 1));
+  }
+  return chips;
+}

@@ -1,23 +1,32 @@
 /**
- * AddExpenseSheet: the one Add / Change expense form (Expense book, spec §6.1).
+ * AddExpenseSheet: the one Add / Change expense form (Expense book; calmer
+ * layout from the staff money spec §4.1).
  *
- *   Add expense                         [x]
- *   [Petrol ₹200] [Tea ₹60] [Roses – Ramesh ₹1,500] ...   suggestion chips
- *   What was it for?  [ pe|          ]   type-ahead list under the box
- *   Amount [ ₹ 200 ]   (Cash) ( UPI )
- *   Given to: Raju ▸                     remembered per item; optional
- *   + Note   Bill photo                  optional
- *   Date: Today ▸                        owner / manager only
- *   [            Save ₹200            ]
+ *   Add expense                                   ✕
+ *   Usual now
+ *     Tea      ₹50   Cash · Tota Ram
+ *   Often
+ *     Petrol  ₹200   Cash · Ramesh
+ *   What was it for?   [ type here…            ]
+ *   Amount             ₹ [      ]
+ *   Paid by            [ Cash | UPI ]
+ *   Given to           (Tota Ram) (Ramesh) (Asha)   More ›
+ *   Kind               Food (from the item)     ›
+ *   Date               Today                    ›   owner / manager only
+ *   Note / bill photo  —                        ›
+ *   [              Save ₹50              ]
  *   Money coming back? Record a return
  *
- * Common case: tap a suggestion (fills name, kind, usual amount, Given to)
- * then Save.
+ * Common case: Add expense → Tea → Save (3 taps). A suggestion fills the
+ * item, its most common amount, your own last Cash/UPI and the last Given to
+ * (only when that person is here today), see pickDefaults.
  *
  * Props:
  *   visible, locationId, registerOpen, registerLoading?, register?
  *   expense?          change mode (shows "Remove this expense")
  *   initial?          add mode pre-fill, e.g. a return of an earlier expense
+ *   prefill?          add mode: a suggestion item (from Usual now) to start from
+ *   mode?             'expense' (default); 'advance' / 'shopping' arrive with staff money
  *   onClose()
  *   onSaved(result)   result = { expense, removed, message } after a save or remove
  *   onRegisterOpened? called after the register was opened from inside the sheet
@@ -35,10 +44,13 @@ import useSubmitGuard from '../../hooks/useSubmitGuard';
 import { bumpActivity } from '../../hooks/useIdleLock';
 import { appAlert, showConfirm } from '../../utils/alert';
 import { getShopTodayStr } from '../../utils/datetime';
-import { lastSevenDays } from '../../utils/expenseBook';
+import { lastSevenDays, pickDefaults, suggestionSections, suggestionLine } from '../../utils/expenseBook';
 import { OpenRegisterForm } from '../OpenRegisterSheet';
 import DateTimePickerModal from '../DateTimePickerModal';
-import GivenToPicker, { givenToLabel } from './GivenToPicker';
+import RecentPeople, { givenToLabel } from './RecentPeople';
+import SheetRow from './SheetRow';
+import OptionList from './OptionList';
+import MethodSwitch from './MethodSwitch';
 import { Colors, FontSize, Spacing, BorderRadius } from '../../constants/theme';
 
 export const EXPENSE_CATEGORIES = [
@@ -76,12 +88,23 @@ const withoutNote = (description, note) => {
   return n && d.endsWith(` — ${n}`) ? d.slice(0, -(n.length + 3)) : d;
 };
 const localDateStr = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+const personKey = (p) => (!p ? '' : p.user_id ? `u${Number(p.user_id)}` : `n${nameKey(givenToLabel(p))}`);
 
 function givenToFromExpense(e) {
   if (!e) return null;
   if (e.given_to_user_id) return { user_id: Number(e.given_to_user_id), name: null, display_name: e.given_to_display || '' };
   if (e.given_to_name) return { user_id: null, name: e.given_to_name, display_name: e.given_to_name };
   return null;
+}
+
+// A Usual now item handed in by the caller becomes the add-mode start.
+function startFromPrefill(p) {
+  if (!p || !p.id) return null;
+  const d = pickDefaults(p);
+  return {
+    item_id: p.id, item_name: p.name, category: p.category,
+    amount: d.amount, payment_method: d.method, givenTo: d.givenTo,
+  };
 }
 
 export default function AddExpenseSheet(props) {
@@ -100,33 +123,43 @@ export default function AddExpenseSheet(props) {
 }
 
 function SheetBody({
-  locationId, registerOpen, registerLoading = false, register, expense, initial,
+  locationId, registerOpen, registerLoading = false, register, expense, initial, prefill,
+  // mode: only 'expense' today; Salary advance / Shopping money come later.
+  mode = 'expense', // eslint-disable-line no-unused-vars
   onClose, onSaved, onRegisterOpened, closeRequest,
 }) {
   const { user, settings } = useAuth();
   const timezone = settings?.timezone?.value || 'Asia/Kolkata';
   const today = getShopTodayStr(timezone);
   const isBoss = user?.role === 'owner' || user?.role === 'manager';
+  // Counter staff give salary money through Salary advance (server refuses it here).
+  const hideSalary = user?.role === 'employee' || user?.role === 'counter_staff';
   const editing = !!expense;
-  const start = expense || initial || {};
+  const [fromPrefill] = useState(() => (editing || initial ? null : startFromPrefill(prefill)));
+  const start = expense || initial || fromPrefill || {};
 
   // ── Form state ──
   const startName = expense ? (expense.item_name || withoutNote(expense.description, expense.note)) : (start.item_name || start.description || '');
+  const startAmount = start.amount ? String(Number(start.amount)) : '';
+  const startGivenTo = editing ? givenToFromExpense(expense) : (fromPrefill ? fromPrefill.givenTo : null);
   const [name, setName] = useState(startName);
   const [item, setItem] = useState(
     start.item_id ? { id: Number(start.item_id), name: start.item_name || startName, category: start.category } : null
   );
   const [category, setCategory] = useState(start.category || null);
-  const [amount, setAmount] = useState(start.amount ? String(Number(start.amount)) : '');
+  // Add mode: the kind comes from the item unless picked in the Kind list.
+  const [kindChosen, setKindChosen] = useState(false);
+  const [amount, setAmount] = useState(startAmount);
   const [isReturn, setIsReturn] = useState(!!start.is_return);
-  const [givenTo, setGivenTo] = useState(givenToFromExpense(expense));
+  const [givenTo, setGivenTo] = useState(startGivenTo);
   const [givenToTouched, setGivenToTouched] = useState(false);
   const [note, setNote] = useState(expense?.note || '');
-  const [showNote, setShowNote] = useState(!!expense?.note);
   const [photo, setPhoto] = useState(null); // a newly picked local asset
   const [photoUrl, setPhotoUrl] = useState(expense?.photo_url || null); // already saved
+  const [showExtras, setShowExtras] = useState(!!(expense?.note || expense?.photo_url));
   const [expenseDate, setExpenseDate] = useState(dateStr(expense?.expense_date) || today);
   const [showDates, setShowDates] = useState(false);
+  const [showKinds, setShowKinds] = useState(false);
   const [showOtherDay, setShowOtherDay] = useState(false);
   const [salaryEmployee, setSalaryEmployee] = useState(
     expense?.employee_id ? { id: expense.employee_id, name: expense.employee_name || '' } : null
@@ -179,14 +212,14 @@ function SheetBody({
   }, [registerLoading, isOpen]);
 
   const methods = [
-    { key: 'cash', label: 'Cash', icon: 'cash-outline' },
-    { key: 'upi', label: 'UPI', icon: 'phone-portrait-outline' },
+    { key: 'cash', label: 'Cash', disabled: cashDisabled },
+    { key: 'upi', label: 'UPI' },
   ];
   // Card stays only for an older expense that was paid by card.
-  if (editing && expense.payment_method === 'card') methods.push({ key: 'card', label: 'Card', icon: 'card-outline' });
+  if (editing && expense.payment_method === 'card') methods.push({ key: 'card', label: 'Card' });
 
   // ── Suggestions ──
-  const [chips, setChips] = useState([]);
+  const [sections, setSections] = useState({ usualNow: [], often: [] });
   const [typed, setTyped] = useState([]);
   const [typedFor, setTypedFor] = useState('');
   const [showTyped, setShowTyped] = useState(false);
@@ -194,10 +227,10 @@ function SheetBody({
   const reqId = useRef(0);
 
   useEffect(() => {
-    if (!locationId) return;
+    if (!locationId || editing) return;
     api.getExpenseSuggestions({ location_id: locationId })
-      .then((res) => setChips(res.data || []))
-      .catch(() => setChips([]));
+      .then((res) => setSections(suggestionSections(res, { hideSalary })))
+      .catch(() => setSections({ usualNow: [], often: [] }));
   }, [locationId]);
 
   useEffect(() => {
@@ -213,7 +246,9 @@ function SheetBody({
         .then((res) => {
           if (id !== reqId.current) return;
           const all = res.data || [];
-          const rows = editing ? all.filter((r) => (r.category === 'salary') === (expense.category === 'salary')) : all;
+          const rows = editing
+            ? all.filter((r) => (r.category === 'salary') === (expense.category === 'salary'))
+            : all.filter((r) => !(hideSalary && r.category === 'salary'));
           setTyped(rows);
           setTypedFor(q);
           // Typed the exact name of a known item: use it, no kind to pick.
@@ -227,15 +262,19 @@ function SheetBody({
 
   const pickSuggestion = (s) => {
     reqId.current += 1; // a slower type-ahead reply must not replace this pick
+    const d = pickDefaults(s, { userId: user?.id });
     setName(s.name);
     setItem({ id: s.id, name: s.name, category: s.category });
     setCategory(s.category);
-    if (s.usual_amount != null && Number(s.usual_amount) > 0) setAmount(String(Number(s.usual_amount)));
-    setGivenTo(s.last_given_to ? { ...s.last_given_to } : null);
+    setKindChosen(false);
+    if (d.amount) setAmount(String(d.amount));
+    // Your own last Cash/UPI for this item (a change keeps its method).
+    if (!editing) { autoMovedOffCash.current = false; setPaymentMethod(d.method); }
+    setGivenTo(d.givenTo);
     setGivenToTouched(true);
     setShowTyped(false);
     setErrors({});
-    setTimeout(() => amountRef.current?.focus(), 50);
+    if (!d.amount) setTimeout(() => amountRef.current?.focus(), 50);
   };
 
   const onNameChange = (t) => {
@@ -250,9 +289,9 @@ function SheetBody({
   // Changing: a salary row keeps its kind, and other rows can't become
   // salary (server: SALARY_ROW_MESSAGE).
   const salaryRow = editing && expense.category === 'salary';
-  const showCategories = editing ? !salaryRow : isNewName;
-  const categoryChoices = editing ? EXPENSE_CATEGORIES.filter((c) => c.key !== 'salary') : EXPENSE_CATEGORIES;
-  const effectiveCategory = item && !editing ? item.category : category;
+  const needsKind = editing ? !salaryRow : isNewName;
+  const categoryChoices = (editing || hideSalary) ? EXPENSE_CATEGORIES.filter((c) => c.key !== 'salary') : EXPENSE_CATEGORIES;
+  const effectiveCategory = editing ? category : (item && !kindChosen ? item.category : category);
   const isSalary = effectiveCategory === 'salary';
 
   // ── Photo ──
@@ -307,8 +346,9 @@ function SheetBody({
       || category !== (expense.category || null) || isReturn !== !!expense.is_return
       || expenseDate !== (dateStr(expense.expense_date) || today) || pickedEmployeeId !== startEmployeeId
       || (photoUrl || null) !== (expense.photo_url || null))
-    : (name.trim() !== startName.trim() || (amount !== '' && amount !== (start.amount ? String(Number(start.amount)) : '')) || !!photo || !!note.trim()
-      || category !== (start.category || null) || isReturn !== !!start.is_return || expenseDate !== today || pickedEmployeeId !== null);
+    : (name.trim() !== startName.trim() || (amount !== '' && amount !== startAmount) || !!photo || !!note.trim()
+      || category !== (start.category || null) || isReturn !== !!start.is_return || expenseDate !== today
+      || pickedEmployeeId !== null || personKey(givenTo) !== personKey(startGivenTo));
   const requestClose = () => {
     if (saving || removing) return;
     if (!dirty) { onClose(); return; }
@@ -329,7 +369,7 @@ function SheetBody({
     const e = {};
     if (!name.trim()) e.name = 'Type what this was for, like Petrol.';
     if (!amountOk) e.amount = 'Type how much was paid.';
-    if (showCategories && !effectiveCategory) e.category = 'Pick what kind of expense this is.';
+    if (needsKind && !effectiveCategory) e.category = 'Tap Kind and pick what kind of expense this is.';
     if (isSalary && !salaryEmployee) e.salary = 'Pick which employee this salary payment is for.';
     setErrors(e);
     if (e.amount && !e.name) setTimeout(() => amountRef.current?.focus(), 50);
@@ -339,7 +379,11 @@ function SheetBody({
   const itemFields = () => {
     // Salary keeps its old shape (no item), as before the expense book.
     if (isSalary && !item) return { description: name.trim(), category: 'salary' };
-    if (item) return editing ? { item_id: item.id, category: effectiveCategory } : { item_id: item.id };
+    if (item) {
+      if (editing) return { item_id: item.id, category: effectiveCategory };
+      // A kind picked in the Kind list for a known item goes with this entry.
+      return kindChosen && category && category !== item.category ? { item_id: item.id, category } : { item_id: item.id };
+    }
     return { item_name: name.trim(), category: effectiveCategory };
   };
 
@@ -465,6 +509,37 @@ function SheetBody({
   const saveText = editing ? 'Save changes' : `${isReturn ? 'Save return' : 'Save'}${amountOk ? ` ${rupees(amt)}` : ''}`;
   const busy = saving || removing;
   const photoPreview = photo ? photo.uri : (photoUrl ? `${getApiOrigin()}${photoUrl}` : null);
+  const showSuggestions = !editing && !(showTyped && name.trim()) && (sections.usualNow.length + sections.often.length) > 0;
+  const suggestItems = sections.usualNow.concat(sections.often);
+  const extrasText = [note.trim() ? 'Note' : null, photoPreview ? 'Bill photo' : null].filter(Boolean).join(' · ');
+
+  let kindValue = effectiveCategory ? categoryLabel(effectiveCategory) : '';
+  if (kindValue && item && !editing && !kindChosen) kindValue = `${kindValue} (from the item)`;
+  const kindHint = salaryRow
+    ? 'A salary line stays Salary. To make it something else, remove it and add it again.'
+    : (!editing && isNewName && !effectiveCategory ? 'New item — tap Kind and pick what kind it is.' : null);
+
+  const suggestionRow = (s) => {
+    const d = pickDefaults(s);
+    const active = !!item && item.id === s.id;
+    return (
+      <TouchableOpacity
+        key={s.id}
+        style={styles.suggestRow}
+        onPress={() => pickSuggestion(s)}
+        accessibilityRole="button"
+        accessibilityState={{ selected: active }}
+        accessibilityLabel={`${s.name}${d.amount ? `, ${rupees(d.amount)}` : ''}, ${suggestionLine(s)}`}
+      >
+        <View style={{ flex: 1 }}>
+          <Text style={[styles.suggestName, active && styles.suggestNameActive]} numberOfLines={1}>{s.name}</Text>
+          <Text style={styles.suggestMeta} numberOfLines={1}>{suggestionLine(s)}</Text>
+        </View>
+        {!!d.amount && <Text style={styles.suggestAmount}>{rupees(d.amount)}</Text>}
+        {active && <Ionicons name="checkmark" size={20} color={Colors.primary} />}
+      </TouchableOpacity>
+    );
+  };
 
   return (
     <>
@@ -483,29 +558,13 @@ function SheetBody({
           </View>
         )}
 
-        {/* Suggestion chips */}
-        {!editing && chips.length > 0 && !(showTyped && name.trim()) && (
-          <View style={styles.chipWrap}>
-            {chips.map((s) => {
-              const who = s.last_given_to ? givenToLabel(s.last_given_to) : '';
-              const active = item && item.id === s.id;
-              return (
-                <TouchableOpacity
-                  key={s.id}
-                  style={[styles.suggestChip, active && styles.chipActive]}
-                  onPress={() => pickSuggestion(s)}
-                  accessibilityRole="button"
-                  accessibilityState={{ selected: !!active }}
-                >
-                  <Text style={[styles.suggestText, active && styles.chipTextActive]}>
-                    {s.name}{who ? ` – ${who}` : ''}
-                    {s.usual_amount != null && Number(s.usual_amount) > 0 ? (
-                      <Text style={[styles.suggestAmount, active && styles.chipTextActive]}>{`  ${rupees(s.usual_amount)}`}</Text>
-                    ) : null}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
+        {/* Usual now, then Often */}
+        {showSuggestions && (
+          <View style={styles.section}>
+            {sections.usualNow.length > 0 && <Text style={styles.sectionTitle}>Usual now</Text>}
+            {sections.usualNow.map(suggestionRow)}
+            {sections.often.length > 0 && <Text style={styles.sectionTitle}>Often</Text>}
+            {sections.often.map(suggestionRow)}
           </View>
         )}
 
@@ -536,77 +595,33 @@ function SheetBody({
           </View>
         )}
 
-        {/* Kind of expense: once, for a new name (always shown when changing) */}
-        {showCategories && (
-          <>
-            <Text style={styles.label}>{editing ? 'Kind of expense' : 'New item — what kind of expense is it?'}</Text>
-            <View style={styles.chipWrap}>
-              {categoryChoices.map((c) => {
-                const active = effectiveCategory === c.key;
-                return (
-                  <TouchableOpacity
-                    key={c.key}
-                    style={[styles.chip, active && styles.chipActive]}
-                    onPress={() => { setCategory(c.key); setErrors((e) => ({ ...e, category: undefined })); }}
-                    accessibilityRole="button"
-                    accessibilityState={{ selected: active }}
-                  >
-                    <Ionicons name={c.icon} size={18} color={active ? Colors.white : Colors.textSecondary} />
-                    <Text style={[styles.chipText, active && styles.chipTextActive]}>{c.label}</Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
-            {!!errors.category && <Text style={styles.error}>{errors.category}</Text>}
-          </>
-        )}
-
-        {isSalary && (
-          <SalaryEmployeePicker
-            locationId={locationId}
-            value={salaryEmployee}
-            onChange={(u) => { setSalaryEmployee(u); setErrors((e) => ({ ...e, salary: undefined })); }}
-            error={errors.salary}
-          />
-        )}
-
-        {/* Amount + Cash / UPI */}
+        {/* Amount */}
         <Text style={styles.label}>Amount</Text>
-        <View style={styles.amountRow}>
-          <View style={[styles.amountBox, errors.amount && styles.inputError]}>
-            <Text style={styles.rupee}>₹</Text>
-            <TextInput
-              ref={amountRef}
-              style={styles.amountInput}
-              value={amount}
-              onChangeText={(t) => { setAmount(t.replace(/[^0-9.]/g, '')); setErrors((e) => ({ ...e, amount: undefined })); }}
-              editable={!cashLocked}
-              placeholder="0"
-              placeholderTextColor={Colors.textLight}
-              keyboardType="decimal-pad"
-              onFocus={() => setShowTyped(false)}
-              accessibilityLabel="Amount in rupees"
-            />
-          </View>
-          {methods.map((m) => {
-            const active = paymentMethod === m.key;
-            const disabled = cashLocked ? !active : (m.key === 'cash' && cashDisabled);
-            return (
-              <TouchableOpacity
-                key={m.key}
-                style={[styles.methodBtn, active && styles.chipActive, disabled && styles.methodDisabled]}
-                onPress={() => { autoMovedOffCash.current = false; setPaymentMethod(m.key); }}
-                disabled={disabled || cashLocked}
-                accessibilityRole="button"
-                accessibilityState={{ selected: active, disabled }}
-              >
-                <Ionicons name={m.icon} size={18} color={active ? Colors.white : disabled ? Colors.textLight : Colors.textSecondary} />
-                <Text style={[styles.chipText, active && styles.chipTextActive, disabled && { color: Colors.textLight }]}>{m.label}</Text>
-              </TouchableOpacity>
-            );
-          })}
+        <View style={[styles.amountBox, errors.amount && styles.inputError, cashLocked && styles.lockedBox]}>
+          <Text style={styles.rupee}>₹</Text>
+          <TextInput
+            ref={amountRef}
+            style={[styles.amountInput, cashLocked && { color: Colors.textLight }]}
+            value={amount}
+            onChangeText={(t) => { setAmount(t.replace(/[^0-9.]/g, '')); setErrors((e) => ({ ...e, amount: undefined })); }}
+            editable={!cashLocked}
+            placeholder="0"
+            placeholderTextColor={Colors.textLight}
+            keyboardType="decimal-pad"
+            onFocus={() => setShowTyped(false)}
+            accessibilityLabel="Amount in rupees"
+          />
         </View>
         {!!errors.amount && <Text style={styles.error}>{errors.amount}</Text>}
+
+        {/* Paid by: Cash | UPI */}
+        <Text style={styles.label}>Paid by</Text>
+        <MethodSwitch
+          value={paymentMethod}
+          options={methods}
+          locked={cashLocked}
+          onChange={(k) => { autoMovedOffCash.current = false; setPaymentMethod(k); }}
+        />
         {cashLocked && (
           <Text style={styles.hint}>
             This cash was paid on a day whose register is already closed, so the amount and Cash/UPI stay as they are. You can still change the rest.
@@ -628,102 +643,78 @@ function SheetBody({
           <Text style={styles.hint}>Cash comes out of the drawer that is open now.</Text>
         )}
 
-        {/* Given to */}
-        <Text style={styles.label}>Who got the money? (optional)</Text>
-        <GivenToPicker
+        {/* Given to (optional) */}
+        <Text style={styles.label}>Given to <Text style={styles.optional}>(optional)</Text></Text>
+        <RecentPeople
           locationId={locationId}
+          items={suggestItems}
           value={givenTo}
           onChange={(v) => { setGivenTo(v); setGivenToTouched(true); }}
         />
 
-        {/* Note + bill photo */}
-        <View style={styles.extrasRow}>
-          {!showNote && (
-            <TouchableOpacity style={styles.extraBtn} onPress={() => setShowNote(true)} accessibilityRole="button">
-              <Ionicons name="add" size={20} color={Colors.primary} />
-              <Text style={styles.extraText}>Note</Text>
-            </TouchableOpacity>
-          )}
-          <TouchableOpacity style={styles.extraBtn} onPress={choosePhoto} accessibilityRole="button">
-            <Ionicons name="camera-outline" size={20} color={Colors.primary} />
-            <Text style={styles.extraText}>{photoPreview ? 'Change bill photo' : 'Bill photo'}</Text>
-          </TouchableOpacity>
-        </View>
-        {showNote && (
-          <TextInput
-            style={[styles.input, { marginTop: Spacing.sm }]}
-            value={note}
-            onChangeText={setNote}
-            placeholder="Note (optional)"
-            placeholderTextColor={Colors.textLight}
-            maxLength={200}
-            accessibilityLabel="Note"
+        <View style={styles.rows}>
+          {/* Kind: from the item; Salary not offered to counter staff */}
+          <SheetRow
+            label="Kind"
+            value={kindValue}
+            placeholder={isNewName ? 'Pick one' : '—'}
+            onPress={() => setShowKinds(true)}
+            disabled={salaryRow}
+            hint={kindHint}
+            error={errors.category}
           />
-        )}
-        {photoPreview && (
-          <View style={styles.photoRow}>
-            <Image source={{ uri: photoPreview }} style={styles.photo} resizeMode="cover" accessibilityLabel="Bill photo" />
-            <TouchableOpacity
-              style={styles.extraBtn}
-              onPress={() => { setPhoto(null); setPhotoUrl(null); }}
-              accessibilityRole="button"
-            >
-              <Ionicons name="trash-outline" size={18} color={Colors.error} />
-              <Text style={[styles.extraText, { color: Colors.error }]}>Remove photo</Text>
-            </TouchableOpacity>
-          </View>
-        )}
-
-        {/* Date: owner and manager only */}
-        {isBoss && (
-          <>
-            <TouchableOpacity
-              style={[styles.dateRow]}
-              onPress={() => setShowDates((v) => !v)}
-              accessibilityRole="button"
-              accessibilityState={{ expanded: showDates }}
-            >
-              <Ionicons name="calendar-outline" size={20} color={Colors.textSecondary} />
-              <Text style={styles.dateText}>Date: <Text style={styles.dateValue}>{dateLabel}</Text></Text>
-              <Ionicons name={showDates ? 'chevron-up' : 'chevron-forward'} size={20} color={Colors.textSecondary} />
-            </TouchableOpacity>
-            {showDates && (
-              <View style={[styles.chipWrap, { marginTop: Spacing.sm }]}>
-                {days.map((d) => {
-                  const active = d.date === expenseDate;
-                  return (
-                    <TouchableOpacity
-                      key={d.date}
-                      style={[styles.chip, active && styles.chipActive]}
-                      onPress={() => { setExpenseDate(d.date); setShowDates(false); }}
-                      accessibilityRole="button"
-                      accessibilityState={{ selected: active }}
-                    >
-                      <Text style={[styles.chipText, active && styles.chipTextActive]}>{d.label}</Text>
-                    </TouchableOpacity>
-                  );
-                })}
-                <TouchableOpacity style={styles.chip} onPress={() => setShowOtherDay(true)} accessibilityRole="button">
-                  <Text style={styles.chipText}>Other day…</Text>
-                </TouchableOpacity>
-              </View>
-            )}
-            <DateTimePickerModal
-              visible={showOtherDay}
-              mode="date"
-              value={new Date(`${expenseDate}T12:00:00`)}
-              title="Which day was it paid?"
-              onCancel={() => setShowOtherDay(false)}
-              onConfirm={(d) => {
-                setShowOtherDay(false);
-                const s = localDateStr(d);
-                if (s > today) { appAlert('Pick an earlier day', 'An expense cannot be entered for a day that has not come yet.'); return; }
-                setExpenseDate(s);
-                setShowDates(false);
-              }}
+          {isSalary && (
+            <SalaryEmployeePicker
+              locationId={locationId}
+              value={salaryEmployee}
+              onChange={(u) => { setSalaryEmployee(u); setErrors((e) => ({ ...e, salary: undefined })); }}
+              error={errors.salary}
             />
-          </>
-        )}
+          )}
+
+          {/* Date: owner and manager only */}
+          {isBoss && <SheetRow label="Date" value={dateLabel} onPress={() => setShowDates(true)} />}
+
+          {/* Note / bill photo */}
+          <SheetRow
+            label="Note / bill photo"
+            value={extrasText}
+            onPress={() => setShowExtras((v) => !v)}
+            accessibilityLabel={`Note and bill photo: ${extrasText || 'none'}. Tap to ${showExtras ? 'hide' : 'add'}.`}
+          />
+          {showExtras && (
+            <View style={styles.extras}>
+              <TextInput
+                style={styles.input}
+                value={note}
+                onChangeText={setNote}
+                placeholder="Note (optional)"
+                placeholderTextColor={Colors.textLight}
+                maxLength={200}
+                accessibilityLabel="Note"
+              />
+              <View style={styles.photoRow}>
+                {photoPreview && (
+                  <Image source={{ uri: photoPreview }} style={styles.photo} resizeMode="cover" accessibilityLabel="Bill photo" />
+                )}
+                <TouchableOpacity style={styles.extraBtn} onPress={choosePhoto} accessibilityRole="button">
+                  <Ionicons name="camera-outline" size={20} color={Colors.primary} />
+                  <Text style={styles.extraText}>{photoPreview ? 'Change bill photo' : 'Add bill photo'}</Text>
+                </TouchableOpacity>
+                {photoPreview && (
+                  <TouchableOpacity
+                    style={styles.extraBtn}
+                    onPress={() => { setPhoto(null); setPhotoUrl(null); }}
+                    accessibilityRole="button"
+                  >
+                    <Ionicons name="trash-outline" size={18} color={Colors.error} />
+                    <Text style={[styles.extraText, { color: Colors.error }]}>Remove photo</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+            </View>
+          )}
+        </View>
 
         {/* Return switch, then Remove (change mode) */}
         {!cashLocked && (
@@ -757,6 +748,50 @@ function SheetBody({
           ? <ActivityIndicator color={Colors.white} />
           : <Text style={styles.saveText}>{saveText}</Text>}
       </TouchableOpacity>
+
+      <OptionList
+        visible={showKinds}
+        title="What kind of expense?"
+        options={categoryChoices.map((c) => ({ key: c.key, label: c.label, selected: effectiveCategory === c.key }))}
+        onPick={(o) => {
+          setShowKinds(false);
+          setCategory(o.key);
+          setKindChosen(true);
+          setErrors((e) => ({ ...e, category: undefined }));
+        }}
+        onClose={() => setShowKinds(false)}
+      />
+
+      {isBoss && (
+        <>
+          <OptionList
+            visible={showDates}
+            title="Which day was it paid?"
+            options={days.map((d) => ({ key: d.date, label: d.label, selected: d.date === expenseDate }))}
+            footer={[{ key: 'other', label: 'Other day…' }]}
+            onPick={(o) => {
+              setShowDates(false);
+              // iOS cannot open a modal while another is still closing.
+              if (o.key === 'other') { setTimeout(() => setShowOtherDay(true), Platform.OS === 'ios' ? 400 : 0); return; }
+              setExpenseDate(o.key);
+            }}
+            onClose={() => setShowDates(false)}
+          />
+          <DateTimePickerModal
+            visible={showOtherDay}
+            mode="date"
+            value={new Date(`${expenseDate}T12:00:00`)}
+            title="Which day was it paid?"
+            onCancel={() => setShowOtherDay(false)}
+            onConfirm={(d) => {
+              setShowOtherDay(false);
+              const s = localDateStr(d);
+              if (s > today) { appAlert('Pick an earlier day', 'An expense cannot be entered for a day that has not come yet.'); return; }
+              setExpenseDate(s);
+            }}
+          />
+        </>
+      )}
     </>
   );
 }
@@ -857,7 +892,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.md, paddingTop: Spacing.md, paddingBottom: Spacing.lg,
     width: '100%', maxWidth: 560, alignSelf: 'center', maxHeight: '92%',
   },
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: Spacing.sm },
+  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: Spacing.xs },
   title: { fontSize: FontSize.lg, fontWeight: '800', color: Colors.text, flex: 1 },
   closeBtn: { minWidth: 48, minHeight: 48, alignItems: 'flex-end', justifyContent: 'center' },
   scroll: { flexGrow: 0 },
@@ -868,7 +903,23 @@ const styles = StyleSheet.create({
   },
   returnNoteText: { fontSize: FontSize.md, color: Colors.text, flex: 1 },
 
+  // Usual now / Often: plain list rows with thin dividers
+  section: { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: Colors.border, paddingBottom: Spacing.xs },
+  sectionTitle: {
+    fontSize: FontSize.sm, fontWeight: '700', color: Colors.textSecondary, textTransform: 'uppercase',
+    letterSpacing: 0.5, marginTop: Spacing.sm, marginBottom: Spacing.xs,
+  },
+  suggestRow: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, minHeight: 56, paddingVertical: Spacing.xs,
+    borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: Colors.border,
+  },
+  suggestName: { fontSize: FontSize.md, fontWeight: '700', color: Colors.text },
+  suggestNameActive: { color: Colors.primary },
+  suggestMeta: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: 2 },
+  suggestAmount: { fontSize: FontSize.md, fontWeight: '700', color: Colors.text, fontVariant: ['tabular-nums'] },
+
   label: { fontSize: FontSize.md, fontWeight: '600', color: Colors.text, marginTop: Spacing.md, marginBottom: Spacing.xs },
+  optional: { fontWeight: '400', color: Colors.textSecondary },
   input: {
     minHeight: 52, borderWidth: 1, borderColor: Colors.border, borderRadius: BorderRadius.md,
     paddingHorizontal: Spacing.md, fontSize: FontSize.md, color: Colors.text, backgroundColor: Colors.background,
@@ -877,6 +928,7 @@ const styles = StyleSheet.create({
   error: { color: Colors.error, fontSize: FontSize.md, marginTop: Spacing.xs },
   hint: { color: Colors.textSecondary, fontSize: FontSize.sm, marginTop: Spacing.xs },
 
+  // Salary employee chips
   chipWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm },
   chip: {
     flexDirection: 'row', alignItems: 'center', gap: Spacing.xs,
@@ -886,13 +938,6 @@ const styles = StyleSheet.create({
   chipActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
   chipText: { fontSize: FontSize.md, color: Colors.text },
   chipTextActive: { color: Colors.white, fontWeight: '700' },
-
-  suggestChip: {
-    minHeight: 52, paddingHorizontal: Spacing.md, justifyContent: 'center',
-    borderRadius: BorderRadius.md, borderWidth: 1, borderColor: Colors.primaryLight, backgroundColor: Colors.primaryGlow,
-  },
-  suggestText: { fontSize: FontSize.md, fontWeight: '700', color: Colors.text },
-  suggestAmount: { fontWeight: '600', color: Colors.textSecondary, fontVariant: ['tabular-nums'] },
 
   typedList: {
     marginTop: Spacing.xs, borderWidth: 1, borderColor: Colors.border, borderRadius: BorderRadius.md,
@@ -905,23 +950,17 @@ const styles = StyleSheet.create({
   typedName: { fontSize: FontSize.md, fontWeight: '700', color: Colors.text },
   typedMeta: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: 2 },
 
-  amountRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, flexWrap: 'wrap' },
   amountBox: {
-    flexDirection: 'row', alignItems: 'center', flexGrow: 1, flexBasis: 140, minHeight: 56,
+    flexDirection: 'row', alignItems: 'center', minHeight: 56,
     borderWidth: 1, borderColor: Colors.border, borderRadius: BorderRadius.md,
     paddingHorizontal: Spacing.md, backgroundColor: Colors.background,
   },
+  lockedBox: { backgroundColor: Colors.surfaceAlt },
   rupee: { fontSize: FontSize.lg, fontWeight: '700', color: Colors.textSecondary, marginRight: Spacing.xs },
   amountInput: {
     flex: 1, minHeight: 54, fontSize: FontSize.xl, fontWeight: '800', color: Colors.text,
     fontVariant: ['tabular-nums'],
   },
-  methodBtn: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.xs,
-    minHeight: 56, minWidth: 88, paddingHorizontal: Spacing.md,
-    borderRadius: BorderRadius.md, borderWidth: 1, borderColor: Colors.border, backgroundColor: Colors.surface,
-  },
-  methodDisabled: { backgroundColor: Colors.surfaceAlt, opacity: 0.5 },
 
   closedRow: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: Spacing.sm,
@@ -934,19 +973,12 @@ const styles = StyleSheet.create({
   },
   openRegText: { color: Colors.primary, fontWeight: '700', fontSize: FontSize.md },
 
-  extrasRow: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.md, marginTop: Spacing.md },
+  rows: { marginTop: Spacing.md, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: Colors.border },
+  extras: { paddingVertical: Spacing.sm, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: Colors.border },
+  photoRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: Spacing.md, marginTop: Spacing.sm },
+  photo: { width: 72, height: 72, borderRadius: BorderRadius.sm, backgroundColor: Colors.surfaceAlt },
   extraBtn: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs, minHeight: 44, paddingHorizontal: Spacing.xs },
   extraText: { fontSize: FontSize.md, color: Colors.primary, fontWeight: '600' },
-  photoRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, marginTop: Spacing.sm },
-  photo: { width: 72, height: 72, borderRadius: BorderRadius.sm, backgroundColor: Colors.surfaceAlt },
-
-  dateRow: {
-    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, minHeight: 48, marginTop: Spacing.md,
-    paddingHorizontal: Spacing.sm, borderRadius: BorderRadius.md, borderWidth: 1, borderColor: Colors.border,
-    backgroundColor: Colors.background,
-  },
-  dateText: { flex: 1, fontSize: FontSize.md, color: Colors.textSecondary },
-  dateValue: { color: Colors.text, fontWeight: '700' },
 
   linkBtn: { minHeight: 48, justifyContent: 'center', alignItems: 'center', marginTop: Spacing.md },
   linkText: { fontSize: FontSize.md, color: Colors.textSecondary, textDecorationLine: 'underline' },

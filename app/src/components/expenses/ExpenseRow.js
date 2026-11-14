@@ -45,7 +45,7 @@ export default function ExpenseRow({ expense, canChange, onChange, onReturn, sho
     <View style={[styles.card, e.is_return && styles.cardReturn]}>
       <View style={styles.top}>
         <View style={[styles.icon, e.is_return && styles.iconReturn]}>
-          <Ionicons name={e.is_return ? 'arrow-undo' : cat.icon} size={22} color={e.is_return ? Colors.success : Colors.primary} />
+          <Ionicons name={e.is_return ? 'arrow-undo' : cat.icon} size={22} color={e.is_return ? Colors.success : Colors.textSecondary} />
         </View>
         <View style={styles.center}>
           <Text style={styles.title}>
@@ -111,26 +111,22 @@ export default function ExpenseRow({ expense, canChange, onChange, onReturn, sho
 }
 
 const styles = StyleSheet.create({
+  // Plain list row (spec §4.8): thin divider, grey secondary text.
   card: {
-    backgroundColor: Colors.surface, borderRadius: BorderRadius.md,
-    padding: Spacing.md, marginBottom: Spacing.sm,
-    borderWidth: 1, borderColor: Colors.border,
+    backgroundColor: Colors.surface, paddingHorizontal: Spacing.sm, paddingVertical: Spacing.md,
+    borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: Colors.border,
   },
-  cardReturn: { borderColor: Colors.success + '40', backgroundColor: Colors.successLight },
+  cardReturn: { backgroundColor: Colors.successLight },
   top: { flexDirection: 'row', alignItems: 'flex-start' },
-  icon: {
-    width: 40, height: 40, borderRadius: BorderRadius.md,
-    backgroundColor: Colors.primaryGlow, justifyContent: 'center', alignItems: 'center',
-    marginRight: Spacing.sm,
-  },
-  iconReturn: { backgroundColor: Colors.surface },
+  icon: { width: 32, height: 40, justifyContent: 'center', alignItems: 'flex-start', marginRight: Spacing.xs },
+  iconReturn: {},
   center: { flex: 1 },
   title: { fontSize: FontSize.md, fontWeight: '600', color: Colors.text },
   meta: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: 2 },
   note: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: 2, fontStyle: 'italic' },
   session: { fontSize: FontSize.xs, color: Colors.textSecondary, marginTop: 2 },
   right: { alignItems: 'flex-end', marginLeft: Spacing.sm, gap: Spacing.xs },
-  amount: { fontSize: FontSize.md, fontWeight: '700', color: Colors.error, fontVariant: ['tabular-nums'] },
+  amount: { fontSize: FontSize.md, fontWeight: '700', color: Colors.text, fontVariant: ['tabular-nums'] },
   amountReturn: { color: Colors.success },
   photoBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 4,
