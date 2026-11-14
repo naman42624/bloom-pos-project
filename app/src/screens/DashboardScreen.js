@@ -1321,6 +1321,51 @@ export default function DashboardScreen({ navigation }) {
     </View>
   );
 
+  // Owner/manager: the register and "Add an expense" were only inside the
+  // + menu (and the owner-only Registers list further down), so a manager
+  // had no visible way in (2026-11-14). Same two shortcuts counter staff
+  // already get. Shows the shop the board is scoped to; on the owner's
+  // "All locations" view it falls back to the device's shop.
+  const renderRegisterExpenseRow = () => {
+    const scopedId = (locationScope != null && locationScope !== 'all')
+      ? locationScope
+      : (activeLocation?.id || locations?.[0]?.id || null);
+    const reg = registers.find((r) => Number(r.locationId) === Number(scopedId));
+    const known = !!reg;
+    const open = reg?.isOpen === true;
+    const tint = !known ? '#6B7280' : open ? '#047857' : '#B91C1C';
+    const shopName = reg?.locationName || '';
+    return (
+      <View style={{ flexDirection: 'row', gap: 8 }}>
+        <TouchableOpacity
+          style={[styles.codBannerCompact, { flex: 1, backgroundColor: !known ? '#F3F4F6' : open ? '#ECFDF5' : '#FEF2F2' }]}
+          onPress={() => navigation.navigate('POS', { screen: 'CashRegister', params: scopedId ? { locationId: scopedId } : undefined })}
+          accessibilityRole="button"
+          accessibilityLabel={`Register ${!known ? '' : open ? 'open' : 'closed'}${shopName ? ` at ${shopName}` : ''}`}
+        >
+          <Ionicons name={open ? 'lock-open-outline' : 'lock-closed-outline'} size={20} color={tint} />
+          <View style={{ flex: 1 }}>
+            <Text style={[styles.codBannerCompactText, { color: tint }]} numberOfLines={1}>Register</Text>
+            {known && (
+              <Text style={{ fontSize: 12, fontWeight: '700', color: tint }} numberOfLines={1}>{open ? 'Open' : 'Closed'}</Text>
+            )}
+          </View>
+          <Ionicons name="chevron-forward" size={16} color={tint} />
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.codBannerCompact, { flex: 1 }]}
+          onPress={() => navigation.navigate('POS', { screen: 'Expenses', params: { openAdd: true } })}
+          accessibilityRole="button"
+          accessibilityLabel="Add an expense"
+        >
+          <Ionicons name="receipt-outline" size={20} color="#92400E" />
+          <Text style={styles.codBannerCompactText} numberOfLines={1}>Add expense</Text>
+          <Ionicons name="chevron-forward" size={16} color="#92400E" />
+        </TouchableOpacity>
+      </View>
+    );
+  };
+
   return (
     <View style={styles.root}>
       <ScrollView
@@ -2100,6 +2145,8 @@ export default function DashboardScreen({ navigation }) {
               )}
 
               {isOwnerOrManager && renderCustomerRows()}
+
+              {isOwnerOrManager && renderRegisterExpenseRow()}
 
               {/* E52 (2026-11-07): owner and manager see the helpers' cash
                   bags too, with Receive cash and Give float (bag mode only;

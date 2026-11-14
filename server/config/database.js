@@ -916,6 +916,34 @@ function ensureCompatibilityColumns() {
   // "Known structural debt"). Additive and idempotent, same as every other
   // ensureColumn here.
   ensureColumn('expenses', 'register_id', 'INTEGER REFERENCES cash_registers(id) ON DELETE SET NULL');
+  // Expense Book: a shared list of named expense items, plus optional
+  // item, note, photo and given-to details on each expense. Additive only.
+  runPsql(`
+    CREATE TABLE IF NOT EXISTS expense_items (
+      id SERIAL PRIMARY KEY,
+      name VARCHAR(80) NOT NULL,
+      name_key VARCHAR(80) NOT NULL UNIQUE,
+      category VARCHAR(50) NOT NULL,
+      usual_amount DECIMAL(10,2),
+      pinned BOOLEAN DEFAULT FALSE,
+      pin_order INTEGER,
+      last_given_to_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      last_given_to_name VARCHAR(80),
+      merged_into INTEGER REFERENCES expense_items(id) ON DELETE SET NULL,
+      is_active BOOLEAN DEFAULT TRUE,
+      created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  ensureColumn('expenses', 'item_id', 'INTEGER REFERENCES expense_items(id) ON DELETE SET NULL');
+  ensureColumn('expenses', 'note', 'TEXT');
+  ensureColumn('expenses', 'photo_url', 'TEXT');
+  ensureColumn('expenses', 'given_to_user_id', 'INTEGER REFERENCES users(id) ON DELETE SET NULL');
+  ensureColumn('expenses', 'given_to_name', 'VARCHAR(80)');
+  ensureIndex('idx_expenses_item_date', 'expenses', 'item_id, expense_date', ['item_id', 'expense_date']);
+  ensureIndex('idx_expenses_location_date', 'expenses', 'location_id, expense_date', ['location_id', 'expense_date']);
+  ensureIndex('idx_expenses_given_to', 'expenses', 'given_to_user_id', ['given_to_user_id']);
   ensureColumn('locations', 'gst_number', 'VARCHAR(50)');
   ensureColumn('locations', 'geofence_radius', 'INTEGER DEFAULT 500');
   // Geofencing has never actually fired in this shop (confirmed: zero rows

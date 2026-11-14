@@ -5,6 +5,12 @@ const { getDb: getAsyncDb, withMoneyTx } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
 const { todayStr: localToday } = require('../utils/time');
 const { hasOpenRegister, lockOpenRegister, registerClosedError, REGISTER_CLOSED_MESSAGE } = require('../utils/register-guard');
+const {
+  nameKey, resolveItem, rememberOnItem, assertGivenTo, isLocalUploadPath, composeDescription, stripNote,
+  GIVEN_TO_ROLES, GIVEN_TO_INVALID_MESSAGE,
+} = require('../utils/expense-items');
+
+const { previousRange, changePct, round2, lastMonths, SIGNED_AMOUNT, EXPENSE_ROW_SELECT, normalizeExpenseRow } = require('../utils/expense-book');
 
 const router = express.Router();
 
@@ -55,55 +61,669 @@ function generateExpenseNumber(db, locationId) {
 router.get('/', authenticate, authorize('owner', 'manager', 'employee', 'counter_staff'), async (req, res, next) => {
   try {
     const db = await getAsyncDb();
-    const { location_id, category, start_date, end_date, employee_id } = req.query;
+    const { location_id, category, start_date, end_date, employee_id, item_id, created_by, given_to_user_id } = req.query;
+    const q = String(req.query.q || '').trim().slice(0, 80);
+    const isBoss = isBossRole(req.user.role);
 
     // register_opened_at/register_closed_at let the client show which
-    // session an expense belongs to — added because multiple sessions in
-    // one day are a real, regular occurrence at this shop, and expenses
-    // already stored the right register_id with nothing surfacing it
-    // (2026-09-04 cash-register/expense audit). LEFT JOIN: a cash expense
-    // recorded with no register open at all (legacy data, or the
-    // register_id column not existing yet — see hasExpenseNumberColumn's
-    // sibling fallback in POST /) still returns the expense, just with
-    // both fields null.
-    let sql = `
-      SELECT e.*, l.name as location_name, u.name as created_by_name,
-             cr.opening_time as register_opened_at, cr.opened_at as register_opened_at_fallback,
-             cr.closed_at as register_closed_at
-      FROM expenses e
-      JOIN locations l ON e.location_id = l.id
-      JOIN users u ON e.created_by = u.id
-      LEFT JOIN cash_registers cr ON cr.id = e.register_id
-      WHERE 1=1
+    // session an expense belongs to (multiple sessions a day are normal).
+    // LEFT JOIN: a cash expense with no register still returns, with null.
+    let sql = `${EXPENSE_ROW_SELECT}      WHERE 1=1
     `;
     const params = [];
 
-    if (location_id) { sql += ' AND e.location_id = ?'; params.push(location_id); }
+    let effectiveStart = start_date || null;
+    let limitedToDays = null;
+    if (!isBoss) {
+      // Staff see only their own shops (a shop they are not linked to is
+      // quietly ignored) and only the last 7 days including today.
+      limitedToDays = 7;
+      const mine = (await db.prepare('SELECT location_id FROM user_locations WHERE user_id = ?').all(req.user.id)).map((r) => Number(r.location_id));
+      const wanted = location_id ? Number(location_id) : null;
+      const allowed = wanted && mine.includes(wanted) ? [wanted] : mine;
+      if (allowed.length === 0) { sql += ' AND 1=0'; }
+      else { sql += ` AND e.location_id IN (${allowed.map(() => '?').join(',')})`; params.push(...allowed); }
+      const floor = localToday(new Date(Date.now() - 6 * 86400000));
+      if (!effectiveStart || effectiveStart < floor) effectiveStart = floor;
+    } else if (location_id) {
+      sql += ' AND e.location_id = ?'; params.push(location_id);
+    }
     if (category) { sql += ' AND e.category = ?'; params.push(category); }
-    if (start_date) { sql += ' AND e.expense_date >= ?'; params.push(start_date); }
+    if (effectiveStart) { sql += ' AND e.expense_date >= ?'; params.push(effectiveStart); }
     if (end_date) { sql += ' AND e.expense_date <= ?'; params.push(end_date); }
     if (employee_id) { sql += ' AND e.employee_id = ?'; params.push(employee_id); }
+    if (item_id) { sql += ' AND e.item_id = ?'; params.push(Number(item_id)); }
+    if (created_by) { sql += ' AND e.created_by = ?'; params.push(Number(created_by)); }
+    if (given_to_user_id) { sql += ' AND e.given_to_user_id = ?'; params.push(Number(given_to_user_id)); }
+    if (q) {
+      const like = `%${q.toLowerCase().replace(/[\\%_]/g, (c) => '\\' + c)}%`;
+      sql += " AND (LOWER(COALESCE(e.description, '')) LIKE ? ESCAPE '\\' OR LOWER(COALESCE(ei.name, '')) LIKE ? ESCAPE '\\' OR LOWER(COALESCE(e.note, '')) LIKE ? ESCAPE '\\')";
+      params.push(like, like, like);
+    }
 
-    sql += ' ORDER BY e.expense_date DESC, e.created_at DESC';
+    const CAP = 500;
+    sql += ` ORDER BY e.expense_date DESC, e.created_at DESC`;
+    if (isBoss) sql += ` LIMIT ${CAP + 1}`;
 
-    const expenses = await db.prepare(sql).all(...params);
+    let expenses = await db.prepare(sql).all(...params);
+    let truncated = false;
+    if (isBoss && expenses.length > CAP) { truncated = true; expenses = expenses.slice(0, CAP); }
 
-    const normalizedExpenses = expenses.map((expense) => {
-      const { register_opened_at_fallback, ...rest } = expense;
-      return {
-        ...rest,
-        amount: Number(expense.amount) || 0,
-        is_return: !!expense.is_return,
-        register_opened_at: expense.register_opened_at || register_opened_at_fallback || null,
-      };
-    });
+    const normalizedExpenses = expenses.map(normalizeExpenseRow);
 
     // Calculate totals using numeric amounts so the client always receives numbers.
     const total = normalizedExpenses.reduce((sum, expense) => sum + (expense.is_return ? -expense.amount : expense.amount), 0);
 
-    res.json({ success: true, data: normalizedExpenses, total });
+    const extra = {};
+    if (limitedToDays) extra.limited_to_days = limitedToDays;
+    if (truncated) extra.truncated = true;
+    res.json({ success: true, data: normalizedExpenses, total, ...extra });
   } catch (err) {
     next(err);
+  }
+});
+
+// ─── Expense book helpers (2026-11-13) ───────────────────────
+const NO_ITEM_MESSAGE = 'Type what this was for, like Petrol.';
+const NO_AMOUNT_MESSAGE = 'Type how much was paid.';
+const NO_CATEGORY_MESSAGE = 'Pick what kind of expense this is.';
+const OTHER_DAY_MESSAGE = 'Only the owner or a manager can enter an expense for another day.';
+// Cash for an earlier day would come out of today's drawer and leave today's
+// close over (2026-11-14 ruling: earlier days are UPI only).
+const PAST_DAY_CASH_MESSAGE = "Past days don't change today's drawer. For an earlier day, pick UPI.";
+// An old cash expense with no register session (saved before register_id, or
+// from a session that is gone) never moves into today's drawer.
+const OLD_CASH_MESSAGE = "This cash was paid on a register day that is already closed, so its amount, Cash or UPI and return can't be changed. You can still change what it was for, the note, the photo, who got it and the date.";
+const SALARY_ROW_MESSAGE = "Salary entries can't be changed to another kind, and other entries can't be changed to Salary. Remove it and add it again instead.";
+const FIELD_FALLBACK_MESSAGE = 'Check the amount, type and date, then save again.';
+const BAD_PHOTO_MESSAGE = 'That photo could not be used. Take the photo again.';
+const isBossRole = (role) => role === 'owner' || role === 'manager';
+
+// Plain-language message for the first failed field.
+function validationMessage(errors, fallback) {
+  const first = errors.array()[0] || {};
+  if (first.path === 'amount') return NO_AMOUNT_MESSAGE;
+  if (first.path === 'category') return NO_CATEGORY_MESSAGE;
+  if (first.path === 'expense_date') return 'Check the date, then save again.';
+  if (first.path === 'given_to_user_id') return GIVEN_TO_INVALID_MESSAGE;
+  if (first.path === 'photo_url') return BAD_PHOTO_MESSAGE;
+  return fallback;
+}
+
+const extraFieldRules = [
+  body('item_id').optional({ nullable: true }).isInt({ min: 1 }),
+  body('item_name').optional({ nullable: true }).isString().isLength({ max: 80 }),
+  body('note').optional({ nullable: true }).isString().isLength({ max: 500 }),
+  body('photo_url').optional({ nullable: true }).isString(),
+  body('given_to_user_id').optional({ nullable: true }).isInt({ min: 1 }),
+  body('given_to_name').optional({ nullable: true }).isString(),
+];
+
+// "Given to": at most one of user id / free name; the user id wins.
+function readGivenTo(b) {
+  const userId = b.given_to_user_id ? Number(b.given_to_user_id) : null;
+  const name = userId ? null : (String(b.given_to_name || '').trim().replace(/\s+/g, ' ').slice(0, 80) || null);
+  return { given_to_user_id: userId, given_to_name: name };
+}
+
+// One saved expense with the names the app shows.
+async function loadExpenseRow(db, id) {
+  const row = await db.prepare(`
+    SELECT e.*, l.name as location_name, u.name as created_by_name,
+           ei.name as item_name, gu.name as given_to_user_name
+    FROM expenses e
+    JOIN locations l ON e.location_id = l.id
+    JOIN users u ON e.created_by = u.id
+    LEFT JOIN expense_items ei ON ei.id = e.item_id
+    LEFT JOIN users gu ON gu.id = e.given_to_user_id
+    WHERE e.id = ?
+  `).get(id);
+  if (!row) return row;
+  const { given_to_user_name, ...rest } = row;
+  return {
+    ...rest,
+    amount: Number(row.amount) || 0,
+    item_id: row.item_id == null ? null : Number(row.item_id),
+    given_to_user_id: row.given_to_user_id == null ? null : Number(row.given_to_user_id),
+    register_id: row.register_id == null ? null : Number(row.register_id),
+    given_to_display: given_to_user_name || row.given_to_name || null,
+  };
+}
+
+// After a save: the item remembers the amount and who it was given to.
+// Never fails the request; the expense is already saved.
+async function rememberAfterSave(itemId, saved) {
+  if (!itemId) return;
+  try {
+    const db = await getAsyncDb();
+    await rememberOnItem(db, itemId, saved);
+  } catch (err) {
+    console.error('expense item remember failed:', err.message);
+  }
+}
+
+// ─── GET /api/expenses/summary-by-item ───────────────────────
+// Owner/manager: spend per category and item for a period, next to the
+// same-length period just before it. Rows with no item stay grouped by category.
+const BOSS_ONLY = [authenticate, authorize('owner', 'manager')];
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+async function sumByItem(db, from, to, locationId) {
+  const params = [from, to];
+  let loc = '';
+  if (locationId) { loc = ' AND e.location_id = ?'; params.push(locationId); }
+  // Rows of a merged item count under the item it was merged into.
+  const rows = await db.prepare(`
+    SELECT e.category, COALESCE(ei.merged_into, e.item_id) AS item_id,
+           SUM(${SIGNED_AMOUNT}) AS amount, COUNT(*) AS n
+      FROM expenses e LEFT JOIN expense_items ei ON ei.id = e.item_id
+     WHERE e.expense_date >= ? AND e.expense_date <= ?${loc}
+     GROUP BY e.category, COALESCE(ei.merged_into, e.item_id)
+  `).all(...params);
+  return rows.map((r) => ({ category: r.category, item_id: r.item_id == null ? null : Number(r.item_id), amount: Number(r.amount) || 0, count: Number(r.n) || 0 }));
+}
+
+router.get('/summary-by-item', ...BOSS_ONLY, async (req, res, next) => {
+  try {
+    const { from, to } = req.query;
+    if (!DATE_RE.test(String(from || '')) || !DATE_RE.test(String(to || '')) || from > to) {
+      return res.status(400).json({ success: false, message: 'Pick the dates to look at.' });
+    }
+    const locationId = req.query.location_id ? Number(req.query.location_id) : null;
+    if (locationId !== null && (!Number.isInteger(locationId) || locationId <= 0)) {
+      return res.status(400).json({ success: false, message: 'Pick a shop first.' });
+    }
+    // Optional comparison period (the app sends "same days last month" etc.).
+    // Both or neither; when absent, the same number of days just before.
+    const { prev_from: pf, prev_to: pt } = req.query;
+    let prev;
+    if (pf !== undefined || pt !== undefined) {
+      if (!DATE_RE.test(String(pf || '')) || !DATE_RE.test(String(pt || '')) || pf > pt) {
+        return res.status(400).json({ success: false, message: 'Pick the dates to compare with.' });
+      }
+      prev = { from: pf, to: pt };
+    } else {
+      prev = previousRange(from, to);
+    }
+    const db = await getAsyncDb();
+    const [cur, before] = await Promise.all([sumByItem(db, from, to, locationId), sumByItem(db, prev.from, prev.to, locationId)]);
+
+    // One row per category and item over both periods, so an item that
+    // stopped being bought still shows (amount 0, previous_amount X).
+    const rows = new Map();
+    const put = (r, field) => {
+      const key = `${r.category}|${r.item_id}`;
+      const row = rows.get(key) || { category: r.category, item_id: r.item_id, amount: 0, previous_amount: 0, count: 0 };
+      row[field] += r.amount;
+      if (field === 'amount') row.count += r.count;
+      rows.set(key, row);
+    };
+    cur.forEach((r) => put(r, 'amount'));
+    before.forEach((r) => put(r, 'previous_amount'));
+
+    const ids = [...new Set([...rows.values()].filter((r) => r.item_id != null).map((r) => r.item_id))];
+    const names = new Map();
+    if (ids.length) {
+      const found = await db.prepare(`SELECT id, name FROM expense_items WHERE id IN (${ids.map(() => '?').join(',')})`).all(...ids);
+      found.forEach((i) => names.set(Number(i.id), i.name));
+    }
+
+    let total = 0;
+    let previousTotal = 0;
+    const cats = new Map();
+    const older = [];
+    for (const r of rows.values()) {
+      total += r.amount;
+      previousTotal += r.previous_amount;
+      if (r.item_id == null) {
+        older.push({ category: r.category, amount: round2(r.amount), previous_amount: round2(r.previous_amount), change_pct: changePct(r.amount, r.previous_amount), count: r.count });
+        continue;
+      }
+      const c = cats.get(r.category) || { category: r.category, amount: 0, previous_amount: 0, items: [] };
+      c.amount += r.amount;
+      c.previous_amount += r.previous_amount;
+      c.items.push({ item_id: r.item_id, name: names.get(r.item_id) || 'Item', amount: round2(r.amount), previous_amount: round2(r.previous_amount), change_pct: changePct(r.amount, r.previous_amount) });
+      cats.set(r.category, c);
+    }
+    const byAmount = (a, b) => (b.amount - a.amount) || (b.previous_amount - a.previous_amount);
+    const categories = [...cats.values()].map((c) => ({
+      category: c.category, amount: round2(c.amount), previous_amount: round2(c.previous_amount),
+      change_pct: changePct(c.amount, c.previous_amount), items: c.items.sort(byAmount),
+    })).sort(byAmount);
+    older.sort(byAmount);
+
+    const uParams = [];
+    let uLoc = '';
+    if (locationId) { uLoc = ' AND location_id = ?'; uParams.push(locationId); }
+    const un = await db.prepare(`SELECT COUNT(*) AS c FROM expenses WHERE item_id IS NULL AND category <> 'salary'${uLoc}`).get(...uParams);
+
+    res.json({ success: true, data: { total: round2(total), previous_total: round2(previousTotal), change_pct: changePct(total, previousTotal), categories, older, unsorted_count: Number(un.c) || 0 } });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── GET /api/expenses/items/:id/history ─────────────────────
+// Owner/manager: one item's monthly spend (always the last N shop months,
+// empty months as 0) and its entries for from..to, including items that were
+// merged into it.
+router.get('/items/:id/history', ...BOSS_ONLY, async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) return res.status(404).json({ success: false, message: 'That item was not found.' });
+    const q0 = req.query;
+    if ((q0.location_id && !Number.isInteger(Number(q0.location_id))) || (q0.given_to_user_id && !Number.isInteger(Number(q0.given_to_user_id)))) {
+      return res.status(400).json({ success: false, message: q0.location_id && !Number.isInteger(Number(q0.location_id)) ? 'Pick a shop first.' : 'Pick who it was given to again.' });
+    }
+    const db = await getAsyncDb();
+    const item = await db.prepare('SELECT id, name, category, is_active, merged_into FROM expense_items WHERE id = ?').get(id);
+    if (!item) return res.status(404).json({ success: false, message: 'That item was not found.' });
+
+    const months = Math.min(Math.max(parseInt(req.query.months, 10) || 6, 1), 24);
+    const today = localToday();
+    const keys = lastMonths(today, months);
+    const windowStart = `${keys[0]}-01`;
+    const { from, to, location_id, given_to_user_id } = req.query;
+    const start = DATE_RE.test(String(from || '')) ? from : windowStart;
+    const end = DATE_RE.test(String(to || '')) ? to : today;
+
+    // Month totals always cover the last N months (shop, person filters
+    // apply); the entry list follows from..to.
+    const whereFor = (a, b) => {
+      let w = ' WHERE (e.item_id = ? OR e.item_id IN (SELECT id FROM expense_items WHERE merged_into = ?)) AND e.expense_date >= ? AND e.expense_date <= ?';
+      const p = [id, id, a, b];
+      if (location_id) { w += ' AND e.location_id = ?'; p.push(Number(location_id)); }
+      if (given_to_user_id) { w += ' AND e.given_to_user_id = ?'; p.push(Number(given_to_user_id)); }
+      return { w, p };
+    };
+    const strip = whereFor(windowStart, today);
+    const list = whereFor(start, end);
+
+    const monthRows = await db.prepare(`
+      SELECT to_char(e.expense_date, 'YYYY-MM') AS month, SUM(${SIGNED_AMOUNT}) AS amount
+        FROM expenses e${strip.w}
+       GROUP BY 1
+    `).all(...strip.p);
+    const byMonth = new Map(monthRows.map((r) => [r.month, Number(r.amount) || 0]));
+    const entries = (await db.prepare(`${EXPENSE_ROW_SELECT}${list.w} ORDER BY e.expense_date DESC, e.created_at DESC LIMIT 500`).all(...list.p)).map(normalizeExpenseRow);
+
+    res.json({ success: true, data: { item, months: keys.map((m) => ({ month: m, amount: round2(byMonth.get(m) || 0) })), entries } });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── GET /api/expenses/people ────────────────────────────────
+// The "Given to" chips: active staff and riders linked to the shop, plus the
+// owner. Needs a login (unlike /auth/staff-roster), so rider names stay private.
+router.get('/people', authenticate, authorize('owner', 'manager', 'employee', 'counter_staff'), async (req, res, next) => {
+  try {
+    const locationId = Number(req.query.location_id);
+    if (!Number.isInteger(locationId) || locationId <= 0) {
+      return res.status(400).json({ success: false, message: 'Pick a shop first.' });
+    }
+    const db = await getAsyncDb();
+    const roles = GIVEN_TO_ROLES.map(() => '?').join(', ');
+    const people = await db.prepare(`
+      SELECT u.id, u.name, u.role
+      FROM users u
+      WHERE u.is_active = 1
+        AND u.role IN (${roles})
+        AND (u.role = 'owner' OR EXISTS (SELECT 1 FROM user_locations ul WHERE ul.user_id = u.id AND ul.location_id = ?))
+      ORDER BY u.name ASC
+    `).all(...GIVEN_TO_ROLES, locationId);
+    res.json({ success: true, data: people.map((p) => ({ id: Number(p.id), name: p.name, role: p.role })) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── GET /api/expenses/suggest ───────────────────────────────
+// Quick-pick chips (pinned first, then this shop's most used in the last 30
+// days) and type-ahead when q is given. Never hidden or merged items.
+router.get('/suggest', authenticate, authorize('owner', 'manager', 'employee', 'counter_staff'), async (req, res, next) => {
+  try {
+    const locationId = Number(req.query.location_id);
+    if (!Number.isInteger(locationId) || locationId <= 0) {
+      return res.status(400).json({ success: false, message: 'Pick a shop first.' });
+    }
+    const db = await getAsyncDb();
+    const sinceStr = localToday(new Date(Date.now() - 29 * 86400000));
+    const cols = `i.id, i.name, i.category, i.usual_amount, i.last_given_to_user_id, i.last_given_to_name, gu.name AS last_user_name`;
+    const base = `FROM expense_items i LEFT JOIN users gu ON gu.id = i.last_given_to_user_id WHERE i.is_active = TRUE AND i.merged_into IS NULL`;
+    const useCount = `(SELECT COUNT(*) FROM expenses e WHERE e.item_id = i.id AND e.location_id = ? AND e.expense_date >= ?)`;
+    const q = nameKey(req.query.q);
+    let rows;
+    if (q) {
+      const like = q.replace(/[\\%_]/g, (c) => '\\' + c);
+      rows = await db.prepare(`
+        SELECT ${cols}, ${useCount} AS uses
+        ${base} AND i.name_key LIKE ? ESCAPE '\\'
+        ORDER BY (i.name_key LIKE ? ESCAPE '\\') DESC, uses DESC, i.name ASC
+        LIMIT 8
+      `).all(locationId, sinceStr, `%${like}%`, `${like}%`);
+    } else {
+      const pinned = await db.prepare(`
+        SELECT ${cols} ${base} AND i.pinned = TRUE
+        ORDER BY i.pin_order ASC NULLS LAST, i.name ASC LIMIT 8
+      `).all();
+      rows = pinned;
+      if (rows.length < 8) {
+        const skip = rows.map(() => '?').join(', ');
+        const used = await db.prepare(`
+          SELECT ${cols}, ${useCount} AS uses
+          ${base} AND i.pinned IS NOT TRUE ${rows.length ? `AND i.id NOT IN (${skip})` : ''}
+          AND ${useCount} > 0
+          ORDER BY uses DESC, i.name ASC LIMIT ?
+        `).all(locationId, sinceStr, ...rows.map((r) => r.id), locationId, sinceStr, 8 - rows.length);
+        rows = rows.concat(used);
+      }
+    }
+    res.json({
+      success: true,
+      data: rows.map((r) => ({
+        id: Number(r.id),
+        name: r.name,
+        category: r.category,
+        usual_amount: r.usual_amount == null ? null : Number(r.usual_amount),
+        last_given_to: (r.last_given_to_user_id || r.last_given_to_name)
+          ? {
+              user_id: r.last_given_to_user_id ? Number(r.last_given_to_user_id) : null,
+              name: r.last_given_to_name || null,
+              display_name: r.last_given_to_user_id ? (r.last_user_name || r.last_given_to_name) : r.last_given_to_name,
+            }
+          : null,
+      })),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── Owner item tools: list, change, pin order, merge ────────
+// Owner only. Literal paths, so they sit before every '/:id' route.
+const OWNER_ONLY = [authenticate, authorize('owner')];
+const SALARY_ITEM_MESSAGE = "Salary items can't be moved to another kind. Use Payroll for salary.";
+const MERGE_TARGET_MESSAGE = 'Pick a different item to merge into.';
+const ITEM_NOT_FOUND_MESSAGE = 'That item was not found. Pull down to refresh.';
+
+const itemOut = (r) => ({
+  id: Number(r.id),
+  name: r.name,
+  category: r.category,
+  usual_amount: r.usual_amount == null ? null : Number(r.usual_amount),
+  pinned: !!r.pinned,
+  pin_order: r.pin_order == null ? null : Number(r.pin_order),
+  is_active: r.is_active !== false,
+  merged_into: r.merged_into == null ? null : Number(r.merged_into),
+  ...(r.use_count !== undefined ? { use_count: Number(r.use_count) || 0 } : {}),
+});
+const pickItemAudit = (r) => ({
+  name: r.name, category: r.category, usual_amount: r.usual_amount == null ? null : Number(r.usual_amount),
+  pinned: !!r.pinned, pin_order: r.pin_order == null ? null : Number(r.pin_order),
+  is_active: r.is_active !== false, merged_into: r.merged_into == null ? null : Number(r.merged_into),
+});
+
+async function auditItem(tx, itemId, userId, action, before, after) {
+  await tx.prepare(`
+    INSERT INTO audit_logs (entity_type, entity_id, user_id, action, previous_state, new_state, created_at)
+    VALUES ('expense_item', ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+  `).run(itemId, userId, action, JSON.stringify(before), after ? JSON.stringify(after) : null);
+}
+
+function sendItemError(res, next, err) {
+  if (err && err.statusCode) return res.status(err.statusCode).json({ success: false, message: err.message });
+  return next(err);
+}
+
+// GET /api/expenses/items?q=&include_hidden=
+router.get('/items', ...OWNER_ONLY, async (req, res, next) => {
+  try {
+    const db = await getAsyncDb();
+    const params = [];
+    let where = ' WHERE 1=1';
+    const showHidden = ['1', 'true'].includes(String(req.query.include_hidden || '').toLowerCase());
+    if (!showHidden) where += ' AND i.is_active = TRUE AND i.merged_into IS NULL';
+    const q = nameKey(req.query.q);
+    if (q) {
+      where += " AND i.name_key LIKE ? ESCAPE '\\'";
+      params.push(`%${q.replace(/[\\%_]/g, (c) => '\\' + c)}%`);
+    }
+    const rows = await db.prepare(`
+      SELECT i.id, i.name, i.category, i.usual_amount, i.pinned, i.pin_order, i.is_active, i.merged_into,
+             (SELECT COUNT(*) FROM expenses e WHERE e.item_id = i.id) AS use_count
+        FROM expense_items i${where}
+       ORDER BY i.pinned DESC NULLS LAST, i.pin_order ASC NULLS LAST, i.name ASC
+       LIMIT 500
+    `).all(...params);
+    res.json({ success: true, data: rows.map(itemOut) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// PUT /api/expenses/items/pins { ids: [...] }: the full pinned list, in order.
+// Items left out of the list are unpinned.
+router.put('/items/pins', ...OWNER_ONLY, async (req, res, next) => {
+  try {
+    const raw = req.body && req.body.ids;
+    const ids = Array.isArray(raw) ? raw.map(Number) : null;
+    if (!ids || ids.length > 50 || ids.some((n) => !Number.isInteger(n) || n <= 0) || new Set(ids).size !== ids.length) {
+      return res.status(400).json({ success: false, message: 'Pick the items to pin again.' });
+    }
+    await withMoneyTx(async (tx) => {
+      if (ids.length) {
+        const found = await tx.prepare(
+          `SELECT id FROM expense_items WHERE id IN (${ids.map(() => '?').join(',')}) AND merged_into IS NULL FOR UPDATE`
+        ).all(...ids);
+        if (found.length !== ids.length) throw httpError(400, 'One of these items was merged or removed. Pull down to refresh, then pin again.');
+      }
+      const before = await tx.prepare('SELECT id FROM expense_items WHERE pinned = TRUE ORDER BY pin_order ASC NULLS LAST, id ASC FOR UPDATE').all();
+      await tx.prepare('UPDATE expense_items SET pinned = FALSE, pin_order = NULL, updated_at = CURRENT_TIMESTAMP WHERE pinned = TRUE').run();
+      for (let i = 0; i < ids.length; i += 1) {
+        await tx.prepare('UPDATE expense_items SET pinned = TRUE, pin_order = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(i + 1, ids[i]);
+      }
+      // The pin list is shop-wide, not one item, so entity_id is 0.
+      await auditItem(tx, 0, req.user.id, 'expense_item_pins', { ids: before.map((r) => Number(r.id)) }, { ids });
+    });
+    res.json({ success: true, data: { ids } });
+  } catch (err) {
+    sendItemError(res, next, err);
+  }
+});
+
+// PUT /api/expenses/items/:id: name, category (+ move_past), usual_amount,
+// pinned, pin_order, is_active.
+router.put('/items/:id', ...OWNER_ONLY, async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) return res.status(404).json({ success: false, message: ITEM_NOT_FOUND_MESSAGE });
+    const b = req.body || {};
+    const has = (k) => Object.prototype.hasOwnProperty.call(b, k);
+    const changes = {};
+    if (has('name')) {
+      const display = String(b.name == null ? '' : b.name).trim().replace(/\s+/g, ' ');
+      if (!display) return res.status(400).json({ success: false, message: 'Type what this was for, like Petrol.' });
+      if (display.length > 80) return res.status(400).json({ success: false, message: 'Make the name shorter (80 letters at most).' });
+      changes.name = display;
+    }
+    if (has('category')) {
+      if (!EXPENSE_CATEGORIES.includes(b.category)) return res.status(400).json({ success: false, message: NO_CATEGORY_MESSAGE });
+      changes.category = b.category;
+    }
+    if (has('usual_amount')) {
+      const n = b.usual_amount === null || b.usual_amount === '' ? null : Number(b.usual_amount);
+      if (n !== null && (!Number.isFinite(n) || n < 0 || n > 10000000)) return res.status(400).json({ success: false, message: NO_AMOUNT_MESSAGE });
+      changes.usual_amount = n === null ? null : round2(n);
+    }
+    for (const k of ['pinned', 'is_active']) {
+      if (has(k)) {
+        if (typeof b[k] !== 'boolean') return res.status(400).json({ success: false, message: 'Something on this item could not be saved. Try again.' });
+        changes[k] = b[k];
+      }
+    }
+    if (has('pin_order')) {
+      const n = b.pin_order === null ? null : Number(b.pin_order);
+      if (n !== null && !Number.isInteger(n)) return res.status(400).json({ success: false, message: 'Something on this item could not be saved. Try again.' });
+      changes.pin_order = n;
+    }
+    const movePast = b.move_past === true;
+
+    const result = await withMoneyTx(async (tx) => {
+      const item = await tx.prepare('SELECT * FROM expense_items WHERE id = ? FOR UPDATE').get(id);
+      if (!item) throw httpError(404, ITEM_NOT_FOUND_MESSAGE);
+      if (item.merged_into) throw httpError(400, 'This item was merged into another one. Change that item instead.');
+      if (changes.name !== undefined) {
+        const key = nameKey(changes.name);
+        const other = await tx.prepare('SELECT id, name FROM expense_items WHERE name_key = ? AND id <> ?').get(key, id);
+        if (other) throw httpError(400, `There is already an item called ${other.name}. Merge them instead.`);
+        changes.name_key = key;
+      }
+      const categoryChanges = changes.category !== undefined && changes.category !== item.category;
+      if (categoryChanges && (item.category === 'salary' || changes.category === 'salary')) throw httpError(400, SALARY_ITEM_MESSAGE);
+      if (!categoryChanges) delete changes.category;
+
+      const cols = Object.keys(changes);
+      if (cols.length) {
+        await tx.prepare(
+          `UPDATE expense_items SET ${cols.map((c) => `${c} = ?`).join(', ')}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`
+        ).run(...cols.map((c) => changes[c]), id);
+      }
+      const after = await tx.prepare('SELECT * FROM expense_items WHERE id = ?').get(id);
+      if (cols.length) await auditItem(tx, id, req.user.id, 'expense_item_update', pickItemAudit(item), pickItemAudit(after));
+
+      // Past rows follow the new category only when asked. Salary rows never move.
+      let recategorised = 0;
+      if (categoryChanges && movePast) {
+        const moved = await tx.prepare(
+          "UPDATE expenses SET category = ? WHERE item_id = ? AND category <> 'salary' AND category <> ?"
+        ).run(after.category, id, after.category);
+        recategorised = moved.changes;
+        await auditItem(tx, id, req.user.id, 'expense_item_recategorise',
+          { category: item.category }, { category: after.category, recategorised });
+      }
+      return { item: after, recategorised };
+    });
+    res.json({ success: true, data: { ...itemOut(result.item), recategorised: result.recategorised } });
+  } catch (err) {
+    if (err && err.code === '23505') {
+      return res.status(400).json({ success: false, message: 'There is already an item with that name. Merge them instead.' });
+    }
+    sendItemError(res, next, err);
+  }
+});
+
+// POST /api/expenses/items/:id/merge { into_id }: one transaction.
+// Moves item_id only; category and description on the rows stay as they are.
+router.post('/items/:id/merge', ...OWNER_ONLY, async (req, res, next) => {
+  try {
+    const sourceId = Number(req.params.id);
+    const intoId = Number(req.body && req.body.into_id);
+    if (!Number.isInteger(sourceId) || sourceId <= 0) return res.status(404).json({ success: false, message: ITEM_NOT_FOUND_MESSAGE });
+    if (!Number.isInteger(intoId) || intoId <= 0 || intoId === sourceId) {
+      return res.status(400).json({ success: false, message: MERGE_TARGET_MESSAGE });
+    }
+    const out = await withMoneyTx(async (tx) => {
+      // Lock both items in id order so two merges cannot deadlock.
+      const locked = await tx.prepare('SELECT * FROM expense_items WHERE id IN (?, ?) ORDER BY id FOR UPDATE').all(sourceId, intoId);
+      const source = locked.find((r) => Number(r.id) === sourceId);
+      const target = locked.find((r) => Number(r.id) === intoId);
+      if (!source) throw httpError(404, ITEM_NOT_FOUND_MESSAGE);
+      if (source.merged_into) throw httpError(400, 'This item was already merged. Pull down to refresh.');
+      if (!target || target.merged_into || target.is_active === false) throw httpError(400, MERGE_TARGET_MESSAGE);
+      // Salary stays apart: rows merged across would change kind for future entries.
+      if ((source.category === 'salary') !== (target.category === 'salary')) throw httpError(400, SALARY_ITEM_MESSAGE);
+
+      const moved = (await tx.prepare('UPDATE expenses SET item_id = ? WHERE item_id = ?').run(intoId, sourceId)).changes;
+      // Items already merged into the source now point at the target (never chained).
+      const repointed = (await tx.prepare('UPDATE expense_items SET merged_into = ?, updated_at = CURRENT_TIMESTAMP WHERE merged_into = ?').run(intoId, sourceId)).changes;
+      await tx.prepare(
+        'UPDATE expense_items SET merged_into = ?, is_active = FALSE, pinned = FALSE, pin_order = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?'
+      ).run(intoId, sourceId);
+      await auditItem(tx, sourceId, req.user.id, 'expense_item_merge',
+        pickItemAudit(source), { merged_into: intoId, into_name: target.name, moved, repointed });
+      return { moved, repointed, into: target };
+    });
+    res.json({ success: true, data: { moved: out.moved, repointed: out.repointed, into_id: intoId, into_name: out.into.name } });
+  } catch (err) {
+    sendItemError(res, next, err);
+  }
+});
+
+// ─── Sort old entries into items (owner only) ────────────────
+// Suggestion: the exact name key of the description, else the item whose key is
+// the longest prefix of it (ending on a word boundary, so tea never matches teak).
+function suggestItem(items, description) {
+  const key = nameKey(description);
+  if (!key) return null;
+  let best = null;
+  for (const it of items) {
+    const k = it.name_key;
+    if (!k) continue;
+    if (k === key) return { id: Number(it.id), name: it.name };
+    if (key.startsWith(k) && key[k.length] === ' ' && (!best || k.length > best.k.length)) best = { k, id: Number(it.id), name: it.name };
+  }
+  return best ? { id: best.id, name: best.name } : null;
+}
+
+// GET /api/expenses/unsorted?limit=50: rows with no item (not salary), newest first.
+router.get('/unsorted', ...OWNER_ONLY, async (req, res, next) => {
+  try {
+    const db = await getAsyncDb();
+    const asked = parseInt(req.query.limit, 10);
+    const limit = Math.min(asked > 0 ? asked : 50, 200);
+    const rows = await db.prepare(
+      `${EXPENSE_ROW_SELECT}      WHERE e.item_id IS NULL AND e.category <> 'salary'
+      ORDER BY e.expense_date DESC, e.created_at DESC, e.id DESC LIMIT ${limit}`
+    ).all();
+    const items = await db.prepare('SELECT id, name, name_key FROM expense_items WHERE is_active = TRUE AND merged_into IS NULL AND category <> \'salary\'').all();
+    const data = rows.map(normalizeExpenseRow).map((r) => ({ ...r, suggested_item: suggestItem(items, r.description) }));
+    res.json({ success: true, data });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/expenses/assign-items { assignments: [{ expense_id, item_id | item_name, category? }] }
+// One transaction; sets item_id only. Salary rows and rows that already have an
+// item are skipped. One audit row per call (entity_id 0).
+router.post('/assign-items', ...OWNER_ONLY, async (req, res, next) => {
+  try {
+    const list = req.body && req.body.assignments;
+    if (!Array.isArray(list) || list.length === 0 || list.length > 200) {
+      return res.status(400).json({ success: false, message: 'Pick at least one entry to sort.' });
+    }
+    const seen = new Set();
+    for (const a of list) {
+      const id = Number(a && a.expense_id);
+      if (!Number.isInteger(id) || id <= 0 || seen.has(id)) return res.status(400).json({ success: false, message: 'Pick the entries to sort again.' });
+      seen.add(id);
+      if (a.category != null && a.category !== '') {
+        if (!EXPENSE_CATEGORIES.includes(a.category)) return res.status(400).json({ success: false, message: NO_CATEGORY_MESSAGE });
+        if (a.category === 'salary') return res.status(400).json({ success: false, message: SALARY_ITEM_MESSAGE });
+      }
+    }
+    const out = await withMoneyTx(async (tx) => {
+      const skipped = [];
+      const done = [];
+      for (const a of list) {
+        const id = Number(a.expense_id);
+        const row = await tx.prepare('SELECT id, category, item_id FROM expenses WHERE id = ? FOR UPDATE').get(id);
+        if (!row || row.item_id || row.category === 'salary') { skipped.push(id); continue; }
+        const item = await resolveItem(tx, {
+          item_id: a.item_id ? Number(a.item_id) : null, item_name: a.item_name,
+          category: a.category || row.category, userId: req.user.id,
+        });
+        if (item.category === 'salary') throw httpError(400, SALARY_ITEM_MESSAGE);
+        await tx.prepare('UPDATE expenses SET item_id = ? WHERE id = ? AND item_id IS NULL').run(item.id, id);
+        done.push({ expense_id: id, item_id: Number(item.id) });
+      }
+      if (done.length) await auditItem(tx, 0, req.user.id, 'expense_assign_items', { expense_ids: done.map((d) => d.expense_id), item_id: null }, { assignments: done });
+      return { assigned: done.length, skipped };
+    });
+    res.json({ success: true, data: out });
+  } catch (err) {
+    sendItemError(res, next, err);
   }
 });
 
@@ -114,21 +734,59 @@ router.post(
   authorize('owner', 'manager', 'employee', 'counter_staff'),
   [
     body('location_id').isInt(),
-    body('category').isIn(['supplies', 'petty_cash', 'maintenance', 'transport', 'food', 'utilities', 'salary', 'other']),
-    body('amount').isFloat({ min: 0.01 }),
-    body('description').optional().trim(),
+    // Optional when an item is given: the item's category is used.
+    body('category').optional({ nullable: true }).isIn(['supplies', 'petty_cash', 'maintenance', 'transport', 'food', 'utilities', 'salary', 'other']),
+    body('amount').isFloat({ min: 0.01, max: 10000000 }),
+    body('description').optional({ nullable: true }).trim(),
     body('payment_method').isIn(['cash', 'card', 'upi', 'bank_transfer']),
-    body('expense_date').notEmpty(),
+    body('expense_date').optional({ nullable: true }).matches(/^\d{4}-\d{2}-\d{2}$/),
     body('is_return').optional().isBoolean(),
     body('employee_id').optional({ nullable: true }).isInt(),
+    ...extraFieldRules,
   ],
   async (req, res, next) => {
     try {
       const errors = validationResult(req);
-      if (!errors.isEmpty()) return res.status(400).json({ success: false, message: 'Validation failed', errors: errors.array() });
+      if (!errors.isEmpty()) return res.status(400).json({ success: false, message: validationMessage(errors, FIELD_FALLBACK_MESSAGE), errors: errors.array() });
 
       const db = getDb();
-      const { location_id, category, amount, description, payment_method, expense_date, is_return, employee_id } = req.body;
+      const { location_id, amount, description, payment_method, is_return, employee_id } = req.body;
+      const expense_date = req.body.expense_date || localToday();
+      const note = String(req.body.note || '').trim() || null;
+      const photo_url = req.body.photo_url || null;
+      const givenTo = readGivenTo(req.body);
+      const has = (k) => Object.prototype.hasOwnProperty.call(req.body, k);
+      const wantsItem = !!req.body.item_id || has('item_name');
+
+      // Checks that need no item come first, so a refused save never
+      // creates an item.
+      const isToday = expense_date === localToday();
+      if (!isBossRole(req.user.role) && !isToday) {
+        return res.status(403).json({ success: false, message: OTHER_DAY_MESSAGE });
+      }
+      if (payment_method === 'cash' && !isToday) {
+        return res.status(400).json({ success: false, message: PAST_DAY_CASH_MESSAGE });
+      }
+      if (!req.body.item_id && has('item_name') && !nameKey(req.body.item_name)) {
+        return res.status(400).json({ success: false, message: NO_ITEM_MESSAGE });
+      }
+      if (!wantsItem && !req.body.category) {
+        return res.status(400).json({ success: false, message: NO_CATEGORY_MESSAGE });
+      }
+      if (photo_url && !isLocalUploadPath(photo_url)) {
+        return res.status(400).json({ success: false, message: BAD_PHOTO_MESSAGE });
+      }
+      const adb = await getAsyncDb();
+      if (givenTo.given_to_user_id) await assertGivenTo(adb, givenTo.given_to_user_id, location_id);
+
+      // Category: as sent, else the item's. A new name without a category is
+      // refused by resolveItem. With a category sent, salary checks run
+      // before the item is resolved; otherwise the existing item decides it.
+      let item = null;
+      if (wantsItem && !req.body.category) {
+        item = await resolveItem(adb, { item_id: req.body.item_id, item_name: req.body.item_name, category: null, userId: req.user.id });
+      }
+      const category = req.body.category || item.category;
 
       // A "Salary" category expense logged through this general route has no
       // structural connection to the payroll system otherwise — no employee,
@@ -171,6 +829,15 @@ router.post(
         return res.status(400).json({ success: false, message: REGISTER_CLOSED_MESSAGE });
       }
 
+      // The item is an ordinary write, made before the money transaction.
+      // Only when one was sent: a description-only save (older app, or a
+      // salary row) stays without an item.
+      if (wantsItem && !item) {
+        item = await resolveItem(adb, { item_id: req.body.item_id, item_name: req.body.item_name, category, userId: req.user.id });
+      }
+      const itemId = item ? item.id : null;
+      const finalDescription = composeDescription(item ? item.name : (description || ''), note);
+
       // Look up the currently open register FIRST so we can store register_id on the expense.
       // This links the expense permanently to its session — critical for correct session-scoped queries
       // and for reversing against the correct register on deletion.
@@ -187,34 +854,30 @@ router.post(
       // feature is about) — null for everything else, unchanged from today.
       const employeeIdValue = category === 'salary' ? employee_id : null;
 
-      let result;
       const isReturnInt = is_return ? 1 : 0;
+      const cols = {
+        expense_number, location_id, category, amount, description: finalDescription, payment_method, expense_date,
+        created_by: req.user.id, is_return: isReturnInt, register_id: registerId, employee_id: employeeIdValue,
+        item_id: itemId, note, photo_url,
+        given_to_user_id: givenTo.given_to_user_id, given_to_name: givenTo.given_to_name,
+      };
+      if (!expense_number) delete cols.expense_number;
+      const insert = (c) => {
+        const keys = Object.keys(c);
+        return db.prepare(`INSERT INTO expenses (${keys.join(', ')}) VALUES (${keys.map(() => '?').join(', ')})`).run(...keys.map((k) => c[k]));
+      };
+      let result;
       try {
-        if (expense_number) {
-          result = await db.prepare(
-            `INSERT INTO expenses (expense_number, location_id, category, amount, description, payment_method, expense_date, created_by, is_return, register_id, employee_id)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-          ).run(expense_number, location_id, category, amount, description || '', payment_method, expense_date, req.user.id, isReturnInt, registerId, employeeIdValue);
-        } else {
-          result = await db.prepare(
-            `INSERT INTO expenses (location_id, category, amount, description, payment_method, expense_date, created_by, is_return, register_id, employee_id)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-          ).run(location_id, category, amount, description || '', payment_method, expense_date, req.user.id, isReturnInt, registerId, employeeIdValue);
-        }
+        result = await insert(cols);
       } catch (err) {
         const msg = String(err?.message || '').toLowerCase();
-        // Fallback if expense_number column doesn't exist (legacy schema)
+        // Fallbacks for legacy schemas missing expense_number / register_id.
         if (msg.includes('expense_number')) {
-          result = await db.prepare(
-            `INSERT INTO expenses (location_id, category, amount, description, payment_method, expense_date, created_by, is_return, register_id, employee_id)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-          ).run(location_id, category, amount, description || '', payment_method, expense_date, req.user.id, isReturnInt, registerId, employeeIdValue);
-        // Fallback if register_id column doesn't exist yet (migration pending)
+          delete cols.expense_number;
+          result = await insert(cols);
         } else if (msg.includes('register_id')) {
-          result = await db.prepare(
-            `INSERT INTO expenses (location_id, category, amount, description, payment_method, expense_date, created_by, is_return, employee_id)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-          ).run(location_id, category, amount, description || '', payment_method, expense_date, req.user.id, isReturnInt, employeeIdValue);
+          delete cols.register_id;
+          result = await insert(cols);
         } else {
           throw err;
         }
@@ -231,16 +894,15 @@ router.post(
       return result.lastInsertRowid;
       });
 
-      const expense = db.prepare(`
-        SELECT e.*, l.name as location_name, u.name as created_by_name
-        FROM expenses e
-        JOIN locations l ON e.location_id = l.id
-        JOIN users u ON e.created_by = u.id
-        WHERE e.id = ?
-      `).get(newExpenseId);
+      // A return or an earlier day's entry is not the usual amount or person.
+      if (!is_return && isToday) {
+        await rememberAfterSave(itemId, { amount: Math.round(Number(amount) * 100) / 100, ...givenTo });
+      }
 
+      const expense = await loadExpenseRow(adb, newExpenseId);
       res.status(201).json({ success: true, data: expense });
     } catch (err) {
+      if (err.statusCode) return res.status(err.statusCode).json({ success: false, message: err.message });
       next(err);
     }
   }
@@ -295,14 +957,16 @@ async function loadForChange(tx, expenseId, user) {
       : new Date(expense.created_at) >= new Date(openRegister.opened_at));
     if (!inOpenSession) throw httpError(403, DAY_CLOSED_MESSAGE);
   }
-  // The session this expense's cash belongs to. Old rows saved before
-  // register_id existed fall back to the open register, as delete always did.
+  // The session this expense's cash belongs to. An old row saved before
+  // register_id existed belongs to the open register only when it was made
+  // after that register opened (the same test as the staff check above).
+  // Otherwise it has no session: it never moves into today's drawer.
   let oldRegisterId = null;
   if (expense.payment_method === 'cash') {
     if (expense.register_id) {
       const r = await tx.prepare('SELECT id FROM cash_registers WHERE id = ? FOR UPDATE').get(expense.register_id);
       oldRegisterId = r ? r.id : null;
-    } else if (openRegister) {
+    } else if (openRegister && new Date(expense.created_at) >= new Date(openRegister.opened_at)) {
       oldRegisterId = openRegister.id;
     }
   }
@@ -320,6 +984,8 @@ const pickAudit = (e) => ({
   amount: Number(e.amount), category: e.category, description: e.description, payment_method: e.payment_method,
   expense_date: e.expense_date, is_return: e.is_return ? 1 : 0, employee_id: e.employee_id || null,
   register_id: e.register_id || null, created_by: e.created_by,
+  item_id: e.item_id || null, note: e.note || null, photo_url: e.photo_url || null,
+  given_to_user_id: e.given_to_user_id || null, given_to_name: e.given_to_name || null,
 });
 
 // ─── PUT /api/expenses/:id ───────────────────────────────────
@@ -335,30 +1001,96 @@ router.put(
     body('expense_date').optional().matches(/^\d{4}-\d{2}-\d{2}$/),
     body('is_return').optional().isBoolean(),
     body('employee_id').optional({ nullable: true }).isInt(),
+    ...extraFieldRules,
   ],
   async (req, res, next) => {
     try {
       const errors = validationResult(req);
       if (!errors.isEmpty()) {
-        return res.status(400).json({ success: false, message: 'Check the amount, type and date, then save again.', errors: errors.array() });
+        return res.status(400).json({ success: false, message: validationMessage(errors, FIELD_FALLBACK_MESSAGE), errors: errors.array() });
       }
       const expenseId = Number(req.params.id);
+      const has = (k) => Object.prototype.hasOwnProperty.call(req.body, k);
+      const isBoss = isBossRole(req.user.role);
+      const adb = await getAsyncDb();
+
+      // Checks before the item is resolved, so a refused change never
+      // creates an item. The transaction below checks again under locks.
+      const current = await adb.prepare('SELECT id, location_id, created_by, expense_date, item_id, note, description, category FROM expenses WHERE id = ?').get(expenseId);
+      if (!current) return res.status(404).json({ success: false, message: 'This expense was not found. It may have been removed already — pull down to refresh.' });
+      if (!isBoss && Number(current.created_by) !== Number(req.user.id)) {
+        return res.status(403).json({ success: false, message: NOT_YOURS_MESSAGE });
+      }
+      if (!isBoss && has('expense_date') && req.body.expense_date !== current.expense_date) {
+        return res.status(403).json({ success: false, message: OTHER_DAY_MESSAGE });
+      }
+      const wantsItem = !!req.body.item_id || has('item_name');
+      if (!req.body.item_id && has('item_name') && !nameKey(req.body.item_name)) {
+        return res.status(400).json({ success: false, message: NO_ITEM_MESSAGE });
+      }
+      // Salary rows stay salary (payroll links them by employee); other rows
+      // never become salary here (spec 7). Checked again under the lock.
+      const crossesSalary = (cat) => (cat === 'salary') !== (current.category === 'salary');
+      if (has('category') && req.body.category && crossesSalary(req.body.category)) {
+        return res.status(400).json({ success: false, message: SALARY_ROW_MESSAGE });
+      }
+      if (has('photo_url') && req.body.photo_url && !isLocalUploadPath(req.body.photo_url)) {
+        return res.status(400).json({ success: false, message: BAD_PHOTO_MESSAGE });
+      }
+      const touchesGivenTo = has('given_to_user_id') || has('given_to_name');
+      const givenTo = touchesGivenTo ? readGivenTo(req.body) : null;
+      if (givenTo && givenTo.given_to_user_id) await assertGivenTo(adb, givenTo.given_to_user_id, current.location_id);
+
+      // The item is an ordinary write, made before the money transaction.
+      let item = null;
+      if (wantsItem) {
+        // An existing item is checked before a new name is made, so a refused
+        // change never creates an item.
+        if (!req.body.item_id) {
+          const known = await adb.prepare('SELECT category FROM expense_items WHERE name_key = ?').get(nameKey(req.body.item_name));
+          if (known && crossesSalary(known.category)) return res.status(400).json({ success: false, message: SALARY_ROW_MESSAGE });
+        }
+        item = await resolveItem(adb, { item_id: req.body.item_id, item_name: req.body.item_name, category: req.body.category || null, userId: req.user.id });
+        if (crossesSalary(item.category)) return res.status(400).json({ success: false, message: SALARY_ROW_MESSAGE });
+      } else if (current.item_id && (has('note') || has('description'))) {
+        item = await adb.prepare('SELECT * FROM expense_items WHERE id = ?').get(current.item_id);
+      }
 
       const updated = await withMoneyTx(async (tx) => {
         const { expense, openRegister, oldRegisterId } = await loadForChange(tx, expenseId, req.user);
-        const has = (k) => Object.prototype.hasOwnProperty.call(req.body, k);
         const nv = {
-          category: has('category') ? req.body.category : expense.category,
+          category: has('category') ? req.body.category : (wantsItem ? item.category : expense.category),
           amount: has('amount') ? Math.round(Number(req.body.amount) * 100) / 100 : Number(expense.amount),
           description: has('description') ? (req.body.description || '') : (expense.description || ''),
           payment_method: has('payment_method') ? req.body.payment_method : expense.payment_method,
           expense_date: has('expense_date') ? req.body.expense_date : expense.expense_date,
           is_return: has('is_return') ? (req.body.is_return ? 1 : 0) : (expense.is_return ? 1 : 0),
           employee_id: has('employee_id') ? (req.body.employee_id || null) : (expense.employee_id || null),
+          item_id: wantsItem ? item.id : (expense.item_id || null),
+          note: has('note') ? (String(req.body.note || '').trim() || null) : (expense.note || null),
+          photo_url: has('photo_url') ? (req.body.photo_url || null) : (expense.photo_url || null),
+          given_to_user_id: givenTo ? givenTo.given_to_user_id : (expense.given_to_user_id || null),
+          given_to_name: givenTo ? givenTo.given_to_name : (expense.given_to_name || null),
         };
+        // description is always rebuilt as "item name — note" (or the old
+        // text without its note, for a row with no item); never appended to.
+        if (wantsItem || has('note') || has('description')) {
+          let base;
+          if (item) base = item.name;
+          else if (has('description')) base = stripNote(req.body.description || '', expense.note);
+          else base = stripNote(expense.description || '', expense.note);
+          nv.description = composeDescription(base, nv.note);
+        }
+        const wasSalary = expense.category === 'salary';
+        if ((nv.category === 'salary') !== wasSalary || (wantsItem && (item.category === 'salary') !== wasSalary)) {
+          throw httpError(400, SALARY_ROW_MESSAGE);
+        }
         if (nv.category !== 'salary') nv.employee_id = null;
         if (nv.category === 'salary' && !nv.employee_id) throw httpError(400, 'Select which employee this salary payment is for.');
-        if (nv.category === 'salary') {
+        // The payroll overlap check runs only when the date or the employee
+        // changes; otherwise it would find the row's own payment.
+        const salaryMoved = nv.expense_date !== expense.expense_date || Number(nv.employee_id) !== Number(expense.employee_id);
+        if (nv.category === 'salary' && salaryMoved) {
           const covering = await tx.prepare(
             'SELECT period_start, period_end FROM salary_payments WHERE user_id = ? AND status != ? AND period_start <= ? AND period_end >= ?'
           ).get(nv.employee_id, 'cancelled', nv.expense_date, nv.expense_date);
@@ -368,40 +1100,62 @@ router.put(
         }
 
         // Drawer: take the old effect off its session, put the new one on.
-        const oldEffect = oldRegisterId ? drawerEffect(expense) : 0;
-        const newEffect = drawerEffect(nv);
+        // Only amount, method or return change the effect; a date move
+        // leaves register_id and the drawer as they are.
+        const wasCash = expense.payment_method === 'cash';
         let newRegisterId = null;
-        if (nv.payment_method === 'cash') {
-          newRegisterId = (expense.payment_method === 'cash' && oldRegisterId) ? oldRegisterId : (openRegister ? openRegister.id : null);
-          if (!newRegisterId) throw registerClosedError();
-        }
-        if (oldRegisterId && oldRegisterId === newRegisterId) {
-          await moveDrawer(tx, oldRegisterId, newEffect - oldEffect);
+        if (wasCash && !oldRegisterId) {
+          // Old cash with no session: only changes that move no cash.
+          const sameCash = nv.payment_method === 'cash' && Math.abs(drawerEffect(nv) - drawerEffect(expense)) < 0.005;
+          if (!sameCash) throw httpError(400, OLD_CASH_MESSAGE);
+          newRegisterId = expense.register_id || null;
         } else {
-          await moveDrawer(tx, oldRegisterId, -oldEffect);
-          await moveDrawer(tx, newRegisterId, newEffect);
+          const oldEffect = oldRegisterId ? drawerEffect(expense) : 0;
+          const newEffect = drawerEffect(nv);
+          if (nv.payment_method === 'cash') {
+            if (wasCash && oldRegisterId) {
+              newRegisterId = oldRegisterId;
+            } else {
+              // Newly cash: it comes out of today's open drawer, so only for today.
+              if (nv.expense_date !== localToday()) throw httpError(400, PAST_DAY_CASH_MESSAGE);
+              newRegisterId = openRegister ? openRegister.id : null;
+              if (!newRegisterId) throw registerClosedError();
+            }
+          }
+          if (oldRegisterId && oldRegisterId === newRegisterId) {
+            await moveDrawer(tx, oldRegisterId, newEffect - oldEffect);
+          } else {
+            await moveDrawer(tx, oldRegisterId, -oldEffect);
+            await moveDrawer(tx, newRegisterId, newEffect);
+          }
         }
 
         await tx.prepare(`
           UPDATE expenses SET category = ?, amount = ?, description = ?, payment_method = ?, expense_date = ?,
-            is_return = ?, employee_id = ?, register_id = ?
+            is_return = ?, employee_id = ?, register_id = ?,
+            item_id = ?, note = ?, photo_url = ?, given_to_user_id = ?, given_to_name = ?
           WHERE id = ?
         `).run(nv.category, nv.amount, nv.description, nv.payment_method, nv.expense_date,
-          nv.is_return, nv.employee_id, newRegisterId, expenseId);
+          nv.is_return, nv.employee_id, newRegisterId,
+          nv.item_id, nv.note, nv.photo_url, nv.given_to_user_id, nv.given_to_name, expenseId);
 
         const after = { ...expense, ...nv, register_id: newRegisterId };
         await auditExpense(tx, expenseId, req.user.id, 'expense_edit', pickAudit(expense), pickAudit(after));
         return after;
       });
 
-      const db = getDb();
-      const expense = db.prepare(`
-        SELECT e.*, l.name as location_name, u.name as created_by_name
-        FROM expenses e
-        JOIN locations l ON e.location_id = l.id
-        JOIN users u ON e.created_by = u.id
-        WHERE e.id = ?
-      `).get(expenseId) || updated;
+      // The item remembers this save only when it is the latest entry for
+      // the item, so fixing an old row never overwrites newer usual values.
+      if (updated.item_id && (wantsItem || has('amount') || touchesGivenTo)) {
+        const latest = await adb.prepare('SELECT id FROM expenses WHERE item_id = ? ORDER BY created_at DESC, id DESC LIMIT 1').get(updated.item_id);
+        if (latest && Number(latest.id) === expenseId) {
+          await rememberAfterSave(updated.item_id, {
+            amount: updated.amount, given_to_user_id: updated.given_to_user_id, given_to_name: updated.given_to_name,
+          });
+        }
+      }
+
+      const expense = (await loadExpenseRow(adb, expenseId)) || updated;
       res.json({ success: true, data: expense });
     } catch (err) {
       if (err.statusCode) return res.status(err.statusCode).json({ success: false, message: err.message });
