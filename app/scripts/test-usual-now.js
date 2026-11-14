@@ -141,6 +141,82 @@ test('recentPeopleChips: nothing known -> empty', () => {
   assert.deepStrictEqual(e.recentPeopleChips(null, null, null), []);
 });
 
+// ── undoReducer (components/expenses/usualNowUndo.js) ──
+const u = loadModule(path.join(__dirname, '../src/components/expenses/usualNowUndo.js'));
+const teaExpense = { id: 41, amount: 50 };
+const added = (state, now = 1000) => u.undoReducer(u.undoReducer(state, { type: 'add_start' }),
+  { type: 'add_done', expense: teaExpense, text: 'Added Tea ₹50 · Cash', now });
+test('undoReducer: add -> bar showing for 15 s', () => {
+  assert.strictEqual(u.UNDO_MS, 15000);
+  const s = added(u.initialUndoState, 1000);
+  assert.strictEqual(s.saving, false);
+  assert.strictEqual(s.bar.text, 'Added Tea ₹50 · Cash');
+  assert.strictEqual(s.bar.expense.id, 41);
+  assert.strictEqual(s.bar.expiresAt, 16000);
+  assert.ok(u.undoReducer(s, { type: 'expire', now: 15999 }).bar, 'still there just before 15 s');
+  assert.strictEqual(u.undoReducer(s, { type: 'expire', now: 16000 }).bar, null);
+});
+test('undoReducer: undo success -> bar gone', () => {
+  const s = u.undoReducer(added(u.initialUndoState), { type: 'undo_start' });
+  assert.strictEqual(s.bar.undoing, true);
+  // The bar does not expire while the undo is on its way.
+  assert.ok(u.undoReducer(s, { type: 'expire', now: 99999 }).bar);
+  const done = u.undoReducer(s, { type: 'undo_done' });
+  assert.strictEqual(done.bar, null);
+  assert.strictEqual(done.message, null);
+});
+test('undoReducer: undo refused (register closed since) -> server message, entry kept', () => {
+  const s = u.undoReducer(added(u.initialUndoState), { type: 'undo_start' });
+  const refused = u.undoReducer(s, { type: 'undo_failed', message: 'This register is closed. Ask the owner to change it.' });
+  assert.strictEqual(refused.message, 'This register is closed. Ask the owner to change it.');
+  assert.strictEqual(refused.bar, null, 'the bar closes; the entry itself stays in the list');
+  assert.strictEqual(u.undoReducer(refused, { type: 'message_shown' }).message, null);
+  const noMsg = u.undoReducer(s, { type: 'undo_failed' });
+  assert.ok(noMsg.message && noMsg.message.length > 0, 'a plain fallback message');
+});
+test('undoReducer: second add tap while saving is ignored', () => {
+  const s1 = u.undoReducer(u.initialUndoState, { type: 'add_start' });
+  assert.strictEqual(s1.saving, true);
+  assert.strictEqual(u.undoReducer(s1, { type: 'add_start' }), s1);
+  assert.strictEqual(u.undoReducer(u.undoReducer(s1, { type: 'add_failed' }), { type: 'add_start' }).saving, true);
+});
+test('undoReducer: a new add replaces the bar; undo twice is ignored', () => {
+  const first = added(u.initialUndoState, 1000);
+  const second = u.undoReducer(u.undoReducer(first, { type: 'add_start' }),
+    { type: 'add_done', expense: { id: 42 }, text: 'Added Milk ₹60 · UPI', now: 5000 });
+  assert.strictEqual(second.bar.expense.id, 42);
+  assert.strictEqual(second.bar.expiresAt, 20000);
+  // The old bar's timer firing at 16 s does not close the new bar.
+  assert.ok(u.undoReducer(second, { type: 'expire', now: 16000 }).bar);
+  const undoing = u.undoReducer(second, { type: 'undo_start' });
+  assert.strictEqual(u.undoReducer(undoing, { type: 'undo_start' }), undoing);
+  assert.strictEqual(u.undoReducer(u.initialUndoState, { type: 'undo_start' }), u.initialUndoState);
+});
+test('undoBarText: "Added Tea ₹50 · Cash"', () => {
+  assert.strictEqual(u.undoBarText('Tea', 50, 'cash'), 'Added Tea ₹50 · Cash');
+  assert.strictEqual(u.undoBarText('Milk', 1250, 'upi'), 'Added Milk ₹1,250 · UPI');
+});
+test('usualNowBody: same body the sheet sends', () => {
+  const body = u.usualNowBody(tea, 5);
+  assert.deepStrictEqual(body, {
+    location_id: 5, item_id: 1, category: 'food', amount: 50, payment_method: 'cash',
+    is_return: false, note: null, employee_id: null, given_to_user_id: 7,
+  });
+  const typed = u.usualNowBody({ ...tea, my_last_method: 'upi', last_given_to: { user_id: null, name: 'Milkman', display_name: 'Milkman', present_today: true } }, 5);
+  assert.strictEqual(typed.given_to_name, 'Milkman');
+  assert.strictEqual(typed.payment_method, 'upi');
+  const nobody = u.usualNowBody({ ...tea, last_given_to: null }, 5);
+  assert.strictEqual(nobody.given_to_user_id, null);
+  assert.strictEqual(nobody.given_to_name, null);
+  assert.strictEqual(u.usualNowBody({ ...tea, common_amount: null, usual_amount: null }, 5), null, 'no amount -> no 1-tap');
+});
+test('usualNowRows: up to 3, salary left out', () => {
+  const rows = u.usualNowRows({ usual_now: [tea, { ...tea, id: 2 }, { ...tea, id: 9, category: 'salary' }, { ...tea, id: 3 }, { ...tea, id: 4 }] });
+  assert.deepStrictEqual(rows.map((r) => r.id), [1, 2, 3]);
+  assert.deepStrictEqual(u.usualNowRows(null), []);
+  assert.deepStrictEqual(u.usualNowRows({ data: [tea] }), [], 'older server: no Usual now line');
+});
+
 let passed = 0;
 for (const t of tests) {
   try { t.fn(); passed++; console.log(`  ok   ${t.name}`); } catch (err) { console.log(`  FAIL ${t.name}\n       ${err.message}`); }

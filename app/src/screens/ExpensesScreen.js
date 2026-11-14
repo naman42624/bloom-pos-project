@@ -12,6 +12,7 @@ import RegisterStatusBanner from '../components/RegisterStatusBanner';
 import AddExpenseSheet, { rupees } from '../components/expenses/AddExpenseSheet';
 import ExpenseRow from '../components/expenses/ExpenseRow';
 import ExpenseSummaryView from '../components/expenses/ExpenseSummaryView';
+import UsualNowLine, { useUsualNow, UndoBar, UNDO_BAR_SPACE } from '../components/expenses/UsualNowLine';
 
 // Two views (spec §6.2 / §6.3):
 //   counter staff / employee: day chips for the last 7 days and that day's
@@ -57,6 +58,7 @@ export default function ExpensesScreen() {
 
   // The Add / Change expense sheet (components/expenses/AddExpenseSheet.js).
   // sheet = null (closed) | { expense } (change) | { initial } (add, maybe pre-filled)
+  //   | { prefill } (add, starting from a Usual now item)
   const [sheet, setSheet] = useState(null);
   // Brief "Saved ₹200 Petrol" line after a save; there is no app-wide toast.
   const [toast, setToast] = useState('');
@@ -154,6 +156,33 @@ export default function ExpensesScreen() {
 
   const openChange = (item) => setSheet({ expense: item });
 
+  // Usual now 1-tap line (spec §4.3): the day list on Today, and the owner's
+  // summary while the period is Today. Helpers, florists and riders never
+  // reach this screen; the role check keeps it that way.
+  const canUsualNow = ['owner', 'manager', 'employee', 'counter_staff'].includes(user?.role);
+  const goOpenRegister = () => navigation.navigate('CashRegister', { locationId: selectedLocation });
+  const usualNow = useUsualNow({
+    locationId: selectedLocation,
+    enabled: canUsualNow,
+    onChanged: () => {
+      if (summaryOn) setRefreshKey((k) => k + 1);
+      else fetchExpenses();
+      registerStatus.refetch();
+    },
+    onOpenRegister: goOpenRegister,
+  });
+  const usualNowLine = canUsualNow ? (
+    <UsualNowLine
+      items={usualNow.items}
+      saving={usualNow.state.saving}
+      registerOpen={registerStatus.isOpen}
+      registerLoading={registerStatus.loading}
+      onAdd={usualNow.add}
+      onOpenSheet={(item) => setSheet({ prefill: item })}
+      onOpenRegister={goOpenRegister}
+    />
+  ) : null;
+
   const handleInitiateReturn = (expense) => setSheet({
     initial: {
       is_return: true,
@@ -222,7 +251,7 @@ export default function ExpensesScreen() {
             isOpen={registerStatus.isOpen}
             isStale={registerStatus.isStale}
             register={registerStatus.register}
-            onPress={() => navigation.navigate('CashRegister', { locationId: selectedLocation })}
+            onPress={goOpenRegister}
             closedMessage="Cash expenses need it open — UPI still works either way."
           />
         )}
@@ -255,6 +284,7 @@ export default function ExpensesScreen() {
           onChangeExpense={openChange}
           onReturn={handleInitiateReturn}
           onShopPicked={setSelectedLocation}
+          todayTop={usualNowLine}
         />
       ) : (
         <>
@@ -283,19 +313,22 @@ export default function ExpensesScreen() {
                 onReturn={canChange(item) ? handleInitiateReturn : undefined}
               />
             )}
-            contentContainerStyle={styles.list}
+            contentContainerStyle={[styles.list, usualNow.state.bar && { paddingBottom: UNDO_BAR_SPACE }]}
             ListHeaderComponent={
-              <View style={styles.summaryCard}>
-                <Text style={styles.summaryLabel}>{dayTitle}</Text>
-                {fresh ? (
-                  <Text style={styles.summaryAmount}>{rupees(total)}</Text>
-                ) : (
-                  <Text style={styles.summaryLoading}>{loadError ? ' ' : 'Loading…'}</Text>
-                )}
-                {day !== today && !isBoss && (
-                  <Text style={styles.summaryHint}>Only today's own entries can be changed.</Text>
-                )}
-              </View>
+              <>
+                {day === today && usualNowLine}
+                <View style={styles.summaryCard}>
+                  <Text style={styles.summaryLabel}>{dayTitle}</Text>
+                  {fresh ? (
+                    <Text style={styles.summaryAmount}>{rupees(total)}</Text>
+                  ) : (
+                    <Text style={styles.summaryLoading}>{loadError ? ' ' : 'Loading…'}</Text>
+                  )}
+                  {day !== today && !isBoss && (
+                    <Text style={styles.summaryHint}>Only today's own entries can be changed.</Text>
+                  )}
+                </View>
+              </>
             }
             ListEmptyComponent={
               <View style={styles.empty}>
@@ -328,10 +361,13 @@ export default function ExpensesScreen() {
         register={sheetStatus.register}
         expense={sheet?.expense || null}
         initial={sheet?.initial || null}
+        prefill={sheet?.prefill || null}
         onClose={() => setSheet(null)}
         onSaved={handleSaved}
         onRegisterOpened={sheetStatus.refetch}
       />
+
+      <UndoBar bar={usualNow.state.bar} onUndo={usualNow.undo} />
     </View>
   );
 }
