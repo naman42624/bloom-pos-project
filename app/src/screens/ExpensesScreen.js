@@ -17,8 +17,11 @@ import ExpenseSummaryView from '../components/expenses/ExpenseSummaryView';
 //   counter staff / employee: day chips for the last 7 days and that day's
 //     entries; Change only on their own entries from today while the
 //     register is open (the server checks the same rule).
-//   owner / manager: ExpenseSummaryView (period totals by category and item,
+//   owner: ExpenseSummaryView (period totals by category and item,
 //     ▲/▼ vs the period before, "See all entries").
+//   manager: the day list first, like counter staff (they work the counter
+//     and mostly add and check today's entries), but can change any entry;
+//     "Summary & history" opens the owner's summary view (2026-11-14, user).
 export default function ExpensesScreen() {
   const navigation = useNavigation();
   const route = useRoute();
@@ -27,6 +30,9 @@ export default function ExpensesScreen() {
   const today = getShopTodayStr(timezone);
   const isBoss = user?.role === 'owner' || user?.role === 'manager';
   const isOwner = user?.role === 'owner';
+  // Owner opens on the summary; manager opens on the day list and can switch.
+  const [showSummary, setShowSummary] = useState(isOwner);
+  const summaryOn = isBoss && showSummary;
 
   const [locations, setLocations] = useState([]);
   // Cash Register passes its shop, so an expense lands on the drawer staff
@@ -94,8 +100,8 @@ export default function ExpensesScreen() {
 
   useFocusEffect(
     useCallback(() => {
-      if (!isBoss && selectedLocation) fetchExpenses();
-    }, [isBoss, selectedLocation, day])
+      if (!summaryOn && selectedLocation) fetchExpenses();
+    }, [summaryOn, selectedLocation, day])
   );
 
   const fetchLocations = async () => {
@@ -162,7 +168,7 @@ export default function ExpensesScreen() {
 
   const handleSaved = (result) => {
     setSheet(null);
-    if (isBoss) setRefreshKey((k) => k + 1);
+    if (summaryOn) setRefreshKey((k) => k + 1);
     else fetchExpenses();
     registerStatus.refetch();
     if (result?.message) {
@@ -193,7 +199,7 @@ export default function ExpensesScreen() {
     <View style={styles.container}>
       {/* Staff: shop chips when linked to more than one shop. Owner/manager
           get "All shops" + shop chips inside the summary view instead. */}
-      {!isBoss && locations.length > 1 && (
+      {!summaryOn && locations.length > 1 && (
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.locRow} contentContainerStyle={styles.chipRow}>
           {locations.map((loc) => (
             <TouchableOpacity
@@ -220,6 +226,17 @@ export default function ExpensesScreen() {
             closedMessage="Cash expenses need it open — UPI still works either way."
           />
         )}
+        {isBoss && !isOwner && (
+          <TouchableOpacity
+            style={styles.switchBtn}
+            onPress={() => setShowSummary((v) => !v)}
+            accessibilityRole="button"
+          >
+            <Ionicons name={showSummary ? 'arrow-back' : 'bar-chart-outline'} size={20} color={Colors.primary} />
+            <Text style={styles.switchText}>{showSummary ? "Back to today's list" : 'Summary & history'}</Text>
+            {!showSummary && <Ionicons name="chevron-forward" size={18} color={Colors.primary} />}
+          </TouchableOpacity>
+        )}
         {!!toast && (
           <View style={styles.toast} accessibilityLiveRegion="polite">
             <Ionicons name="checkmark-circle" size={20} color={Colors.success} />
@@ -228,7 +245,7 @@ export default function ExpensesScreen() {
         )}
       </View>
 
-      {isBoss ? (
+      {summaryOn ? (
         <ExpenseSummaryView
           todayStr={today}
           locations={locations}
@@ -275,7 +292,7 @@ export default function ExpensesScreen() {
                 ) : (
                   <Text style={styles.summaryLoading}>{loadError ? ' ' : 'Loading…'}</Text>
                 )}
-                {day !== today && (
+                {day !== today && !isBoss && (
                   <Text style={styles.summaryHint}>Only today's own entries can be changed.</Text>
                 )}
               </View>
@@ -339,6 +356,11 @@ const styles = StyleSheet.create({
     minHeight: 52, backgroundColor: Colors.primary, borderRadius: BorderRadius.md,
   },
   addBtnText: { color: Colors.white, fontWeight: '700', fontSize: FontSize.md },
+  switchBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, minHeight: 48, paddingHorizontal: Spacing.md,
+    borderRadius: BorderRadius.md, borderWidth: 1, borderColor: Colors.primary, backgroundColor: Colors.surface,
+  },
+  switchText: { flex: 1, color: Colors.primary, fontWeight: '700', fontSize: FontSize.md },
   toast: {
     flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
     padding: Spacing.sm, borderRadius: BorderRadius.md, backgroundColor: Colors.successLight,
