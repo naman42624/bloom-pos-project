@@ -12,7 +12,7 @@ import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors, FontSize, Spacing, BorderRadius } from '../../constants/theme';
 import { formatTime } from '../../utils/datetime';
-import { givenToText, methodLabel } from '../../utils/expenseBook';
+import { givenToText, methodLabel, savedTimeLabel } from '../../utils/expenseBook';
 import { getApiOrigin } from '../../services/api';
 import ImageModal from '../ImageModal';
 import { EXPENSE_CATEGORIES, rupees } from './AddExpenseSheet';
@@ -38,7 +38,7 @@ export default function ExpenseRow({ expense, canChange, onChange, onReturn, sho
   // the bill's Given to, so it is not named twice).
   const method = methodLabel(e);
   const given = String(e.payment_method).toLowerCase() === 'shopping_money' ? null : givenToText(e);
-  const parts = [method, given, e.created_by_name ? `added by ${e.created_by_name}` : null].filter(Boolean);
+  const parts = [method, given, e.created_by_name ? `added by ${e.created_by_name}` : null, savedTimeLabel(e.created_at, e.expense_date)].filter(Boolean);
   const photoUri = e.photo_url ? (/^https?:/.test(e.photo_url) ? e.photo_url : `${getApiOrigin()}${e.photo_url}`) : null;
   const showReturn = !!onReturn && !e.is_return && String(e.payment_method).toLowerCase() === 'cash';
 

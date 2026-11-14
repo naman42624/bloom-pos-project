@@ -117,6 +117,23 @@ test('methodLabel: own pocket and shopping money name the person', () => {
   assert.strictEqual(e.methodLabel({}), '');
 });
 
+test('savedTimeLabel same day shows time only', () => {
+  assert.strictEqual(e.savedTimeLabel('2026-11-13T05:12:00.000Z', '2026-11-13'), '10:42 am');
+  assert.strictEqual(e.savedTimeLabel('2026-11-13 05:12:00', '2026-11-13'), '10:42 am');
+});
+test('savedTimeLabel different day', () => {
+  assert.strictEqual(e.savedTimeLabel('2026-11-14T12:35:00.000Z', '2026-11-13'), 'saved 14 Nov, 6:05 pm');
+});
+test('savedTimeLabel UTC-midnight crossing uses IST', () => {
+  // 20:00 UTC on the 13th is 1:30 am IST on the 14th
+  assert.strictEqual(e.savedTimeLabel('2026-11-13T20:00:00.000Z', '2026-11-14'), '1:30 am');
+  assert.strictEqual(e.savedTimeLabel('2026-11-13T20:00:00.000Z', '2026-11-13'), 'saved 14 Nov, 1:30 am');
+});
+test('savedTimeLabel missing', () => {
+  assert.strictEqual(e.savedTimeLabel(null, '2026-11-13'), '');
+  assert.strictEqual(e.savedTimeLabel('garbage', '2026-11-13'), '');
+});
+
 let failed = 0;
 for (const t of tests) {
   try { t.fn(); console.log('ok   ' + t.name); } catch (err) { failed++; console.log('FAIL ' + t.name + ': ' + err.message); }

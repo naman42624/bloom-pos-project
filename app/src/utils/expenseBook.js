@@ -242,3 +242,22 @@ export function recentPeopleChips(items, people, value, max = 3) {
   }
   return chips;
 }
+
+// When a row was saved, for its secondary line. Same day as the expense date:
+// "10:42 am". Another day: "saved 13 Nov, 6:05 pm". Shop time (IST) like
+// utils/datetime.js; a timestamp with no zone suffix is UTC, as there.
+// (Not imported from datetime.js so the plain-node test scripts can load this.)
+export function savedTimeLabel(createdAt, expenseDate) {
+  if (!createdAt) return '';
+  let raw = String(createdAt).trim().replace(' ', 'T');
+  if (/^\d{4}-\d{2}-\d{2}T/.test(raw) && !/[zZ]$|[+\-]\d{2}:?\d{2}$/.test(raw)) raw += 'Z';
+  const d = createdAt instanceof Date ? createdAt : new Date(raw);
+  if (Number.isNaN(d.getTime())) return '';
+  const tz = 'Asia/Kolkata';
+  const time = d.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: tz }).toLowerCase();
+  const day = d.toLocaleDateString('en-CA', { timeZone: tz });
+  const want = String(expenseDate || '').slice(0, 10);
+  if (!want || day === want) return time;
+  const dm = d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', timeZone: tz });
+  return `saved ${dm}, ${time}`;
+}
