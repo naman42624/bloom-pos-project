@@ -3,7 +3,8 @@ const { body, validationResult } = require('express-validator');
 const { getDb } = require('../config/database');
 const { getDb: getAsyncDb, withMoneyTx } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
-const { todayStr: localToday } = require('../utils/time');
+const { todayStr: localToday, getTimezone } = require('../utils/time');
+const { rankSuggestions, commonAmount, toShopLocal } = require('../utils/usual-now');
 const { hasOpenRegister, lockOpenRegister, registerClosedError, REGISTER_CLOSED_MESSAGE } = require('../utils/register-guard');
 const {
   nameKey, resolveItem, rememberOnItem, assertGivenTo, isLocalUploadPath, composeDescription, stripNote,
@@ -378,6 +379,71 @@ router.get('/people', authenticate, authorize('owner', 'manager', 'employee', 'c
   }
 });
 
+// Usual now / Often sections for the chips (no search text). One query over
+// the shop's last 60 days of cash/UPI expenses with an item. The legacy `data`
+// array stays as it was for older app builds.
+async function usualNowSections(db, locationId, userId, shapeItem, cols, base) {
+  const tz = getTimezone();
+  const nowLocal = toShopLocal(new Date(), tz);
+  const since = new Date(Date.now() - 61 * 86400000);
+  const sinceSql = since.toISOString().replace('T', ' ').slice(0, 19);
+  const entryRows = await db.prepare(`
+    SELECT item_id, amount, payment_method, created_by, created_at
+    FROM expenses
+    WHERE location_id = ? AND item_id IS NOT NULL AND payment_method IN ('cash', 'upi')
+      AND COALESCE(is_return, 0) = 0 AND created_at >= ?
+    ORDER BY created_at ASC
+  `).all(locationId, sinceSql);
+  const byItem = new Map();
+  for (const r of entryRows) {
+    const at = toShopLocal(r.created_at instanceof Date ? r.created_at : new Date(r.created_at), tz);
+    const list = byItem.get(Number(r.item_id)) || [];
+    list.push({ at, amount: Number(r.amount), method: r.payment_method, created_by: Number(r.created_by) });
+    byItem.set(Number(r.item_id), list);
+  }
+  const thirtyAgo = nowLocal.getTime() - 30 * 86400000;
+  const itemIds = [...byItem.keys()];
+  const idList = itemIds.length ? itemIds.map(() => '?').join(', ') : 'NULL';
+  const candidates = await db.prepare(`
+    SELECT ${cols}, i.pinned, i.pin_order ${base}
+    AND (i.pinned = TRUE OR i.id IN (${idList}))
+  `).all(...itemIds);
+  const items = candidates.map((r) => {
+    const entries = byItem.get(Number(r.id)) || [];
+    return {
+      id: Number(r.id), pinned: !!r.pinned, pin_order: r.pin_order == null ? null : Number(r.pin_order),
+      uses30: entries.filter((e) => e.at.getTime() >= thirtyAgo).length,
+      entries, row: r,
+    };
+  });
+  const { usual_now, often } = rankSuggestions(items, nowLocal);
+  const picked = usual_now.concat(often);
+
+  // Clocked in today with no clock-out: the Given to person is shown only if here.
+  const personIds = [...new Set(picked.map((i) => Number(i.row.last_given_to_user_id)).filter(Boolean))];
+  let present = new Set();
+  if (personIds.length) {
+    const att = await db.prepare(`
+      SELECT DISTINCT user_id FROM attendance
+      WHERE date = ? AND clock_out IS NULL AND user_id IN (${personIds.map(() => '?').join(', ')})
+    `).all(localToday(), ...personIds);
+    present = new Set(att.map((a) => Number(a.user_id)));
+  }
+  const finish = (i) => {
+    const shaped = shapeItem(i.row);
+    const mine = i.entries.filter((e) => e.created_by === Number(userId)).pop();
+    return {
+      ...shaped,
+      common_amount: commonAmount(i.entries),
+      my_last_method: mine ? mine.method : null,
+      last_given_to: shaped.last_given_to
+        ? { ...shaped.last_given_to, present_today: shaped.last_given_to.user_id ? present.has(shaped.last_given_to.user_id) : false }
+        : null,
+    };
+  };
+  return { usual_now: usual_now.map(finish), often: often.map(finish) };
+}
+
 // ─── GET /api/expenses/suggest ───────────────────────────────
 // Quick-pick chips (pinned first, then this shop's most used in the last 30
 // days) and type-ahead when q is given. Never hidden or merged items.
@@ -419,22 +485,22 @@ router.get('/suggest', authenticate, authorize('owner', 'manager', 'employee', '
         rows = rows.concat(used);
       }
     }
-    res.json({
-      success: true,
-      data: rows.map((r) => ({
-        id: Number(r.id),
-        name: r.name,
-        category: r.category,
-        usual_amount: r.usual_amount == null ? null : Number(r.usual_amount),
-        last_given_to: (r.last_given_to_user_id || r.last_given_to_name)
-          ? {
-              user_id: r.last_given_to_user_id ? Number(r.last_given_to_user_id) : null,
-              name: r.last_given_to_name || null,
-              display_name: r.last_given_to_user_id ? (r.last_user_name || r.last_given_to_name) : r.last_given_to_name,
-            }
-          : null,
-      })),
+    const shapeItem = (r) => ({
+      id: Number(r.id),
+      name: r.name,
+      category: r.category,
+      usual_amount: r.usual_amount == null ? null : Number(r.usual_amount),
+      last_given_to: (r.last_given_to_user_id || r.last_given_to_name)
+        ? {
+            user_id: r.last_given_to_user_id ? Number(r.last_given_to_user_id) : null,
+            name: r.last_given_to_name || null,
+            display_name: r.last_given_to_user_id ? (r.last_user_name || r.last_given_to_name) : r.last_given_to_name,
+          }
+        : null,
     });
+    const out = { success: true, data: rows.map(shapeItem) };
+    if (!q) Object.assign(out, await usualNowSections(db, locationId, req.user.id, shapeItem, cols, base));
+    res.json(out);
   } catch (err) {
     next(err);
   }
