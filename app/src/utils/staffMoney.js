@@ -182,9 +182,9 @@ export function daysText(days) {
   return n === 0 ? 'Today' : n === 1 ? '1 day' : `${n} days`;
 }
 
-// "Ramesh is back — what did he buy?" (spec 3, verbatim).
+// "Ramesh is back — what was bought?" (spec 3, verbatim).
 export function isBackTitle(name) {
-  return `${firstName(name)} is back — what did he buy?`;
+  return `${firstName(name)} is back — what was bought?`;
 }
 
 // "Had ₹500 · given 12 Nov by Priya"
@@ -266,7 +266,7 @@ export function settleBody(bills, sums, method, final) {
   return body;
 }
 
-// "+ Add what he bought": the name and the amount, or the first problem.
+// "+ Add what was bought": the name and the amount, or the first problem.
 export function billCheck(name, amountText) {
   if (!String(name || '').trim()) return { error: 'Type what was bought, like Roses.', field: 'name' };
   const amount = parseGiveAmount(amountText);

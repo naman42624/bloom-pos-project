@@ -14,7 +14,7 @@
 
 - Schema additive only; read the `db-migration-safety` skill before any schema task. No apostrophe inside a SQL `--` comment.
 - New server code uses `getAsyncDb` / `withMoneyTx`; no new sync `getDb()` use.
-- Names on screen exactly as spec §3: Salary advance · Shopping money · Shopping money out · "<Name> is back — what did he buy?" / Done · Take from pay · Own pocket · Shop owes / Pay back · Usual now · Often.
+- Names on screen exactly as spec §3: Salary advance · Shopping money · Shopping money out · "<Name> is back — what was bought?" / Done · Take from pay · Own pocket · Shop owes / Pay back · Usual now · Often.
 - Settings and defaults: `advance_daily_limit` 500, `advance_monthly_limit` 2000, `shopping_money_daily_limit` 1000, `shopping_money_late_days` 3.
 - Non-drawer methods: `shopping_money` (settle bills, shopping write-offs) and `own_pocket` (own-pocket expenses). Only the routes named in this plan write them.
 - PIN: approver chosen by id from `GET /api/staff-money/approvers`; verified with `approval-pin.js` `checkCodeAndPin` using that user's `employee_code`, roles `['manager','owner']`, manager must be linked to the shop, approver ≠ recipient; never inside a transaction that can roll back.

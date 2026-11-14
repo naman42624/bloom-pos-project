@@ -38,7 +38,7 @@ Defaults: Cash or UPI for hand-outs (only cash touches the drawer); part settlin
 | Advance against salary | **Salary advance** |
 | Cash given to buy things, to be accounted for later | **Shopping money** |
 | The card listing who holds shopping money | **Shopping money out** |
-| Accounting for shopping money | "**Ramesh is back — what did he buy?**" (button: **Done**) |
+| Accounting for shopping money | "**Ramesh is back — what was bought?**" (button: **Done**) |
 | Converting unsettled money at payroll | **Take from pay** |
 | Paying from one's own pocket | **Own pocket** |
 | What the shop owes someone | **Shop owes** (button: **Pay back**) |
@@ -131,11 +131,11 @@ On the counter-staff, employee, manager and owner dashboards and at the top of E
 Tap a shopping line:
 
 ```
-  Ramesh is back — what did he buy?
+  Ramesh is back — what was bought?
   Had ₹500 · given 12 Nov by Priya
   ─────────────────────────────────────────────
   Roses            ₹300                         ✕
-  + Add what he bought
+  + Add what was bought
   Change back       ₹ [ 200 ]   [ Cash | UPI ]
   ─────────────────────────────────────────────
   Still with Ramesh  ₹0

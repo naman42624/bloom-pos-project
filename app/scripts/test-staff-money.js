@@ -240,7 +240,7 @@ test('payBackCheck: part allowed, more than owed refused', () => {
   assert.strictEqual(s.payBackCheck('0', 120, 'Ramesh').error, 'Type an amount above ₹0, like 300.');
 });
 test('titles and labels', () => {
-  assert.strictEqual(s.isBackTitle('Ramesh Kumar'), 'Ramesh is back — what did he buy?');
+  assert.strictEqual(s.isBackTitle('Ramesh Kumar'), 'Ramesh is back — what was bought?');
   assert.strictEqual(s.hadLine(500, new Date(2026, 10, 12, 10, 0), 'Priya Shah'), 'Had ₹500 · given 12 Nov by Priya');
   assert.strictEqual(s.hadLine(500, null, null), 'Had ₹500');
   assert.strictEqual(s.daysText(0), 'Today');

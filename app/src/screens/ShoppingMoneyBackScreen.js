@@ -1,11 +1,11 @@
 /**
- * ShoppingMoneyBackScreen — "Ramesh is back — what did he buy?" (spec 3, 4.4).
+ * ShoppingMoneyBackScreen — "Ramesh is back — what was bought?" (spec 3, 4.4).
  *
- *   Ramesh is back — what did he buy?
+ *   Ramesh is back — what was bought?
  *   Had ₹500 · given 12 Nov by Priya
  *   ─────────────────────────────────
  *   Roses            ₹300            ✕
- *   What did he buy?  [Roses     ] ₹ [300]  (Usual now / Often rows, type-ahead)
+ *   What was bought?  [Roses     ] ₹ [300]  (Usual now / Often rows, type-ahead)
  *   + Add another
  *   Change back       ₹ [ 200 ]   [ Cash | UPI ]
  *   ─────────────────────────────────
@@ -334,7 +334,7 @@ export default function ShoppingMoneyBackScreen() {
         ))}
 
         {/* The thing being typed (counts once it has a name and an amount) */}
-        <Text style={styles.label}>{bills.length ? 'Anything else he bought?' : 'What did he buy?'}</Text>
+        <Text style={styles.label}>{bills.length ? 'Anything else bought?' : 'What was bought?'}</Text>
         <View style={styles.adderRow}>
           <TextInput
             style={[styles.input, styles.nameInput, pError?.field === 'name' && styles.inputError]}
@@ -345,7 +345,7 @@ export default function ShoppingMoneyBackScreen() {
             maxLength={80}
             returnKeyType="next"
             onSubmitEditing={() => amountRef.current?.focus()}
-            accessibilityLabel="What did he buy?"
+            accessibilityLabel="What was bought?"
           />
           <View style={[styles.input, styles.amountBox, pError?.field === 'amount' && styles.inputError]}>
             <Text style={styles.rupee}>₹</Text>

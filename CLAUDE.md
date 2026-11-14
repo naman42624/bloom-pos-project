@@ -164,7 +164,7 @@ Order-side work is first because the app is live at the counter and that's today
      - **Staff money (PR B, 2026-11-15, same branch `feature/staff-money`, ledger "## PR B" section).**
        - **Built:**
          - Salary advance at the counter: Who, amount, Cash/UPI. Four owner settings (Settings → Expenses): advance limit per person per day and per month, shopping money limit per person per day, and "late after" days for shopping money. Over a limit, or money for yourself (counter staff), a manager or owner confirms with their PIN. The server refuses a limit that is not a whole number of 1 or more, and falls back to the default if one is stored as 0 or blank.
-         - Shopping money: Shopping money out, "is back" screen (what he bought, change back, still with), Done. A hand-out typed by mistake can be removed while nothing is settled.
+         - Shopping money: Shopping money out, "is back" screen (what was bought, change back, still with), Done. A hand-out typed by mistake can be removed while nothing is settled.
          - Own pocket: an expense paid from a person's own pocket becomes "Shop owes". Pay back, or the owner keeps/writes it off.
          - Payroll "Take from pay": open shopping money is taken off the pay.
          - Register session lines "Shopping money given", "Change brought back", "Shop owes paid back" and a close note.
