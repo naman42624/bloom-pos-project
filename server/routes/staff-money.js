@@ -65,44 +65,31 @@ router.get('/people', authenticate, authorize(...GIVER_ROLES), async (req, res, 
     if (!locationId) return res.status(400).json({ success: false, message: LOCATION_MESSAGE });
     const db = await getDb();
     const roles = PEOPLE_ROLES.map(() => '?').join(', ');
+    // One comparable last-given time per person, worked out in SQL: the later
+    // of the last advance at this shop (its expense time, else its day) and
+    // the last shopping hand-out here. GREATEST skips NULLs.
     const rows = await db.prepare(`
-      SELECT u.id, u.name, u.role,
-        (SELECT MAX(sa.id) FROM salary_advances sa
-          WHERE sa.user_id = u.id AND sa.location_id = ? AND sa.status IN ('approved', 'repaid')) AS last_advance_id,
-        (SELECT MAX(sa.date) FROM salary_advances sa
-          WHERE sa.user_id = u.id AND sa.location_id = ? AND sa.status IN ('approved', 'repaid')) AS last_advance_day,
-        (SELECT MAX(mo.created_at) FROM staff_money_out mo
-          WHERE mo.user_id = u.id AND mo.location_id = ? AND mo.status <> 'removed') AS last_out_at
-      FROM users u
-      JOIN user_locations ul ON ul.user_id = u.id AND ul.location_id = ?
-      WHERE u.is_active = 1 AND u.role IN (${roles})
-      ORDER BY u.name ASC, u.id ASC
-    `).all(locationId, locationId, locationId, locationId, ...PEOPLE_ROLES);
+      SELECT id, name, role, last_at IS NOT NULL AS has_recent FROM (
+        SELECT u.id, u.name, u.role,
+          GREATEST(
+            (SELECT MAX(COALESCE(e.created_at, CAST(sa.date AS timestamp)))
+               FROM salary_advances sa LEFT JOIN expenses e ON e.id = sa.expense_id
+              WHERE sa.user_id = u.id AND sa.location_id = ? AND sa.status IN ('approved', 'repaid')),
+            (SELECT MAX(mo.created_at) FROM staff_money_out mo
+              WHERE mo.user_id = u.id AND mo.location_id = ? AND mo.status <> 'removed')
+          ) AS last_at
+        FROM users u
+        WHERE u.is_active = 1 AND u.role IN (${roles})
+          AND EXISTS (SELECT 1 FROM user_locations ul WHERE ul.user_id = u.id AND ul.location_id = ?)
+      ) p
+      ORDER BY last_at DESC NULLS LAST, name ASC, id ASC
+    `).all(locationId, locationId, ...PEOPLE_ROLES, locationId);
 
-    // Recency key: the later of the last advance day and the last hand-out;
-    // advances on the same day keep their order by id.
-    const keyOf = (r) => {
-      const adv = r.last_advance_day ? `${String(r.last_advance_day).slice(0, 10)}|a${String(r.last_advance_id).padStart(12, '0')}` : '';
-      const out = r.last_out_at ? `${String(r.last_out_at).slice(0, 10)}|o${String(r.last_out_at).slice(11)}` : '';
-      return adv > out ? adv : out;
-    };
-    const seen = new Set();
-    const people = [];
-    for (const r of rows) {
-      if (seen.has(Number(r.id))) continue;
-      seen.add(Number(r.id));
-      people.push({ id: Number(r.id), name: r.name, role: r.role, key: keyOf(r) });
-    }
-    const ranked = people.filter((p) => p.key).sort((a, b) => (a.key < b.key ? 1 : a.key > b.key ? -1 : 0));
-    const rank = new Map(ranked.map((p, i) => [p.id, i + 1]));
-    const data = people
-      .map((p) => ({ id: p.id, name: p.name, role: p.role, recent_rank: rank.get(p.id) || null }))
-      .sort((a, b) => {
-        if (a.recent_rank && b.recent_rank) return a.recent_rank - b.recent_rank;
-        if (a.recent_rank) return -1;
-        if (b.recent_rank) return 1;
-        return 0; // both unranked: keep name order
-      });
+    let n = 0;
+    const data = rows.map((r) => ({
+      id: Number(r.id), name: r.name, role: r.role,
+      recent_rank: r.has_recent ? ++n : null,
+    }));
     res.json({ success: true, data });
   } catch (err) { next(err); }
 });

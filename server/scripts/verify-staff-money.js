@@ -178,6 +178,7 @@ const { todayStr } = require('../utils/time');
 const API_BASE = process.env.API_BASE_URL || 'http://localhost:3001/api';
 const createdRegisterIds = [];
 const createdAdvanceIds = [];
+const createdMoneyOutIds = [];
 const tok = (id) => jwt.sign({ id }, process.env.JWT_SECRET);
 async function api(method, path, userId, body) {
   const res = await fetch(`${API_BASE}${path}`, {
@@ -205,6 +206,7 @@ async function getCast() {
     owner: await makeUser(db, { role: 'owner', name: 'VerifySM Owner', pin: '5932', code: 'VSMO' + s, location: null }),
     mgr: await makeUser(db, { role: 'manager', name: 'VerifySM Asha', pin: '5932', code: 'VSMA' + s }),
     mgrNoPin: await makeUser(db, { role: 'manager', name: 'VerifySM NoPinMgr' }),
+    mgrNoCode: await makeUser(db, { role: 'manager', name: 'VerifySM NoCodeMgr', pin: '5932' }),
     mgrFar: other ? await makeUser(db, { role: 'manager', name: 'VerifySM FarMgr', pin: '5932', code: 'VSMF' + s, location: other.id }) : null,
     counter: await makeUser(db, { role: 'counter_staff', name: 'VerifySM Counter' }),
     r1: await makeUser(db, { role: 'counter_staff', name: 'VerifySM Ramesh' }),
@@ -278,7 +280,7 @@ check('B2: people lists linked staff and riders with recent_rank; approvers list
   eq(a.status, 200, 'approvers status');
   const aid = a.body.data.map((x) => x.id);
   assert(aid.includes(c.mgr) && aid.includes(c.owner), 'manager and owner with PIN listed');
-  for (const id of [c.mgrNoPin, c.mgrFar, c.counter].filter(Boolean)) assert(!aid.includes(id), 'should not list approver ' + id);
+  for (const id of [c.mgrNoPin, c.mgrNoCode, c.mgrFar, c.counter].filter(Boolean)) assert(!aid.includes(id), 'should not list approver ' + id);
   for (const x of a.body.data) eq(Object.keys(x).sort().join(','), 'id,name,role', 'approver fields');
   eq((await api('GET', '/staff-money/people', c.counter)).status, 400, 'people without a shop');
 });
@@ -484,6 +486,28 @@ check('B2: people puts the most recently given first', async () => {
   eq(unranked.recent_rank, null, 'never given: no rank');
 });
 
+check('B2: people ranks shopping hand-outs and advances by real time, not by text', async () => {
+  const c = await getCast();
+  const db = await getDb();
+  // A hand-out one minute after r2's latest advance expense puts the florist first;
+  // a hand-out 40 days ago puts the no-PIN manager below everyone given money since.
+  const a = await db.prepare(`INSERT INTO staff_money_out (location_id, user_id, amount, status, created_at)
+    SELECT ?, ?, 50, 'open', MAX(created_at) + interval '1 minute' FROM expenses WHERE employee_id = ? RETURNING id`).get(TEST_LOCATION_ID, c.florist, c.r2);
+  createdMoneyOutIds.push(a.id);
+  const b = await db.prepare(`INSERT INTO staff_money_out (location_id, user_id, amount, status, created_at)
+    VALUES (?, ?, 50, 'open', CURRENT_TIMESTAMP - interval '40 days') RETURNING id`).get(TEST_LOCATION_ID, c.mgrNoPin);
+  createdMoneyOutIds.push(b.id);
+  const p = await api('GET', `/staff-money/people?location_id=${TEST_LOCATION_ID}`, c.counter);
+  eq(p.status, 200, 'status');
+  const rank = (id) => (p.body.data.find((x) => x.id === id) || {}).recent_rank;
+  eq(rank(c.florist), 1, 'latest hand-out ranks first');
+  assert(rank(c.florist) < rank(c.r2), 'hand-out a minute later beats a same-day advance');
+  for (const id of [c.r1, c.r2, c.r4, c.mgr]) assert(rank(c.mgrNoPin) > rank(id), `old hand-out below advance-only person ${id}`);
+  if (rank(c.r3)) assert(rank(c.mgrNoPin) > rank(c.r3), 'old hand-out below this month advance');
+  const ranks = p.body.data.map((x) => x.recent_rank).filter((r) => r !== null);
+  assert(ranks.every((r, i) => r === i + 1), 'ranked rows come first, in order: ' + JSON.stringify(ranks));
+});
+
 async function cleanup() {
   const db = await getDb();
   const del = async (label, sql, ...p) => { try { await db.prepare(sql).run(...p); } catch (e) { console.error(`cleanup ${label}: ${e.message}`); } };
@@ -491,6 +515,7 @@ async function cleanup() {
     await del('advance notes', "DELETE FROM notifications WHERE type = 'staff_money_advance' AND (data::jsonb->>'advanceId')::int = ?", id);
     await del('advance audits', "DELETE FROM audit_logs WHERE entity_type = 'salary_advance' AND entity_id = ?", id);
   }
+  for (const id of createdMoneyOutIds) await del('money out ' + id, 'DELETE FROM staff_money_out WHERE id = ?', id);
   try { await closeOwnRegister(); } catch (e) { console.error('cleanup close: ' + e.message); }
   for (const id of createdUserIds) {
     await del('advances', 'DELETE FROM salary_advances WHERE user_id = ?', id);
