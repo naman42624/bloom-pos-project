@@ -50,10 +50,10 @@ export function useUsualNow({ locationId, enabled = true, onChanged, onOpenRegis
 
   const fetchRows = useCallback(() => {
     const id = ++reqId.current;
-    if (!enabled || !locationId) { setItems([]); return; }
+    if (!enabled || !locationId) { setItems([]); dispatch({ type: 'rows_loaded' }); return; }
     api.getExpenseSuggestions({ location_id: locationId })
-      .then((res) => { if (id === reqId.current) setItems(usualNowRows(res)); })
-      .catch(() => { if (id === reqId.current) setItems([]); });
+      .then((res) => { if (id === reqId.current) { setItems(usualNowRows(res)); dispatch({ type: 'rows_loaded' }); } })
+      .catch(() => { if (id === reqId.current) { setItems([]); dispatch({ type: 'rows_loaded' }); } });
   }, [enabled, locationId]);
 
   // While the bar shows for this shop, the rows stay as they are; the
@@ -146,7 +146,7 @@ export function useUsualNow({ locationId, enabled = true, onChanged, onOpenRegis
   });
 
   // Rows are locked as added only for the shop the bar's add was for.
-  const lineState = state.bar && barShop.current !== locationId ? { ...state, added: [] } : state;
+  const lineState = (state.added || []).length && barShop.current !== locationId ? { ...state, added: [] } : state;
   return { items, state, lineState, add, undo, reload, afterSheetSave };
 }
 

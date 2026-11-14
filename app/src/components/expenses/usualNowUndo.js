@@ -11,7 +11,8 @@ const rupees = (n) => `₹${Number(n || 0).toLocaleString('en-IN', { maximumFrac
 // state.bar: the Undo bar, null | { expense, text, expiresAt, undoing }.
 // state.message: a server refusal of Undo still to be shown.
 // state.added: item ids shown as a disabled "Added ✓" in place while the
-//   bar shows, so a quick second tap lands on the same, disabled button.
+//   bar shows and until the reload after it closes has answered, so a quick
+//   second tap lands on the same, disabled button.
 // state.reloadDue: the line is reloaded only once the bar has closed, so no
 //   row moves under the finger meanwhile (see needsReload).
 export const initialUndoState = { saving: false, bar: null, message: null, added: [], reloadDue: false };
@@ -21,8 +22,9 @@ const withAdded = (s, itemId) => {
   if (itemId == null || list.includes(Number(itemId))) return list;
   return list.concat(Number(itemId));
 };
-// The bar closes: every row goes back to normal and the line reloads.
-const closed = (s, extra) => ({ ...s, ...extra, bar: null, added: [], reloadDue: true });
+// The bar closes: the line reloads. Rows stay "Added" until that reload's
+// answer arrives (rows_loaded), so a tap in between cannot save a duplicate.
+const closed = (s, extra) => ({ ...s, ...extra, bar: null, reloadDue: true });
 
 export function undoReducer(state, action) {
   const s = state || initialUndoState;
@@ -43,6 +45,11 @@ export function undoReducer(state, action) {
       // locked as added too, until the bar closes.
       if (!s.bar) return s;
       return { ...s, added: withAdded(s, action.itemId), reloadDue: true };
+    case 'rows_loaded':
+      // The reload answered (or failed): rows go back to normal. A newer
+      // bar's rows stay locked.
+      if (s.bar || !(s.added || []).length) return s;
+      return { ...s, added: [] };
     case 'reload_later':
       return s.reloadDue ? s : { ...s, reloadDue: true };
     case 'reload_taken':
@@ -82,7 +89,7 @@ export function needsReload(state) {
 // What a row's button shows: 'added' (disabled "Added ✓"), 'saving'
 // (an add is on its way, every button waits) or 'ready' ("+ Add").
 export function rowState(state, itemId) {
-  if (state && state.bar && (state.added || []).includes(Number(itemId))) return 'added';
+  if (state && (state.added || []).includes(Number(itemId))) return 'added';
   if (state && state.saving) return 'saving';
   return 'ready';
 }

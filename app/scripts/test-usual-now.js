@@ -208,8 +208,8 @@ test('rows: the added row stays in place as "Added ✓" while the bar shows; no 
   assert.strictEqual(u.rowState(u.undoReducer(s, { type: 'expire', now: 15999 }), 1), 'added', 'still locked just before 15 s');
   const gone = u.undoReducer(later, { type: 'expire', now: 16000 });
   assert.strictEqual(gone.bar, null);
-  assert.deepStrictEqual(gone.added, []);
-  assert.strictEqual(u.rowState(gone, 1), 'ready');
+  assert.deepStrictEqual(gone.added, [1], 'kept until the reload answers');
+  assert.strictEqual(u.rowState(gone, 1), 'added');
   assert.strictEqual(u.needsReload(gone), true, 'reload once the bar closes');
   const taken = u.undoReducer(gone, { type: 'reload_taken' });
   assert.strictEqual(u.needsReload(taken), false, 'reload runs once');
@@ -220,10 +220,12 @@ test('rows: Undo brings back + Add and reloads; a refused Undo reloads too', () 
   const undoing = u.undoReducer(s, { type: 'undo_start' });
   assert.strictEqual(u.rowState(undoing, 1), 'added', 'locked while the undo is on its way');
   const done = u.undoReducer(undoing, { type: 'undo_done' });
-  assert.strictEqual(u.rowState(done, 1), 'ready');
+  assert.strictEqual(u.rowState(done, 1), 'added', 'still locked until the reload answers');
+  assert.strictEqual(u.rowState(u.undoReducer(done, { type: 'rows_loaded' }), 1), 'ready');
   assert.strictEqual(u.needsReload(done), true);
   const refused = u.undoReducer(undoing, { type: 'undo_failed', message: 'x' });
-  assert.strictEqual(u.rowState(refused, 1), 'ready');
+  assert.strictEqual(u.rowState(refused, 1), 'added');
+  assert.strictEqual(u.rowState(u.undoReducer(refused, { type: 'rows_loaded' }), 1), 'ready');
   assert.strictEqual(u.needsReload(refused), true);
 });
 test('rows: a second add keeps both rows locked; a sheet save locks its item only while a bar shows', () => {
@@ -236,6 +238,23 @@ test('rows: a second add keeps both rows locked; a sheet save locks its item onl
   s = u.undoReducer(s, { type: 'mark_added', itemId: 3 });
   assert.strictEqual(u.rowState(s, 3), 'added');
   assert.strictEqual(u.undoReducer(u.initialUndoState, { type: 'mark_added', itemId: 3 }), u.initialUndoState, 'no bar: nothing locked');
+});
+test('rows: after the bar closes the row stays Added until rows_loaded (success or failed reload)', () => {
+  const s = u.undoReducer(u.undoReducer(u.initialUndoState, { type: 'add_start' }),
+    { type: 'add_done', itemId: 1, expense: teaExpense, text: 'x', now: 1000 });
+  for (const close of [{ type: 'expire', now: 16000 }, { type: 'dismiss' },
+    { type: 'undo_done' }, { type: 'undo_failed', message: 'm' }]) {
+    const base = close.type.startsWith('undo') ? u.undoReducer(s, { type: 'undo_start' }) : s;
+    const closedState = u.undoReducer(base, close);
+    assert.strictEqual(closedState.bar, null);
+    assert.strictEqual(u.rowState(closedState, 1), 'added', close.type + ': locked after close');
+    const loaded = u.undoReducer(closedState, { type: 'rows_loaded' });
+    assert.strictEqual(u.rowState(loaded, 1), 'ready', close.type + ': cleared by rows_loaded');
+    assert.deepStrictEqual(loaded.added, []);
+  }
+  // A failed reload dispatches the same action, so rows never stay locked.
+  // A reload answering while a bar shows does not unlock that bar's rows.
+  assert.strictEqual(u.rowState(u.undoReducer(s, { type: 'rows_loaded' }), 1), 'added');
 });
 test('undoBarText: "Added Tea ₹50 · Cash"', () => {
   assert.strictEqual(u.undoBarText('Tea', 50, 'cash'), 'Added Tea ₹50 · Cash');
