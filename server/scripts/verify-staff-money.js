@@ -2,6 +2,7 @@
 /**
  * Verification of staff money (PR B). B1: schema, settings, helper module.
  * B2: salary advance at the counter (live API on API_BASE_URL).
+ * B3: shopping money, settle, remove, write-off and the register lines.
  * Test rows are named VerifySM. Cleans up only rows this run created.
  * Usage: source test-env.sh; node server/scripts/verify-staff-money.js
  */
@@ -508,6 +509,412 @@ check('B2: people ranks shopping hand-outs and advances by real time, not by tex
   assert(ranks.every((r, i) => r === i + 1), 'ranked rows come first, in order: ' + JSON.stringify(ranks));
 });
 
+// ══ B3: shopping money, settle and the drawer lines (spec 4.4, 4.6, 4.7, 5.4, 5.9, 5.10) ══
+const createdItemIds = new Set();
+const ALREADY_DONE = 'Already done — refresh.';
+const firstName = (n) => String(n).trim().split(/\s+/)[0];
+async function hand(giver, body) {
+  const r = await api('POST', '/staff-money/shopping', giver, { location_id: TEST_LOCATION_ID, payment_method: 'cash', ...body });
+  if (r.status === 201 && r.body && r.body.data) createdMoneyOutIds.push(r.body.data.id);
+  return r;
+}
+async function settle(user, id, body) {
+  const r = await api('POST', `/staff-money/${id}/settle`, user, { bills: [], change_back: 0, change_method: 'cash', final: false, ...body });
+  return r;
+}
+const moRow = async (id) => (await getDb()).prepare('SELECT * FROM staff_money_out WHERE id = ?').get(id);
+async function billsOf(id) {
+  const rows = await (await getDb()).prepare('SELECT * FROM expenses WHERE money_out_id = ? ORDER BY id').all(id);
+  for (const r of rows) if (r.item_id) createdItemIds.add(Number(r.item_id));
+  return rows;
+}
+async function regStatus(userId) {
+  const c = await getCast();
+  const r = await api('GET', `/sales/register/status?location_id=${TEST_LOCATION_ID}`, userId || c.owner);
+  assert(r.status === 200, 'status ' + r.status);
+  return r.body.data;
+}
+async function auditOf(id, action) {
+  return (await getDb()).prepare("SELECT * FROM audit_logs WHERE entity_type = 'staff_money_out' AND entity_id = ? AND action = ?").get(id, action);
+}
+const bill = (amount, name = 'VerifySM Roses') => ({ item_name: name, category: 'supplies', amount });
+
+check('B3: helper gets 403 on every new route; florist on every route but My money', async () => {
+  const c = await getCast();
+  const routes = [
+    ['POST', '/staff-money/shopping', { location_id: TEST_LOCATION_ID, user_id: c.r1, amount: 10, payment_method: 'upi' }],
+    ['POST', '/staff-money/1/settle', { bills: [], change_back: 1, change_method: 'upi', final: true }],
+    ['DELETE', '/staff-money/1'],
+    ['POST', '/staff-money/1/write-off', { reason: 'x' }],
+    ['GET', `/staff-money/open?location_id=${TEST_LOCATION_ID}`],
+    ['GET', `/staff-money/history?location_id=${TEST_LOCATION_ID}`],
+  ];
+  for (const [m, p, b] of [...routes, ['GET', '/staff-money/mine']]) eq((await api(m, p, c.helper, b)).status, 403, `helper ${m} ${p}`);
+  for (const [m, p, b] of routes) eq((await api(m, p, c.florist, b)).status, 403, `florist ${m} ${p}`);
+});
+
+check('B3: cash shopping money with the register closed is refused in plain words', async () => {
+  const c = await getCast();
+  if (await testLocRegister()) throw skip('Test Loc has an open register; skipped.');
+  const r = await hand(c.counter, { user_id: c.r1, amount: 50 });
+  eq(r.status, 400, 'status');
+  eq(r.body.message, CLOSED_COPY, 'copy');
+});
+
+let flow = null; // the 500 hand-out walked through hand-out, part settle, Done
+check('B3: hand-out 500 cash: drawer -500, no expense, locked count follows, audited', async () => {
+  const c = await getCast();
+  const reg = await openOwnRegister();
+  const db = await getDb();
+  await db.prepare('UPDATE cash_registers SET close_count_locked = 1000 WHERE id = ?').run(reg);
+  const before = await drawer(reg);
+  const r = await hand(c.counter, { user_id: c.r1, amount: 500, note: 'flowers' });
+  eq(r.status, 201, 'status ' + JSON.stringify(r.body));
+  const id = r.body.data.id;
+  const row = await moRow(id);
+  eq(row.status, 'open', 'status');
+  eq(Number(row.amount), 500, 'amount');
+  eq(row.register_id, reg, 'register');
+  eq(row.given_by, c.counter, 'given_by');
+  eq(row.approved_by, c.counter, 'approved_by');
+  eq(row.payment_method, 'cash', 'method');
+  eq(await drawer(reg), before - 500, 'drawer');
+  eq(Number((await db.prepare('SELECT close_count_locked FROM cash_registers WHERE id = ?').get(reg)).close_count_locked), 500, 'locked count follows');
+  await db.prepare('UPDATE cash_registers SET close_count_locked = NULL WHERE id = ?').run(reg);
+  eq((await billsOf(id)).length, 0, 'no expense');
+  assert(await auditOf(id, 'shopping_money_given'), 'no audit');
+  const st = await regStatus();
+  eq(st.shopping_out, 500, 'status shopping_out');
+  eq(st.expected_cash, st.running_expected_cash, 'status expected = running');
+  flow = { id, reg, start: before };
+});
+
+check('B3: part settle 300: remaining 200; bills are shopping_money expenses for the holder; drawer unchanged', async () => {
+  const c = await getCast();
+  if (!flow) throw new Error('needs the hand-out check');
+  const before = await drawer(flow.reg);
+  const st0 = await regStatus();
+  const r = await settle(c.counter, flow.id, { bills: [bill(200), bill(100, 'VerifySM Ribbon')] });
+  eq(r.status, 200, 'status ' + JSON.stringify(r.body));
+  eq(r.body.data.remaining, 200, 'remaining');
+  eq(r.body.data.status, 'open', 'still open');
+  const bills = await billsOf(flow.id);
+  eq(bills.length, 2, 'two bills');
+  for (const b of bills) {
+    eq(b.payment_method, 'shopping_money', 'method');
+    eq(b.given_to_user_id, c.r1, 'given to holder');
+    eq(b.register_id, null, 'no register');
+    eq(b.created_by, c.counter, 'created_by');
+    eq(b.location_id, TEST_LOCATION_ID, 'location');
+  }
+  eq(await drawer(flow.reg), before, 'drawer unchanged');
+  const st = await regStatus();
+  eq(st.expected_cash, st0.expected_cash, 'status expected unchanged by bills');
+  assert(await auditOf(flow.id, 'shopping_money_settled'), 'no audit');
+});
+
+check('B3: change back above what is left is refused with the spec copy', async () => {
+  const c = await getCast();
+  const r = await settle(c.counter, flow.id, { change_back: 250, final: true });
+  eq(r.status, 400, 'status');
+  eq(r.body.message, `${firstName('VerifySM Ramesh')} only has ₹200 left — check the change amount.`, 'copy');
+});
+
+check('B3: Done with 200 cash change: drawer +200, settled, net -300', async () => {
+  const c = await getCast();
+  const before = await drawer(flow.reg);
+  const r = await settle(c.counter, flow.id, { change_back: 200, change_method: 'cash', final: true });
+  eq(r.status, 200, 'status ' + JSON.stringify(r.body));
+  eq(r.body.data.remaining, 0, 'remaining');
+  eq(r.body.data.status, 'settled', 'settled');
+  eq(await drawer(flow.reg), before + 200, 'drawer +200');
+  eq(await drawer(flow.reg), flow.start - 300, 'net -300');
+  const s = await (await getDb()).prepare('SELECT * FROM staff_money_settles WHERE money_out_id = ? ORDER BY id').all(flow.id);
+  eq(s.length, 2, 'two settle rows');
+  eq(s[1].register_id, flow.reg, 'change row register');
+  eq(Number(s[1].returned_amount), 200, 'change amount');
+  const st = await regStatus();
+  eq(st.shopping_in, 200, 'status shopping_in');
+  eq(st.expected_cash, st.running_expected_cash, 'status = running');
+  const again = await settle(c.counter, flow.id, { change_back: 1, final: true });
+  eq(again.status, 409, 'settled line answers 409');
+  eq(again.body.message, ALREADY_DONE, 'copy');
+});
+
+check('B3: deleting a settle bill puts its amount back as still held; no drawer move', async () => {
+  const c = await getCast();
+  const before = await drawer(flow.reg);
+  const [b1] = await billsOf(flow.id);
+  const d = await api('DELETE', `/expenses/${b1.id}`, c.owner);
+  eq(d.status, 200, 'delete ' + JSON.stringify(d.body));
+  const row = await moRow(flow.id);
+  eq(Number(row.settled_amount), 100, 'settled_amount down');
+  eq(row.status, 'open', 'reopened');
+  eq((await api('GET', `/staff-money/open?location_id=${TEST_LOCATION_ID}`, c.counter)).body.data.shopping.find((x) => x.id === flow.id).remaining, 200, 'remaining back');
+  eq(await drawer(flow.reg), before, 'drawer unchanged');
+  const up = await api('PUT', `/expenses/${(await billsOf(flow.id))[0].id}`, c.owner, { amount: 150 });
+  eq(up.status, 400, 'changing a settle bill amount is refused');
+});
+
+check('B3: overspend 620 on 500 makes a Shop owes row for 120; removing a bill shrinks it', async () => {
+  const c = await getCast();
+  const reg = await openOwnRegister();
+  const g = await hand(c.owner, { user_id: c.r2, amount: 500 });
+  eq(g.status, 201, 'hand ' + JSON.stringify(g.body));
+  const before = await drawer(reg);
+  const r = await settle(c.counter, g.body.data.id, { bills: [bill(400), bill(220, 'VerifySM Foam')], final: true });
+  eq(r.status, 200, 'settle ' + JSON.stringify(r.body));
+  eq(r.body.data.status, 'settled', 'settled');
+  eq(r.body.data.remaining, 0, 'remaining');
+  assert(r.body.data.owes_id, 'owes_id');
+  const db = await getDb();
+  const o = await db.prepare('SELECT * FROM shop_owes WHERE id = ?').get(r.body.data.owes_id);
+  eq(Number(o.amount), 120, 'owes amount');
+  eq(o.source, 'overspend', 'source');
+  eq(o.money_out_id, g.body.data.id, 'money_out link');
+  eq(o.user_id, c.r2, 'owed to holder');
+  eq(o.status, 'open', 'open');
+  eq(await drawer(reg), before, 'drawer unchanged');
+  const open = await api('GET', `/staff-money/open?location_id=${TEST_LOCATION_ID}`, c.counter);
+  assert(open.body.data.owes.some((x) => x.id === o.id), 'owes listed on the card');
+  const foam = (await billsOf(g.body.data.id)).find((b) => b.description.startsWith('VerifySM Foam'));
+  const d = await api('DELETE', `/expenses/${foam.id}`, c.owner);
+  eq(d.status, 200, 'delete ' + JSON.stringify(d.body));
+  eq(await db.prepare('SELECT id FROM shop_owes WHERE id = ?').get(o.id), undefined, 'owes gone when no excess is left');
+  const row = await moRow(g.body.data.id);
+  eq(row.status, 'open', 'reopened');
+  eq(sm.remaining(row), 100, '100 still held');
+});
+
+check('B3: no bills, change only (UPI hand-out back in cash) is fine', async () => {
+  const c = await getCast();
+  const reg = await openOwnRegister();
+  const g = await hand(c.counter, { user_id: c.r3, amount: 100, payment_method: 'upi' });
+  eq(g.status, 201, 'hand');
+  eq((await moRow(g.body.data.id)).register_id, null, 'UPI hand-out has no register');
+  const before = await drawer(reg);
+  const r = await settle(c.counter, g.body.data.id, { change_back: 100, change_method: 'cash', final: true });
+  eq(r.status, 200, 'settle ' + JSON.stringify(r.body));
+  eq(r.body.data.status, 'settled', 'settled');
+  eq(await drawer(reg), before + 100, 'drawer +100');
+});
+
+check('B3: Done with money still unaccounted is refused', async () => {
+  const c = await getCast();
+  await openOwnRegister();
+  const g = await hand(c.counter, { user_id: c.r3, amount: 80, payment_method: 'upi' });
+  const r = await settle(c.counter, g.body.data.id, { bills: [bill(30)], final: true });
+  eq(r.status, 400, 'status ' + JSON.stringify(r.body));
+  eq((await moRow(g.body.data.id)).status, 'open', 'still open');
+  const empty = await settle(c.counter, g.body.data.id, {});
+  eq(empty.status, 400, 'nothing to save');
+});
+
+check('B3 RF1: two settles at once: only one Done lands; the drawer moves once', async () => {
+  const c = await getCast();
+  const reg = await openOwnRegister();
+  const g = await hand(c.counter, { user_id: c.r1, amount: 300 });
+  eq(g.status, 201, 'hand');
+  const before = await drawer(reg);
+  const body = { change_back: 300, change_method: 'cash', final: true };
+  const both = await Promise.all([settle(c.counter, g.body.data.id, body), settle(c.mgr, g.body.data.id, body)]);
+  const codes = both.map((x) => x.status).sort();
+  eq(codes.join(','), '200,409', 'one lands, one 409');
+  eq(both.find((x) => x.status === 409).body.message, ALREADY_DONE, 'copy');
+  eq(await drawer(reg), before + 300, 'drawer once');
+  const n = await (await getDb()).prepare('SELECT COUNT(*)::int AS n FROM staff_money_settles WHERE money_out_id = ?').get(g.body.data.id);
+  eq(n.n, 1, 'one settle row');
+});
+
+check('B3: a shopping_money bill with no register inside the session leaves expected cash alone', async () => {
+  const c = await getCast();
+  const reg = await openOwnRegister();
+  const db = await getDb();
+  const st0 = await regStatus();
+  const e = await db.prepare(`INSERT INTO expenses (location_id, category, amount, description, payment_method, expense_date, created_by, register_id)
+    VALUES (?, 'supplies', 777, 'VerifySM raw bill', 'shopping_money', CAST(? AS date), ?, NULL) RETURNING id`).get(TEST_LOCATION_ID, todayStr(), c.counter);
+  const st = await regStatus();
+  eq(st.expected_cash, st0.expected_cash, 'status expected unchanged');
+  eq(st.total_expenses_cash, st0.total_expenses_cash, 'cash expenses unchanged');
+  const pv = await api('PUT', '/sales/register/close', c.owner, { location_id: TEST_LOCATION_ID, actual_cash: st.expected_cash, preview: true });
+  eq(pv.status, 200, 'preview');
+  eq(pv.body.data.expected_cash, st0.expected_cash, 'preview unchanged');
+  await db.prepare('DELETE FROM expenses WHERE id = ?').run(e.id);
+  eq(await drawer(reg), st0.running_expected_cash, 'running unchanged');
+});
+
+check('B3: close preview = register status figure; preview lists shopping still out', async () => {
+  const c = await getCast();
+  await openOwnRegister();
+  const g = await hand(c.counter, { user_id: c.r3, amount: 60 });
+  eq(g.status, 201, 'hand');
+  const st = await regStatus();
+  eq(st.expected_cash, st.running_expected_cash, 'status = running');
+  const pv = await api('PUT', '/sales/register/close', c.owner, { location_id: TEST_LOCATION_ID, actual_cash: st.expected_cash, preview: true });
+  eq(pv.status, 200, 'preview');
+  eq(pv.body.data.expected_cash, st.expected_cash, 'preview = status');
+  const line = (pv.body.data.shopping_still_out || []).find((x) => x.user_name === 'VerifySM Meena');
+  assert(line && line.remaining >= 60, 'still out line: ' + JSON.stringify(pv.body.data.shopping_still_out));
+  eq(Object.keys(line).sort().join(','), 'remaining,user_name', 'still-out fields');
+});
+
+check('B3: owes paid back from this session come off expected cash', async () => {
+  const c = await getCast();
+  const reg = await openOwnRegister();
+  const db = await getDb();
+  const st0 = await regStatus();
+  const o = await db.prepare("INSERT INTO shop_owes (location_id, user_id, amount, source, status) VALUES (?, ?, 40, 'own_pocket', 'open') RETURNING id").get(TEST_LOCATION_ID, c.r3);
+  await db.prepare("INSERT INTO shop_owes_payments (owes_id, amount, method, register_id, paid_by) VALUES (?, 40, 'cash', ?, ?)").run(o.id, reg, c.owner);
+  await db.prepare("INSERT INTO shop_owes_payments (owes_id, amount, method, register_id, paid_by) VALUES (?, 5, 'upi', NULL, ?)").run(o.id, c.owner);
+  const st = await regStatus();
+  eq(st.owes_paid, 40, 'owes_paid');
+  eq(st.expected_cash, Math.round((st0.expected_cash - 40) * 100) / 100, 'expected down by cash pay-back only');
+  await db.prepare('DELETE FROM shop_owes WHERE id = ?').run(o.id);
+});
+
+check('B3: the giver removes their own typo in the same session; cash back, audited', async () => {
+  const c = await getCast();
+  const reg = await openOwnRegister();
+  const before = await drawer(reg);
+  const g = await hand(c.counter, { user_id: c.r3, amount: 70 });
+  eq(g.status, 201, 'hand');
+  const d = await api('DELETE', `/staff-money/${g.body.data.id}`, c.counter);
+  eq(d.status, 200, 'remove ' + JSON.stringify(d.body));
+  eq((await moRow(g.body.data.id)).status, 'removed', 'removed');
+  eq(await drawer(reg), before, 'cash back');
+  assert(await auditOf(g.body.data.id, 'shopping_money_removed'), 'no audit');
+  const st = await regStatus();
+  eq(st.expected_cash, st.running_expected_cash, 'status = running after remove');
+});
+
+check('B3: other counter staff cannot remove; owner can; after a part settle nobody can', async () => {
+  const c = await getCast();
+  await openOwnRegister();
+  const g = await hand(c.counter, { user_id: c.r3, amount: 40 });
+  eq(g.status, 201, 'hand');
+  eq((await api('DELETE', `/staff-money/${g.body.data.id}`, c.r1)).status, 403, 'other counter staff');
+  eq((await api('DELETE', `/staff-money/${g.body.data.id}`, c.owner)).status, 200, 'owner');
+  const h = await hand(c.counter, { user_id: c.r3, amount: 40 });
+  eq((await settle(c.counter, h.body.data.id, { bills: [bill(10)] })).status, 200, 'part settle');
+  const d = await api('DELETE', `/staff-money/${h.body.data.id}`, c.owner);
+  eq(d.status, 409, 'after a part settle');
+  eq((await moRow(h.body.data.id)).status, 'open', 'still open');
+});
+
+check('B3: owner writes off the rest; it becomes a shopping_money expense; others cannot', async () => {
+  const c = await getCast();
+  const reg = await openOwnRegister();
+  const g = await hand(c.counter, { user_id: c.r2, amount: 150 });
+  await settle(c.counter, g.body.data.id, { bills: [bill(50)] });
+  eq((await api('POST', `/staff-money/${g.body.data.id}/write-off`, c.counter, { reason: 'lost' })).status, 403, 'counter staff');
+  eq((await api('POST', `/staff-money/${g.body.data.id}/write-off`, c.mgr, { reason: 'lost' })).status, 403, 'manager');
+  eq((await api('POST', `/staff-money/${g.body.data.id}/write-off`, c.owner, { reason: ' ' })).status, 400, 'reason needed');
+  const before = await drawer(reg);
+  const w = await api('POST', `/staff-money/${g.body.data.id}/write-off`, c.owner, { reason: 'Lost the change' });
+  eq(w.status, 200, 'write off ' + JSON.stringify(w.body));
+  const row = await moRow(g.body.data.id);
+  eq(row.status, 'written_off', 'status');
+  eq(row.close_reason, 'Lost the change', 'reason');
+  const wo = (await billsOf(g.body.data.id)).find((b) => b.description.startsWith('Shopping money written off'));
+  assert(wo, 'write-off expense');
+  eq(wo.description, 'Shopping money written off — VerifySM Ravi', 'description');
+  eq(Number(wo.amount), 100, 'remainder');
+  eq(wo.payment_method, 'shopping_money', 'method');
+  eq(wo.given_to_user_id, c.r2, 'given to');
+  eq(await drawer(reg), before, 'drawer unchanged');
+  assert(await auditOf(g.body.data.id, 'shopping_money_written_off'), 'audit');
+  eq((await api('POST', `/staff-money/${g.body.data.id}/write-off`, c.owner, { reason: 'again' })).status, 409, 'second write-off');
+});
+
+check('B3: the card marks lines late after the set days; history and My money', async () => {
+  const c = await getCast();
+  const db = await getDb();
+  const old = await db.prepare(`INSERT INTO staff_money_out (location_id, user_id, amount, payment_method, given_by, approved_by, status, created_at)
+    VALUES (?, ?, 90, 'upi', ?, ?, 'open', CURRENT_TIMESTAMP - make_interval(days => ?)) RETURNING id`).get(TEST_LOCATION_ID, c.r4, c.owner, c.owner, c.limits.lateDays + 1);
+  createdMoneyOutIds.push(old.id);
+  const fresh = await hand(c.counter, { user_id: c.r4, amount: 20, payment_method: 'upi' });
+  const open = await api('GET', `/staff-money/open?location_id=${TEST_LOCATION_ID}`, c.counter);
+  eq(open.status, 200, 'open');
+  const o = open.body.data.shopping.find((x) => x.id === old.id);
+  const f = open.body.data.shopping.find((x) => x.id === fresh.body.data.id);
+  eq(o.late, true, 'old line late');
+  eq(f.late, false, 'fresh line not late');
+  eq(o.user_name, 'VerifySM Raju', 'user_name');
+  eq(o.given_by_name, 'VerifySM Owner', 'given_by_name');
+  for (const k of ['id', 'user_id', 'user_name', 'remaining', 'created_at', 'given_by_name', 'late']) assert(k in f, 'missing ' + k);
+  eq((await api('GET', `/staff-money/open`, c.counter)).status, 400, 'open without a shop');
+  const h = await api('GET', `/staff-money/history?location_id=${TEST_LOCATION_ID}&user_id=${c.r1}`, c.mgr);
+  eq(h.status, 200, 'history');
+  assert(h.body.data.length >= 2 && h.body.data.every((x) => x.user_id === c.r1), 'history filtered by person');
+  const withBills = h.body.data.find((x) => x.id === flow.id);
+  assert(withBills && withBills.bills.length >= 1, 'history carries bills');
+  const ho = await api('GET', `/staff-money/history?location_id=${TEST_LOCATION_ID}&status=open`, c.owner);
+  assert(ho.body.data.every((x) => x.status === 'open'), 'status filter');
+  eq((await api('GET', `/staff-money/history?location_id=${TEST_LOCATION_ID}`, c.counter)).status, 403, 'counter staff no history');
+  const mine = await api('GET', '/staff-money/mine', c.r4);
+  eq(mine.status, 200, 'mine ' + JSON.stringify(mine.body));
+  assert(mine.body.data.shopping.some((x) => x.id === old.id), 'mine lists own holding');
+  eq(mine.body.data.shopping_held, 110, 'held total');
+});
+
+check('B3: shopping money follows the limits and PIN rules; owner told of a PIN amount', async () => {
+  const c = await getCast();
+  await openOwnRegister();
+  const over = await hand(c.counter, { user_id: c.r3, amount: c.limits.shoppingDay + 1, payment_method: 'upi' });
+  eq(over.status, 409, 'over day');
+  eq(over.body.needs_pin, 'over_day', 'reason');
+  eq(over.body.message, `That's more than the ₹${c.limits.shoppingDay.toLocaleString('en-IN')} daily shopping money limit. A manager or owner can confirm with their PIN.`, 'copy');
+  const self = await hand(c.counter, { user_id: c.counter, amount: 10, payment_method: 'upi' });
+  eq(self.status, 409, 'self');
+  eq(self.body.message, SELF_COPY, 'self copy');
+  const ok = await hand(c.counter, { user_id: c.r3, amount: c.limits.shoppingDay + 1, payment_method: 'upi', approver_id: c.mgr, approver_pin: '5932' });
+  eq(ok.status, 201, 'with pin ' + JSON.stringify(ok.body));
+  eq((await moRow(ok.body.data.id)).approved_by, c.mgr, 'approved_by');
+  const n = await (await getDb()).prepare("SELECT 1 AS ok FROM notifications WHERE user_id = ? AND type = 'staff_money_shopping' AND (data::jsonb->>'moneyOutId')::int = ?").get(c.owner, ok.body.data.id);
+  assert(n, 'owner told');
+});
+
+check('B3 RF2: change back the next day lands in that day\'s session; the closed session is untouched', async () => {
+  const c = await getCast();
+  await closeOwnRegister(); // a fresh session holds only this hand-out
+  const r1 = await openOwnRegister();
+  const g = await hand(c.counter, { user_id: c.r4, amount: 200 });
+  eq(g.status, 201, 'hand');
+  await closeOwnRegister();
+  const db = await getDb();
+  // Back-date only this run's register and hand-out by one day.
+  await db.prepare(`UPDATE cash_registers SET opened_at = opened_at - interval '1 day', opening_time = opening_time - interval '1 day',
+    closed_at = closed_at - interval '1 day', closing_time = closing_time - interval '1 day', date = date - 1 WHERE id = ?`).run(r1);
+  await db.prepare("UPDATE staff_money_out SET created_at = created_at - interval '1 day' WHERE id = ?").run(g.body.data.id);
+  const closedBefore = await db.prepare('SELECT expected_cash, actual_cash, discrepancy, closed_at FROM cash_registers WHERE id = ?').get(r1);
+  const r2 = await openOwnRegister();
+  assert(r2 !== r1, 'a new session');
+  const before = await drawer(r2);
+  const s = await settle(c.counter, g.body.data.id, { change_back: 200, change_method: 'cash', final: true });
+  eq(s.status, 200, 'settle ' + JSON.stringify(s.body));
+  eq(await drawer(r2), before + 200, 'today\'s session +200');
+  const closedAfter = await db.prepare('SELECT expected_cash, actual_cash, discrepancy, closed_at FROM cash_registers WHERE id = ?').get(r1);
+  eq(JSON.stringify(closedAfter), JSON.stringify(closedBefore), 'closed session untouched');
+  const row = await db.prepare('SELECT register_id FROM staff_money_settles WHERE money_out_id = ?').get(g.body.data.id);
+  eq(row.register_id, r2, 'change row in today\'s session');
+  const st = await regStatus();
+  eq(st.shopping_in, 200, 'status shopping_in');
+  eq(st.shopping_out, 0, 'no hand-out in this session');
+  eq(st.expected_cash, st.running_expected_cash, 'status = running');
+  const hist = await api('GET', `/sales/register/history?location_id=${TEST_LOCATION_ID}&limit=60`, c.owner);
+  const h1 = hist.body.data.find((x) => x.id === r1);
+  assert(h1, 'closed session in history');
+  eq(h1.shopping_out, 200, 'history shopping_out');
+  eq(h1.shopping_in, 0, 'history shopping_in');
+  eq(h1.owes_paid, 0, 'history owes_paid');
+  await closeOwnRegister();
+  const closedStatus = await regStatus();
+  eq(closedStatus.id, r2, 'status shows the session just closed');
+  eq(closedStatus.shopping_in, 200, 'closed status shopping_in');
+  // inferred expenses leave shopping money out
+  eq(closedStatus.total_expenses_cash, 0, 'closed session inferred expenses exclude shopping lines');
+});
+
 async function cleanup() {
   const db = await getDb();
   const del = async (label, sql, ...p) => { try { await db.prepare(sql).run(...p); } catch (e) { console.error(`cleanup ${label}: ${e.message}`); } };
@@ -515,7 +922,14 @@ async function cleanup() {
     await del('advance notes', "DELETE FROM notifications WHERE type = 'staff_money_advance' AND (data::jsonb->>'advanceId')::int = ?", id);
     await del('advance audits', "DELETE FROM audit_logs WHERE entity_type = 'salary_advance' AND entity_id = ?", id);
   }
-  for (const id of createdMoneyOutIds) await del('money out ' + id, 'DELETE FROM staff_money_out WHERE id = ?', id);
+  for (const id of createdMoneyOutIds) {
+    await del('shopping notes', "DELETE FROM notifications WHERE type = 'staff_money_shopping' AND (data::jsonb->>'moneyOutId')::int = ?", id);
+    await del('shopping audits', "DELETE FROM audit_logs WHERE entity_type = 'staff_money_out' AND entity_id = ?", id);
+    await del('shopping bill audits', "DELETE FROM audit_logs WHERE entity_type = 'expense' AND entity_id IN (SELECT id FROM expenses WHERE money_out_id = ?)", id);
+    await del('shopping bills', 'DELETE FROM expenses WHERE money_out_id = ?', id);
+    await del('owes of ' + id, 'DELETE FROM shop_owes WHERE money_out_id = ?', id);
+    await del('money out ' + id, 'DELETE FROM staff_money_out WHERE id = ?', id);
+  }
   try { await closeOwnRegister(); } catch (e) { console.error('cleanup close: ' + e.message); }
   for (const id of createdUserIds) {
     await del('advances', 'DELETE FROM salary_advances WHERE user_id = ?', id);
@@ -526,6 +940,9 @@ async function cleanup() {
   for (const id of createdRegisterIds) {
     await del('register audits', "DELETE FROM audit_logs WHERE entity_type = 'cash_register' AND entity_id = ?", id);
     await del('register ' + id, 'DELETE FROM cash_registers WHERE id = ?', id);
+  }
+  for (const id of createdItemIds) {
+    await del('item ' + id, "DELETE FROM expense_items WHERE id = ? AND name_key LIKE 'verifysm%' AND NOT EXISTS (SELECT 1 FROM expenses WHERE item_id = ?)", id, id);
   }
   for (const id of createdUserIds) {
     await del('owes', 'DELETE FROM shop_owes WHERE user_id = ?', id);

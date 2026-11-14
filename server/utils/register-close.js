@@ -162,10 +162,37 @@ async function computeRegisterClose(db, register, location_id, { until = null } 
   const handoverTotal = Number(helperCash.handovers) || 0;
   const floatTotal = Number(helperCash.floats) || 0;
 
+  // Staff money (spec 4.6, 5.4, 5.5): shopping money handed out of this
+  // session, change brought back into it, and Shop owes paid back from it.
+  const { shoppingOut, shoppingIn, owesPaid } = await staffMoneyDrawerLines(db, register.id);
+
   // Whole paise, so float and handover sums never leave a stray fraction
-  const expectedCash = Math.round((Number(register.opening_balance) + Number(paymentTotals.cash_total) - Number(refundTotal) - Number(expenseTotal) - floatTotal + handoverTotal) * 100) / 100;
-  return { paymentTotals, refundTotal, expenseTotal, floatTotal, handoverTotal, expectedCash };
+  const expectedCash = Math.round((Number(register.opening_balance) + Number(paymentTotals.cash_total) - Number(refundTotal) - Number(expenseTotal) - floatTotal + handoverTotal - shoppingOut + shoppingIn - owesPaid) * 100) / 100;
+  return {
+    paymentTotals, refundTotal, expenseTotal, floatTotal, handoverTotal,
+    shoppingOutTotal: shoppingOut, shoppingInTotal: shoppingIn, owesPaidTotal: owesPaid,
+    expectedCash,
+  };
+}
+
+// Cash that staff money moved in or out of one register session, in rupees
+// (whole paise). Only cash rows tied to the session count: a UPI hand-out,
+// UPI change or UPI pay-back has no drawer effect. Settle bills and
+// write-offs are expenses with payment_method shopping_money and never
+// reach the drawer at all.
+async function staffMoneyDrawerLines(db, registerId) {
+  const row = await db.prepare(`
+    SELECT
+      COALESCE((SELECT SUM(amount) FROM staff_money_out
+                WHERE register_id = ? AND payment_method = 'cash'), 0) AS shopping_out,
+      COALESCE((SELECT SUM(returned_amount) FROM staff_money_settles
+                WHERE register_id = ? AND returned_method = 'cash'), 0) AS shopping_in,
+      COALESCE((SELECT SUM(amount) FROM shop_owes_payments
+                WHERE register_id = ? AND method = 'cash'), 0) AS owes_paid
+  `).get(registerId, registerId, registerId);
+  const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+  return { shoppingOut: r2(row && row.shopping_out), shoppingIn: r2(row && row.shopping_in), owesPaid: r2(row && row.owes_paid) };
 }
 
 
-module.exports = { computeRegisterClose, computeShutTimePayments };
+module.exports = { computeRegisterClose, computeShutTimePayments, staffMoneyDrawerLines };

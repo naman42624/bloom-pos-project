@@ -1110,6 +1110,64 @@ const pickAdvance = (a) => ({
   date: a.date ? String(a.date).slice(0, 10) : null, expense_id: a.expense_id || null, source: a.source || null,
 });
 
+// A bill (or write-off) paid with shopping money is linked to its hand-out
+// (expenses.money_out_id). Spec 5.4: removing it puts its amount back as
+// still with that person, with no drawer move. Its amount, how it was paid,
+// return and who got it can't be changed here (that would break the link).
+const MONEY_OUT_LINK_MESSAGE = 'This was bought with shopping money. Remove it and add it again on the shopping money line.';
+const MONEY_OUT_CLOSED_MESSAGE = "This shopping money was already closed, so this can't be removed.";
+const MONEY_OUT_OWES_PAID_MESSAGE = "The shop already paid back part of what was overspent, so this can't be removed.";
+// Locked before the expense and the register (money row first).
+async function lockLinkedMoneyOut(tx, expenseId) {
+  return (await tx.prepare(`
+    SELECT mo.* FROM staff_money_out mo
+    WHERE mo.id = (SELECT e.money_out_id FROM expenses e WHERE e.id = ?)
+    FOR UPDATE
+  `).get(expenseId)) || null;
+}
+// Takes one removed bill off its hand-out: settled_amount down, an overspend
+// Shop owes shrinks first, and the line opens again if money is left.
+async function unsettleBill(tx, mo, expense, userId) {
+  if (!['open', 'settled', 'written_off'].includes(mo.status)) throw httpError(400, MONEY_OUT_CLOSED_MESSAGE);
+  const amtP = centsOf(expense.amount);
+  const totalP = centsOf(mo.amount);
+  const settledP = centsOf(mo.settled_amount);
+  const returnedP = centsOf(mo.returned_amount);
+  const newSettledP = Math.max(0, settledP - amtP);
+  const excessBefore = Math.max(0, settledP + returnedP - totalP);
+  const excessAfter = Math.max(0, newSettledP + returnedP - totalP);
+  const shrinkP = excessBefore - excessAfter;
+  let owesChange = null;
+  if (shrinkP > 0) {
+    const owes = await tx.prepare("SELECT * FROM shop_owes WHERE money_out_id = ? AND source = 'overspend' ORDER BY id DESC LIMIT 1 FOR UPDATE").get(mo.id);
+    if (owes) {
+      if (owes.status !== 'open') throw httpError(400, MONEY_OUT_OWES_PAID_MESSAGE);
+      const newOwesP = centsOf(owes.amount) - shrinkP;
+      if (centsOf(owes.paid_amount) > Math.max(0, newOwesP)) throw httpError(400, MONEY_OUT_OWES_PAID_MESSAGE);
+      if (newOwesP <= 0) {
+        await tx.prepare('DELETE FROM shop_owes WHERE id = ?').run(owes.id);
+      } else {
+        await tx.prepare('UPDATE shop_owes SET amount = ? WHERE id = ?').run(newOwesP / 100, owes.id);
+      }
+      owesChange = { owes_id: Number(owes.id), amount_before: Number(owes.amount), amount_after: Math.max(0, newOwesP) / 100 };
+    }
+  }
+  const remainingP = Math.max(0, totalP - newSettledP - returnedP);
+  const status = remainingP > 0 ? 'open' : mo.status;
+  await tx.prepare(`
+    UPDATE staff_money_out SET settled_amount = ?, status = ?,
+      closed_at = CASE WHEN ? = 'open' THEN NULL ELSE closed_at END,
+      close_reason = CASE WHEN ? = 'open' THEN NULL ELSE close_reason END
+    WHERE id = ?
+  `).run(newSettledP / 100, status, status, status, mo.id);
+  await tx.prepare(`
+    INSERT INTO audit_logs (entity_type, entity_id, user_id, action, previous_state, new_state, created_at)
+    VALUES ('staff_money_out', ?, ?, 'shopping_money_bill_removed', ?, ?, CURRENT_TIMESTAMP)
+  `).run(mo.id, userId,
+    JSON.stringify({ status: mo.status, settled_amount: settledP / 100 }),
+    JSON.stringify({ status, settled_amount: newSettledP / 100, expense_id: Number(expense.id), amount: amtP / 100, owes: owesChange }));
+}
+
 // ─── PUT /api/expenses/:id ───────────────────────────────────
 router.put(
   '/:id',
@@ -1185,6 +1243,7 @@ router.put(
 
       const updated = await withMoneyTx(async (tx) => {
         const advance = await lockLinkedAdvance(tx, expenseId);
+        const moneyOut = await lockLinkedMoneyOut(tx, expenseId);
         const { expense, openRegister, oldRegisterId } = await loadForChange(tx, expenseId, req.user);
         const nv = {
           category: has('category') ? req.body.category : (wantsItem ? item.category : expense.category),
@@ -1224,6 +1283,13 @@ router.put(
           if (breaksLink) throw httpError(400, ADVANCE_LINK_MESSAGE);
           const moneyMoved = centsOf(nv.amount) !== centsOf(expense.amount) || nv.payment_method !== expense.payment_method;
           if (moneyMoved && advanceTaken(advance)) throw httpError(400, ADVANCE_TAKEN_MESSAGE);
+        }
+        if (moneyOut) {
+          const breaksLink = centsOf(nv.amount) !== centsOf(expense.amount)
+            || nv.payment_method !== expense.payment_method
+            || nv.is_return !== (expense.is_return ? 1 : 0)
+            || Number(nv.given_to_user_id || 0) !== Number(expense.given_to_user_id || 0);
+          if (breaksLink) throw httpError(400, MONEY_OUT_LINK_MESSAGE);
         }
         // The payroll overlap check runs only when the date or the employee
         // changes; otherwise it would find the row's own payment.
@@ -1317,8 +1383,11 @@ router.delete('/:id', authenticate, authorize('owner', 'manager', 'employee', 'c
     const expenseId = Number(req.params.id);
     await withMoneyTx(async (tx) => {
       const advance = await lockLinkedAdvance(tx, expenseId);
+      const moneyOut = await lockLinkedMoneyOut(tx, expenseId);
       const { expense, oldRegisterId } = await loadForChange(tx, expenseId, req.user);
       if (advance && advanceTaken(advance)) throw httpError(400, ADVANCE_TAKEN_MESSAGE);
+      // A shopping money bill: its amount is still with that person again.
+      if (moneyOut) await unsettleBill(tx, moneyOut, expense, req.user.id);
       // Put the cash back on the session it came out of.
       await moveDrawer(tx, oldRegisterId, -drawerEffect(expense));
       if (advance && advance.status === 'approved') {
