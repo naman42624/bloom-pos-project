@@ -11,6 +11,7 @@ import useRegisterStatus from '../hooks/useRegisterStatus';
 import RegisterStatusBanner from '../components/RegisterStatusBanner';
 import AddExpenseSheet, { rupees } from '../components/expenses/AddExpenseSheet';
 import ExpenseRow from '../components/expenses/ExpenseRow';
+import ShoppingMoneyCard from '../components/expenses/ShoppingMoneyCard';
 import ExpenseSummaryView from '../components/expenses/ExpenseSummaryView';
 import UsualNowLine, { useUsualNow, UndoBar, UNDO_BAR_SPACE } from '../components/expenses/UsualNowLine';
 
@@ -55,6 +56,9 @@ export default function ExpensesScreen() {
 
   // Owner/manager view refreshes when this changes (after a save).
   const [refreshKey, setRefreshKey] = useState(0);
+  // The Shopping money out card reloads when this changes (after a save:
+  // shopping money given or a bill added from the sheet).
+  const [cardKey, setCardKey] = useState(0);
 
   // The Add / Change expense sheet (components/expenses/AddExpenseSheet.js).
   // sheet = null (closed) | { expense } (change) | { initial } (add, maybe pre-filled)
@@ -183,6 +187,21 @@ export default function ExpensesScreen() {
     />
   ) : null;
 
+  // "Shopping money out" (spec 4.4): at the top, only while someone holds
+  // shopping money or the shop owes someone (the card renders nothing else).
+  const moneyCard = canUsualNow ? (
+    <ShoppingMoneyCard
+      locationId={selectedLocation}
+      refreshKey={cardKey}
+      onChanged={() => {
+        if (summaryOn) setRefreshKey((k) => k + 1);
+        else fetchExpenses();
+        registerStatus.refetch();
+      }}
+    />
+  ) : null;
+  const topOfToday = canUsualNow ? <>{moneyCard}{usualNowLine}</> : null;
+
   const handleInitiateReturn = (expense) => setSheet({
     initial: {
       is_return: true,
@@ -197,6 +216,7 @@ export default function ExpensesScreen() {
 
   const handleSaved = (result) => {
     setSheet(null);
+    setCardKey((k) => k + 1);
     if (summaryOn) setRefreshKey((k) => k + 1);
     else fetchExpenses();
     registerStatus.refetch();
@@ -287,7 +307,7 @@ export default function ExpensesScreen() {
           onChangeExpense={openChange}
           onReturn={handleInitiateReturn}
           onShopPicked={setSelectedLocation}
-          todayTop={usualNowLine}
+          todayTop={topOfToday}
         />
       ) : (
         <>
@@ -319,6 +339,7 @@ export default function ExpensesScreen() {
             contentContainerStyle={[styles.list, usualNow.state.bar && { paddingBottom: UNDO_BAR_SPACE }]}
             ListHeaderComponent={
               <>
+                {moneyCard}
                 {day === today && usualNowLine}
                 <View style={styles.summaryCard}>
                   <Text style={styles.summaryLabel}>{dayTitle}</Text>

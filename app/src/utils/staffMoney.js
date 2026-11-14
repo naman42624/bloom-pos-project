@@ -163,3 +163,139 @@ export function parseGiveAmount(text) {
   const p = toPaise(t);
   return p > 0 ? fromPaise(p) : null;
 }
+
+// ── "Ramesh is back", Shop owes, history (B8, spec 3, 4.4, 4.7, 5.10) ──
+
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+// "12 Nov" in the device's local day (the shop's counter device).
+export function shortDate(value) {
+  if (value == null || value === '') return '';
+  const d = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(d.getTime())) return '';
+  return `${d.getDate()} ${MONTHS[d.getMonth()]}`;
+}
+
+// The card's age label from the server's whole-day count.
+export function daysText(days) {
+  const n = Math.max(0, Math.round(Number(days) || 0));
+  return n === 0 ? 'Today' : n === 1 ? '1 day' : `${n} days`;
+}
+
+// "Ramesh is back — what did he buy?" (spec 3, verbatim).
+export function isBackTitle(name) {
+  return `${firstName(name)} is back — what did he buy?`;
+}
+
+// "Had ₹500 · given 12 Nov by Priya"
+export function hadLine(remaining, createdAt, givenByName) {
+  const when = shortDate(createdAt);
+  const by = givenByName ? ` by ${firstName(givenByName)}` : '';
+  return `Had ${inr(remaining)}${when ? ` · given ${when}${by}` : by ? ` · given${by}` : ''}`;
+}
+
+// The change box: empty means 0; else rupees with at most 2 decimals; null
+// when it is not a number.
+export function parseChangeText(text) {
+  const t = String(text == null ? '' : text).trim();
+  if (t === '') return 0;
+  if (!/^\d{1,8}(\.\d{1,2})?$/.test(t)) return null;
+  return fromPaise(toPaise(t));
+}
+
+// Everything the is-back screen shows and checks, from what the person had
+// (left), the bills added and the change box. Same maths as the server's
+// settle route (whole paise).
+export function isBackSums(left, bills, changeText) {
+  const list = Array.isArray(bills) ? bills : [];
+  const change = parseChangeText(changeText);
+  const afterBills = defaultChange(left, list);
+  const over = overspend(left, list);
+  let changeError = null;
+  if (change === null) changeError = 'format';
+  else if (toPaise(change) > toPaise(afterBills)) changeError = 'too_much';
+  const still = stillWith(left, list, changeError ? 0 : change);
+  const something = list.length > 0 || (change !== null && toPaise(change) > 0);
+  return {
+    billsTotal: fromPaise(sumPaise(list)),
+    afterBills,
+    over,
+    change: changeError === 'format' ? null : change,
+    changeError,
+    still,
+    canDone: !changeError && something && toPaise(still) === 0,
+    canSaveLater: !changeError && something,
+  };
+}
+
+// The plain message for a Done / Save, rest later tap, or null when it can
+// be sent. Same copy as the server (spec 5.10: say what to do).
+export function isBackError(name, sums, final) {
+  const n = firstName(name);
+  if (sums.changeError === 'format') return 'Type the change as an amount, like 200, or 0.';
+  if (sums.changeError === 'too_much') return `${n} only has ${inr(sums.afterBills)} left — check the change amount.`;
+  if (!sums.canSaveLater) return 'Add what was bought or the change brought back, then tap Done.';
+  if (final && toPaise(sums.still) > 0) {
+    return `${n} still has ${inr(sums.still)}. Add what was bought or the change back — or tap Save, rest later.`;
+  }
+  return null;
+}
+
+// "Ramesh spent ₹120 of his own — the shop owes him ₹120." (spec 4.4)
+export function overspendText(name, over) {
+  const n = firstName(name);
+  return `${n} spent ${inr(over)} of his own — the shop owes him ${inr(over)}.`;
+}
+
+// POST /staff-money/:id/settle body. A bill keeps its item id when it was
+// picked from the list, else the typed name (the server makes the item).
+export function settleBody(bills, sums, method, final) {
+  const change = sums.change || 0;
+  const body = {
+    bills: (Array.isArray(bills) ? bills : []).map((b) => {
+      const out = { amount: b.amount };
+      if (b.item_id) out.item_id = b.item_id;
+      else out.item_name = b.name;
+      if (b.category && b.category !== 'salary') out.category = b.category;
+      return out;
+    }),
+    change_back: change,
+    final: !!final,
+  };
+  if (toPaise(change) > 0) body.change_method = method === 'upi' ? 'upi' : 'cash';
+  return body;
+}
+
+// "+ Add what he bought": the name and the amount, or the first problem.
+export function billCheck(name, amountText) {
+  if (!String(name || '').trim()) return { error: 'Type what was bought, like Roses.', field: 'name' };
+  const amount = parseGiveAmount(amountText);
+  if (amount === null) return { error: 'Type how much it cost, like 300.', field: 'amount' };
+  return { error: null, amount };
+}
+
+// Pay back: the amount typed (pre-filled with what is owed, editable for a
+// part payment), checked against what is left.
+export function payBackCheck(text, remaining, name) {
+  const amount = parseGiveAmount(text);
+  if (amount === null) return { error: 'Type an amount above ₹0, like 300.' };
+  if (toPaise(amount) > toPaise(remaining)) {
+    return { error: `The shop owes ${firstName(name)} only ${inr(remaining)}. Type ${inr(remaining)} or less.` };
+  }
+  return { error: null, amount };
+}
+
+// Show the card only while someone holds shopping money or is owed money.
+export function cardHasLines(data) {
+  const d = data || {};
+  return (Array.isArray(d.shopping) && d.shopping.length > 0) || (Array.isArray(d.owes) && d.owes.length > 0);
+}
+
+const HISTORY_STATUS = {
+  open: 'Still out', settled: 'Settled', to_salary: 'Taken from pay', removed: 'Removed', written_off: 'Written off',
+};
+export function historyStatus(status) {
+  return HISTORY_STATUS[status] || String(status || '');
+}
+
+export { inr as rupeesText };

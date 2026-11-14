@@ -174,6 +174,87 @@ test('firstName', () => {
   assert.strictEqual(s.firstName('  '), 'This person');
 });
 
+// ── B8: is-back screen, pay back, card ──
+test('isBackSums: 500 out, one 300 bill, change 200 -> Done allowed', () => {
+  const r = s.isBackSums(500, [{ amount: 300 }], '200');
+  assert.strictEqual(r.billsTotal, 300);
+  assert.strictEqual(r.afterBills, 200);
+  assert.strictEqual(r.still, 0);
+  assert.strictEqual(r.over, 0);
+  assert.strictEqual(r.canDone, true);
+  assert.strictEqual(s.isBackError('Ramesh', r, true), null);
+});
+test('isBackSums: part settle (change 100) -> only Save, rest later', () => {
+  const r = s.isBackSums(500, [{ amount: 300 }], '100');
+  assert.strictEqual(r.still, 100);
+  assert.strictEqual(r.canDone, false);
+  assert.strictEqual(r.canSaveLater, true);
+  assert.strictEqual(s.isBackError('Ramesh Kumar', r, true),
+    'Ramesh still has ₹100. Add what was bought or the change back — or tap Save, rest later.');
+  assert.strictEqual(s.isBackError('Ramesh Kumar', r, false), null);
+});
+test('isBackSums: overspent 620 -> owes 120, change must be 0', () => {
+  const r = s.isBackSums(500, [{ amount: 620 }], '0');
+  assert.strictEqual(r.over, 120);
+  assert.strictEqual(r.still, 0);
+  assert.strictEqual(r.canDone, true);
+  assert.strictEqual(s.overspendText('Ramesh', r.over), 'Ramesh spent ₹120 of his own — the shop owes him ₹120.');
+  const bad = s.isBackSums(500, [{ amount: 620 }], '10');
+  assert.strictEqual(bad.changeError, 'too_much');
+  assert.strictEqual(s.isBackError('Ramesh', bad, true), 'Ramesh only has ₹0 left — check the change amount.');
+});
+test('isBackSums: no bills, all change back -> Done allowed; nothing at all -> refused', () => {
+  assert.strictEqual(s.isBackSums(500, [], '500').canDone, true);
+  const none = s.isBackSums(500, [], '');
+  assert.strictEqual(none.canSaveLater, false);
+  assert.strictEqual(s.isBackError('Ramesh', none, false), 'Add what was bought or the change brought back, then tap Done.');
+});
+test('isBackSums: bad change text', () => {
+  const r = s.isBackSums(500, [], '2..0');
+  assert.strictEqual(r.changeError, 'format');
+  assert.strictEqual(r.change, null);
+  assert.strictEqual(s.isBackError('Ramesh', r, true), 'Type the change as an amount, like 200, or 0.');
+  assert.strictEqual(s.parseChangeText(''), 0);
+  assert.strictEqual(s.parseChangeText('200.50'), 200.5);
+});
+test('settleBody: item ids kept, typed names sent, method only with change', () => {
+  const bills = [{ item_id: 7, name: 'Roses', amount: 300, category: 'supplies' }, { name: 'Tape', amount: 20 }];
+  const b = s.settleBody(bills, s.isBackSums(500, bills, '180'), 'cash', true);
+  assert.deepStrictEqual(b, {
+    bills: [{ amount: 300, item_id: 7, category: 'supplies' }, { amount: 20, item_name: 'Tape' }],
+    change_back: 180, final: true, change_method: 'cash',
+  });
+  const noChange = s.settleBody(bills, s.isBackSums(320, bills, ''), 'upi', true);
+  assert.strictEqual(noChange.change_method, undefined);
+  assert.strictEqual(noChange.change_back, 0);
+});
+test('billCheck: name and amount', () => {
+  assert.strictEqual(s.billCheck('', '300').field, 'name');
+  assert.strictEqual(s.billCheck('Roses', '').field, 'amount');
+  assert.deepStrictEqual(s.billCheck('Roses', '300'), { error: null, amount: 300 });
+});
+test('payBackCheck: part allowed, more than owed refused', () => {
+  assert.deepStrictEqual(s.payBackCheck('120', 120, 'Ramesh'), { error: null, amount: 120 });
+  assert.deepStrictEqual(s.payBackCheck('50', 120, 'Ramesh'), { error: null, amount: 50 });
+  assert.strictEqual(s.payBackCheck('130', 120, 'Ramesh K').error, 'The shop owes Ramesh only ₹120. Type ₹120 or less.');
+  assert.strictEqual(s.payBackCheck('0', 120, 'Ramesh').error, 'Type an amount above ₹0, like 300.');
+});
+test('titles and labels', () => {
+  assert.strictEqual(s.isBackTitle('Ramesh Kumar'), 'Ramesh is back — what did he buy?');
+  assert.strictEqual(s.hadLine(500, new Date(2026, 10, 12, 10, 0), 'Priya Shah'), 'Had ₹500 · given 12 Nov by Priya');
+  assert.strictEqual(s.hadLine(500, null, null), 'Had ₹500');
+  assert.strictEqual(s.daysText(0), 'Today');
+  assert.strictEqual(s.daysText(1), '1 day');
+  assert.strictEqual(s.daysText(4), '4 days');
+  assert.strictEqual(s.historyStatus('to_salary'), 'Taken from pay');
+});
+test('cardHasLines: only while something is out or owed', () => {
+  assert.strictEqual(s.cardHasLines(null), false);
+  assert.strictEqual(s.cardHasLines({ shopping: [], owes: [] }), false);
+  assert.strictEqual(s.cardHasLines({ shopping: [{ id: 1 }], owes: [] }), true);
+  assert.strictEqual(s.cardHasLines({ owes: [{ id: 1 }] }), true);
+});
+
 let failed = 0;
 for (const t of tests) {
   try { t.fn(); console.log('  ok   ' + t.name); } catch (err) { failed++; console.log('  FAIL ' + t.name + '\n       ' + err.message); }

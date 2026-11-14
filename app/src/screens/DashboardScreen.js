@@ -33,6 +33,7 @@ import CollectCodModal from '../components/orderBoard/CollectCodModal';
 import TaskCompletionModal from '../components/orderBoard/TaskCompletionModal';
 import DateTimePickerModal from '../components/DateTimePickerModal';
 import HelperCashCard from '../components/helperCash/HelperCashCard';
+import ShoppingMoneyCard from '../components/expenses/ShoppingMoneyCard';
 import AttachmentVoiceRow from '../components/AttachmentVoiceRow';
 import ImageModal from '../components/ImageModal';
 import {
@@ -1626,6 +1627,9 @@ export default function DashboardScreen({ navigation }) {
             {/* Cash with helpers (bag mode only; renders nothing otherwise) */}
             <HelperCashCard locationId={activeLocation?.id} onChanged={fetchDashboard} />
 
+            {/* Shopping money out / Shop owes (renders nothing when nobody holds or is owed money) */}
+            <ShoppingMoneyCard locationId={activeLocation?.id} onChanged={fetchDashboard} />
+
             {/* Added 2026-09-13 (staff-ux fix): counter staff's only path to
                 add an expense was Register card -> Expenses -> Add Expense,
                 3 taps. Straight to the add form in one, matching the same
@@ -1811,6 +1815,7 @@ export default function DashboardScreen({ navigation }) {
             </View>
 
             {role === 'employee' && <HelperCashCard locationId={activeLocation?.id} onChanged={fetchDashboard} />}
+            {role === 'employee' && <ShoppingMoneyCard locationId={activeLocation?.id} onChanged={fetchDashboard} />}
 
             {/* employee only, not florist_staff — same reasoning as the
                 Register card above (florist_staff never takes payments or
@@ -2152,6 +2157,9 @@ export default function DashboardScreen({ navigation }) {
                   bags too, with Receive cash and Give float (bag mode only;
                   renders nothing otherwise). */}
               {isOwnerOrManager && <HelperCashCard locationId={activeLocation?.id} onChanged={fetchDashboard} />}
+
+              {/* Shopping money out / Shop owes (spec 4.4); hidden when empty */}
+              {isOwnerOrManager && <ShoppingMoneyCard locationId={activeLocation?.id} onChanged={fetchDashboard} />}
 
               <View style={{ gap: 12 }}>
                 <OrderKanbanBoard
