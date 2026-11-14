@@ -62,6 +62,9 @@ import CashRegisterScreen from '../screens/CashRegisterScreen';
 import RefundSaleScreen from '../screens/RefundSaleScreen';
 import AddPaymentScreen from '../screens/AddPaymentScreen';
 import ExpensesScreen from '../screens/ExpensesScreen';
+import ExpenseItemScreen from '../screens/ExpenseItemScreen';
+import ExpenseItemsScreen from '../screens/ExpenseItemsScreen';
+import SortExpensesScreen from '../screens/SortExpensesScreen';
 
 // Phase 5 — Customers
 import CustomersScreen from '../screens/CustomersScreen';
@@ -365,6 +368,9 @@ function ProfileStack() {
       <Stack.Screen name="Settings" component={SettingsScreen} options={{ title: 'Settings' }} />
       <Stack.Screen name="QuickSaleTiles" component={QuickSaleTilesScreen} options={{ title: 'Quick sale buttons' }} />
       <Stack.Screen name="BillSettings" component={BillSettingsScreen} options={{ title: 'Bill and GST' }} />
+      <Stack.Screen name="ExpenseItem" component={ExpenseItemScreen} options={{ title: 'Expense item' }} />
+      <Stack.Screen name="ExpenseItems" component={ExpenseItemsScreen} options={{ title: 'Expense items' }} />
+      <Stack.Screen name="SortExpenses" component={SortExpensesScreen} options={{ title: 'Sort older entries' }} />
       <Stack.Screen name="Locations" component={LocationsScreen} options={{ title: 'Locations' }} />
       <Stack.Screen name="LocationDetail" component={LocationDetailScreen} options={{ title: 'Location Details' }} />
       <Stack.Screen
@@ -399,6 +405,9 @@ function POSStack() {
       <Stack.Screen name="QuickTag" component={QuickTagScreen} options={{ title: 'Quick tag' }} />
       <Stack.Screen name="CashRegister" component={CashRegisterScreen} options={{ title: 'Cash Register' }} />
       <Stack.Screen name="Expenses" component={ExpensesScreen} options={{ title: 'Expenses' }} />
+      <Stack.Screen name="ExpenseItem" component={ExpenseItemScreen} options={{ title: 'Expense item' }} />
+      <Stack.Screen name="ExpenseItems" component={ExpenseItemsScreen} options={{ title: 'Expense items' }} />
+      <Stack.Screen name="SortExpenses" component={SortExpensesScreen} options={{ title: 'Sort older entries' }} />
       <Stack.Screen name="Settlements" component={SettlementsScreen} options={{ title: 'Settlements' }} />
       <Stack.Screen name="ProductionQueue" component={ProductionQueueScreen} options={{ title: 'Production Queue' }} />
       <Stack.Screen name="CompletedTasks" component={CompletedTasksScreen} options={{ title: 'Completed Tasks' }} />
@@ -419,6 +428,9 @@ function SalesStack() {
       <Stack.Screen name="AddPayment" component={AddPaymentScreen} options={{ title: 'Record Payment' }} />
       <Stack.Screen name="CashRegister" component={CashRegisterScreen} options={{ title: 'Cash Register' }} />
       <Stack.Screen name="Expenses" component={ExpensesScreen} options={{ title: 'Expenses' }} />
+      <Stack.Screen name="ExpenseItem" component={ExpenseItemScreen} options={{ title: 'Expense item' }} />
+      <Stack.Screen name="ExpenseItems" component={ExpenseItemsScreen} options={{ title: 'Expense items' }} />
+      <Stack.Screen name="SortExpenses" component={SortExpensesScreen} options={{ title: 'Sort older entries' }} />
       <Stack.Screen name="Settlements" component={SettlementsScreen} options={{ title: 'Settlements' }} />
       <Stack.Screen name="ProductionQueue" component={ProductionQueueScreen} options={{ title: 'Production Queue' }} />
       <Stack.Screen name="CompletedTasks" component={CompletedTasksScreen} options={{ title: 'Completed Tasks' }} />
@@ -447,6 +459,9 @@ function OrdersStack() {
       <Stack.Screen name="AddPayment" component={AddPaymentScreen} options={{ title: 'Record Payment' }} />
       <Stack.Screen name="CashRegister" component={CashRegisterScreen} options={{ title: 'Cash Register' }} />
       <Stack.Screen name="Expenses" component={ExpensesScreen} options={{ title: 'Expenses' }} />
+      <Stack.Screen name="ExpenseItem" component={ExpenseItemScreen} options={{ title: 'Expense item' }} />
+      <Stack.Screen name="ExpenseItems" component={ExpenseItemsScreen} options={{ title: 'Expense items' }} />
+      <Stack.Screen name="SortExpenses" component={SortExpensesScreen} options={{ title: 'Sort older entries' }} />
       <Stack.Screen name="ProductionQueue" component={ProductionQueueScreen} options={{ title: 'Production Queue' }} />
       <Stack.Screen name="CompletedTasks" component={CompletedTasksScreen} options={{ title: 'Completed Tasks' }} />
       <Stack.Screen name="ProduceProduct" component={ProduceScreen} options={{ title: 'Produce Products' }} />
@@ -562,6 +577,9 @@ function MoreStack() {
       <Stack.Screen name="Settlements" component={SettlementsScreen} options={{ title: 'Settlements' }} />
       <Stack.Screen name="CashRegister" component={CashRegisterScreen} options={{ title: 'Cash Register' }} />
       <Stack.Screen name="Expenses" component={ExpensesScreen} options={{ title: 'Expenses' }} />
+      <Stack.Screen name="ExpenseItem" component={ExpenseItemScreen} options={{ title: 'Expense item' }} />
+      <Stack.Screen name="ExpenseItems" component={ExpenseItemsScreen} options={{ title: 'Expense items' }} />
+      <Stack.Screen name="SortExpenses" component={SortExpensesScreen} options={{ title: 'Sort older entries' }} />
       <Stack.Screen name="Settings" component={SettingsScreen} options={{ title: 'Settings' }} />
       <Stack.Screen name="QuickSaleTiles" component={QuickSaleTilesScreen} options={{ title: 'Quick sale buttons' }} />
       <Stack.Screen name="BillSettings" component={BillSettingsScreen} options={{ title: 'Bill and GST' }} />

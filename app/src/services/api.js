@@ -840,6 +840,57 @@ class ApiService {
     return this.request(`/expenses/summary${query ? `?${query}` : ''}`);
   }
 
+  // ─── Expense Book ───────────────────────────────────────
+  _expenseQuery(params = {}) {
+    const q = new URLSearchParams();
+    Object.keys(params || {}).forEach((k) => {
+      const v = params[k];
+      if (v !== undefined && v !== null && v !== '') q.append(k, String(v));
+    });
+    const s = q.toString();
+    return s ? `?${s}` : '';
+  }
+
+  getExpenseSuggestions(params = {}) {
+    return this.request(`/expenses/suggest${this._expenseQuery(params)}`);
+  }
+
+  getExpensePeople(locationId) {
+    return this.request(`/expenses/people${this._expenseQuery({ location_id: locationId })}`);
+  }
+
+  getExpenseSummaryByItem(params = {}) {
+    return this.request(`/expenses/summary-by-item${this._expenseQuery(params)}`);
+  }
+
+  getExpenseItemHistory(id, params = {}) {
+    return this.request(`/expenses/items/${id}/history${this._expenseQuery(params)}`);
+  }
+
+  getExpenseItems(params = {}) {
+    return this.request(`/expenses/items${this._expenseQuery(params)}`);
+  }
+
+  updateExpenseItem(id, data) {
+    return this.request(`/expenses/items/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+  }
+
+  setExpenseItemPins(ids) {
+    return this.request('/expenses/items/pins', { method: 'PUT', body: JSON.stringify({ ids }) });
+  }
+
+  mergeExpenseItem(id, intoId) {
+    return this.request(`/expenses/items/${id}/merge`, { method: 'POST', body: JSON.stringify({ into_id: intoId }) });
+  }
+
+  getUnsortedExpenses(params = {}) {
+    return this.request(`/expenses/unsorted${this._expenseQuery(params)}`);
+  }
+
+  assignExpenseItems(assignments) {
+    return this.request('/expenses/assign-items', { method: 'POST', body: JSON.stringify({ assignments }) });
+  }
+
   // ─── Customers ──────────────────────────────────────────
   getCustomers(params = {}) {
     const query = new URLSearchParams(params).toString();

@@ -16,6 +16,7 @@ import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
  *   mode ('date'|'time') - date or time selection
  *   value (Date|null)    - current selected date/time value
  *   minimumDate (Date)   - optional minimum date
+ *   maximumDate (Date)   - optional maximum date (quick picks after it are hidden)
  *   onConfirm (Date => void) - called with selected Date
  *   onCancel (() => void)    - called when dismissed
  *   title (string)       - optional title shown at top
@@ -31,7 +32,7 @@ const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov
 function pad(n) { return String(n).padStart(2, '0'); }
 
 export default function DateTimePickerModal({
-  visible, mode = 'date', value, minimumDate, onConfirm, onCancel, title,
+  visible, mode = 'date', value, minimumDate, maximumDate, onConfirm, onCancel, title,
 }) {
   const initial = value || new Date();
   const [tempDate, setTempDate] = useState(initial);
@@ -82,7 +83,8 @@ export default function DateTimePickerModal({
     { label: 'Tomorrow', date: tomorrow },
     { label: `${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][dayAfter.getDay()]}`, date: dayAfter },
     { label: 'Next Week', date: nextWeek },
-  ].filter(q => !minimumDate || q.date >= new Date(minimumDate.getFullYear(), minimumDate.getMonth(), minimumDate.getDate()));
+  ].filter(q => !minimumDate || q.date >= new Date(minimumDate.getFullYear(), minimumDate.getMonth(), minimumDate.getDate()))
+    .filter(q => !maximumDate || q.date <= new Date(maximumDate.getFullYear(), maximumDate.getMonth(), maximumDate.getDate(), 23, 59, 59));
 
   // Quick time slots
   const quickTimes = [
@@ -129,6 +131,7 @@ export default function DateTimePickerModal({
               mode={mode}
               display="spinner"
               minimumDate={minimumDate}
+              maximumDate={maximumDate}
               onChange={(_, selected) => { if (selected) setTempDate(selected); }}
               style={{ height: 200 }}
             />
