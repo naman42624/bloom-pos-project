@@ -174,8 +174,8 @@ The Expenses list rows, the Money with staff card and the settle screen use the 
 
 - New additive table `staff_money_out`: `id, location_id, user_id` (holder), `amount, payment_method, register_id, given_by, approved_by, note, status` (`open` | `settled` | `to_salary` | `removed`), `settled_amount, returned_amount, created_at, closed_at`.
 - Hand-out (cash): the full amount leaves the drawer at once (`expected_cash` down; the row carries `register_id`). It is **not** an expense, so the expense summary shows only money actually spent.
-- Settle: each bill becomes a normal expense with additive `expenses.money_out_id` pointing at the hand-out. These rows **never** touch the drawer: the register close and every `created_at` fallback that counts register-less cash expenses must exclude rows with `money_out_id`. Change returned in cash goes back into the drawer (`expected_cash` up) on the open register.
-- Register close: `computeRegisterClose` adds "shopping money out" (cash hand-outs by `register_id`) and "change returned" (by the register it was returned into), the same way helper floats and handovers are handled. A test pins the net effect: drawer down by exactly what was spent.
+- Settle: each bill becomes a normal expense with additive `expenses.money_out_id` pointing at the hand-out and `payment_method = 'shopping_money'` (shown as "Shopping money · Ramesh"). Every drawer query already counts only `payment_method = 'cash'`, so these rows can never touch the drawer, including the `created_at` fallback for register-less rows (planning ruling 2026-11-14: safer than adding an exclusion to each query). Change returned is a row in additive `staff_money_settles` (`money_out_id, bills_amount, returned_amount, returned_method, register_id, settled_by, created_at`); returned cash goes back into the drawer (`expected_cash` up) on the open register.
+- Register close: `computeRegisterClose` adds "shopping money out" (cash hand-outs by `register_id`, not `removed`) and "change returned" (cash `staff_money_settles.returned_amount` by `register_id`), the same way helper floats and handovers are handled; register status, history, the closed-session inferred expenses and the pickup overwrite in `deliveries.js` include them too. A test pins the net effect: drawer down by exactly what was spent.
 - Part settle leaves `amount − settled − returned` open. "Late" = open and older than the setting, counted from the hand-out date.
 - Removing a settled bill puts its amount back as open with that person; it never moves drawer cash.
 - A hand-out can be removed by owner/manager only while nothing is settled; cash goes back into the drawer if the register it came from is still open, otherwise refused with plain copy.
@@ -209,7 +209,8 @@ Per item and shop, from that shop's own expenses:
 ## 5. Data (additive only)
 
 - New table `staff_money_out` (above), indexes on `(location_id, status)` and `(user_id, status)`.
-- `expenses.money_out_id` (nullable, FK).
+- New table `staff_money_settles` (one row per settle; above), index on `(register_id)` and `(money_out_id)`.
+- `expenses.money_out_id` (nullable, FK); `payment_method` gains the value `shopping_money` (written only by the settle route).
 - `salary_advances.given_by`, `source`, `payment_method`, `location_id` (nullable; old rows stay NULL = "requested in app").
 - Settings `advance_daily_limit` (500), `shopping_money_daily_limit` (1000), `shopping_money_late_days` (3), seeded only if missing.
 - All via `ensureColumn` / guarded `CREATE TABLE IF NOT EXISTS` in `server/config/database.js` (read the `db-migration-safety` skill first). No apostrophes in SQL `--` comments.
