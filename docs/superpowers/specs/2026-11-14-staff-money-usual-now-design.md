@@ -239,7 +239,7 @@ Audit entries for: advance given (incl. approver), advance cancelled, shopping m
 ### 5.10 Errors (plain, say what to do)
 
 - Over the day limit: "That's more than the ₹500 daily advance limit. A manager or owner can confirm with their PIN."
-- Over the month limit: "Ramesh has had ₹2,000 in advances this month — the monthly limit. A manager or owner can confirm with their PIN."
+- Over the month limit: "That would take Ramesh over the ₹2,000 monthly advance limit. A manager or owner can confirm with their PIN." (Changed after the final review: the first wording stated the limit as if it were the real total, and it showed a colleague's total to counter staff.)
 - Self (counter staff): "A manager or owner needs to confirm money for yourself."
 - Wrong PIN: "That PIN didn't match. <n> tries left." (existing copy)
 - Cash with the register closed: "Open the register to give cash — or pick UPI." with an inline Open Register button.
