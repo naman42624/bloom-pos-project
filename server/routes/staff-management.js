@@ -7,6 +7,7 @@ const { nowLocal, todayStr } = require('../utils/time');
 const { computeShiftWork, findPartialDays, normalizeSegments, matchSegmentForTime, lateMinutesFor, timestampToMinutes } = require('../utils/shift-work');
 const { hasOpenRegister, lockOpenRegister, REGISTER_CLOSED_MESSAGE } = require('../utils/register-guard');
 const { createNotification } = require('./notifications');
+const { payrollShopping, remainingPaise } = require('../utils/staff-money');
 
 router.use(authenticate);
 
@@ -396,7 +397,7 @@ router.post('/geofence-event', authorize('manager', 'employee', 'counter_staff',
 // ═══════════════════════════════════════════════════════════════
 
 // Calculate salary for a pay period (preview — does not save)
-router.post('/payroll/calculate', authorize('owner'), (req, res) => {
+router.post('/payroll/calculate', authorize('owner'), async (req, res) => {
   try {
     const db = getDb();
     const { user_id, period_start, period_end } = req.body;
@@ -504,6 +505,10 @@ router.post('/payroll/calculate', authorize('owner'), (req, res) => {
 
     const netAmount = Math.max(0, basePay - deductions);
 
+    // Spec 5.6: open shopping money shown as its own line (never part of
+    // net_amount). 0 for riders; the screen offers Take from pay only when > 0.
+    const openShopping = await payrollShopping(await getAsyncDb(), { userId: Number(user_id) });
+
     res.json({
       success: true,
       data: {
@@ -529,6 +534,7 @@ router.post('/payroll/calculate', authorize('owner'), (req, res) => {
           deductions: Math.round(deductions * 100) / 100,
           pending_advances: Math.round(pendingAdvances * 100) / 100,
           net_amount: Math.round(netAmount * 100) / 100,
+          open_shopping_money_total: openShopping.totalPaise / 100,
         },
       },
     });
@@ -537,6 +543,45 @@ router.post('/payroll/calculate', authorize('owner'), (req, res) => {
     res.status(500).json({ success: false, message: 'Failed to calculate payroll.' });
   }
 });
+
+const STALE_TAKE_MESSAGE = 'Shopping money changed since you calculated — tap Calculate again.';
+
+// Take from pay (spec 5.6, 5.9). Inside disburse's transaction, with the
+// lines already locked and their total checked. The remainder becomes one
+// approved advance (source shopping_money) that the deduction loop then
+// takes from this same payment. No drawer move: the cash left the drawer at
+// hand-out. payment_method shopping_money (no drawer query counts it) and no
+// expense link (removing an expense can never cancel it).
+async function takeShoppingFromPay(db, { userId, lines, totalPaise, paymentId, ownerId }) {
+  const amount = totalPaise / 100;
+  const adv = await db.prepare(`
+    INSERT INTO salary_advances (user_id, amount, reason, status, approved_by, given_by, source,
+      payment_method, location_id, expense_id, date)
+    VALUES (?, ?, ?, 'approved', ?, ?, 'shopping_money', 'shopping_money', ?, NULL, CAST(? AS date))
+  `).run(userId, amount, 'Shopping money taken from pay', ownerId, ownerId, lines[0].location_id, todayStr());
+  const advanceId = Number(adv.lastInsertRowid);
+  const reason = `Taken from pay (salary payment #${paymentId})`;
+  for (const line of lines) {
+    const leftPaise = remainingPaise(line);
+    await db.prepare(`
+      UPDATE staff_money_out SET status = 'to_salary', closed_at = CURRENT_TIMESTAMP, close_reason = ? WHERE id = ?
+    `).run(reason, line.id);
+    await db.prepare(`
+      INSERT INTO audit_logs (entity_type, entity_id, user_id, action, previous_state, new_state, created_at)
+      VALUES ('staff_money_out', ?, ?, 'shopping_money_taken_from_pay', ?, ?, CURRENT_TIMESTAMP)
+    `).run(line.id, ownerId,
+      JSON.stringify({ status: line.status, amount: Number(line.amount), settled_amount: Number(line.settled_amount) || 0, returned_amount: Number(line.returned_amount) || 0 }),
+      JSON.stringify({ status: 'to_salary', taken: leftPaise / 100, advance_id: advanceId, salary_payment_id: paymentId }));
+  }
+  await db.prepare(`
+    INSERT INTO audit_logs (entity_type, entity_id, user_id, action, previous_state, new_state, created_at)
+    VALUES ('salary_advance', ?, ?, 'shopping_money_taken_from_pay', NULL, ?, CURRENT_TIMESTAMP)
+  `).run(advanceId, ownerId, JSON.stringify({
+    user_id: userId, amount, source: 'shopping_money', salary_payment_id: paymentId,
+    money_out_ids: lines.map((l) => Number(l.id)),
+  }));
+  return advanceId;
+}
 
 // Disburse salary (create payment record)
 router.post('/payroll/disburse', authorize('owner'), async (req, res) => {
@@ -556,6 +601,22 @@ router.post('/payroll/disburse', authorize('owner'), async (req, res) => {
 
     if (!user_id || !period_start || !period_end || net_amount === undefined) {
       return res.status(400).json({ success: false, message: 'Missing required fields.' });
+    }
+
+    // Take from pay (spec 5.6): the request carries the open shopping money
+    // total the screen showed. The server re-adds it up under lock at Pay
+    // time and refuses on any difference. net_amount must already have it
+    // taken off (as it has pending advances); advances_deducted must not
+    // include it (the server adds it below).
+    let takePaise = 0;
+    const take = req.body.take_shopping_money;
+    if (take !== undefined && take !== null) {
+      const raw = take && typeof take === 'object' ? take.expected_total : undefined;
+      const str = raw === undefined || raw === null || typeof raw === 'boolean' ? '' : String(raw).trim();
+      if (!/^\d{1,8}(\.\d{1,2})?$/.test(str)) {
+        return res.status(400).json({ success: false, message: STALE_TAKE_MESSAGE });
+      }
+      takePaise = Math.round(Number(str) * 100);
     }
 
     // Overlap detection, not exact match: period_start/period_end are
@@ -598,7 +659,9 @@ router.post('/payroll/disburse', authorize('owner'), async (req, res) => {
       0,
       Math.max(0, (Number(base_salary) || 0) - (Number(deductions) || 0)) + (Number(bonus) || 0)
     );
-    advancesDeducted = Math.min(advancesDeducted, payable);
+    // Shopping money taken from pay becomes an advance deducted in this
+    // same payment, so it counts toward the same cap.
+    advancesDeducted = Math.min(Math.round((advancesDeducted + takePaise / 100) * 100) / 100, payable);
 
     const method = payment_method || 'cash';
 
@@ -635,8 +698,12 @@ router.post('/payroll/disburse', authorize('owner'), async (req, res) => {
       locationId = employeeLocation ? employeeLocation.location_id : null;
     }
 
-    // One transaction: the payee row, then the register, locked. A repeat of
-    // the same payout within 2 minutes (a second tap) is refused.
+    // One transaction. Lock order (money rows first, register last): the
+    // payee row, their open shopping lines, their unpaid approved advances,
+    // then the register. Expense PUT/DELETE lock an advance, then the
+    // expense, then the register, so the two can no longer wait on each
+    // other in a circle. A repeat of the same payout within 2 minutes (a
+    // second tap) is refused.
     const disburseTx = () => withMoneyTx(async (db) => {
       await db.prepare('SELECT id FROM users WHERE id = ? FOR UPDATE').get(user_id);
       const repeat = await db.prepare(`
@@ -645,6 +712,17 @@ router.post('/payroll/disburse', authorize('owner'), async (req, res) => {
         LIMIT 1
       `).get(user_id, period_start, period_end, net_amount);
       if (repeat) throw Object.assign(new Error('This salary was just paid. Refresh to see it.'), { statusCode: 409 });
+      let takeLines = [];
+      if (take !== undefined && take !== null) {
+        const current = await payrollShopping(db, { userId: Number(user_id), forUpdate: true });
+        if (current.totalPaise !== takePaise) {
+          throw Object.assign(new Error(STALE_TAKE_MESSAGE), { statusCode: 409 });
+        }
+        takeLines = current.rows;
+      }
+      await db.prepare(
+        "SELECT id FROM salary_advances WHERE user_id = ? AND status = 'approved' AND repaid_amount < amount ORDER BY id FOR UPDATE"
+      ).all(user_id);
       const openRegister = (method === 'cash' && locationId) ? await lockOpenRegister(db, locationId) : null;
       if (method === 'cash' && !openRegister) {
         throw Object.assign(new Error("The cash drawer isn't open at this employee's location — open the register first, or choose UPI/Bank if you're paying this by transfer."), { statusCode: 400 });
@@ -690,6 +768,12 @@ router.post('/payroll/disburse', authorize('owner'), async (req, res) => {
         req.user.id, notes || '', expenseId
       );
       const paymentId = paymentResult.lastInsertRowid;
+
+      if (takePaise > 0) {
+        await takeShoppingFromPay(db, {
+          userId: Number(user_id), lines: takeLines, totalPaise: takePaise, paymentId: Number(paymentId), ownerId: req.user.id,
+        });
+      }
 
       if (advancesDeducted > 0) {
         let remaining = advancesDeducted;

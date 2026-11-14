@@ -102,7 +102,8 @@ router.get('/people', authenticate, authorize(...GIVER_ROLES), async (req, res, 
           GREATEST(
             (SELECT MAX(COALESCE(e.created_at, CAST(sa.date AS timestamp)))
                FROM salary_advances sa LEFT JOIN expenses e ON e.id = sa.expense_id
-              WHERE sa.user_id = u.id AND sa.location_id = ? AND sa.status IN ('approved', 'repaid')),
+              WHERE sa.user_id = u.id AND sa.location_id = ? AND sa.status IN ('approved', 'repaid')
+                AND COALESCE(sa.source, '') <> 'shopping_money'),
             (SELECT MAX(mo.created_at) FROM staff_money_out mo
               WHERE mo.user_id = u.id AND mo.location_id = ? AND mo.status <> 'removed')
           ) AS last_at

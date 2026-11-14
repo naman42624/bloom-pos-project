@@ -4,6 +4,7 @@
  * B2: salary advance at the counter (live API on API_BASE_URL).
  * B3: shopping money, settle, remove, write-off and the register lines.
  * B4: own pocket and Shop owes (pay back, keep, write-off).
+ * B5: payroll Take from pay (throwaway VerifySM employees only).
  * Test rows are named VerifySM. Cleans up only rows this run created.
  * Usage: source test-env.sh; node server/scripts/verify-staff-money.js
  */
@@ -1228,6 +1229,159 @@ check('B4: a settle bill keeps shopping_money when sent back unchanged; switchin
   eq((await api('POST', '/expenses', c.counter, { location_id: TEST_LOCATION_ID, category: 'supplies', description: 'x', amount: 5, payment_method: 'shopping_money' })).status, 400, 'POST shopping_money refused');
 });
 
+// ══ B5: payroll Take from pay (spec 5.6, 5.9, 5.10) ══
+// Only throwaway VerifySM people are ever paid here.
+const STALE_TAKE = 'Shopping money changed since you calculated — tap Calculate again.';
+async function salaried(role, name) {
+  const c = await getCast();
+  const db = await getDb();
+  const u = await makeUser(db, { role, name });
+  await db.prepare("INSERT INTO employee_salaries (user_id, monthly_salary, salary_type, updated_by) VALUES (?, 15000, 'monthly', ?)").run(u, c.owner);
+  return u;
+}
+let payPeriodYear = 2001;
+function payPeriod() { const y = payPeriodYear++; return { period_start: `${y}-01-01`, period_end: `${y}-01-31` }; }
+async function calc(userId, period) {
+  const c = await getCast();
+  const r = await api('POST', '/staff/payroll/calculate', c.owner, { user_id: userId, ...period });
+  eq(r.status, 200, 'calculate ' + JSON.stringify(r.body));
+  return r.body.data.calculation;
+}
+async function pay(userId, period, extra) {
+  const c = await getCast();
+  return api('POST', '/staff/payroll/disburse', c.owner, {
+    user_id: userId, ...period, base_salary: 15000, deductions: 0, bonus: 0, advances_deducted: 0,
+    payment_method: 'bank_transfer', ...extra,
+  });
+}
+const linesOf = async (userId) => (await getDb()).prepare('SELECT * FROM staff_money_out WHERE user_id = ? ORDER BY id').all(userId);
+const shopAdvOf = async (userId) => (await getDb()).prepare("SELECT * FROM salary_advances WHERE user_id = ? AND source = 'shopping_money' ORDER BY id").all(userId);
+const paymentsOf = async (userId) => (await getDb()).prepare('SELECT * FROM salary_payments WHERE user_id = ? ORDER BY id').all(userId);
+
+check('B5: calculate shows the open shopping money total (whole paise, part-settled lines count only what is left)', async () => {
+  const c = await getCast();
+  const u = await salaried('counter_staff', 'VerifySM PayCalc');
+  const a = await hand(c.owner, { user_id: u, amount: 300.5, payment_method: 'upi' });
+  const b = await hand(c.owner, { user_id: u, amount: 200, payment_method: 'upi' });
+  eq(a.status, 201, 'hand a ' + JSON.stringify(a.body)); eq(b.status, 201, 'hand b');
+  eq((await settle(c.owner, b.body.data.id, { bills: [bill(120.25)] })).status, 200, 'part settle');
+  const calcd = await calc(u, payPeriod());
+  eq(calcd.open_shopping_money_total, 380.25, 'open total');
+  eq(calcd.net_amount, Math.max(0, Math.round((calcd.base_pay - calcd.deductions) * 100) / 100), 'net unchanged by the shopping line');
+});
+
+check('B5: take from pay makes one shopping_money advance, deducts it in the same payment, closes the lines as to_salary, drawer moves only by the pay', async () => {
+  const c = await getCast();
+  const reg = await openOwnRegister();
+  const u = await salaried('counter_staff', 'VerifySM PayTake');
+  const a = await hand(c.owner, { user_id: u, amount: 500, payment_method: 'cash' });
+  const b = await hand(c.owner, { user_id: u, amount: 100, payment_method: 'upi' });
+  eq((await settle(c.owner, a.body.data.id, { bills: [bill(300)] })).status, 200, 'part settle');
+  const period = payPeriod();
+  const calcd = await calc(u, period);
+  eq(calcd.open_shopping_money_total, 300, 'open total');
+  const before = await drawer(reg);
+  const r = await pay(u, period, { payment_method: 'cash', net_amount: 14700, take_shopping_money: { expected_total: 300 } });
+  eq(r.status, 201, 'disburse ' + JSON.stringify(r.body));
+  eq(Number(r.body.data.advances_deducted), 300, 'advances_deducted includes the shopping money');
+  eq(await drawer(reg), before - 14700, 'drawer down by the pay only');
+  const advs = await shopAdvOf(u);
+  eq(advs.length, 1, 'one shopping_money advance');
+  const adv = advs[0];
+  createdAdvanceIds.push(adv.id);
+  eq(Number(adv.amount), 300, 'advance amount');
+  eq(adv.status, 'repaid', 'deducted in the same payment');
+  eq(Number(adv.repaid_amount), 300, 'repaid amount');
+  eq(adv.payment_method, 'shopping_money', 'non-drawer method');
+  eq(adv.expense_id, null, 'no expense link');
+  eq(String(adv.date).slice(0, 10), todayStr(), 'shop-local date');
+  eq(adv.given_by, c.owner, 'given_by');
+  for (const line of await linesOf(u)) {
+    eq(line.status, 'to_salary', `line ${line.id} status`);
+    assert(line.closed_at, `line ${line.id} closed_at`);
+    assert(/pay/i.test(line.close_reason || ''), `line ${line.id} close_reason ${line.close_reason}`);
+    assert(await auditOf(line.id, 'shopping_money_taken_from_pay'), `audit for line ${line.id}`);
+  }
+  const salaryExp = await (await getDb()).prepare("SELECT COUNT(*)::int AS n FROM expenses WHERE employee_id = ? AND category = 'salary'").get(u);
+  eq(salaryExp.n, 1, 'only the pay expense, none for the shopping advance');
+  const t = await sm.totals(await getDb(), { userId: u });
+  eq(t.shoppingHeld, 0, 'nothing held'); eq(t.advancesUnpaid, 0, 'nothing unpaid'); eq(t.advanceToday, 0, 'not counted as an advance given today');
+  eq((await settle(c.owner, a.body.data.id, { bills: [bill(10)] })).status, 409, 'settle a to_salary line refused');
+  eq((await api('DELETE', `/staff-money/${b.body.data.id}`, c.owner)).status, 409, 'remove a to_salary line refused');
+  eq((await api('POST', `/staff-money/${b.body.data.id}/write-off`, c.owner, { reason: 'x' })).status, 409, 'write off a to_salary line refused');
+  const st = await regStatus();
+  eq(st.expected_cash, st.running_expected_cash, 'register status = running');
+});
+
+check('stale take-from-pay refused', async () => {
+  const c = await getCast();
+  const u = await salaried('counter_staff', 'VerifySM PayStale');
+  const a = await hand(c.owner, { user_id: u, amount: 400, payment_method: 'upi' });
+  eq(a.status, 201, 'hand');
+  const period = payPeriod();
+  const calcd = await calc(u, period);
+  eq(calcd.open_shopping_money_total, 400, 'open total at calculate');
+  eq((await settle(c.owner, a.body.data.id, { bills: [bill(150)] })).status, 200, 'part settle in between');
+  const r = await pay(u, period, { net_amount: 14600, take_shopping_money: { expected_total: 400 } });
+  eq(r.status, 409, 'status');
+  eq(r.body.message, STALE_TAKE, 'copy');
+  eq((await paymentsOf(u)).length, 0, 'nothing paid');
+  eq((await shopAdvOf(u)).length, 0, 'no advance');
+  const line = await moRow(a.body.data.id);
+  eq(line.status, 'open', 'line still open');
+  eq(Number(line.settled_amount), 150, 'line unchanged');
+  eq((await (await getDb()).prepare("SELECT COUNT(*)::int AS n FROM expenses WHERE employee_id = ? AND category = 'salary'").get(u)).n, 0, 'no pay expense');
+  const again = await calc(u, period);
+  eq(again.open_shopping_money_total, 250, 'fresh total');
+  const ok = await pay(u, period, { net_amount: 14750, take_shopping_money: { expected_total: 250 } });
+  eq(ok.status, 201, 'paid with the fresh total ' + JSON.stringify(ok.body));
+  for (const x of await shopAdvOf(u)) createdAdvanceIds.push(x.id);
+});
+
+check('B5: rider gets 0 and no option; a take request for a rider is refused', async () => {
+  const c = await getCast();
+  const u = await salaried('delivery_partner', 'VerifySM PayRider');
+  const a = await hand(c.owner, { user_id: u, amount: 250, payment_method: 'upi' });
+  eq(a.status, 201, 'hand');
+  const period = payPeriod();
+  eq((await calc(u, period)).open_shopping_money_total, 0, 'rider total');
+  const r = await pay(u, period, { net_amount: 14750, take_shopping_money: { expected_total: 250 } });
+  eq(r.status, 409, 'rider take refused');
+  eq((await paymentsOf(u)).length, 0, 'nothing paid');
+  eq((await moRow(a.body.data.id)).status, 'open', 'rider line still open');
+  const plain = await pay(u, period, { net_amount: 15000 });
+  eq(plain.status, 201, 'plain pay still works');
+  eq((await moRow(a.body.data.id)).status, 'open', 'plain pay leaves the line alone');
+});
+
+check('B5: no take_shopping_money leaves open shopping money alone', async () => {
+  const c = await getCast();
+  const u = await salaried('employee', 'VerifySM PayNoTake');
+  const a = await hand(c.owner, { user_id: u, amount: 90, payment_method: 'upi' });
+  const period = payPeriod();
+  eq((await calc(u, period)).open_shopping_money_total, 90, 'offered');
+  const r = await pay(u, period, { net_amount: 15000 });
+  eq(r.status, 201, 'paid');
+  eq((await moRow(a.body.data.id)).status, 'open', 'line still open');
+  eq((await shopAdvOf(u)).length, 0, 'no advance');
+  eq((await pay(u, payPeriod(), { net_amount: 15000, take_shopping_money: { expected_total: 'abc' } })).status, 400, 'bad expected_total');
+});
+
+check('B5: two Pays at once take the shopping money once', async () => {
+  const c = await getCast();
+  const u = await salaried('counter_staff', 'VerifySM PayTwice');
+  const a = await hand(c.owner, { user_id: u, amount: 120, payment_method: 'upi' });
+  eq(a.status, 201, 'hand');
+  const p1 = payPeriod(); const p2 = payPeriod();
+  const both = await Promise.all([p1, p2].map((p) => pay(u, p, { net_amount: 14880, take_shopping_money: { expected_total: 120 } })));
+  eq(both.map((r) => r.status).sort().join(','), '201,409', 'statuses ' + JSON.stringify(both.map((r) => r.body)));
+  eq(both.find((r) => r.status === 409).body.message, STALE_TAKE, 'second is told to recalculate');
+  const advs = await shopAdvOf(u);
+  for (const x of advs) createdAdvanceIds.push(x.id);
+  eq(advs.length, 1, 'one advance');
+  eq((await paymentsOf(u)).length, 1, 'one payment');
+});
+
 async function cleanup() {
   const db = await getDb();
   const del = async (label, sql, ...p) => { try { await db.prepare(sql).run(...p); } catch (e) { console.error(`cleanup ${label}: ${e.message}`); } };
@@ -1245,6 +1399,8 @@ async function cleanup() {
   }
   try { await closeOwnRegister(); } catch (e) { console.error('cleanup close: ' + e.message); }
   for (const id of createdUserIds) {
+    await del('salary payments', 'DELETE FROM salary_payments WHERE user_id = ?', id);
+    await del('salary config', 'DELETE FROM employee_salaries WHERE user_id = ?', id);
     await del('advances', 'DELETE FROM salary_advances WHERE user_id = ?', id);
     await del('expense audits', "DELETE FROM audit_logs WHERE entity_type = 'expense' AND entity_id IN (SELECT id FROM expenses WHERE employee_id = ? OR created_by = ?)", id, id);
     await del('expenses', 'DELETE FROM expenses WHERE employee_id = ? OR created_by = ?', id, id);

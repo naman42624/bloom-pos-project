@@ -39,7 +39,9 @@ function remainingPaise(row) {
 function remaining(row) { return rupees(remainingPaise(row)); }
 
 // Shop-local day and month figures for one person. Advances count status
-// approved or repaid from any source; shopping counts every hand-out not removed.
+// approved or repaid from any source except shopping_money (shopping money
+// taken from pay is not new money given that day); shopping counts every
+// hand-out not removed.
 async function totals(db, { userId }) {
   const today = todayStr();
   const monthStart = `${today.slice(0, 7)}-01`;
@@ -47,8 +49,8 @@ async function totals(db, { userId }) {
 
   const adv = await db.prepare(`
     SELECT
-      COALESCE(SUM(CASE WHEN status IN ('approved','repaid') AND date = CAST(? AS date) THEN amount ELSE 0 END), 0) AS today,
-      COALESCE(SUM(CASE WHEN status IN ('approved','repaid') AND date >= CAST(? AS date) AND date <= CAST(? AS date) THEN amount ELSE 0 END), 0) AS month,
+      COALESCE(SUM(CASE WHEN status IN ('approved','repaid') AND COALESCE(source, '') <> 'shopping_money' AND date = CAST(? AS date) THEN amount ELSE 0 END), 0) AS today,
+      COALESCE(SUM(CASE WHEN status IN ('approved','repaid') AND COALESCE(source, '') <> 'shopping_money' AND date >= CAST(? AS date) AND date <= CAST(? AS date) THEN amount ELSE 0 END), 0) AS month,
       COALESCE(SUM(CASE WHEN status = 'approved' THEN amount - COALESCE(repaid_amount, 0) ELSE 0 END), 0) AS unpaid
     FROM salary_advances WHERE user_id = ?
   `).get(today, monthStart, today, userId);
@@ -127,4 +129,19 @@ function needsPinMessage(reason, { name, limits, kind } = {}) {
   return `That's more than the ${inr(lim)} daily ${kind === 'shopping' ? 'shopping money' : 'advance'} limit. A manager or owner can confirm with their PIN.`;
 }
 
-module.exports = { getLimits, totals, needsPin, needsPinMessage, checkApprover, remaining, remainingPaise, wrongPinMessage };
+// Payroll (spec 5.6): the open shopping money payroll may take from pay.
+// Only staff with a salary record; riders are never offered it (piece 3
+// settles their holdings). forUpdate locks the open lines (inside a money tx).
+const PAYROLL_SHOPPING_EXCLUDED_ROLES = ['delivery_partner'];
+async function payrollShopping(db, { userId, forUpdate = false }) {
+  const user = await db.prepare('SELECT role FROM users WHERE id = ?').get(userId);
+  const salary = await db.prepare('SELECT 1 AS ok FROM employee_salaries WHERE user_id = ? LIMIT 1').get(userId);
+  if (!user || !salary || PAYROLL_SHOPPING_EXCLUDED_ROLES.includes(user.role)) return { rows: [], totalPaise: 0 };
+  const all = await db.prepare(
+    `SELECT * FROM staff_money_out WHERE user_id = ? AND status = 'open' ORDER BY id${forUpdate ? ' FOR UPDATE' : ''}`
+  ).all(userId);
+  const rows = all.filter((r) => remainingPaise(r) > 0);
+  return { rows, totalPaise: rows.reduce((t, r) => t + remainingPaise(r), 0) };
+}
+
+module.exports = { payrollShopping, getLimits, totals, needsPin, needsPinMessage, checkApprover, remaining, remainingPaise, wrongPinMessage };
