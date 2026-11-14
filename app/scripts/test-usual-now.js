@@ -56,7 +56,24 @@ test('pickDefaults: no method -> cash; odd method -> cash', () => {
   assert.strictEqual(e.pickDefaults({ ...tea, my_last_method: 'card' }, {}).method, 'cash');
 });
 test('pickDefaults: survives a missing item', () => {
-  assert.deepStrictEqual(e.pickDefaults(null, {}), { amount: null, method: 'cash', givenTo: null });
+  assert.deepStrictEqual(e.pickDefaults(null, {}), { amount: null, method: null, givenTo: null });
+});
+test('pickDefaults: a type-ahead row (no my_last_method field) knows no method', () => {
+  const typedRow = { id: 1, name: 'Tea', category: 'food', usual_amount: 60, last_given_to: null };
+  assert.strictEqual(e.pickDefaults(typedRow, {}).method, null);
+});
+
+// ── methodAfterPick ──
+test('methodAfterPick: a typed pick keeps the current UPI', () => {
+  const typedRow = { id: 2, name: 'Petrol', category: 'transport', usual_amount: 200, last_given_to: null };
+  assert.strictEqual(e.methodAfterPick('upi', typedRow), 'upi');
+  assert.strictEqual(e.methodAfterPick('cash', typedRow), 'cash');
+});
+test('methodAfterPick: a section row with my_last_method upi sets UPI', () => {
+  assert.strictEqual(e.methodAfterPick('cash', { ...tea, my_last_method: 'upi' }), 'upi');
+});
+test('methodAfterPick: a section row with my_last_method null sets Cash', () => {
+  assert.strictEqual(e.methodAfterPick('upi', { ...tea, my_last_method: null }), 'cash');
 });
 
 // ── suggestionSections ──

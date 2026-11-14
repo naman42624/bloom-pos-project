@@ -442,6 +442,7 @@ async function usualNowSections(db, locationId, userId, shapeItem, cols, base) {
   const picked = usual_now.concat(often);
 
   // Clocked in today with no clock-out: the Given to person is shown only if here.
+  // A typed name (a vendor, no user_id) never clocks in, so it always counts as here.
   const personIds = [...new Set(picked.map((i) => Number(i.row.last_given_to_user_id)).filter(Boolean))];
   let present = new Set();
   if (personIds.length) {
@@ -459,7 +460,7 @@ async function usualNowSections(db, locationId, userId, shapeItem, cols, base) {
       common_amount: commonAmount(i.entries),
       my_last_method: mine ? mine.method : null,
       last_given_to: shaped.last_given_to
-        ? { ...shaped.last_given_to, present_today: shaped.last_given_to.user_id ? present.has(shaped.last_given_to.user_id) : false }
+        ? { ...shaped.last_given_to, present_today: shaped.last_given_to.user_id ? present.has(shaped.last_given_to.user_id) : true }
         : null,
     };
   };

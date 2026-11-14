@@ -163,18 +163,31 @@ const positive = (n) => (n != null && Number(n) > 0 ? Number(n) : null);
 
 // What tapping a suggestion fills (spec §5.7): the most common amount, the
 // current user's own last method (else Cash), and the last Given to only when
-// that person is clocked in today. `me` is { userId }; the server already sends
-// only the caller's own method, so no other person's method is ever used.
+// that person is clocked in today (a typed name, a vendor, always counts as
+// here: the server sends present_today true for it). `me` is { userId }; the
+// server already sends only the caller's own method, so no other person's
+// method is ever used.
+// method is null when the row has no my_last_method field at all (a
+// type-ahead row from /suggest?q=): the method is unknown, so the caller keeps
+// whatever is chosen now. A Usual now / Often row always has the field (null
+// when you never paid for it), which means Cash.
 // eslint-disable-next-line no-unused-vars
 export function pickDefaults(item, me) {
   const it = item || {};
-  const method = it.my_last_method === 'cash' || it.my_last_method === 'upi' ? it.my_last_method : 'cash';
+  const known = Object.prototype.hasOwnProperty.call(it, 'my_last_method');
+  const method = !known ? null
+    : (it.my_last_method === 'cash' || it.my_last_method === 'upi' ? it.my_last_method : 'cash');
   const p = it.last_given_to;
   return {
     amount: positive(it.common_amount) ?? positive(it.usual_amount),
     method,
     givenTo: p && p.present_today === true ? personOnly(p) : null,
   };
+}
+
+// Paid by after a pick: the row's known method, else the current choice.
+export function methodAfterPick(current, item) {
+  return pickDefaults(item).method || current;
 }
 
 // "Cash · Tota Ram": the grey line under a suggestion, exactly what a tap fills.

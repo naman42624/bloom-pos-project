@@ -44,7 +44,7 @@ import useSubmitGuard from '../../hooks/useSubmitGuard';
 import { bumpActivity } from '../../hooks/useIdleLock';
 import { appAlert, showConfirm } from '../../utils/alert';
 import { getShopTodayStr } from '../../utils/datetime';
-import { lastSevenDays, pickDefaults, suggestionSections, suggestionLine } from '../../utils/expenseBook';
+import { lastSevenDays, pickDefaults, methodAfterPick, suggestionSections, suggestionLine } from '../../utils/expenseBook';
 import { OpenRegisterForm } from '../OpenRegisterSheet';
 import DateTimePickerModal from '../DateTimePickerModal';
 import RecentPeople, { givenToLabel } from './RecentPeople';
@@ -205,10 +205,11 @@ function SheetBody({
   // In add mode, while the register status is still loading, start on Cash
   // once we learn it is open.
   const sawLoading = useRef(registerLoading);
+  const methodChosen = useRef(false); // a pick or a tap on Paid by already chose
   useEffect(() => {
     if (editing || !sawLoading.current || registerLoading) return;
     sawLoading.current = false;
-    if (isOpen && !start.payment_method) setPaymentMethod('cash');
+    if (isOpen && !start.payment_method && !methodChosen.current) setPaymentMethod('cash');
   }, [registerLoading, isOpen]);
 
   const methods = [
@@ -268,10 +269,18 @@ function SheetBody({
     setCategory(s.category);
     setKindChosen(false);
     if (d.amount) setAmount(String(d.amount));
-    // Your own last Cash/UPI for this item (a change keeps its method).
-    if (!editing) { autoMovedOffCash.current = false; setPaymentMethod(d.method); }
-    setGivenTo(d.givenTo);
-    setGivenToTouched(true);
+    // Your own last Cash/UPI for this item, only when the row knows it (a
+    // type-ahead row does not: the current choice stays). A change keeps its method.
+    if (!editing && d.method) {
+      autoMovedOffCash.current = false;
+      methodChosen.current = true;
+      setPaymentMethod((cur) => methodAfterPick(cur, s));
+    }
+    // A change keeps the row's own Given to (controller ruling, fix round 1).
+    if (!editing) {
+      setGivenTo(d.givenTo);
+      setGivenToTouched(true);
+    }
     setShowTyped(false);
     setErrors({});
     if (!d.amount) setTimeout(() => amountRef.current?.focus(), 50);
@@ -620,7 +629,7 @@ function SheetBody({
           value={paymentMethod}
           options={methods}
           locked={cashLocked}
-          onChange={(k) => { autoMovedOffCash.current = false; setPaymentMethod(k); }}
+          onChange={(k) => { autoMovedOffCash.current = false; methodChosen.current = true; setPaymentMethod(k); }}
         />
         {cashLocked && (
           <Text style={styles.hint}>

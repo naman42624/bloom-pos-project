@@ -178,6 +178,18 @@ check('route: typing a search still finds items', async () => {
   assert(r.status === 200 && r.body.data.some((x) => x.name === 'VerifyUN Tea'), 'search broke');
 });
 
+check('route: a typed-name Given to (no user_id, e.g. a vendor) counts as present', async () => {
+  const db = await getDb();
+  const it = await db.prepare("SELECT id FROM expense_items WHERE name_key = 'verifyun tea'").get();
+  assert(it, 'VerifyUN Tea missing (earlier check failed?)');
+  await db.prepare("UPDATE expense_items SET last_given_to_user_id = NULL, last_given_to_name = 'VerifyUN Milkman' WHERE id = ?").run(it.id);
+  const r = await api(`/expenses/suggest?location_id=${TEST_LOCATION_ID}`, tokenFor(COUNTER_ID));
+  const row = r.body.usual_now.concat(r.body.often).find((x) => x.id === Number(it.id));
+  assert(row && row.last_given_to, 'no last_given_to: ' + JSON.stringify(row));
+  assert(row.last_given_to.user_id === null && row.last_given_to.display_name === 'VerifyUN Milkman', JSON.stringify(row.last_given_to));
+  assert(row.last_given_to.present_today === true, 'typed name should be present_today true: ' + JSON.stringify(row.last_given_to));
+});
+
 async function cleanup() {
   const db = await getDb();
   const del = async (label, sql, ...p) => { try { await db.prepare(sql).run(...p); } catch (e) { console.error(`cleanup ${label}:`, e.message); } };
