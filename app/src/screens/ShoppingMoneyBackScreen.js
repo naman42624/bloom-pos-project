@@ -35,7 +35,7 @@ import { showConfirm } from '../utils/alert';
 import { suggestionSections, pickDefaults } from '../utils/expenseBook';
 import {
   isBackTitle, hadLine, isBackSums, isBackError, overspendText, settleBody, billCheck,
-  defaultChange, firstName, rupeesText,
+  defaultChange, firstName, rupeesText, changeMethodDefault, canOfferRemove, removeConfirmText,
 } from '../utils/staffMoney';
 import MethodSwitch from '../components/expenses/MethodSwitch';
 import PayBackSheet from '../components/expenses/PayBackSheet';
@@ -61,9 +61,10 @@ export default function ShoppingMoneyBackScreen() {
 
   // ── The line ──
   const [line, setLine] = useState(null);
-  const [loadState, setLoadState] = useState('loading'); // loading | ready | gone | error
+  const [loadState, setLoadState] = useState('loading'); // loading | ready | gone | noshop | error
   const load = async () => {
-    if (!locationId || !id) { setLoadState('gone'); return; }
+    if (!locationId) { setLoadState('noshop'); return; }
+    if (!id) { setLoadState('gone'); return; }
     setLoadState('loading');
     try {
       const res = await api.getOpenStaffMoney({ location_id: locationId });
@@ -143,7 +144,12 @@ export default function ShoppingMoneyBackScreen() {
   // ── Change back ──
   const [change, setChange] = useState('');
   const [changeTouched, setChangeTouched] = useState(false);
+  // Cash while the register is open, UPI while it is closed, until picked.
   const [method, setMethod] = useState('cash');
+  const methodTouched = useRef(false);
+  useEffect(() => {
+    if (!methodTouched.current && !register.loading) setMethod(changeMethodDefault(register.isOpen));
+  }, [register.loading, register.isOpen]);
   const prefill = line ? String(defaultChange(left, allBills)) : '';
   useEffect(() => { if (!changeTouched) setChange(prefill); }, [prefill, changeTouched]);
 
@@ -233,6 +239,24 @@ export default function ShoppingMoneyBackScreen() {
     }
   });
 
+  // ── Remove a hand-out typed by mistake (spec 5.4). The server decides who
+  // and when (the giver in the same open session, or owner/manager). ──
+  const doRemove = guard(async () => {
+    setBusy(true);
+    setError('');
+    try {
+      await api.cancelShoppingMoney(id);
+      setBusy(false);
+      leave();
+    } catch (err) {
+      setBusy(false);
+      if (err && err.status === 409) load();
+      setError(err && err.status && err.status < 500 ? err.message : LOST_ERROR);
+    }
+  });
+  const askRemove = () => showConfirm('Remove this shopping money?', removeConfirmText(line), doRemove,
+    { confirmLabel: 'Remove', cancelLabel: 'Keep it', destructive: true });
+
   // ── Render ──
   if (loadState !== 'ready' && !result) {
     return (
@@ -242,7 +266,9 @@ export default function ShoppingMoneyBackScreen() {
             <Text style={styles.centerText}>
               {loadState === 'error'
                 ? "Couldn't load this. Check the internet, then tap Try again."
-                : 'This shopping money is already accounted for. Go back to see what is still out.'}
+                : loadState === 'noshop'
+                  ? "Couldn't tell which shop this is from. Go back and tap it on the Shopping money out card."
+                  : 'This shopping money is already accounted for. Go back to see what is still out.'}
             </Text>
             <TouchableOpacity style={styles.retryBtn} onPress={loadState === 'error' ? load : () => navigation.goBack()} accessibilityRole="button">
               <Text style={styles.retryText}>{loadState === 'error' ? 'Try again' : 'Go back'}</Text>
@@ -379,7 +405,7 @@ export default function ShoppingMoneyBackScreen() {
             />
           </View>
           <View style={styles.changeMethod}>
-            <MethodSwitch value={method} options={METHODS} onChange={(k) => { setMethod(k); setError(''); }} />
+            <MethodSwitch value={method} options={METHODS} onChange={(k) => { methodTouched.current = true; setMethod(k); setError(''); }} />
           </View>
         </View>
         {changeClosed && (
@@ -413,6 +439,11 @@ export default function ShoppingMoneyBackScreen() {
           <Text style={styles.linkText}>Save, rest later</Text>
         </TouchableOpacity>
 
+        {canOfferRemove(line) && !writeOff && bills.length === 0 && (
+          <TouchableOpacity style={styles.linkRow} onPress={askRemove} disabled={busy} accessibilityRole="button">
+            <Text style={styles.mutedLink}>Remove (typed by mistake)</Text>
+          </TouchableOpacity>
+        )}
         {isOwner && !writeOff && (
           <TouchableOpacity style={styles.linkRow} onPress={() => { setWriteOff(true); setError(''); }} disabled={busy} accessibilityRole="button">
             <Text style={styles.mutedLink}>Write off</Text>

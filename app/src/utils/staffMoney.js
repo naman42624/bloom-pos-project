@@ -298,4 +298,26 @@ export function historyStatus(status) {
   return HISTORY_STATUS[status] || String(status || '');
 }
 
+// Change back's method: Cash while the register is open, else UPI (same
+// rule as the add sheet's default; only cash needs the drawer).
+export function changeMethodDefault(registerOpen) {
+  return registerOpen === false ? 'upi' : 'cash';
+}
+
+// "Remove (typed by mistake)" is offered only while nothing on the line is
+// accounted for (the server also checks who and when, spec 5.4).
+export function canOfferRemove(line) {
+  if (!line || line.amount == null) return false;
+  return toPaise(line.remaining) > 0 && toPaise(line.remaining) === toPaise(line.amount);
+}
+
+// The confirm for Remove: plain words on where the money goes.
+export function removeConfirmText(line) {
+  const n = firstName(line && line.user_name);
+  const amt = inr(line && line.amount);
+  return line && line.payment_method === 'upi'
+    ? `The ${amt} UPI shopping money given to ${n} is removed. Use this only if it was typed by mistake.`
+    : `The ${amt} cash goes back into the drawer and ${n} no longer holds it. Use this only if it was typed by mistake.`;
+}
+
 export { inr as rupeesText };

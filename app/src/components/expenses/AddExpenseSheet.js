@@ -583,7 +583,7 @@ function SheetBody({
   const held = givenTo && givenTo.user_id ? heldBy(openShopping, givenTo.user_id) : { amount: 0, id: null };
   const isBackLine = canGive && isBackReady && !isSalary && !isReturn && held.id ? isBackHint(givenToLabel(givenTo), held.amount) : null;
   const goIsBack = () => {
-    const go = () => { onClose(); navigation.navigate(IS_BACK_SCREEN, { id: held.id }); };
+    const go = () => { onClose(); navigation.navigate(IS_BACK_SCREEN, { id: held.id, locationId }); };
     if (!name.trim() && !amount && !note.trim() && !photo) { go(); return; }
     showConfirm('Leave without saving?', 'What you typed here will be lost.', go,
       { confirmLabel: 'Leave', cancelLabel: 'Keep typing', destructive: true });

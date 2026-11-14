@@ -255,6 +255,25 @@ test('cardHasLines: only while something is out or owed', () => {
   assert.strictEqual(s.cardHasLines({ owes: [{ id: 1 }] }), true);
 });
 
+test('changeMethodDefault: UPI only when the register is known closed', () => {
+  assert.strictEqual(s.changeMethodDefault(false), 'upi');
+  assert.strictEqual(s.changeMethodDefault(true), 'cash');
+  assert.strictEqual(s.changeMethodDefault(undefined), 'cash');
+});
+test('canOfferRemove: only while nothing is accounted for', () => {
+  assert.strictEqual(s.canOfferRemove({ amount: 500, remaining: 500 }), true);
+  assert.strictEqual(s.canOfferRemove({ amount: 500, remaining: 200 }), false);
+  assert.strictEqual(s.canOfferRemove({ amount: 500, remaining: 0 }), false);
+  assert.strictEqual(s.canOfferRemove({ remaining: 500 }), false);
+  assert.strictEqual(s.canOfferRemove(null), false);
+});
+test('removeConfirmText: cash back into the drawer / UPI just removed', () => {
+  assert.strictEqual(s.removeConfirmText({ user_name: 'Ramesh K', amount: 500, payment_method: 'cash' }),
+    'The ₹500 cash goes back into the drawer and Ramesh no longer holds it. Use this only if it was typed by mistake.');
+  assert.strictEqual(s.removeConfirmText({ user_name: 'Ramesh', amount: 500, payment_method: 'upi' }),
+    'The ₹500 UPI shopping money given to Ramesh is removed. Use this only if it was typed by mistake.');
+});
+
 let failed = 0;
 for (const t of tests) {
   try { t.fn(); console.log('  ok   ' + t.name); } catch (err) { failed++; console.log('  FAIL ' + t.name + '\n       ' + err.message); }
