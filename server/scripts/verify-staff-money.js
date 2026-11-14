@@ -1364,7 +1364,9 @@ check('B5: no take_shopping_money leaves open shopping money alone', async () =>
   eq(r.status, 201, 'paid');
   eq((await moRow(a.body.data.id)).status, 'open', 'line still open');
   eq((await shopAdvOf(u)).length, 0, 'no advance');
-  eq((await pay(u, payPeriod(), { net_amount: 15000, take_shopping_money: { expected_total: 'abc' } })).status, 400, 'bad expected_total');
+  const bad = await pay(u, payPeriod(), { net_amount: 15000, take_shopping_money: { expected_total: 'abc' } });
+  eq(bad.status, 400, 'bad expected_total');
+  eq(bad.body.message, "The shopping money amount didn't come through right — tap Calculate again.", 'bad copy');
 });
 
 check('B5: two Pays at once take the shopping money once', async () => {
@@ -1380,6 +1382,27 @@ check('B5: two Pays at once take the shopping money once', async () => {
   for (const x of advs) createdAdvanceIds.push(x.id);
   eq(advs.length, 1, 'one advance');
   eq((await paymentsOf(u)).length, 1, 'one payment');
+});
+
+check('B5: a take with a pay that was not reduced by it is refused; nothing written', async () => {
+  const c = await getCast();
+  const u = await salaried('counter_staff', 'VerifySM PayFullNet');
+  const a = await hand(c.owner, { user_id: u, amount: 300, payment_method: 'upi' });
+  eq(a.status, 201, 'hand');
+  const period = payPeriod();
+  eq((await calc(u, period)).open_shopping_money_total, 300, 'offered');
+  const r = await pay(u, period, { net_amount: 15000, take_shopping_money: { expected_total: 300 } });
+  eq(r.status, 409, 'full net refused ' + JSON.stringify(r.body));
+  assert(/tap Calculate again/.test(r.body.message), 'copy: ' + r.body.message);
+  eq((await moRow(a.body.data.id)).status, 'open', 'line still open');
+  eq((await shopAdvOf(u)).length, 0, 'no advance');
+  eq((await paymentsOf(u)).length, 0, 'no payment');
+  eq((await (await getDb()).prepare("SELECT COUNT(*)::int AS n FROM expenses WHERE employee_id = ? AND category = 'salary'").get(u)).n, 0, 'no pay expense');
+  const half = await pay(u, period, { net_amount: 14700.01, take_shopping_money: { expected_total: 300 } });
+  eq(half.status, 409, 'one paisa over refused');
+  const ok = await pay(u, period, { net_amount: 14700, take_shopping_money: { expected_total: 300 } });
+  eq(ok.status, 201, 'reduced net paid');
+  for (const x of await shopAdvOf(u)) createdAdvanceIds.push(x.id);
 });
 
 async function cleanup() {

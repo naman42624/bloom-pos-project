@@ -545,6 +545,8 @@ router.post('/payroll/calculate', authorize('owner'), async (req, res) => {
 });
 
 const STALE_TAKE_MESSAGE = 'Shopping money changed since you calculated — tap Calculate again.';
+const BAD_TAKE_MESSAGE = "The shopping money amount didn't come through right — tap Calculate again.";
+const TAKE_NET_MESSAGE = "The pay amount doesn't take off the shopping money — tap Calculate again.";
 
 // Take from pay (spec 5.6, 5.9). Inside disburse's transaction, with the
 // lines already locked and their total checked. The remainder becomes one
@@ -614,7 +616,7 @@ router.post('/payroll/disburse', authorize('owner'), async (req, res) => {
       const raw = take && typeof take === 'object' ? take.expected_total : undefined;
       const str = raw === undefined || raw === null || typeof raw === 'boolean' ? '' : String(raw).trim();
       if (!/^\d{1,8}(\.\d{1,2})?$/.test(str)) {
-        return res.status(400).json({ success: false, message: STALE_TAKE_MESSAGE });
+        return res.status(400).json({ success: false, message: BAD_TAKE_MESSAGE });
       }
       takePaise = Math.round(Number(str) * 100);
     }
@@ -719,6 +721,13 @@ router.post('/payroll/disburse', authorize('owner'), async (req, res) => {
           throw Object.assign(new Error(STALE_TAKE_MESSAGE), { statusCode: 409 });
         }
         takeLines = current.rows;
+        // The pay must already have the advances (old ones and this
+        // shopping money) taken off; otherwise the person would be paid in
+        // full while the shopping money is marked repaid.
+        const maxNetPaise = Math.round(payable * 100) - Math.round(advancesDeducted * 100);
+        if (!(Math.round(Number(net_amount) * 100) <= maxNetPaise)) {
+          throw Object.assign(new Error(TAKE_NET_MESSAGE), { statusCode: 409 });
+        }
       }
       await db.prepare(
         "SELECT id FROM salary_advances WHERE user_id = ? AND status = 'approved' AND repaid_amount < amount ORDER BY id FOR UPDATE"
@@ -778,7 +787,7 @@ router.post('/payroll/disburse', authorize('owner'), async (req, res) => {
       if (advancesDeducted > 0) {
         let remaining = advancesDeducted;
         const advances = await db.prepare(
-          'SELECT * FROM salary_advances WHERE user_id = ? AND status = ? AND repaid_amount < amount ORDER BY date'
+          'SELECT * FROM salary_advances WHERE user_id = ? AND status = ? AND repaid_amount < amount ORDER BY date, id'
         ).all(user_id, 'approved');
         for (const adv of advances) {
           if (remaining <= 0) break;
