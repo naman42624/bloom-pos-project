@@ -159,6 +159,7 @@ function hideSalaryNames(row, viewerId) {
     given_to_user_id: null,
     given_to_name: null,
     given_to_display: null,
+    photo_url: null,
   };
 }
 
@@ -413,7 +414,7 @@ async function usualNowSections(db, locationId, userId, shapeItem, cols, base) {
     SELECT item_id, amount, payment_method, created_by, created_at
     FROM expenses
     WHERE location_id = ? AND item_id IS NOT NULL AND payment_method IN ('cash', 'upi')
-      AND COALESCE(is_return, 0) = 0 AND created_at >= ?
+      AND COALESCE(is_return, 0) = 0 AND category <> 'salary' AND created_at >= ?
     ORDER BY created_at ASC
   `).all(locationId, sinceSql);
   const byItem = new Map();
@@ -479,7 +480,9 @@ router.get('/suggest', authenticate, authorize('owner', 'manager', 'employee', '
     const db = await getAsyncDb();
     const sinceStr = localToday(new Date(Date.now() - 29 * 86400000));
     const cols = `i.id, i.name, i.category, i.usual_amount, i.last_given_to_user_id, i.last_given_to_name, gu.name AS last_user_name`;
-    const base = `FROM expense_items i LEFT JOIN users gu ON gu.id = i.last_given_to_user_id WHERE i.is_active = TRUE AND i.merged_into IS NULL`;
+    // Counter staff never get a salary item (its amount or person) here.
+    const noSalary = isBossRole(req.user.role) ? '' : " AND i.category <> 'salary'";
+    const base = `FROM expense_items i LEFT JOIN users gu ON gu.id = i.last_given_to_user_id WHERE i.is_active = TRUE AND i.merged_into IS NULL${noSalary}`;
     const useCount = `(SELECT COUNT(*) FROM expenses e WHERE e.item_id = i.id AND e.location_id = ? AND e.expense_date >= ?)`;
     const q = nameKey(req.query.q);
     let rows;
@@ -866,7 +869,10 @@ router.post(
         return res.status(400).json({ success: false, message: BAD_PHOTO_MESSAGE });
       }
       const adb = await getAsyncDb();
-      if (givenTo.given_to_user_id) await assertGivenTo(adb, givenTo.given_to_user_id, location_id);
+      // A salary row's Given to is its employee (checked by the payroll
+      // rules below), who need not be linked to this shop.
+      const salaryGivenTo = req.body.category === 'salary' && Number(givenTo.given_to_user_id) === Number(employee_id);
+      if (givenTo.given_to_user_id && !salaryGivenTo) await assertGivenTo(adb, givenTo.given_to_user_id, location_id);
 
       // Category: as sent, else the item's. A new name without a category is
       // refused by resolveItem. With a category sent, salary checks run
@@ -986,8 +992,9 @@ router.post(
       return result.lastInsertRowid;
       });
 
-      // A return or an earlier day's entry is not the usual amount or person.
-      if (!is_return && isToday) {
+      // A return or an earlier day's entry is not the usual amount or person,
+      // and a salary entry never feeds an item's usual amount or person.
+      if (!is_return && isToday && category !== 'salary') {
         await rememberAfterSave(itemId, { amount: Math.round(Number(amount) * 100) / 100, ...givenTo });
       }
 
@@ -1108,7 +1115,7 @@ router.put(
 
       // Checks before the item is resolved, so a refused change never
       // creates an item. The transaction below checks again under locks.
-      const current = await adb.prepare('SELECT id, location_id, created_by, expense_date, item_id, note, description, category FROM expenses WHERE id = ?').get(expenseId);
+      const current = await adb.prepare('SELECT id, location_id, created_by, expense_date, item_id, note, description, category, employee_id FROM expenses WHERE id = ?').get(expenseId);
       if (!current) return res.status(404).json({ success: false, message: 'This expense was not found. It may have been removed already — pull down to refresh.' });
       if (!isBoss && Number(current.created_by) !== Number(req.user.id)) {
         return res.status(403).json({ success: false, message: NOT_YOURS_MESSAGE });
@@ -1134,7 +1141,9 @@ router.put(
       }
       const touchesGivenTo = has('given_to_user_id') || has('given_to_name');
       const givenTo = touchesGivenTo ? readGivenTo(req.body) : null;
-      if (givenTo && givenTo.given_to_user_id) await assertGivenTo(adb, givenTo.given_to_user_id, current.location_id);
+      const salaryEmployeeId = has('employee_id') ? req.body.employee_id : current.employee_id;
+      const salaryGivenTo = current.category === 'salary' && givenTo && Number(givenTo.given_to_user_id) === Number(salaryEmployeeId);
+      if (givenTo && givenTo.given_to_user_id && !salaryGivenTo) await assertGivenTo(adb, givenTo.given_to_user_id, current.location_id);
 
       // The item is an ordinary write, made before the money transaction.
       let item = null;
@@ -1241,8 +1250,8 @@ router.put(
 
       // The item remembers this save only when it is the latest entry for
       // the item, so fixing an old row never overwrites newer usual values.
-      if (updated.item_id && (wantsItem || has('amount') || touchesGivenTo)) {
-        const latest = await adb.prepare('SELECT id FROM expenses WHERE item_id = ? ORDER BY created_at DESC, id DESC LIMIT 1').get(updated.item_id);
+      if (updated.item_id && updated.category !== 'salary' && (wantsItem || has('amount') || touchesGivenTo)) {
+        const latest = await adb.prepare("SELECT id FROM expenses WHERE item_id = ? AND category <> 'salary' ORDER BY created_at DESC, id DESC LIMIT 1").get(updated.item_id);
         if (latest && Number(latest.id) === expenseId) {
           await rememberAfterSave(updated.item_id, {
             amount: updated.amount, given_to_user_id: updated.given_to_user_id, given_to_name: updated.given_to_name,

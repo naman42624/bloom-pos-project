@@ -1106,7 +1106,7 @@ check('counter staff cannot edit a salary row or turn a row into salary', async 
 });
 
 check('counter staff list shows another person\'s advance as "Salary advance" with no name; own advance keeps its name', async () => {
-  const theirs = await rawRow({ category: 'salary', employee_id: MANAGER_ID, given_to_user_id: MANAGER_ID, given_to_name: 'VerifyEB Secret', description: 'VerifyEB Secret advance', note: 'VerifyEB secret note', amount: 7 });
+  const theirs = await rawRow({ category: 'salary', employee_id: MANAGER_ID, given_to_user_id: MANAGER_ID, given_to_name: 'VerifyEB Secret', description: 'VerifyEB Secret advance', note: 'VerifyEB secret note', photo_url: '/uploads/verifyeb-secret.png', amount: 7 });
   const own = await rawRow({ category: 'salary', employee_id: COUNTER_ID, description: 'VerifyEB own advance', amount: 8 });
   const r = await api('GET', `/expenses?location_id=${TEST_LOCATION_ID}`, counterT());
   assert(r.status === 200, 'status ' + r.status);
@@ -1115,12 +1115,14 @@ check('counter staff list shows another person\'s advance as "Salary advance" wi
   assert(t && o, 'rows missing');
   assert(t.description === 'Salary advance' && t.employee_id === null && t.employee_name == null && t.given_to_user_id === null && t.given_to_name === null && t.given_to_display === null, JSON.stringify(t));
   assert(!JSON.stringify(t).includes('Secret'), 'name leaked: ' + JSON.stringify(t));
+  assert(t.photo_url === null, 'bill photo kept on a hidden salary row: ' + t.photo_url);
   assert(o.description === 'VerifyEB own advance' && Number(o.employee_id) === COUNTER_ID, JSON.stringify(o));
   const byName = await api('GET', `/expenses?location_id=${TEST_LOCATION_ID}&q=VerifyEB%20Secret`, counterT());
   assert(!byName.body.data.some((x) => x.id === theirs), 'search matched hidden text');
   const bo = await api('GET', `/expenses?location_id=${TEST_LOCATION_ID}`, ownerT());
   const ot = bo.body.data.find((x) => x.id === theirs);
   assert(ot && ot.description === 'VerifyEB Secret advance' && Number(ot.employee_id) === MANAGER_ID, 'owner view changed: ' + JSON.stringify(ot));
+  assert(ot.photo_url === '/uploads/verifyeb-secret.png', 'owner lost the photo: ' + ot.photo_url);
 });
 
 async function cleanup() {

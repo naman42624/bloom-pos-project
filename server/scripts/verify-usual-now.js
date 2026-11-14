@@ -190,6 +190,59 @@ check('route: a typed-name Given to (no user_id, e.g. a vendor) counts as presen
   assert(row.last_given_to.present_today === true, 'typed name should be present_today true: ' + JSON.stringify(row.last_given_to));
 });
 
+async function send(method, path, token, body) {
+  const res = await fetch(`${API_BASE}${path}`, {
+    method, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  let out = null; try { out = await res.json(); } catch { /* non-JSON */ }
+  return { status: res.status, body: out };
+}
+
+check('route: a salary entry on a normal item never changes its usual amount or Given to (add and change)', async () => {
+  const db = await getDb();
+  const worker = await db.prepare("INSERT INTO users (phone, password, name, role, is_active) VALUES (?, 'x', 'VerifyUN Worker', 'counter_staff', 1) RETURNING id").get('8' + String(Date.now()).slice(-9));
+  createdUserIds.push(worker.id);
+  const it = await db.prepare("INSERT INTO expense_items (name, name_key, category, usual_amount) VALUES ('VerifyUN Snack', 'verifyun snack', 'food', 40) RETURNING id").get();
+  createdItemIds.push(it.id);
+  const created = new Date(Date.now() - 86400000); created.setUTCHours(3, 30, 0, 0);
+  const day = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(created);
+  const past = await db.prepare(`INSERT INTO expenses (location_id, category, amount, description, payment_method, expense_date, created_by, created_at, item_id) VALUES (?, 'food', 40, 'VerifyUN Snack', 'upi', ?, ?, ?, ?) RETURNING id`)
+    .get(TEST_LOCATION_ID, day, OWNER_ID, sqlUtc(created), it.id);
+  createdExpenseIds.push(past.id);
+  // The worker is not linked to Test Loc: a salary Given to is its employee and is still accepted.
+  const add = await send('POST', '/expenses', tokenFor(OWNER_ID), {
+    location_id: TEST_LOCATION_ID, item_id: it.id, category: 'salary', employee_id: worker.id,
+    given_to_user_id: worker.id, given_to_name: null, amount: 3000, payment_method: 'upi', is_return: false,
+  });
+  assert(add.status === 201, `salary add ${add.status} ${JSON.stringify(add.body)}`);
+  createdExpenseIds.push(add.body.data.id);
+  assert(Number(add.body.data.given_to_user_id) === Number(worker.id), 'given_to_user_id not the employee');
+  let row = await db.prepare('SELECT usual_amount, last_given_to_user_id, last_given_to_name FROM expense_items WHERE id = ?').get(it.id);
+  assert(Number(row.usual_amount) === 40 && !row.last_given_to_user_id && !row.last_given_to_name, 'item changed by add: ' + JSON.stringify(row));
+  const change = await send('PUT', `/expenses/${add.body.data.id}`, tokenFor(OWNER_ID), {
+    amount: 3100, employee_id: worker.id, given_to_user_id: worker.id, given_to_name: null, category: 'salary',
+  });
+  assert(change.status === 200, `salary change ${change.status} ${JSON.stringify(change.body)}`);
+  row = await db.prepare('SELECT usual_amount, last_given_to_user_id, last_given_to_name FROM expense_items WHERE id = ?').get(it.id);
+  assert(Number(row.usual_amount) === 40 && !row.last_given_to_user_id && !row.last_given_to_name, 'item changed by change: ' + JSON.stringify(row));
+  const r = await api(`/expenses/suggest?location_id=${TEST_LOCATION_ID}`, tokenFor(OWNER_ID));
+  const shown = r.body.usual_now.concat(r.body.often).find((x) => x.id === Number(it.id));
+  assert(!shown || shown.common_amount === 40, 'salary amount in common_amount: ' + JSON.stringify(shown));
+});
+
+check('route: counter staff /suggest never returns a salary item (with and without q); the owner still finds it', async () => {
+  const db = await getDb();
+  const wage = await db.prepare("INSERT INTO expense_items (name, name_key, category, usual_amount, pinned, pin_order) VALUES ('VerifyUN Wage', 'verifyun wage', 'salary', 900, TRUE, 0) RETURNING id").get();
+  createdItemIds.push(wage.id);
+  const salaryIn = (b) => (b.data || []).concat(b.usual_now || [], b.often || []).filter((x) => x.category === 'salary');
+  const plain = await api(`/expenses/suggest?location_id=${TEST_LOCATION_ID}`, tokenFor(COUNTER_ID));
+  assert(plain.status === 200 && salaryIn(plain.body).length === 0, 'salary in counter chips: ' + JSON.stringify(salaryIn(plain.body)));
+  const typed = await api(`/expenses/suggest?location_id=${TEST_LOCATION_ID}&q=verifyun%20wage`, tokenFor(COUNTER_ID));
+  assert(typed.status === 200 && salaryIn(typed.body).length === 0, 'salary in counter search: ' + JSON.stringify(typed.body.data));
+  const boss = await api(`/expenses/suggest?location_id=${TEST_LOCATION_ID}&q=verifyun%20wage`, tokenFor(OWNER_ID));
+  assert(boss.body.data.some((x) => x.id === Number(wage.id)), 'owner search lost the salary item');
+});
+
 async function cleanup() {
   const db = await getDb();
   const del = async (label, sql, ...p) => { try { await db.prepare(sql).run(...p); } catch (e) { console.error(`cleanup ${label}:`, e.message); } };
