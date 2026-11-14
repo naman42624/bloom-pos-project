@@ -1187,6 +1187,8 @@ function ensureCompatibilityColumns() {
   runPsql('CREATE INDEX IF NOT EXISTS idx_staff_money_settles_out ON staff_money_settles(money_out_id)');
   runPsql('CREATE INDEX IF NOT EXISTS idx_shop_owes_user_status ON shop_owes(user_id, status)');
   runPsql('CREATE INDEX IF NOT EXISTS idx_shop_owes_payments_register ON shop_owes_payments(register_id)');
+  // One own pocket owes line per expense (backstop for two saves at once).
+  runPsql("CREATE UNIQUE INDEX IF NOT EXISTS idx_shop_owes_own_pocket_expense ON shop_owes(expense_id) WHERE source = 'own_pocket' AND expense_id IS NOT NULL");
   runPsql('CREATE INDEX IF NOT EXISTS idx_expenses_money_out ON expenses(money_out_id)');
   runPsql('CREATE INDEX IF NOT EXISTS idx_expenses_paid_by_user ON expenses(paid_by_user_id)');
   for (const [k, v, d] of [

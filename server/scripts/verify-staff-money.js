@@ -64,7 +64,7 @@ check('indexes exist', async () => {
   const have = rows.map((r) => r.indexname);
   for (const i of ['idx_staff_money_out_loc_status', 'idx_staff_money_out_user_status', 'idx_staff_money_settles_register',
     'idx_staff_money_settles_out', 'idx_shop_owes_user_status', 'idx_shop_owes_payments_register',
-    'idx_expenses_money_out', 'idx_expenses_paid_by_user']) assert(have.includes(i), 'missing index ' + i);
+    'idx_expenses_money_out', 'idx_expenses_paid_by_user', 'idx_shop_owes_own_pocket_expense']) assert(have.includes(i), 'missing index ' + i);
 });
 
 check('salary_advances status check allows cancelled', async () => {
@@ -1194,6 +1194,19 @@ check('B4: switching cash to own pocket gives the drawer back and opens owes; ow
   // A partly paid-back own pocket line cannot leave own pocket.
   const out = await api('PUT', `/expenses/${b4.partPaid.expense}`, c.counter, { payment_method: 'cash' });
   eq(out.status, 400, 'paid-back line cannot switch method');
+});
+
+check('B4: two saves at once switching into own pocket open one owes line; the other is told to refresh', async () => {
+  const c = await getCast();
+  await openOwnRegister();
+  const e = await api('POST', '/expenses', c.counter, { location_id: TEST_LOCATION_ID, category: 'supplies', description: 'VerifySM twice', amount: 25, payment_method: 'upi' });
+  eq(e.status, 201, 'upi expense');
+  const both = await Promise.all([1, 2].map(() => api('PUT', `/expenses/${e.body.data.id}`, c.counter, { payment_method: 'own_pocket' })));
+  eq(both.map((r) => r.status).sort().join(','), '200,409', 'statuses ' + JSON.stringify(both.map((r) => r.body)));
+  eq(both.find((r) => r.status === 409).body.message, 'Already saved — refresh.', 'copy');
+  const rows = await (await getDb()).prepare("SELECT id FROM shop_owes WHERE expense_id = ? AND source = 'own_pocket'").all(e.body.data.id);
+  eq(rows.length, 1, 'one owes line');
+  await owesOf(e.body.data.id);
 });
 
 check('B4: a settle bill keeps shopping_money when sent back unchanged; switching into or out of it is refused', async () => {

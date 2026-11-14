@@ -229,6 +229,7 @@ const OWN_POCKET_SALARY_MESSAGE = 'Pick Cash or UPI for salary.';
 const INTO_SHOPPING_MESSAGE = 'Shopping money bills are added from the shopping money line. Pick Cash, UPI or Own pocket.';
 const OWES_PAID_BACK_MESSAGE = "The shop already paid back part of this, so it can't be removed. Ask the owner if it needs fixing.";
 const OWES_PART_PAID_MESSAGE = "The shop already paid back part of this, so Paid by and Whose? can't be changed. Ask the owner if it needs fixing.";
+const ALREADY_SAVED_MESSAGE = 'Already saved — refresh.';
 const OWES_CLOSED_MESSAGE = "This Shop owes line is already closed, so its amount, Paid by and Whose? can't be changed. Ask the owner if it needs fixing.";
 
 // Whose pocket: active staff, rider or the owner, linked to the shop (owner anywhere).
@@ -1466,7 +1467,12 @@ router.put(
             }
           }
         } else if (isOwn) {
-          // Newly own pocket (or an own pocket row with no owes line yet).
+          // Newly own pocket. If the locked row is already own pocket, another
+          // save switched it while this one waited (a double tap): its owes
+          // line was not visible when the owes lock ran, so stop here rather
+          // than open a second line. Never re-read the owes row after the
+          // expense lock: pay back locks owes before the register.
+          if (expense.payment_method === OWN_POCKET) throw httpError(409, ALREADY_SAVED_MESSAGE);
           await createOwnPocketOwes(tx, {
             expenseId, locationId: expense.location_id, userId: nv.paid_by_user_id, amount: nv.amount, createdBy: req.user.id,
           });
