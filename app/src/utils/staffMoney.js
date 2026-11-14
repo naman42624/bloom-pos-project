@@ -63,3 +63,103 @@ export function needsPinOf(err) {
   const r = err && err.status === 409 && err.body ? err.body.needs_pin : null;
   return ['over_day', 'over_month', 'self'].includes(r) ? r : null;
 }
+
+// ── The add sheet: Salary advance, Shopping money, Own pocket (B7) ──
+
+// "Ramesh Kumar" -> "Ramesh" (the server's copy uses first names too).
+export function firstName(name) {
+  return String(name || '').trim().split(/\s+/)[0] || 'This person';
+}
+
+// Typed "advance" or "shopping" in "What was it for?" offers the matching
+// link first (spec 4.1). Three letters or more; a word of the text may start
+// the keyword ("adv", "shop") or contain it ("salary advance"). Counter staff
+// (hideSalary) typing "salary" are pointed to Salary advance too.
+export function moneyLinksFor(text, { hideSalary = false } = {}) {
+  const words = String(text || '').trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const hit = (kw) => words.some((w) => w.length >= 3 && (kw.startsWith(w) || w.startsWith(kw)));
+  const out = [];
+  if (hit('advance') || (hideSalary && hit('salary'))) out.push('advance');
+  if (hit('shopping')) out.push('shopping');
+  return out;
+}
+
+const chip = (p, meId) => ({
+  id: Number(p.id), name: p.name, me: Number(p.id) === Number(meId),
+  label: Number(p.id) === Number(meId) ? 'Me' : p.name,
+});
+
+// Who (Salary advance / Shopping money): the people list comes recent first
+// from GET /staff-money/people. Up to `max` others, then Me when the caller
+// can receive money (is in the list). A person picked under More shows first.
+export function whoChips(people, meId, chosenId, max = 3) {
+  const list = Array.isArray(people) ? people.filter(Boolean) : [];
+  const others = list.filter((p) => Number(p.id) !== Number(meId));
+  let shown = others.slice(0, max);
+  const chosen = chosenId != null && others.find((p) => Number(p.id) === Number(chosenId));
+  if (chosen && !shown.some((p) => Number(p.id) === Number(chosenId))) {
+    shown = [chosen].concat(shown.slice(0, max - 1));
+  }
+  const out = shown.map((p) => chip(p, meId));
+  const me = list.find((p) => Number(p.id) === Number(meId));
+  if (me) out.push(chip(me, meId));
+  return out;
+}
+
+// Whose? (Own pocket): Me first (the default), then others. Me shows even
+// before the list loads. A person picked under More shows next to Me.
+export function whoseChips(people, meId, chosenId, max = 3) {
+  const list = Array.isArray(people) ? people.filter(Boolean) : [];
+  const others = list.filter((p) => Number(p.id) !== Number(meId));
+  let shown = others.slice(0, max - 1);
+  const chosen = chosenId != null && Number(chosenId) !== Number(meId)
+    && others.find((p) => Number(p.id) === Number(chosenId));
+  if (chosen && !shown.some((p) => Number(p.id) === Number(chosenId))) {
+    shown = [chosen].concat(shown.slice(0, max - 2));
+  }
+  return [{ id: Number(meId), name: 'Me', me: true, label: 'Me' }].concat(shown.map((p) => chip(p, meId)));
+}
+
+// Advances not yet taken from pay, from GET /attendance/salary-advances rows
+// (same sum as the server's totals().advancesUnpaid: approved only).
+export function unpaidAdvances(rows, userId) {
+  const p = (Array.isArray(rows) ? rows : [])
+    .filter((r) => r && r.status === 'approved' && Number(r.user_id) === Number(userId))
+    .reduce((t, r) => t + toPaise(r.amount) - toPaise(r.repaid_amount), 0);
+  return fromPaise(Math.max(0, p));
+}
+
+// Shopping money a person holds, from GET /staff-money/open's `shopping`
+// lines (oldest first): the total and the oldest line's id (for "is back").
+export function heldBy(openShopping, userId) {
+  const mine = (Array.isArray(openShopping) ? openShopping : [])
+    .filter((r) => r && Number(r.user_id) === Number(userId) && toPaise(r.remaining) > 0);
+  return {
+    amount: fromPaise(mine.reduce((t, r) => t + toPaise(r.remaining), 0)),
+    id: mine.length ? Number(mine[0].id) : null,
+  };
+}
+
+// The grey line under Note (spec 4.2). null when there is nothing to say.
+export function moneyLine(kind, name, amount, { me = false } = {}) {
+  if (!(toPaise(amount) > 0)) return null;
+  const who = me ? 'You' : firstName(name);
+  if (kind === 'shopping') return `${who} still ${me ? 'have' : 'has'} ${inr(amount)} shopping money`;
+  return `${who}: ${inr(amount)} in advances not yet taken from pay`;
+}
+
+// Given to a person who holds shopping money (spec 4.1).
+export function isBackHint(name, amount) {
+  if (!(toPaise(amount) > 0)) return null;
+  const n = firstName(name);
+  return `${n} has ${inr(amount)} shopping money — ${n} is back?`;
+}
+
+// The amount box: rupees with at most 2 decimals, above 0 (same rule as the
+// server's parseMoney), else null.
+export function parseGiveAmount(text) {
+  const t = String(text == null ? '' : text).trim();
+  if (!/^\d{1,8}(\.\d{1,2})?$/.test(t)) return null;
+  const p = toPaise(t);
+  return p > 0 ? fromPaise(p) : null;
+}

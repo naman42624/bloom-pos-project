@@ -105,6 +105,18 @@ test('merge confirm text', () => {
   assert.strictEqual(e.mergeConfirmText('a', 'B', 1), 'Move 1 entry from "a" into "B"? "a" will be hidden.');
 });
 
+test('methodLabel: own pocket and shopping money name the person', () => {
+  assert.strictEqual(e.methodLabel({ payment_method: 'cash' }), 'Cash');
+  assert.strictEqual(e.methodLabel({ payment_method: 'UPI' }), 'UPI');
+  assert.strictEqual(e.methodLabel({ payment_method: 'card' }), 'Card');
+  assert.strictEqual(e.methodLabel({ payment_method: 'own_pocket', paid_by_user_name: 'Owner' }), 'Own pocket · Owner');
+  assert.strictEqual(e.methodLabel({ payment_method: 'own_pocket' }), 'Own pocket');
+  assert.strictEqual(e.methodLabel({ payment_method: 'shopping_money', given_to_display: 'Ramesh' }), 'Shopping money · Ramesh');
+  assert.strictEqual(e.methodLabel({ payment_method: 'shopping_money' }), 'Shopping money');
+  assert.strictEqual(e.methodLabel({ payment_method: 'bank_transfer' }), 'Bank');
+  assert.strictEqual(e.methodLabel({}), '');
+});
+
 let failed = 0;
 for (const t of tests) {
   try { t.fn(); console.log('ok   ' + t.name); } catch (err) { failed++; console.log('FAIL ' + t.name + ': ' + err.message); }

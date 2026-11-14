@@ -55,6 +55,18 @@ export function givenToText(row) {
   return name && String(name).trim() ? `given to ${String(name).trim()}` : null;
 }
 
+// How an expense was paid, as the list shows it (spec 3, 4.8):
+// "Cash", "UPI", "Own pocket · Owner", "Shopping money · Ramesh".
+const METHOD_NAMES = { cash: 'Cash', upi: 'UPI', card: 'Card', bank_transfer: 'Bank', own_pocket: 'Own pocket', shopping_money: 'Shopping money' };
+export function methodLabel(row) {
+  const r = row || {};
+  const key = String(r.payment_method || '').toLowerCase();
+  if (!key) return '';
+  const base = METHOD_NAMES[key] || key.toUpperCase();
+  const who = key === 'own_pocket' ? r.paid_by_user_name : key === 'shopping_money' ? r.given_to_display : null;
+  return who && String(who).trim() ? `${base} · ${String(who).trim()}` : base;
+}
+
 // Same number of days, ending the day before `from` (matches the server's
 // previousRange in server/utils/expense-book.js, which the % compares to).
 export function previousRange(from, to) {

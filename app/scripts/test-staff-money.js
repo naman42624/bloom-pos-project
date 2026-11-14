@@ -85,6 +85,95 @@ test('needsPinOf reads the 409 body', () => {
   assert.strictEqual(s.needsPinOf(null), null);
 });
 
+// ── B7: the add sheet's Salary advance / Shopping money / Own pocket ──
+const people = [
+  { id: 5, name: 'Ramesh Kumar', role: 'counter_staff', recent_rank: 1 },
+  { id: 2, name: 'Asha', role: 'manager', recent_rank: 2 },
+  { id: 9, name: 'Priya', role: 'counter_staff', recent_rank: null },
+  { id: 7, name: 'Tota Ram', role: 'delivery_partner', recent_rank: null },
+];
+test('moneyLinksFor: typed advance / shopping offer the matching link', () => {
+  assert.deepStrictEqual(s.moneyLinksFor('advance'), ['advance']);
+  assert.deepStrictEqual(s.moneyLinksFor('  Adv '), ['advance']);
+  assert.deepStrictEqual(s.moneyLinksFor('salary advance for ramesh'), ['advance']);
+  assert.deepStrictEqual(s.moneyLinksFor('Shop'), ['shopping']);
+  assert.deepStrictEqual(s.moneyLinksFor('shopping money'), ['shopping']);
+  assert.deepStrictEqual(s.moneyLinksFor('ad'), [], 'two letters are too few');
+  assert.deepStrictEqual(s.moneyLinksFor('Tea'), []);
+  assert.deepStrictEqual(s.moneyLinksFor(''), []);
+});
+test('moneyLinksFor: "salary" offers Salary advance only when salary is hidden', () => {
+  assert.deepStrictEqual(s.moneyLinksFor('salary', { hideSalary: true }), ['advance']);
+  assert.deepStrictEqual(s.moneyLinksFor('salary'), []);
+});
+test('whoChips: recent people first, then Me, chosen always shown', () => {
+  const c = s.whoChips(people, 2, null);
+  assert.deepStrictEqual(c.map((x) => x.id), [5, 9, 7, 2]);
+  assert.strictEqual(c[3].me, true);
+  assert.strictEqual(c[3].label, 'Me');
+  assert.strictEqual(c[0].label, 'Ramesh Kumar');
+  // Me is not offered when the caller is not in the list (the owner).
+  assert.deepStrictEqual(s.whoChips(people, 1, null).map((x) => x.id), [5, 2, 9]);
+  // A chosen person from More replaces the last chip.
+  assert.deepStrictEqual(s.whoChips(people, 1, 7).map((x) => x.id), [7, 5, 2]);
+  assert.deepStrictEqual(s.whoChips([], 1, null), []);
+});
+test('whoseChips: Me first, then others; chosen always shown', () => {
+  const list = [{ id: 1, name: 'Owner' }, ...people];
+  assert.deepStrictEqual(s.whoseChips(list, 1, null).map((x) => x.id), [1, 5, 2]);
+  assert.strictEqual(s.whoseChips(list, 1, null)[0].label, 'Me');
+  assert.deepStrictEqual(s.whoseChips(list, 1, 7).map((x) => x.id), [1, 7, 5]);
+  assert.deepStrictEqual(s.whoseChips(list, 1, 1).map((x) => x.id), [1, 5, 2], 'Me picked = no extra chip');
+  assert.deepStrictEqual(s.whoseChips([], 1, null).map((x) => x.id), [1], 'Me even before the list loads');
+});
+test('unpaidAdvances: approved minus taken from pay, paise maths', () => {
+  const rows = [
+    { user_id: 5, status: 'approved', amount: '300.10', repaid_amount: '100' },
+    { user_id: 5, status: 'approved', amount: 900, repaid_amount: null },
+    { user_id: 5, status: 'repaid', amount: 500, repaid_amount: 500 },
+    { user_id: 5, status: 'pending', amount: 700 },
+    { user_id: 6, status: 'approved', amount: 999 },
+  ];
+  assert.strictEqual(s.unpaidAdvances(rows, 5), 1100.1);
+  assert.strictEqual(s.unpaidAdvances([], 5), 0);
+  assert.strictEqual(s.unpaidAdvances(null, 5), 0);
+});
+test('heldBy: sums the person\'s open shopping lines, oldest id first', () => {
+  const open = [
+    { id: 11, user_id: 5, remaining: 200 },
+    { id: 14, user_id: 5, remaining: 300.5 },
+    { id: 12, user_id: 9, remaining: 50 },
+  ];
+  assert.deepStrictEqual(s.heldBy(open, 5), { amount: 500.5, id: 11 });
+  assert.deepStrictEqual(s.heldBy(open, 3), { amount: 0, id: null });
+  assert.deepStrictEqual(s.heldBy(undefined, 5), { amount: 0, id: null });
+});
+test('moneyLine: the line under Note (spec 4.2)', () => {
+  assert.strictEqual(s.moneyLine('advance', 'Ramesh Kumar', 1200), 'Ramesh: ₹1,200 in advances not yet taken from pay');
+  assert.strictEqual(s.moneyLine('shopping', 'Ramesh', 500), 'Ramesh still has ₹500 shopping money');
+  assert.strictEqual(s.moneyLine('advance', 'Ramesh', 0), null);
+  assert.strictEqual(s.moneyLine('shopping', 'Ramesh', null), null);
+  assert.strictEqual(s.moneyLine('advance', 'Ramesh', 300, { me: true }), 'You: ₹300 in advances not yet taken from pay');
+  assert.strictEqual(s.moneyLine('shopping', 'Ramesh', 300, { me: true }), 'You still have ₹300 shopping money');
+});
+test('isBackHint: "Ramesh has ₹500 shopping money — Ramesh is back?"', () => {
+  assert.strictEqual(s.isBackHint('Ramesh Kumar', 500), 'Ramesh has ₹500 shopping money — Ramesh is back?');
+  assert.strictEqual(s.isBackHint('Ramesh', 0), null);
+});
+test('parseGiveAmount: rupees with up to 2 decimals, above 0 (server parseMoney)', () => {
+  assert.strictEqual(s.parseGiveAmount('300'), 300);
+  assert.strictEqual(s.parseGiveAmount(' 300.5 '), 300.5);
+  assert.strictEqual(s.parseGiveAmount('300.55'), 300.55);
+  assert.strictEqual(s.parseGiveAmount('300.555'), null);
+  assert.strictEqual(s.parseGiveAmount('0'), null);
+  assert.strictEqual(s.parseGiveAmount(''), null);
+  assert.strictEqual(s.parseGiveAmount('1.2.3'), null);
+});
+test('firstName', () => {
+  assert.strictEqual(s.firstName('Ramesh Kumar'), 'Ramesh');
+  assert.strictEqual(s.firstName('  '), 'This person');
+});
+
 let failed = 0;
 for (const t of tests) {
   try { t.fn(); console.log('  ok   ' + t.name); } catch (err) { failed++; console.log('  FAIL ' + t.name + '\n       ' + err.message); }

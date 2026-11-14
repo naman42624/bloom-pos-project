@@ -12,13 +12,12 @@ import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors, FontSize, Spacing, BorderRadius } from '../../constants/theme';
 import { formatTime } from '../../utils/datetime';
-import { givenToText } from '../../utils/expenseBook';
+import { givenToText, methodLabel } from '../../utils/expenseBook';
 import { getApiOrigin } from '../../services/api';
 import ImageModal from '../ImageModal';
 import { EXPENSE_CATEGORIES, rupees } from './AddExpenseSheet';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-const METHOD_LABEL = { cash: 'Cash', upi: 'UPI', card: 'Card' };
 
 export function shortDate(str) {
   const [y, m, d] = String(str || '').slice(0, 10).split('-').map(Number);
@@ -35,8 +34,10 @@ export default function ExpenseRow({ expense, canChange, onChange, onReturn, sho
   const e = expense || {};
   const cat = catInfo(e.category);
   const title = e.item_name || e.description || cat.label;
-  const method = METHOD_LABEL[String(e.payment_method || '').toLowerCase()] || String(e.payment_method || '').toUpperCase();
-  const given = givenToText(e);
+  // "Cash", "Own pocket · Owner", "Shopping money · Ramesh" (the holder is
+  // the bill's Given to, so it is not named twice).
+  const method = methodLabel(e);
+  const given = String(e.payment_method).toLowerCase() === 'shopping_money' ? null : givenToText(e);
   const parts = [method, given, e.created_by_name ? `added by ${e.created_by_name}` : null].filter(Boolean);
   const photoUri = e.photo_url ? (/^https?:/.test(e.photo_url) ? e.photo_url : `${getApiOrigin()}${e.photo_url}`) : null;
   const showReturn = !!onReturn && !e.is_return && String(e.payment_method).toLowerCase() === 'cash';

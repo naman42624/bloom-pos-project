@@ -9,11 +9,13 @@
  *     Petrol  ₹200   Cash · Ramesh
  *   What was it for?   [ type here…            ]
  *   Amount             ₹ [      ]
- *   Paid by            [ Cash | UPI ]
+ *   Paid by            [ Cash | UPI | Own pocket ]
+ *   Whose?             (Me) (Ramesh) (Asha)   More ›   only with Own pocket
  *   Given to           (Tota Ram) (Ramesh) (Asha)   More ›
  *   Kind               Food (from the item)     ›
  *   Date               Today                    ›   owner / manager only
  *   Note / bill photo  —                        ›
+ *   ↗ Salary advance      ↗ Shopping money        (MoneyToStaffForm, in place)
  *   [              Save ₹50              ]
  *   Money coming back? Record a return
  *
@@ -26,7 +28,7 @@
  *   expense?          change mode (shows "Remove this expense")
  *   initial?          add mode pre-fill, e.g. a return of an earlier expense
  *   prefill?          add mode: a suggestion item (from Usual now) to start from
- *   mode?             'expense' (default); 'advance' / 'shopping' arrive with staff money
+ *   mode?             'expense' (default); 'advance' / 'shopping' open straight on that form
  *   onClose()
  *   onSaved(result)   result = { expense, removed, message } after a save or remove
  *   onRegisterOpened? called after the register was opened from inside the sheet
@@ -39,6 +41,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import api, { getApiOrigin } from '../../services/api';
+import { useNavigation } from '@react-navigation/native';
 import { useAuth } from '../../context/AuthContext';
 import useSubmitGuard from '../../hooks/useSubmitGuard';
 import { bumpActivity } from '../../hooks/useIdleLock';
@@ -51,6 +54,8 @@ import RecentPeople, { givenToLabel } from './RecentPeople';
 import SheetRow from './SheetRow';
 import OptionList from './OptionList';
 import MethodSwitch from './MethodSwitch';
+import MoneyToStaffForm from './MoneyToStaffForm';
+import { moneyLinksFor, heldBy, isBackHint } from '../../utils/staffMoney';
 import { Colors, FontSize, Spacing, BorderRadius } from '../../constants/theme';
 
 export const EXPENSE_CATEGORIES = [
@@ -70,6 +75,17 @@ export const categoryLabel = (key) => (EXPENSE_CATEGORIES.find((c) => c.key === 
 // ShiftManagementScreen (owner left out: the owner is not paid a wage here).
 const PAYROLL_ROLES = ['manager', 'employee', 'counter_staff', 'florist_staff', 'delivery_partner'];
 
+// Who may give Salary advance / Shopping money and pay from their own pocket
+// (spec 5.1; server GIVER_ROLES).
+const GIVER_ROLES = ['owner', 'manager', 'employee', 'counter_staff'];
+// B8 registers this screen ("Ramesh is back") with params { id }.
+const IS_BACK_SCREEN = 'ShoppingMoneyBack';
+
+const MONEY_LINKS = {
+  advance: { label: 'Salary advance', sub: 'Salary money given now, taken from pay later' },
+  shopping: { label: 'Shopping money', sub: 'Cash to buy things; the bills and change come back' },
+};
+
 const PHOTO_FAILED_MESSAGE = "Photo didn't upload — saved without it. Tap the expense to add it again.";
 
 export const rupees = (n) => `₹${Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
@@ -88,6 +104,10 @@ const withoutNote = (description, note) => {
   return n && d.endsWith(` — ${n}`) ? d.slice(0, -(n.length + 3)) : d;
 };
 const localDateStr = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+const firstNameOf = (people, id) => {
+  const p = (people || []).find((x) => Number(x.id) === Number(id));
+  return p ? String(p.name || '').trim().split(/\s+/)[0] || 'them' : 'them';
+};
 const personKey = (p) => (!p ? '' : p.user_id ? `u${Number(p.user_id)}` : `n${nameKey(givenToLabel(p))}`);
 
 function givenToFromExpense(e) {
@@ -124,8 +144,7 @@ export default function AddExpenseSheet(props) {
 
 function SheetBody({
   locationId, registerOpen, registerLoading = false, register, expense, initial, prefill,
-  // mode: only 'expense' today; Salary advance / Shopping money come later.
-  mode = 'expense', // eslint-disable-line no-unused-vars
+  mode = 'expense',
   onClose, onSaved, onRegisterOpened, closeRequest,
 }) {
   const { user, settings } = useAuth();
@@ -135,6 +154,11 @@ function SheetBody({
   // Counter staff give salary money through Salary advance (server refuses it here).
   const hideSalary = user?.role === 'employee' || user?.role === 'counter_staff';
   const editing = !!expense;
+  const canGive = !editing && GIVER_ROLES.includes(user?.role);
+  // 'expense' | 'advance' | 'shopping': the two money forms show in place of
+  // the expense form; this form's state stays while they show.
+  const [view, setView] = useState(canGive && (mode === 'advance' || mode === 'shopping') ? mode : 'expense');
+  const navigation = useNavigation();
   const [fromPrefill] = useState(() => (editing || initial ? null : startFromPrefill(prefill)));
   const start = expense || initial || fromPrefill || {};
 
@@ -212,12 +236,27 @@ function SheetBody({
     if (isOpen && !start.payment_method && !methodChosen.current) setPaymentMethod('cash');
   }, [registerLoading, isOpen]);
 
-  const methods = [
-    { key: 'cash', label: 'Cash', disabled: cashDisabled },
-    { key: 'upi', label: 'UPI' },
-  ];
-  // Card stays only for an older expense that was paid by card.
-  if (editing && expense.payment_method === 'card') methods.push({ key: 'card', label: 'Card' });
+  // ── Own pocket: whose pocket (null = Me) ──
+  const meId = Number(user?.id);
+  const startWhoseId = editing && expense.payment_method === 'own_pocket' && expense.paid_by_user_id
+    && Number(expense.paid_by_user_id) !== meId ? Number(expense.paid_by_user_id) : null;
+  const [whoseId, setWhoseId] = useState(startWhoseId);
+  const [whosePeople, setWhosePeople] = useState([]);
+  const [whoseState, setWhoseState] = useState('idle'); // idle | loading | ready | error
+  const loadWhose = () => {
+    if (!locationId) return;
+    setWhoseState('loading');
+    api.getExpensePeople(locationId)
+      .then((res) => { setWhosePeople(res.data || []); setWhoseState('ready'); })
+      .catch(() => setWhoseState('error'));
+  };
+  useEffect(() => {
+    if (paymentMethod === 'own_pocket' && whoseState === 'idle') loadWhose();
+  }, [paymentMethod]);
+  // A row paid from someone no longer in the list still shows their name.
+  const whoseList = startWhoseId && !whosePeople.some((p) => Number(p.id) === startWhoseId)
+    ? whosePeople.concat({ id: startWhoseId, name: expense.paid_by_user_name || 'Someone' })
+    : whosePeople;
 
   // ── Suggestions ──
   const [sections, setSections] = useState({ usualNow: [], often: [] });
@@ -310,6 +349,24 @@ function SheetBody({
     wasSalary.current = isSalary;
   }, [isSalary]);
 
+  // Paid by. Own pocket (spec 4.1, 5.5) never touches the drawer, so it stays
+  // on with the register closed and on past days; not for a return or salary
+  // (server refuses both). A shopping money bill keeps its method.
+  const shoppingBill = editing && expense.payment_method === 'shopping_money';
+  const ownPocketOk = GIVER_ROLES.includes(user?.role) && !isReturn && !isSalary;
+  const methods = shoppingBill ? [{ key: 'shopping_money', label: 'Shopping money' }] : [
+    { key: 'cash', label: 'Cash', disabled: cashDisabled },
+    { key: 'upi', label: 'UPI' },
+  ];
+  // Card stays only for an older expense that was paid by card.
+  if (editing && expense.payment_method === 'card') methods.push({ key: 'card', label: 'Card' });
+  if (!shoppingBill && (ownPocketOk || paymentMethod === 'own_pocket')) {
+    methods.push({ key: 'own_pocket', label: 'Own pocket', disabled: !ownPocketOk });
+  }
+  useEffect(() => {
+    if (paymentMethod === 'own_pocket' && !ownPocketOk) setPaymentMethod(cashDisabled ? 'upi' : 'cash');
+  }, [ownPocketOk]);
+
   // ── Photo ──
   const pickPhoto = async (fromCamera) => {
     try {
@@ -361,10 +418,12 @@ function SheetBody({
       || note !== (expense.note || '') || paymentMethod !== expense.payment_method
       || category !== (expense.category || null) || isReturn !== !!expense.is_return
       || expenseDate !== (dateStr(expense.expense_date) || today) || pickedEmployeeId !== startEmployeeId
-      || (photoUrl || null) !== (expense.photo_url || null))
+      || (photoUrl || null) !== (expense.photo_url || null)
+      || (paymentMethod === 'own_pocket' && whoseId !== startWhoseId))
     : (name.trim() !== startName.trim() || (amount !== '' && amount !== startAmount) || !!photo || !!note.trim()
       || category !== (start.category || null) || isReturn !== !!start.is_return || expenseDate !== today
-      || pickedEmployeeId !== null || personKey(givenTo) !== personKey(startGivenTo));
+      || pickedEmployeeId !== null || personKey(givenTo) !== personKey(startGivenTo)
+      || (paymentMethod === 'own_pocket' && whoseId !== null));
   const requestClose = () => {
     if (saving || removing) return;
     if (!dirty) { onClose(); return; }
@@ -373,7 +432,8 @@ function SheetBody({
   };
   const firstClose = useRef(closeRequest);
   useEffect(() => {
-    if (closeRequest !== firstClose.current) requestClose();
+    // While a money form shows, it handles the close itself.
+    if (closeRequest !== firstClose.current && view === 'expense') requestClose();
   }, [closeRequest]);
 
   // ── Save ──
@@ -425,6 +485,8 @@ function SheetBody({
         ...itemFields(),
         employee_id: isSalary ? salaryEmployee.id : null,
       };
+      // Own pocket: whose pocket (Me unless another person was picked).
+      if (paymentMethod === 'own_pocket') body.paid_by_user_id = whoseId || meId;
       if (isSalary) {
         // Given to is the salary employee (lists that show Given to agree).
         body.category = 'salary';
@@ -505,6 +567,55 @@ function SheetBody({
   // ── Date (owner / manager) ──
   const days = useMemo(() => lastSevenDays(today), [today]);
   const dateLabel = (days.find((d) => d.date === expenseDate) || {}).label || expenseDate;
+
+  // ── Salary advance / Shopping money (spec 4.1) ──
+  // Who holds shopping money now, for the "<Name> is back? ›" hint.
+  const [openShopping, setOpenShopping] = useState([]);
+  useEffect(() => {
+    if (!canGive || !locationId) return;
+    api.getOpenStaffMoney({ location_id: locationId })
+      .then((res) => setOpenShopping(res.data?.shopping || []))
+      .catch(() => setOpenShopping([]));
+  }, [locationId]);
+  const isBackReady = (() => {
+    try { return (navigation.getState()?.routeNames || []).includes(IS_BACK_SCREEN); } catch { return false; }
+  })();
+  const held = givenTo && givenTo.user_id ? heldBy(openShopping, givenTo.user_id) : { amount: 0, id: null };
+  const isBackLine = canGive && isBackReady && !isSalary && !isReturn && held.id ? isBackHint(givenToLabel(givenTo), held.amount) : null;
+  const goIsBack = () => {
+    const go = () => { onClose(); navigation.navigate(IS_BACK_SCREEN, { id: held.id }); };
+    if (!name.trim() && !amount && !note.trim() && !photo) { go(); return; }
+    showConfirm('Leave without saving?', 'What you typed here will be lost.', go,
+      { confirmLabel: 'Leave', cancelLabel: 'Keep typing', destructive: true });
+  };
+  const typedLinks = canGive && !isReturn && showTyped ? moneyLinksFor(name, { hideSalary }) : [];
+  const openMoney = (kind, fromTyping) => {
+    if (fromTyping) {
+      // "advance" was typed only to find the link: leave the expense form clean.
+      reqId.current += 1;
+      setName(''); setItem(null); setShowTyped(false);
+      setErrors((e) => ({ ...e, name: undefined }));
+    }
+    setView(kind);
+  };
+
+  if (view !== 'expense') {
+    return (
+      <MoneyToStaffForm
+        key={view}
+        kind={view}
+        locationId={locationId}
+        registerOpen={isOpen}
+        registerLoading={registerLoading}
+        register={register}
+        onBack={() => setView('expense')}
+        onClose={onClose}
+        onDone={(result) => onSaved && onSaved(result)}
+        onRegisterOpened={() => { setOpenedHere(true); onRegisterOpened && onRegisterOpened(); }}
+        closeRequest={closeRequest}
+      />
+    );
+  }
 
   // ── Open register in place ──
   if (showOpenRegister) {
@@ -603,6 +714,16 @@ function SheetBody({
           accessibilityLabel="What was it for?"
         />
         {!!errors.name && <Text style={styles.error}>{errors.name}</Text>}
+        {typedLinks.length > 0 && (
+          <View style={styles.typedList}>
+            {typedLinks.map((k) => (
+              <TouchableOpacity key={k} style={styles.typedRow} onPress={() => openMoney(k, true)} accessibilityRole="button">
+                <Text style={[styles.typedName, { color: Colors.primary }]}>{MONEY_LINKS[k].label} ›</Text>
+                <Text style={styles.typedMeta}>{MONEY_LINKS[k].sub}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        )}
         {showTyped && name.trim() !== '' && typedFor === name.trim() && typed.length > 0 && !(item && typed.length === 1 && typed[0].id === item.id) && (
           <View style={styles.typedList}>
             {typed.map((s) => (
@@ -640,9 +761,21 @@ function SheetBody({
         <MethodSwitch
           value={paymentMethod}
           options={methods}
-          locked={cashLocked}
+          locked={cashLocked || shoppingBill}
           onChange={(k) => { autoMovedOffCash.current = false; methodChosen.current = true; setPaymentMethod(k); }}
+          whose={{
+            meId, people: whoseList, value: whoseId, state: whoseState, onRetry: loadWhose,
+            onChange: (id) => setWhoseId(id),
+          }}
         />
+        {paymentMethod === 'own_pocket' && (
+          <Text style={styles.hint}>
+            Not from the drawer. The shop owes {whoseId ? firstNameOf(whoseList, whoseId) : 'you'} this until it is paid back.
+          </Text>
+        )}
+        {shoppingBill && (
+          <Text style={styles.hint}>Bought with shopping money, so Paid by stays as it is.</Text>
+        )}
         {cashLocked && (
           <Text style={styles.hint}>
             This cash was paid on a day whose register is already closed, so the amount and Cash/UPI stay as they are. You can still change the rest.
@@ -651,7 +784,7 @@ function SheetBody({
         {cashPastDay && (
           <Text style={styles.hint}>Past days don't change today's drawer, so an earlier day is paid by UPI.</Text>
         )}
-        {cashDisabled && !cashPastDay && (
+        {cashDisabled && !cashPastDay && paymentMethod !== 'own_pocket' && !shoppingBill && (
           <View style={styles.closedRow}>
             <Text style={styles.closedText}>Open the register to pay cash</Text>
             <TouchableOpacity style={styles.openRegBtn} onPress={() => setShowOpenRegister(true)} accessibilityRole="button">
@@ -674,6 +807,12 @@ function SheetBody({
               value={givenTo}
               onChange={(v) => { setGivenTo(v); setGivenToTouched(true); }}
             />
+            {!!isBackLine && (
+              <TouchableOpacity style={styles.isBackRow} onPress={goIsBack} accessibilityRole="button">
+                <Text style={styles.isBackText}>{isBackLine}</Text>
+                <Ionicons name="chevron-forward" size={20} color={Colors.primary} />
+              </TouchableOpacity>
+            )}
           </>
         )}
 
@@ -740,6 +879,24 @@ function SheetBody({
             </View>
           )}
         </View>
+
+        {/* Salary advance / Shopping money: given to staff, not an expense here */}
+        {canGive && !isReturn && (
+          <View style={styles.moneyLinks}>
+            {['advance', 'shopping'].map((k) => (
+              <TouchableOpacity
+                key={k}
+                style={styles.moneyLink}
+                onPress={() => openMoney(k, false)}
+                accessibilityRole="button"
+                accessibilityLabel={`${MONEY_LINKS[k].label}: ${MONEY_LINKS[k].sub}`}
+              >
+                <Ionicons name="arrow-forward-circle-outline" size={20} color={Colors.primary} />
+                <Text style={styles.moneyLinkText}>{MONEY_LINKS[k].label}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        )}
 
         {/* Return switch, then Remove (change mode) */}
         {!cashLocked && (
@@ -1004,6 +1161,17 @@ const styles = StyleSheet.create({
   photo: { width: 72, height: 72, borderRadius: BorderRadius.sm, backgroundColor: Colors.surfaceAlt },
   extraBtn: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs, minHeight: 44, paddingHorizontal: Spacing.xs },
   extraText: { fontSize: FontSize.md, color: Colors.primary, fontWeight: '600' },
+
+  moneyLinks: {
+    flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm, marginTop: Spacing.md,
+    paddingVertical: Spacing.xs, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: Colors.border,
+  },
+  moneyLink: { flex: 1, minWidth: 150, flexDirection: 'row', alignItems: 'center', gap: Spacing.xs, minHeight: 48 },
+  moneyLinkText: { fontSize: FontSize.md, fontWeight: '700', color: Colors.primary },
+  isBackRow: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.xs, minHeight: 48, marginTop: Spacing.xs,
+  },
+  isBackText: { flex: 1, fontSize: FontSize.md, color: Colors.primary, fontWeight: '600' },
 
   linkBtn: { minHeight: 48, justifyContent: 'center', alignItems: 'center', marginTop: Spacing.md },
   linkText: { fontSize: FontSize.md, color: Colors.textSecondary, textDecorationLine: 'underline' },
