@@ -9,9 +9,8 @@
 //
 // Params: { itemId, from?, to?, locationId? } (from the Expenses summary).
 //
-// The month strip and the entry list are two calls: the server works out the
-// month totals inside from..to only, so the strip asks with no dates (its
-// own 6-month window) and the list asks for the chosen period.
+// One call: the server gives the month strip for the last 6 months whatever
+// the dates, and the entry list for the chosen period (from..to).
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView, FlatList, ActivityIndicator, TextInput, Switch,
@@ -137,16 +136,13 @@ export default function ExpenseItemScreen({ navigation, route }) {
     setLoading(true);
     setError('');
     try {
-      const base = { months: 6 };
-      if (locationId) base.location_id = locationId;
-      const [stripRes, listRes] = await Promise.all([
-        api.getExpenseItemHistory(itemId, base),
-        api.getExpenseItemHistory(itemId, { ...base, from, to }),
-      ]);
+      const params = { months: 6, from, to };
+      if (locationId) params.location_id = locationId;
+      const res = await api.getExpenseItemHistory(itemId, params);
       if (id !== reqId.current) return;
-      const data = listRes.data || {};
-      setItem(data.item || stripRes.data?.item || null);
-      setMonths(stripRes.data?.months || []);
+      const data = res.data || {};
+      setItem(data.item || null);
+      setMonths(data.months || []);
       setEntries((data.entries || []).map((r) => ({ ...r, amount: Number(r.amount) || 0 })));
       setLoadedKey(viewKey);
       // Owner: usual amount, pin, hidden and the entry count come from the item list.

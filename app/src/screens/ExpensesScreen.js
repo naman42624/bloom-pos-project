@@ -70,6 +70,12 @@ export default function ExpensesScreen() {
   // The sheet disables Cash up front with "Open the register to pay cash"
   // when the register is closed (2026-09-04 audit).
   const registerStatus = useRegisterStatus(selectedLocation);
+  // Changing an entry from another shop (All shops list) needs that shop's
+  // register, not the selected one's.
+  const sheetLocation = sheet?.expense?.location_id || selectedLocation;
+  const otherShop = !!sheetLocation && Number(sheetLocation) !== Number(selectedLocation);
+  const otherShopStatus = useRegisterStatus(otherShop ? sheetLocation : null);
+  const sheetStatus = otherShop ? otherShopStatus : registerStatus;
 
   // useRegisterStatus refetches on locationId change, not on focus — without
   // this, opening the register via the banner below and coming back here
@@ -299,15 +305,15 @@ export default function ExpensesScreen() {
 
       <AddExpenseSheet
         visible={!!sheet}
-        locationId={sheet?.expense?.location_id || selectedLocation}
-        registerOpen={registerStatus.isOpen}
-        registerLoading={registerStatus.loading}
-        register={registerStatus.register}
+        locationId={sheetLocation}
+        registerOpen={sheetStatus.isOpen}
+        registerLoading={sheetStatus.loading}
+        register={sheetStatus.register}
         expense={sheet?.expense || null}
         initial={sheet?.initial || null}
         onClose={() => setSheet(null)}
         onSaved={handleSaved}
-        onRegisterOpened={registerStatus.refetch}
+        onRegisterOpened={sheetStatus.refetch}
       />
     </View>
   );

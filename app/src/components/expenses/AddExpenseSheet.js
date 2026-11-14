@@ -68,6 +68,13 @@ const dateStr = (d) => {
   try { return new Date(d).toISOString().slice(0, 10); } catch { return ''; }
 };
 const pad2 = (n) => String(n).padStart(2, '0');
+// The stored description of a row with no item ends in " — note"; the name
+// box shows it without the note (the note has its own box).
+const withoutNote = (description, note) => {
+  const d = String(description || '');
+  const n = String(note || '').trim();
+  return n && d.endsWith(` — ${n}`) ? d.slice(0, -(n.length + 3)) : d;
+};
 const localDateStr = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 
 function givenToFromExpense(e) {
@@ -104,7 +111,7 @@ function SheetBody({
   const start = expense || initial || {};
 
   // ── Form state ──
-  const startName = expense ? (expense.item_name || expense.description || '') : (start.item_name || start.description || '');
+  const startName = expense ? (expense.item_name || withoutNote(expense.description, expense.note)) : (start.item_name || start.description || '');
   const [name, setName] = useState(startName);
   const [item, setItem] = useState(
     start.item_id ? { id: Number(start.item_id), name: start.item_name || startName, category: start.category } : null
@@ -133,7 +140,19 @@ function SheetBody({
   const [showOpenRegister, setShowOpenRegister] = useState(false);
   const isOpen = !!registerOpen || openedHere;
   const keepsCash = editing && expense.payment_method === 'cash';
-  const cashDisabled = !keepsCash && !registerLoading && !isOpen;
+  // An old cash expense with no register session (saved before registers
+  // were linked, from a day already closed) never moves into today's drawer:
+  // its amount, Cash/UPI and return stay as they are (server: OLD_CASH_MESSAGE).
+  const openedAt = register && (register.opened_at || register.opening_time);
+  const inOpenSession = editing && !!registerOpen && !!register && (expense.register_id
+    ? Number(expense.register_id) === Number(register.id)
+    : !!openedAt && !!expense.created_at && new Date(expense.created_at) >= new Date(openedAt));
+  const cashLocked = keepsCash && !expense.register_id && !registerLoading && !inOpenSession;
+  // Cash for another day would come out of today's drawer, so an earlier day
+  // is UPI only (a cash expense keeps its own session when its date moves).
+  const pastDay = expenseDate !== today;
+  const cashPastDay = !keepsCash && pastDay;
+  const cashDisabled = !keepsCash && (pastDay || (!registerLoading && !isOpen));
   const [paymentMethod, setPaymentMethod] = useState(
     expense ? expense.payment_method : (start.payment_method || (registerOpen ? 'cash' : 'upi'))
   );
@@ -145,7 +164,7 @@ function SheetBody({
     if (cashDisabled && paymentMethod === 'cash') {
       autoMovedOffCash.current = true;
       setPaymentMethod('upi');
-    } else if (!editing && isOpen && autoMovedOffCash.current) {
+    } else if (!editing && !cashDisabled && autoMovedOffCash.current) {
       autoMovedOffCash.current = false;
       if (paymentMethod === 'upi') setPaymentMethod('cash');
     }
@@ -183,13 +202,18 @@ function SheetBody({
 
   useEffect(() => {
     const q = name.trim();
-    if (!showTyped || !q || !locationId) { setTyped([]); setTypedFor(''); return undefined; }
+    if (!showTyped || !q || !locationId) {
+      // A reply still on its way must not change the item any more.
+      reqId.current += 1;
+      setTyped([]); setTypedFor(''); return undefined;
+    }
     const id = ++reqId.current;
     const t = setTimeout(() => {
       api.getExpenseSuggestions({ location_id: locationId, q })
         .then((res) => {
           if (id !== reqId.current) return;
-          const rows = res.data || [];
+          const all = res.data || [];
+          const rows = editing ? all.filter((r) => (r.category === 'salary') === (expense.category === 'salary')) : all;
           setTyped(rows);
           setTypedFor(q);
           // Typed the exact name of a known item: use it, no kind to pick.
@@ -202,6 +226,7 @@ function SheetBody({
   }, [name, showTyped, locationId]);
 
   const pickSuggestion = (s) => {
+    reqId.current += 1; // a slower type-ahead reply must not replace this pick
     setName(s.name);
     setItem({ id: s.id, name: s.name, category: s.category });
     setCategory(s.category);
@@ -222,7 +247,11 @@ function SheetBody({
 
   // A new name (not a known item) asks for the kind of expense once.
   const isNewName = !item && name.trim().length > 0;
-  const showCategories = editing || isNewName;
+  // Changing: a salary row keeps its kind, and other rows can't become
+  // salary (server: SALARY_ROW_MESSAGE).
+  const salaryRow = editing && expense.category === 'salary';
+  const showCategories = editing ? !salaryRow : isNewName;
+  const categoryChoices = editing ? EXPENSE_CATEGORIES.filter((c) => c.key !== 'salary') : EXPENSE_CATEGORIES;
   const effectiveCategory = item && !editing ? item.category : category;
   const isSalary = effectiveCategory === 'salary';
 
@@ -270,10 +299,16 @@ function SheetBody({
   };
 
   // ── Close with unsaved input ──
+  const startEmployeeId = expense?.employee_id ? Number(expense.employee_id) : null;
+  const pickedEmployeeId = salaryEmployee ? Number(salaryEmployee.id) : null;
   const dirty = editing
     ? (name !== startName || amount !== String(Number(expense.amount || 0)) || givenToTouched || !!photo
-      || note !== (expense.note || '') || paymentMethod !== expense.payment_method)
-    : (name.trim() !== startName.trim() || (amount !== '' && amount !== (start.amount ? String(Number(start.amount)) : '')) || !!photo || !!note.trim());
+      || note !== (expense.note || '') || paymentMethod !== expense.payment_method
+      || category !== (expense.category || null) || isReturn !== !!expense.is_return
+      || expenseDate !== (dateStr(expense.expense_date) || today) || pickedEmployeeId !== startEmployeeId
+      || (photoUrl || null) !== (expense.photo_url || null))
+    : (name.trim() !== startName.trim() || (amount !== '' && amount !== (start.amount ? String(Number(start.amount)) : '')) || !!photo || !!note.trim()
+      || category !== (start.category || null) || isReturn !== !!start.is_return || expenseDate !== today || pickedEmployeeId !== null);
   const requestClose = () => {
     if (saving || removing) return;
     if (!dirty) { onClose(); return; }
@@ -337,11 +372,19 @@ function SheetBody({
 
       let res;
       if (editing) {
-        // An unchanged name on an old row with no item stays as it was.
+        // An unchanged name on an old row with no item stays as it was: no
+        // description is sent, so the server keeps the text and only swaps
+        // the note at its end (never adds the note twice).
         if (!expense.item_id && name === startName && !item) {
           delete body.item_name;
-          body.description = expense.description;
+          delete body.description;
           body.category = effectiveCategory;
+        }
+        // An old cash expense with no session: only the parts that move no cash.
+        if (cashLocked) {
+          delete body.amount;
+          delete body.payment_method;
+          delete body.is_return;
         }
         res = await api.updateExpense(expense.id, body);
       } else {
@@ -357,7 +400,7 @@ function SheetBody({
       setSaving(false);
       const msg = err?.message || 'It was not saved. Check the connection and try again.';
       // The server's register-guard copy: "Register isn't open — ..."
-      if (paymentMethod === 'cash' && /register isn.t open/i.test(String(err?.raw_message || ''))) {
+      if (paymentMethod === 'cash' && !keepsCash && /register isn.t open/i.test(String(err?.raw_message || ''))) {
         setOpenedHere(false);
         appAlert('Register is closed', msg, [
           { text: 'Open register', onPress: () => setShowOpenRegister(true) },
@@ -371,7 +414,7 @@ function SheetBody({
 
   // ── Remove (change mode) ──
   const handleRemove = () => {
-    const cashNote = expense.payment_method === 'cash'
+    const cashNote = expense.payment_method === 'cash' && !cashLocked
       ? (expense.is_return ? ' The cash is taken back off the register.' : ' The cash is put back on the register.')
       : '';
     const label = expense.item_name || expense.description || 'this expense';
@@ -379,7 +422,7 @@ function SheetBody({
       { text: 'Keep it', style: 'cancel' },
       {
         text: 'Remove', style: 'destructive',
-        onPress: async () => {
+        onPress: guard(async () => {
           setRemoving(true);
           try {
             await api.deleteExpense(expense.id);
@@ -389,7 +432,7 @@ function SheetBody({
             setRemoving(false);
             appAlert('Could not remove', err?.message || 'The expense was not removed. Check the connection and try again.');
           }
-        },
+        }),
       },
     ]);
   };
@@ -498,7 +541,7 @@ function SheetBody({
           <>
             <Text style={styles.label}>{editing ? 'Kind of expense' : 'New item — what kind of expense is it?'}</Text>
             <View style={styles.chipWrap}>
-              {EXPENSE_CATEGORIES.map((c) => {
+              {categoryChoices.map((c) => {
                 const active = effectiveCategory === c.key;
                 return (
                   <TouchableOpacity
@@ -537,6 +580,7 @@ function SheetBody({
               style={styles.amountInput}
               value={amount}
               onChangeText={(t) => { setAmount(t.replace(/[^0-9.]/g, '')); setErrors((e) => ({ ...e, amount: undefined })); }}
+              editable={!cashLocked}
               placeholder="0"
               placeholderTextColor={Colors.textLight}
               keyboardType="decimal-pad"
@@ -545,14 +589,14 @@ function SheetBody({
             />
           </View>
           {methods.map((m) => {
-            const disabled = m.key === 'cash' && cashDisabled;
+            const disabled = cashLocked ? !active : (m.key === 'cash' && cashDisabled);
             const active = paymentMethod === m.key;
             return (
               <TouchableOpacity
                 key={m.key}
                 style={[styles.methodBtn, active && styles.chipActive, disabled && styles.methodDisabled]}
                 onPress={() => { autoMovedOffCash.current = false; setPaymentMethod(m.key); }}
-                disabled={disabled}
+                disabled={disabled || cashLocked}
                 accessibilityRole="button"
                 accessibilityState={{ selected: active, disabled }}
               >
@@ -563,7 +607,15 @@ function SheetBody({
           })}
         </View>
         {!!errors.amount && <Text style={styles.error}>{errors.amount}</Text>}
-        {cashDisabled && (
+        {cashLocked && (
+          <Text style={styles.hint}>
+            This cash was paid on a day whose register is already closed, so the amount and Cash/UPI stay as they are. You can still change the rest.
+          </Text>
+        )}
+        {cashPastDay && (
+          <Text style={styles.hint}>Past days don't change today's drawer, so an earlier day is paid by UPI.</Text>
+        )}
+        {cashDisabled && !cashPastDay && (
           <View style={styles.closedRow}>
             <Text style={styles.closedText}>Open the register to pay cash</Text>
             <TouchableOpacity style={styles.openRegBtn} onPress={() => setShowOpenRegister(true)} accessibilityRole="button">
@@ -572,7 +624,7 @@ function SheetBody({
             </TouchableOpacity>
           </View>
         )}
-        {!editing && paymentMethod === 'cash' && isOpen && register && (register.opening_time || register.opened_at) && (
+        {!editing && !pastDay && paymentMethod === 'cash' && isOpen && register && (register.opening_time || register.opened_at) && (
           <Text style={styles.hint}>Cash comes out of the drawer that is open now.</Text>
         )}
 
@@ -674,15 +726,17 @@ function SheetBody({
         )}
 
         {/* Return switch, then Remove (change mode) */}
-        <TouchableOpacity
-          style={styles.linkBtn}
-          onPress={() => { setIsReturn((v) => !v); }}
-          accessibilityRole="button"
-        >
-          <Text style={styles.linkText}>
-            {isReturn ? 'This is money going out? Record an expense' : 'Money coming back? Record a return'}
-          </Text>
-        </TouchableOpacity>
+        {!cashLocked && (
+          <TouchableOpacity
+            style={styles.linkBtn}
+            onPress={() => { setIsReturn((v) => !v); }}
+            accessibilityRole="button"
+          >
+            <Text style={styles.linkText}>
+              {isReturn ? 'This is money going out? Record an expense' : 'Money coming back? Record a return'}
+            </Text>
+          </TouchableOpacity>
+        )}
         {editing && (
           <TouchableOpacity style={styles.removeBtn} onPress={handleRemove} disabled={busy} accessibilityRole="button">
             <Ionicons name="trash-outline" size={20} color={Colors.error} />
