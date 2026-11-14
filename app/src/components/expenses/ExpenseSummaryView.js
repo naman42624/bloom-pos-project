@@ -1,18 +1,18 @@
 // Owner / manager view of the Expenses screen (spec §6.3).
 //
-// Period chips (Today · This week · This month · Last month · Pick dates) and
-// shop chips ("All shops" + each shop) at the top. Below, either:
+// One line at the top: a period picker (Today · This week · This month · Last
+// month · Pick dates) and a shop picker ("All shops" + each shop). Below, either:
 //   - the summary: the period total with ▲/▼ vs the same number of days just
 //     before, each category with its item lines, then "Older entries" (rows
 //     saved before items existed); or
 //   - "See all entries": the plain list (GET /expenses) with filters.
 //
-// Owner only: the "N older entries have no item — Sort them" banner. Item
+// Owner only: a "Sort older entries" link at the bottom (was a banner on top). Item
 // lines open ExpenseItem for both owner and manager; the item tools inside
 // that screen are owner-only (Task 11).
 import React, { useState, useCallback, useMemo, useRef } from 'react';
 import {
-  View, Text, StyleSheet, TouchableOpacity, ScrollView, FlatList, ActivityIndicator, TextInput,
+  View, Text, StyleSheet, TouchableOpacity, ScrollView, FlatList, ActivityIndicator, TextInput, Modal,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
@@ -21,6 +21,7 @@ import { Colors, FontSize, Spacing, BorderRadius } from '../../constants/theme';
 import { periodRange, changeLabel, comparisonRange, rangeLabel } from '../../utils/expenseBook';
 import DateTimePickerModal from '../DateTimePickerModal';
 import ExpenseRow from './ExpenseRow';
+import PickerButton from './PickerButton';
 import { EXPENSE_CATEGORIES, categoryLabel, rupees } from './AddExpenseSheet';
 
 const PERIODS = [
@@ -113,6 +114,7 @@ export default function ExpenseSummaryView({
   const [addedBy, setAddedBy] = useState(null);
   const [givenTo, setGivenTo] = useState(null);
   const [search, setSearch] = useState('');
+  const [filtersOpen, setFiltersOpen] = useState(false);
 
   // Compared with: same days last month, last week, yesterday, the month
   // before, or (picked dates) the same number of days just before.
@@ -190,6 +192,16 @@ export default function ExpenseSummaryView({
   }, [rows, method, addedBy, givenTo, search]);
   const shownTotal = shown.reduce((s, r) => s + signed(r), 0);
 
+  // Filters on the entries list live in one sheet; the ones that are on
+  // show as small chips under the search box, each with an ✕ to remove it.
+  const activeFilters = [
+    category && { key: 'category', label: categoryLabel(category), clear: () => setCategory(null) },
+    method && { key: 'method', label: method === 'cash' ? 'Cash' : 'UPI', clear: () => setMethod(null) },
+    addedBy && { key: 'addedBy', label: `Added by ${addedBy}`, clear: () => setAddedBy(null) },
+    givenTo && { key: 'givenTo', label: `Given to ${givenTo}`, clear: () => setGivenTo(null) },
+  ].filter(Boolean);
+  const clearFilters = () => { setCategory(null); setMethod(null); setAddedBy(null); setGivenTo(null); };
+
   const periodLabel = period === 'custom'
     ? rangeLabel(from, to)
     : (PERIODS.find((p) => p.key === period) || {}).label;
@@ -197,26 +209,41 @@ export default function ExpenseSummaryView({
   const openItem = (itemId) => navigation.navigate('ExpenseItem', { itemId, from, to, locationId: locationParam });
 
   // ── Pieces ──
+  // One line: "This month ▾" and "All shops ▾" (2026-11-14 — two rows of
+  // chips made the screen feel like too much). Every option is still there.
+  const periodOptions = [
+    ...PERIODS,
+    { key: 'custom', icon: 'calendar-outline', label: period === 'custom' && custom ? `Pick dates (${rangeLabel(custom.from, custom.to)})` : 'Pick dates…' },
+  ];
+  const shopOptions = [
+    { key: ALL, icon: 'storefront-outline', label: 'All shops' },
+    ...locations.map((l) => ({ key: Number(l.id), label: l.name })),
+  ];
+  const shopLabel = shop === ALL
+    ? 'All shops'
+    : ((locations.find((l) => Number(l.id) === Number(shop)) || {}).name || 'Shop');
   const topBar = (
-    <View style={styles.topBar}>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
-        {PERIODS.map((p) => (
-          <Chip key={p.key} label={p.label} active={period === p.key} onPress={() => setPeriod(p.key)} />
-        ))}
-        <Chip
-          icon="calendar-outline"
-          label={period === 'custom' && custom ? rangeLabel(custom.from, custom.to) : 'Pick dates'}
-          active={period === 'custom'}
-          onPress={() => { setPickFrom(null); setPicking('from'); }}
-        />
-      </ScrollView>
+    <View style={[styles.topBar, styles.topBarRow]}>
+      <PickerButton
+        icon="calendar-outline"
+        title="Which days?"
+        label={period === 'custom' && custom ? rangeLabel(custom.from, custom.to) : periodLabel}
+        options={periodOptions}
+        value={period}
+        onPick={(k) => {
+          if (k === 'custom') { setPickFrom(null); setPicking('from'); return; }
+          setPeriod(k);
+        }}
+      />
       {locations.length > 1 && (
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
-          <Chip icon="storefront-outline" label="All shops" active={shop === ALL} onPress={() => pickShop(ALL)} />
-          {locations.map((l) => (
-            <Chip key={l.id} label={l.name} active={Number(shop) === Number(l.id)} onPress={() => pickShop(l.id)} />
-          ))}
-        </ScrollView>
+        <PickerButton
+          icon="storefront-outline"
+          title="Which shop?"
+          label={shopLabel}
+          options={shopOptions}
+          value={shop === ALL ? ALL : Number(shop)}
+          onPick={(k) => pickShop(k)}
+        />
       )}
     </View>
   );
@@ -271,49 +298,48 @@ export default function ExpenseSummaryView({
           )}
         </View>
 
-        <TextInput
-          style={styles.search}
-          value={search}
-          onChangeText={setSearch}
-          placeholder="Search item or note"
-          placeholderTextColor={Colors.textLight}
-          accessibilityLabel="Search item or note"
-        />
-
-        <Text style={styles.filterLabel}>Kind</Text>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
-          <Chip label="All" active={!category} onPress={() => setCategory(null)} />
-          {EXPENSE_CATEGORIES.map((c) => (
-            <Chip key={c.key} label={c.label} active={category === c.key} onPress={() => setCategory(c.key)} />
-          ))}
-        </ScrollView>
-
-        <Text style={styles.filterLabel}>Paid by</Text>
-        <View style={[styles.filterRow, styles.wrap]}>
-          <Chip label="All" active={!method} onPress={() => setMethod(null)} />
-          <Chip label="Cash" active={method === 'cash'} onPress={() => setMethod('cash')} />
-          <Chip label="UPI" active={method === 'upi'} onPress={() => setMethod('upi')} />
+        <View style={styles.searchRow}>
+          <TextInput
+            style={[styles.search, { flex: 1 }]}
+            value={search}
+            onChangeText={setSearch}
+            placeholder="Search item or note"
+            placeholderTextColor={Colors.textLight}
+            accessibilityLabel="Search item or note"
+          />
+          <TouchableOpacity
+            style={[styles.filtersBtn, activeFilters.length > 0 && styles.filtersBtnActive]}
+            onPress={() => setFiltersOpen(true)}
+            accessibilityRole="button"
+            accessibilityLabel={activeFilters.length ? `Filters, ${activeFilters.length} on` : 'Filters'}
+          >
+            <Ionicons name="options-outline" size={20} color={activeFilters.length ? Colors.primary : Colors.text} />
+            <Text style={styles.filtersBtnText}>Filters{activeFilters.length ? ` · ${activeFilters.length}` : ''}</Text>
+          </TouchableOpacity>
         </View>
 
-        {addedByNames.length > 1 && (
-          <>
-            <Text style={styles.filterLabel}>Added by</Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
-              <Chip label="Anyone" active={!addedBy} onPress={() => setAddedBy(null)} />
-              {addedByNames.map((n) => <Chip key={n} label={n} active={addedBy === n} onPress={() => setAddedBy(n)} />)}
-            </ScrollView>
-          </>
+        {activeFilters.length > 0 && (
+          <View style={styles.activeRow}>
+            {activeFilters.map((f) => (
+              <TouchableOpacity
+                key={f.key}
+                style={styles.activeChip}
+                onPress={f.clear}
+                accessibilityRole="button"
+                accessibilityLabel={`Remove filter ${f.label}`}
+              >
+                <Text style={styles.activeChipText}>{f.label}</Text>
+                <Ionicons name="close" size={16} color={Colors.primaryDark || Colors.primary} />
+              </TouchableOpacity>
+            ))}
+            {activeFilters.length > 1 && (
+              <TouchableOpacity onPress={clearFilters} accessibilityRole="button">
+                <Text style={styles.clearAll}>Clear all</Text>
+              </TouchableOpacity>
+            )}
+          </View>
         )}
 
-        {givenToNames.length > 0 && (
-          <>
-            <Text style={styles.filterLabel}>Given to</Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
-              <Chip label="Anyone" active={!givenTo} onPress={() => setGivenTo(null)} />
-              {givenToNames.map((n) => <Chip key={n} label={n} active={givenTo === n} onPress={() => setGivenTo(n)} />)}
-            </ScrollView>
-          </>
-        )}
         {errorBox}
       </View>
     );
@@ -332,11 +358,68 @@ export default function ExpenseSummaryView({
           ListEmptyComponent={!error && (
             <View style={styles.empty}>
               {loading ? <ActivityIndicator color={Colors.primary} /> : (
-                <Text style={styles.emptyText}>No entries match. Tap "All" on a filter to see more.</Text>
+                <Text style={styles.emptyText}>
+                  {activeFilters.length || search.trim()
+                    ? 'No entries match. Tap ✕ on a filter or clear the search to see more.'
+                    : 'No expenses on these days.'}
+                </Text>
               )}
             </View>
           )}
         />
+        <Modal visible={filtersOpen} transparent animationType="slide" onRequestClose={() => setFiltersOpen(false)}>
+          <TouchableOpacity style={styles.sheetBackdrop} activeOpacity={1} onPress={() => setFiltersOpen(false)}>
+            <TouchableOpacity activeOpacity={1} style={styles.sheet}>
+              <View style={styles.sheetHead}>
+                <Text style={styles.sheetTitle}>Filters</Text>
+                {activeFilters.length > 0 && (
+                  <TouchableOpacity onPress={clearFilters} accessibilityRole="button">
+                    <Text style={styles.clearAll}>Clear all</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+              <ScrollView>
+                <Text style={styles.filterLabel}>Kind</Text>
+                <View style={[styles.filterRow, styles.wrap]}>
+                  <Chip label="All" active={!category} onPress={() => setCategory(null)} />
+                  {EXPENSE_CATEGORIES.map((c) => (
+                    <Chip key={c.key} label={c.label} active={category === c.key} onPress={() => setCategory(c.key)} />
+                  ))}
+                </View>
+
+                <Text style={styles.filterLabel}>Paid by</Text>
+                <View style={[styles.filterRow, styles.wrap]}>
+                  <Chip label="All" active={!method} onPress={() => setMethod(null)} />
+                  <Chip label="Cash" active={method === 'cash'} onPress={() => setMethod('cash')} />
+                  <Chip label="UPI" active={method === 'upi'} onPress={() => setMethod('upi')} />
+                </View>
+
+                {addedByNames.length > 1 && (
+                  <>
+                    <Text style={styles.filterLabel}>Added by</Text>
+                    <View style={[styles.filterRow, styles.wrap]}>
+                      <Chip label="Anyone" active={!addedBy} onPress={() => setAddedBy(null)} />
+                      {addedByNames.map((n) => <Chip key={n} label={n} active={addedBy === n} onPress={() => setAddedBy(n)} />)}
+                    </View>
+                  </>
+                )}
+
+                {givenToNames.length > 0 && (
+                  <>
+                    <Text style={styles.filterLabel}>Given to</Text>
+                    <View style={[styles.filterRow, styles.wrap]}>
+                      <Chip label="Anyone" active={!givenTo} onPress={() => setGivenTo(null)} />
+                      {givenToNames.map((n) => <Chip key={n} label={n} active={givenTo === n} onPress={() => setGivenTo(n)} />)}
+                    </View>
+                  </>
+                )}
+              </ScrollView>
+              <TouchableOpacity style={styles.sheetDone} onPress={() => setFiltersOpen(false)} accessibilityRole="button">
+                <Text style={styles.sheetDoneText}>Show {shown.length} {shown.length === 1 ? 'entry' : 'entries'}</Text>
+              </TouchableOpacity>
+            </TouchableOpacity>
+          </TouchableOpacity>
+        </Modal>
         {picker}
       </View>
     );
@@ -369,20 +452,6 @@ export default function ExpenseSummaryView({
             </View>
           )}
         </View>
-
-        {isOwner && s && s.unsorted_count > 0 && (
-          <TouchableOpacity
-            style={styles.banner}
-            onPress={() => navigation.navigate('SortExpenses')}
-            accessibilityRole="button"
-          >
-            <Ionicons name="albums-outline" size={22} color={Colors.warning} />
-            <Text style={styles.bannerText}>
-              {s.unsorted_count} older {s.unsorted_count === 1 ? 'entry has' : 'entries have'} no item — <Text style={styles.bannerLink}>Sort them</Text>
-            </Text>
-            <Ionicons name="chevron-forward" size={20} color={Colors.textSecondary} />
-          </TouchableOpacity>
-        )}
 
         {errorBox}
 
@@ -458,6 +527,25 @@ export default function ExpenseSummaryView({
             <Ionicons name="chevron-forward" size={20} color={Colors.textSecondary} />
           </TouchableOpacity>
         )}
+
+        {/* Owner only. Was a yellow banner at the top; moved down here as a
+            plain link (2026-11-14) so the top of the screen stays calm. */}
+        {isOwner && s && s.unsorted_count > 0 && (
+          <TouchableOpacity
+            style={styles.itemsLink}
+            onPress={() => navigation.navigate('SortExpenses')}
+            accessibilityRole="button"
+          >
+            <Ionicons name="albums-outline" size={22} color={Colors.primary} />
+            <View style={styles.flex}>
+              <Text style={styles.itemsLinkTitle}>Sort older entries</Text>
+              <Text style={styles.headerSub}>
+                {s.unsorted_count} older {s.unsorted_count === 1 ? 'entry has' : 'entries have'} no item yet
+              </Text>
+            </View>
+            <Ionicons name="chevron-forward" size={20} color={Colors.textSecondary} />
+          </TouchableOpacity>
+        )}
       </ScrollView>
       {picker}
     </View>
@@ -471,6 +559,30 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.xs, gap: Spacing.xs,
   },
   chipRow: { paddingHorizontal: Spacing.md, gap: Spacing.sm, alignItems: 'center' },
+  topBarRow: { flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm, gap: Spacing.sm },
+  searchRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
+  filtersBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 6, minHeight: 48, paddingHorizontal: 14,
+    borderRadius: BorderRadius.md, borderWidth: 1, borderColor: Colors.border, backgroundColor: Colors.surface,
+  },
+  filtersBtnActive: { borderColor: Colors.primary, backgroundColor: Colors.primaryLight },
+  filtersBtnText: { fontSize: FontSize.md, fontWeight: '700', color: Colors.text },
+  activeRow: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm, marginTop: Spacing.sm, alignItems: 'center' },
+  activeChip: {
+    flexDirection: 'row', alignItems: 'center', gap: 4, minHeight: 36, paddingHorizontal: 12,
+    borderRadius: BorderRadius.full, backgroundColor: Colors.primaryLight,
+  },
+  activeChipText: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.primaryDark || Colors.primary },
+  clearAll: { fontSize: FontSize.sm, fontWeight: '700', color: Colors.primary, paddingVertical: 8, paddingHorizontal: 4 },
+  sheetBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.35)', justifyContent: 'flex-end' },
+  sheet: {
+    backgroundColor: Colors.surface, borderTopLeftRadius: BorderRadius.lg, borderTopRightRadius: BorderRadius.lg,
+    padding: Spacing.md, maxHeight: '85%', width: '100%', maxWidth: 800, alignSelf: 'center',
+  },
+  sheetHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  sheetTitle: { fontSize: FontSize.lg, fontWeight: '700', color: Colors.text },
+  sheetDone: { minHeight: 52, borderRadius: BorderRadius.md, backgroundColor: Colors.primary, alignItems: 'center', justifyContent: 'center', marginTop: Spacing.md },
+  sheetDoneText: { color: '#fff', fontSize: FontSize.md, fontWeight: '700' },
   filterRow: { gap: Spacing.sm, alignItems: 'center' },
   wrap: { flexDirection: 'row', flexWrap: 'wrap' },
   chip: {
@@ -499,13 +611,6 @@ const styles = StyleSheet.create({
   change: { fontSize: FontSize.sm, fontWeight: '700' },
   changeBig: { fontSize: FontSize.md, fontWeight: '700' },
 
-  banner: {
-    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, minHeight: 48,
-    backgroundColor: Colors.warningLight, borderRadius: BorderRadius.md,
-    padding: Spacing.md, marginBottom: Spacing.md,
-  },
-  bannerText: { flex: 1, fontSize: FontSize.md, color: Colors.text },
-  bannerLink: { color: Colors.primaryDark, fontWeight: '700' },
 
   catBlock: {
     backgroundColor: Colors.surface, borderRadius: BorderRadius.md, padding: Spacing.md,
