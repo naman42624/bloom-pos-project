@@ -393,6 +393,9 @@ function ProfileStack() {
           shows up as a real, browsable menu item on the tab these roles
           already open for account-level things. */}
       <Stack.Screen name="Customers" component={CustomersScreen} options={{ title: 'Customers' }} />
+      {/* My money's "Ask for a salary advance" link (staff money B9): staff
+          open Profile from this tab, so the screen must live here too. */}
+      <Stack.Screen name="SalaryAdvances" component={SalaryAdvancesScreen} options={{ title: 'Salary Advances' }} />
     </Stack.Navigator>
   );
 }
