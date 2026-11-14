@@ -194,12 +194,13 @@ function readGivenTo(b) {
 async function loadExpenseRow(db, id) {
   const row = await db.prepare(`
     SELECT e.*, l.name as location_name, u.name as created_by_name,
-           ei.name as item_name, gu.name as given_to_user_name
+           ei.name as item_name, gu.name as given_to_user_name, pb.name as paid_by_user_name
     FROM expenses e
     JOIN locations l ON e.location_id = l.id
     JOIN users u ON e.created_by = u.id
     LEFT JOIN expense_items ei ON ei.id = e.item_id
     LEFT JOIN users gu ON gu.id = e.given_to_user_id
+    LEFT JOIN users pb ON pb.id = e.paid_by_user_id
     WHERE e.id = ?
   `).get(id);
   if (!row) return row;
@@ -210,8 +211,59 @@ async function loadExpenseRow(db, id) {
     item_id: row.item_id == null ? null : Number(row.item_id),
     given_to_user_id: row.given_to_user_id == null ? null : Number(row.given_to_user_id),
     register_id: row.register_id == null ? null : Number(row.register_id),
+    paid_by_user_id: row.paid_by_user_id == null ? null : Number(row.paid_by_user_id),
     given_to_display: given_to_user_name || row.given_to_name || null,
   };
+}
+
+// ─── Own pocket (spec 4.1, 5.5) ──────────────────────────────
+// Paid by Own pocket: payment_method own_pocket, paid_by_user_id = whose
+// pocket. Never a register, never counted by a drawer query (they count only
+// cash). Each such expense has one shop_owes row (source own_pocket,
+// expense_id) that Pay back, Keep or Write off close.
+const OWN_POCKET = 'own_pocket';
+const SHOPPING_MONEY = 'shopping_money';
+const WHOSE_INVALID_MESSAGE = "That person can't be picked here. Tap Whose? and pick again.";
+const OWN_POCKET_RETURN_MESSAGE = "Own pocket can't be used for a return. Pick Cash or UPI.";
+const OWN_POCKET_SALARY_MESSAGE = 'Pick Cash or UPI for salary.';
+const INTO_SHOPPING_MESSAGE = 'Shopping money bills are added from the shopping money line. Pick Cash, UPI or Own pocket.';
+const OWES_PAID_BACK_MESSAGE = "The shop already paid back part of this, so it can't be removed. Ask the owner if it needs fixing.";
+const OWES_PART_PAID_MESSAGE = "The shop already paid back part of this, so Paid by and Whose? can't be changed. Ask the owner if it needs fixing.";
+const OWES_CLOSED_MESSAGE = "This Shop owes line is already closed, so its amount, Paid by and Whose? can't be changed. Ask the owner if it needs fixing.";
+
+// Whose pocket: active staff, rider or the owner, linked to the shop (owner anywhere).
+async function assertWhose(db, userId, locationId) {
+  try {
+    await assertGivenTo(db, userId, locationId);
+  } catch (e) {
+    if (e.statusCode === 400) throw httpError(400, WHOSE_INVALID_MESSAGE);
+    throw e;
+  }
+}
+// Locked before the expense and the register (money row first).
+async function lockLinkedOwes(tx, expenseId) {
+  return (await tx.prepare("SELECT * FROM shop_owes WHERE expense_id = ? AND source = 'own_pocket' ORDER BY id LIMIT 1 FOR UPDATE").get(expenseId)) || null;
+}
+async function auditOwesRow(tx, owesId, userId, action, before, after) {
+  await tx.prepare(`
+    INSERT INTO audit_logs (entity_type, entity_id, user_id, action, previous_state, new_state, created_at)
+    VALUES ('shop_owes', ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+  `).run(owesId, userId, action, before ? JSON.stringify(before) : null, after ? JSON.stringify(after) : null);
+}
+const pickOwesRow = (o) => ({
+  user_id: Number(o.user_id), amount: Number(o.amount), paid_amount: Number(o.paid_amount) || 0, status: o.status,
+  expense_id: o.expense_id ? Number(o.expense_id) : null, location_id: o.location_id ? Number(o.location_id) : null,
+});
+async function createOwnPocketOwes(tx, { expenseId, locationId, userId, amount, createdBy }) {
+  const ins = await tx.prepare(`
+    INSERT INTO shop_owes (location_id, user_id, amount, paid_amount, source, expense_id, status, created_by)
+    VALUES (?, ?, ?, 0, 'own_pocket', ?, 'open', ?)
+  `).run(locationId, userId, amount, expenseId, createdBy);
+  const id = Number(ins.lastInsertRowid);
+  await auditOwesRow(tx, id, createdBy, 'own_pocket_expense', null, {
+    user_id: Number(userId), amount: Number(amount), paid_amount: 0, status: 'open', expense_id: Number(expenseId), location_id: Number(locationId),
+  });
+  return id;
 }
 
 // After a save: the item remembers the amount and who it was given to.
@@ -830,10 +882,11 @@ router.post(
     body('category').optional({ nullable: true }).isIn(['supplies', 'petty_cash', 'maintenance', 'transport', 'food', 'utilities', 'salary', 'other']),
     body('amount').isFloat({ min: 0.01, max: 10000000 }),
     body('description').optional({ nullable: true }).trim(),
-    body('payment_method').isIn(['cash', 'card', 'upi', 'bank_transfer']),
+    body('payment_method').isIn(['cash', 'card', 'upi', 'bank_transfer', OWN_POCKET]),
     body('expense_date').optional({ nullable: true }).matches(/^\d{4}-\d{2}-\d{2}$/),
     body('is_return').optional().isBoolean(),
     body('employee_id').optional({ nullable: true }).isInt(),
+    body('paid_by_user_id').optional({ nullable: true }).isInt({ min: 1 }),
     ...extraFieldRules,
   ],
   async (req, res, next) => {
@@ -869,6 +922,14 @@ router.post(
         return res.status(400).json({ success: false, message: BAD_PHOTO_MESSAGE });
       }
       const adb = await getAsyncDb();
+      // Own pocket: never a return; whose pocket defaults to Me (spec 4.1).
+      const ownPocket = payment_method === OWN_POCKET;
+      const paidBy = ownPocket ? Number(req.body.paid_by_user_id || req.user.id) : null;
+      if (ownPocket) {
+        if (is_return) return res.status(400).json({ success: false, message: OWN_POCKET_RETURN_MESSAGE });
+        if (req.body.category === 'salary') return res.status(400).json({ success: false, message: OWN_POCKET_SALARY_MESSAGE });
+        await assertWhose(adb, paidBy, location_id);
+      }
       // A salary row's Given to is its employee (checked by the payroll
       // rules below), who need not be linked to this shop.
       const salaryGivenTo = req.body.category === 'salary' && Number(givenTo.given_to_user_id) === Number(employee_id);
@@ -884,6 +945,9 @@ router.post(
       const category = req.body.category || item.category;
       if (!isBossRole(req.user.role) && category === 'salary') {
         return res.status(400).json({ success: false, message: SALARY_ADVANCE_MESSAGE });
+      }
+      if (ownPocket && category === 'salary') {
+        return res.status(400).json({ success: false, message: OWN_POCKET_SALARY_MESSAGE });
       }
 
       // A "Salary" category expense logged through this general route has no
@@ -958,6 +1022,7 @@ router.post(
         created_by: req.user.id, is_return: isReturnInt, register_id: registerId, employee_id: employeeIdValue,
         item_id: itemId, note, photo_url,
         given_to_user_id: givenTo.given_to_user_id, given_to_name: givenTo.given_to_name,
+        paid_by_user_id: paidBy,
       };
       if (!expense_number) delete cols.expense_number;
       const insert = (c) => {
@@ -988,6 +1053,13 @@ router.post(
         } else {
           await db.prepare('UPDATE cash_registers SET expected_cash = expected_cash - ? WHERE id = ?').run(amount, openRegister.id);
         }
+      }
+      // Own pocket: the shop now owes that person this amount (spec 5.5).
+      if (ownPocket) {
+        await createOwnPocketOwes(db, {
+          expenseId: result.lastInsertRowid, locationId: location_id, userId: paidBy,
+          amount: Math.round(Number(amount) * 100) / 100, createdBy: req.user.id,
+        });
       }
       return result.lastInsertRowid;
       });
@@ -1085,6 +1157,7 @@ const pickAudit = (e) => ({
   register_id: e.register_id || null, created_by: e.created_by,
   item_id: e.item_id || null, note: e.note || null, photo_url: e.photo_url || null,
   given_to_user_id: e.given_to_user_id || null, given_to_name: e.given_to_name || null,
+  paid_by_user_id: e.paid_by_user_id || null,
 });
 
 // A salary expense written by payAdvance is linked from its advance
@@ -1177,10 +1250,12 @@ router.put(
     body('category').optional().isIn(EXPENSE_CATEGORIES),
     body('amount').optional().isFloat({ min: 0.01, max: 10000000 }),
     body('description').optional({ nullable: true }).trim(),
-    body('payment_method').optional().isIn(EXPENSE_METHODS),
+    // shopping_money is accepted only when unchanged (checked below).
+    body('payment_method').optional().isIn([...EXPENSE_METHODS, OWN_POCKET, SHOPPING_MONEY]),
     body('expense_date').optional().matches(/^\d{4}-\d{2}-\d{2}$/),
     body('is_return').optional().isBoolean(),
     body('employee_id').optional({ nullable: true }).isInt(),
+    body('paid_by_user_id').optional({ nullable: true }).isInt({ min: 1 }),
     ...extraFieldRules,
   ],
   async (req, res, next) => {
@@ -1196,7 +1271,7 @@ router.put(
 
       // Checks before the item is resolved, so a refused change never
       // creates an item. The transaction below checks again under locks.
-      const current = await adb.prepare('SELECT id, location_id, created_by, expense_date, item_id, note, description, category, employee_id FROM expenses WHERE id = ?').get(expenseId);
+      const current = await adb.prepare('SELECT id, location_id, created_by, expense_date, item_id, note, description, category, employee_id, payment_method, paid_by_user_id FROM expenses WHERE id = ?').get(expenseId);
       if (!current) return res.status(404).json({ success: false, message: 'This expense was not found. It may have been removed already — pull down to refresh.' });
       if (!isBoss && Number(current.created_by) !== Number(req.user.id)) {
         return res.status(403).json({ success: false, message: NOT_YOURS_MESSAGE });
@@ -1219,6 +1294,17 @@ router.put(
       }
       if (has('photo_url') && req.body.photo_url && !isLocalUploadPath(req.body.photo_url)) {
         return res.status(400).json({ success: false, message: BAD_PHOTO_MESSAGE });
+      }
+      // Shopping money is only ever set on the shopping money line; a bill
+      // keeps it (sending it back unchanged is fine). Checked again under the lock.
+      if (has('payment_method') && req.body.payment_method === SHOPPING_MONEY && current.payment_method !== SHOPPING_MONEY) {
+        return res.status(400).json({ success: false, message: INTO_SHOPPING_MESSAGE });
+      }
+      // Whose pocket, checked before the lock when a new person is sent.
+      const staysOwnPocket = (has('payment_method') ? req.body.payment_method : current.payment_method) === OWN_POCKET;
+      if (staysOwnPocket && has('paid_by_user_id') && req.body.paid_by_user_id
+          && Number(req.body.paid_by_user_id) !== Number(current.paid_by_user_id || 0)) {
+        await assertWhose(adb, req.body.paid_by_user_id, current.location_id);
       }
       const touchesGivenTo = has('given_to_user_id') || has('given_to_name');
       const givenTo = touchesGivenTo ? readGivenTo(req.body) : null;
@@ -1244,6 +1330,7 @@ router.put(
       const updated = await withMoneyTx(async (tx) => {
         const advance = await lockLinkedAdvance(tx, expenseId);
         const moneyOut = await lockLinkedMoneyOut(tx, expenseId);
+        const owes = await lockLinkedOwes(tx, expenseId);
         const { expense, openRegister, oldRegisterId } = await loadForChange(tx, expenseId, req.user);
         const nv = {
           category: has('category') ? req.body.category : (wantsItem ? item.category : expense.category),
@@ -1258,7 +1345,12 @@ router.put(
           photo_url: has('photo_url') ? (req.body.photo_url || null) : (expense.photo_url || null),
           given_to_user_id: givenTo ? givenTo.given_to_user_id : (expense.given_to_user_id || null),
           given_to_name: givenTo ? givenTo.given_to_name : (expense.given_to_name || null),
+          paid_by_user_id: null,
         };
+        if (nv.payment_method === OWN_POCKET) {
+          const sent = has('paid_by_user_id') && req.body.paid_by_user_id ? Number(req.body.paid_by_user_id) : null;
+          nv.paid_by_user_id = sent || (expense.payment_method === OWN_POCKET && expense.paid_by_user_id ? Number(expense.paid_by_user_id) : Number(req.user.id));
+        }
         // description is always rebuilt as "item name — note" (or the old
         // text without its note, for a row with no item); never appended to.
         if (wantsItem || has('note') || has('description')) {
@@ -1283,6 +1375,17 @@ router.put(
           if (breaksLink) throw httpError(400, ADVANCE_LINK_MESSAGE);
           const moneyMoved = centsOf(nv.amount) !== centsOf(expense.amount) || nv.payment_method !== expense.payment_method;
           if (moneyMoved && advanceTaken(advance)) throw httpError(400, ADVANCE_TAKEN_MESSAGE);
+        }
+        if ((nv.payment_method === SHOPPING_MONEY) !== (expense.payment_method === SHOPPING_MONEY)) {
+          throw httpError(400, expense.payment_method === SHOPPING_MONEY ? MONEY_OUT_LINK_MESSAGE : INTO_SHOPPING_MESSAGE);
+        }
+        if (nv.payment_method === OWN_POCKET) {
+          if (nv.is_return) throw httpError(400, OWN_POCKET_RETURN_MESSAGE);
+          if (nv.category === 'salary') throw httpError(400, OWN_POCKET_SALARY_MESSAGE);
+          // Me as the default pocket is checked here; a person sent was checked above.
+          if (Number(nv.paid_by_user_id) !== Number(expense.paid_by_user_id || 0)) {
+            await assertWhose(tx, nv.paid_by_user_id, expense.location_id);
+          }
         }
         if (moneyOut) {
           const breaksLink = centsOf(nv.amount) !== centsOf(expense.amount)
@@ -1334,14 +1437,49 @@ router.put(
           }
         }
 
+        // Own pocket: the owes line follows the expense (spec 5.5). Once any
+        // of it was paid back, its person and Paid by stay, and the amount can
+        // not go below what was paid back; a closed line changes no more.
+        const isOwn = nv.payment_method === OWN_POCKET;
+        if (owes) {
+          const paidP = centsOf(owes.paid_amount);
+          const moved = !isOwn || centsOf(nv.amount) !== centsOf(owes.amount) || Number(nv.paid_by_user_id) !== Number(owes.user_id);
+          if (moved) {
+            if (owes.status !== 'open') throw httpError(400, OWES_CLOSED_MESSAGE);
+            if (paidP > 0 && (!isOwn || Number(nv.paid_by_user_id) !== Number(owes.user_id))) throw httpError(400, OWES_PART_PAID_MESSAGE);
+            if (paidP > centsOf(nv.amount)) {
+              const paid = `₹${(paidP / 100).toLocaleString('en-IN')}`;
+              throw httpError(400, `The shop already paid back ${paid} of this. Type ${paid} or more.`);
+            }
+            if (!isOwn) {
+              await tx.prepare('DELETE FROM shop_owes WHERE id = ?').run(owes.id);
+              await auditOwesRow(tx, owes.id, req.user.id, 'own_pocket_removed', pickOwesRow(owes), null);
+            } else {
+              const status = paidP >= centsOf(nv.amount) ? 'paid' : 'open';
+              await tx.prepare(`
+                UPDATE shop_owes SET amount = ?, user_id = ?, status = ?,
+                  closed_at = CASE WHEN ? = 'paid' THEN CURRENT_TIMESTAMP ELSE closed_at END
+                WHERE id = ?
+              `).run(nv.amount, nv.paid_by_user_id, status, status, owes.id);
+              await auditOwesRow(tx, owes.id, req.user.id, 'own_pocket_changed', pickOwesRow(owes),
+                pickOwesRow({ ...owes, amount: nv.amount, user_id: nv.paid_by_user_id, status }));
+            }
+          }
+        } else if (isOwn) {
+          // Newly own pocket (or an own pocket row with no owes line yet).
+          await createOwnPocketOwes(tx, {
+            expenseId, locationId: expense.location_id, userId: nv.paid_by_user_id, amount: nv.amount, createdBy: req.user.id,
+          });
+        }
+
         await tx.prepare(`
           UPDATE expenses SET category = ?, amount = ?, description = ?, payment_method = ?, expense_date = ?,
             is_return = ?, employee_id = ?, register_id = ?,
-            item_id = ?, note = ?, photo_url = ?, given_to_user_id = ?, given_to_name = ?
+            item_id = ?, note = ?, photo_url = ?, given_to_user_id = ?, given_to_name = ?, paid_by_user_id = ?
           WHERE id = ?
         `).run(nv.category, nv.amount, nv.description, nv.payment_method, nv.expense_date,
           nv.is_return, nv.employee_id, newRegisterId,
-          nv.item_id, nv.note, nv.photo_url, nv.given_to_user_id, nv.given_to_name, expenseId);
+          nv.item_id, nv.note, nv.photo_url, nv.given_to_user_id, nv.given_to_name, nv.paid_by_user_id, expenseId);
 
         const after = { ...expense, ...nv, register_id: newRegisterId };
         await auditExpense(tx, expenseId, req.user.id, 'expense_edit', pickAudit(expense), pickAudit(after));
@@ -1384,8 +1522,15 @@ router.delete('/:id', authenticate, authorize('owner', 'manager', 'employee', 'c
     await withMoneyTx(async (tx) => {
       const advance = await lockLinkedAdvance(tx, expenseId);
       const moneyOut = await lockLinkedMoneyOut(tx, expenseId);
+      const owes = await lockLinkedOwes(tx, expenseId);
       const { expense, oldRegisterId } = await loadForChange(tx, expenseId, req.user);
       if (advance && advanceTaken(advance)) throw httpError(400, ADVANCE_TAKEN_MESSAGE);
+      // Own pocket: what the shop owes for it goes too, unless any was paid back.
+      if (owes) {
+        if (centsOf(owes.paid_amount) > 0) throw httpError(400, OWES_PAID_BACK_MESSAGE);
+        await tx.prepare('DELETE FROM shop_owes WHERE id = ?').run(owes.id);
+        await auditOwesRow(tx, owes.id, req.user.id, 'own_pocket_removed', pickOwesRow(owes), null);
+      }
       // A shopping money bill: its amount is still with that person again.
       if (moneyOut) await unsettleBill(tx, moneyOut, expense, req.user.id);
       // Put the cash back on the session it came out of.

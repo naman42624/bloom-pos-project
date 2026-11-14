@@ -550,6 +550,138 @@ router.post('/:id/write-off', authenticate, authorize('owner'), async (req, res,
   }
 });
 
+// ─── Shop owes: pay back, keep, write off (spec 4.4, 4.7, 5.5) ──
+const OWES_NOT_FOUND_MESSAGE = 'This Shop owes line was not found. Pull down to refresh.';
+const OWES_OTHER_SHOP_MESSAGE = 'This Shop owes line is from another shop. Switch to that shop and try again.';
+const OWES_KEEP_NOT_YOURS_MESSAGE = 'Only the person the shop owes can keep it as their money. Tap Pay back instead.';
+const OWES_WRITE_OFF_REASON_MESSAGE = 'Type why this is written off.';
+
+async function loadOwesForUser(db, id, user) {
+  const row = await db.prepare(`
+    SELECT so.id, so.location_id, so.user_id, so.status, u.name AS user_name
+    FROM shop_owes so JOIN users u ON u.id = so.user_id WHERE so.id = ?
+  `).get(id);
+  if (!row) throw httpError(404, OWES_NOT_FOUND_MESSAGE);
+  if (user.role !== 'owner' && (!row.location_id || !(await isLinked(db, Number(user.id), row.location_id)))) {
+    throw httpError(403, OWES_OTHER_SHOP_MESSAGE);
+  }
+  return row;
+}
+const owesLeftPaise = (o) => Math.max(0, toPaise(o.amount) - toPaise(o.paid_amount));
+const pickOwes = (o) => ({
+  user_id: Number(o.user_id), amount: Number(o.amount), paid_amount: Number(o.paid_amount) || 0, status: o.status,
+  source: o.source || null, expense_id: o.expense_id || null, money_out_id: o.money_out_id || null, location_id: o.location_id || null,
+});
+async function auditOwes(tx, id, userId, action, before, after) {
+  await tx.prepare(`
+    INSERT INTO audit_logs (entity_type, entity_id, user_id, action, previous_state, new_state, created_at)
+    VALUES ('shop_owes', ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+  `).run(id, userId, action, before ? JSON.stringify(before) : null, after ? JSON.stringify(after) : null);
+}
+
+// ─── POST /api/staff-money/owes/:id/pay-back ─────────────────
+// { amount, method: 'cash' | 'upi' } Part payments allowed. Cash comes out of
+// the shop's open register (expected cash and a locked count move with it).
+router.post('/owes/:id/pay-back', authenticate, authorize(...GIVER_ROLES), async (req, res, next) => {
+  try {
+    const id = parseId(req.params.id);
+    if (!id) throw httpError(404, OWES_NOT_FOUND_MESSAGE);
+    const b = req.body || {};
+    const amount = parseMoney(b.amount);
+    if (amount === null) throw httpError(400, AMOUNT_MESSAGE);
+    const method = b.method;
+    if (!['cash', 'upi'].includes(method)) throw httpError(400, METHOD_MESSAGE);
+    const db = await getDb();
+    const line = await loadOwesForUser(db, id, req.user);
+    if (line.status !== 'open') throw httpError(409, ALREADY_DONE_MESSAGE);
+
+    const out = await withMoneyTx(async (tx) => {
+      // Lock order: the owes line first, then (cash only) the register.
+      const o = await tx.prepare('SELECT * FROM shop_owes WHERE id = ? FOR UPDATE').get(id);
+      if (!o || o.status !== 'open') throw httpError(409, ALREADY_DONE_MESSAGE);
+      const leftP = owesLeftPaise(o);
+      const payP = toPaise(amount);
+      if (leftP <= 0) throw httpError(409, ALREADY_DONE_MESSAGE);
+      if (payP > leftP) {
+        const left = inr(rupees(leftP));
+        throw httpError(400, `The shop owes ${firstName(line.user_name)} only ${left}. Type ${left} or less.`);
+      }
+      let registerId = null;
+      if (method === 'cash') {
+        const reg = o.location_id ? await lockOpenRegister(tx, o.location_id) : null;
+        if (!reg) throw httpError(400, ADVANCE_REGISTER_CLOSED_MESSAGE);
+        registerId = reg.id;
+      }
+      await tx.prepare(`
+        INSERT INTO shop_owes_payments (owes_id, amount, method, register_id, paid_by) VALUES (?, ?, ?, ?, ?)
+      `).run(id, rupees(payP), method, registerId, req.user.id);
+      const paidP = toPaise(o.paid_amount) + payP;
+      const status = paidP >= toPaise(o.amount) ? 'paid' : 'open';
+      await tx.prepare(`
+        UPDATE shop_owes SET paid_amount = ?, status = ?,
+          closed_at = CASE WHEN ? = 'paid' THEN CURRENT_TIMESTAMP ELSE closed_at END
+        WHERE id = ?
+      `).run(rupees(paidP), status, status, id);
+      if (registerId) await moveSessionCash(tx, registerId, -rupees(payP));
+      const after = { ...o, paid_amount: rupees(paidP), status };
+      await auditOwes(tx, id, req.user.id, 'shop_owes_paid_back', pickOwes(o), {
+        ...pickOwes(after), paid_now: rupees(payP), method, register_id: registerId,
+      });
+      return { status, remaining: rupees(Math.max(0, toPaise(o.amount) - paidP)) };
+    });
+    res.json({ success: true, data: { id, status: out.status, remaining: out.remaining } });
+  } catch (err) {
+    sendError(res, next, err);
+  }
+});
+
+// ─── POST /api/staff-money/owes/:id/keep ─────────────────────
+// "Keep as my money": the owner, on a line the shop owes the owner. Closes it.
+router.post('/owes/:id/keep', authenticate, authorize('owner'), async (req, res, next) => {
+  try {
+    const id = parseId(req.params.id);
+    if (!id) throw httpError(404, OWES_NOT_FOUND_MESSAGE);
+    const db = await getDb();
+    const line = await loadOwesForUser(db, id, req.user);
+    if (Number(line.user_id) !== Number(req.user.id)) throw httpError(403, OWES_KEEP_NOT_YOURS_MESSAGE);
+    await withMoneyTx(async (tx) => {
+      const o = await tx.prepare('SELECT * FROM shop_owes WHERE id = ? FOR UPDATE').get(id);
+      if (!o || o.status !== 'open') throw httpError(409, ALREADY_DONE_MESSAGE);
+      await tx.prepare("UPDATE shop_owes SET status = 'kept', closed_at = CURRENT_TIMESTAMP, close_reason = 'kept' WHERE id = ?").run(id);
+      await auditOwes(tx, id, req.user.id, 'shop_owes_kept', pickOwes(o), {
+        ...pickOwes(o), status: 'kept', kept_amount: rupees(owesLeftPaise(o)),
+      });
+    });
+    res.json({ success: true, data: { id, status: 'kept', remaining: 0 } });
+  } catch (err) {
+    sendError(res, next, err);
+  }
+});
+
+// ─── POST /api/staff-money/owes/:id/write-off ────────────────
+// Owner only. { reason } The shop will not pay the rest back. No drawer move.
+router.post('/owes/:id/write-off', authenticate, authorize('owner'), async (req, res, next) => {
+  try {
+    const id = parseId(req.params.id);
+    if (!id) throw httpError(404, OWES_NOT_FOUND_MESSAGE);
+    const reason = typeof (req.body || {}).reason === 'string' ? req.body.reason.trim().slice(0, 500) : '';
+    if (!reason) throw httpError(400, OWES_WRITE_OFF_REASON_MESSAGE);
+    const db = await getDb();
+    await loadOwesForUser(db, id, req.user);
+    await withMoneyTx(async (tx) => {
+      const o = await tx.prepare('SELECT * FROM shop_owes WHERE id = ? FOR UPDATE').get(id);
+      if (!o || o.status !== 'open') throw httpError(409, ALREADY_DONE_MESSAGE);
+      await tx.prepare("UPDATE shop_owes SET status = 'written_off', closed_at = CURRENT_TIMESTAMP, close_reason = ? WHERE id = ?").run(reason, id);
+      await auditOwes(tx, id, req.user.id, 'shop_owes_written_off', pickOwes(o), {
+        ...pickOwes(o), status: 'written_off', written_off: rupees(owesLeftPaise(o)), reason,
+      });
+    });
+    res.json({ success: true, data: { id, status: 'written_off', remaining: 0 } });
+  } catch (err) {
+    sendError(res, next, err);
+  }
+});
+
 // Whole shop-local days from a timestamp to today.
 function daysSince(createdAt) {
   const d = createdAt instanceof Date ? createdAt : new Date(createdAt);

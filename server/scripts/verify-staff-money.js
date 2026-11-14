@@ -3,6 +3,7 @@
  * Verification of staff money (PR B). B1: schema, settings, helper module.
  * B2: salary advance at the counter (live API on API_BASE_URL).
  * B3: shopping money, settle, remove, write-off and the register lines.
+ * B4: own pocket and Shop owes (pay back, keep, write-off).
  * Test rows are named VerifySM. Cleans up only rows this run created.
  * Usage: source test-env.sh; node server/scripts/verify-staff-money.js
  */
@@ -915,6 +916,305 @@ check('B3 RF2: change back the next day lands in that day\'s session; the closed
   eq(closedStatus.total_expenses_cash, 0, 'closed session inferred expenses exclude shopping lines');
 });
 
+// ── B4: own pocket and Shop owes ──
+const OWES_PAID_BACK_COPY = "The shop already paid back part of this, so it can't be removed. Ask the owner if it needs fixing.";
+async function ownPocket(user, body) {
+  return api('POST', '/expenses', user, {
+    location_id: TEST_LOCATION_ID, category: 'supplies', description: 'VerifySM own pocket', payment_method: 'own_pocket', ...body,
+  });
+}
+const createdOwesIds = new Set();
+async function owesOf(expenseId) {
+  const row = await (await getDb()).prepare('SELECT * FROM shop_owes WHERE expense_id = ?').get(expenseId);
+  if (row) createdOwesIds.add(Number(row.id));
+  return row;
+}
+const owesRow = async (id) => (await getDb()).prepare('SELECT * FROM shop_owes WHERE id = ?').get(id);
+const payBack = (user, id, body) => api('POST', `/staff-money/owes/${id}/pay-back`, user, body);
+const owesAudit = async (id, action) => (await getDb()).prepare("SELECT * FROM audit_logs WHERE entity_type = 'shop_owes' AND entity_id = ? AND action = ?").get(id, action);
+
+check('B4: helper and florist get 403 on the owes routes; helper cannot add own pocket', async () => {
+  const c = await getCast();
+  for (const who of [c.helper, c.florist]) {
+    for (const [m, p, b] of [
+      ['POST', '/staff-money/owes/1/pay-back', { amount: 1, method: 'upi' }],
+      ['POST', '/staff-money/owes/1/keep', {}],
+      ['POST', '/staff-money/owes/1/write-off', { reason: 'x' }],
+    ]) eq((await api(m, p, who, b)).status, 403, `${who === c.helper ? 'helper' : 'florist'} ${p}`);
+  }
+  eq((await ownPocket(c.helper, { amount: 10, paid_by_user_id: c.helper })).status, 403, 'helper own pocket');
+});
+
+let b4 = null;
+check('B4: own-pocket expense: no drawer change, no register, Shop owes row for that person, audited', async () => {
+  const c = await getCast();
+  const reg = await openOwnRegister();
+  const st0 = await regStatus();
+  const before = await drawer(reg);
+  const r = await ownPocket(c.counter, { amount: 120 });
+  eq(r.status, 201, 'create ' + JSON.stringify(r.body));
+  const e = await expRow(r.body.data.id);
+  eq(e.payment_method, 'own_pocket', 'method');
+  eq(e.paid_by_user_id, c.counter, 'defaults to Me');
+  eq(e.register_id, null, 'no register');
+  eq(await drawer(reg), before, 'drawer unchanged');
+  const o = await owesOf(e.id);
+  assert(o, 'owes row');
+  eq(o.user_id, c.counter, 'owes person');
+  eq(Number(o.amount), 120, 'owes amount');
+  eq(o.source, 'own_pocket', 'source');
+  eq(o.status, 'open', 'open');
+  eq(o.location_id, TEST_LOCATION_ID, 'shop');
+  assert(await owesAudit(o.id, 'own_pocket_expense'), 'audit');
+  const st = await regStatus();
+  eq(st.expected_cash, st0.expected_cash, 'status expected unchanged');
+  eq(st.expected_cash, st.running_expected_cash, 'status = running');
+  const pv = await api('PUT', '/sales/register/close', c.owner, { location_id: TEST_LOCATION_ID, actual_cash: st.expected_cash, preview: true });
+  eq(pv.body.data.expected_cash, st.expected_cash, 'close preview ignores own pocket');
+  const open = await api('GET', `/staff-money/open?location_id=${TEST_LOCATION_ID}`, c.counter);
+  assert(open.body.data.owes.some((x) => x.id === o.id && x.remaining === 120 && x.source === 'own_pocket'), 'card lists it');
+  b4 = { reg, selfExpense: e.id, selfOwes: o.id };
+});
+
+check('B4: counter staff mark own pocket for a named colleague; a person from elsewhere is refused', async () => {
+  const c = await getCast();
+  await openOwnRegister();
+  const r = await ownPocket(c.counter, { amount: 75, paid_by_user_id: c.r1 });
+  eq(r.status, 201, 'colleague ' + JSON.stringify(r.body));
+  const o = await owesOf(r.body.data.id);
+  eq(o.user_id, c.r1, 'owes the colleague');
+  eq((await expRow(r.body.data.id)).paid_by_user_id, c.r1, 'paid_by');
+  const bad = await ownPocket(c.counter, { amount: 75, paid_by_user_id: c.unlinked });
+  eq(bad.status, 400, 'unlinked person');
+  eq(bad.body.message, "That person can't be picked here. Tap Whose? and pick again.", 'copy');
+  const ret = await ownPocket(c.counter, { amount: 75, is_return: true });
+  eq(ret.status, 400, 'own pocket return refused');
+  const own = await ownPocket(c.owner, { amount: 10, paid_by_user_id: c.owner });
+  eq(own.status, 201, 'owner for themself');
+  b4.colleagueOwes = o.id;
+  b4.ownerExpense = own.body.data.id;
+});
+
+check('B4: own_pocket and shopping_money rows are never counted by drawer queries', async () => {
+  const c = await getCast();
+  const reg = await openOwnRegister();
+  const db = await getDb();
+  const st0 = await regStatus();
+  // Even with register_id set by mistake, a non-cash row stays out of the drawer.
+  const e = await db.prepare(`INSERT INTO expenses (location_id, category, amount, description, payment_method, expense_date, created_by, register_id, paid_by_user_id)
+    VALUES (?, 'supplies', 33, 'VerifySM stray', 'own_pocket', CAST(? AS date), ?, ?, ?) RETURNING id`).get(TEST_LOCATION_ID, todayStr(), c.counter, reg, c.counter);
+  const st = await regStatus();
+  eq(st.expected_cash, st0.expected_cash, 'status unchanged');
+  eq(st.total_expenses_cash || 0, st0.total_expenses_cash || 0, 'cash expenses unchanged');
+  const pv = await api('PUT', '/sales/register/close', c.owner, { location_id: TEST_LOCATION_ID, actual_cash: st.expected_cash, preview: true });
+  eq(pv.body.data.expected_cash, st0.expected_cash, 'preview unchanged');
+  await db.prepare('DELETE FROM expenses WHERE id = ?').run(e.id);
+});
+
+check('B4: pay back 850 cash: drawer -850, locked count follows, status paid, audited; again is 409', async () => {
+  const c = await getCast();
+  const reg = await openOwnRegister();
+  const db = await getDb();
+  const ex = await ownPocket(c.owner, { amount: 850, paid_by_user_id: c.owner });
+  eq(ex.status, 201, 'own pocket 850');
+  const o = await owesOf(ex.body.data.id);
+  await db.prepare('UPDATE cash_registers SET close_count_locked = 2000 WHERE id = ?').run(reg);
+  const before = await drawer(reg);
+  const st0 = await regStatus();
+  const p = await payBack(c.counter, o.id, { amount: 850, method: 'cash' });
+  eq(p.status, 200, 'pay back ' + JSON.stringify(p.body));
+  eq(p.body.data.status, 'paid', 'paid');
+  eq(p.body.data.remaining, 0, 'remaining 0');
+  eq(await drawer(reg), before - 850, 'drawer -850');
+  eq(Number((await db.prepare('SELECT close_count_locked FROM cash_registers WHERE id = ?').get(reg)).close_count_locked), 1150, 'locked count follows');
+  await db.prepare('UPDATE cash_registers SET close_count_locked = NULL WHERE id = ?').run(reg);
+  const row = await owesRow(o.id);
+  eq(row.status, 'paid', 'row paid');
+  eq(Number(row.paid_amount), 850, 'paid_amount');
+  assert(row.closed_at, 'closed_at');
+  const pay = await db.prepare('SELECT * FROM shop_owes_payments WHERE owes_id = ?').all(o.id);
+  eq(pay.length, 1, 'one payment');
+  eq(pay[0].register_id, reg, 'payment register');
+  eq(pay[0].method, 'cash', 'payment method');
+  eq(pay[0].paid_by, c.counter, 'paid_by');
+  assert(await owesAudit(o.id, 'shop_owes_paid_back'), 'audit');
+  const st = await regStatus();
+  eq(st.owes_paid, Math.round((Number(st0.owes_paid || 0) + 850) * 100) / 100, 'status owes_paid');
+  eq(st.expected_cash, st.running_expected_cash, 'status = running');
+  eq(st.expected_cash, Math.round((st0.expected_cash - 850) * 100) / 100, 'status down 850');
+  const again = await payBack(c.counter, o.id, { amount: 1, method: 'cash' });
+  eq(again.status, 409, 'second pay back');
+  eq(again.body.message, ALREADY_DONE, 'copy');
+  eq(await drawer(reg), before - 850, 'drawer moved once');
+});
+
+check('B4: part pay back by UPI moves no drawer; over the rest is refused; the rest in cash closes it', async () => {
+  const c = await getCast();
+  const reg = await openOwnRegister();
+  const db = await getDb();
+  const ex = await ownPocket(c.counter, { amount: 500, paid_by_user_id: c.r3 });
+  const o = await owesOf(ex.body.data.id);
+  const before = await drawer(reg);
+  const p1 = await payBack(c.counter, o.id, { amount: 300, method: 'upi' });
+  eq(p1.status, 200, 'part ' + JSON.stringify(p1.body));
+  eq(p1.body.data.remaining, 200, 'remaining 200');
+  eq(p1.body.data.status, 'open', 'still open');
+  eq(await drawer(reg), before, 'UPI moves no drawer');
+  const pay = await db.prepare('SELECT * FROM shop_owes_payments WHERE owes_id = ?').get(o.id);
+  eq(pay.register_id, null, 'UPI payment has no register');
+  const over = await payBack(c.counter, o.id, { amount: 200.01, method: 'cash' });
+  eq(over.status, 400, 'over the rest');
+  eq(over.body.message, 'The shop owes VerifySM only ₹200. Type ₹200 or less.', 'over copy');
+  eq((await payBack(c.counter, o.id, { amount: 0, method: 'cash' })).status, 400, 'zero');
+  eq((await payBack(c.counter, o.id, { amount: 10, method: 'card' })).status, 400, 'card');
+  const t = await api('GET', '/staff-money/mine', c.r3);
+  assert(t.body.data.owes.some((x) => x.id === o.id && x.remaining === 200), 'My money shows what is owed');
+  const p2 = await payBack(c.counter, o.id, { amount: 200, method: 'cash' });
+  eq(p2.status, 200, 'rest');
+  eq(p2.body.data.status, 'paid', 'paid');
+  eq(await drawer(reg), before - 200, 'drawer -200');
+});
+
+check('B4: cash pay back with the register closed is refused in plain words; UPI still works', async () => {
+  const c = await getCast();
+  await openOwnRegister();
+  const ex = await ownPocket(c.counter, { amount: 40, paid_by_user_id: c.r1 });
+  const o = await owesOf(ex.body.data.id);
+  await closeOwnRegister();
+  if (await testLocRegister()) throw skip('Test Loc has an open register; skipped.');
+  const r = await payBack(c.counter, o.id, { amount: 40, method: 'cash' });
+  eq(r.status, 400, 'closed');
+  eq(r.body.message, CLOSED_COPY, 'copy');
+  eq(Number((await owesRow(o.id)).paid_amount), 0, 'nothing paid');
+  const u = await payBack(c.counter, o.id, { amount: 40, method: 'upi' });
+  eq(u.status, 200, 'UPI with the register shut');
+  await openOwnRegister();
+});
+
+check('B4: Keep as my money: owner, own line only; staff and manager cannot', async () => {
+  const c = await getCast();
+  await openOwnRegister();
+  const o = await owesOf(b4.ownerExpense);
+  eq((await api('POST', `/staff-money/owes/${o.id}/keep`, c.counter)).status, 403, 'counter staff');
+  eq((await api('POST', `/staff-money/owes/${o.id}/keep`, c.mgr)).status, 403, 'manager');
+  const notOwn = await api('POST', `/staff-money/owes/${b4.colleagueOwes}/keep`, c.owner);
+  eq(notOwn.status, 403, 'owner on someone else\'s line');
+  eq((await owesRow(b4.colleagueOwes)).status, 'open', 'colleague line still open');
+  const k = await api('POST', `/staff-money/owes/${o.id}/keep`, c.owner);
+  eq(k.status, 200, 'keep ' + JSON.stringify(k.body));
+  const row = await owesRow(o.id);
+  eq(row.status, 'kept', 'kept');
+  assert(row.closed_at, 'closed_at');
+  assert(await owesAudit(o.id, 'shop_owes_kept'), 'audit');
+  eq((await api('POST', `/staff-money/owes/${o.id}/keep`, c.owner)).status, 409, 'second keep');
+  const open = await api('GET', `/staff-money/open?location_id=${TEST_LOCATION_ID}`, c.counter);
+  assert(!open.body.data.owes.some((x) => x.id === o.id), 'kept line leaves the card');
+});
+
+check('B4: owner writes off a Shop owes line with a reason; others cannot', async () => {
+  const c = await getCast();
+  const reg = await openOwnRegister();
+  const id = b4.colleagueOwes;
+  eq((await api('POST', `/staff-money/owes/${id}/write-off`, c.mgr, { reason: 'x' })).status, 403, 'manager');
+  eq((await api('POST', `/staff-money/owes/${id}/write-off`, c.counter, { reason: 'x' })).status, 403, 'counter');
+  const nr = await api('POST', `/staff-money/owes/${id}/write-off`, c.owner, { reason: '  ' });
+  eq(nr.status, 400, 'reason needed');
+  eq(nr.body.message, 'Type why this is written off.', 'reason copy');
+  const before = await drawer(reg);
+  const w = await api('POST', `/staff-money/owes/${id}/write-off`, c.owner, { reason: 'Ramesh said keep it' });
+  eq(w.status, 200, 'write off ' + JSON.stringify(w.body));
+  const row = await owesRow(id);
+  eq(row.status, 'written_off', 'status');
+  eq(row.close_reason, 'Ramesh said keep it', 'reason');
+  eq(await drawer(reg), before, 'drawer unchanged');
+  assert(await owesAudit(id, 'shop_owes_written_off'), 'audit');
+  eq((await api('POST', `/staff-money/owes/${id}/write-off`, c.owner, { reason: 'x' })).status, 409, 'second');
+});
+
+check('B4: removing an own-pocket expense before pay back removes the owes; after part pay back it is refused', async () => {
+  const c = await getCast();
+  await openOwnRegister();
+  const a = await ownPocket(c.counter, { amount: 60 });
+  const oa = await owesOf(a.body.data.id);
+  const d = await api('DELETE', `/expenses/${a.body.data.id}`, c.counter);
+  eq(d.status, 200, 'remove ' + JSON.stringify(d.body));
+  eq(await owesRow(oa.id), undefined, 'owes gone');
+  const b = await ownPocket(c.counter, { amount: 90 });
+  const ob = await owesOf(b.body.data.id);
+  eq((await payBack(c.counter, ob.id, { amount: 10, method: 'upi' })).status, 200, 'part pay back');
+  const d2 = await api('DELETE', `/expenses/${b.body.data.id}`, c.counter);
+  eq(d2.status, 400, 'refused');
+  eq(d2.body.message, OWES_PAID_BACK_COPY, 'copy');
+  assert(await expRow(b.body.data.id), 'expense still there');
+  eq(Number((await owesRow(ob.id)).amount), 90, 'owes unchanged');
+  b4.partPaid = { expense: b.body.data.id, owes: ob.id };
+});
+
+check('B4: changing an own-pocket amount moves its owes; below what was paid back is refused', async () => {
+  const c = await getCast();
+  await openOwnRegister();
+  const { expense, owes } = b4.partPaid;
+  const up = await api('PUT', `/expenses/${expense}`, c.counter, { amount: 95, payment_method: 'own_pocket' });
+  eq(up.status, 200, 'change ' + JSON.stringify(up.body));
+  eq(Number((await owesRow(owes)).amount), 95, 'owes follows');
+  const low = await api('PUT', `/expenses/${expense}`, c.counter, { amount: 5 });
+  eq(low.status, 400, 'below paid');
+  eq(low.body.message, 'The shop already paid back ₹10 of this. Type ₹10 or more.', 'copy');
+  const who = await api('PUT', `/expenses/${expense}`, c.counter, { paid_by_user_id: c.r1 });
+  eq(who.status, 400, 'person change after a pay back refused');
+  const fresh = await ownPocket(c.counter, { amount: 30 });
+  const sw = await api('PUT', `/expenses/${fresh.body.data.id}`, c.counter, { paid_by_user_id: c.r1 });
+  eq(sw.status, 200, 'person change before a pay back ' + JSON.stringify(sw.body));
+  eq((await owesOf(fresh.body.data.id)).user_id, c.r1, 'owes moves to the new person');
+  eq((await expRow(fresh.body.data.id)).paid_by_user_id, c.r1, 'paid_by moves');
+});
+
+check('B4: switching cash to own pocket gives the drawer back and opens owes; own pocket to UPI drops the owes', async () => {
+  const c = await getCast();
+  const reg = await openOwnRegister();
+  const before = await drawer(reg);
+  const e = await api('POST', '/expenses', c.counter, { location_id: TEST_LOCATION_ID, category: 'supplies', description: 'VerifySM switch', amount: 45, payment_method: 'cash' });
+  eq(e.status, 201, 'cash expense');
+  eq(await drawer(reg), before - 45, 'drawer -45');
+  const toOwn = await api('PUT', `/expenses/${e.body.data.id}`, c.counter, { payment_method: 'own_pocket' });
+  eq(toOwn.status, 200, 'to own pocket ' + JSON.stringify(toOwn.body));
+  eq(await drawer(reg), before, 'drawer back');
+  const row = await expRow(e.body.data.id);
+  eq(row.register_id, null, 'register cleared');
+  eq(row.paid_by_user_id, c.counter, 'paid by Me');
+  const o = await owesOf(e.body.data.id);
+  eq(o && o.status, 'open', 'owes opened');
+  eq(Number(o.amount), 45, 'owes amount');
+  const toUpi = await api('PUT', `/expenses/${e.body.data.id}`, c.counter, { payment_method: 'upi' });
+  eq(toUpi.status, 200, 'to UPI');
+  eq(await owesOf(e.body.data.id), undefined, 'owes dropped');
+  eq((await expRow(e.body.data.id)).paid_by_user_id, null, 'paid_by cleared');
+  const st = await regStatus();
+  eq(st.expected_cash, st.running_expected_cash, 'status = running');
+  // A partly paid-back own pocket line cannot leave own pocket.
+  const out = await api('PUT', `/expenses/${b4.partPaid.expense}`, c.counter, { payment_method: 'cash' });
+  eq(out.status, 400, 'paid-back line cannot switch method');
+});
+
+check('B4: a settle bill keeps shopping_money when sent back unchanged; switching into or out of it is refused', async () => {
+  const c = await getCast();
+  await openOwnRegister();
+  const g = await hand(c.counter, { user_id: c.r4, amount: 50, payment_method: 'upi' });
+  eq(g.status, 201, 'hand ' + JSON.stringify(g.body));
+  const s = await settle(c.counter, g.body.data.id, { bills: [bill(20)] });
+  eq(s.status, 200, 'settle');
+  const billId = s.body.data.expense_ids[0];
+  const note = await api('PUT', `/expenses/${billId}`, c.counter, { note: 'red ones', payment_method: 'shopping_money' });
+  eq(note.status, 200, 'note edit with method unchanged ' + JSON.stringify(note.body));
+  const out = await api('PUT', `/expenses/${billId}`, c.counter, { payment_method: 'upi' });
+  eq(out.status, 400, 'out of shopping money');
+  const e = await api('POST', '/expenses', c.counter, { location_id: TEST_LOCATION_ID, category: 'supplies', description: 'VerifySM upi', amount: 5, payment_method: 'upi' });
+  const into = await api('PUT', `/expenses/${e.body.data.id}`, c.counter, { payment_method: 'shopping_money' });
+  eq(into.status, 400, 'into shopping money');
+  eq(into.body.message, 'Shopping money bills are added from the shopping money line. Pick Cash, UPI or Own pocket.', 'copy');
+  eq((await api('POST', '/expenses', c.counter, { location_id: TEST_LOCATION_ID, category: 'supplies', description: 'x', amount: 5, payment_method: 'shopping_money' })).status, 400, 'POST shopping_money refused');
+});
+
 async function cleanup() {
   const db = await getDb();
   const del = async (label, sql, ...p) => { try { await db.prepare(sql).run(...p); } catch (e) { console.error(`cleanup ${label}: ${e.message}`); } };
@@ -944,7 +1244,11 @@ async function cleanup() {
   for (const id of createdItemIds) {
     await del('item ' + id, "DELETE FROM expense_items WHERE id = ? AND name_key LIKE 'verifysm%' AND NOT EXISTS (SELECT 1 FROM expenses WHERE item_id = ?)", id, id);
   }
+  for (const id of createdOwesIds) {
+    await del('owes audit ' + id, "DELETE FROM audit_logs WHERE entity_type = 'shop_owes' AND entity_id = ?", id);
+  }
   for (const id of createdUserIds) {
+    await del('owes audits', "DELETE FROM audit_logs WHERE entity_type = 'shop_owes' AND entity_id IN (SELECT id FROM shop_owes WHERE user_id = ?)", id);
     await del('owes', 'DELETE FROM shop_owes WHERE user_id = ?', id);
     await del('money out', 'DELETE FROM staff_money_out WHERE user_id = ?', id);
     await del('advances', 'DELETE FROM salary_advances WHERE user_id = ?', id);
