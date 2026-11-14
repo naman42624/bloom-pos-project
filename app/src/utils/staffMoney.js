@@ -52,7 +52,7 @@ export function heldLabel(createdAt, now = new Date(), lateDays = 3) {
 export function pinMessage(needsPin, { limits = {}, name, kind = 'advance' } = {}) {
   if (needsPin === 'self') return 'A manager or owner needs to confirm money for yourself.';
   if (needsPin === 'over_month') {
-    return `${name || 'This person'} has had ${inr(limits.advanceMonth)} in advances this month — the monthly limit. A manager or owner can confirm with their PIN.`;
+    return `That would take ${name || 'this person'} over the ${inr(limits.advanceMonth)} monthly advance limit. A manager or owner can confirm with their PIN.`;
   }
   const lim = kind === 'shopping' ? limits.shoppingDay : limits.advanceDay;
   return `That's more than the ${inr(lim)} daily ${kind === 'shopping' ? 'shopping money' : 'advance'} limit. A manager or owner can confirm with their PIN.`;
@@ -363,8 +363,9 @@ export function expectedFromLines(s0) {
   );
 }
 
-// Today's sessions come without the per-session cash lines; the current
-// register carries them, so copy them onto the matching session.
+// The server now sends the per-session cash lines on every session today;
+// an older server sent them only on the current register, so copy them onto
+// the matching session (same values either way).
 const SESSION_LINE_KEYS = ['helper_floats', 'helper_handovers', 'shopping_out', 'shopping_in', 'owes_paid'];
 export function withSessionLines(sessions, register) {
   const list = Array.isArray(sessions) ? sessions : [];

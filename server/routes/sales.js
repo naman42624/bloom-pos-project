@@ -612,10 +612,22 @@ router.get('/register/status', authenticate, async (req, res, next) => {
       `).get(location_id, today);
     }
 
-    // Run independent lookups in parallel
-    const [todaySessions] = await Promise.all([
+    // Today's sessions carry the same per-session cash lines as register
+    // history (helper floats/handovers and staff money), so an earlier
+    // closed session today does not show them as Net Cash Expenses.
+    const [todaySessionRows] = await Promise.all([
       db.prepare(`
-        SELECT cr.*, u1.name as opened_by_name, u2.name as closed_by_name
+        SELECT cr.*, u1.name as opened_by_name, u2.name as closed_by_name,
+          COALESCE((SELECT SUM(m.expected_amount) FROM staff_cash_movements m
+                    WHERE m.register_id = cr.id AND m.type = 'float_out'), 0) as helper_floats,
+          COALESCE((SELECT SUM(m.counted_amount) FROM staff_cash_movements m
+                    WHERE m.register_id = cr.id AND m.type = 'handover_in'), 0) as helper_handovers,
+          COALESCE((SELECT SUM(mo.amount) FROM staff_money_out mo
+                    WHERE mo.register_id = cr.id AND mo.payment_method = 'cash'), 0) as shopping_out,
+          COALESCE((SELECT SUM(ms.returned_amount) FROM staff_money_settles ms
+                    WHERE ms.register_id = cr.id AND ms.returned_method = 'cash'), 0) as shopping_in,
+          COALESCE((SELECT SUM(op.amount) FROM shop_owes_payments op
+                    WHERE op.register_id = cr.id AND op.method = 'cash'), 0) as owes_paid
         FROM cash_registers cr
         LEFT JOIN users u1 ON cr.opened_by = u1.id
         LEFT JOIN users u2 ON cr.closed_by = u2.id
@@ -623,6 +635,15 @@ router.get('/register/status', authenticate, async (req, res, next) => {
         ORDER BY cr.id DESC
       `).all(location_id, today),
     ]);
+    const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+    const todaySessions = todaySessionRows.map((s) => ({
+      ...s,
+      helper_floats: r2(s.helper_floats),
+      helper_handovers: r2(s.helper_handovers),
+      shopping_out: r2(s.shopping_out),
+      shopping_in: r2(s.shopping_in),
+      owes_paid: r2(s.owes_paid),
+    }));
 
     if (register) {
       // Helper cash bags: change floats handed out of this session and cash

@@ -9,6 +9,24 @@ const { readGstSettings, cleanHsn } = require('../utils/gst-settings');
 const { cleanPrefix } = require('../utils/invoice-number');
 const { SHOW_KEYS } = require('../utils/invoice-view');
 
+// Staff money limits (Settings -> Expenses). Same rule as the app: a whole
+// number, 1 or more. 0 or empty would make every give need a PIN.
+const STAFF_MONEY_LIMITS = {
+  advance_daily_limit: 'Advance limit per person per day: type a whole amount in rupees, above 0, like 500.',
+  advance_monthly_limit: 'Advance limit per person per month: type a whole amount in rupees, above 0, like 2000.',
+  shopping_money_daily_limit: 'Shopping money limit per person per day: type a whole amount in rupees, above 0, like 1000.',
+  shopping_money_late_days: 'Mark shopping money late after (days): type a whole number of days, 1 or more, like 3.',
+};
+function normalizeStaffMoneyLimits(st) {
+  for (const [k, message] of Object.entries(STAFF_MONEY_LIMITS)) {
+    if (!Object.prototype.hasOwnProperty.call(st, k)) continue;
+    const v = String(st[k] == null ? '' : st[k]).trim();
+    if (!/^\d{1,7}$/.test(v) || Number(v) < 1) return message;
+    st[k] = String(Number(v));
+  }
+  return null;
+}
+
 // Bill settings (Settings -> Bill). Cleans values in place; returns a plain
 // message when one is wrong.
 function normalizeBillSettings(st) {
@@ -165,6 +183,8 @@ router.put(
 
       const billErr = normalizeBillSettings(settings);
       if (billErr) return res.status(400).json({ success: false, message: billErr });
+      const limitErr = normalizeStaffMoneyLimits(settings);
+      if (limitErr) return res.status(400).json({ success: false, message: limitErr });
 
       const update = db.prepare(
         "UPDATE settings SET value = ?, updated_by = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?"

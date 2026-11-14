@@ -72,7 +72,7 @@ test('pinMessage: day limit (advance and shopping money)', () => {
 });
 test('pinMessage: month limit names the person', () => {
   const m = s.pinMessage('over_month', { limits, name: 'Ramesh' });
-  assert.strictEqual(m, 'Ramesh has had ₹2,000 in advances this month — the monthly limit. A manager or owner can confirm with their PIN.');
+  assert.strictEqual(m, 'That would take Ramesh over the ₹2,000 monthly advance limit. A manager or owner can confirm with their PIN.');
   assert.ok(m.includes('Ramesh'));
 });
 test('pinMessage: self', () => {

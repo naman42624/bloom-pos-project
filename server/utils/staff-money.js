@@ -22,13 +22,16 @@ async function getLimits(db) {
     "SELECT key, value FROM settings WHERE key IN ('advance_daily_limit','advance_monthly_limit','shopping_money_daily_limit','shopping_money_late_days')"
   ).all();
   const m = {};
-  for (const r of rows) m[r.key] = Number(r.value);
-  const pick = (key, dflt) => (Number.isFinite(m[key]) && m[key] >= 0 ? m[key] : dflt);
+  // An empty or blank value is not 0: Number('') is 0, so keep it missing.
+  for (const r of rows) m[r.key] = String(r.value ?? '').trim() === '' ? NaN : Number(r.value);
+  // A limit must be a positive number (late days at least 1); anything else
+  // falls back to the default rather than making every give need a PIN.
+  const pick = (key, dflt, min) => (Number.isFinite(m[key]) && m[key] >= min ? m[key] : dflt);
   return {
-    advanceDay: pick('advance_daily_limit', DEFAULT_LIMITS.advanceDay),
-    advanceMonth: pick('advance_monthly_limit', DEFAULT_LIMITS.advanceMonth),
-    shoppingDay: pick('shopping_money_daily_limit', DEFAULT_LIMITS.shoppingDay),
-    lateDays: pick('shopping_money_late_days', DEFAULT_LIMITS.lateDays),
+    advanceDay: pick('advance_daily_limit', DEFAULT_LIMITS.advanceDay, 0.01),
+    advanceMonth: pick('advance_monthly_limit', DEFAULT_LIMITS.advanceMonth, 0.01),
+    shoppingDay: pick('shopping_money_daily_limit', DEFAULT_LIMITS.shoppingDay, 0.01),
+    lateDays: pick('shopping_money_late_days', DEFAULT_LIMITS.lateDays, 1),
   };
 }
 
@@ -123,7 +126,7 @@ function needsPinMessage(reason, { name, limits, kind } = {}) {
   const inr = (n) => `₹${Number(n).toLocaleString('en-IN')}`;
   if (reason === 'self') return 'A manager or owner needs to confirm money for yourself.';
   if (reason === 'over_month') {
-    return `${name || 'This person'} has had ${inr(limits.advanceMonth)} in advances this month — the monthly limit. A manager or owner can confirm with their PIN.`;
+    return `That would take ${name || 'this person'} over the ${inr(limits.advanceMonth)} monthly advance limit. A manager or owner can confirm with their PIN.`;
   }
   const lim = kind === 'shopping' ? limits.shoppingDay : limits.advanceDay;
   return `That's more than the ${inr(lim)} daily ${kind === 'shopping' ? 'shopping money' : 'advance'} limit. A manager or owner can confirm with their PIN.`;

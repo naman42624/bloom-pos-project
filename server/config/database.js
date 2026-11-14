@@ -1120,6 +1120,8 @@ function ensureCompatibilityColumns() {
   ensureColumn('salary_advances', 'payment_method', 'VARCHAR(30)');
   ensureColumn('salary_advances', 'location_id', 'INTEGER REFERENCES locations(id) ON DELETE SET NULL');
   ensureColumn('salary_advances', 'expense_id', 'INTEGER REFERENCES expenses(id) ON DELETE SET NULL');
+  // Expense change and remove look up the linked advance by expense_id.
+  runPsql('CREATE INDEX IF NOT EXISTS idx_salary_advances_expense ON salary_advances(expense_id)');
   runPsql(`
     CREATE TABLE IF NOT EXISTS staff_money_out (
       id SERIAL PRIMARY KEY,

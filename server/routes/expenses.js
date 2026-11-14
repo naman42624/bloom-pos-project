@@ -1106,7 +1106,9 @@ function drawerEffect(exp) {
 
 // expected_cash moves by delta; a closed session also gets its difference
 // recalculated against the new expected cash (same rule as before for delete).
-async function moveDrawer(tx, registerId, delta) {
+// shiftLock: also move a locked blind count on an open session. Used for an
+// advance-linked expense, so removing or changing it mirrors payAdvance.
+async function moveDrawer(tx, registerId, delta, { shiftLock = false } = {}) {
   if (!registerId || Math.abs(delta) < 0.005) return;
   await tx.prepare(`
     UPDATE cash_registers SET
@@ -1114,6 +1116,10 @@ async function moveDrawer(tx, registerId, delta) {
       discrepancy = CASE WHEN closed_at IS NOT NULL THEN (expected_cash + ?) - actual_cash ELSE discrepancy END
     WHERE id = ?
   `).run(delta, delta, registerId);
+  if (shiftLock) {
+    await tx.prepare('UPDATE cash_registers SET close_count_locked = close_count_locked + ? WHERE id = ? AND closed_at IS NULL AND close_count_locked IS NOT NULL')
+      .run(delta, registerId);
+  }
 }
 
 // Locks the expense and the shop's open register, then checks who may touch it.
@@ -1190,7 +1196,16 @@ const pickAdvance = (a) => ({
 // return and who got it can't be changed here (that would break the link).
 const MONEY_OUT_LINK_MESSAGE = 'This was bought with shopping money. Remove it and add it again on the shopping money line.';
 const MONEY_OUT_CLOSED_MESSAGE = "This shopping money was already closed, so this can't be removed.";
-const MONEY_OUT_OWES_PAID_MESSAGE = "The shop already paid back part of what was overspent, so this can't be removed.";
+const MONEY_OUT_OWES_PAID_MESSAGE = "The shop already paid back part of what was overspent, so this can't be removed. Ask the owner if it needs fixing.";
+const MONEY_OUT_OWES_ALL_PAID_MESSAGE = "The shop already paid back what was overspent, so this can't be removed. Ask the owner if it needs fixing.";
+const MONEY_OUT_OWES_KEPT_MESSAGE = "What was overspent was kept as the owner's own money, so this can't be removed. Ask the owner if it needs fixing.";
+const MONEY_OUT_OWES_WRITTEN_OFF_MESSAGE = "What was overspent was written off, so this can't be removed. Ask the owner if it needs fixing.";
+function overspendClosedMessage(owes) {
+  if (owes.status === 'kept') return MONEY_OUT_OWES_KEPT_MESSAGE;
+  if (owes.status === 'written_off') return MONEY_OUT_OWES_WRITTEN_OFF_MESSAGE;
+  if (owes.status === 'paid') return MONEY_OUT_OWES_ALL_PAID_MESSAGE;
+  return MONEY_OUT_OWES_PAID_MESSAGE;
+}
 // Locked before the expense and the register (money row first).
 async function lockLinkedMoneyOut(tx, expenseId) {
   return (await tx.prepare(`
@@ -1199,9 +1214,17 @@ async function lockLinkedMoneyOut(tx, expenseId) {
     FOR UPDATE
   `).get(expenseId)) || null;
 }
+// The hand-out's overspend Shop owes line. Locked right after the hand-out
+// and before the expense and the register, the same order Pay back uses
+// (money rows first, then the register), so the two never deadlock.
+async function lockOverspendOwes(tx, mo) {
+  if (!mo) return null;
+  return (await tx.prepare("SELECT * FROM shop_owes WHERE money_out_id = ? AND source = 'overspend' ORDER BY id DESC LIMIT 1 FOR UPDATE").get(mo.id)) || null;
+}
 // Takes one removed bill off its hand-out: settled_amount down, an overspend
 // Shop owes shrinks first, and the line opens again if money is left.
-async function unsettleBill(tx, mo, expense, userId) {
+// owes is the overspend line from lockOverspendOwes (already locked).
+async function unsettleBill(tx, mo, owes, expense, userId) {
   if (!['open', 'settled', 'written_off'].includes(mo.status)) throw httpError(400, MONEY_OUT_CLOSED_MESSAGE);
   const amtP = centsOf(expense.amount);
   const totalP = centsOf(mo.amount);
@@ -1213,9 +1236,8 @@ async function unsettleBill(tx, mo, expense, userId) {
   const shrinkP = excessBefore - excessAfter;
   let owesChange = null;
   if (shrinkP > 0) {
-    const owes = await tx.prepare("SELECT * FROM shop_owes WHERE money_out_id = ? AND source = 'overspend' ORDER BY id DESC LIMIT 1 FOR UPDATE").get(mo.id);
     if (owes) {
-      if (owes.status !== 'open') throw httpError(400, MONEY_OUT_OWES_PAID_MESSAGE);
+      if (owes.status !== 'open') throw httpError(400, overspendClosedMessage(owes));
       const newOwesP = centsOf(owes.amount) - shrinkP;
       if (centsOf(owes.paid_amount) > Math.max(0, newOwesP)) throw httpError(400, MONEY_OUT_OWES_PAID_MESSAGE);
       if (newOwesP <= 0) {
@@ -1430,11 +1452,12 @@ router.put(
               if (!newRegisterId) throw registerClosedError();
             }
           }
+          const lockOpt = { shiftLock: !!advance };
           if (oldRegisterId && oldRegisterId === newRegisterId) {
-            await moveDrawer(tx, oldRegisterId, newEffect - oldEffect);
+            await moveDrawer(tx, oldRegisterId, newEffect - oldEffect, lockOpt);
           } else {
-            await moveDrawer(tx, oldRegisterId, -oldEffect);
-            await moveDrawer(tx, newRegisterId, newEffect);
+            await moveDrawer(tx, oldRegisterId, -oldEffect, lockOpt);
+            await moveDrawer(tx, newRegisterId, newEffect, lockOpt);
           }
         }
 
@@ -1528,6 +1551,7 @@ router.delete('/:id', authenticate, authorize('owner', 'manager', 'employee', 'c
     await withMoneyTx(async (tx) => {
       const advance = await lockLinkedAdvance(tx, expenseId);
       const moneyOut = await lockLinkedMoneyOut(tx, expenseId);
+      const overspend = await lockOverspendOwes(tx, moneyOut);
       const owes = await lockLinkedOwes(tx, expenseId);
       const { expense, oldRegisterId } = await loadForChange(tx, expenseId, req.user);
       if (advance && advanceTaken(advance)) throw httpError(400, ADVANCE_TAKEN_MESSAGE);
@@ -1538,9 +1562,9 @@ router.delete('/:id', authenticate, authorize('owner', 'manager', 'employee', 'c
         await auditOwesRow(tx, owes.id, req.user.id, 'own_pocket_removed', pickOwesRow(owes), null);
       }
       // A shopping money bill: its amount is still with that person again.
-      if (moneyOut) await unsettleBill(tx, moneyOut, expense, req.user.id);
+      if (moneyOut) await unsettleBill(tx, moneyOut, overspend, expense, req.user.id);
       // Put the cash back on the session it came out of.
-      await moveDrawer(tx, oldRegisterId, -drawerEffect(expense));
+      await moveDrawer(tx, oldRegisterId, -drawerEffect(expense), { shiftLock: !!advance });
       if (advance && advance.status === 'approved') {
         // Removing the advance expense cancels the advance (spec 5.3).
         await tx.prepare("UPDATE salary_advances SET status = 'cancelled' WHERE id = ?").run(advance.id);

@@ -9,7 +9,7 @@ const { getDb, withMoneyTx } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
 const sm = require('../utils/staff-money');
 const { payAdvance, ADVANCE_REGISTER_CLOSED_MESSAGE } = require('../utils/advance-payout');
-const { lockOpenRegister } = require('../utils/register-guard');
+const { lockOpenRegister, moveSessionCash } = require('../utils/register-guard');
 const { todayStr } = require('../utils/time');
 const { resolveItem, composeDescription } = require('../utils/expense-items');
 const { notifyByRole } = require('./notifications');
@@ -216,13 +216,8 @@ async function tellOwner(g, { what, title, type, data }) {
   await notifyByRole({ roles: ['owner'], locationId: g.locationId, title, body, type, data });
 }
 
-// Cash in (+) or out (-) of an open register session: the running expected
-// cash moves, and so does a locked blind count (same as helper floats).
-async function moveSessionCash(tx, registerId, delta) {
-  await tx.prepare('UPDATE cash_registers SET expected_cash = expected_cash + ? WHERE id = ? AND closed_at IS NULL').run(delta, registerId);
-  await tx.prepare('UPDATE cash_registers SET close_count_locked = close_count_locked + ? WHERE id = ? AND closed_at IS NULL AND close_count_locked IS NOT NULL')
-    .run(delta, registerId);
-}
+// moveSessionCash (utils/register-guard): expected cash and a locked blind
+// count move together, same as helper floats.
 
 async function auditMoneyOut(tx, id, userId, action, before, after) {
   await tx.prepare(`
@@ -256,11 +251,14 @@ router.post('/advance', authenticate, authorize(...GIVER_ROLES), async (req, res
       type: 'staff_money_advance',
       data: { screen: 'Expenses', advanceId: result.advanceId, userId: g.userId },
     });
-    const after = await sm.totals(g.db, { userId: g.userId });
-    res.status(201).json({
-      success: true,
-      data: { advance_id: result.advanceId, expense_id: result.expenseId, unpaid_after: after.advancesUnpaid },
-    });
+    const data = { advance_id: result.advanceId, expense_id: result.expenseId };
+    // A colleague's unpaid advances are private (spec 5.8): only the owner,
+    // a manager, or the person themself sees the total.
+    if (isBoss(g.giver.role) || Number(g.giver.id) === Number(g.userId)) {
+      const after = await sm.totals(g.db, { userId: g.userId });
+      data.unpaid_after = after.advancesUnpaid;
+    }
+    res.status(201).json({ success: true, data });
   } catch (err) {
     sendError(res, next, err);
   }

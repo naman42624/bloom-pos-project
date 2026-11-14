@@ -3,7 +3,7 @@
 // payAdvance, so both write the same advance row and the same salary expense.
 // Runs inside the caller's withMoneyTx. Lock order: the caller locks an
 // existing salary_advances row first; payAdvance then locks the open register.
-const { lockOpenRegister } = require('./register-guard');
+const { lockOpenRegister, moveSessionCash } = require('./register-guard');
 const { todayStr } = require('./time');
 const { composeDescription } = require('./expense-items');
 
@@ -48,9 +48,9 @@ async function payAdvance(tx, {
   );
   const expenseId = Number(expense.lastInsertRowid);
 
-  if (registerId) {
-    await tx.prepare('UPDATE cash_registers SET expected_cash = expected_cash - ? WHERE id = ?').run(amt, registerId);
-  }
+  // The register was locked open above, so this is always an open session:
+  // a locked blind count moves with the cash (the other staff money paths do too).
+  if (registerId) await moveSessionCash(tx, registerId, -amt);
 
   let id = advanceId ? Number(advanceId) : null;
   if (id) {
