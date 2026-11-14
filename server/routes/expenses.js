@@ -1087,6 +1087,29 @@ const pickAudit = (e) => ({
   given_to_user_id: e.given_to_user_id || null, given_to_name: e.given_to_name || null,
 });
 
+// A salary expense written by payAdvance is linked from its advance
+// (salary_advances.expense_id). Spec 5.3: removing it cancels the advance,
+// changing its amount moves the advance, anything that would break the link
+// is refused, and nothing changes once payroll took any of it.
+const ADVANCE_LINK_MESSAGE = 'Remove it and give the advance again.';
+const ADVANCE_TAKEN_MESSAGE = "This advance was already taken from pay, so it can't be changed or removed.";
+const centsOf = (n) => Math.round((Number(n) || 0) * 100);
+const advanceTaken = (adv) => adv.status === 'repaid' || centsOf(adv.repaid_amount) > 0;
+// Locked before the expense and the register (money row first).
+async function lockLinkedAdvance(tx, expenseId) {
+  return (await tx.prepare('SELECT * FROM salary_advances WHERE expense_id = ? FOR UPDATE').get(expenseId)) || null;
+}
+async function auditAdvance(tx, advanceId, userId, action, before, after) {
+  await tx.prepare(`
+    INSERT INTO audit_logs (entity_type, entity_id, user_id, action, previous_state, new_state, created_at)
+    VALUES ('salary_advance', ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+  `).run(advanceId, userId, action, JSON.stringify(before), after ? JSON.stringify(after) : null);
+}
+const pickAdvance = (a) => ({
+  user_id: a.user_id, amount: Number(a.amount), status: a.status, payment_method: a.payment_method || null,
+  date: a.date ? String(a.date).slice(0, 10) : null, expense_id: a.expense_id || null, source: a.source || null,
+});
+
 // ─── PUT /api/expenses/:id ───────────────────────────────────
 router.put(
   '/:id',
@@ -1161,6 +1184,7 @@ router.put(
       }
 
       const updated = await withMoneyTx(async (tx) => {
+        const advance = await lockLinkedAdvance(tx, expenseId);
         const { expense, openRegister, oldRegisterId } = await loadForChange(tx, expenseId, req.user);
         const nv = {
           category: has('category') ? req.body.category : (wantsItem ? item.category : expense.category),
@@ -1191,6 +1215,16 @@ router.put(
         }
         if (nv.category !== 'salary') nv.employee_id = null;
         if (nv.category === 'salary' && !nv.employee_id) throw httpError(400, 'Select which employee this salary payment is for.');
+        if (advance) {
+          const breaksLink = nv.category !== 'salary'
+            || Number(nv.employee_id) !== Number(advance.user_id)
+            || Number(nv.given_to_user_id) !== Number(advance.user_id)
+            || nv.is_return
+            || !['cash', 'upi'].includes(nv.payment_method);
+          if (breaksLink) throw httpError(400, ADVANCE_LINK_MESSAGE);
+          const moneyMoved = centsOf(nv.amount) !== centsOf(expense.amount) || nv.payment_method !== expense.payment_method;
+          if (moneyMoved && advanceTaken(advance)) throw httpError(400, ADVANCE_TAKEN_MESSAGE);
+        }
         // The payroll overlap check runs only when the date or the employee
         // changes; otherwise it would find the row's own payment.
         const salaryMoved = nv.expense_date !== expense.expense_date || Number(nv.employee_id) !== Number(expense.employee_id);
@@ -1245,6 +1279,15 @@ router.put(
 
         const after = { ...expense, ...nv, register_id: newRegisterId };
         await auditExpense(tx, expenseId, req.user.id, 'expense_edit', pickAudit(expense), pickAudit(after));
+        if (advance) {
+          // The advance follows its expense: amount, Cash or UPI, and day.
+          await tx.prepare('UPDATE salary_advances SET amount = ?, payment_method = ?, date = CAST(? AS date) WHERE id = ?')
+            .run(nv.amount, nv.payment_method, nv.expense_date, advance.id);
+          const advAfter = { ...advance, amount: nv.amount, payment_method: nv.payment_method, date: nv.expense_date };
+          if (JSON.stringify(pickAdvance(advance)) !== JSON.stringify(pickAdvance(advAfter))) {
+            await auditAdvance(tx, advance.id, req.user.id, 'salary_advance_changed', pickAdvance(advance), pickAdvance(advAfter));
+          }
+        }
         return after;
       });
 
@@ -1273,9 +1316,16 @@ router.delete('/:id', authenticate, authorize('owner', 'manager', 'employee', 'c
   try {
     const expenseId = Number(req.params.id);
     await withMoneyTx(async (tx) => {
+      const advance = await lockLinkedAdvance(tx, expenseId);
       const { expense, oldRegisterId } = await loadForChange(tx, expenseId, req.user);
+      if (advance && advanceTaken(advance)) throw httpError(400, ADVANCE_TAKEN_MESSAGE);
       // Put the cash back on the session it came out of.
       await moveDrawer(tx, oldRegisterId, -drawerEffect(expense));
+      if (advance && advance.status === 'approved') {
+        // Removing the advance expense cancels the advance (spec 5.3).
+        await tx.prepare("UPDATE salary_advances SET status = 'cancelled' WHERE id = ?").run(advance.id);
+        await auditAdvance(tx, advance.id, req.user.id, 'salary_advance_cancelled', pickAdvance(advance), { ...pickAdvance(advance), status: 'cancelled' });
+      }
       await tx.prepare('DELETE FROM expenses WHERE id = ?').run(expenseId);
       await auditExpense(tx, expenseId, req.user.id, 'expense_delete', pickAudit(expense), null);
     });
