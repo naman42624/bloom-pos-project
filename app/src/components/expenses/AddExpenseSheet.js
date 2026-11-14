@@ -302,6 +302,13 @@ function SheetBody({
   const categoryChoices = (editing || hideSalary) ? EXPENSE_CATEGORIES.filter((c) => c.key !== 'salary') : EXPENSE_CATEGORIES;
   const effectiveCategory = editing ? category : (item && !kindChosen ? item.category : category);
   const isSalary = effectiveCategory === 'salary';
+  // Salary: the employee picked IS who it was given to, so Given to is
+  // hidden. Moving the Kind away from Salary brings Given to back empty.
+  const wasSalary = useRef(isSalary);
+  useEffect(() => {
+    if (wasSalary.current && !isSalary) { setGivenTo(null); setGivenToTouched(true); }
+    wasSalary.current = isSalary;
+  }, [isSalary]);
 
   // ── Photo ──
   const pickPhoto = async (fromCamera) => {
@@ -418,7 +425,12 @@ function SheetBody({
         ...itemFields(),
         employee_id: isSalary ? salaryEmployee.id : null,
       };
-      if (!editing || givenToTouched) Object.assign(body, givenToFields());
+      if (isSalary) {
+        // Given to is the salary employee (lists that show Given to agree).
+        body.category = 'salary';
+        body.given_to_user_id = Number(salaryEmployee.id);
+        body.given_to_name = null;
+      } else if (!editing || givenToTouched) Object.assign(body, givenToFields());
       if (newPhotoUrl) body.photo_url = newPhotoUrl;
       else if (editing && expense.photo_url && !photoUrl) body.photo_url = null;
       if (isBoss && (!editing ? expenseDate !== today : expenseDate !== dateStr(expense.expense_date))) body.expense_date = expenseDate;
@@ -652,14 +664,18 @@ function SheetBody({
           <Text style={styles.hint}>Cash comes out of the drawer that is open now.</Text>
         )}
 
-        {/* Given to (optional) */}
-        <Text style={styles.label}>Given to <Text style={styles.optional}>(optional)</Text></Text>
-        <RecentPeople
-          locationId={locationId}
-          items={suggestItems}
-          value={givenTo}
-          onChange={(v) => { setGivenTo(v); setGivenToTouched(true); }}
-        />
+        {/* Given to (optional). Not for Salary: the employee below is the person. */}
+        {!isSalary && (
+          <>
+            <Text style={styles.label}>Given to <Text style={styles.optional}>(optional)</Text></Text>
+            <RecentPeople
+              locationId={locationId}
+              items={suggestItems}
+              value={givenTo}
+              onChange={(v) => { setGivenTo(v); setGivenToTouched(true); }}
+            />
+          </>
+        )}
 
         <View style={styles.rows}>
           {/* Kind: from the item; Salary not offered to counter staff */}

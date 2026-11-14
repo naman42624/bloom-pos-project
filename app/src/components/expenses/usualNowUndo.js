@@ -10,7 +10,19 @@ const rupees = (n) => `₹${Number(n || 0).toLocaleString('en-IN', { maximumFrac
 // state.saving: an Add is on its way (a second Add tap is ignored).
 // state.bar: the Undo bar, null | { expense, text, expiresAt, undoing }.
 // state.message: a server refusal of Undo still to be shown.
-export const initialUndoState = { saving: false, bar: null, message: null };
+// state.added: item ids shown as a disabled "Added ✓" in place while the
+//   bar shows, so a quick second tap lands on the same, disabled button.
+// state.reloadDue: the line is reloaded only once the bar has closed, so no
+//   row moves under the finger meanwhile (see needsReload).
+export const initialUndoState = { saving: false, bar: null, message: null, added: [], reloadDue: false };
+
+const withAdded = (s, itemId) => {
+  const list = s.added || [];
+  if (itemId == null || list.includes(Number(itemId))) return list;
+  return list.concat(Number(itemId));
+};
+// The bar closes: every row goes back to normal and the line reloads.
+const closed = (s, extra) => ({ ...s, ...extra, bar: null, added: [], reloadDue: true });
 
 export function undoReducer(state, action) {
   const s = state || initialUndoState;
@@ -23,34 +35,56 @@ export function undoReducer(state, action) {
         ...s,
         saving: false,
         bar: { expense: action.expense, text: action.text, expiresAt: action.now + UNDO_MS, undoing: false },
+        added: withAdded(s, action.itemId),
+        reloadDue: true,
       };
+    case 'mark_added':
+      // Saved another way (the full sheet) while the bar shows: that row is
+      // locked as added too, until the bar closes.
+      if (!s.bar) return s;
+      return { ...s, added: withAdded(s, action.itemId), reloadDue: true };
+    case 'reload_later':
+      return s.reloadDue ? s : { ...s, reloadDue: true };
+    case 'reload_taken':
+      return s.reloadDue ? { ...s, reloadDue: false } : s;
     case 'add_failed':
       return s.saving ? { ...s, saving: false } : s;
     case 'expire':
       // A timer from an older bar never closes a newer one, and a bar whose
       // Undo is on its way stays until the answer comes.
       if (!s.bar || s.bar.undoing || action.now < s.bar.expiresAt) return s;
-      return { ...s, bar: null };
+      return closed(s);
     case 'undo_start':
       if (!s.bar || s.bar.undoing) return s;
       return { ...s, bar: { ...s.bar, undoing: true } };
     case 'undo_done':
-      return { ...s, bar: null, message: null };
+      return closed(s, { message: null });
     case 'undo_failed':
       // The entry stays in the list; the bar closes and the server's plain
       // message is shown.
-      return {
-        ...s,
-        bar: null,
+      return closed(s, {
         message: action.message || 'It was not removed. Check the connection, then remove it from the list.',
-      };
+      });
     case 'message_shown':
       return s.message ? { ...s, message: null } : s;
     case 'dismiss':
-      return s.bar ? { ...s, bar: null } : s;
+      return s.bar ? closed(s) : s;
     default:
       return s;
   }
+}
+
+// Reload the line now: the bar has closed and a reload is owed.
+export function needsReload(state) {
+  return !!(state && !state.bar && state.reloadDue);
+}
+
+// What a row's button shows: 'added' (disabled "Added ✓"), 'saving'
+// (an add is on its way, every button waits) or 'ready' ("+ Add").
+export function rowState(state, itemId) {
+  if (state && state.bar && (state.added || []).includes(Number(itemId))) return 'added';
+  if (state && state.saving) return 'saving';
+  return 'ready';
 }
 
 // "Added Tea ₹50 · Cash"

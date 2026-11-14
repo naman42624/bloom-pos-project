@@ -192,6 +192,51 @@ test('undoReducer: a new add replaces the bar; undo twice is ignored', () => {
   assert.strictEqual(u.undoReducer(undoing, { type: 'undo_start' }), undoing);
   assert.strictEqual(u.undoReducer(u.initialUndoState, { type: 'undo_start' }), u.initialUndoState);
 });
+test('rows: the added row stays in place as "Added ✓" while the bar shows; no reload until it closes', () => {
+  const addTea = (st, now) => u.undoReducer(u.undoReducer(st, { type: 'add_start' }),
+    { type: 'add_done', itemId: 1, expense: teaExpense, text: 'Added Tea ₹50 · Cash', now });
+  const s0 = u.undoReducer(u.initialUndoState, { type: 'add_start' });
+  assert.strictEqual(u.rowState(s0, 1), 'saving', 'every row waits during the save');
+  assert.strictEqual(u.rowState(s0, 2), 'saving');
+  const s = addTea(u.initialUndoState, 1000);
+  assert.strictEqual(u.rowState(s, 1), 'added', 'tapped row locked');
+  assert.strictEqual(u.rowState(s, 2), 'ready', 'other rows still usable');
+  assert.strictEqual(u.needsReload(s), false, 'no reload while the bar shows');
+  // A focus or sheet reload while the bar shows waits.
+  const later = u.undoReducer(s, { type: 'reload_later' });
+  assert.strictEqual(u.needsReload(later), false);
+  assert.strictEqual(u.rowState(u.undoReducer(s, { type: 'expire', now: 15999 }), 1), 'added', 'still locked just before 15 s');
+  const gone = u.undoReducer(later, { type: 'expire', now: 16000 });
+  assert.strictEqual(gone.bar, null);
+  assert.deepStrictEqual(gone.added, []);
+  assert.strictEqual(u.rowState(gone, 1), 'ready');
+  assert.strictEqual(u.needsReload(gone), true, 'reload once the bar closes');
+  const taken = u.undoReducer(gone, { type: 'reload_taken' });
+  assert.strictEqual(u.needsReload(taken), false, 'reload runs once');
+});
+test('rows: Undo brings back + Add and reloads; a refused Undo reloads too', () => {
+  const s = u.undoReducer(u.undoReducer(u.initialUndoState, { type: 'add_start' }),
+    { type: 'add_done', itemId: 1, expense: teaExpense, text: 'Added Tea ₹50 · Cash', now: 1000 });
+  const undoing = u.undoReducer(s, { type: 'undo_start' });
+  assert.strictEqual(u.rowState(undoing, 1), 'added', 'locked while the undo is on its way');
+  const done = u.undoReducer(undoing, { type: 'undo_done' });
+  assert.strictEqual(u.rowState(done, 1), 'ready');
+  assert.strictEqual(u.needsReload(done), true);
+  const refused = u.undoReducer(undoing, { type: 'undo_failed', message: 'x' });
+  assert.strictEqual(u.rowState(refused, 1), 'ready');
+  assert.strictEqual(u.needsReload(refused), true);
+});
+test('rows: a second add keeps both rows locked; a sheet save locks its item only while a bar shows', () => {
+  let s = u.undoReducer(u.undoReducer(u.initialUndoState, { type: 'add_start' }),
+    { type: 'add_done', itemId: 1, expense: teaExpense, text: 'Added Tea ₹50 · Cash', now: 1000 });
+  s = u.undoReducer(u.undoReducer(s, { type: 'add_start' }),
+    { type: 'add_done', itemId: 2, expense: { id: 42 }, text: 'Added Milk ₹60 · UPI', now: 2000 });
+  assert.strictEqual(u.rowState(s, 1), 'added');
+  assert.strictEqual(u.rowState(s, 2), 'added');
+  s = u.undoReducer(s, { type: 'mark_added', itemId: 3 });
+  assert.strictEqual(u.rowState(s, 3), 'added');
+  assert.strictEqual(u.undoReducer(u.initialUndoState, { type: 'mark_added', itemId: 3 }), u.initialUndoState, 'no bar: nothing locked');
+});
 test('undoBarText: "Added Tea ₹50 · Cash"', () => {
   assert.strictEqual(u.undoBarText('Tea', 50, 'cash'), 'Added Tea ₹50 · Cash');
   assert.strictEqual(u.undoBarText('Milk', 1250, 'upi'), 'Added Milk ₹1,250 · UPI');

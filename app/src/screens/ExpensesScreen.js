@@ -174,7 +174,7 @@ export default function ExpensesScreen() {
   const usualNowLine = canUsualNow ? (
     <UsualNowLine
       items={usualNow.items}
-      saving={usualNow.state.saving}
+      state={usualNow.lineState}
       registerOpen={registerStatus.isOpen}
       registerLoading={registerStatus.loading}
       onAdd={usualNow.add}
@@ -200,6 +200,9 @@ export default function ExpensesScreen() {
     if (summaryOn) setRefreshKey((k) => k + 1);
     else fetchExpenses();
     registerStatus.refetch();
+    // The Usual now line (day list and owner summary) drops a just-saved
+    // item and brings back a removed one.
+    usualNow.afterSheetSave(result);
     if (result?.message) {
       setToast(result.message);
       clearTimeout(toastTimer.current);

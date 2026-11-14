@@ -6,8 +6,10 @@
  *     Milk  ₹60   Cash                         [+ Add]
  *
  * + Add saves at once with what the line shows; a large bar at the bottom,
- * "Added Tea ₹50 · Cash — Undo", stays 15 seconds. Tapping the name opens
- * the add sheet pre-filled instead. A Cash line with the register closed
+ * "Added Tea ₹50 · Cash — Undo", stays 15 seconds. While it shows, the
+ * tapped row stays where it is as a disabled "Added ✓" and the line is not
+ * reloaded, so a quick second tap never lands on another row's + Add.
+ * Tapping the name opens the add sheet pre-filled instead. A Cash line with the register closed
  * reads "Open register" (never switched to UPI quietly).
  *
  * useUsualNow() keeps the rows and the Undo state; the screen renders
@@ -24,10 +26,10 @@ import { showAlert } from '../../utils/alert';
 import { pickDefaults, suggestionLine } from '../../utils/expenseBook';
 import { Colors, FontSize, Spacing, BorderRadius } from '../../constants/theme';
 import {
-  UNDO_MS, initialUndoState, undoReducer, undoBarText, usualNowBody, usualNowRows,
+  UNDO_MS, initialUndoState, undoReducer, undoBarText, usualNowBody, usualNowRows, needsReload, rowState,
 } from './usualNowUndo';
 
-export { UNDO_MS, initialUndoState, undoReducer, undoBarText, usualNowBody, usualNowRows };
+export { UNDO_MS, initialUndoState, undoReducer, undoBarText, usualNowBody, usualNowRows, needsReload, rowState };
 
 const rupees = (n) => `₹${Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
 const REGISTER_CLOSED = /register isn.t open/i;
@@ -44,13 +46,42 @@ export function useUsualNow({ locationId, enabled = true, onChanged, onOpenRegis
   const addGuard = useSubmitGuard();
   const undoGuard = useSubmitGuard();
 
-  const reload = useCallback(() => {
+  const barShop = useRef(null); // the shop the showing bar's add was for
+
+  const fetchRows = useCallback(() => {
     const id = ++reqId.current;
     if (!enabled || !locationId) { setItems([]); return; }
     api.getExpenseSuggestions({ location_id: locationId })
       .then((res) => { if (id === reqId.current) setItems(usualNowRows(res)); })
       .catch(() => { if (id === reqId.current) setItems([]); });
   }, [enabled, locationId]);
+
+  // While the bar shows for this shop, the rows stay as they are; the
+  // reload runs when the bar closes (effect below).
+  const reload = useCallback(() => {
+    if (stateRef.current.bar && barShop.current === locationId) {
+      dispatch({ type: 'reload_later' });
+      return;
+    }
+    fetchRows();
+  }, [fetchRows, locationId]);
+
+  useEffect(() => {
+    if (!needsReload(state)) return;
+    dispatch({ type: 'reload_taken' });
+    fetchRows();
+  }, [state.bar, state.reloadDue, fetchRows]);
+
+  // A save from the full sheet: that item is locked as added while a bar
+  // shows (it would otherwise still offer + Add), then the line reloads.
+  const afterSheetSave = useCallback((result) => {
+    const itemId = result && !result.removed && result.expense ? result.expense.item_id : null;
+    if (itemId && stateRef.current.bar && barShop.current === locationId) {
+      dispatch({ type: 'mark_added', itemId });
+      return;
+    }
+    reload();
+  }, [reload, locationId]);
 
   // On focus and when the shop changes ("usual now" moves with the clock).
   useFocusEffect(useCallback(() => { reload(); }, [reload]));
@@ -77,14 +108,16 @@ export function useUsualNow({ locationId, enabled = true, onChanged, onOpenRegis
     try {
       const res = await api.createExpense(body);
       const saved = res?.data || { id: null };
+      barShop.current = locationId;
+      // The line reloads once the bar closes (reloadDue), not now.
       dispatch({
         type: 'add_done',
+        itemId: item.id,
         expense: saved,
         text: undoBarText(item.name, body.amount, body.payment_method),
         now: Date.now(),
       });
       onChanged && onChanged();
-      reload();
     } catch (err) {
       dispatch({ type: 'add_failed' });
       const msg = err?.message || 'It was not saved. Check the connection and try again.';
@@ -105,19 +138,20 @@ export function useUsualNow({ locationId, enabled = true, onChanged, onOpenRegis
     dispatch({ type: 'undo_start' });
     try {
       await api.deleteExpense(bar.expense.id);
-      dispatch({ type: 'undo_done' });
+      dispatch({ type: 'undo_done' }); // closes the bar; the line then reloads
       onChanged && onChanged();
-      reload();
     } catch (err) {
       dispatch({ type: 'undo_failed', message: err?.message });
     }
   });
 
-  return { items, state, add, undo, reload };
+  // Rows are locked as added only for the shop the bar's add was for.
+  const lineState = state.bar && barShop.current !== locationId ? { ...state, added: [] } : state;
+  return { items, state, lineState, add, undo, reload, afterSheetSave };
 }
 
 export default function UsualNowLine({
-  items, saving, registerOpen, registerLoading, onAdd, onOpenSheet, onOpenRegister, style,
+  items, state, registerOpen, registerLoading, onAdd, onOpenSheet, onOpenRegister, style,
 }) {
   if (!items || items.length === 0) return null;
   return (
@@ -126,8 +160,10 @@ export default function UsualNowLine({
       {items.map((item, i) => {
         const d = pickDefaults(item);
         const body = usualNowBody(item, 0);
-        const cashClosed = body && body.payment_method === 'cash' && !registerLoading && !registerOpen;
+        const status = rowState(state, item.id);
+        const cashClosed = status !== 'added' && body && body.payment_method === 'cash' && !registerLoading && !registerOpen;
         const line = suggestionLine(item);
+        const saving = status === 'saving';
         return (
           <View key={item.id} style={[styles.row, i > 0 && styles.rowDivider]}>
             <TouchableOpacity
@@ -151,6 +187,15 @@ export default function UsualNowLine({
               >
                 <Text style={[styles.btnText, styles.btnWarnText]}>Open register</Text>
               </TouchableOpacity>
+            ) : status === 'added' ? (
+              <View
+                style={[styles.btn, styles.btnAdded]}
+                accessibilityRole="button"
+                accessibilityState={{ disabled: true }}
+                accessibilityLabel={`${item.name} added. Use Undo at the bottom to take it back.`}
+              >
+                <Text style={[styles.btnText, styles.btnAddedText]}>Added ✓</Text>
+              </View>
             ) : (
               <TouchableOpacity
                 style={[styles.btn, saving && styles.btnBusy]}
@@ -213,6 +258,8 @@ const styles = StyleSheet.create({
     borderRadius: BorderRadius.md, borderWidth: 1.5, borderColor: Colors.primary, backgroundColor: Colors.surface,
   },
   btnBusy: { opacity: 0.5 },
+  btnAdded: { borderColor: Colors.success, backgroundColor: Colors.surface },
+  btnAddedText: { color: Colors.success },
   btnText: { fontSize: FontSize.md, fontWeight: '700', color: Colors.primary },
   btnWarn: { borderColor: Colors.warning, backgroundColor: Colors.warningLight },
   btnWarnText: { color: Colors.text },
