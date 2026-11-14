@@ -1111,8 +1111,92 @@ function ensureCompatibilityColumns() {
   // elsewhere in this file. Widening only.
   try { runPsql('ALTER TABLE salary_advances DROP CONSTRAINT IF EXISTS salary_advances_status_check'); } catch (_) {}
   try {
-    runPsql("ALTER TABLE salary_advances ADD CONSTRAINT salary_advances_status_check CHECK(status IN ('pending', 'approved', 'paid', 'rejected', 'repaid'))");
+    runPsql("ALTER TABLE salary_advances ADD CONSTRAINT salary_advances_status_check CHECK(status IN ('pending', 'approved', 'paid', 'rejected', 'repaid', 'cancelled'))");
   } catch (_) {}
+
+  // ─── Staff money (2026-11-14): advances, shopping money, own pocket ───
+  ensureColumn('salary_advances', 'given_by', 'INTEGER REFERENCES users(id) ON DELETE SET NULL');
+  ensureColumn('salary_advances', 'source', 'VARCHAR(30)');
+  ensureColumn('salary_advances', 'payment_method', 'VARCHAR(30)');
+  ensureColumn('salary_advances', 'location_id', 'INTEGER REFERENCES locations(id) ON DELETE SET NULL');
+  ensureColumn('salary_advances', 'expense_id', 'INTEGER REFERENCES expenses(id) ON DELETE SET NULL');
+  runPsql(`
+    CREATE TABLE IF NOT EXISTS staff_money_out (
+      id SERIAL PRIMARY KEY,
+      location_id INTEGER REFERENCES locations(id) ON DELETE SET NULL,
+      user_id INTEGER NOT NULL REFERENCES users(id),
+      amount DECIMAL(10,2) NOT NULL,
+      payment_method VARCHAR(30) DEFAULT 'cash',
+      register_id INTEGER REFERENCES cash_registers(id) ON DELETE SET NULL,
+      given_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      approved_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      note TEXT,
+      status VARCHAR(20) NOT NULL DEFAULT 'open',
+      settled_amount DECIMAL(10,2) DEFAULT 0,
+      returned_amount DECIMAL(10,2) DEFAULT 0,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      closed_at TIMESTAMP,
+      close_reason TEXT
+    )
+  `);
+  runPsql(`
+    CREATE TABLE IF NOT EXISTS staff_money_settles (
+      id SERIAL PRIMARY KEY,
+      money_out_id INTEGER NOT NULL REFERENCES staff_money_out(id) ON DELETE CASCADE,
+      bills_amount DECIMAL(10,2) DEFAULT 0,
+      returned_amount DECIMAL(10,2) DEFAULT 0,
+      returned_method VARCHAR(30),
+      register_id INTEGER REFERENCES cash_registers(id) ON DELETE SET NULL,
+      settled_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  runPsql(`
+    CREATE TABLE IF NOT EXISTS shop_owes (
+      id SERIAL PRIMARY KEY,
+      location_id INTEGER REFERENCES locations(id) ON DELETE SET NULL,
+      user_id INTEGER NOT NULL REFERENCES users(id),
+      amount DECIMAL(10,2) NOT NULL,
+      paid_amount DECIMAL(10,2) DEFAULT 0,
+      source VARCHAR(30),
+      money_out_id INTEGER REFERENCES staff_money_out(id) ON DELETE SET NULL,
+      expense_id INTEGER REFERENCES expenses(id) ON DELETE SET NULL,
+      status VARCHAR(20) NOT NULL DEFAULT 'open',
+      created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      closed_at TIMESTAMP,
+      close_reason TEXT
+    )
+  `);
+  runPsql(`
+    CREATE TABLE IF NOT EXISTS shop_owes_payments (
+      id SERIAL PRIMARY KEY,
+      owes_id INTEGER NOT NULL REFERENCES shop_owes(id) ON DELETE CASCADE,
+      amount DECIMAL(10,2) NOT NULL,
+      method VARCHAR(30),
+      register_id INTEGER REFERENCES cash_registers(id) ON DELETE SET NULL,
+      paid_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  ensureColumn('expenses', 'money_out_id', 'INTEGER REFERENCES staff_money_out(id) ON DELETE SET NULL');
+  ensureColumn('expenses', 'paid_by_user_id', 'INTEGER REFERENCES users(id) ON DELETE SET NULL');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_staff_money_out_loc_status ON staff_money_out(location_id, status)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_staff_money_out_user_status ON staff_money_out(user_id, status)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_staff_money_settles_register ON staff_money_settles(register_id)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_staff_money_settles_out ON staff_money_settles(money_out_id)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_shop_owes_user_status ON shop_owes(user_id, status)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_shop_owes_payments_register ON shop_owes_payments(register_id)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_expenses_money_out ON expenses(money_out_id)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_expenses_paid_by_user ON expenses(paid_by_user_id)');
+  for (const [k, v, d] of [
+    ['advance_daily_limit', '500', 'Most salary advance one person can get in a day without a manager or owner PIN'],
+    ['advance_monthly_limit', '2000', 'Most salary advance one person can get in a month without a manager or owner PIN'],
+    ['shopping_money_daily_limit', '1000', 'Most shopping money one person can be handed in a day without a manager or owner PIN'],
+    ['shopping_money_late_days', '3', 'Days after which shopping money not yet settled shows as late'],
+  ]) {
+    runPsql(`INSERT INTO settings (key, value, description) VALUES ('${k}', '${v}', '${d}') ON CONFLICT (key) DO NOTHING`);
+  }
 
   ensureColumn('product_materials', 'notes', 'TEXT');
   ensureColumn('product_materials', 'created_at', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP');
