@@ -11,6 +11,7 @@ import DateTimePickerModal from '../components/DateTimePickerModal';
 import useSubmitGuard from '../hooks/useSubmitGuard';
 import { showAlert, showConfirm, appAlert } from '../utils/alert';
 import { getShopTodayStr, getShopNow } from '../utils/datetime';
+import { deactivateWarning } from '../utils/staffMoney';
 import {
   addDaysStr, dateStrToDate, dateToDateStr, formatWeekdayDayMonth,
 } from '../utils/helperAccess';
@@ -285,6 +286,33 @@ export default function UserFormScreen({ route, navigation }) {
         setLoading(false);
       }
     };
+    // Deactivating someone who still holds shopping money or is owed money
+    // warns first (spec 4.7) — never blocks. The check is best effort: if it
+    // fails, the usual confirm shows.
+    let warning = null;
+    if (isActive) {
+      setLoading(true);
+      try {
+        let locs = locations;
+        if (!locs || locs.length === 0) {
+          const r = await api.getLocations();
+          locs = r.data?.locations || r.data || [];
+        }
+        const open = await Promise.all((locs || []).map((l) =>
+          api.getOpenStaffMoney({ location_id: l.id }).then((r) => r && r.data).catch(() => null)));
+        warning = deactivateWarning(existingUser.name, existingUser.id, open);
+      } catch (e) {
+        warning = null;
+      } finally {
+        setLoading(false);
+      }
+    }
+    if (warning) {
+      showConfirm('Money still open', `${warning}\n\nDeactivate ${existingUser.name} anyway?`, doToggle, {
+        confirmLabel: 'Deactivate anyway', cancelLabel: 'Go back', destructive: true,
+      });
+      return;
+    }
     showConfirm(action, `${action} ${existingUser.name}?`, doToggle, { confirmLabel: action, destructive: !!isActive });
   };
 

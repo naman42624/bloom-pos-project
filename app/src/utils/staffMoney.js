@@ -321,3 +321,161 @@ export function removeConfirmText(line) {
 }
 
 export { inr as rupeesText };
+
+// ── Register lines, close note, My money, settings, payroll (B9) ──
+
+const r2p = (p) => fromPaise(Math.round(p));
+
+// The three staff money lines of one register session (spec 4.6), in the
+// order the screen shows them; only lines with money. sign -1 = left the
+// drawer, +1 = came into it. Names exact (spec 3, 4.6).
+export function registerMoneyLines(session) {
+  const s = session || {};
+  return [
+    { key: 'shopping_out', label: 'Shopping money given', amount: fromPaise(toPaise(s.shopping_out)), sign: -1 },
+    { key: 'shopping_in', label: 'Change brought back', amount: fromPaise(toPaise(s.shopping_in)), sign: 1 },
+    { key: 'owes_paid', label: 'Shop owes paid back', amount: fromPaise(toPaise(s.owes_paid)), sign: -1 },
+  ].filter((l) => toPaise(l.amount) > 0);
+}
+
+// Net cash expenses of a closed session, worked back from its expected cash.
+// Same terms as the server's computeRegisterClose: expected = opening + cash
+// sales - cash refunds - expenses - helper floats + helper handovers -
+// shopping money given + change brought back - Shop owes paid back.
+export function inferredCashExpenses(session) {
+  const s = session || {};
+  return r2p(
+    toPaise(s.opening_balance) + toPaise(s.total_cash_sales) - toPaise(s.total_refunds_cash)
+    - toPaise(s.helper_floats) + toPaise(s.helper_handovers)
+    - toPaise(s.shopping_out) + toPaise(s.shopping_in) - toPaise(s.owes_paid)
+    - toPaise(s.expected_cash)
+  );
+}
+
+// Expected cash from the lines (only a fallback: the server sends it).
+export function expectedFromLines(s0) {
+  const s = s0 || {};
+  return r2p(
+    toPaise(s.opening_balance) + toPaise(s.total_cash_sales) - toPaise(s.total_refunds_cash)
+    - toPaise(s.total_expenses_cash)
+    - toPaise(s.helper_floats) + toPaise(s.helper_handovers)
+    - toPaise(s.shopping_out) + toPaise(s.shopping_in) - toPaise(s.owes_paid)
+  );
+}
+
+// Today's sessions come without the per-session cash lines; the current
+// register carries them, so copy them onto the matching session.
+const SESSION_LINE_KEYS = ['helper_floats', 'helper_handovers', 'shopping_out', 'shopping_in', 'owes_paid'];
+export function withSessionLines(sessions, register) {
+  const list = Array.isArray(sessions) ? sessions : [];
+  if (!register || register.id == null) return list;
+  return list.map((s) => {
+    if (!s || Number(s.id) !== Number(register.id)) return s;
+    const out = { ...s };
+    SESSION_LINE_KEYS.forEach((k) => { if (register[k] != null) out[k] = register[k]; });
+    return out;
+  });
+}
+
+// Close preview's shopping_still_out -> "₹500 still with Ramesh" (spec 4.6;
+// information only, closing is not blocked).
+export function stillOutLines(stillOut) {
+  return (Array.isArray(stillOut) ? stillOut : [])
+    .filter((r) => r && toPaise(r.remaining) > 0)
+    .map((r) => `${inr(r.remaining)} still with ${firstName(r.user_name)}`);
+}
+
+// ── My money (spec 4.5, 5.8): GET /staff-money/mine, own figures only ──
+export function myMoneySummary(data) {
+  const d = data || {};
+  const all = (Array.isArray(d.advances) ? d.advances : []).filter(Boolean);
+  // Money given this month: approved or repaid advances. A request still
+  // waiting is listed but not counted; shopping money taken from pay is not
+  // new money given, so it is listed under its own words.
+  const counted = all.filter((a) => a.status !== 'pending' && a.source !== 'shopping_money');
+  const monthPaise = counted.reduce((t, a) => t + toPaise(a.amount), 0);
+  return {
+    advancesMonth: fromPaise(monthPaise),
+    advanceRows: all.map((a) => {
+      let note = null;
+      if (a.status === 'pending') note = 'asked, waiting for OK';
+      else if (a.source === 'shopping_money') note = 'shopping money taken from pay';
+      else if (a.taken_from_pay) note = 'taken from pay';
+      return { id: a.id, text: `${inr(a.amount)} · ${shortDate(a.date)}`, note };
+    }),
+    advancesUnpaid: fromPaise(toPaise(d.advances_unpaid)),
+    shoppingHeld: fromPaise(toPaise(d.shopping_held)),
+    owed: fromPaise(toPaise(d.owed)),
+  };
+}
+
+// ── Owner settings: Settings -> Expenses (spec 4.7, 5.2) ──
+export const LIMIT_SETTINGS = [
+  { key: 'advance_daily_limit', label: 'Advance limit per person per day', unit: 'rupees', fallback: '500' },
+  { key: 'advance_monthly_limit', label: 'Advance limit per person per month', unit: 'rupees', fallback: '2000' },
+  { key: 'shopping_money_daily_limit', label: 'Shopping money limit per person per day', unit: 'rupees', fallback: '1000' },
+  { key: 'shopping_money_late_days', label: 'Mark shopping money late after (days)', unit: 'days', fallback: '3' },
+];
+
+// A whole number of rupees above 0 (limits), or a whole number of days, 1 or
+// more (late after). Plain message, or null when it is fine.
+export function limitSettingProblem(key, value) {
+  const def = LIMIT_SETTINGS.find((s) => s.key === key);
+  if (!def) return null;
+  const v = String(value == null ? '' : value).trim();
+  const ok = /^\d{1,7}$/.test(v) && Number(v) >= 1;
+  if (ok) return null;
+  return def.unit === 'days'
+    ? `${def.label}: type a whole number of days, 1 or more, like 3.`
+    : `${def.label}: type a whole amount in rupees, above 0, like ${def.fallback}.`;
+}
+
+// ── Payroll: Take from pay (spec 5.6) ──
+
+// "Take ₹500 unsettled shopping money from pay"
+export function takeFromPayLabel(total) {
+  return `Take ${inr(total)} unsettled shopping money from pay`;
+}
+
+// The money part of POST /staff/payroll/disburse. advances_deducted stays
+// the pending advances only (the server adds the shopping total itself);
+// net_amount has the shopping total already taken off. Unticked (or a 0
+// total) = exactly today's body, no take_shopping_money.
+export function buildDisburseBody(calc, { take = false, bonus = 0 } = {}) {
+  const c = calc || {};
+  const pending = toPaise(c.pending_advances);
+  const shopping = toPaise(c.open_shopping_money_total);
+  const taking = !!take && shopping > 0;
+  const net = Math.max(0, toPaise(c.net_amount) + toPaise(bonus) - pending - (taking ? shopping : 0));
+  const body = { advances_deducted: fromPaise(pending), net_amount: fromPaise(net) };
+  if (taking) body.take_shopping_money = { expected_total: fromPaise(shopping) };
+  return body;
+}
+
+// The two "tap Calculate again" refusals from disburse (409). Returns the
+// server's message, or null for any other error.
+const CALC_AGAIN = [
+  'Shopping money changed since you calculated — tap Calculate again.',
+  "The pay amount doesn't take off the shopping money — tap Calculate again.",
+  "The shopping money amount didn't come through right — tap Calculate again.",
+];
+export function calculateAgainMessage(err) {
+  if (!err) return null;
+  const msg = String(err.raw_message || err.message || '');
+  if ((err.status === 409 || err.status === 400) && CALC_AGAIN.includes(msg)) return msg;
+  return null;
+}
+
+// ── Deactivate warning (spec 4.7): from GET /staff-money/open of each shop ──
+// "Ramesh still has ₹500 shopping money. Settle or write it off first."
+export function deactivateWarning(name, userId, openResults) {
+  const all = (Array.isArray(openResults) ? openResults : []).filter(Boolean);
+  const mine = (rows) => rows.filter((r) => r && Number(r.user_id) === Number(userId));
+  const held = all.reduce((t, d) => t + mine(Array.isArray(d.shopping) ? d.shopping : []).reduce((s, r) => s + toPaise(r.remaining), 0), 0);
+  const owed = all.reduce((t, d) => t + mine(Array.isArray(d.owes) ? d.owes : []).reduce((s, r) => s + toPaise(r.remaining), 0), 0);
+  const n = firstName(name);
+  const lines = [];
+  if (held > 0) lines.push(`${n} still has ${inr(fromPaise(held))} shopping money. Settle or write it off first.`);
+  if (owed > 0) lines.push(`The shop still owes ${n} ${inr(fromPaise(owed))}. Pay it back first.`);
+  return lines.length ? lines.join('\n') : null;
+}

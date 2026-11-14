@@ -274,6 +274,119 @@ test('removeConfirmText: cash back into the drawer / UPI just removed', () => {
     'The ₹500 UPI shopping money given to Ramesh is removed. Use this only if it was typed by mistake.');
 });
 
+// ── B9 ──
+test('registerMoneyLines: exact names, only lines with money, signs', () => {
+  const l = s.registerMoneyLines({ shopping_out: 500, shopping_in: 120, owes_paid: 0 });
+  assert.deepStrictEqual(l.map((x) => [x.label, x.amount, x.sign]),
+    [['Shopping money given', 500, -1], ['Change brought back', 120, 1]]);
+  assert.deepStrictEqual(s.registerMoneyLines({ owes_paid: '80.50' }).map((x) => x.label), ['Shop owes paid back']);
+  assert.deepStrictEqual(s.registerMoneyLines(null), []);
+});
+test('inferredCashExpenses: same terms as computeRegisterClose', () => {
+  // opening 1000 + sales 2000 - refunds 100 - expenses 300 - float 200 + handover 150
+  // - shopping 500 + change 120 - owes 80 = expected 2090
+  const session = {
+    opening_balance: 1000, total_cash_sales: 2000, total_refunds_cash: 100,
+    helper_floats: 200, helper_handovers: 150, shopping_out: 500, shopping_in: 120, owes_paid: 80,
+    expected_cash: 2090,
+  };
+  assert.strictEqual(s.inferredCashExpenses(session), 300);
+  assert.strictEqual(s.expectedFromLines({ ...session, total_expenses_cash: 300 }), 2090);
+  // Without the staff money lines the old formula called 760 (300 + 500 - 120 + 80) expenses.
+  assert.strictEqual(s.inferredCashExpenses({ ...session, shopping_out: 0, shopping_in: 0, owes_paid: 0 }), 760);
+});
+test('inferredCashExpenses: paise exact', () => {
+  assert.strictEqual(s.inferredCashExpenses({ opening_balance: 0.3, shopping_out: 0.1, expected_cash: 0.1 }), 0.1);
+});
+test('withSessionLines: copies the current register lines onto its session only', () => {
+  const out = s.withSessionLines([{ id: 7, x: 1 }, { id: 8 }], { id: '7', shopping_out: 500, owes_paid: 20, helper_floats: 0 });
+  assert.deepStrictEqual(out[0], { id: 7, x: 1, shopping_out: 500, owes_paid: 20, helper_floats: 0 });
+  assert.deepStrictEqual(out[1], { id: 8 });
+  assert.deepStrictEqual(s.withSessionLines([{ id: 1 }], null), [{ id: 1 }]);
+});
+test('stillOutLines: "₹500 still with Ramesh"', () => {
+  assert.deepStrictEqual(s.stillOutLines([{ user_name: 'Ramesh Kumar', remaining: 500 }, { user_name: 'Asha', remaining: 0 }]),
+    ['₹500 still with Ramesh']);
+  assert.deepStrictEqual(s.stillOutLines(undefined), []);
+});
+test('myMoneySummary: month total skips waiting requests and shopping taken from pay', () => {
+  const m = s.myMoneySummary({
+    advances: [
+      { id: 1, amount: 300, date: '2026-11-12', status: 'approved', taken_from_pay: false },
+      { id: 2, amount: 200, date: '2026-11-03', status: 'repaid', taken_from_pay: true },
+      { id: 3, amount: 150, date: '2026-11-13', status: 'pending', taken_from_pay: false },
+      { id: 4, amount: 90, date: '2026-11-10', status: 'repaid', source: 'shopping_money', taken_from_pay: true },
+    ],
+    advances_unpaid: 300, shopping_held: 500, owed: 120,
+  });
+  assert.strictEqual(m.advancesMonth, 500);
+  assert.deepStrictEqual(m.advanceRows.map((r) => r.note), [null, 'taken from pay', 'asked, waiting for OK', 'shopping money taken from pay']);
+  assert.strictEqual(m.advanceRows[0].text, '₹300 · 12 Nov');
+  assert.strictEqual(m.shoppingHeld, 500);
+  assert.strictEqual(m.owed, 120);
+  assert.strictEqual(s.myMoneySummary(null).advancesMonth, 0);
+});
+test('limitSettingProblem: whole rupees above 0, late days 1 or more', () => {
+  assert.strictEqual(s.limitSettingProblem('advance_daily_limit', '500'), null);
+  assert.strictEqual(s.limitSettingProblem('shopping_money_late_days', '1'), null);
+  assert.ok(s.limitSettingProblem('advance_daily_limit', '0'));
+  assert.ok(s.limitSettingProblem('advance_monthly_limit', '2000.5'));
+  assert.ok(s.limitSettingProblem('shopping_money_daily_limit', ''));
+  assert.ok(s.limitSettingProblem('shopping_money_daily_limit', '-5'));
+  assert.strictEqual(s.limitSettingProblem('shopping_money_late_days', '0'),
+    'Mark shopping money late after (days): type a whole number of days, 1 or more, like 3.');
+  assert.strictEqual(s.limitSettingProblem('business_name', ''), null);
+  assert.deepStrictEqual(s.LIMIT_SETTINGS.map((x) => x.label), [
+    'Advance limit per person per day', 'Advance limit per person per month',
+    'Shopping money limit per person per day', 'Mark shopping money late after (days)',
+  ]);
+});
+test('takeFromPayLabel', () => {
+  assert.strictEqual(s.takeFromPayLabel(500), 'Take ₹500 unsettled shopping money from pay');
+});
+test('buildDisburseBody: ticked -> expected_total, net reduced, advances_deducted pending only', () => {
+  const calc = { net_amount: 10000, pending_advances: 1500, open_shopping_money_total: 500 };
+  assert.deepStrictEqual(s.buildDisburseBody(calc, { take: true, bonus: 200 }),
+    { advances_deducted: 1500, net_amount: 8200, take_shopping_money: { expected_total: 500 } });
+});
+test('buildDisburseBody: unticked = today\'s body', () => {
+  const calc = { net_amount: 10000, pending_advances: 1500, open_shopping_money_total: 500 };
+  assert.deepStrictEqual(s.buildDisburseBody(calc, { take: false, bonus: 200 }), { advances_deducted: 1500, net_amount: 8700 });
+});
+test('buildDisburseBody: total 0 never sends take; net never below 0; paise', () => {
+  assert.deepStrictEqual(s.buildDisburseBody({ net_amount: 100, pending_advances: 0, open_shopping_money_total: 0 }, { take: true }),
+    { advances_deducted: 0, net_amount: 100 });
+  assert.deepStrictEqual(s.buildDisburseBody({ net_amount: 300, pending_advances: 100, open_shopping_money_total: 500 }, { take: true }),
+    { advances_deducted: 100, net_amount: 0, take_shopping_money: { expected_total: 500 } });
+  assert.strictEqual(s.buildDisburseBody({ net_amount: 0.3, pending_advances: 0.1, open_shopping_money_total: 0.1 }, { take: true }).net_amount, 0.1);
+});
+test('buildDisburseBody: passes the server check (net <= payable - min(pending + take, payable))', () => {
+  for (const [net, pend, shop, bonus] of [[10000, 1500, 500, 200], [300, 100, 500, 0], [5000, 0, 4999.99, 0.01]]) {
+    const b = s.buildDisburseBody({ net_amount: net, pending_advances: pend, open_shopping_money_total: shop }, { take: true, bonus });
+    const payable = Math.max(0, net + bonus);
+    const adv = Math.min(Math.round((pend + shop) * 100) / 100, payable);
+    assert.ok(Math.round(b.net_amount * 100) <= Math.round(payable * 100) - Math.round(adv * 100), `net ${b.net_amount}`);
+  }
+});
+test('calculateAgainMessage: only the two refusals (and the bad amount)', () => {
+  const stale = 'Shopping money changed since you calculated — tap Calculate again.';
+  assert.strictEqual(s.calculateAgainMessage({ status: 409, message: stale, raw_message: stale }), stale);
+  const net = "The pay amount doesn't take off the shopping money — tap Calculate again.";
+  assert.strictEqual(s.calculateAgainMessage({ status: 409, message: net }), net);
+  assert.strictEqual(s.calculateAgainMessage({ status: 409, message: 'This salary was just paid. Refresh to see it.' }), null);
+  assert.strictEqual(s.calculateAgainMessage(null), null);
+});
+test('deactivateWarning: shopping money and Shop owes across shops, this person only', () => {
+  const open = [
+    { shopping: [{ user_id: 5, remaining: 300 }, { user_id: 6, remaining: 900 }], owes: [] },
+    { shopping: [{ user_id: 5, remaining: 200 }], owes: [{ user_id: 5, remaining: 120 }] },
+  ];
+  assert.strictEqual(s.deactivateWarning('Ramesh Kumar', 5, open),
+    'Ramesh still has ₹500 shopping money. Settle or write it off first.\nThe shop still owes Ramesh ₹120. Pay it back first.');
+  assert.strictEqual(s.deactivateWarning('Asha', 7, open), null);
+  assert.strictEqual(s.deactivateWarning('Asha', 7, [null]), null);
+});
+
 let failed = 0;
 for (const t of tests) {
   try { t.fn(); console.log('  ok   ' + t.name); } catch (err) { failed++; console.log('  FAIL ' + t.name + '\n       ' + err.message); }

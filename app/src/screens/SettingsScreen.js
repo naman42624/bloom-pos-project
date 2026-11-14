@@ -9,6 +9,9 @@ import Button from '../components/Button';
 import DismissKeyboard from '../components/DismissKeyboard';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import { showAlert, appAlert } from '../utils/alert';
+import { LIMIT_SETTINGS, limitSettingProblem } from '../utils/staffMoney';
+
+const LIMIT_KEYS = LIMIT_SETTINGS.map((d) => d.key);
 
 // '' / not a number / outside 0-100 → a plain message, else null.
 function helperLimitProblem(value) {
@@ -165,6 +168,14 @@ export default function SettingsScreen() {
         return;
       }
     }
+    for (const key of LIMIT_KEYS) {
+      if (editedValues[key] === undefined) continue;
+      const problem = limitSettingProblem(key, editedValues[key]);
+      if (problem) {
+        showAlert('Check this number', problem);
+        return;
+      }
+    }
     setSaving(true);
     try {
       await api.updateSettings(editedValues);
@@ -180,7 +191,7 @@ export default function SettingsScreen() {
 
   const hasChanges = Object.keys(editedValues).length > 0;
   const sortedKeys = Object.keys(settings)
-    .filter((k) => !PREFERENCE_SETTINGS.some((p) => p.key === k) && k !== 'helper_cash_mode' && k !== 'discount_limits_v2' && !BILL_KEYS.includes(k))
+    .filter((k) => !PREFERENCE_SETTINGS.some((p) => p.key === k) && k !== 'helper_cash_mode' && k !== 'discount_limits_v2' && !BILL_KEYS.includes(k) && !LIMIT_KEYS.includes(k))
     // One "Bill and GST" row stands for every bill setting
     .concat(settings.bill_round_off ? ['bill_round_off'] : [])
     .sort();
@@ -288,6 +299,37 @@ export default function SettingsScreen() {
               </View>
               <Ionicons name="chevron-forward" size={22} color={Colors.textSecondary} />
             </TouchableOpacity>
+          )}
+
+          {/* ─── Expenses: salary advance and shopping money limits (Owner only, spec 4.7) ─── */}
+          {isOwner && LIMIT_SETTINGS.some((d) => settings[d.key] !== undefined) && (
+            <View style={styles.settingRow}>
+              <Text style={styles.sectionTitle}>Expenses</Text>
+              {LIMIT_SETTINGS.map((d, i) => {
+                if (settings[d.key] === undefined) return null;
+                const value = editedValues[d.key] !== undefined ? editedValues[d.key] : settings[d.key].value;
+                const problem = editedValues[d.key] !== undefined ? limitSettingProblem(d.key, value) : null;
+                return (
+                  <View key={d.key} style={[styles.limitRow, i > 0 && styles.limitRowDivider]}>
+                    <Text style={styles.limitLabel}>{d.label}</Text>
+                    <View style={styles.limitInputWrap}>
+                      {d.unit === 'rupees' ? <Text style={styles.limitUnit}>₹</Text> : null}
+                      <TextInput
+                        style={styles.limitInput}
+                        value={String(value ?? '')}
+                        onChangeText={(text) => handleChange(d.key, text.replace(/[^0-9]/g, ''))}
+                        keyboardType="number-pad"
+                        accessibilityLabel={d.label}
+                        placeholder={d.fallback}
+                        placeholderTextColor={Colors.textLight}
+                      />
+                    </View>
+                    {problem ? <Text style={styles.limitProblem}>{problem}</Text> : null}
+                  </View>
+                );
+              })}
+              <Text style={styles.settingDesc}>Over a limit, a manager or owner confirms with their PIN.</Text>
+            </View>
           )}
 
           {/* ─── Preferences Section (Owner only) ─── */}
@@ -608,6 +650,17 @@ const styles = StyleSheet.create({
     marginTop: Spacing.sm, padding: Spacing.sm, borderRadius: BorderRadius.sm, backgroundColor: Colors.errorLight,
   },
   modeErrorText: { flex: 1, fontSize: FontSize.md, color: Colors.error, fontWeight: '600' },
+  limitRow: { paddingVertical: Spacing.sm },
+  limitRowDivider: { borderTopWidth: 1, borderTopColor: Colors.border },
+  limitLabel: { fontSize: FontSize.md, color: Colors.text },
+  limitInputWrap: {
+    flexDirection: 'row', alignItems: 'center', marginTop: Spacing.xs, minHeight: 48,
+    backgroundColor: Colors.background, borderRadius: BorderRadius.sm, borderWidth: 1, borderColor: Colors.border,
+    paddingHorizontal: Spacing.md,
+  },
+  limitUnit: { fontSize: FontSize.md, color: Colors.textSecondary, marginRight: Spacing.xs },
+  limitInput: { flex: 1, fontSize: FontSize.md, color: Colors.text, paddingVertical: Spacing.sm },
+  limitProblem: { fontSize: FontSize.sm, color: Colors.error, marginTop: Spacing.xs },
   helperLine: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: Spacing.xs },
   helperWarn: { fontSize: FontSize.sm, color: Colors.text, fontWeight: '600', marginTop: Spacing.xs },
   inputDisabled: { backgroundColor: Colors.surfaceAlt, color: Colors.textSecondary },
