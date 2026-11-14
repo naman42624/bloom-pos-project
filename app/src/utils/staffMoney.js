@@ -241,10 +241,10 @@ export function isBackError(name, sums, final) {
   return null;
 }
 
-// "Ramesh spent ₹120 of his own — the shop owes him ₹120." (spec 4.4)
+// "Ramesh spent ₹120 extra — the shop owes Ramesh ₹120." (spec 4.4)
 export function overspendText(name, over) {
   const n = firstName(name);
-  return `${n} spent ${inr(over)} of his own — the shop owes him ${inr(over)}.`;
+  return `${n} spent ${inr(over)} extra — the shop owes ${n} ${inr(over)}.`;
 }
 
 // POST /staff-money/:id/settle body. A bill keeps its item id when it was

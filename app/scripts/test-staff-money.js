@@ -198,7 +198,7 @@ test('isBackSums: overspent 620 -> owes 120, change must be 0', () => {
   assert.strictEqual(r.over, 120);
   assert.strictEqual(r.still, 0);
   assert.strictEqual(r.canDone, true);
-  assert.strictEqual(s.overspendText('Ramesh', r.over), 'Ramesh spent ₹120 of his own — the shop owes him ₹120.');
+  assert.strictEqual(s.overspendText('Ramesh', r.over), 'Ramesh spent ₹120 extra — the shop owes Ramesh ₹120.');
   const bad = s.isBackSums(500, [{ amount: 620 }], '10');
   assert.strictEqual(bad.changeError, 'too_much');
   assert.strictEqual(s.isBackError('Ramesh', bad, true), 'Ramesh only has ₹0 left — check the change amount.');

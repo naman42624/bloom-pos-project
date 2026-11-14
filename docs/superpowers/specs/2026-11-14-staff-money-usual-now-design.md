@@ -144,7 +144,7 @@ Tap a shopping line:
 ```
 
 - Items use the add sheet's suggestions. Change back is pre-filled with what is left.
-- **Overspent** (bills more than he had): "Ramesh spent ₹120 of his own — the shop owes him ₹120. [Pay back now] [Later]". Later adds it to Shop owes.
+- **Overspent** (bills more than was given): "Ramesh spent ₹120 extra — the shop owes Ramesh ₹120. [Pay back now] [Later]". Later adds it to Shop owes.
 - **No bills**: allowed; Done with change only.
 - **Pay back** (Shop owes): amount (pre-filled, editable for part), Cash | UPI. Cash needs the register open. For the owner's own line, a second choice: "**Keep as my money**" (no pay back; the line closes).
 
