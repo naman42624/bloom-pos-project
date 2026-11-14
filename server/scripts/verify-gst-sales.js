@@ -365,6 +365,11 @@ check('a refund on a GST bill gets a credit note that reverses GST in the bill p
   const db = await getDb();
   const owner = await loginOwner();
   const loc = await db.prepare('SELECT gst_number, state, state_code FROM locations WHERE id = ?').get(LOC);
+  // Remember the credit note counter so it can be put back afterwards. Deleting
+  // it instead restarted the series at 1, and later refunds at Test Loc then
+  // collided with credit notes other suites had already issued.
+  const cnSeries = `credit_note:loc:${LOC}`;
+  const cnBefore = await db.prepare('SELECT last_no, fy FROM invoice_counters WHERE series_key = ? ORDER BY fy DESC LIMIT 1').get(cnSeries);
   try {
     await db.prepare("UPDATE locations SET gst_number = '07ABCDE1234F1Z5', state = 'Delhi' WHERE id = ?").run(LOC);
     const p5 = await taxedProduct(105, await rateId(5), '0603');
@@ -390,7 +395,12 @@ check('a refund on a GST bill gets a credit note that reverses GST in the bill p
     assert(rr.kind === 'refund_receipt', rr.kind);
   } finally {
     await db.prepare('UPDATE locations SET gst_number = ?, state = ?, state_code = ? WHERE id = ?').run(loc.gst_number, loc.state, loc.state_code, LOC);
-    await db.prepare("DELETE FROM invoice_counters WHERE series_key = ?").run(`credit_note:loc:${LOC}`);
+    // The refunds this check made are deleted in cleanup, so their numbers are free again.
+    if (cnBefore) {
+      await db.prepare('UPDATE invoice_counters SET last_no = ? WHERE series_key = ? AND fy = ?').run(cnBefore.last_no, cnSeries, cnBefore.fy);
+    } else {
+      await db.prepare('DELETE FROM invoice_counters WHERE series_key = ?').run(cnSeries);
+    }
   }
 });
 
