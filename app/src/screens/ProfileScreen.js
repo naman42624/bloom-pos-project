@@ -1,7 +1,7 @@
-import React, { useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Platform } from 'react-native';
+import React, { useState, useCallback } from 'react';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Platform, ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '../context/AuthContext';
 import Input from '../components/Input';
 import Button from '../components/Button';
@@ -9,6 +9,10 @@ import api from '../services/api';
 import DismissKeyboard from '../components/DismissKeyboard';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import { appAlert } from '../utils/alert';
+import { myMoneySummary, rupeesText } from '../utils/staffMoney';
+
+// Who has "My money" (spec 5.1): GET /staff-money/mine answers these roles.
+const MY_MONEY_ROLES = ['manager', 'employee', 'counter_staff', 'florist_staff', 'delivery_partner'];
 
 export default function ProfileScreen() {
   const navigation = useNavigation();
@@ -24,6 +28,23 @@ export default function ProfileScreen() {
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [passwordLoading, setPasswordLoading] = useState(false);
+
+  // My money (spec 4.5, 5.8): only the caller's own figures.
+  const showMyMoney = MY_MONEY_ROLES.includes(user?.role);
+  const [myMoney, setMyMoney] = useState(null);
+  const [myMoneyState, setMyMoneyState] = useState('loading'); // loading | ok | error
+  const loadMyMoney = useCallback(async () => {
+    if (!showMyMoney) return;
+    setMyMoneyState((st) => (st === 'ok' ? 'ok' : 'loading'));
+    try {
+      const res = await api.getMyStaffMoney();
+      setMyMoney(myMoneySummary(res && res.data));
+      setMyMoneyState('ok');
+    } catch (e) {
+      setMyMoneyState('error');
+    }
+  }, [showMyMoney]);
+  useFocusEffect(useCallback(() => { loadMyMoney(); }, [loadMyMoney]));
 
   const handleSaveProfile = async () => {
     if (!name.trim()) {
@@ -156,6 +177,56 @@ export default function ProfileScreen() {
           </View>
         )}
       </View>
+
+      {/* My money */}
+      {showMyMoney && (
+        <View style={styles.section}>
+          <Text style={[styles.sectionTitle, { marginBottom: Spacing.sm }]}>My money</Text>
+          {myMoneyState === 'loading' && !myMoney ? (
+            <ActivityIndicator color={Colors.primary} style={{ paddingVertical: Spacing.md }} />
+          ) : myMoneyState === 'error' && !myMoney ? (
+            <TouchableOpacity style={styles.moneyRow} onPress={loadMyMoney} accessibilityRole="button">
+              <Text style={styles.moneyError}>Couldn't load your money. Tap to try again.</Text>
+            </TouchableOpacity>
+          ) : myMoney ? (
+            <>
+              <View style={styles.moneyRow}>
+                <Text style={styles.moneyLabel}>Salary advances this month</Text>
+                <Text style={styles.moneyValue}>{rupeesText(myMoney.advancesMonth)}</Text>
+              </View>
+              {myMoney.advanceRows.map((r) => (
+                <View key={r.id} style={styles.moneySubRow}>
+                  <Text style={styles.moneySub}>{r.text}</Text>
+                  {r.note ? <Text style={styles.moneySub}>{r.note}</Text> : null}
+                </View>
+              ))}
+              {myMoney.advancesUnpaid > 0 && (
+                <View style={styles.moneyRow}>
+                  <Text style={styles.moneyLabel}>Not yet taken from pay</Text>
+                  <Text style={styles.moneyValue}>{rupeesText(myMoney.advancesUnpaid)}</Text>
+                </View>
+              )}
+              <View style={styles.moneyRow}>
+                <Text style={styles.moneyLabel}>Shopping money with you</Text>
+                <Text style={styles.moneyValue}>{rupeesText(myMoney.shoppingHeld)}</Text>
+              </View>
+              <View style={styles.moneyRow}>
+                <Text style={styles.moneyLabel}>Shop owes you</Text>
+                <Text style={styles.moneyValue}>{rupeesText(myMoney.owed)}</Text>
+              </View>
+              <TouchableOpacity
+                style={styles.moneyRow}
+                onPress={() => navigation.navigate('SalaryAdvances')}
+                accessibilityRole="button"
+                accessibilityLabel="Ask for a salary advance"
+              >
+                <Text style={styles.moneyLinkText}>Ask for a salary advance</Text>
+                <Ionicons name="chevron-forward" size={20} color={Colors.textSecondary} />
+              </TouchableOpacity>
+            </>
+          ) : null}
+        </View>
+      )}
 
       {/* Change Password */}
       <View style={styles.section}>
@@ -298,6 +369,28 @@ const styles = StyleSheet.create({
   logoutButton: {
     marginTop: Spacing.md,
   },
+  moneyRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    minHeight: 44,
+    paddingVertical: Spacing.xs,
+    borderTopWidth: 1,
+    borderTopColor: Colors.border,
+    gap: Spacing.sm,
+  },
+  moneyLabel: { flex: 1, fontSize: FontSize.md, color: Colors.text },
+  moneyValue: { fontSize: FontSize.md, fontWeight: '600', color: Colors.text },
+  moneySubRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingLeft: Spacing.md,
+    paddingBottom: Spacing.xs,
+    gap: Spacing.sm,
+  },
+  moneySub: { fontSize: FontSize.sm, color: Colors.textSecondary },
+  moneyError: { flex: 1, fontSize: FontSize.md, color: Colors.textSecondary },
+  moneyLinkText: { flex: 1, fontSize: FontSize.md, color: Colors.text },
   versionText: {
     textAlign: 'center',
     fontSize: FontSize.xs,

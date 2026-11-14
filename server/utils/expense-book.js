@@ -49,7 +49,7 @@ const SIGNED_AMOUNT = 'CASE WHEN e.is_return <> 0 THEN -e.amount ELSE e.amount E
 // Shared by the list route and item history, so both return the same row shape.
 const EXPENSE_ROW_SELECT = `
       SELECT e.*, l.name as location_name, u.name as created_by_name,
-             ei.name as item_name, gu.name as given_to_user_name,
+             ei.name as item_name, gu.name as given_to_user_name, pb.name as paid_by_user_name,
              cr.opening_time as register_opened_at, cr.opened_at as register_opened_at_fallback,
              cr.closed_at as register_closed_at
       FROM expenses e
@@ -57,6 +57,7 @@ const EXPENSE_ROW_SELECT = `
       JOIN users u ON e.created_by = u.id
       LEFT JOIN expense_items ei ON ei.id = e.item_id
       LEFT JOIN users gu ON gu.id = e.given_to_user_id
+      LEFT JOIN users pb ON pb.id = e.paid_by_user_id
       LEFT JOIN cash_registers cr ON cr.id = e.register_id
 `;
 

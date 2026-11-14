@@ -9,7 +9,7 @@ const { safeParseJSON } = require('../utils/json');
 const { hasOpenRegister, lockOpenRegister, registerClosedError, REGISTER_CLOSED_MESSAGE } = require('../utils/register-guard');
 const { completeProductionTaskCore } = require('./production');
 const { computeOrderStage, getStageFlags } = require('../utils/order-stage');
-const { computeRegisterClose, computeShutTimePayments } = require('../utils/register-close');
+const { computeRegisterClose, computeShutTimePayments, staffMoneyDrawerLines } = require('../utils/register-close');
 const { buildTrackingUrl } = require('../utils/tracking-token');
 const { slipUrl } = require('../utils/slip-token');
 const { reverseSaleEffects } = require('../utils/sale-reversal');
@@ -612,10 +612,22 @@ router.get('/register/status', authenticate, async (req, res, next) => {
       `).get(location_id, today);
     }
 
-    // Run independent lookups in parallel
-    const [todaySessions] = await Promise.all([
+    // Today's sessions carry the same per-session cash lines as register
+    // history (helper floats/handovers and staff money), so an earlier
+    // closed session today does not show them as Net Cash Expenses.
+    const [todaySessionRows] = await Promise.all([
       db.prepare(`
-        SELECT cr.*, u1.name as opened_by_name, u2.name as closed_by_name
+        SELECT cr.*, u1.name as opened_by_name, u2.name as closed_by_name,
+          COALESCE((SELECT SUM(m.expected_amount) FROM staff_cash_movements m
+                    WHERE m.register_id = cr.id AND m.type = 'float_out'), 0) as helper_floats,
+          COALESCE((SELECT SUM(m.counted_amount) FROM staff_cash_movements m
+                    WHERE m.register_id = cr.id AND m.type = 'handover_in'), 0) as helper_handovers,
+          COALESCE((SELECT SUM(mo.amount) FROM staff_money_out mo
+                    WHERE mo.register_id = cr.id AND mo.payment_method = 'cash'), 0) as shopping_out,
+          COALESCE((SELECT SUM(ms.returned_amount) FROM staff_money_settles ms
+                    WHERE ms.register_id = cr.id AND ms.returned_method = 'cash'), 0) as shopping_in,
+          COALESCE((SELECT SUM(op.amount) FROM shop_owes_payments op
+                    WHERE op.register_id = cr.id AND op.method = 'cash'), 0) as owes_paid
         FROM cash_registers cr
         LEFT JOIN users u1 ON cr.opened_by = u1.id
         LEFT JOIN users u2 ON cr.closed_by = u2.id
@@ -623,6 +635,15 @@ router.get('/register/status', authenticate, async (req, res, next) => {
         ORDER BY cr.id DESC
       `).all(location_id, today),
     ]);
+    const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+    const todaySessions = todaySessionRows.map((s) => ({
+      ...s,
+      helper_floats: r2(s.helper_floats),
+      helper_handovers: r2(s.helper_handovers),
+      shopping_out: r2(s.shopping_out),
+      shopping_in: r2(s.shopping_in),
+      owes_paid: r2(s.owes_paid),
+    }));
 
     if (register) {
       // Helper cash bags: change floats handed out of this session and cash
@@ -636,6 +657,12 @@ router.get('/register/status', authenticate, async (req, res, next) => {
       `).get(register.id);
       register.helper_floats = Math.round((Number(helperCashRow?.floats) || 0) * 100) / 100;
       register.helper_handovers = Math.round((Number(helperCashRow?.handovers) || 0) * 100) / 100;
+      // Staff money lines: shopping money given, change brought back and
+      // Shop owes paid back, in this session's drawer (cash only).
+      const moneyLines = await staffMoneyDrawerLines(db, register.id);
+      register.shopping_out = moneyLines.shoppingOut;
+      register.shopping_in = moneyLines.shoppingIn;
+      register.owes_paid = moneyLines.owesPaid;
 
       if (!register.closed_at) {
         // Open session: get net expenses that belong to THIS session (using register_id for
@@ -674,11 +701,16 @@ router.get('/register/status', authenticate, async (req, res, next) => {
         // Closed session: derive net expenses from expected cash math.
         // Helper floats left the drawer and handovers came into it (bag
         // mode); they are not expenses, so they are taken out of the gap.
+        // Shopping money given, change brought back and Shop owes paid
+        // back are not expenses either.
         const inferredExpenses = (Number(register.opening_balance) || 0) 
                                + (Number(register.total_cash_sales) || 0) 
                                - (Number(register.total_refunds_cash) || 0) 
                                - register.helper_floats
                                + register.helper_handovers
+                               - register.shopping_out
+                               + register.shopping_in
+                               - register.owes_paid
                                - (Number(register.expected_cash) || 0);
         register.total_expenses_cash = Math.round(inferredExpenses * 100) / 100;
       }
@@ -876,7 +908,19 @@ router.put(
         } catch (auditErr) { console.error('register close preview audit failed:', auditErr.message); }
 
         const shutTime = await computeShutTimePayments(db, register, location_id);
-        return { status: 200, body: { success: true, data: { preview: true, expected_cash: expectedCash, actual_cash: Number(actual_cash), discrepancy, pending_cod: pendingCod, shut_time_payments: shutTime } } };
+        // Shopping money still out from this shop: information only, closing
+        // is not blocked (spec 4.6).
+        const stillOut = (await db.prepare(`
+          SELECT u.name AS user_name,
+            SUM(GREATEST(mo.amount - COALESCE(mo.settled_amount, 0) - COALESCE(mo.returned_amount, 0), 0)) AS remaining
+          FROM staff_money_out mo JOIN users u ON u.id = mo.user_id
+          WHERE mo.location_id = ? AND mo.status = 'open'
+          GROUP BY u.id, u.name
+          ORDER BY MIN(mo.created_at) ASC, u.id ASC
+        `).all(location_id))
+          .map((r) => ({ user_name: r.user_name, remaining: Math.round((Number(r.remaining) || 0) * 100) / 100 }))
+          .filter((r) => r.remaining > 0);
+        return { status: 200, body: { success: true, data: { preview: true, expected_cash: expectedCash, actual_cash: Number(actual_cash), discrepancy, pending_cod: pendingCod, shut_time_payments: shutTime, shopping_still_out: stillOut } } };
       }
 
       // Cash still out with helpers (bag mode). Close goes ahead; the bags
@@ -952,7 +996,13 @@ router.get('/register/history', authenticate, authorize('owner', 'manager'), asy
         COALESCE((SELECT SUM(m.expected_amount) FROM staff_cash_movements m
                   WHERE m.register_id = cr.id AND m.type = 'float_out'), 0) as helper_floats,
         COALESCE((SELECT SUM(m.counted_amount) FROM staff_cash_movements m
-                  WHERE m.register_id = cr.id AND m.type = 'handover_in'), 0) as helper_handovers
+                  WHERE m.register_id = cr.id AND m.type = 'handover_in'), 0) as helper_handovers,
+        COALESCE((SELECT SUM(mo.amount) FROM staff_money_out mo
+                  WHERE mo.register_id = cr.id AND mo.payment_method = 'cash'), 0) as shopping_out,
+        COALESCE((SELECT SUM(ms.returned_amount) FROM staff_money_settles ms
+                  WHERE ms.register_id = cr.id AND ms.returned_method = 'cash'), 0) as shopping_in,
+        COALESCE((SELECT SUM(op.amount) FROM shop_owes_payments op
+                  WHERE op.register_id = cr.id AND op.method = 'cash'), 0) as owes_paid
       FROM cash_registers cr
       LEFT JOIN locations l ON cr.location_id = l.id
       LEFT JOIN users u1 ON cr.opened_by = u1.id
@@ -970,6 +1020,9 @@ router.get('/register/history', authenticate, authorize('owner', 'manager'), asy
       ...r,
       helper_floats: Math.round((Number(r.helper_floats) || 0) * 100) / 100,
       helper_handovers: Math.round((Number(r.helper_handovers) || 0) * 100) / 100,
+      shopping_out: Math.round((Number(r.shopping_out) || 0) * 100) / 100,
+      shopping_in: Math.round((Number(r.shopping_in) || 0) * 100) / 100,
+      owes_paid: Math.round((Number(r.owes_paid) || 0) * 100) / 100,
     }));
     res.json({ success: true, data: registers });
   } catch (err) { next(err); }

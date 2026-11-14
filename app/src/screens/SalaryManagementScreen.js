@@ -7,7 +7,8 @@ import api from '../services/api';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import { formatDate } from '../utils/datetime';
 import DateTimePickerModal from '../components/DateTimePickerModal';
-import { appAlert } from '../utils/alert';
+import { appAlert, showConfirm } from '../utils/alert';
+import { buildDisburseBody, takeFromPayLabel, calculateAgainMessage } from '../utils/staffMoney';
 
 const SALARY_TYPES = [
   { label: 'Monthly', value: 'monthly' },
@@ -78,6 +79,8 @@ export default function SalaryManagementScreen() {
   const [paymentMethod, setPaymentMethod] = useState('cash');
   const [paymentRef, setPaymentRef] = useState('');
   const [bonusAmount, setBonusAmount] = useState('');
+  // Take from pay (spec 5.6): off unless the owner ticks it.
+  const [takeShopping, setTakeShopping] = useState(false);
   const [payrollHistory, setPayrollHistory] = useState([]);
   const [payrollHistoryLoading, setPayrollHistoryLoading] = useState(false);
   const [confirmedHalfDays, setConfirmedHalfDays] = useState([]); // array of 'YYYY-MM-DD' date strings
@@ -164,6 +167,7 @@ export default function SalaryManagementScreen() {
     setPaymentMethod('cash');
     setPaymentRef('');
     setBonusAmount('');
+    setTakeShopping(false);
     setConfirmedHalfDays([]);
     // Reset before the fetch resolves so a previously-opened employee's payments
     // can't briefly leak into this modal's overlap check for the newly-selected one.
@@ -248,8 +252,11 @@ export default function SalaryManagementScreen() {
   const handleDisburse = async () => {
     if (!payrollCalc) return;
     const bonus = Number(bonusAmount) || 0;
-    const advDeduct = payrollCalc.calculation.pending_advances;
-    const finalNet = payrollCalc.calculation.net_amount + bonus - advDeduct;
+    // advances_deducted = pending advances only; net_amount already has the
+    // shopping money taken off when Take from pay is ticked (the server adds
+    // the shopping total to the deduction itself and checks both).
+    const money = buildDisburseBody(payrollCalc.calculation, { take: takeShopping, bonus });
+    const finalNet = money.net_amount;
 
     const doDisburse = async () => {
       setSaving(true);
@@ -266,26 +273,30 @@ export default function SalaryManagementScreen() {
           absent_days: payrollCalc.attendance_summary.absent_days,
           leaves_taken: payrollCalc.attendance_summary.leave_days,
           deductions: payrollCalc.calculation.deductions,
-          advances_deducted: advDeduct,
           bonus,
-          net_amount: Math.max(0, finalNet),
+          ...money,
           payment_method: paymentMethod,
           payment_reference: paymentRef,
         });
         setPayrollModal(false);
-        appAlert('Success', `Salary of ${formatCurrency(Math.max(0, finalNet))} disbursed.`);
+        appAlert('Success', `Salary of ${formatCurrency(finalNet)} disbursed.`);
         fetchPayrollHistory();
       } catch (e) {
-        appAlert('Error', e.message || 'Failed to disburse.');
+        const again = calculateAgainMessage(e);
+        if (again) {
+          showConfirm('Calculate again', again, () => handleCalculatePayroll(), { confirmLabel: 'Calculate again' });
+        } else {
+          appAlert('Error', e.message || 'Failed to disburse.');
+        }
       } finally {
         setSaving(false);
       }
     };
 
-    appAlert('Confirm Payment', `Disburse ${formatCurrency(Math.max(0, finalNet))} to ${payrollCalc.user.name}?`, [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Pay', onPress: doDisburse },
-    ]);
+    const takeText = money.take_shopping_money
+      ? ` ${formatCurrency(money.take_shopping_money.expected_total)} unsettled shopping money is taken from pay.`
+      : '';
+    showConfirm('Confirm Payment', `Disburse ${formatCurrency(finalNet)} to ${payrollCalc.user.name}?${takeText}`, doDisburse, { confirmLabel: 'Pay' });
   };
 
   const fetchPayrollHistory = async () => {
@@ -723,6 +734,24 @@ export default function SalaryManagementScreen() {
                     <Text style={[styles.breakdownValue, { color: Colors.warning }]}>−{formatCurrency(payrollCalc.calculation.pending_advances)}</Text>
                   </View>
                 )}
+                {/* Take from pay: its own line, never mixed into the advances.
+                    Riders and staff with no open shopping money get 0, so no line. */}
+                {Number(payrollCalc.calculation.open_shopping_money_total) > 0 && (
+                  <TouchableOpacity
+                    style={styles.takeRow}
+                    onPress={() => setTakeShopping((v) => !v)}
+                    disabled={payrollCalculating || saving}
+                    accessibilityRole="checkbox"
+                    accessibilityState={{ checked: takeShopping, disabled: payrollCalculating || saving }}
+                    accessibilityLabel={takeFromPayLabel(payrollCalc.calculation.open_shopping_money_total)}
+                  >
+                    <Ionicons name={takeShopping ? 'checkbox' : 'square-outline'} size={24} color={Colors.primary} />
+                    <Text style={styles.takeText}>{takeFromPayLabel(payrollCalc.calculation.open_shopping_money_total)}</Text>
+                    {takeShopping ? (
+                      <Text style={[styles.breakdownValue, { color: Colors.warning }]}>−{formatCurrency(payrollCalc.calculation.open_shopping_money_total)}</Text>
+                    ) : null}
+                  </TouchableOpacity>
+                )}
 
                 {/* Bonus */}
                 <Text style={styles.label}>Bonus (optional)</Text>
@@ -756,7 +785,7 @@ export default function SalaryManagementScreen() {
                 <View style={[styles.breakdownRow, { marginTop: Spacing.md, paddingTop: Spacing.md, borderTopWidth: 2, borderTopColor: Colors.primary }]}>
                   <Text style={[styles.breakdownLabel, { fontSize: FontSize.lg, fontWeight: '700' }]}>Net Payable</Text>
                   <Text style={[styles.breakdownValue, { fontSize: FontSize.lg, fontWeight: '700', color: Colors.success }]}>
-                    {formatCurrency(Math.max(0, payrollCalc.calculation.net_amount + (Number(bonusAmount) || 0) - payrollCalc.calculation.pending_advances))}
+                    {formatCurrency(buildDisburseBody(payrollCalc.calculation, { take: takeShopping, bonus: Number(bonusAmount) || 0 }).net_amount)}
                   </Text>
                 </View>
 
@@ -904,6 +933,12 @@ const styles = StyleSheet.create({
   },
   breakdownLabel: { fontSize: FontSize.md, color: Colors.text },
   breakdownValue: { fontSize: FontSize.md, fontWeight: '600', color: Colors.text },
+  takeRow: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, minHeight: 48,
+    paddingVertical: Spacing.xs, borderTopWidth: 1, borderBottomWidth: 1, borderColor: Colors.border,
+    marginTop: Spacing.xs,
+  },
+  takeText: { flex: 1, fontSize: FontSize.md, color: Colors.text },
   partialDayRow: {
     flexDirection: 'row', alignItems: 'center',
     paddingVertical: Spacing.sm, paddingHorizontal: Spacing.xs,

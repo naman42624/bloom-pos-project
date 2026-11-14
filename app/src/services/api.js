@@ -1421,6 +1421,62 @@ class ApiService {
     return this.request(`/staff/salaries/${userId}/history`);
   }
 
+  // ─── Staff money (salary advance, shopping money, shop owes) ─────
+  // A 409 from giveAdvance/giveShoppingMoney carries needs_pin in the thrown
+  // error's body: err.body.needs_pin ('over_day' | 'over_month' | 'self').
+  getStaffMoneyPeople(params = {}) {
+    return this.request(`/staff-money/people?${new URLSearchParams(params).toString()}`);
+  }
+
+  getStaffMoneyApprovers(params = {}) {
+    return this.request(`/staff-money/approvers?${new URLSearchParams(params).toString()}`);
+  }
+
+  giveAdvance(data) {
+    return this.request('/staff-money/advance', { method: 'POST', body: JSON.stringify(data) });
+  }
+
+  giveShoppingMoney(data) {
+    return this.request('/staff-money/shopping', { method: 'POST', body: JSON.stringify(data) });
+  }
+
+  settleShoppingMoney(id, data) {
+    return this.request(`/staff-money/${id}/settle`, { method: 'POST', body: JSON.stringify(data) });
+  }
+
+  cancelShoppingMoney(id) {
+    return this.request(`/staff-money/${id}`, { method: 'DELETE' });
+  }
+
+  writeOffShoppingMoney(id, data = {}) {
+    return this.request(`/staff-money/${id}/write-off`, { method: 'POST', body: JSON.stringify(data) });
+  }
+
+  getOpenStaffMoney(params = {}) {
+    return this.request(`/staff-money/open?${new URLSearchParams(params).toString()}`);
+  }
+
+  getStaffMoneyHistory(params = {}) {
+    const query = new URLSearchParams(params).toString();
+    return this.request(`/staff-money/history${query ? `?${query}` : ''}`);
+  }
+
+  getMyStaffMoney() {
+    return this.request('/staff-money/mine');
+  }
+
+  payBackOwes(id, data) {
+    return this.request(`/staff-money/owes/${id}/pay-back`, { method: 'POST', body: JSON.stringify(data) });
+  }
+
+  keepOwes(id, data = {}) {
+    return this.request(`/staff-money/owes/${id}/keep`, { method: 'POST', body: JSON.stringify(data) });
+  }
+
+  writeOffOwes(id, data = {}) {
+    return this.request(`/staff-money/owes/${id}/write-off`, { method: 'POST', body: JSON.stringify(data) });
+  }
+
   // ─── Payroll ─────────────────────────────────────────────
   calculatePayroll(data) {
     return this.request('/staff/payroll/calculate', { method: 'POST', body: JSON.stringify(data) });

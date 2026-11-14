@@ -12,13 +12,12 @@ import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors, FontSize, Spacing, BorderRadius } from '../../constants/theme';
 import { formatTime } from '../../utils/datetime';
-import { givenToText } from '../../utils/expenseBook';
+import { givenToText, methodLabel, savedTimeLabel } from '../../utils/expenseBook';
 import { getApiOrigin } from '../../services/api';
 import ImageModal from '../ImageModal';
 import { EXPENSE_CATEGORIES, rupees } from './AddExpenseSheet';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-const METHOD_LABEL = { cash: 'Cash', upi: 'UPI', card: 'Card' };
 
 export function shortDate(str) {
   const [y, m, d] = String(str || '').slice(0, 10).split('-').map(Number);
@@ -35,9 +34,11 @@ export default function ExpenseRow({ expense, canChange, onChange, onReturn, sho
   const e = expense || {};
   const cat = catInfo(e.category);
   const title = e.item_name || e.description || cat.label;
-  const method = METHOD_LABEL[String(e.payment_method || '').toLowerCase()] || String(e.payment_method || '').toUpperCase();
-  const given = givenToText(e);
-  const parts = [method, given, e.created_by_name ? `added by ${e.created_by_name}` : null].filter(Boolean);
+  // "Cash", "Own pocket · Owner", "Shopping money · Ramesh" (the holder is
+  // the bill's Given to, so it is not named twice).
+  const method = methodLabel(e);
+  const given = String(e.payment_method).toLowerCase() === 'shopping_money' ? null : givenToText(e);
+  const parts = [method, given, e.created_by_name ? `added by ${e.created_by_name}` : null, savedTimeLabel(e.created_at, e.expense_date)].filter(Boolean);
   const photoUri = e.photo_url ? (/^https?:/.test(e.photo_url) ? e.photo_url : `${getApiOrigin()}${e.photo_url}`) : null;
   const showReturn = !!onReturn && !e.is_return && String(e.payment_method).toLowerCase() === 'cash';
 
@@ -45,7 +46,7 @@ export default function ExpenseRow({ expense, canChange, onChange, onReturn, sho
     <View style={[styles.card, e.is_return && styles.cardReturn]}>
       <View style={styles.top}>
         <View style={[styles.icon, e.is_return && styles.iconReturn]}>
-          <Ionicons name={e.is_return ? 'arrow-undo' : cat.icon} size={22} color={e.is_return ? Colors.success : Colors.primary} />
+          <Ionicons name={e.is_return ? 'arrow-undo' : cat.icon} size={22} color={e.is_return ? Colors.success : Colors.textSecondary} />
         </View>
         <View style={styles.center}>
           <Text style={styles.title}>
@@ -111,26 +112,22 @@ export default function ExpenseRow({ expense, canChange, onChange, onReturn, sho
 }
 
 const styles = StyleSheet.create({
+  // Plain list row (spec §4.8): thin divider, grey secondary text.
   card: {
-    backgroundColor: Colors.surface, borderRadius: BorderRadius.md,
-    padding: Spacing.md, marginBottom: Spacing.sm,
-    borderWidth: 1, borderColor: Colors.border,
+    backgroundColor: Colors.surface, paddingHorizontal: Spacing.sm, paddingVertical: Spacing.md,
+    borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: Colors.border,
   },
-  cardReturn: { borderColor: Colors.success + '40', backgroundColor: Colors.successLight },
+  cardReturn: { backgroundColor: Colors.successLight },
   top: { flexDirection: 'row', alignItems: 'flex-start' },
-  icon: {
-    width: 40, height: 40, borderRadius: BorderRadius.md,
-    backgroundColor: Colors.primaryGlow, justifyContent: 'center', alignItems: 'center',
-    marginRight: Spacing.sm,
-  },
-  iconReturn: { backgroundColor: Colors.surface },
+  icon: { width: 32, height: 40, justifyContent: 'center', alignItems: 'flex-start', marginRight: Spacing.xs },
+  iconReturn: {},
   center: { flex: 1 },
   title: { fontSize: FontSize.md, fontWeight: '600', color: Colors.text },
   meta: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: 2 },
   note: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: 2, fontStyle: 'italic' },
   session: { fontSize: FontSize.xs, color: Colors.textSecondary, marginTop: 2 },
   right: { alignItems: 'flex-end', marginLeft: Spacing.sm, gap: Spacing.xs },
-  amount: { fontSize: FontSize.md, fontWeight: '700', color: Colors.error, fontVariant: ['tabular-nums'] },
+  amount: { fontSize: FontSize.md, fontWeight: '700', color: Colors.text, fontVariant: ['tabular-nums'] },
   amountReturn: { color: Colors.success },
   photoBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 4,

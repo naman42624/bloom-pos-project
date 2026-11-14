@@ -78,6 +78,9 @@ function Chip({ label, active, onPress, icon }) {
 export default function ExpenseSummaryView({
   todayStr, locations = [], defaultLocationId, isOwner, refreshKey = 0,
   onChangeExpense, onReturn, onShopPicked,
+  // Shown at the top of the summary only while the period is Today
+  // (the Usual now line, staff money spec §4.3).
+  todayTop = null,
 }) {
   const navigation = useNavigation();
 
@@ -433,6 +436,7 @@ export default function ExpenseSummaryView({
     <View style={styles.flex}>
       {topBar}
       <ScrollView contentContainerStyle={styles.content}>
+        {period === 'today' && todayTop}
         <View style={styles.headerCard}>
           <View style={styles.headerTop}>
             <Text style={styles.headerLabel}>{periodLabel} · {rangeLabel(from, to)}</Text>

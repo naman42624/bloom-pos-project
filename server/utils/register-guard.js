@@ -31,10 +31,20 @@ async function lockOpenRegister(tx, locationId) {
   return row || null;
 }
 
+// Cash in (+) or out (-) of an open register session: the running expected
+// cash moves, and so does a locked blind count (close_count_locked), the same
+// way helper floats and handovers move it. Inside a money transaction, after
+// the register row is locked. A closed session is never touched.
+async function moveSessionCash(tx, registerId, delta) {
+  await tx.prepare('UPDATE cash_registers SET expected_cash = expected_cash + ? WHERE id = ? AND closed_at IS NULL').run(delta, registerId);
+  await tx.prepare('UPDATE cash_registers SET close_count_locked = close_count_locked + ? WHERE id = ? AND closed_at IS NULL AND close_count_locked IS NOT NULL')
+    .run(delta, registerId);
+}
+
 function registerClosedError() {
   const e = new Error(REGISTER_CLOSED_MESSAGE);
   e.statusCode = 400;
   return e;
 }
 
-module.exports = { hasOpenRegister, lockOpenRegister, registerClosedError, REGISTER_CLOSED_MESSAGE };
+module.exports = { hasOpenRegister, lockOpenRegister, moveSessionCash, registerClosedError, REGISTER_CLOSED_MESSAGE };

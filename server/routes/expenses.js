@@ -3,7 +3,8 @@ const { body, validationResult } = require('express-validator');
 const { getDb } = require('../config/database');
 const { getDb: getAsyncDb, withMoneyTx } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
-const { todayStr: localToday } = require('../utils/time');
+const { todayStr: localToday, getTimezone } = require('../utils/time');
+const { rankSuggestions, commonAmount, toShopLocal } = require('../utils/usual-now');
 const { hasOpenRegister, lockOpenRegister, registerClosedError, REGISTER_CLOSED_MESSAGE } = require('../utils/register-guard');
 const {
   nameKey, resolveItem, rememberOnItem, assertGivenTo, isLocalUploadPath, composeDescription, stripNote,
@@ -95,6 +96,10 @@ router.get('/', authenticate, authorize('owner', 'manager', 'employee', 'counter
     if (item_id) { sql += ' AND e.item_id = ?'; params.push(Number(item_id)); }
     if (created_by) { sql += ' AND e.created_by = ?'; params.push(Number(created_by)); }
     if (given_to_user_id) { sql += ' AND e.given_to_user_id = ?'; params.push(Number(given_to_user_id)); }
+    if (!isBoss && (q || employee_id || given_to_user_id)) {
+      // A search or filter must not reveal what a hidden salary row says.
+      sql += " AND (e.category <> 'salary' OR e.employee_id = ?)"; params.push(req.user.id);
+    }
     if (q) {
       const like = `%${q.toLowerCase().replace(/[\\%_]/g, (c) => '\\' + c)}%`;
       sql += " AND (LOWER(COALESCE(e.description, '')) LIKE ? ESCAPE '\\' OR LOWER(COALESCE(ei.name, '')) LIKE ? ESCAPE '\\' OR LOWER(COALESCE(e.note, '')) LIKE ? ESCAPE '\\')";
@@ -109,7 +114,7 @@ router.get('/', authenticate, authorize('owner', 'manager', 'employee', 'counter
     let truncated = false;
     if (isBoss && expenses.length > CAP) { truncated = true; expenses = expenses.slice(0, CAP); }
 
-    const normalizedExpenses = expenses.map(normalizeExpenseRow);
+    const normalizedExpenses = expenses.map(normalizeExpenseRow).map((r) => (isBoss ? r : hideSalaryNames(r, req.user.id)));
 
     // Calculate totals using numeric amounts so the client always receives numbers.
     const total = normalizedExpenses.reduce((sum, expense) => sum + (expense.is_return ? -expense.amount : expense.amount), 0);
@@ -138,6 +143,25 @@ const SALARY_ROW_MESSAGE = "Salary entries can't be changed to another kind, and
 const FIELD_FALLBACK_MESSAGE = 'Check the amount, type and date, then save again.';
 const BAD_PHOTO_MESSAGE = 'That photo could not be used. Take the photo again.';
 const isBossRole = (role) => role === 'owner' || role === 'manager';
+// Counter staff never log a Salary expense; they use Salary advance instead.
+const SALARY_ADVANCE_MESSAGE = 'Use Salary advance for money given to staff.';
+// Other people's salary rows, as counter staff see them: no names at all.
+function hideSalaryNames(row, viewerId) {
+  if (row.category !== 'salary' || Number(row.employee_id) === Number(viewerId)) return row;
+  return {
+    ...row,
+    description: 'Salary advance',
+    note: null,
+    item_id: null,
+    item_name: null,
+    employee_id: null,
+    employee_name: null,
+    given_to_user_id: null,
+    given_to_name: null,
+    given_to_display: null,
+    photo_url: null,
+  };
+}
 
 // Plain-language message for the first failed field.
 function validationMessage(errors, fallback) {
@@ -170,12 +194,13 @@ function readGivenTo(b) {
 async function loadExpenseRow(db, id) {
   const row = await db.prepare(`
     SELECT e.*, l.name as location_name, u.name as created_by_name,
-           ei.name as item_name, gu.name as given_to_user_name
+           ei.name as item_name, gu.name as given_to_user_name, pb.name as paid_by_user_name
     FROM expenses e
     JOIN locations l ON e.location_id = l.id
     JOIN users u ON e.created_by = u.id
     LEFT JOIN expense_items ei ON ei.id = e.item_id
     LEFT JOIN users gu ON gu.id = e.given_to_user_id
+    LEFT JOIN users pb ON pb.id = e.paid_by_user_id
     WHERE e.id = ?
   `).get(id);
   if (!row) return row;
@@ -186,8 +211,60 @@ async function loadExpenseRow(db, id) {
     item_id: row.item_id == null ? null : Number(row.item_id),
     given_to_user_id: row.given_to_user_id == null ? null : Number(row.given_to_user_id),
     register_id: row.register_id == null ? null : Number(row.register_id),
+    paid_by_user_id: row.paid_by_user_id == null ? null : Number(row.paid_by_user_id),
     given_to_display: given_to_user_name || row.given_to_name || null,
   };
+}
+
+// ─── Own pocket (spec 4.1, 5.5) ──────────────────────────────
+// Paid by Own pocket: payment_method own_pocket, paid_by_user_id = whose
+// pocket. Never a register, never counted by a drawer query (they count only
+// cash). Each such expense has one shop_owes row (source own_pocket,
+// expense_id) that Pay back, Keep or Write off close.
+const OWN_POCKET = 'own_pocket';
+const SHOPPING_MONEY = 'shopping_money';
+const WHOSE_INVALID_MESSAGE = "That person can't be picked here. Tap Whose? and pick again.";
+const OWN_POCKET_RETURN_MESSAGE = "Own pocket can't be used for a return. Pick Cash or UPI.";
+const OWN_POCKET_SALARY_MESSAGE = 'Pick Cash or UPI for salary.';
+const INTO_SHOPPING_MESSAGE = 'Shopping money bills are added from the shopping money line. Pick Cash, UPI or Own pocket.';
+const OWES_PAID_BACK_MESSAGE = "The shop already paid back part of this, so it can't be removed. Ask the owner if it needs fixing.";
+const OWES_PART_PAID_MESSAGE = "The shop already paid back part of this, so Paid by and Whose? can't be changed. Ask the owner if it needs fixing.";
+const ALREADY_SAVED_MESSAGE = 'Already saved — refresh.';
+const OWES_CLOSED_MESSAGE = "This Shop owes line is already closed, so its amount, Paid by and Whose? can't be changed. Ask the owner if it needs fixing.";
+
+// Whose pocket: active staff, rider or the owner, linked to the shop (owner anywhere).
+async function assertWhose(db, userId, locationId) {
+  try {
+    await assertGivenTo(db, userId, locationId);
+  } catch (e) {
+    if (e.statusCode === 400) throw httpError(400, WHOSE_INVALID_MESSAGE);
+    throw e;
+  }
+}
+// Locked before the expense and the register (money row first).
+async function lockLinkedOwes(tx, expenseId) {
+  return (await tx.prepare("SELECT * FROM shop_owes WHERE expense_id = ? AND source = 'own_pocket' ORDER BY id LIMIT 1 FOR UPDATE").get(expenseId)) || null;
+}
+async function auditOwesRow(tx, owesId, userId, action, before, after) {
+  await tx.prepare(`
+    INSERT INTO audit_logs (entity_type, entity_id, user_id, action, previous_state, new_state, created_at)
+    VALUES ('shop_owes', ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+  `).run(owesId, userId, action, before ? JSON.stringify(before) : null, after ? JSON.stringify(after) : null);
+}
+const pickOwesRow = (o) => ({
+  user_id: Number(o.user_id), amount: Number(o.amount), paid_amount: Number(o.paid_amount) || 0, status: o.status,
+  expense_id: o.expense_id ? Number(o.expense_id) : null, location_id: o.location_id ? Number(o.location_id) : null,
+});
+async function createOwnPocketOwes(tx, { expenseId, locationId, userId, amount, createdBy }) {
+  const ins = await tx.prepare(`
+    INSERT INTO shop_owes (location_id, user_id, amount, paid_amount, source, expense_id, status, created_by)
+    VALUES (?, ?, ?, 0, 'own_pocket', ?, 'open', ?)
+  `).run(locationId, userId, amount, expenseId, createdBy);
+  const id = Number(ins.lastInsertRowid);
+  await auditOwesRow(tx, id, createdBy, 'own_pocket_expense', null, {
+    user_id: Number(userId), amount: Number(amount), paid_amount: 0, status: 'open', expense_id: Number(expenseId), location_id: Number(locationId),
+  });
+  return id;
 }
 
 // After a save: the item remembers the amount and who it was given to.
@@ -378,6 +455,72 @@ router.get('/people', authenticate, authorize('owner', 'manager', 'employee', 'c
   }
 });
 
+// Usual now / Often sections for the chips (no search text). One query over
+// the shop's last 60 days of cash/UPI expenses with an item. The legacy `data`
+// array stays as it was for older app builds.
+async function usualNowSections(db, locationId, userId, shapeItem, cols, base) {
+  const tz = getTimezone();
+  const nowLocal = toShopLocal(new Date(), tz);
+  const since = new Date(Date.now() - 61 * 86400000);
+  const sinceSql = since.toISOString().replace('T', ' ').slice(0, 19);
+  const entryRows = await db.prepare(`
+    SELECT item_id, amount, payment_method, created_by, created_at
+    FROM expenses
+    WHERE location_id = ? AND item_id IS NOT NULL AND payment_method IN ('cash', 'upi')
+      AND COALESCE(is_return, 0) = 0 AND category <> 'salary' AND created_at >= ?
+    ORDER BY created_at ASC
+  `).all(locationId, sinceSql);
+  const byItem = new Map();
+  for (const r of entryRows) {
+    const at = toShopLocal(r.created_at instanceof Date ? r.created_at : new Date(r.created_at), tz);
+    const list = byItem.get(Number(r.item_id)) || [];
+    list.push({ at, amount: Number(r.amount), method: r.payment_method, created_by: Number(r.created_by) });
+    byItem.set(Number(r.item_id), list);
+  }
+  const thirtyAgo = nowLocal.getTime() - 30 * 86400000;
+  const itemIds = [...byItem.keys()];
+  const idList = itemIds.length ? itemIds.map(() => '?').join(', ') : 'NULL';
+  const candidates = await db.prepare(`
+    SELECT ${cols}, i.pinned, i.pin_order ${base}
+    AND (i.pinned = TRUE OR i.id IN (${idList}))
+  `).all(...itemIds);
+  const items = candidates.map((r) => {
+    const entries = byItem.get(Number(r.id)) || [];
+    return {
+      id: Number(r.id), pinned: !!r.pinned, pin_order: r.pin_order == null ? null : Number(r.pin_order),
+      uses30: entries.filter((e) => e.at.getTime() >= thirtyAgo).length,
+      entries, row: r,
+    };
+  });
+  const { usual_now, often } = rankSuggestions(items, nowLocal);
+  const picked = usual_now.concat(often);
+
+  // Clocked in today with no clock-out: the Given to person is shown only if here.
+  // A typed name (a vendor, no user_id) never clocks in, so it always counts as here.
+  const personIds = [...new Set(picked.map((i) => Number(i.row.last_given_to_user_id)).filter(Boolean))];
+  let present = new Set();
+  if (personIds.length) {
+    const att = await db.prepare(`
+      SELECT DISTINCT user_id FROM attendance
+      WHERE date = ? AND clock_out IS NULL AND user_id IN (${personIds.map(() => '?').join(', ')})
+    `).all(localToday(), ...personIds);
+    present = new Set(att.map((a) => Number(a.user_id)));
+  }
+  const finish = (i) => {
+    const shaped = shapeItem(i.row);
+    const mine = i.entries.filter((e) => e.created_by === Number(userId)).pop();
+    return {
+      ...shaped,
+      common_amount: commonAmount(i.entries),
+      my_last_method: mine ? mine.method : null,
+      last_given_to: shaped.last_given_to
+        ? { ...shaped.last_given_to, present_today: shaped.last_given_to.user_id ? present.has(shaped.last_given_to.user_id) : true }
+        : null,
+    };
+  };
+  return { usual_now: usual_now.map(finish), often: often.map(finish) };
+}
+
 // ─── GET /api/expenses/suggest ───────────────────────────────
 // Quick-pick chips (pinned first, then this shop's most used in the last 30
 // days) and type-ahead when q is given. Never hidden or merged items.
@@ -390,7 +533,9 @@ router.get('/suggest', authenticate, authorize('owner', 'manager', 'employee', '
     const db = await getAsyncDb();
     const sinceStr = localToday(new Date(Date.now() - 29 * 86400000));
     const cols = `i.id, i.name, i.category, i.usual_amount, i.last_given_to_user_id, i.last_given_to_name, gu.name AS last_user_name`;
-    const base = `FROM expense_items i LEFT JOIN users gu ON gu.id = i.last_given_to_user_id WHERE i.is_active = TRUE AND i.merged_into IS NULL`;
+    // Counter staff never get a salary item (its amount or person) here.
+    const noSalary = isBossRole(req.user.role) ? '' : " AND i.category <> 'salary'";
+    const base = `FROM expense_items i LEFT JOIN users gu ON gu.id = i.last_given_to_user_id WHERE i.is_active = TRUE AND i.merged_into IS NULL${noSalary}`;
     const useCount = `(SELECT COUNT(*) FROM expenses e WHERE e.item_id = i.id AND e.location_id = ? AND e.expense_date >= ?)`;
     const q = nameKey(req.query.q);
     let rows;
@@ -419,22 +564,22 @@ router.get('/suggest', authenticate, authorize('owner', 'manager', 'employee', '
         rows = rows.concat(used);
       }
     }
-    res.json({
-      success: true,
-      data: rows.map((r) => ({
-        id: Number(r.id),
-        name: r.name,
-        category: r.category,
-        usual_amount: r.usual_amount == null ? null : Number(r.usual_amount),
-        last_given_to: (r.last_given_to_user_id || r.last_given_to_name)
-          ? {
-              user_id: r.last_given_to_user_id ? Number(r.last_given_to_user_id) : null,
-              name: r.last_given_to_name || null,
-              display_name: r.last_given_to_user_id ? (r.last_user_name || r.last_given_to_name) : r.last_given_to_name,
-            }
-          : null,
-      })),
+    const shapeItem = (r) => ({
+      id: Number(r.id),
+      name: r.name,
+      category: r.category,
+      usual_amount: r.usual_amount == null ? null : Number(r.usual_amount),
+      last_given_to: (r.last_given_to_user_id || r.last_given_to_name)
+        ? {
+            user_id: r.last_given_to_user_id ? Number(r.last_given_to_user_id) : null,
+            name: r.last_given_to_name || null,
+            display_name: r.last_given_to_user_id ? (r.last_user_name || r.last_given_to_name) : r.last_given_to_name,
+          }
+        : null,
     });
+    const out = { success: true, data: rows.map(shapeItem) };
+    if (!q) Object.assign(out, await usualNowSections(db, locationId, req.user.id, shapeItem, cols, base));
+    res.json(out);
   } catch (err) {
     next(err);
   }
@@ -738,10 +883,11 @@ router.post(
     body('category').optional({ nullable: true }).isIn(['supplies', 'petty_cash', 'maintenance', 'transport', 'food', 'utilities', 'salary', 'other']),
     body('amount').isFloat({ min: 0.01, max: 10000000 }),
     body('description').optional({ nullable: true }).trim(),
-    body('payment_method').isIn(['cash', 'card', 'upi', 'bank_transfer']),
+    body('payment_method').isIn(['cash', 'card', 'upi', 'bank_transfer', OWN_POCKET]),
     body('expense_date').optional({ nullable: true }).matches(/^\d{4}-\d{2}-\d{2}$/),
     body('is_return').optional().isBoolean(),
     body('employee_id').optional({ nullable: true }).isInt(),
+    body('paid_by_user_id').optional({ nullable: true }).isInt({ min: 1 }),
     ...extraFieldRules,
   ],
   async (req, res, next) => {
@@ -777,7 +923,18 @@ router.post(
         return res.status(400).json({ success: false, message: BAD_PHOTO_MESSAGE });
       }
       const adb = await getAsyncDb();
-      if (givenTo.given_to_user_id) await assertGivenTo(adb, givenTo.given_to_user_id, location_id);
+      // Own pocket: never a return; whose pocket defaults to Me (spec 4.1).
+      const ownPocket = payment_method === OWN_POCKET;
+      const paidBy = ownPocket ? Number(req.body.paid_by_user_id || req.user.id) : null;
+      if (ownPocket) {
+        if (is_return) return res.status(400).json({ success: false, message: OWN_POCKET_RETURN_MESSAGE });
+        if (req.body.category === 'salary') return res.status(400).json({ success: false, message: OWN_POCKET_SALARY_MESSAGE });
+        await assertWhose(adb, paidBy, location_id);
+      }
+      // A salary row's Given to is its employee (checked by the payroll
+      // rules below), who need not be linked to this shop.
+      const salaryGivenTo = req.body.category === 'salary' && Number(givenTo.given_to_user_id) === Number(employee_id);
+      if (givenTo.given_to_user_id && !salaryGivenTo) await assertGivenTo(adb, givenTo.given_to_user_id, location_id);
 
       // Category: as sent, else the item's. A new name without a category is
       // refused by resolveItem. With a category sent, salary checks run
@@ -787,6 +944,12 @@ router.post(
         item = await resolveItem(adb, { item_id: req.body.item_id, item_name: req.body.item_name, category: null, userId: req.user.id });
       }
       const category = req.body.category || item.category;
+      if (!isBossRole(req.user.role) && category === 'salary') {
+        return res.status(400).json({ success: false, message: SALARY_ADVANCE_MESSAGE });
+      }
+      if (ownPocket && category === 'salary') {
+        return res.status(400).json({ success: false, message: OWN_POCKET_SALARY_MESSAGE });
+      }
 
       // A "Salary" category expense logged through this general route has no
       // structural connection to the payroll system otherwise — no employee,
@@ -860,6 +1023,7 @@ router.post(
         created_by: req.user.id, is_return: isReturnInt, register_id: registerId, employee_id: employeeIdValue,
         item_id: itemId, note, photo_url,
         given_to_user_id: givenTo.given_to_user_id, given_to_name: givenTo.given_to_name,
+        paid_by_user_id: paidBy,
       };
       if (!expense_number) delete cols.expense_number;
       const insert = (c) => {
@@ -891,11 +1055,19 @@ router.post(
           await db.prepare('UPDATE cash_registers SET expected_cash = expected_cash - ? WHERE id = ?').run(amount, openRegister.id);
         }
       }
+      // Own pocket: the shop now owes that person this amount (spec 5.5).
+      if (ownPocket) {
+        await createOwnPocketOwes(db, {
+          expenseId: result.lastInsertRowid, locationId: location_id, userId: paidBy,
+          amount: Math.round(Number(amount) * 100) / 100, createdBy: req.user.id,
+        });
+      }
       return result.lastInsertRowid;
       });
 
-      // A return or an earlier day's entry is not the usual amount or person.
-      if (!is_return && isToday) {
+      // A return or an earlier day's entry is not the usual amount or person,
+      // and a salary entry never feeds an item's usual amount or person.
+      if (!is_return && isToday && category !== 'salary') {
         await rememberAfterSave(itemId, { amount: Math.round(Number(amount) * 100) / 100, ...givenTo });
       }
 
@@ -934,7 +1106,9 @@ function drawerEffect(exp) {
 
 // expected_cash moves by delta; a closed session also gets its difference
 // recalculated against the new expected cash (same rule as before for delete).
-async function moveDrawer(tx, registerId, delta) {
+// shiftLock: also move a locked blind count on an open session. Used for an
+// advance-linked expense, so removing or changing it mirrors payAdvance.
+async function moveDrawer(tx, registerId, delta, { shiftLock = false } = {}) {
   if (!registerId || Math.abs(delta) < 0.005) return;
   await tx.prepare(`
     UPDATE cash_registers SET
@@ -942,6 +1116,10 @@ async function moveDrawer(tx, registerId, delta) {
       discrepancy = CASE WHEN closed_at IS NOT NULL THEN (expected_cash + ?) - actual_cash ELSE discrepancy END
     WHERE id = ?
   `).run(delta, delta, registerId);
+  if (shiftLock) {
+    await tx.prepare('UPDATE cash_registers SET close_count_locked = close_count_locked + ? WHERE id = ? AND closed_at IS NULL AND close_count_locked IS NOT NULL')
+      .run(delta, registerId);
+  }
 }
 
 // Locks the expense and the shop's open register, then checks who may touch it.
@@ -986,7 +1164,105 @@ const pickAudit = (e) => ({
   register_id: e.register_id || null, created_by: e.created_by,
   item_id: e.item_id || null, note: e.note || null, photo_url: e.photo_url || null,
   given_to_user_id: e.given_to_user_id || null, given_to_name: e.given_to_name || null,
+  paid_by_user_id: e.paid_by_user_id || null,
 });
+
+// A salary expense written by payAdvance is linked from its advance
+// (salary_advances.expense_id). Spec 5.3: removing it cancels the advance,
+// changing its amount moves the advance, anything that would break the link
+// is refused, and nothing changes once payroll took any of it.
+const ADVANCE_LINK_MESSAGE = 'Remove it and give the advance again.';
+const ADVANCE_TAKEN_MESSAGE = "This advance was already taken from pay, so it can't be changed or removed.";
+const centsOf = (n) => Math.round((Number(n) || 0) * 100);
+const advanceTaken = (adv) => adv.status === 'repaid' || centsOf(adv.repaid_amount) > 0;
+// Locked before the expense and the register (money row first).
+async function lockLinkedAdvance(tx, expenseId) {
+  return (await tx.prepare('SELECT * FROM salary_advances WHERE expense_id = ? FOR UPDATE').get(expenseId)) || null;
+}
+async function auditAdvance(tx, advanceId, userId, action, before, after) {
+  await tx.prepare(`
+    INSERT INTO audit_logs (entity_type, entity_id, user_id, action, previous_state, new_state, created_at)
+    VALUES ('salary_advance', ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+  `).run(advanceId, userId, action, JSON.stringify(before), after ? JSON.stringify(after) : null);
+}
+const pickAdvance = (a) => ({
+  user_id: a.user_id, amount: Number(a.amount), status: a.status, payment_method: a.payment_method || null,
+  date: a.date ? String(a.date).slice(0, 10) : null, expense_id: a.expense_id || null, source: a.source || null,
+});
+
+// A bill (or write-off) paid with shopping money is linked to its hand-out
+// (expenses.money_out_id). Spec 5.4: removing it puts its amount back as
+// still with that person, with no drawer move. Its amount, how it was paid,
+// return and who got it can't be changed here (that would break the link).
+const MONEY_OUT_LINK_MESSAGE = 'This was bought with shopping money. Remove it and add it again on the shopping money line.';
+const MONEY_OUT_CLOSED_MESSAGE = "This shopping money was already closed, so this can't be removed.";
+const MONEY_OUT_OWES_PAID_MESSAGE = "The shop already paid back part of what was overspent, so this can't be removed. Ask the owner if it needs fixing.";
+const MONEY_OUT_OWES_ALL_PAID_MESSAGE = "The shop already paid back what was overspent, so this can't be removed. Ask the owner if it needs fixing.";
+const MONEY_OUT_OWES_KEPT_MESSAGE = "What was overspent was kept as the owner's own money, so this can't be removed. Ask the owner if it needs fixing.";
+const MONEY_OUT_OWES_WRITTEN_OFF_MESSAGE = "What was overspent was written off, so this can't be removed. Ask the owner if it needs fixing.";
+function overspendClosedMessage(owes) {
+  if (owes.status === 'kept') return MONEY_OUT_OWES_KEPT_MESSAGE;
+  if (owes.status === 'written_off') return MONEY_OUT_OWES_WRITTEN_OFF_MESSAGE;
+  if (owes.status === 'paid') return MONEY_OUT_OWES_ALL_PAID_MESSAGE;
+  return MONEY_OUT_OWES_PAID_MESSAGE;
+}
+// Locked before the expense and the register (money row first).
+async function lockLinkedMoneyOut(tx, expenseId) {
+  return (await tx.prepare(`
+    SELECT mo.* FROM staff_money_out mo
+    WHERE mo.id = (SELECT e.money_out_id FROM expenses e WHERE e.id = ?)
+    FOR UPDATE
+  `).get(expenseId)) || null;
+}
+// The hand-out's overspend Shop owes line. Locked right after the hand-out
+// and before the expense and the register, the same order Pay back uses
+// (money rows first, then the register), so the two never deadlock.
+async function lockOverspendOwes(tx, mo) {
+  if (!mo) return null;
+  return (await tx.prepare("SELECT * FROM shop_owes WHERE money_out_id = ? AND source = 'overspend' ORDER BY id DESC LIMIT 1 FOR UPDATE").get(mo.id)) || null;
+}
+// Takes one removed bill off its hand-out: settled_amount down, an overspend
+// Shop owes shrinks first, and the line opens again if money is left.
+// owes is the overspend line from lockOverspendOwes (already locked).
+async function unsettleBill(tx, mo, owes, expense, userId) {
+  if (!['open', 'settled', 'written_off'].includes(mo.status)) throw httpError(400, MONEY_OUT_CLOSED_MESSAGE);
+  const amtP = centsOf(expense.amount);
+  const totalP = centsOf(mo.amount);
+  const settledP = centsOf(mo.settled_amount);
+  const returnedP = centsOf(mo.returned_amount);
+  const newSettledP = Math.max(0, settledP - amtP);
+  const excessBefore = Math.max(0, settledP + returnedP - totalP);
+  const excessAfter = Math.max(0, newSettledP + returnedP - totalP);
+  const shrinkP = excessBefore - excessAfter;
+  let owesChange = null;
+  if (shrinkP > 0) {
+    if (owes) {
+      if (owes.status !== 'open') throw httpError(400, overspendClosedMessage(owes));
+      const newOwesP = centsOf(owes.amount) - shrinkP;
+      if (centsOf(owes.paid_amount) > Math.max(0, newOwesP)) throw httpError(400, MONEY_OUT_OWES_PAID_MESSAGE);
+      if (newOwesP <= 0) {
+        await tx.prepare('DELETE FROM shop_owes WHERE id = ?').run(owes.id);
+      } else {
+        await tx.prepare('UPDATE shop_owes SET amount = ? WHERE id = ?').run(newOwesP / 100, owes.id);
+      }
+      owesChange = { owes_id: Number(owes.id), amount_before: Number(owes.amount), amount_after: Math.max(0, newOwesP) / 100 };
+    }
+  }
+  const remainingP = Math.max(0, totalP - newSettledP - returnedP);
+  const status = remainingP > 0 ? 'open' : mo.status;
+  await tx.prepare(`
+    UPDATE staff_money_out SET settled_amount = ?, status = ?,
+      closed_at = CASE WHEN ? = 'open' THEN NULL ELSE closed_at END,
+      close_reason = CASE WHEN ? = 'open' THEN NULL ELSE close_reason END
+    WHERE id = ?
+  `).run(newSettledP / 100, status, status, status, mo.id);
+  await tx.prepare(`
+    INSERT INTO audit_logs (entity_type, entity_id, user_id, action, previous_state, new_state, created_at)
+    VALUES ('staff_money_out', ?, ?, 'shopping_money_bill_removed', ?, ?, CURRENT_TIMESTAMP)
+  `).run(mo.id, userId,
+    JSON.stringify({ status: mo.status, settled_amount: settledP / 100 }),
+    JSON.stringify({ status, settled_amount: newSettledP / 100, expense_id: Number(expense.id), amount: amtP / 100, owes: owesChange }));
+}
 
 // ─── PUT /api/expenses/:id ───────────────────────────────────
 router.put(
@@ -997,10 +1273,12 @@ router.put(
     body('category').optional().isIn(EXPENSE_CATEGORIES),
     body('amount').optional().isFloat({ min: 0.01, max: 10000000 }),
     body('description').optional({ nullable: true }).trim(),
-    body('payment_method').optional().isIn(EXPENSE_METHODS),
+    // shopping_money is accepted only when unchanged (checked below).
+    body('payment_method').optional().isIn([...EXPENSE_METHODS, OWN_POCKET, SHOPPING_MONEY]),
     body('expense_date').optional().matches(/^\d{4}-\d{2}-\d{2}$/),
     body('is_return').optional().isBoolean(),
     body('employee_id').optional({ nullable: true }).isInt(),
+    body('paid_by_user_id').optional({ nullable: true }).isInt({ min: 1 }),
     ...extraFieldRules,
   ],
   async (req, res, next) => {
@@ -1016,13 +1294,16 @@ router.put(
 
       // Checks before the item is resolved, so a refused change never
       // creates an item. The transaction below checks again under locks.
-      const current = await adb.prepare('SELECT id, location_id, created_by, expense_date, item_id, note, description, category FROM expenses WHERE id = ?').get(expenseId);
+      const current = await adb.prepare('SELECT id, location_id, created_by, expense_date, item_id, note, description, category, employee_id, payment_method, paid_by_user_id FROM expenses WHERE id = ?').get(expenseId);
       if (!current) return res.status(404).json({ success: false, message: 'This expense was not found. It may have been removed already — pull down to refresh.' });
       if (!isBoss && Number(current.created_by) !== Number(req.user.id)) {
         return res.status(403).json({ success: false, message: NOT_YOURS_MESSAGE });
       }
       if (!isBoss && has('expense_date') && req.body.expense_date !== current.expense_date) {
         return res.status(403).json({ success: false, message: OTHER_DAY_MESSAGE });
+      }
+      if (!isBoss && (current.category === 'salary' || req.body.category === 'salary')) {
+        return res.status(400).json({ success: false, message: SALARY_ADVANCE_MESSAGE });
       }
       const wantsItem = !!req.body.item_id || has('item_name');
       if (!req.body.item_id && has('item_name') && !nameKey(req.body.item_name)) {
@@ -1037,9 +1318,22 @@ router.put(
       if (has('photo_url') && req.body.photo_url && !isLocalUploadPath(req.body.photo_url)) {
         return res.status(400).json({ success: false, message: BAD_PHOTO_MESSAGE });
       }
+      // Shopping money is only ever set on the shopping money line; a bill
+      // keeps it (sending it back unchanged is fine). Checked again under the lock.
+      if (has('payment_method') && req.body.payment_method === SHOPPING_MONEY && current.payment_method !== SHOPPING_MONEY) {
+        return res.status(400).json({ success: false, message: INTO_SHOPPING_MESSAGE });
+      }
+      // Whose pocket, checked before the lock when a new person is sent.
+      const staysOwnPocket = (has('payment_method') ? req.body.payment_method : current.payment_method) === OWN_POCKET;
+      if (staysOwnPocket && has('paid_by_user_id') && req.body.paid_by_user_id
+          && Number(req.body.paid_by_user_id) !== Number(current.paid_by_user_id || 0)) {
+        await assertWhose(adb, req.body.paid_by_user_id, current.location_id);
+      }
       const touchesGivenTo = has('given_to_user_id') || has('given_to_name');
       const givenTo = touchesGivenTo ? readGivenTo(req.body) : null;
-      if (givenTo && givenTo.given_to_user_id) await assertGivenTo(adb, givenTo.given_to_user_id, current.location_id);
+      const salaryEmployeeId = has('employee_id') ? req.body.employee_id : current.employee_id;
+      const salaryGivenTo = current.category === 'salary' && givenTo && Number(givenTo.given_to_user_id) === Number(salaryEmployeeId);
+      if (givenTo && givenTo.given_to_user_id && !salaryGivenTo) await assertGivenTo(adb, givenTo.given_to_user_id, current.location_id);
 
       // The item is an ordinary write, made before the money transaction.
       let item = null;
@@ -1057,6 +1351,9 @@ router.put(
       }
 
       const updated = await withMoneyTx(async (tx) => {
+        const advance = await lockLinkedAdvance(tx, expenseId);
+        const moneyOut = await lockLinkedMoneyOut(tx, expenseId);
+        const owes = await lockLinkedOwes(tx, expenseId);
         const { expense, openRegister, oldRegisterId } = await loadForChange(tx, expenseId, req.user);
         const nv = {
           category: has('category') ? req.body.category : (wantsItem ? item.category : expense.category),
@@ -1071,7 +1368,12 @@ router.put(
           photo_url: has('photo_url') ? (req.body.photo_url || null) : (expense.photo_url || null),
           given_to_user_id: givenTo ? givenTo.given_to_user_id : (expense.given_to_user_id || null),
           given_to_name: givenTo ? givenTo.given_to_name : (expense.given_to_name || null),
+          paid_by_user_id: null,
         };
+        if (nv.payment_method === OWN_POCKET) {
+          const sent = has('paid_by_user_id') && req.body.paid_by_user_id ? Number(req.body.paid_by_user_id) : null;
+          nv.paid_by_user_id = sent || (expense.payment_method === OWN_POCKET && expense.paid_by_user_id ? Number(expense.paid_by_user_id) : Number(req.user.id));
+        }
         // description is always rebuilt as "item name — note" (or the old
         // text without its note, for a row with no item); never appended to.
         if (wantsItem || has('note') || has('description')) {
@@ -1087,6 +1389,34 @@ router.put(
         }
         if (nv.category !== 'salary') nv.employee_id = null;
         if (nv.category === 'salary' && !nv.employee_id) throw httpError(400, 'Select which employee this salary payment is for.');
+        if (advance) {
+          const breaksLink = nv.category !== 'salary'
+            || Number(nv.employee_id) !== Number(advance.user_id)
+            || Number(nv.given_to_user_id) !== Number(advance.user_id)
+            || nv.is_return
+            || !['cash', 'upi'].includes(nv.payment_method);
+          if (breaksLink) throw httpError(400, ADVANCE_LINK_MESSAGE);
+          const moneyMoved = centsOf(nv.amount) !== centsOf(expense.amount) || nv.payment_method !== expense.payment_method;
+          if (moneyMoved && advanceTaken(advance)) throw httpError(400, ADVANCE_TAKEN_MESSAGE);
+        }
+        if ((nv.payment_method === SHOPPING_MONEY) !== (expense.payment_method === SHOPPING_MONEY)) {
+          throw httpError(400, expense.payment_method === SHOPPING_MONEY ? MONEY_OUT_LINK_MESSAGE : INTO_SHOPPING_MESSAGE);
+        }
+        if (nv.payment_method === OWN_POCKET) {
+          if (nv.is_return) throw httpError(400, OWN_POCKET_RETURN_MESSAGE);
+          if (nv.category === 'salary') throw httpError(400, OWN_POCKET_SALARY_MESSAGE);
+          // Me as the default pocket is checked here; a person sent was checked above.
+          if (Number(nv.paid_by_user_id) !== Number(expense.paid_by_user_id || 0)) {
+            await assertWhose(tx, nv.paid_by_user_id, expense.location_id);
+          }
+        }
+        if (moneyOut) {
+          const breaksLink = centsOf(nv.amount) !== centsOf(expense.amount)
+            || nv.payment_method !== expense.payment_method
+            || nv.is_return !== (expense.is_return ? 1 : 0)
+            || Number(nv.given_to_user_id || 0) !== Number(expense.given_to_user_id || 0);
+          if (breaksLink) throw httpError(400, MONEY_OUT_LINK_MESSAGE);
+        }
         // The payroll overlap check runs only when the date or the employee
         // changes; otherwise it would find the row's own payment.
         const salaryMoved = nv.expense_date !== expense.expense_date || Number(nv.employee_id) !== Number(expense.employee_id);
@@ -1122,32 +1452,82 @@ router.put(
               if (!newRegisterId) throw registerClosedError();
             }
           }
+          const lockOpt = { shiftLock: !!advance };
           if (oldRegisterId && oldRegisterId === newRegisterId) {
-            await moveDrawer(tx, oldRegisterId, newEffect - oldEffect);
+            await moveDrawer(tx, oldRegisterId, newEffect - oldEffect, lockOpt);
           } else {
-            await moveDrawer(tx, oldRegisterId, -oldEffect);
-            await moveDrawer(tx, newRegisterId, newEffect);
+            await moveDrawer(tx, oldRegisterId, -oldEffect, lockOpt);
+            await moveDrawer(tx, newRegisterId, newEffect, lockOpt);
           }
+        }
+
+        // Own pocket: the owes line follows the expense (spec 5.5). Once any
+        // of it was paid back, its person and Paid by stay, and the amount can
+        // not go below what was paid back; a closed line changes no more.
+        const isOwn = nv.payment_method === OWN_POCKET;
+        if (owes) {
+          const paidP = centsOf(owes.paid_amount);
+          const moved = !isOwn || centsOf(nv.amount) !== centsOf(owes.amount) || Number(nv.paid_by_user_id) !== Number(owes.user_id);
+          if (moved) {
+            if (owes.status !== 'open') throw httpError(400, OWES_CLOSED_MESSAGE);
+            if (paidP > 0 && (!isOwn || Number(nv.paid_by_user_id) !== Number(owes.user_id))) throw httpError(400, OWES_PART_PAID_MESSAGE);
+            if (paidP > centsOf(nv.amount)) {
+              const paid = `₹${(paidP / 100).toLocaleString('en-IN')}`;
+              throw httpError(400, `The shop already paid back ${paid} of this. Type ${paid} or more.`);
+            }
+            if (!isOwn) {
+              await tx.prepare('DELETE FROM shop_owes WHERE id = ?').run(owes.id);
+              await auditOwesRow(tx, owes.id, req.user.id, 'own_pocket_removed', pickOwesRow(owes), null);
+            } else {
+              const status = paidP >= centsOf(nv.amount) ? 'paid' : 'open';
+              await tx.prepare(`
+                UPDATE shop_owes SET amount = ?, user_id = ?, status = ?,
+                  closed_at = CASE WHEN ? = 'paid' THEN CURRENT_TIMESTAMP ELSE closed_at END
+                WHERE id = ?
+              `).run(nv.amount, nv.paid_by_user_id, status, status, owes.id);
+              await auditOwesRow(tx, owes.id, req.user.id, 'own_pocket_changed', pickOwesRow(owes),
+                pickOwesRow({ ...owes, amount: nv.amount, user_id: nv.paid_by_user_id, status }));
+            }
+          }
+        } else if (isOwn) {
+          // Newly own pocket. If the locked row is already own pocket, another
+          // save switched it while this one waited (a double tap): its owes
+          // line was not visible when the owes lock ran, so stop here rather
+          // than open a second line. Never re-read the owes row after the
+          // expense lock: pay back locks owes before the register.
+          if (expense.payment_method === OWN_POCKET) throw httpError(409, ALREADY_SAVED_MESSAGE);
+          await createOwnPocketOwes(tx, {
+            expenseId, locationId: expense.location_id, userId: nv.paid_by_user_id, amount: nv.amount, createdBy: req.user.id,
+          });
         }
 
         await tx.prepare(`
           UPDATE expenses SET category = ?, amount = ?, description = ?, payment_method = ?, expense_date = ?,
             is_return = ?, employee_id = ?, register_id = ?,
-            item_id = ?, note = ?, photo_url = ?, given_to_user_id = ?, given_to_name = ?
+            item_id = ?, note = ?, photo_url = ?, given_to_user_id = ?, given_to_name = ?, paid_by_user_id = ?
           WHERE id = ?
         `).run(nv.category, nv.amount, nv.description, nv.payment_method, nv.expense_date,
           nv.is_return, nv.employee_id, newRegisterId,
-          nv.item_id, nv.note, nv.photo_url, nv.given_to_user_id, nv.given_to_name, expenseId);
+          nv.item_id, nv.note, nv.photo_url, nv.given_to_user_id, nv.given_to_name, nv.paid_by_user_id, expenseId);
 
         const after = { ...expense, ...nv, register_id: newRegisterId };
         await auditExpense(tx, expenseId, req.user.id, 'expense_edit', pickAudit(expense), pickAudit(after));
+        if (advance) {
+          // The advance follows its expense: amount, Cash or UPI, and day.
+          await tx.prepare('UPDATE salary_advances SET amount = ?, payment_method = ?, date = CAST(? AS date) WHERE id = ?')
+            .run(nv.amount, nv.payment_method, nv.expense_date, advance.id);
+          const advAfter = { ...advance, amount: nv.amount, payment_method: nv.payment_method, date: nv.expense_date };
+          if (JSON.stringify(pickAdvance(advance)) !== JSON.stringify(pickAdvance(advAfter))) {
+            await auditAdvance(tx, advance.id, req.user.id, 'salary_advance_changed', pickAdvance(advance), pickAdvance(advAfter));
+          }
+        }
         return after;
       });
 
       // The item remembers this save only when it is the latest entry for
       // the item, so fixing an old row never overwrites newer usual values.
-      if (updated.item_id && (wantsItem || has('amount') || touchesGivenTo)) {
-        const latest = await adb.prepare('SELECT id FROM expenses WHERE item_id = ? ORDER BY created_at DESC, id DESC LIMIT 1').get(updated.item_id);
+      if (updated.item_id && updated.category !== 'salary' && (wantsItem || has('amount') || touchesGivenTo)) {
+        const latest = await adb.prepare("SELECT id FROM expenses WHERE item_id = ? AND category <> 'salary' ORDER BY created_at DESC, id DESC LIMIT 1").get(updated.item_id);
         if (latest && Number(latest.id) === expenseId) {
           await rememberAfterSave(updated.item_id, {
             amount: updated.amount, given_to_user_id: updated.given_to_user_id, given_to_name: updated.given_to_name,
@@ -1169,9 +1549,27 @@ router.delete('/:id', authenticate, authorize('owner', 'manager', 'employee', 'c
   try {
     const expenseId = Number(req.params.id);
     await withMoneyTx(async (tx) => {
+      const advance = await lockLinkedAdvance(tx, expenseId);
+      const moneyOut = await lockLinkedMoneyOut(tx, expenseId);
+      const overspend = await lockOverspendOwes(tx, moneyOut);
+      const owes = await lockLinkedOwes(tx, expenseId);
       const { expense, oldRegisterId } = await loadForChange(tx, expenseId, req.user);
+      if (advance && advanceTaken(advance)) throw httpError(400, ADVANCE_TAKEN_MESSAGE);
+      // Own pocket: what the shop owes for it goes too, unless any was paid back.
+      if (owes) {
+        if (centsOf(owes.paid_amount) > 0) throw httpError(400, OWES_PAID_BACK_MESSAGE);
+        await tx.prepare('DELETE FROM shop_owes WHERE id = ?').run(owes.id);
+        await auditOwesRow(tx, owes.id, req.user.id, 'own_pocket_removed', pickOwesRow(owes), null);
+      }
+      // A shopping money bill: its amount is still with that person again.
+      if (moneyOut) await unsettleBill(tx, moneyOut, overspend, expense, req.user.id);
       // Put the cash back on the session it came out of.
-      await moveDrawer(tx, oldRegisterId, -drawerEffect(expense));
+      await moveDrawer(tx, oldRegisterId, -drawerEffect(expense), { shiftLock: !!advance });
+      if (advance && advance.status === 'approved') {
+        // Removing the advance expense cancels the advance (spec 5.3).
+        await tx.prepare("UPDATE salary_advances SET status = 'cancelled' WHERE id = ?").run(advance.id);
+        await auditAdvance(tx, advance.id, req.user.id, 'salary_advance_cancelled', pickAdvance(advance), { ...pickAdvance(advance), status: 'cancelled' });
+      }
       await tx.prepare('DELETE FROM expenses WHERE id = ?').run(expenseId);
       await auditExpense(tx, expenseId, req.user.id, 'expense_delete', pickAudit(expense), null);
     });

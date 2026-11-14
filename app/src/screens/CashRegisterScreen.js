@@ -14,6 +14,7 @@ import useSubmitGuard from '../hooks/useSubmitGuard';
 import ReceiveCashSheet from '../components/helperCash/ReceiveCashSheet';
 import { closeWarningLines, handoverDoneText } from '../utils/helperCash';
 import { lastCloseFromStatus, lastCloseCashText, lastCloseHint } from '../utils/lastClose';
+import { registerMoneyLines, inferredCashExpenses, expectedFromLines, withSessionLines, stillOutLines } from '../utils/staffMoney';
 
 const formatTime = (timeStr) => {
   if (!timeStr) return '-';
@@ -42,11 +43,15 @@ const HistoryCard = ({ session, isToday }) => {
   // received from helpers came into it. Neither is an expense.
   const helperFloats = Number(session.helper_floats || 0);
   const helperHandovers = Number(session.helper_handovers || 0);
+  // Staff money: shopping money given, change brought back and Shop owes
+  // paid back moved drawer cash but are not expenses either.
+  const moneyLines = registerMoneyLines(session);
   
-  // Dynamically derive Net Cash Expenses for closed sessions
-  // expected = opening + cashSales - cashRefunds - floats + handovers - netExpenses
-  // netExpenses = opening + cashSales - cashRefunds - floats + handovers - expected
-  const inferredExpenses = Math.round((opening + cashSales - cashRefunds - helperFloats + helperHandovers - expected) * 100) / 100;
+  // Dynamically derive Net Cash Expenses for closed sessions, with the same
+  // terms as the server's computeRegisterClose:
+  // netExpenses = opening + cashSales - cashRefunds - floats + handovers
+  //               - shopping given + change back - owes paid back - expected
+  const inferredExpenses = inferredCashExpenses(session);
   const hasDiscrepancy = Math.abs(discrepancy) >= 1;
 
   return (
@@ -105,6 +110,14 @@ const HistoryCard = ({ session, isToday }) => {
                   <Text style={[styles.detailVal, { color: Colors.success }]}>+₹{helperHandovers.toFixed(2)}</Text>
                 </View>
               )}
+              {moneyLines.map((l) => (
+                <View key={l.key} style={styles.detailRow}>
+                  <Text style={styles.detailLabel}>{l.label}</Text>
+                  <Text style={[styles.detailVal, { color: l.sign < 0 ? Colors.error : Colors.success }]}>
+                    {l.sign < 0 ? '-' : '+'}₹{l.amount.toFixed(2)}
+                  </Text>
+                </View>
+              ))}
               {inferredExpenses > 0 ? (
                 <View style={styles.detailRow}>
                   <Text style={styles.detailLabel}>Net Cash Expenses</Text>
@@ -230,6 +243,9 @@ export default function CashRegisterScreen({ navigation, route }) {
   const [collectFor, setCollectFor] = useState(null);
   const [bagNote, setBagNote] = useState('');
   useEffect(() => { setBagWarn(null); setBagNote(''); }, [selectedLocation]);
+  // "₹500 still with Ramesh" from the close preview: a note, never a blocker.
+  const [stillOut, setStillOut] = useState([]);
+  useEffect(() => { setStillOut([]); }, [selectedLocation]);
   const guardSubmit = useSubmitGuard();
   const [pendingCodTotal, setPendingCodTotal] = useState(0);
   const [pendingCodDeliveries, setPendingCodDeliveries] = useState(0);
@@ -341,6 +357,7 @@ export default function CashRegisterScreen({ navigation, route }) {
         setIsOpen(false);
         setActualCash('');
         setClosingNotes('');
+        setStillOut([]);
         fetchStatus(selectedLocation);
         // discrepancy = expected - counted: above 0 the drawer was short,
         // below 0 it had extra. Say which, never a bare signed number.
@@ -429,6 +446,8 @@ export default function CashRegisterScreen({ navigation, route }) {
       if (handleCountLocked(e)) { setSubmitting(false); return; }
     }
     setSubmitting(false);
+    const still = stillOutLines(preview && preview.shopping_still_out);
+    setStillOut(still);
 
     const excess = preview ? Math.round(-Number(preview.discrepancy) * 100) / 100 : 0;
     if (preview && Number.isFinite(excess) && excess >= 1) {
@@ -441,7 +460,8 @@ export default function CashRegisterScreen({ navigation, route }) {
       return;
     }
     setTopup(null);
-    showConfirm('Close Register', `Close register with ${rupees(cash)} actual cash?`, () => doClose(cash), { confirmLabel: 'Close' });
+    const stillText = still.length > 0 ? `\n\nShopping money not back yet:\n${still.join('\n')}` : '';
+    showConfirm('Close Register', `Close register with ${rupees(cash)} actual cash?${stillText}`, () => doClose(cash), { confirmLabel: 'Close' });
   };
 
   const handleBookTopup = async () => {
@@ -664,23 +684,25 @@ export default function CashRegisterScreen({ navigation, route }) {
                     <Text style={[styles.calcVal, { color: Colors.success }]}>₹{Number(register.helper_handovers).toFixed(2)}</Text>
                   </View>
                 )}
+                {registerMoneyLines(register).map((l) => (
+                  <View key={l.key} style={styles.calcRow}>
+                    <Text style={styles.calcLabel}>{l.sign < 0 ? '-' : '+'} {l.label}</Text>
+                    <Text style={[styles.calcVal, { color: l.sign < 0 ? Colors.error : Colors.success }]}>₹{l.amount.toFixed(2)}</Text>
+                  </View>
+                ))}
 
                 <View style={styles.calcDivider} />
                 <View style={styles.calcRow}>
                   <Text style={styles.calcTotalLabel}>Expected in Drawer</Text>
                   <Text style={styles.calcTotalVal}>
                     {/* The server keeps expected_cash for the open session
-                        (sales, refunds, expenses, helper floats and cash);
-                        the sum of the lines above is only a fallback. */}
+                        (sales, refunds, expenses, helper floats and cash,
+                        staff money); the sum of the lines above is only a
+                        fallback. */}
                     ₹{(
                       register.expected_cash != null && Number.isFinite(Number(register.expected_cash))
                         ? Number(register.expected_cash)
-                        : Number(register.opening_balance || 0) +
-                          Number(register.total_cash_sales || 0) -
-                          Number(register.total_refunds_cash || 0) -
-                          Number(register.total_expenses_cash || 0) -
-                          Number(register.helper_floats || 0) +
-                          Number(register.helper_handovers || 0)
+                        : expectedFromLines(register)
                     ).toFixed(2)}
                   </Text>
                 </View>
@@ -764,6 +786,16 @@ export default function CashRegisterScreen({ navigation, route }) {
               <View style={styles.bagNote}>
                 <Ionicons name="checkmark-circle" size={20} color={Colors.success} />
                 <Text style={styles.bagNoteText}>{bagNote}</Text>
+              </View>
+            )}
+
+            {stillOut.length > 0 && (
+              <View style={styles.stillOut} accessibilityLiveRegion="polite">
+                <Text style={styles.stillOutTitle}>Shopping money not back yet</Text>
+                {stillOut.map((line) => (
+                  <Text key={line} style={styles.stillOutText}>{line}</Text>
+                ))}
+                <Text style={styles.stillOutHint}>You can still close. It stays with them until they are back.</Text>
               </View>
             )}
 
@@ -895,7 +927,7 @@ export default function CashRegisterScreen({ navigation, route }) {
       {todaySessions.length > 0 && !showHistory && (
         <View style={styles.listSection}>
           <Text style={styles.sectionTitle}>Today's Sessions</Text>
-          {todaySessions.map((s, idx) => (
+          {withSessionLines(todaySessions, register).map((s, idx) => (
             <HistoryCard key={`today-${s.id}`} session={s} isToday={true} />
           ))}
         </View>
@@ -1038,6 +1070,10 @@ const styles = StyleSheet.create({
   bagCollect: { backgroundColor: Colors.success, borderRadius: BorderRadius.md, minHeight: 48, paddingHorizontal: Spacing.md, alignItems: 'center', justifyContent: 'center' },
   bagNote: { flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.xs, marginTop: Spacing.sm, padding: Spacing.sm, borderRadius: BorderRadius.md, backgroundColor: Colors.successLight },
   bagNoteText: { flex: 1, fontSize: FontSize.md, color: Colors.text, lineHeight: 22 },
+  stillOut: { marginTop: Spacing.md, paddingTop: Spacing.sm, borderTopWidth: 1, borderTopColor: Colors.border, gap: 2 },
+  stillOutTitle: { fontSize: FontSize.sm, color: Colors.textSecondary },
+  stillOutText: { fontSize: FontSize.md, fontWeight: '600', color: Colors.text, lineHeight: 24 },
+  stillOutHint: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: 2 },
 
   actionRow: { flexDirection: 'row', gap: Spacing.md, marginBottom: Spacing.xl },
   actionBtn: {
