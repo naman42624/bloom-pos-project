@@ -1603,7 +1603,12 @@ router.put(
         }
       }
       // A rider's own petrol is paid through km money (same rule as adding).
-      if (staysOwnPocket) {
+      // Checked only when the method, the person or the item changes, so a
+      // note or photo can still be added to an older row.
+      const changesWhoOrWhat = (has('payment_method') && req.body.payment_method !== current.payment_method)
+        || (has('paid_by_user_id') && Number(req.body.paid_by_user_id || 0) !== Number(current.paid_by_user_id || 0))
+        || (wantsItem && item && Number(item.id) !== Number(current.item_id || 0));
+      if (staysOwnPocket && changesWhoOrWhat) {
         const petrolItem = item || (current.item_id ? await adb.prepare('SELECT is_rider_petrol FROM expense_items WHERE id = ?').get(current.item_id) : null);
         const sentBy = has('paid_by_user_id') && req.body.paid_by_user_id ? Number(req.body.paid_by_user_id) : null;
         const whose = sentBy || (current.payment_method === OWN_POCKET && current.paid_by_user_id ? Number(current.paid_by_user_id) : Number(req.user.id));

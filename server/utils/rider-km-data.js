@@ -48,10 +48,15 @@ async function loadChainInputs(db, userId) {
   ).all(userId);
   const rates = await db.prepare('SELECT id, rate, effective_from FROM rider_km_rates ORDER BY effective_from ASC, id ASC').all();
   const u = await db.prepare('SELECT km_usual_home_ride FROM users WHERE id = ?').get(userId);
+  // cutoff_read_at is the latest cutoff of any settlement, not only the
+  // last one: a settlement that covered no readings (COD only, or a carry
+  // taken at payroll) has no cutoff of its own, and the km before it stays settled.
   const lastSettlement = await db.prepare(`
     SELECT s.id, s.cutoff_reading_id, s.paid_km, s.km_amount, s.net_amount, s.action, s.moved_amount,
            s.moved_method, s.carry_out, s.created_at,
-           (SELECT to_char(r.read_at, 'YYYY-MM-DD HH24:MI:SS') FROM rider_km_readings r WHERE r.id = s.cutoff_reading_id) AS cutoff_read_at
+           (SELECT to_char(MAX(r.read_at), 'YYYY-MM-DD HH24:MI:SS')
+              FROM rider_km_settlements s2 JOIN rider_km_readings r ON r.id = s2.cutoff_reading_id
+             WHERE s2.user_id = s.user_id) AS cutoff_read_at
     FROM rider_km_settlements s WHERE s.user_id = ? ORDER BY s.id DESC LIMIT 1
   `).get(userId);
   const override = u && u.km_usual_home_ride != null ? Number(u.km_usual_home_ride) : null;
@@ -59,10 +64,12 @@ async function loadChainInputs(db, userId) {
   return { readings, answers, corrections, rates, usualHomeKm, usualOverrideKm: override, lastSettlement: lastSettlement || null };
 }
 
-async function isRider(db, userId, locationId) {
+// includeInactive: a rider who has left can still be settled (the final
+// settlement); new readings need an active rider.
+async function isRider(db, userId, locationId, { includeInactive = false } = {}) {
   const r = await db.prepare(`
     SELECT 1 AS ok FROM users u
-    WHERE u.id = ? AND u.role = 'delivery_partner' AND u.is_active = 1
+    WHERE u.id = ? AND u.role = 'delivery_partner' ${includeInactive ? '' : 'AND u.is_active = 1'}
       AND EXISTS (SELECT 1 FROM user_locations ul WHERE ul.user_id = u.id AND ul.location_id = ?)
   `).get(userId, locationId);
   return !!r;
@@ -294,6 +301,10 @@ async function auditRow(tx, entityType, entityId, userId, action, before, after)
 // 409 when the figures moved since the preview (expectedNetPaise, and
 // expectedLastSettlementId when the caller sends it).
 // action: pay | take | carry | zero | salary. amount in rupees (pay/take).
+// salary (Take from salary, owner) is saved as a carry flagged for_salary in
+// lines_json; payroll then offers that carry. salaryPaymentId is kept for a
+// caller that already has a payment; payroll itself zeroes the carry with
+// applyCarryAtPayroll below, which covers nothing else.
 async function commitSettlement(tx, {
   userId, locationId, actor, action, amount = null, method = null, upiOwnIds = [], expectedNetPaise,
   salaryPaymentId = null, expectedLastSettlementId,
@@ -310,10 +321,10 @@ async function commitSettlement(tx, {
   const net = s.netPaise;
 
   const fits = (action === 'pay' && net > 0) || (action === 'take' && net < 0)
-    || (action === 'carry' && net !== 0) || (action === 'zero' && net === 0) || action === 'salary';
+    || ((action === 'carry' || action === 'salary') && net !== 0) || (action === 'zero' && net === 0);
   if (!fits) throw coded(400, 'ACTION', SETTLE_MSG.action);
   // Carrying or closing nothing new would only write an empty row.
-  if (!s.covers && (action === 'carry' || action === 'zero')) throw coded(409, 'NOTHING', SETTLE_MSG.nothing);
+  if (!s.covers && ['carry', 'salary', 'zero'].includes(action)) throw coded(409, 'NOTHING', SETTLE_MSG.nothing);
 
   let movedPaise = 0;
   let registerId = null;
@@ -330,6 +341,9 @@ async function commitSettlement(tx, {
   }
   const carryOut = action === 'pay' ? net - movedPaise : action === 'take' ? net + movedPaise : net;
   const codHeldPaise = s.lines.cod_held_paise;
+  const forSalary = action === 'salary';
+  const savedAction = forSalary ? 'carry' : action;
+  const lines = forSalary ? { ...s.lines, for_salary: true } : s.lines;
 
   const ins = await tx.prepare(`
     INSERT INTO rider_km_settlements (user_id, location_id, cutoff_reading_id, paid_km, km_amount, petrol_book, petrol_taken,
@@ -339,9 +353,9 @@ async function commitSettlement(tx, {
   `).run(
     userId, locationId, s.cutoff ? Number(s.cutoff.id) : null, s.priced.paidKm, rupees(s.priced.amountPaise),
     rupees(s.items.petrolBookPaise), rupees(s.items.petrolTakenPaise), rupees(s.items.carriedInPaise),
-    rupees(s.items.supplyHeldPaise), rupees(codHeldPaise), rupees(net), action,
+    rupees(s.items.supplyHeldPaise), rupees(codHeldPaise), rupees(net), savedAction,
     movedPaise ? rupees(movedPaise) : null, movedPaise ? method : null, registerId, rupees(carryOut),
-    JSON.stringify(s.upiOwnChosen), JSON.stringify(s.lines), actor.id, salaryPaymentId,
+    JSON.stringify(s.upiOwnChosen), JSON.stringify(lines), actor.id, salaryPaymentId,
   );
   const sid = Number(ins.lastInsertRowid);
 
@@ -404,7 +418,7 @@ async function commitSettlement(tx, {
   if (registerId) await moveSessionCash(tx, registerId, action === 'pay' ? -rupees(movedPaise) : rupees(movedPaise));
 
   const out = {
-    settlement_id: sid, action, net_paise: net, moved_paise: movedPaise, moved_method: movedPaise ? method : null,
+    settlement_id: sid, action: savedAction, for_salary: forSalary, net_paise: net, moved_paise: movedPaise, moved_method: movedPaise ? method : null,
     register_id: registerId, carry_out_paise: carryOut, expense_id: expenseId,
   };
   await auditRow(tx, 'rider_km', sid, actor.id, 'km_settle', null, {
@@ -415,7 +429,93 @@ async function commitSettlement(tx, {
   return out;
 }
 
+// ─── Payroll (spec section 9, At payroll) ────────────────────
+const firstName = (name) => String(name || '').trim().split(/\s+/)[0] || 'The rider';
+
+async function lastCarry(db, userId) {
+  const last = await db.prepare('SELECT carry_out, lines_json FROM rider_km_settlements WHERE user_id = ? ORDER BY id DESC LIMIT 1').get(userId);
+  return {
+    carriedPaise: last ? toPaise(last.carry_out) : 0,
+    forSalary: !!(last && last.lines_json && last.lines_json.for_salary === true),
+  };
+}
+
+// Payroll's km line: only the carried balance is offered. Anything still to
+// net (km, gaps, petrol, cash COD, supply money) means Settle km first.
+async function payrollKm(db, userId, name) {
+  const { carriedPaise, forSalary } = await lastCarry(db, userId);
+  const s = await computeSettlement(db, userId);
+  // Petrol taken after the last going-home reading still waits for a settle.
+  const petrolNow = (await collectOpenItems(db, userId, fmtLocal(new Date()))).petrolRows.length > 0;
+  const unsettled = s.covers || s.gapsOpen > 0 || petrolNow;
+  return {
+    carried_paise: carriedPaise,
+    for_salary: forSalary,
+    unsettled,
+    settle_first_message: unsettled ? `${firstName(name)} has km not settled — Settle km first` : null,
+  };
+}
+
+// Inside payroll's money transaction, before any row lock: takes the rider
+// lock and re-reads the carry. Throws 409 CHANGED when it moved since
+// calculate.
+async function lockCarryForPayroll(tx, userId, expectedPaise) {
+  await lockRider(tx, userId);
+  const { carriedPaise } = await lastCarry(tx, userId);
+  if (carriedPaise !== Number(expectedPaise)) throw coded(409, 'CHANGED', SETTLE_MSG.changed);
+  return carriedPaise;
+}
+
+// The salary row: the carry is paid (shop owed) or taken (rider owed)
+// through the pay and the balance is 0. It covers no readings or items.
+// A cash pay puts the register on the row, so register close counts the
+// carry part of the cash (the salary expense holds only the salary).
+async function applyCarryAtPayroll(tx, { userId, locationId, actor, carryPaise, salaryPaymentId, registerId }) {
+  if (!carryPaise) return null;
+  const lines = { for_salary: true, carried_in_paise: carryPaise, salary_payment_id: salaryPaymentId };
+  const ins = await tx.prepare(`
+    INSERT INTO rider_km_settlements (user_id, location_id, cutoff_reading_id, paid_km, km_amount, petrol_book, petrol_taken,
+      carried_in, supply_held, cod_held, net_amount, action, moved_amount, moved_method, register_id, carry_out,
+      upi_own_delivery_ids, lines_json, created_by, salary_payment_id)
+    VALUES (?, ?, NULL, 0, 0, 0, 0, ?, 0, 0, ?, 'salary', ?, ?, ?, 0, '[]', CAST(? AS jsonb), ?, ?)
+  `).run(userId, locationId, rupees(carryPaise), rupees(carryPaise), rupees(Math.abs(carryPaise)),
+    registerId ? 'cash' : 'salary', registerId || null, JSON.stringify(lines), actor.id, salaryPaymentId);
+  const sid = Number(ins.lastInsertRowid);
+  await auditRow(tx, 'rider_km', sid, actor.id, 'km_salary', null, {
+    settlement_id: sid, user_id: userId, carried_in_paise: carryPaise, salary_payment_id: salaryPaymentId, register_id: registerId || null,
+  });
+  return sid;
+}
+
+// The rider's own figures for My money; /api/rider-km/mine is the full view.
+async function riderMoneySummary(db, userId) {
+  const s = await computeSettlement(db, userId);
+  const last = await db.prepare(`
+    SELECT id, action, paid_km, km_amount, net_amount, moved_amount, moved_method, carry_out, created_at, lines_json
+    FROM rider_km_settlements WHERE user_id = ? ORDER BY id DESC LIMIT 3
+  `).all(userId);
+  return {
+    unsettled_km: s.lines.paid_km,
+    unsettled_paise: s.lines.km_paise,
+    petrol_taken_paise: s.lines.petrol_taken_paise,
+    cod_held_paise: s.lines.cod_held_paise,
+    gaps_open: s.gapsOpen,
+    balance_paise: s.gapsOpen ? null : s.netPaise,
+    last: last.map((r) => ({
+      id: Number(r.id), action: r.action, created_at: r.created_at,
+      for_salary: !!(r.lines_json && r.lines_json.for_salary === true),
+      paid_km: r.paid_km == null ? 0 : Number(r.paid_km),
+      km_paise: toPaise(r.km_amount),
+      net_paise: toPaise(r.net_amount),
+      moved_paise: toPaise(r.moved_amount),
+      moved_method: r.moved_method || null,
+      carry_out_paise: toPaise(r.carry_out),
+    })),
+  };
+}
+
 module.exports = {
   accountStart, loadReadings, loadChainInputs, isRider, fmtLocal,
   collectOpenItems, computeSettlement, commitSettlement, lockRider, SETTLE_MSG,
+  payrollKm, lockCarryForPayroll, applyCarryAtPayroll, riderMoneySummary,
 };

@@ -629,9 +629,9 @@ router.get('/register/status', authenticate, async (req, res, next) => {
           COALESCE((SELECT SUM(op.amount) FROM shop_owes_payments op
                     WHERE op.register_id = cr.id AND op.method = 'cash'), 0) as owes_paid,
           COALESCE((SELECT SUM(k.moved_amount) FROM rider_km_settlements k
-                    WHERE k.register_id = cr.id AND k.moved_method = 'cash' AND k.action = 'pay'), 0) as km_paid_out,
+                    WHERE k.register_id = cr.id AND k.moved_method = 'cash' AND (k.action = 'pay' OR (k.action = 'salary' AND k.carried_in > 0))), 0) as km_paid_out,
           COALESCE((SELECT SUM(k.moved_amount) FROM rider_km_settlements k
-                    WHERE k.register_id = cr.id AND k.moved_method = 'cash' AND k.action = 'take'), 0) as km_taken_in
+                    WHERE k.register_id = cr.id AND k.moved_method = 'cash' AND (k.action = 'take' OR (k.action = 'salary' AND k.carried_in < 0))), 0) as km_taken_in
         FROM cash_registers cr
         LEFT JOIN users u1 ON cr.opened_by = u1.id
         LEFT JOIN users u2 ON cr.closed_by = u2.id
@@ -1017,9 +1017,9 @@ router.get('/register/history', authenticate, authorize('owner', 'manager'), asy
         COALESCE((SELECT SUM(op.amount) FROM shop_owes_payments op
                   WHERE op.register_id = cr.id AND op.method = 'cash'), 0) as owes_paid,
         COALESCE((SELECT SUM(k.moved_amount) FROM rider_km_settlements k
-                  WHERE k.register_id = cr.id AND k.moved_method = 'cash' AND k.action = 'pay'), 0) as km_paid_out,
+                  WHERE k.register_id = cr.id AND k.moved_method = 'cash' AND (k.action = 'pay' OR (k.action = 'salary' AND k.carried_in > 0))), 0) as km_paid_out,
         COALESCE((SELECT SUM(k.moved_amount) FROM rider_km_settlements k
-                  WHERE k.register_id = cr.id AND k.moved_method = 'cash' AND k.action = 'take'), 0) as km_taken_in
+                  WHERE k.register_id = cr.id AND k.moved_method = 'cash' AND (k.action = 'take' OR (k.action = 'salary' AND k.carried_in < 0))), 0) as km_taken_in
       FROM cash_registers cr
       LEFT JOIN locations l ON cr.location_id = l.id
       LEFT JOIN users u1 ON cr.opened_by = u1.id

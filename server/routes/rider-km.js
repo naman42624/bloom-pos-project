@@ -89,8 +89,10 @@ async function sharesShop(db, actor, riderId) {
     WHERE a.user_id = ? AND b.user_id = ?
   `).get(actor.id, riderId));
 }
-async function riderRow(db, id) {
-  return db.prepare("SELECT id, name, km_usual_home_ride FROM users WHERE id = ? AND role = 'delivery_partner' AND is_active = 1").get(id);
+// includeInactive: a rider who has left can still be looked at and settled.
+async function riderRow(db, id, { includeInactive = false } = {}) {
+  return db.prepare(`SELECT id, name, km_usual_home_ride, is_active FROM users
+    WHERE id = ? AND role = 'delivery_partner' ${includeInactive ? '' : 'AND is_active = 1'}`).get(id);
 }
 async function lockRider(tx, riderId) {
   await tx.prepare('SELECT 1 AS ok FROM (SELECT pg_advisory_xact_lock(?, ?)) x').get(RIDER_LOCK_NS, riderId);
@@ -157,7 +159,7 @@ function buildView(rider, inputs) {
   return {
     chain, cutoff, open, priced, gapsOpen, readings, corrections, lastReading,
     data: {
-      rider: { id: Number(rider.id), name: rider.name },
+      rider: { id: Number(rider.id), name: rider.name, is_active: rider.is_active == null ? true : Number(rider.is_active) === 1 },
       stretches: open.map((s) => ({
         kind: s.kind, from_reading_id: s.fromId, to_reading_id: s.toId, km: s.km, end_at: s.endAt,
         answer: s.answer, reason: s.reason,
@@ -207,7 +209,7 @@ async function history(db, userId) {
 }
 
 async function accountFor(db, riderId) {
-  const rider = await riderRow(db, riderId);
+  const rider = await riderRow(db, riderId, { includeInactive: true });
   if (!rider) return null;
   const inputs = await loadChainInputs(db, riderId);
   const v = buildView(rider, inputs);
@@ -616,7 +618,10 @@ router.post('/:userId/settle', authenticate, forGivers, async (req, res, next) =
       upiOwn = [...new Set(b.upi_own_delivery_ids.map(Number))];
     }
     const db = await getDb();
-    if (!(await isRider(db, riderId, locationId))) return res.status(400).json({ success: false, message: MSG.rider });
+    // A rider who has left still gets a final settlement.
+    if (!(await isRider(db, riderId, locationId, { includeInactive: true }))) {
+      return res.status(400).json({ success: false, message: MSG.rider });
+    }
     if (req.user.role !== 'owner' && !(await isLinked(db, req.user.id, locationId))) {
       return res.status(403).json({ success: false, message: MSG.notYourShop });
     }

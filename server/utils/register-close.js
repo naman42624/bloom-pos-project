@@ -185,7 +185,10 @@ async function computeRegisterClose(db, register, location_id, { until = null } 
 // write-offs are expenses with payment_method shopping_money and never
 // reach the drawer at all. Rider km settlements count only the cash moved
 // (moved_method cash) in this session: Pay out, Take in. Their km_account
-// expense row is never cash, so the expense sum above skips it.
+// expense row is never cash, so the expense sum above skips it. A carry
+// applied at a cash payroll (action salary) is paid out with the salary when
+// the shop owed (carried_in > 0) and kept back from it when the rider owed;
+// the salary expense row holds only the salary.
 async function staffMoneyDrawerLines(db, registerId) {
   const row = await db.prepare(`
     SELECT
@@ -196,9 +199,11 @@ async function staffMoneyDrawerLines(db, registerId) {
       COALESCE((SELECT SUM(amount) FROM shop_owes_payments
                 WHERE register_id = ? AND method = 'cash'), 0) AS owes_paid,
       COALESCE((SELECT SUM(moved_amount) FROM rider_km_settlements
-                WHERE register_id = ? AND moved_method = 'cash' AND action = 'pay'), 0) AS km_paid,
+                WHERE register_id = ? AND moved_method = 'cash'
+                  AND (action = 'pay' OR (action = 'salary' AND carried_in > 0))), 0) AS km_paid,
       COALESCE((SELECT SUM(moved_amount) FROM rider_km_settlements
-                WHERE register_id = ? AND moved_method = 'cash' AND action = 'take'), 0) AS km_taken
+                WHERE register_id = ? AND moved_method = 'cash'
+                  AND (action = 'take' OR (action = 'salary' AND carried_in < 0))), 0) AS km_taken
   `).get(registerId, registerId, registerId, registerId, registerId);
   const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
   return {

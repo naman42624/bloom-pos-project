@@ -765,13 +765,33 @@ check('settle: open gaps block settling', async () => {
   eq((await preview(c.counter, r)).status, 200, 'settles after the answer');
 });
 
+// A shop-local 'YYYY-MM-DD HH:MM:SS' (IST) as the UTC wall clock that
+// expenses.created_at holds, worked out here in JS rather than in SQL.
+function istToUtcWall(local) {
+  return new Date(`${local.replace(' ', 'T')}+05:30`).toISOString().slice(0, 19).replace('T', ' ');
+}
+// Petrol whose created_at is set straight from a UTC literal.
+async function petrolUtc(rider, amount, method, utcWall) {
+  const c = await getCast();
+  const r = await api('POST', '/expenses', c.counter, {
+    location_id: TEST_LOCATION_ID, item_id: await petrolItem(), amount, payment_method: method, given_to_user_id: rider,
+  });
+  eq(r.status, 201, 'petrol ' + JSON.stringify(r.body));
+  await (await getDb()).prepare('UPDATE expenses SET created_at = CAST(? AS timestamp) WHERE id = ?').run(utcWall, r.body.data.id);
+  return r.body.data.id;
+}
+
 check('settle: petrol window follows the cutoff reading and the account start', async () => {
   const c = await getCast();
   const r = await freshRider();
   await work(r, 3, 10, 100);
-  const inside = await petrol(r, 50, 'upi', at(3, '17:59'));
-  const after = await petrol(r, 70, 'upi', at(3, '18:01'));
-  const before = await petrol(r, 90, 'upi', at(4, '12:00'));
+  // The cutoff is the 18:00 IST going-home reading, which is 12:30 UTC.
+  const cutUtc = istToUtcWall(at(3, '18:00'));
+  assert(cutUtc.endsWith(' 12:30:00'), 'cutoff in UTC ' + cutUtc);
+  const day = cutUtc.slice(0, 10);
+  const inside = await petrolUtc(r, 50, 'upi', `${day} 12:29:00`);
+  const after = await petrolUtc(r, 70, 'upi', `${day} 12:31:00`);
+  const before = await petrolUtc(r, 90, 'upi', istToUtcWall(at(4, '12:00')));
   const p1 = await okPreview(c.counter, r);
   eq(p1.lines.petrol.map((x) => x.id).join(','), String(inside), 'only the petrol saved before the cutoff');
   eq(p1.lines.petrol_taken_paise, 5000, 'petrol taken');
@@ -871,7 +891,9 @@ check('settle: counter staff can settle; florist 403; salary action owner only',
   const os = await commit(c.owner, r, pv, { action: 'salary' });
   eq(os.status, 201, 'owner salary ' + JSON.stringify(os.body));
   const s = await settlementRow(os.body.data.settlement_id);
-  eq(s.action, 'salary', 'action');
+  eq(s.action, 'carry', 'salary commits as a carry');
+  eq(s.lines_json && s.lines_json.for_salary, true, 'flagged for salary');
+  eq(s.salary_payment_id, null, 'no payment yet');
   eq(P(s.carry_out), pv.net_paise, 'carry = net');
   const r2 = await freshRider();
   await work(r2, 3, 10, 100);
@@ -926,11 +948,257 @@ check('settle: rate back-dated after a settlement changes only unsettled km', as
   }
 });
 
+// ─── Task 4: payroll and the rider's own view ────────────────
+// Only riders and staff this run made are ever paid; their salary rows are
+// made here and removed in cleanup.
+async function salaried(role) {
+  const c = await getCast();
+  const db = await getDb();
+  const u = role === 'delivery_partner' ? await freshRider() : await makeUser(db, { role, name: 'VerifyRK Staff ' + createdUserIds.length });
+  await db.prepare("INSERT INTO employee_salaries (user_id, monthly_salary, salary_type, updated_by) VALUES (?, 15000, 'monthly', ?)").run(u, c.owner);
+  return u;
+}
+let payYear = 2001;
+function payPeriod() { const y = payYear++; return { period_start: `${y}-01-01`, period_end: `${y}-01-31` }; }
+async function calcPay(userId, period) {
+  const c = await getCast();
+  const r = await api('POST', '/staff/payroll/calculate', c.owner, { user_id: userId, ...(period || payPeriod()) });
+  eq(r.status, 200, 'calculate ' + JSON.stringify(r.body));
+  return r.body.data;
+}
+async function payRider(userId, period, extra) {
+  const c = await getCast();
+  return api('POST', '/staff/payroll/disburse', c.owner, {
+    user_id: userId, ...period, base_salary: 15000, deductions: 0, bonus: 0, advances_deducted: 0,
+    payment_method: 'upi', net_amount: 15000, ...extra,
+  });
+}
+// A rider with one settled day and a carry; returns { r, carry }.
+async function riderWithCarry({ km = 20, codCash = 500, meter = 100, salary = true } = {}) {
+  const c = await getCast();
+  const r = salary ? await salaried('delivery_partner') : await freshRider();
+  await work(r, 4, km, meter);
+  if (codCash) await cod(r, { cash: codCash });
+  const pv = await okPreview(c.counter, r);
+  const res = await commit(c.counter, r, pv, { action: 'carry' });
+  eq(res.status, 201, 'carry ' + JSON.stringify(res.body));
+  return { r, carry: pv.net_paise };
+}
+const lastSettlementOf = async (r) => (await getDb()).prepare('SELECT * FROM rider_km_settlements WHERE user_id = ? ORDER BY id DESC LIMIT 1').get(r);
+
+check('payroll shows a rider carry and Settle km first', async () => {
+  const { r, carry } = await riderWithCarry();
+  assert(carry < 0, 'rider owes ' + carry);
+  let k = (await calcPay(r)).km;
+  assert(k, 'km block');
+  eq(k.carried_paise, carry, 'carried');
+  eq(k.unsettled, false, 'nothing unsettled');
+  eq(k.settle_first_message, null, 'no message');
+  await work(r, 2, 10, 125);
+  k = (await calcPay(r)).km;
+  eq(k.unsettled, true, 'new km is unsettled');
+  eq(k.settle_first_message, 'VerifyRK has km not settled — Settle km first', 'copy');
+  eq(k.carried_paise, carry, 'carry unchanged');
+  // Petrol taken after a settled day, with no new readings, is unsettled too.
+  const { r: r2 } = await riderWithCarry({ codCash: 0 });
+  eq((await calcPay(r2)).km.unsettled, false, 'clean after the settle');
+  await petrol(r2, 30, 'upi', at(1, '10:00'));
+  eq((await calcPay(r2)).km.unsettled, true, 'petrol alone is unsettled');
+  // Open shopping money is unsettled too.
+  const { r: r3 } = await riderWithCarry({ codCash: 0 });
+  await shopping(r3, 100, 0);
+  eq((await calcPay(r3)).km.unsettled, true, 'shopping money is unsettled');
+  eq((await calcPay(r3)).calculation.open_shopping_money_total, 0, 'riders still never get the shopping money tick');
+});
+
+check('applying the carry takes it off pay and zeroes the balance', async () => {
+  const c = await getCast();
+  const { r, carry } = await riderWithCarry();
+  const period = payPeriod();
+  eq((await calcPay(r, period)).km.carried_paise, carry, 'calculate shows it');
+  const res = await payRider(r, period, { apply_km_carry: true, expected_km_carry_paise: carry });
+  eq(res.status, 201, 'pay ' + JSON.stringify(res.body));
+  eq(P(res.body.data.net_amount), 1500000 + carry, 'pay less what the rider owes');
+  const s = await lastSettlementOf(r);
+  eq(s.action, 'salary', 'salary row');
+  eq(P(s.carry_out), 0, 'carry zeroed');
+  eq(P(s.carried_in), carry, 'carried in');
+  eq(P(s.moved_amount), Math.abs(carry), 'moved = |carry|');
+  eq(Number(s.salary_payment_id), Number(res.body.data.id), 'linked to the payment');
+  eq(s.cutoff_reading_id, null, 'covers no readings');
+  eq(s.register_id, null, 'UPI pay: no register');
+  const exp = await (await getDb()).prepare('SELECT amount FROM expenses WHERE id = ?').get(res.body.data.expense_id);
+  eq(P(exp.amount), 1500000, 'salary expense is the salary only (km is in the petrol book)');
+  eq((await calcPay(r)).km.carried_paise, 0, 'balance now 0');
+  const pv = await preview(c.counter, r);
+  eq(pv.status, 409, 'nothing left to settle, old km not back ' + JSON.stringify(pv.body));
+  eq((await view(c.mgr, r)).unsettled.paid_km, 0, 'old km stays settled');
+  // Not a rider; a carry bigger than the pay; no carry to apply.
+  const staff = await salaried('counter_staff');
+  const ns = await payRider(staff, payPeriod(), { apply_km_carry: true, expected_km_carry_paise: 0 });
+  eq(ns.status, 400, 'not a rider ' + JSON.stringify(ns.body));
+  const { r: big, carry: bigCarry } = await riderWithCarry({ codCash: 20000, meter: 500 });
+  const bp = await payRider(big, payPeriod(), { net_amount: 100, apply_km_carry: true, expected_km_carry_paise: bigCarry });
+  eq(bp.status, 400, 'carry bigger than the pay ' + JSON.stringify(bp.body));
+  eq(Number((await (await getDb()).prepare('SELECT COUNT(*) AS c FROM salary_payments WHERE user_id = ?').get(big)).c), 0, 'nothing paid');
+  const zr = await salaried('delivery_partner');
+  const z = await payRider(zr, payPeriod(), { apply_km_carry: true, expected_km_carry_paise: 0 });
+  eq(z.status, 201, 'zero carry pays as normal ' + JSON.stringify(z.body));
+  eq(P(z.body.data.net_amount), 1500000, 'unchanged net');
+  eq(await lastSettlementOf(zr), undefined, 'no settlement row for a zero carry');
+});
+
+check('applying a shop-owes carry in cash adds it to pay and the drawer adds up', async () => {
+  const c = await getCast();
+  const reg = await openOwnRegister();
+  const { r, carry } = await riderWithCarry({ codCash: 0, meter: 700 });
+  assert(carry > 0, 'shop owes ' + carry);
+  const closeExpected = async () => {
+    const p = await api('PUT', '/sales/register/close', c.owner, { location_id: TEST_LOCATION_ID, actual_cash: 0, preview: true });
+    eq(p.status, 200, 'close preview ' + JSON.stringify(p.body));
+    return P(p.body.data.expected_cash);
+  };
+  const before = await drawer(reg);
+  const beforeClose = await closeExpected();
+  const res = await payRider(r, payPeriod(), { payment_method: 'cash', apply_km_carry: true, expected_km_carry_paise: carry });
+  eq(res.status, 201, 'pay ' + JSON.stringify(res.body));
+  eq(P(res.body.data.net_amount), 1500000 + carry, 'pay plus what the shop owes');
+  eq(P(await drawer(reg)), P(before) - 1500000 - carry, 'drawer down by all the cash paid');
+  eq(beforeClose - (await closeExpected()), 1500000 + carry, 'close count agrees with the drawer');
+  const s = await lastSettlementOf(r);
+  eq(Number(s.register_id), reg, 'register on the row');
+  eq(s.moved_method, 'cash', 'cash');
+});
+
+check('a stale carry at pay is refused', async () => {
+  const c = await getCast();
+  const { r, carry } = await riderWithCarry();
+  const period = payPeriod();
+  eq((await calcPay(r, period)).km.carried_paise, carry, 'calculated');
+  await work(r, 2, 10, 125);
+  const pv = await okPreview(c.counter, r);
+  eq((await commit(c.counter, r, pv, { action: 'carry' })).status, 201, 'second carry');
+  const res = await payRider(r, period, { apply_km_carry: true, expected_km_carry_paise: carry });
+  eq(res.status, 409, 'stale ' + JSON.stringify(res.body));
+  eq(res.body.code, 'CHANGED', 'code');
+  eq(res.body.message, 'Something changed — check the figures again.', 'copy');
+  const missing = await payRider(r, period, { apply_km_carry: true });
+  eq(missing.status, 409, 'no expected figure');
+  const db = await getDb();
+  eq(Number((await db.prepare('SELECT COUNT(*) AS c FROM salary_payments WHERE user_id = ?').get(r)).c), 0, 'nothing paid');
+  eq((await lastSettlementOf(r)).action, 'carry', 'no salary row');
+});
+
+check('the settle sheet Take from salary carry shows at payroll', async () => {
+  const c = await getCast();
+  const r = await salaried('delivery_partner');
+  await work(r, 3, 20, 100);
+  const pv = await okPreview(c.owner, r);
+  const res = await commit(c.owner, r, pv, { action: 'salary' });
+  eq(res.status, 201, 'salary ' + JSON.stringify(res.body));
+  const k = (await calcPay(r)).km;
+  eq(k.carried_paise, pv.net_paise, 'payroll shows that carry');
+  eq(k.unsettled, false, 'settled');
+  eq(k.for_salary, true, 'marked for salary');
+});
+
+check('rider /mine has the km block', async () => {
+  const c = await getCast();
+  const r = await freshRider();
+  await work(r, 3, 20, 100);
+  await petrol(r, 30, 'upi', at(3, '12:00'));
+  await cod(r, { cash: 200 });
+  const pv = await okPreview(c.counter, r);
+  let m = await api('GET', '/staff-money/mine', r);
+  eq(m.status, 200, 'mine ' + JSON.stringify(m.body));
+  let k = m.body.data.km;
+  assert(k, 'km block');
+  eq(k.unsettled_km, pv.lines.paid_km, 'km');
+  eq(k.unsettled_paise, pv.lines.km_paise, 'km money');
+  eq(k.petrol_taken_paise, 3000, 'petrol');
+  eq(k.cod_held_paise, 20000, 'cod');
+  eq(k.balance_paise, pv.net_paise, 'balance');
+  eq(k.last.length, 0, 'no settlements yet');
+  eq((await commit(c.counter, r, pv, { action: 'carry' })).status, 201, 'carry');
+  m = await api('GET', '/staff-money/mine', r);
+  k = m.body.data.km;
+  eq(k.unsettled_km, 0, 'nothing unsettled');
+  eq(k.balance_paise, pv.net_paise, 'balance = carry');
+  eq(k.last.length, 1, 'one settlement');
+  eq(k.last[0].carry_out_paise, pv.net_paise, 'carry shown');
+  eq(k.last[0].paid_km, pv.lines.paid_km, 'km shown');
+  const staff = await api('GET', '/staff-money/mine', c.counter);
+  eq(staff.status, 200, 'counter mine');
+  eq(staff.body.data.km, undefined, 'no km block for counter staff');
+});
+
+check('a non-rider payroll is unchanged', async () => {
+  const u = await salaried('counter_staff');
+  const d = await calcPay(u);
+  eq(Object.keys(d).sort().join(','), 'attendance_summary,calculation,partial_days,period,salary_config,user', 'data keys');
+  eq(Object.keys(d.calculation).sort().join(','), 'base_pay,deductions,net_amount,open_shopping_money_total,pending_advances', 'calculation keys');
+});
+
+check('a settlement with no new readings keeps old km settled', async () => {
+  const c = await getCast();
+  const { r } = await riderWithCarry({ codCash: 0, salary: false });
+  await cod(r, { cash: 100 });
+  const p2 = await okPreview(c.counter, r);
+  eq(p2.lines.paid_km, 0, 'no km on the COD-only settle');
+  eq(p2.cutoff_reading_id, null, 'no cutoff');
+  eq((await commit(c.counter, r, p2, { action: 'carry' })).status, 201, 'carry COD only');
+  const p3 = await okPreview(c.counter, r);
+  eq(p3.lines.paid_km, 0, 'old km not back');
+  eq(p3.lines.km_paise, 0, 'old km money not back');
+  eq((await view(c.mgr, r)).unsettled.paid_km, 0, 'view agrees');
+});
+
+check('a rider who has left can still be viewed and settled, but gets no new readings', async () => {
+  const c = await getCast();
+  const r = await freshRider();
+  await work(r, 3, 20, 100);
+  const db = await getDb();
+  await db.prepare('UPDATE users SET is_active = 0 WHERE id = ?').run(r);
+  eq((await api('GET', `/rider-km/${r}`, c.mgr)).status, 200, 'view');
+  const pv = await okPreview(c.counter, r);
+  eq((await post(c.mgr, r, 'arrive', 500, at(1, '09:00'))).status, 400, 'no new reading');
+  const res = await commit(c.counter, r, pv, { action: 'pay', amount: pv.net_paise / 100, method: 'upi' });
+  eq(res.status, 201, 'final settle ' + JSON.stringify(res.body));
+  eq(P((await lastSettlementOf(r)).carry_out), 0, 'nothing left');
+});
+
+check('an old own-pocket rider petrol row can still get a note', async () => {
+  const c = await getCast();
+  const db = await getDb();
+  const item = await db.prepare("INSERT INTO expense_items (name, name_key, category) VALUES ('VerifyRK Fuel Old', 'verifyrk fuel old', 'transport') RETURNING id").get();
+  createdItemIds.push(item.id);
+  const r = await freshRider();
+  const base = { location_id: TEST_LOCATION_ID, item_id: item.id, amount: 40, expense_date: todayStr() };
+  const own = await api('POST', '/expenses', c.counter, { ...base, payment_method: 'own_pocket', paid_by_user_id: r });
+  eq(own.status, 201, 'own pocket before the flag ' + JSON.stringify(own.body));
+  const upi = await api('POST', '/expenses', c.counter, { ...base, payment_method: 'upi', given_to_user_id: r });
+  eq(upi.status, 201, 'upi petrol');
+  eq((await api('PUT', `/expenses/items/${item.id}/rider-petrol`, c.owner, { on: true })).status, 200, 'flag on');
+  try {
+    const note = await api('PUT', `/expenses/${own.body.data.id}`, c.owner, { note: 'VerifyRK note' });
+    eq(note.status, 200, 'note only ' + JSON.stringify(note.body));
+    const same = await api('PUT', `/expenses/${own.body.data.id}`, c.owner, { payment_method: 'own_pocket', paid_by_user_id: r, note: 'again' });
+    eq(same.status, 200, 'same method and person sent back ' + JSON.stringify(same.body));
+    const into = await api('PUT', `/expenses/${upi.body.data.id}`, c.owner, { payment_method: 'own_pocket', paid_by_user_id: r });
+    eq(into.status, 400, 'changing to own pocket is refused ' + JSON.stringify(into.body));
+    eq(into.body.message, COPY.ownPetrol, 'copy');
+  } finally {
+    await api('PUT', `/expenses/items/${item.id}/rider-petrol`, c.owner, { on: false });
+  }
+});
+
 async function cleanup() {
   const db = await getDb();
   const del = async (label, sql, ...p) => { try { await db.prepare(sql).run(...p); } catch (e) { console.error(`cleanup ${label}: ${e.message}`); } };
   try { await closeOwnRegister(); } catch (e) { console.error('cleanup close: ' + e.message); }
   for (const id of createdUserIds) {
+    await del('salary payments', 'DELETE FROM salary_payments WHERE user_id = ?', id);
+    await del('salary config', 'DELETE FROM employee_salaries WHERE user_id = ?', id);
     await del('settle-now items', 'DELETE FROM delivery_settlement_items WHERE settlement_id IN (SELECT id FROM delivery_settlements WHERE delivery_partner_id = ?)', id);
     await del('settle-now rows', 'DELETE FROM delivery_settlements WHERE delivery_partner_id = ?', id);
     await del('collections', 'DELETE FROM delivery_collections WHERE delivery_id IN (SELECT id FROM deliveries WHERE delivery_partner_id = ?)', id);
