@@ -305,6 +305,26 @@ check('GET /people: staff and riders of the shop, id/name/role only; helpers ref
   assert(h.status === 403, `helper status ${h.status}`);
 });
 
+check('GET /people: typed Given to names come back once each, trimmed, any case, newest spelling first', async () => {
+  const tok = tokenFor(COUNTER_ID);
+  const a = await addExpense(tok, { item_name: 'VerifyEB Tea', amount: 5, payment_method: 'upi', given_to_name: '  verifyeb   kallu ' });
+  assert(a.status === 201, `add a ${a.status} ${JSON.stringify(a.body)}`);
+  await new Promise((r) => setTimeout(r, 20));
+  const b = await addExpense(tok, { item_name: 'VerifyEB Tea', amount: 6, payment_method: 'upi', given_to_name: 'VerifyEB Kallu' });
+  assert(b.status === 201, `add b ${b.status}`);
+  const r = await api('GET', `/expenses/people?location_id=${TEST_LOCATION_ID}`, tok);
+  assert(r.status === 200, `status ${r.status}`);
+  const names = r.body.typed_names;
+  assert(Array.isArray(names), 'typed_names missing');
+  const kallu = names.filter((n) => n.name.toLowerCase() === 'verifyeb kallu');
+  assert(kallu.length === 1, 'kallu listed ' + kallu.length + ' times: ' + JSON.stringify(names));
+  assert(kallu[0].name === 'VerifyEB Kallu', 'spelling ' + kallu[0].name);
+  for (const n of names) assert(Object.keys(n).join(',') === 'name', 'extra fields: ' + Object.keys(n).join(','));
+  assert(names.length <= 20, 'more than 20');
+  const staff = new Set(r.body.data.map((p) => p.name.trim().toLowerCase()));
+  assert(!names.some((n) => staff.has(n.name.toLowerCase())), 'a staff name is repeated as typed');
+});
+
 check('florist staff still cannot add an expense', async () => {
   const r = await addExpense(tokenFor(8447), { item_name: 'VerifyEB Tea', amount: 5, payment_method: 'upi' });
   assert(r.status === 403, `status ${r.status}`);

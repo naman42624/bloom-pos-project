@@ -142,6 +142,22 @@ test('typedText shows only a different typed text', () => {
   assert.strictEqual(e.typedText(null), null);
 });
 
+test('givenToFromTyped: matches a staff name in any case and spacing', () => {
+  const people = [{ id: 7, name: 'Ramesh Kumar' }];
+  assert.deepStrictEqual(e.givenToFromTyped('  ramesh   KUMAR ', people, []),
+    { user_id: 7, name: 'Ramesh Kumar', display_name: 'Ramesh Kumar' });
+});
+test('givenToFromTyped: matches a saved typed name and keeps its spelling', () => {
+  assert.deepStrictEqual(e.givenToFromTyped('tota ram', [], [{ name: 'Tota Ram' }]),
+    { user_id: null, name: 'Tota Ram', display_name: 'Tota Ram' });
+});
+test('givenToFromTyped: a new name is trimmed and squeezed; blank is nobody', () => {
+  assert.deepStrictEqual(e.givenToFromTyped('  Kallu   Bhai ', [], []),
+    { user_id: null, name: 'Kallu Bhai', display_name: 'Kallu Bhai' });
+  assert.strictEqual(e.givenToFromTyped('   ', [], []), null);
+  assert.strictEqual(e.givenToFromTyped(undefined), null);
+});
+
 let failed = 0;
 for (const t of tests) {
   try { t.fn(); console.log('ok   ' + t.name); } catch (err) { failed++; console.log('FAIL ' + t.name + ': ' + err.message); }
