@@ -36,6 +36,7 @@ The owner wants this in the app, with the money right in the expense book, **wit
 - Web-safe dialogs only (`showAlert` / `showConfirm`), and the double-tap guard (`useSubmitGuard`) on every write.
 - Cash at the counter needs an open register (`register-guard`), with the same "Open Register" path as everywhere else.
 - The async DB layer only. No apostrophes in `--` SQL comments.
+- Every money write runs in `withMoneyTx` with one lock order (as built, §15): the rider advisory lock first, then the delivery / shopping money / expense rows `FOR UPDATE`, then the open register last.
 
 ## 4. Approaches considered
 
@@ -99,7 +100,7 @@ A third link in the Add expense sheet, next to Salary advance and Shopping money
 
 **Reminders** (never blocking):
 - The register close screen lists riders whose last reading today is an Arriving: "L has no going-home reading — Add now".
-- The counter dashboard shows "Readings: L hasn't gone home yet" only during the register close flow, not all day (to avoid noise).
+- The counter dashboard shows "Readings: L hasn't gone home yet" only during the register close flow, not all day (to avoid noise). As built, this is the same close-box list above (no separate dashboard line).
 
 ## 8. Petrol taken
 
@@ -170,6 +171,8 @@ Opened from the rider's line on the existing **Shopping money out** card (rename
 **At payroll** (owner): payroll offers only the rider's **current carried balance**, and the owner chooses whether to apply it:
 - If the rider owes, it comes off the pay through the existing **Take from pay** tick, extended to riders for this one figure.
 - If the shop owes, it is added to the pay.
+
+As built (§15): this is its own **Km balance** line with an owner tick **Apply to this pay**, not the shopping money Take from pay tick. The app sends the pay before the carry; the server adds or takes the carry under the rider lock and refuses with "Something changed — check the figures again." if it moved since Calculate.
 
 Unsettled km, COD or supply money is not taken at payroll directly, because that would bypass the km netting. Instead payroll shows "L has km not settled — Settle km first", which opens the settle sheet. The settle sheet has a third button for the owner, **Take from salary**, which carries the result straight into the next payroll. Riders do have salaries (all three have monthly salary rows) and go through payroll like other staff.
 
@@ -256,3 +259,18 @@ Server script `verify-rider-km.js`, covering:
 - payroll Take from pay for a rider balance.
 
 App unit tests for the chain and W maths. On-screen checks at 375 px of the reading sheet, a gap answer, a multi-day settle, and the rider's My money.
+
+## 15. As built (2026-11-15) — where the build differs
+
+Decisions taken during the build (ledger `.superpowers/sdd/2026-11-15-rider-km-account/progress.md`, Rulings 7-16):
+- **Lock order (Ruling 7).** Rider advisory lock `pg_advisory_xact_lock(7304, riderId)` first, then delivery / `staff_money_out` / expense rows `FOR UPDATE`, then the open register (`lockOpenRegister`) last. This is the rows-then-register order every other money route uses; the first plan order (register before rows) would deadlock against `settle-now`. Never take the rider lock after a row or register lock.
+- **`last_settlement_id` echo (Ruling 8).** The settle preview returns `last_settlement_id` and a commit sends it back. If another settlement landed in between, the commit gets 409 CHANGED (or NOTHING for a second Carry of the same figures) instead of settling twice.
+- **`km_account` and settled rows (Ruling 9).** `km_account` is refused on `POST /expenses` (only a settlement writes it) and accepted on `PUT` only unchanged. A petrol advance or `km_account` row that a settlement counted is locked against money changes (amount, method, item, person, return); its note and photo can still change. A mistake is fixed with a Correction.
+- **COD.** No `delivery_settlements` row for km-netted COD. `settle-now` and the pending-COD lists skip any delivery with `km_settlement_id`, so a COD is settled once by either path.
+- **Payroll applies only the carry (Ruling 11).** `payroll/calculate` returns `km` (`carried_paise`, `unsettled`, `settle_first_message`) for riders. `disburse` takes `apply_km_carry` + `expected_km_carry_paise`; `net_amount` is the pay before the carry and the server applies it. A cash payroll's salary expense stays salary-only; the salary settlement row carries the register so close counts the km part. `unsettled` is advisory: the server does not refuse applying the carry while something is unsettled, so the app keeps "Apply to this pay" unticked by default then and shows "{Name} has km not settled — Settle km first" as a button to the rider's km screen.
+- **Riders who have left (Rulings 10, 14, 15).** Settle, the account view, gap answers and corrections work for a deactivated rider who still has unsettled items or a carry (the final settlement); new readings need an active rider. A leaver with no readings and no settlements stays off the list (their COD settles through `settle-now`). Parked: petrol after a leaver's last Going home shows on the card, but the sheet says Nothing to settle yet.
+- **Km reading (Ruling 12):** the rider is not pre-picked (last-used first) — a wrong-rider reading is worse than one tap.
+- **Settle (Ruling 13):** Pay has no extra confirm; the button names the amount and method.
+- **Add missed readings (Ruling 16):** counter staff are checked on the gap's end, so a long gap ending in the last 7 days can be filled.
+- **Usual home ride:** the account view returns `usual_home_km` (what is used) and `usual_home_set_km` (what an owner or manager typed; null = worked out from the rides).
+
