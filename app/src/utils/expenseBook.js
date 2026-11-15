@@ -57,7 +57,7 @@ export function givenToText(row) {
 
 // How an expense was paid, as the list shows it (spec 3, 4.8):
 // "Cash", "UPI", "Own pocket · Owner", "Shopping money · Ramesh".
-const METHOD_NAMES = { cash: 'Cash', upi: 'UPI', card: 'Card', bank_transfer: 'Bank', own_pocket: 'Own pocket', shopping_money: 'Shopping money' };
+const METHOD_NAMES = { cash: 'Cash', upi: 'UPI', card: 'Card', bank_transfer: 'Bank', own_pocket: 'Own pocket', shopping_money: 'Shopping money', km_account: 'Km account' };
 export function methodLabel(row) {
   const r = row || {};
   const key = String(r.payment_method || '').toLowerCase();
