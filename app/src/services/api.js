@@ -883,6 +883,15 @@ class ApiService {
     return this.request(`/expenses/items/${id}/merge`, { method: 'POST', body: JSON.stringify({ into_id: intoId }) });
   }
 
+  // "Separate again": undo this item's last merge.
+  unmergeExpenseItem(id) {
+    return this.request(`/expenses/items/${id}/unmerge`, { method: 'POST', body: JSON.stringify({}) });
+  }
+
+  undoAssignExpenseItems(assignments) {
+    return this.request('/expenses/assign-items/undo', { method: 'POST', body: JSON.stringify({ assignments }) });
+  }
+
   getUnsortedExpenses(params = {}) {
     return this.request(`/expenses/unsorted${this._expenseQuery(params)}`);
   }

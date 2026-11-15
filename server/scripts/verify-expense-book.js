@@ -790,6 +790,113 @@ check('merge across the salary line is refused both ways, nothing moves', async 
   assert(items.every((i) => i.merged_into == null), 'item marked merged');
 });
 
+check('separate again: the merged rows go back, a row changed since stays, the item is back pinned at the end', async () => {
+  const db = await getDb();
+  const P = await newItem('VerifyEB UmP', 'supplies');
+  const Q = await newItem('VerifyEB UmQ', 'supplies');
+  const R = await newItem('VerifyEB UmR', 'supplies');
+  await db.prepare('UPDATE expense_items SET pinned = TRUE, pin_order = 99 WHERE id = ?').run(P.id);
+  const p1 = await rawExpense(P.id, 'supplies', 'VerifyEB um p1');
+  const p2 = await rawExpense(P.id, 'supplies', 'VerifyEB um p2');
+  const q1 = await rawExpense(Q.id, 'supplies', 'VerifyEB um q1');
+  const m = await api('POST', `/expenses/items/${P.id}/merge`, ownerT(), { into_id: Q.id });
+  assert(m.status === 200 && m.body.data.moved === 2, JSON.stringify(m.body));
+  const log = await db.prepare("SELECT new_state FROM audit_logs WHERE entity_type = 'expense_item' AND entity_id = ? AND action = 'expense_item_merge'").get(P.id);
+  assert(log.new_state.moved_ids.join() === [p1, p2].join(), 'moved_ids ' + JSON.stringify(log.new_state));
+  const hist = await api('GET', `/expenses/items/${Q.id}/history`, ownerT());
+  assert(hist.status === 200 && hist.body.data.merged_in.some((x) => x.id === P.id && x.name === 'VerifyEB UmP'), 'merged_in ' + JSON.stringify(hist.body.data.merged_in));
+  await db.prepare('UPDATE expenses SET item_id = ? WHERE id = ?').run(R.id, p2);
+  const maxPin = Number((await db.prepare('SELECT COALESCE(MAX(pin_order), 0) AS m FROM expense_items WHERE pinned = TRUE').get()).m);
+  const u = await api('POST', `/expenses/items/${P.id}/unmerge`, ownerT());
+  assert(u.status === 200 && u.body.data.moved_back === 1 && u.body.data.skipped === 1 && u.body.data.older_merge === false, JSON.stringify(u.body));
+  const rows = await db.prepare('SELECT id, item_id FROM expenses WHERE id IN (?, ?, ?) ORDER BY id').all(p1, p2, q1);
+  assert(Number(rows[0].item_id) === P.id && Number(rows[1].item_id) === R.id && Number(rows[2].item_id) === Q.id, JSON.stringify(rows));
+  const p = await db.prepare('SELECT merged_into, is_active, pinned, pin_order FROM expense_items WHERE id = ?').get(P.id);
+  assert(p.merged_into == null && p.is_active === true && p.pinned === true && Number(p.pin_order) === maxPin + 1, JSON.stringify(p));
+  assert(await auditCount(P.id, 'expense_item_unmerge') === 1, 'no unmerge audit');
+  const again = await api('POST', `/expenses/items/${P.id}/unmerge`, ownerT());
+  assert(again.status === 409, 'second separate ' + again.status);
+  await db.prepare('UPDATE expense_items SET pinned = FALSE, pin_order = NULL WHERE id = ?').run(P.id);
+});
+
+check('separate again after a chain: B gets its rows and A back, then A gets its own rows', async () => {
+  const db = await getDb();
+  const A = await newItem('VerifyEB UcA');
+  const B = await newItem('VerifyEB UcB');
+  const C = await newItem('VerifyEB UcC');
+  const a1 = await rawExpense(A.id, 'other', 'VerifyEB uc a1');
+  const b1 = await rawExpense(B.id, 'other', 'VerifyEB uc b1');
+  await api('POST', `/expenses/items/${A.id}/merge`, ownerT(), { into_id: B.id });
+  await api('POST', `/expenses/items/${B.id}/merge`, ownerT(), { into_id: C.id });
+  const blocked = await api('POST', `/expenses/items/${A.id}/unmerge`, ownerT());
+  assert(blocked.status === 409 && blocked.body.message === '"VerifyEB UcA" moved with "VerifyEB UcB" when "VerifyEB UcB" was merged into "VerifyEB UcC". Separate "VerifyEB UcB" first, then this one.',
+    `A first: ${blocked.status} ${blocked.body && blocked.body.message}`);
+  const ub = await api('POST', `/expenses/items/${B.id}/unmerge`, ownerT());
+  assert(ub.status === 200 && ub.body.data.moved_back === 2, JSON.stringify(ub.body));
+  const items = await db.prepare('SELECT id, merged_into FROM expense_items WHERE id IN (?, ?) ORDER BY id').all(A.id, B.id);
+  assert(Number(items[0].merged_into) === B.id && items[1].merged_into == null, 'after B: ' + JSON.stringify(items));
+  const ua = await api('POST', `/expenses/items/${A.id}/unmerge`, ownerT());
+  assert(ua.status === 200 && ua.body.data.moved_back === 1, JSON.stringify(ua.body));
+  const rows = await db.prepare('SELECT id, item_id FROM expenses WHERE id IN (?, ?) ORDER BY id').all(a1, b1);
+  assert(Number(rows[0].item_id) === A.id && Number(rows[1].item_id) === B.id, JSON.stringify(rows));
+});
+
+check('separate again refuses while the target was merged on, and an older merge brings the item back without rows', async () => {
+  const db = await getDb();
+  const X = await newItem('VerifyEB UtX');
+  const Y = await newItem('VerifyEB UtY');
+  const Z = await newItem('VerifyEB UtZ');
+  await rawExpense(X.id, 'other', 'VerifyEB ut x1');
+  await api('POST', `/expenses/items/${X.id}/merge`, ownerT(), { into_id: Y.id });
+  // Y merged on into Z by hand without re-pointing X, the shape left by an older build.
+  await db.prepare('UPDATE expense_items SET merged_into = ?, is_active = FALSE WHERE id = ?').run(Z.id, Y.id);
+  const r = await api('POST', `/expenses/items/${X.id}/unmerge`, ownerT());
+  assert(r.status === 409 && r.body.message === '"VerifyEB UtY" was merged into "VerifyEB UtZ" since. Separate "VerifyEB UtY" first, then this one.', `${r.status} ${r.body && r.body.message}`);
+  const x = await db.prepare('SELECT merged_into FROM expense_items WHERE id = ?').get(X.id);
+  assert(Number(x.merged_into) === Y.id, 'X changed by a refused separate');
+  const O = await newItem('VerifyEB UtOld');
+  const o1 = await rawExpense(Z.id, 'other', 'VerifyEB ut old row');
+  await db.prepare('UPDATE expense_items SET merged_into = ?, is_active = FALSE WHERE id = ?').run(Z.id, O.id);
+  const old = await api('POST', `/expenses/items/${O.id}/unmerge`, ownerT());
+  assert(old.status === 200 && old.body.data.older_merge === true && old.body.data.moved_back === 0, JSON.stringify(old.body));
+  const o = await db.prepare('SELECT merged_into, is_active FROM expense_items WHERE id = ?').get(O.id);
+  assert(o.merged_into == null && o.is_active === true, JSON.stringify(o));
+  const row = await db.prepare('SELECT item_id FROM expenses WHERE id = ?').get(o1);
+  assert(Number(row.item_id) === Z.id, 'row moved on an older merge');
+});
+
+check('undo a sort: rows lose their item again, a row changed since is skipped, audited', async () => {
+  const db = await getDb();
+  const T = await newItem('VerifyEB UndoSort', 'other');
+  const U = await newItem('VerifyEB UndoSort Other', 'other');
+  const mk = async (d) => {
+    const r = await db.prepare(`INSERT INTO expenses (location_id, category, amount, description, payment_method, expense_date, created_by)
+      VALUES (?, 'other', 4, ?, 'upi', ?, ?) RETURNING id`).get(TEST_LOCATION_ID, d, dayAgo(42), OWNER_ID);
+    createdExpenseIds.push(r.id);
+    return r.id;
+  };
+  const r1 = await mk('VerifyEB undo sort 1');
+  const r2 = await mk('VerifyEB undo sort 2');
+  const s = await trackAudits('expense_assign_items', () => api('POST', '/expenses/assign-items', ownerT(), { assignments: [
+    { expense_id: r1, item_id: T.id }, { expense_id: r2, item_id: T.id },
+  ] }));
+  assert(s.status === 200 && s.body.data.done.length === 2, JSON.stringify(s.body));
+  await db.prepare('UPDATE expenses SET item_id = ? WHERE id = ?').run(U.id, r2);
+  const u = await trackAudits('expense_assign_items_undo', () => api('POST', '/expenses/assign-items/undo', ownerT(), { assignments: s.body.data.done }));
+  assert(u.status === 200 && u.body.data.undone === 1 && u.body.data.skipped.map(Number).join() === String(r2), JSON.stringify(u.body));
+  const rows = await db.prepare('SELECT id, item_id FROM expenses WHERE id IN (?, ?) ORDER BY id').all(r1, r2);
+  assert(rows[0].item_id == null && Number(rows[1].item_id) === U.id, JSON.stringify(rows));
+  const bad = await api('POST', '/expenses/assign-items/undo', ownerT(), { assignments: [] });
+  assert(bad.status === 400 && bad.body.message === 'Nothing to undo. Pull down to refresh.', 'empty ' + bad.status);
+});
+
+check('a manager gets 403 on separate again and undo sort', async () => {
+  const t = managerT();
+  const a = await api('POST', '/expenses/items/1/unmerge', t);
+  const b = await api('POST', '/expenses/assign-items/undo', t, { assignments: [{ expense_id: 1, item_id: 1 }] });
+  assert(a.status === 403 && b.status === 403, `${a.status} ${b.status}`);
+});
+
 check('a manager gets 403 on every owner item tool', async () => {
   const t = managerT();
   const rs = [
@@ -887,6 +994,48 @@ check('assign-items refuses salary and invalid categories, changing nothing', as
   assert(Number(made.c) === 0, 'items created');
   const neg = await api('GET', '/expenses/unsorted?limit=-5', ownerT());
   assert(neg.status === 200, 'negative limit ' + neg.status);
+});
+
+check('unsorted pages reach every row once, even when a row is sorted between pages, with a total', async () => {
+  const db = await getDb();
+  const mine = [];
+  for (let i = 0; i < 7; i += 1) {
+    const r = await db.prepare(`INSERT INTO expenses (location_id, category, amount, description, payment_method, expense_date, created_by)
+      VALUES (?, 'other', ?, ?, 'upi', ?, ?) RETURNING id`).get(TEST_LOCATION_ID, 5 + i, `VerifyEB page row ${i}`, dayAgo(50 + (i % 3)), OWNER_ID);
+    createdExpenseIds.push(r.id);
+    mine.push(Number(r.id));
+  }
+  const want = Number((await db.prepare("SELECT COUNT(*) AS c FROM expenses WHERE item_id IS NULL AND category <> 'salary'").get()).c);
+  const seen = [];
+  let after = null;
+  let pages = 0;
+  let sortedMidway = null;
+  let total = null;
+  do {
+    const r = await api('GET', `/expenses/unsorted?limit=3${after ? `&after_id=${after}` : ''}`, ownerT());
+    assert(r.status === 200 && Array.isArray(r.body.data) && r.body.data.length <= 3, `page ${pages}: ${r.status}`);
+    if (pages === 0) total = r.body.total;
+    r.body.data.forEach((x) => seen.push(Number(x.id)));
+    after = r.body.next_after_id;
+    pages += 1;
+    // Sort one of the test rows not seen yet, between pages: the next page must not skip anything else.
+    if (pages === 1 && !sortedMidway) {
+      sortedMidway = mine.find((id) => !seen.includes(id)) || null;
+      if (sortedMidway) {
+        const T = await newItem('VerifyEB Page Item');
+        await db.prepare('UPDATE expenses SET item_id = ? WHERE id = ?').run(T.id, sortedMidway);
+      }
+    }
+  } while (after && pages < 500);
+  assert(total === want, `total ${total} vs ${want}`);
+  assert(new Set(seen).size === seen.length, 'a row came twice');
+  for (const id of mine) {
+    if (id === sortedMidway) continue;
+    assert(seen.includes(id), `row ${id} never shown`);
+  }
+  assert(seen.length >= want - (sortedMidway ? 1 : 0), `saw ${seen.length} of ${want}`);
+  const bad = await api('GET', '/expenses/unsorted?after_id=abc', ownerT());
+  assert(bad.status === 400, 'bad after_id ' + bad.status);
 });
 
 check('a manager gets 403 on unsorted and assign-items', async () => {

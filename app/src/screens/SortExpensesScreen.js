@@ -29,12 +29,20 @@ export default function SortExpensesScreen({ navigation }) {
   const isOwner = user?.role === 'owner';
 
   const [rows, setRows] = useState([]);
+  // Paging: the server sends 50 at a time; nextAfter is where the next page starts.
+  const [total, setTotal] = useState(0);
+  const [nextAfter, setNextAfter] = useState(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [moreError, setMoreError] = useState('');
+  const moreSeq = useRef(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   // expense_id → { item_id, name } or { item_name, name }
   const [choices, setChoices] = useState({});
   const [saving, setSaving] = useState(false);
   const [doneNote, setDoneNote] = useState('');
+  const [lastDone, setLastDone] = useState(null); // the last save, for Undo
+  const [undoing, setUndoing] = useState(false);
   const guardSubmit = useSubmitGuard();
 
   // "Pick item" search, one row at a time.
@@ -53,7 +61,12 @@ export default function SortExpensesScreen({ navigation }) {
     setError('');
     try {
       const res = await api.getUnsortedExpenses({ limit: PAGE });
-      setRows((res.data || []).map((r) => ({ ...r, amount: Number(r.amount) || 0 })));
+      moreSeq.current += 1; // a page still loading from before is dropped
+      const list = (res.data || []).map((r) => ({ ...r, amount: Number(r.amount) || 0 }));
+      setRows(list);
+      setTotal(Number.isFinite(Number(res.total)) ? Number(res.total) : list.length);
+      setNextAfter(res.next_after_id || null);
+      setMoreError('');
       setChoices({});
       setPickingId(null);
     } catch {
@@ -62,6 +75,29 @@ export default function SortExpensesScreen({ navigation }) {
       setLoading(false);
     }
   }, []);
+
+  // Next 50, added below. Picks already made stay.
+  const loadMore = useCallback(async () => {
+    if (!nextAfter || loadingMore || loading) return;
+    const id = ++moreSeq.current;
+    setLoadingMore(true);
+    setMoreError('');
+    try {
+      const res = await api.getUnsortedExpenses({ limit: PAGE, after_id: nextAfter });
+      if (id !== moreSeq.current) return;
+      const list = (res.data || []).map((r) => ({ ...r, amount: Number(r.amount) || 0 }));
+      setRows((prev) => {
+        const have = new Set(prev.map((r) => r.id));
+        return prev.concat(list.filter((r) => !have.has(r.id)));
+      });
+      if (Number.isFinite(Number(res.total))) setTotal(Number(res.total));
+      setNextAfter(res.next_after_id || null);
+    } catch {
+      if (id === moreSeq.current) setMoreError('Could not load more. Check the internet, then tap Show more.');
+    } finally {
+      if (id === moreSeq.current) setLoadingMore(false);
+    }
+  }, [nextAfter, loadingMore, loading]);
 
   useFocusEffect(useCallback(() => {
     if (isOwner && !dirty.current) load();
@@ -148,12 +184,31 @@ export default function SortExpensesScreen({ navigation }) {
       const skipped = (res.data?.skipped || []).length;
       setChoices({});
       dirty.current = false;
+      setLastDone(Array.isArray(res.data?.done) && res.data.done.length ? res.data.done : null);
       setDoneNote(`Sorted ${entriesText(assigned)}.${skipped ? ` ${entriesText(skipped)} had already been sorted, so ${skipped === 1 ? 'it was' : 'they were'} left as is.` : ''}`);
       await load();
     } catch (err) {
       showAlert('Could not save', err?.message || 'Nothing was changed. Check the internet, then tap Save again.');
     } finally {
       setSaving(false);
+    }
+  });
+
+  // Undo the last save: those rows lose their item and come back to this list.
+  const handleUndo = guardSubmit(async () => {
+    if (!lastDone) return;
+    setUndoing(true);
+    try {
+      const res = await api.undoAssignExpenseItems(lastDone);
+      const undone = Number(res.data?.undone) || 0;
+      const skipped = (res.data?.skipped || []).length;
+      setLastDone(null);
+      setDoneNote(`Undone: ${entriesText(undone)} back in this list.${skipped ? ` ${entriesText(skipped)} changed since, so ${skipped === 1 ? 'it was' : 'they were'} left as is.` : ''}`);
+      await load();
+    } catch (err) {
+      showAlert('Could not undo', err?.message || 'Nothing was changed. Check the internet, then tap Undo again.');
+    } finally {
+      setUndoing(false);
     }
   });
 
@@ -170,10 +225,24 @@ export default function SortExpensesScreen({ navigation }) {
       <Text style={styles.intro}>
         These were saved before items existed. Pick the item for each one. Only the item changes; the amount, date and kind stay the same.
       </Text>
+      {total > 0 && (
+        <Text style={styles.totalLine}>{`${entriesText(total)} still to sort`}</Text>
+      )}
       {!!doneNote && (
         <View style={styles.doneNote} accessibilityLiveRegion="polite">
           <Ionicons name="checkmark-circle" size={20} color={Colors.success} />
           <Text style={styles.doneText}>{doneNote}</Text>
+          {!!lastDone && (
+            <TouchableOpacity
+              style={styles.undoBtn}
+              onPress={handleUndo}
+              disabled={undoing}
+              accessibilityRole="button"
+              accessibilityLabel="Undo this sort"
+            >
+              <Text style={styles.undoText}>{undoing ? 'Undoing…' : 'Undo'}</Text>
+            </TouchableOpacity>
+          )}
         </View>
       )}
       {withSuggestion.length > 1 && !allAccepted && (
@@ -291,6 +360,26 @@ export default function SortExpensesScreen({ navigation }) {
         renderItem={renderRow}
         extraData={{ choices, pickingId, query, results, searching }}
         ListHeaderComponent={header}
+        onEndReached={loadMore}
+        onEndReachedThreshold={0.5}
+        ListFooterComponent={!error && rows.length > 0 && (nextAfter || moreError) ? (
+          <View style={styles.moreBox}>
+            {!!moreError && <Text style={styles.moreError}>{moreError}</Text>}
+            <TouchableOpacity
+              style={styles.moreBtn}
+              onPress={loadMore}
+              disabled={loadingMore}
+              accessibilityRole="button"
+              accessibilityLabel="Show more entries"
+            >
+              {loadingMore ? <ActivityIndicator color={Colors.primary} /> : (
+                <Text style={styles.moreText}>
+                  {total > rows.length ? `Show more (${total - rows.length} more)` : 'Show more'}
+                </Text>
+              )}
+            </TouchableOpacity>
+          </View>
+        ) : null}
         contentContainerStyle={styles.content}
         keyboardShouldPersistTaps="handled"
         ListEmptyComponent={!error && (
@@ -326,11 +415,24 @@ const styles = StyleSheet.create({
   flex: { flex: 1 },
   muted: { fontSize: FontSize.md, color: Colors.textSecondary, textAlign: 'center' },
   intro: { fontSize: FontSize.md, color: Colors.textSecondary, marginBottom: Spacing.md },
+  totalLine: { fontSize: FontSize.md, fontWeight: '700', color: Colors.text, marginBottom: Spacing.md },
+  moreBox: { paddingVertical: Spacing.md, gap: Spacing.sm },
+  moreError: { fontSize: FontSize.md, color: Colors.error, textAlign: 'center' },
+  moreBtn: {
+    minHeight: 48, justifyContent: 'center', alignItems: 'center', borderRadius: BorderRadius.md,
+    borderWidth: 1, borderColor: Colors.primary, backgroundColor: Colors.surface,
+  },
+  moreText: { fontSize: FontSize.md, fontWeight: '700', color: Colors.primary },
   doneNote: {
     flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, padding: Spacing.sm, marginBottom: Spacing.md,
     borderRadius: BorderRadius.md, backgroundColor: Colors.successLight,
   },
   doneText: { flex: 1, fontSize: FontSize.md, fontWeight: '600', color: Colors.text },
+  undoBtn: {
+    minHeight: 44, minWidth: 64, justifyContent: 'center', alignItems: 'center', paddingHorizontal: Spacing.md,
+    borderRadius: BorderRadius.md, borderWidth: 1, borderColor: Colors.primary, backgroundColor: Colors.surface,
+  },
+  undoText: { color: Colors.primary, fontWeight: '700', fontSize: FontSize.md },
   acceptAll: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.sm, minHeight: 48,
     borderRadius: BorderRadius.md, borderWidth: 1, borderColor: Colors.primary, backgroundColor: Colors.surface,

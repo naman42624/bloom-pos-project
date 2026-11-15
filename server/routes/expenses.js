@@ -424,7 +424,11 @@ router.get('/items/:id/history', ...BOSS_ONLY, async (req, res, next) => {
     const byMonth = new Map(monthRows.map((r) => [r.month, Number(r.amount) || 0]));
     const entries = (await db.prepare(`${EXPENSE_ROW_SELECT}${list.w} ORDER BY e.expense_date DESC, e.created_at DESC LIMIT 500`).all(...list.p)).map(normalizeExpenseRow);
 
-    res.json({ success: true, data: { item, months: keys.map((m) => ({ month: m, amount: round2(byMonth.get(m) || 0) })), entries } });
+    // Items merged into this one, so the owner can separate one again.
+    const mergedIn = (await db.prepare('SELECT id, name FROM expense_items WHERE merged_into = ? ORDER BY name').all(id))
+      .map((r) => ({ id: Number(r.id), name: r.name }));
+
+    res.json({ success: true, data: { item, months: keys.map((m) => ({ month: m, amount: round2(byMonth.get(m) || 0) })), entries, merged_in: mergedIn } });
   } catch (err) {
     next(err);
   }
@@ -779,17 +783,96 @@ router.post('/items/:id/merge', ...OWNER_ONLY, async (req, res, next) => {
       // Salary stays apart: rows merged across would change kind for future entries.
       if ((source.category === 'salary') !== (target.category === 'salary')) throw httpError(400, SALARY_ITEM_MESSAGE);
 
+      // The exact rows and items that move are kept in the audit, so the merge
+      // can be undone later (POST /items/:id/unmerge).
+      const movedIds = (await tx.prepare('SELECT id FROM expenses WHERE item_id = ? ORDER BY id FOR UPDATE').all(sourceId)).map((r) => Number(r.id));
       const moved = (await tx.prepare('UPDATE expenses SET item_id = ? WHERE item_id = ?').run(intoId, sourceId)).changes;
       // Items already merged into the source now point at the target (never chained).
+      const repointedIds = (await tx.prepare('SELECT id FROM expense_items WHERE merged_into = ? ORDER BY id FOR UPDATE').all(sourceId)).map((r) => Number(r.id));
       const repointed = (await tx.prepare('UPDATE expense_items SET merged_into = ?, updated_at = CURRENT_TIMESTAMP WHERE merged_into = ?').run(intoId, sourceId)).changes;
       await tx.prepare(
         'UPDATE expense_items SET merged_into = ?, is_active = FALSE, pinned = FALSE, pin_order = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?'
       ).run(intoId, sourceId);
       await auditItem(tx, sourceId, req.user.id, 'expense_item_merge',
-        pickItemAudit(source), { merged_into: intoId, into_name: target.name, moved, repointed });
+        pickItemAudit(source), { merged_into: intoId, into_name: target.name, moved, repointed, moved_ids: movedIds, repointed_ids: repointedIds });
       return { moved, repointed, into: target };
     });
     res.json({ success: true, data: { moved: out.moved, repointed: out.repointed, into_id: intoId, into_name: out.into.name } });
+  } catch (err) {
+    sendItemError(res, next, err);
+  }
+});
+
+// POST /api/expenses/items/:id/unmerge — "Separate again": undo the last merge
+// of this item. The rows that merge moved go back (only those still on the
+// target), items it re-pointed point here again, and the item comes back as
+// it was (pinned at the end of the pin list if it was pinned). A merge saved
+// before the moved rows were recorded brings the item back but moves no rows.
+router.post('/items/:id/unmerge', ...OWNER_ONLY, async (req, res, next) => {
+  try {
+    const sourceId = Number(req.params.id);
+    if (!Number.isInteger(sourceId) || sourceId <= 0) return res.status(404).json({ success: false, message: ITEM_NOT_FOUND_MESSAGE });
+    const out = await withMoneyTx(async (tx) => {
+      const first = await tx.prepare('SELECT id, merged_into FROM expense_items WHERE id = ?').get(sourceId);
+      if (!first) throw httpError(404, ITEM_NOT_FOUND_MESSAGE);
+      if (!first.merged_into) throw httpError(409, 'This item is already separate. Pull down to refresh.');
+      const intoId = Number(first.merged_into);
+      // Same lock order as merge: both items in id order.
+      const locked = await tx.prepare('SELECT * FROM expense_items WHERE id IN (?, ?) ORDER BY id FOR UPDATE').all(sourceId, intoId);
+      const source = locked.find((r) => Number(r.id) === sourceId);
+      const target = locked.find((r) => Number(r.id) === intoId);
+      if (!source || Number(source.merged_into) !== intoId) throw httpError(409, 'This item changed just now. Pull down to refresh, then try again.');
+      if (target && target.merged_into) {
+        const next = await tx.prepare('SELECT name FROM expense_items WHERE id = ?').get(target.merged_into);
+        throw httpError(409, `"${target.name}" was merged into "${next ? next.name : 'another item'}" since. Separate "${target.name}" first, then this one.`);
+      }
+      const log = await tx.prepare(`
+        SELECT previous_state, new_state FROM audit_logs
+         WHERE entity_type = 'expense_item' AND entity_id = ? AND action = 'expense_item_merge'
+         ORDER BY id DESC LIMIT 1
+      `).get(sourceId);
+      const after = log && log.new_state ? (typeof log.new_state === 'string' ? JSON.parse(log.new_state) : log.new_state) : {};
+      const before = log && log.previous_state ? (typeof log.previous_state === 'string' ? JSON.parse(log.previous_state) : log.previous_state) : {};
+      const fromThisMerge = Number(after.merged_into) === intoId;
+      // The item's own merge went into another item that was merged on later
+      // (which re-pointed this one): that later merge holds the rows.
+      if (log && !fromThisMerge && after.merged_into) {
+        const mid = after.into_name || 'the item it was merged into';
+        throw httpError(409, `"${source.name}" moved with "${mid}" when "${mid}" was merged into "${target ? target.name : 'another item'}". Separate "${mid}" first, then this one.`);
+      }
+      const movedIds = fromThisMerge && Array.isArray(after.moved_ids) ? after.moved_ids.map(Number).filter((n) => Number.isInteger(n) && n > 0) : null;
+      const repointedIds = fromThisMerge && Array.isArray(after.repointed_ids) ? after.repointed_ids.map(Number).filter((n) => Number.isInteger(n) && n > 0) : [];
+
+      let movedBack = 0;
+      if (movedIds && movedIds.length) {
+        movedBack = (await tx.prepare(
+          `UPDATE expenses SET item_id = ? WHERE item_id = ? AND id IN (${movedIds.map(() => '?').join(',')})`
+        ).run(sourceId, intoId, ...movedIds)).changes;
+      }
+      let repointedBack = 0;
+      if (repointedIds.length) {
+        repointedBack = (await tx.prepare(
+          `UPDATE expense_items SET merged_into = ?, updated_at = CURRENT_TIMESTAMP WHERE merged_into = ? AND id IN (${repointedIds.map(() => '?').join(',')})`
+        ).run(sourceId, intoId, ...repointedIds)).changes;
+      }
+      const wasPinned = fromThisMerge && before.pinned === true;
+      const pinOrder = wasPinned
+        ? Number((await tx.prepare('SELECT COALESCE(MAX(pin_order), 0) AS m FROM expense_items WHERE pinned = TRUE').get()).m) + 1
+        : null;
+      const active = fromThisMerge ? before.is_active !== false : true;
+      await tx.prepare(
+        'UPDATE expense_items SET merged_into = NULL, is_active = ?, pinned = ?, pin_order = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'
+      ).run(active, wasPinned, pinOrder, sourceId);
+      const skipped = movedIds ? movedIds.length - movedBack : 0;
+      await auditItem(tx, sourceId, req.user.id, 'expense_item_unmerge',
+        { merged_into: intoId, into_name: target ? target.name : null },
+        { moved_back: movedBack, moved_back_ids: movedIds || [], skipped, repointed_back: repointedBack, older_merge: !movedIds });
+      return { movedBack, skipped, olderMerge: !movedIds, name: source.name, intoName: target ? target.name : null };
+    });
+    res.json({ success: true, data: {
+      id: sourceId, name: out.name, into_name: out.intoName,
+      moved_back: out.movedBack, skipped: out.skipped, older_merge: out.olderMerge,
+    } });
   } catch (err) {
     sendItemError(res, next, err);
   }
@@ -811,19 +894,40 @@ function suggestItem(items, description) {
   return best ? { id: best.id, name: best.name } : null;
 }
 
-// GET /api/expenses/unsorted?limit=50: rows with no item (not salary), newest first.
+// GET /api/expenses/unsorted?limit=50&after_id=N: rows with no item (not salary),
+// newest first. after_id is the last row of the previous page: the next page
+// starts right after it in this order (keyset, so rows sorted in between never
+// make a page skip or repeat a row). Also returns total (rows left to sort)
+// and next_after_id (null on the last page).
+const UNSORTED_WHERE = "e.item_id IS NULL AND e.category <> 'salary'";
+const UNSORTED_KEY = "(e.expense_date, COALESCE(e.created_at, TIMESTAMP 'epoch'), e.id)";
 router.get('/unsorted', ...OWNER_ONLY, async (req, res, next) => {
   try {
     const db = await getAsyncDb();
     const asked = parseInt(req.query.limit, 10);
     const limit = Math.min(asked > 0 ? asked : 50, 200);
+    const afterRaw = req.query.after_id;
+    const afterId = afterRaw === undefined || afterRaw === '' ? null : Number(afterRaw);
+    if (afterId !== null && (!Number.isInteger(afterId) || afterId <= 0)) {
+      return res.status(400).json({ success: false, message: 'Pull down to refresh the list.' });
+    }
+    const params = [];
+    let where = ` WHERE ${UNSORTED_WHERE}`;
+    if (afterId) {
+      where += ` AND ${UNSORTED_KEY} < (SELECT a.expense_date, COALESCE(a.created_at, TIMESTAMP 'epoch'), a.id FROM expenses a WHERE a.id = ?)`;
+      params.push(afterId);
+    }
+    // One extra row tells whether another page follows.
     const rows = await db.prepare(
-      `${EXPENSE_ROW_SELECT}      WHERE e.item_id IS NULL AND e.category <> 'salary'
-      ORDER BY e.expense_date DESC, e.created_at DESC, e.id DESC LIMIT ${limit}`
-    ).all();
+      `${EXPENSE_ROW_SELECT}${where}
+      ORDER BY e.expense_date DESC, COALESCE(e.created_at, TIMESTAMP 'epoch') DESC, e.id DESC LIMIT ${limit + 1}`
+    ).all(...params);
+    const more = rows.length > limit;
+    const page = more ? rows.slice(0, limit) : rows;
+    const total = Number((await db.prepare(`SELECT COUNT(*) AS c FROM expenses e WHERE ${UNSORTED_WHERE}`).get()).c) || 0;
     const items = await db.prepare('SELECT id, name, name_key FROM expense_items WHERE is_active = TRUE AND merged_into IS NULL AND category <> \'salary\'').all();
-    const data = rows.map(normalizeExpenseRow).map((r) => ({ ...r, suggested_item: suggestItem(items, r.description) }));
-    res.json({ success: true, data });
+    const data = page.map(normalizeExpenseRow).map((r) => ({ ...r, suggested_item: suggestItem(items, r.description) }));
+    res.json({ success: true, data, total, next_after_id: more && page.length ? Number(page[page.length - 1].id) : null });
   } catch (err) {
     next(err);
   }
@@ -864,7 +968,44 @@ router.post('/assign-items', ...OWNER_ONLY, async (req, res, next) => {
         done.push({ expense_id: id, item_id: Number(item.id) });
       }
       if (done.length) await auditItem(tx, 0, req.user.id, 'expense_assign_items', { expense_ids: done.map((d) => d.expense_id), item_id: null }, { assignments: done });
-      return { assigned: done.length, skipped };
+      // `done` lets the app offer Undo (POST /assign-items/undo).
+      return { assigned: done.length, skipped, done };
+    });
+    res.json({ success: true, data: out });
+  } catch (err) {
+    sendItemError(res, next, err);
+  }
+});
+
+// POST /api/expenses/assign-items/undo { assignments: [{ expense_id, item_id }] }
+// Takes these rows out of their item again, only where the row is still on
+// that same item (a row changed since is left alone and counted as skipped).
+router.post('/assign-items/undo', ...OWNER_ONLY, async (req, res, next) => {
+  try {
+    const list = req.body && req.body.assignments;
+    if (!Array.isArray(list) || list.length === 0 || list.length > 200) {
+      return res.status(400).json({ success: false, message: 'Nothing to undo. Pull down to refresh.' });
+    }
+    const pairs = [];
+    const seen = new Set();
+    for (const a of list) {
+      const expenseId = Number(a && a.expense_id);
+      const itemId = Number(a && a.item_id);
+      if (!Number.isInteger(expenseId) || expenseId <= 0 || !Number.isInteger(itemId) || itemId <= 0 || seen.has(expenseId)) {
+        return res.status(400).json({ success: false, message: 'Nothing to undo. Pull down to refresh.' });
+      }
+      seen.add(expenseId);
+      pairs.push({ expense_id: expenseId, item_id: itemId });
+    }
+    const out = await withMoneyTx(async (tx) => {
+      const undone = [];
+      const skipped = [];
+      for (const p of pairs) {
+        const n = (await tx.prepare('UPDATE expenses SET item_id = NULL WHERE id = ? AND item_id = ?').run(p.expense_id, p.item_id)).changes;
+        if (n) undone.push(p); else skipped.push(p.expense_id);
+      }
+      if (undone.length) await auditItem(tx, 0, req.user.id, 'expense_assign_items_undo', { assignments: undone }, { expense_ids: undone.map((d) => d.expense_id), item_id: null });
+      return { undone: undone.length, skipped };
     });
     res.json({ success: true, data: out });
   } catch (err) {
