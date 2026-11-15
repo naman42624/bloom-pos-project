@@ -1,14 +1,16 @@
-import React, { useState, useCallback, useMemo } from 'react';
+import React, { useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, RefreshControl, Modal, TextInput, ActivityIndicator, Platform, KeyboardAvoidingView } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import { formatDate } from '../utils/datetime';
 import DateTimePickerModal from '../components/DateTimePickerModal';
-import { appAlert, showConfirm } from '../utils/alert';
+import { appAlert, showAlert, showConfirm } from '../utils/alert';
 import { buildDisburseBody, takeFromPayLabel, calculateAgainMessage } from '../utils/staffMoney';
+import { payrollKmView, kmApplyDefault, kmDisburseFields } from '../utils/riderKm';
+import useSubmitGuard from '../hooks/useSubmitGuard';
 
 const SALARY_TYPES = [
   { label: 'Monthly', value: 'monthly' },
@@ -44,6 +46,7 @@ const dateToYMD = (date) => {
 
 export default function SalaryManagementScreen() {
   const { user } = useAuth();
+  const navigation = useNavigation();
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [salaries, setSalaries] = useState([]);
@@ -81,6 +84,12 @@ export default function SalaryManagementScreen() {
   const [bonusAmount, setBonusAmount] = useState('');
   // Take from pay (spec 5.6): off unless the owner ticks it.
   const [takeShopping, setTakeShopping] = useState(false);
+  // Riders' Km balance (rider km account spec 9 At payroll): the owner's
+  // "Apply to this pay" tick. Starts on only when nothing waits for Settle km.
+  const [kmApply, setKmApply] = useState(false);
+  const disburseGuard = useSubmitGuard();
+  // Back from Settle km first: open this payroll again and recalculate.
+  const resumePayroll = useRef(false);
   const [payrollHistory, setPayrollHistory] = useState([]);
   const [payrollHistoryLoading, setPayrollHistoryLoading] = useState(false);
   const [confirmedHalfDays, setConfirmedHalfDays] = useState([]); // array of 'YYYY-MM-DD' date strings
@@ -104,7 +113,14 @@ export default function SalaryManagementScreen() {
     }
   }, []);
 
-  useFocusEffect(useCallback(() => { fetchData(); }, [fetchData]));
+  useFocusEffect(useCallback(() => {
+    fetchData();
+    if (resumePayroll.current) {
+      resumePayroll.current = false;
+      setPayrollModal(true);
+      calcRef.current && calcRef.current();
+    }
+  }, [fetchData]));
 
   const openSetModal = (staffMember, existing = null) => {
     setEditUser(staffMember);
@@ -168,6 +184,7 @@ export default function SalaryManagementScreen() {
     setPaymentRef('');
     setBonusAmount('');
     setTakeShopping(false);
+    setKmApply(false);
     setConfirmedHalfDays([]);
     // Reset before the fetch resolves so a previously-opened employee's payments
     // can't briefly leak into this modal's overlap check for the newly-selected one.
@@ -198,6 +215,25 @@ export default function SalaryManagementScreen() {
     } finally {
       setPayrollCalculating(false);
     }
+  };
+
+  const calcRef = useRef(null);
+  calcRef.current = () => handleCalculatePayroll();
+
+  // The km tick follows the figures: reset when the carry or the
+  // settle-first state changes (a recalculation with the same figures keeps
+  // the owner's choice).
+  const kmKey = payrollCalc && payrollCalc.km
+    ? `${payrollCalc.km.carried_paise}|${payrollCalc.km.unsettled ? 1 : 0}` : '';
+  useEffect(() => {
+    setKmApply(payrollCalc && payrollCalc.km ? kmApplyDefault(payrollCalc.km) : false);
+  }, [kmKey]);
+
+  const settleKmFirst = () => {
+    if (!payrollCalc) return;
+    resumePayroll.current = true;
+    setPayrollModal(false);
+    navigation.navigate('RiderKm', { userId: payrollCalc.user.id, name: payrollCalc.user.name });
   };
 
   // Toggle a partial-day date's confirmed-as-half-day state and immediately
@@ -256,7 +292,11 @@ export default function SalaryManagementScreen() {
     // shopping money taken off when Take from pay is ticked (the server adds
     // the shopping total to the deduction itself and checks both).
     const money = buildDisburseBody(payrollCalc.calculation, { take: takeShopping, bonus });
-    const finalNet = money.net_amount;
+    // net_amount stays the pay before the km balance: the server applies the
+    // carry itself (Ruling 11). finalNet is what is handed over, for display.
+    const km = payrollKmView(payrollCalc.km, payrollCalc.user.name, Math.round(money.net_amount * 100), kmApply);
+    const kmFields = kmDisburseFields(km);
+    const finalNet = km ? km.takeHomePaise / 100 : money.net_amount;
 
     const doDisburse = async () => {
       setSaving(true);
@@ -275,6 +315,7 @@ export default function SalaryManagementScreen() {
           deductions: payrollCalc.calculation.deductions,
           bonus,
           ...money,
+          ...kmFields,
           payment_method: paymentMethod,
           payment_reference: paymentRef,
         });
@@ -283,7 +324,11 @@ export default function SalaryManagementScreen() {
         fetchPayrollHistory();
       } catch (e) {
         const again = calculateAgainMessage(e);
-        if (again) {
+        if (e && e.code === 'CHANGED') {
+          // The km balance moved since Calculate: get the figures again.
+          showAlert('Figures changed', e.raw_message || e.message);
+          handleCalculatePayroll();
+        } else if (again) {
           showConfirm('Calculate again', again, () => handleCalculatePayroll(), { confirmLabel: 'Calculate again' });
         } else {
           appAlert('Error', e.message || 'Failed to disburse.');
@@ -296,7 +341,8 @@ export default function SalaryManagementScreen() {
     const takeText = money.take_shopping_money
       ? ` ${formatCurrency(money.take_shopping_money.expected_total)} unsettled shopping money is taken from pay.`
       : '';
-    showConfirm('Confirm Payment', `Disburse ${formatCurrency(finalNet)} to ${payrollCalc.user.name}?${takeText}`, doDisburse, { confirmLabel: 'Pay' });
+    const kmText = km && km.applied ? ` Km balance applied: ${km.balanceText}.` : '';
+    showConfirm('Confirm Payment', `Disburse ${formatCurrency(finalNet)} to ${payrollCalc.user.name}?${takeText}${kmText}`, disburseGuard(doDisburse), { confirmLabel: 'Pay' });
   };
 
   const fetchPayrollHistory = async () => {
@@ -753,6 +799,58 @@ export default function SalaryManagementScreen() {
                   </TouchableOpacity>
                 )}
 
+                {/* Km balance (riders): the carried km figure, applied only when ticked. */}
+                {(() => {
+                  const pay = buildDisburseBody(payrollCalc.calculation, { take: takeShopping, bonus: Number(bonusAmount) || 0 }).net_amount;
+                  const km = payrollKmView(payrollCalc.km, payrollCalc.user.name, Math.round(pay * 100), kmApply);
+                  if (!km) return null;
+                  const busy = payrollCalculating || saving;
+                  return (
+                    <View style={styles.kmBox}>
+                      {!!km.settleFirst && (
+                        <TouchableOpacity
+                          style={styles.kmSettleBtn}
+                          onPress={settleKmFirst}
+                          accessibilityRole="button"
+                          accessibilityLabel={km.settleFirst}
+                        >
+                          <Ionicons name="speedometer-outline" size={22} color={Colors.white} />
+                          <Text style={styles.kmSettleText}>{km.settleFirst}</Text>
+                          <Ionicons name="chevron-forward" size={20} color={Colors.white} />
+                        </TouchableOpacity>
+                      )}
+                      <View style={styles.breakdownRow}>
+                        <Text style={styles.breakdownLabel}>Km balance</Text>
+                        <Text style={styles.breakdownValue}>{km.balanceText}</Text>
+                      </View>
+                      {km.carry !== 0 && (
+                        <TouchableOpacity
+                          style={[styles.takeRow, (!km.canApply || busy) && { opacity: 0.5 }]}
+                          onPress={() => setKmApply((v) => !v)}
+                          disabled={!km.canApply || busy}
+                          accessibilityRole="checkbox"
+                          accessibilityState={{ checked: km.applied, disabled: !km.canApply || busy }}
+                          accessibilityLabel="Apply to this pay"
+                        >
+                          <Ionicons name={km.applied ? 'checkbox' : 'square-outline'} size={24} color={Colors.primary} />
+                          <Text style={styles.takeText}>Apply to this pay</Text>
+                          {km.applied ? (
+                            <Text style={[styles.breakdownValue, { color: km.carry < 0 ? Colors.warning : Colors.success }]}>
+                              {km.carry < 0 ? '−' : '+'}{formatCurrency(Math.abs(km.carry) / 100)}
+                            </Text>
+                          ) : null}
+                        </TouchableOpacity>
+                      )}
+                      {km.tooBig && (
+                        <Text style={styles.kmHint}>The km balance owed is more than this pay. Settle km first, or leave it for next time.</Text>
+                      )}
+                      {km.unsettled && km.carry !== 0 && !km.applied && (
+                        <Text style={styles.kmHint}>Settle km first, then apply the new balance here.</Text>
+                      )}
+                    </View>
+                  );
+                })()}
+
                 {/* Bonus */}
                 <Text style={styles.label}>Bonus (optional)</Text>
                 <TextInput
@@ -785,7 +883,11 @@ export default function SalaryManagementScreen() {
                 <View style={[styles.breakdownRow, { marginTop: Spacing.md, paddingTop: Spacing.md, borderTopWidth: 2, borderTopColor: Colors.primary }]}>
                   <Text style={[styles.breakdownLabel, { fontSize: FontSize.lg, fontWeight: '700' }]}>Net Payable</Text>
                   <Text style={[styles.breakdownValue, { fontSize: FontSize.lg, fontWeight: '700', color: Colors.success }]}>
-                    {formatCurrency(buildDisburseBody(payrollCalc.calculation, { take: takeShopping, bonus: Number(bonusAmount) || 0 }).net_amount)}
+                    {(() => {
+                      const pay = buildDisburseBody(payrollCalc.calculation, { take: takeShopping, bonus: Number(bonusAmount) || 0 }).net_amount;
+                      const km = payrollKmView(payrollCalc.km, payrollCalc.user.name, Math.round(pay * 100), kmApply);
+                      return formatCurrency(km ? km.takeHomePaise / 100 : pay);
+                    })()}
                   </Text>
                 </View>
 
@@ -939,6 +1041,13 @@ const styles = StyleSheet.create({
     marginTop: Spacing.xs,
   },
   takeText: { flex: 1, fontSize: FontSize.md, color: Colors.text },
+  kmBox: { marginTop: Spacing.sm, gap: Spacing.xs },
+  kmSettleBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, minHeight: 52, paddingHorizontal: Spacing.md,
+    borderRadius: BorderRadius.md, backgroundColor: Colors.primary,
+  },
+  kmSettleText: { flex: 1, fontSize: FontSize.md, fontWeight: '700', color: Colors.white },
+  kmHint: { fontSize: FontSize.md, color: Colors.textSecondary },
   partialDayRow: {
     flexDirection: 'row', alignItems: 'center',
     paddingVertical: Spacing.sm, paddingHorizontal: Spacing.xs,

@@ -213,6 +213,23 @@ export default function ExpenseItemScreen({ navigation, route }) {
     setTool('edit');
   };
 
+  // Rider petrol (owner): saved straight away. On: a rider given this item
+  // has it taken off their km money (rider km account spec 8).
+  const [petrolSaving, setPetrolSaving] = useState(false);
+  const togglePetrol = guardSubmit(async (on) => {
+    if (!details) return;
+    setPetrolSaving(true);
+    try {
+      await api.setRiderPetrol(itemId, on);
+      setDetails((d) => (d ? { ...d, is_rider_petrol: on } : d));
+      showToast(on ? 'Rider petrol on · a rider given this has it taken off their km money' : 'Rider petrol off');
+    } catch (err) {
+      showAlert('Could not save', err?.message || 'Rider petrol was not changed. Check the internet, then try again.');
+    } finally {
+      setPetrolSaving(false);
+    }
+  });
+
   const handleSave = guardSubmit(async () => {
     if (!form || !details) return;
     const name = form.name.trim().replace(/\s+/g, ' ');
@@ -606,6 +623,26 @@ export default function ExpenseItemScreen({ navigation, route }) {
           </TouchableOpacity>
         </View>
       )}
+      {isOwner && !merged && details && !tool && (
+        <View style={[styles.card, styles.petrolCard]}>
+          <View style={styles.flex}>
+            <Text style={styles.switchLabel}>Rider petrol</Text>
+            <Text style={styles.hint}>
+              On: petrol given to a rider with this item is taken off their km money when their km is settled.
+            </Text>
+          </View>
+          {petrolSaving ? <ActivityIndicator color={Colors.primary} /> : (
+            <Switch
+              value={!!details.is_rider_petrol}
+              onValueChange={(v) => togglePetrol(v)}
+              disabled={petrolSaving}
+              trackColor={{ false: Colors.border, true: Colors.primaryLight }}
+              thumbColor={details.is_rider_petrol ? Colors.primary : Colors.surface}
+              accessibilityLabel="Rider petrol"
+            />
+          )}
+        </View>
+      )}
       {editForm}
       {mergeBox}
 
@@ -748,6 +785,7 @@ const styles = StyleSheet.create({
   wrapRow: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm },
   switchRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, marginTop: Spacing.md, minHeight: 48 },
   switchLabel: { fontSize: FontSize.md, fontWeight: '600', color: Colors.text },
+  petrolCard: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, minHeight: 56, marginBottom: Spacing.md },
   hint: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: 2 },
   hintCenter: { fontSize: FontSize.md, color: Colors.textSecondary, textAlign: 'center' },
   error: { fontSize: FontSize.md, color: Colors.danger, marginTop: Spacing.sm },

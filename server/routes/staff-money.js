@@ -13,6 +13,7 @@ const { lockOpenRegister, moveSessionCash } = require('../utils/register-guard')
 const { todayStr } = require('../utils/time');
 const { resolveItem, composeDescription } = require('../utils/expense-items');
 const { notifyByRole } = require('./notifications');
+const { riderMoneySummary } = require('../utils/rider-km-data');
 
 const router = express.Router();
 
@@ -847,9 +848,12 @@ router.get('/mine', authenticate, authorize(...PEOPLE_ROLES), async (req, res, n
       openOwes(db, { userId }),
       sm.totals(db, { userId }),
     ]);
+    // A rider also sees their km money (My km money); others get no km key.
+    const km = req.user.role === 'delivery_partner' ? await riderMoneySummary(db, userId) : undefined;
     res.json({
       success: true,
       data: {
+        ...(km ? { km } : {}),
         advances: advances.map((a) => ({
           id: Number(a.id), amount: money(a.amount), date: a.date, status: a.status, source: a.source || null,
           repaid_amount: money(a.repaid_amount),

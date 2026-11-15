@@ -8,6 +8,7 @@ const { computeShiftWork, findPartialDays, normalizeSegments, matchSegmentForTim
 const { hasOpenRegister, lockOpenRegister, REGISTER_CLOSED_MESSAGE } = require('../utils/register-guard');
 const { createNotification } = require('./notifications');
 const { payrollShopping, remainingPaise } = require('../utils/staff-money');
+const { payrollKm, lockCarryForPayroll, applyCarryAtPayroll, SETTLE_MSG: KM_MSG } = require('../utils/rider-km-data');
 
 router.use(authenticate);
 
@@ -508,10 +509,16 @@ router.post('/payroll/calculate', authorize('owner'), async (req, res) => {
     // Spec 5.6: open shopping money shown as its own line (never part of
     // net_amount). 0 for riders; the screen offers Take from pay only when > 0.
     const openShopping = await payrollShopping(await getAsyncDb(), { userId: Number(user_id) });
+    // Riders: the km carried balance (the only km figure payroll may apply)
+    // and whether anything still needs Settle km first. Others: no km key.
+    const km = user && user.role === 'delivery_partner'
+      ? await payrollKm(await getAsyncDb(), Number(user_id), user.name)
+      : null;
 
     res.json({
       success: true,
       data: {
+        ...(km ? { km } : {}),
         user,
         salary_config: salary,
         period: { start: period_start, end: period_end, days: daysInPeriod },
@@ -547,6 +554,9 @@ router.post('/payroll/calculate', authorize('owner'), async (req, res) => {
 const STALE_TAKE_MESSAGE = 'Shopping money changed since you calculated — tap Calculate again.';
 const BAD_TAKE_MESSAGE = "The shopping money amount didn't come through right — tap Calculate again.";
 const TAKE_NET_MESSAGE = "The pay amount doesn't take off the shopping money — tap Calculate again.";
+const KM_RIDER_ONLY_MESSAGE = 'The km balance is only for riders. Untick it and pay again.';
+const KM_MORE_THAN_PAY_MESSAGE = 'The km balance owed is more than this pay. Untick Apply to this pay, or Settle km first.';
+const kmError = (status, message, code) => Object.assign(new Error(message), { statusCode: status, code_name: code });
 
 // Take from pay (spec 5.6, 5.9). Inside disburse's transaction, with the
 // lines already locked and their total checked. The remainder becomes one
@@ -619,6 +629,24 @@ router.post('/payroll/disburse', authorize('owner'), async (req, res) => {
         return res.status(400).json({ success: false, message: BAD_TAKE_MESSAGE });
       }
       takePaise = Math.round(Number(str) * 100);
+    }
+
+    // Km balance (rider km account, spec 9 At payroll): apply_km_carry with
+    // the carried balance the screen showed (expected_km_carry_paise, + shop
+    // owes, - rider owes). net_amount is the pay before the carry; the server
+    // adds the carry under the rider lock and refuses if it moved.
+    const applyKm = req.body.apply_km_carry === true;
+    let expectedKmPaise = null;
+    if (applyKm) {
+      const payee = await (await getAsyncDb()).prepare('SELECT role FROM users WHERE id = ?').get(user_id);
+      if (!payee || payee.role !== 'delivery_partner') {
+        return res.status(400).json({ success: false, message: KM_RIDER_ONLY_MESSAGE });
+      }
+      const raw = req.body.expected_km_carry_paise;
+      if (raw === undefined || raw === null || typeof raw === 'boolean' || raw === '' || !Number.isInteger(Number(raw))) {
+        return res.status(409).json({ success: false, code: 'CHANGED', message: KM_MSG.changed });
+      }
+      expectedKmPaise = Number(raw);
     }
 
     // Overlap detection, not exact match: period_start/period_end are
@@ -707,12 +735,18 @@ router.post('/payroll/disburse', authorize('owner'), async (req, res) => {
     // other in a circle. A repeat of the same payout within 2 minutes (a
     // second tap) is refused.
     const disburseTx = () => withMoneyTx(async (db) => {
+      // The rider lock comes before every row lock (rider km lock order).
+      let kmCarryPaise = 0;
+      if (applyKm) kmCarryPaise = await lockCarryForPayroll(db, Number(user_id), expectedKmPaise);
+      // What is handed over: the pay plus (or minus) the km balance.
+      const paidNet = Math.round(Math.round(Number(net_amount) * 100) + kmCarryPaise) / 100;
+      if (paidNet < 0) throw kmError(400, KM_MORE_THAN_PAY_MESSAGE);
       await db.prepare('SELECT id FROM users WHERE id = ? FOR UPDATE').get(user_id);
       const repeat = await db.prepare(`
         SELECT 1 AS x FROM salary_payments
         WHERE user_id = ? AND period_start = ? AND period_end = ? AND net_amount = ? AND paid_at > NOW() - INTERVAL '2 minutes'
         LIMIT 1
-      `).get(user_id, period_start, period_end, net_amount);
+      `).get(user_id, period_start, period_end, paidNet);
       if (repeat) throw Object.assign(new Error('This salary was just paid. Refresh to see it.'), { statusCode: 409 });
       let takeLines = [];
       if (take !== undefined && take !== null) {
@@ -756,8 +790,11 @@ router.post('/payroll/disburse', authorize('owner'), async (req, res) => {
         );
         expenseId = expenseResult.lastInsertRowid;
 
-        if (method === 'cash' && openRegister && Number(net_amount) > 0) {
-          await db.prepare('UPDATE cash_registers SET expected_cash = expected_cash - ? WHERE id = ?').run(net_amount, openRegister.id);
+        // The drawer moves by all the cash handed over. Register close
+        // counts the salary from this expense and the km part from the
+        // salary settlement row (it carries the register).
+        if (method === 'cash' && openRegister && paidNet > 0) {
+          await db.prepare('UPDATE cash_registers SET expected_cash = expected_cash - ? WHERE id = ?').run(paidNet, openRegister.id);
         }
       }
 
@@ -772,11 +809,18 @@ router.post('/payroll/disburse', authorize('owner'), async (req, res) => {
         user_id, period_start, period_end,
         base_salary || 0, days_worked || 0, days_in_period || 0,
         hours_worked || 0, late_days || 0, absent_days || 0, leaves_taken || 0,
-        deductions || 0, advancesDeducted, bonus || 0, net_amount,
+        deductions || 0, advancesDeducted, bonus || 0, paidNet,
         method, payment_reference || '',
         req.user.id, notes || '', expenseId
       );
       const paymentId = paymentResult.lastInsertRowid;
+
+      if (kmCarryPaise !== 0) {
+        await applyCarryAtPayroll(db, {
+          userId: Number(user_id), locationId, actor: { id: req.user.id }, carryPaise: kmCarryPaise,
+          salaryPaymentId: Number(paymentId), registerId: openRegister ? Number(openRegister.id) : null,
+        });
+      }
 
       if (takePaise > 0) {
         await takeShoppingFromPay(db, {
@@ -813,7 +857,9 @@ router.post('/payroll/disburse', authorize('owner'), async (req, res) => {
 
     res.status(201).json({ success: true, data: payment });
   } catch (error) {
-    if (error.statusCode) return res.status(error.statusCode).json({ success: false, message: error.message });
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ success: false, message: error.message, ...(error.code_name ? { code: error.code_name } : {}) });
+    }
     console.error('Disburse salary error:', error);
     res.status(500).json({ success: false, message: 'Failed to disburse salary.' });
   }

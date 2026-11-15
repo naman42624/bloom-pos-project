@@ -164,13 +164,17 @@ async function computeRegisterClose(db, register, location_id, { until = null } 
 
   // Staff money (spec 4.6, 5.4, 5.5): shopping money handed out of this
   // session, change brought back into it, and Shop owes paid back from it.
-  const { shoppingOut, shoppingIn, owesPaid } = await staffMoneyDrawerLines(db, register.id);
+  // Rider km settlements: cash paid to a rider out of this session, and cash
+  // taken from a rider into it. Km money netted against COD, petrol or supply
+  // money never crossed the counter and is not here.
+  const { shoppingOut, shoppingIn, owesPaid, kmPaidOut, kmTakenIn } = await staffMoneyDrawerLines(db, register.id);
 
   // Whole paise, so float and handover sums never leave a stray fraction
-  const expectedCash = Math.round((Number(register.opening_balance) + Number(paymentTotals.cash_total) - Number(refundTotal) - Number(expenseTotal) - floatTotal + handoverTotal - shoppingOut + shoppingIn - owesPaid) * 100) / 100;
+  const expectedCash = Math.round((Number(register.opening_balance) + Number(paymentTotals.cash_total) - Number(refundTotal) - Number(expenseTotal) - floatTotal + handoverTotal - shoppingOut + shoppingIn - owesPaid - kmPaidOut + kmTakenIn) * 100) / 100;
   return {
     paymentTotals, refundTotal, expenseTotal, floatTotal, handoverTotal,
     shoppingOutTotal: shoppingOut, shoppingInTotal: shoppingIn, owesPaidTotal: owesPaid,
+    kmPaidTotal: kmPaidOut, kmTakenTotal: kmTakenIn,
     expectedCash,
   };
 }
@@ -179,7 +183,12 @@ async function computeRegisterClose(db, register, location_id, { until = null } 
 // (whole paise). Only cash rows tied to the session count: a UPI hand-out,
 // UPI change or UPI pay-back has no drawer effect. Settle bills and
 // write-offs are expenses with payment_method shopping_money and never
-// reach the drawer at all.
+// reach the drawer at all. Rider km settlements count only the cash moved
+// (moved_method cash) in this session: Pay out, Take in. Their km_account
+// expense row is never cash, so the expense sum above skips it. A carry
+// applied at a cash payroll (action salary) is paid out with the salary when
+// the shop owed (carried_in > 0) and kept back from it when the rider owed;
+// the salary expense row holds only the salary.
 async function staffMoneyDrawerLines(db, registerId) {
   const row = await db.prepare(`
     SELECT
@@ -188,10 +197,19 @@ async function staffMoneyDrawerLines(db, registerId) {
       COALESCE((SELECT SUM(returned_amount) FROM staff_money_settles
                 WHERE register_id = ? AND returned_method = 'cash'), 0) AS shopping_in,
       COALESCE((SELECT SUM(amount) FROM shop_owes_payments
-                WHERE register_id = ? AND method = 'cash'), 0) AS owes_paid
-  `).get(registerId, registerId, registerId);
+                WHERE register_id = ? AND method = 'cash'), 0) AS owes_paid,
+      COALESCE((SELECT SUM(moved_amount) FROM rider_km_settlements
+                WHERE register_id = ? AND moved_method = 'cash'
+                  AND (action = 'pay' OR (action = 'salary' AND carried_in > 0))), 0) AS km_paid,
+      COALESCE((SELECT SUM(moved_amount) FROM rider_km_settlements
+                WHERE register_id = ? AND moved_method = 'cash'
+                  AND (action = 'take' OR (action = 'salary' AND carried_in < 0))), 0) AS km_taken
+  `).get(registerId, registerId, registerId, registerId, registerId);
   const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
-  return { shoppingOut: r2(row && row.shopping_out), shoppingIn: r2(row && row.shopping_in), owesPaid: r2(row && row.owes_paid) };
+  return {
+    shoppingOut: r2(row && row.shopping_out), shoppingIn: r2(row && row.shopping_in), owesPaid: r2(row && row.owes_paid),
+    kmPaidOut: r2(row && row.km_paid), kmTakenIn: r2(row && row.km_taken),
+  };
 }
 
 

@@ -22,7 +22,7 @@ const FILTERS = [
   { key: 'open', label: 'Still out' },
   { key: 'closed', label: 'Closed' },
 ];
-const METHOD = { cash: 'Cash', upi: 'UPI' };
+const METHOD = { cash: 'Cash', upi: 'UPI', km: 'Km settlement' };
 
 export default function ShoppingMoneyHistoryScreen() {
   const navigation = useNavigation();

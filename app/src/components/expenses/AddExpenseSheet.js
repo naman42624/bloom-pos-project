@@ -15,7 +15,7 @@
  *   Kind               Food (from the item)     ›
  *   Date               Today                    ›   owner / manager only
  *   Note / bill photo  —                        ›
- *   ↗ Salary advance      ↗ Shopping money        (MoneyToStaffForm, in place)
+ *   ↗ Salary advance      ↗ Shopping money      ↗ Km reading   (in place)
  *   [              Save ₹50              ]
  *   Money coming back? Record a return
  *
@@ -55,6 +55,7 @@ import SheetRow from './SheetRow';
 import OptionList from './OptionList';
 import MethodSwitch from './MethodSwitch';
 import MoneyToStaffForm from './MoneyToStaffForm';
+import KmReadingForm from './KmReadingForm';
 import { moneyLinksFor, heldBy, isBackHint } from '../../utils/staffMoney';
 import { Colors, FontSize, Spacing, BorderRadius } from '../../constants/theme';
 
@@ -84,6 +85,7 @@ const IS_BACK_SCREEN = 'ShoppingMoneyBack';
 const MONEY_LINKS = {
   advance: { label: 'Salary advance', sub: 'Salary money given now, taken from pay later' },
   shopping: { label: 'Shopping money', sub: 'Cash to buy things; the bills and change come back' },
+  km: { label: 'Km reading', sub: 'A rider\'s bike meter reading, for their km pay' },
 };
 
 const PHOTO_FAILED_MESSAGE = "Photo didn't upload — saved without it. Tap the expense to add it again.";
@@ -599,6 +601,19 @@ function SheetBody({
     setView(kind);
   };
 
+  if (view === 'km') {
+    return (
+      <KmReadingForm
+        key="km"
+        locationId={locationId}
+        onBack={() => setView('expense')}
+        onClose={onClose}
+        onDone={(result) => onSaved && onSaved(result)}
+        closeRequest={closeRequest}
+      />
+    );
+  }
+
   if (view !== 'expense') {
     return (
       <MoneyToStaffForm
@@ -883,7 +898,7 @@ function SheetBody({
         {/* Salary advance / Shopping money: given to staff, not an expense here */}
         {canGive && !isReturn && (
           <View style={styles.moneyLinks}>
-            {['advance', 'shopping'].map((k) => (
+            {['advance', 'shopping', 'km'].map((k) => (
               <TouchableOpacity
                 key={k}
                 style={styles.moneyLink}

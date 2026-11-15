@@ -1453,6 +1453,64 @@ class ApiService {
     return this.request('/staff-money/shopping', { method: 'POST', body: JSON.stringify(data) });
   }
 
+  // ─── Rider km account ───────────────────────────────────
+  // A 409 carries err.code: METER_DOWN, CONFIRM_BIG, SETTLED_RANGE (err.raw_message is the server text).
+  getKmRiders(locationId) {
+    return this.request(`/rider-km/riders${this._expenseQuery({ location_id: locationId })}`);
+  }
+
+  getRiderKm(userId) {
+    return this.request(`/rider-km/${userId}`);
+  }
+
+  getMyRiderKm() {
+    return this.request('/rider-km/mine');
+  }
+
+  addKmReading(body) {
+    return this.request('/rider-km/readings', { method: 'POST', body: JSON.stringify(body) });
+  }
+
+  changeKmReading(id, body) {
+    return this.request(`/rider-km/readings/${id}`, { method: 'PUT', body: JSON.stringify(body) });
+  }
+
+  removeKmReading(id) {
+    return this.request(`/rider-km/readings/${id}`, { method: 'DELETE' });
+  }
+
+  answerKmGap(body) {
+    return this.request('/rider-km/gaps', { method: 'POST', body: JSON.stringify(body) });
+  }
+
+  addKmCorrection(body) {
+    return this.request('/rider-km/corrections', { method: 'POST', body: JSON.stringify(body) });
+  }
+
+  getKmRate() {
+    return this.request('/rider-km/rate');
+  }
+
+  setKmRate(body) {
+    return this.request('/rider-km/rate', { method: 'PUT', body: JSON.stringify(body) });
+  }
+
+  setKmUsualHome(userId, km) {
+    return this.request(`/rider-km/${userId}/usual-home`, { method: 'PUT', body: JSON.stringify({ km }) });
+  }
+
+  getKmSettlements(params = {}) {
+    return this.request(`/rider-km/settlements${this._expenseQuery(params)}`);
+  }
+
+  settleKm(userId, body) {
+    return this.request(`/rider-km/${userId}/settle`, { method: 'POST', body: JSON.stringify(body) });
+  }
+
+  setRiderPetrol(itemId, on) {
+    return this.request(`/expenses/items/${itemId}/rider-petrol`, { method: 'PUT', body: JSON.stringify({ on: !!on }) });
+  }
+
   settleShoppingMoney(id, data) {
     return this.request(`/staff-money/${id}/settle`, { method: 'POST', body: JSON.stringify(data) });
   }
