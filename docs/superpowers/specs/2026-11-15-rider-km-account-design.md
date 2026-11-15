@@ -106,7 +106,8 @@ A third link in the Add expense sheet, next to Salary advance and Shopping money
 A **petrol advance** is an expense whose item is marked **Rider petrol** and that is tied to a rider by the linked person, not a typed name. It counts in any of these ways:
 - given to the rider (`given_to_user_id`), paid in shop cash or UPI;
 - bought with the rider's shopping money (entered through "L is back — what was bought?");
-- paid from the rider's **own pocket** (`own_pocket`, `paid_by_user_id` = rider). The user's rule is that a rider's own petrol money is covered by the km pay, not paid back separately. So the settlement also closes that expense's open **Shop owes** line, and Pay back stops offering it. If that line was already paid back, the expense still counts as petrol taken, because the rider already got the money.
+
+**Own-pocket petrol is not part of this** (user, 2026-11-15). Petrol a rider buys with their own money is never logged in the app; the km pay is what covers it. To keep it that way, the Add expense sheet refuses a Rider petrol item paid by **Own pocket** of a rider: "A rider's own petrol is covered by their km pay — no need to add it."
 
 Petrol entered with only a typed name (no linked rider) is not matched. Picking a Rider petrol item in the Add expense sheet with a typed-only name shows "Pick the rider from the list so it counts against their km." The item flag is a new owner switch on the item page. It is turned on by default for any existing item whose name is "Petrol" (case- and space-insensitive), and when the owner first opens the Km rate setting they are shown which items count.
 
@@ -223,7 +224,7 @@ New payment method `km_account`, excluded from every drawer query, like `own_poc
 Calls I (Claude) made that the user has not explicitly chosen (several after a reviewer check):
 - Account start = start of the shop day of the first reading.
 - Only cash COD is netted.
-- Own-pocket and shopping-money petrol count as petrol taken.
+- Shopping-money petrol counts as petrol taken. Own-pocket petrol is not logged at all; a rider's own-pocket Rider petrol entry is refused.
 - No `delivery_settlements` row for km-netted COD; `settle-now` stays available.
 - Payroll takes only the carried balance, with "Settle km first" for anything unsettled.
 - The 30 km / twice-the-usual gap threshold, the 300 km confirm, and median-of-last-10 for "usual".

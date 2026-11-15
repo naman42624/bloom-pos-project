@@ -7,7 +7,7 @@
 **Architecture:**
 - A pure chain module (`server/utils/rider-km.js`) turns a rider's readings, gap answers and rates into work/home/gap stretches and money. It is never stored as running totals.
 - A new route file (`server/routes/rider-km.js`, mounted at `/api/rider-km`) handles readings, gaps, corrections, rate, preview/commit settlement, and the rider's own view.
-- Settlement is one money transaction that marks petrol, COD, shopping money and own-pocket lines as covered. It writes one petrol expense row (`km_account`) and moves the drawer only by cash paid or taken.
+- Settlement is one money transaction that marks petrol, COD and shopping money lines as covered. It writes one petrol expense row (`km_account`) and moves the drawer only by cash paid or taken.
 - The app adds a Km reading form inside the Add expense sheet, a settle screen, rider lines on the Shopping money out card, the rider's My money block, and owner settings.
 
 **Tech Stack:** Express + `pg` via `database-async.js` (`getDb`, `withMoneyTx`), additive patches in `server/config/database.js`; Expo/React Native (React Navigation stacks in `app/src/navigation/MainNavigator.js`).
@@ -18,13 +18,14 @@
 
 - Schema is additive only (new tables/columns via `database.js` patches; `ensureColumn`). Existing expense, shopping money, owes and COD rows are never rewritten except to set the new link columns and the statuses the existing flows already use.
 - No apostrophes inside `--` SQL comments (`bindParams` footgun). Use the async layer only.
-- Every money write runs in `withMoneyTx`. Lock order: rider advisory lock (`pg_advisory_xact_lock(7304, riderId)`) first, then the open register row (`lockOpenRegister`), then delivery / `staff_money_out` / `shop_owes` rows `FOR UPDATE`. Never take the rider lock after a register lock.
+- Every money write runs in `withMoneyTx`. Lock order: rider advisory lock (`pg_advisory_xact_lock(7304, riderId)`) first, then the open register row (`lockOpenRegister`), then delivery / `staff_money_out` rows `FOR UPDATE`. Never take the rider lock after a register lock.
 - All amounts are compared and summed in whole paise (`toPaise`).
 - App dialogs: `showAlert` / `showConfirm` only, never `Alert.alert`. Every write button is wrapped with `useSubmitGuard`.
 - Copy is plain and says what to do next. Use these exact strings:
   - `"The meter can't go down. Check the number, or tap Type km instead."`
   - `"Is {meter} right? That is {km} km of work."`
   - `"Pick the rider from the list so it counts against their km."`
+  - `"A rider's own petrol is covered by their km pay — no need to add it."`
   - `"Answer the gaps first, then settle."`
   - `"Something changed — check the figures again."`
   - `"Open the register to pay cash — or pick UPI."`
@@ -60,7 +61,7 @@
 |---|---|
 | `server/config/database.js` (modify) | New tables and columns (Task 1). |
 | `server/utils/rider-km.js` (create) | Pure chain + money maths. No DB. |
-| `server/utils/rider-km-data.js` (create) | DB readers: readings, answers, rates, account start, the open items for a settlement (petrol, COD, shopping money, own-pocket, carry). |
+| `server/utils/rider-km-data.js` (create) | DB readers: readings, answers, rates, account start, the open items for a settlement (petrol, COD, shopping money, carry). |
 | `server/routes/rider-km.js` (create) | All `/api/rider-km` routes. |
 | `server/server.js` (modify) | Mount the route. |
 | `server/utils/register-close.js` (modify) | Km cash in/out per register session. |
@@ -100,8 +101,7 @@
   - `users.km_usual_home_ride DECIMAL(10,1)`;
   - `deliveries.km_settlement_id`;
   - `expenses.km_settlement_id`;
-  - `staff_money_out.km_settlement_id`;
-  - `shop_owes.km_settlement_id`.
+  - `staff_money_out.km_settlement_id`.
 - Produces, indexes: `rider_km_readings(user_id, read_at)`, `rider_km_settlements(user_id, id)`, `rider_km_settlements(register_id)`.
 - Produces `server/utils/rider-km.js`:
   - `buildChain(readings, answers, { usualHomeKm }) -> { stretches, openDay, usualHomeKm }`. `readings` are sorted by `read_at`, `id`, with removed ones excluded. Each stretch is `{ kind: 'work'|'home'|'gap'|'typed', fromId, toId, km, endAt, answer|null, reason: 'missed_leave'|'missed_arrive'|'long_home'|null }`. `openDay` is true when the last reading is `arrive`.
@@ -180,17 +180,16 @@
 ### Task 3: Settlement (preview and commit), drawer and COD
 
 **Files:**
-- Modify: `server/routes/rider-km.js`, `server/utils/rider-km-data.js`, `server/utils/register-close.js`, `server/scripts/verify-rider-km.js`
+- Modify: `server/routes/rider-km.js`, `server/utils/rider-km-data.js`, `server/utils/register-close.js`, `server/routes/expenses.js`, `server/routes/deliveries.js`, `server/scripts/verify-rider-km.js`
 
 **Interfaces:**
 - Consumes: Task 2 loaders; `lockOpenRegister`, `moveSessionCash` (`server/utils/register-guard.js`); `remainingPaise` (`server/utils/staff-money.js`).
-- Produces `collectOpenItems(db, userId, cutoffAt, { forUpdate }) -> { petrolRows, petrolBookPaise, petrolTakenPaise, codRows, shoppingRows, supplyHeldPaise, ownPocketOwes, carriedInPaise }`. The item rules:
+- Produces `collectOpenItems(db, userId, cutoffAt, { forUpdate }) -> { petrolRows, petrolBookPaise, petrolTakenPaise, codRows, shoppingRows, supplyHeldPaise, carriedInPaise }`. The item rules:
   - **Petrol** (spec §8): a non-removed expense with an `is_rider_petrol` item, `km_settlement_id IS NULL`, and `created_at` from the account start to `cutoffAt`. It counts if any of these hold:
     - `given_to_user_id = rider` and method cash/upi;
-    - method `shopping_money` and its `staff_money_out.user_id = rider`;
-    - method `own_pocket` and `paid_by_user_id = rider`.
+    - method `shopping_money` and its `staff_money_out.user_id = rider`.
   - **`petrolBookPaise`**: the sum of all those rows (returns negative).
-  - **`petrolTakenPaise`**: the shop money the rider received for petrol. That is the cash/upi rows plus the shopping money rows plus the **already paid-back part** of each own-pocket row's `shop_owes` line. **Ruling:** own-pocket petrol that was not paid back is *not* subtracted, because the rider spent their own money and K covers it. Its open owes remainder is closed at commit. This fixes the spec's "own pocket counts as petrol taken", which would short the rider. The spec gets a one-line fix in this task.
+  - **`petrolTakenPaise`** = `petrolBookPaise` (every counted row is shop money the rider received for petrol).
   - **COD**: deliveries with `delivery_partner_id = rider`, `cod_status IN ('collected','partial')`, `km_settlement_id IS NULL`, and delivered at or after the account start. The cash part is from `delivery_collections` `method='cash'`; the UPI part is listed separately for the **Paid to own UPI** switch.
   - **Shopping money**: `staff_money_out.user_id = rider`, `status='open'`, `remainingPaise > 0` (any date).
   - **Carry**: the last settlement's `carry_out`.
@@ -217,7 +216,6 @@
     - the petrol rows get `km_settlement_id`;
     - the COD rows get `km_settlement_id` and `cod_status='settled'`, with **no `delivery_settlements` row**;
     - each covered shopping money line gets a `staff_money_settles` row (`returned_amount` = remaining, `returned_method='km'`, `register_id` NULL) and `status='settled'`, `closed_at`, `km_settlement_id`;
-    - each own-pocket owes line gets a `shop_owes_payments` row (`method='km'`, `register_id` NULL) for its remainder and `status='paid'`, `km_settlement_id`;
     - one expense row: the item is the first `is_rider_petrol` item (created as "Petrol", kind transport, if none exists), category transport, `payment_method='km_account'`, `given_to_user_id = rider`, `km_settlement_id`, location, today. Its amount is `|km_paise − petrolBookPaise|`, and it is `is_return=1` when km < book. It is skipped when equal.
     - an audit row `km_settle`.
   - `km_account` must be accepted by the expenses validators wherever they list methods. It is excluded from every drawer query (it is never `'cash'`, so `register-close.js`'s expense sum already skips it — assert it).
@@ -229,7 +227,7 @@
   - `carry`: commit carry → `carry_out` −464; the COD is now `cod_status='settled'`; the Settlements pending list (`GET /api/deliveries/settlements/pending` or the route the Settlements screen uses) no longer has it; the shopping line is settled; register expected cash unchanged.
   - `petrol book equals K`: the sum of the settlement's petrol rows plus its expense row = 336 (signed).
   - `K below petrol`: 10 km (30) with 200 petrol → the expense row is a 170 money-back.
-  - `own pocket petrol not paid back is not subtracted`: 100 own-pocket petrol, 50 km → net 150, and the owes line is closed `paid` with a `km` payment. If the owes line was already paid back, net 50.
+  - `own-pocket Rider petrol for a rider is refused`: `POST /api/expenses` with a Rider petrol item, `payment_method='own_pocket'`, `paid_by_user_id` = the rider → 400 with the copy.
   - `pay cash moves the drawer once`: net +200, pay cash 200 → `expected_cash` −200, and the register close preview matches expected cash. Pay UPI → no drawer change.
   - `take cash with the register closed refused, UPI allowed` (Review Focus 3).
   - `carry chains across three settlements` (−464 → next shows carried −464 → pay or take leaves 0).
@@ -246,7 +244,7 @@
   - `collectOpenItems`, the settle route and the register-close lines;
   - the `km_account` method;
   - the settle-now exclusion;
-  - the spec's §8 own-pocket sentence (one-line fix: "counts toward the expense book; only its paid-back part is subtracted").
+  - the own-pocket refusal in `server/routes/expenses.js` (create and change), with the exact copy.
 - [ ] **Step 4: Run** `verify-rider-km.js`, `verify-staff-money.js`, `verify-register-expenses.js`, `verify-cash-safety.js`, `verify-order-flows.js` and `verify-expense-book.js`. All must pass.
 - [ ] **Step 5: Commit** `feat(rider-km): settle km with petrol, supply money, COD and carry`.
 
