@@ -6,7 +6,8 @@
  * Three chips: the people last given money on the suggested items, then the
  * shop's people (GET /expenses/people: staff and riders linked to the shop,
  * plus the owner). Tap the chosen chip again to clear it (nobody). "More ›"
- * opens the full list with search and "Someone else (type a name)".
+ * opens the full list with search: the shop's people, then names typed
+ * before at this shop, then "Someone else (type a name)".
  * Optional: nothing here blocks Save.
  *
  * Props: locationId, value, onChange(value), items (suggestion items)
@@ -18,7 +19,7 @@ import React, { useEffect, useState } from 'react';
 import { View, Text, TextInput, TouchableOpacity, StyleSheet } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import api from '../../services/api';
-import { recentPeopleChips } from '../../utils/expenseBook';
+import { recentPeopleChips, givenToFromTyped } from '../../utils/expenseBook';
 import OptionList from './OptionList';
 import { Colors, FontSize, Spacing, BorderRadius } from '../../constants/theme';
 
@@ -33,6 +34,7 @@ const samePerson = (a, b) => !!a && !!b && (a.user_id
 
 export default function RecentPeople({ locationId, value, onChange, items = [] }) {
   const [people, setPeople] = useState([]);
+  const [typedNames, setTypedNames] = useState([]); // names typed before at this shop
   const [state, setState] = useState('idle'); // idle | loading | ready | error
   const [showMore, setShowMore] = useState(false);
   const [typing, setTyping] = useState(false);
@@ -42,7 +44,7 @@ export default function RecentPeople({ locationId, value, onChange, items = [] }
     if (!locationId) return;
     setState('loading');
     api.getExpensePeople(locationId)
-      .then((res) => { setPeople(res.data || []); setState('ready'); })
+      .then((res) => { setPeople(res.data || []); setTypedNames(res.typed_names || []); setState('ready'); })
       .catch(() => setState('error'));
   };
   useEffect(() => { load(); }, [locationId]);
@@ -59,16 +61,19 @@ export default function RecentPeople({ locationId, value, onChange, items = [] }
     setTyping(true);
   };
   const applyTypedName = () => {
-    const n = typedName.trim().replace(/\s+/g, ' ');
-    onChange(n ? { user_id: null, name: n, display_name: n } : null);
+    // Same name in any case: the staff member, or the name typed before.
+    onChange(givenToFromTyped(typedName, people, typedNames));
     setTyping(false);
   };
 
   const options = people.map((p) => ({
     key: `u${p.id}`, label: p.name, selected: !!value && Number(value.user_id) === Number(p.id), person: p,
+  })).concat(typedNames.map((t) => {
+    const named = { user_id: null, name: t.name, display_name: t.name };
+    return { key: `n${t.name.toLowerCase()}`, label: t.name, selected: samePerson(value, named), named };
   }));
   const footer = [
-    { key: 'type', label: 'Someone else (type a name)', selected: !!value && !value.user_id },
+    { key: 'type', label: 'Someone else (type a name)', selected: !!value && !value.user_id && !options.some((o) => o.selected) },
     { key: 'none', label: 'Nobody / not sure', selected: !value },
   ];
   const pick = (o) => {
@@ -76,6 +81,7 @@ export default function RecentPeople({ locationId, value, onChange, items = [] }
     if (o.key === 'type') { startTyping(); return; }
     setTyping(false);
     if (o.key === 'none') { onChange(null); return; }
+    if (o.named) { onChange(o.named); return; }
     onChange({ user_id: o.person.id, name: o.person.name, display_name: o.person.name });
   };
 

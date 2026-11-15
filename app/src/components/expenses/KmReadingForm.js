@@ -61,6 +61,7 @@ export default function KmReadingForm({ locationId, onBack, onClose, onDone, clo
   const [errors, setErrors] = useState({});
   const [saving, setSaving] = useState(false);
   const [lastFailed, setLastFailed] = useState(false);
+  const [riderTouched, setRiderTouched] = useState(false);
   const riderReq = useRef(0);
   const meterRef = useRef(null);
   const scrollRef = useRef(null);
@@ -77,6 +78,9 @@ export default function KmReadingForm({ locationId, onBack, onClose, onDone, clo
       if (lastId) list = [...list.filter((r) => Number(r.id) === lastId), ...list.filter((r) => Number(r.id) !== lastId)];
       setRiders(list);
       setRidersState('ready');
+      // Pre-pick the rider used last on this phone, or the only rider.
+      const first = list.length === 1 ? list[0] : list.find((r) => Number(r.id) === lastId);
+      if (first) pickRider(first, { auto: true });
     } catch {
       setRidersState('error');
     }
@@ -85,13 +89,14 @@ export default function KmReadingForm({ locationId, onBack, onClose, onDone, clo
     if (presetRider) {
       setRiders([presetRider]);
       setRidersState('ready');
-      pickRider(presetRider);
+      pickRider(presetRider, { auto: true });
       return;
     }
     if (locationId) loadRiders();
   }, [locationId, presetRider && presetRider.id]);
 
-  const pickRider = (r) => {
+  const pickRider = (r, { auto = false } = {}) => {
+    if (!auto) setRiderTouched(true);
     setRider({ id: Number(r.id), name: r.name });
     setErrors((e) => ({ ...e, rider: undefined }));
     setLast(null);
@@ -108,7 +113,8 @@ export default function KmReadingForm({ locationId, onBack, onClose, onDone, clo
     if (!startOn) setTimeout(() => (typedMode ? null : meterRef.current?.focus()), 50);
   };
 
-  const dirty = (!!rider && !presetRider) || meter !== '' || typedKm !== '';
+  // A pre-picked rider is not something the person typed.
+  const dirty = (!!rider && !presetRider && riderTouched) || meter !== '' || typedKm !== '';
   const leave = (then) => {
     if (saving) return;
     if (!dirty) { then(); return; }

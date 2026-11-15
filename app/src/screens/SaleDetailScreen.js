@@ -1635,6 +1635,15 @@ export default function SaleDetailScreen({ route, navigation }) {
         <Ionicons name="receipt" size={18} color={Colors.white} />
         <Text style={styles.actionBtnText}>Share Receipt / PDF</Text>
       </TouchableOpacity>
+      <TouchableOpacity
+        style={[styles.actionBtn, { backgroundColor: Colors.white, borderWidth: 1, borderColor: Colors.primary, alignSelf: 'stretch', marginHorizontal: 0, marginTop: Spacing.sm }]}
+        onPress={() => printSaleBill(saleId, { a4: true })}
+        accessibilityRole="button"
+        accessibilityLabel="A4 invoice, print or save as PDF"
+      >
+        <Ionicons name="document-text-outline" size={18} color={Colors.primary} />
+        <Text style={[styles.actionBtnText, { color: Colors.primary }]}>A4 Invoice (print / save PDF)</Text>
+      </TouchableOpacity>
 
       {/* Order status transitions */}
       {sale.status === 'pending' && (
