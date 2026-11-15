@@ -4,7 +4,7 @@ import { Platform } from 'react-native';
 import api from '../services/api';
 import { showAlert } from './alert';
 import { formatDate, formatCardDateTime } from './datetime';
-import { buildInvoiceHtml, buildCreditNoteHtml } from './invoiceHtml';
+import { buildInvoiceHtml, buildInvoiceA4Html, buildCreditNoteHtml } from './invoiceHtml';
 
 export const printHtmlOnWeb = (markup, title) => {
   const frame = document.createElement('iframe');
@@ -293,8 +293,8 @@ export const canPrintOrderSlip = (order) => !!order && order.order_type !== 'wal
 
 // ─── Bill / tax invoice (80 mm roll) ─────────────────────────
 // One printer for every place that prints a customer's bill (Sale Details,
-// quick sale "Print bill"). 227 pt = 80 mm.
-export const printSaleBill = async (saleId) => {
+// quick sale "Print bill"). 227 pt = 80 mm; { a4: true } prints the A4 page.
+export const printSaleBill = async (saleId, { a4 = false } = {}) => {
   let view = null;
   try {
     view = (await api.getSaleInvoice(saleId))?.data || null;
@@ -305,7 +305,11 @@ export const printSaleBill = async (saleId) => {
     showAlert('Could not print', "Couldn't load this bill. Check the internet connection and try again.");
     return;
   }
-  await printHtml(buildInvoiceHtml(view), `${view.kind === 'tax_invoice' ? 'Tax Invoice' : 'Bill'} ${view.invoice_number || ''}`.trim(), { width: 227 });
+  const title = `${view.kind === 'tax_invoice' ? 'Tax Invoice' : 'Bill'} ${view.invoice_number || ''}`.trim();
+  // A4: the full-page bill. On web the print dialog's "Save as PDF" is the
+  // download; on a phone it becomes a PDF to print or share. 595 pt = A4.
+  if (a4) { await printHtml(buildInvoiceA4Html(view), title, { width: 595 }); return; }
+  await printHtml(buildInvoiceHtml(view), title, { width: 227 });
 };
 
 // Credit note for an order's refund (or a refund receipt for a plain bill)

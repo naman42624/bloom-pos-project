@@ -1,5 +1,7 @@
 // 80 mm thermal roll bill (2026-11-05, layout chosen by the owner: two lines
-// per item). Built from GET /api/sales/:id/invoice, which carries the figures
+// per item). Text is 13 px and bold (2026-11-15, owner asked for bigger,
+// darker print); the GST rate table stays 11 px so its five columns fit.
+// buildInvoiceA4Html below is the same bill on a full A4 page. Built from GET /api/sales/:id/invoice, which carries the figures
 // exactly as saved, so a reprint always matches the sale. Pure: no React.
 
 const esc = (value) => String(value ?? '')
@@ -100,23 +102,133 @@ export function buildInvoiceHtml(v) {
   return `<html><head><meta charset="utf-8"><title>${esc(v.invoice_number || 'Bill')}</title><style>
     @page { size: 80mm auto; margin: 0; }
     * { box-sizing: border-box; }
-    body { width: 72mm; margin: 0 auto; padding: 3mm 0; font-family: 'Courier New', monospace; font-size: 11px; line-height: 1.35; color: #000; }
-    .shop { text-align: center; font-size: 15px; font-weight: bold; }
-    .c { text-align: center; } .b { font-weight: bold; } .small { font-size: 10px; }
-    .title { text-align: center; font-weight: bold; font-size: 13px; margin: 2mm 0 1mm; }
+    body { width: 72mm; margin: 0 auto; padding: 3mm 0; font-family: 'Courier New', monospace; font-size: 13px; font-weight: bold; line-height: 1.35; color: #000; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .shop { text-align: center; font-size: 18px; font-weight: bold; }
+    .c { text-align: center; } .b { font-weight: bold; } .small { font-size: 11.5px; }
+    .title { text-align: center; font-weight: bold; font-size: 15px; margin: 2mm 0 1mm; }
     .row { display: flex; justify-content: space-between; gap: 2mm; }
-    .row.big { font-size: 14px; font-weight: bold; }
+    .row.big { font-size: 17px; font-weight: bold; }
     .item { display: flex; gap: 1mm; margin-top: 1mm; }
-    .item .nm { flex: 1; overflow-wrap: anywhere; } .item .q { width: 7mm; text-align: right; }
-    .item .r { width: 15mm; text-align: right; } .item .a { width: 17mm; text-align: right; }
+    .item .nm { flex: 1; overflow-wrap: anywhere; } .item .q { width: 8mm; text-align: right; }
+    .item .r { width: 16mm; text-align: right; } .item .a { width: 19mm; text-align: right; }
     .item.hd { font-weight: bold; margin-top: 0; }
-    .sub { padding-left: 2mm; font-size: 10px; }
-    .gt { display: flex; } .gt span { flex: 1; text-align: right; } .gt span:first-child { flex: 0.6; text-align: left; }
+    .sub { padding-left: 2mm; font-size: 11.5px; }
+    .gt { display: flex; font-size: 11px; } .gt span { flex: 1; text-align: right; } .gt span:first-child { flex: 0.6; text-align: left; }
     .gt.hd { font-weight: bold; } .gt.b { font-weight: bold; }
-    .dash { border-top: 1px dashed #000; margin: 1.5mm 0; } .dbl { border-top: 2px solid #000; margin: 1.5mm 0; }
+    .dash { border-top: 2px dashed #000; margin: 1.5mm 0; } .dbl { border-top: 2px solid #000; margin: 1.5mm 0; }
     .gap { margin-top: 2mm; }
   </style></head><body>
     ${head}<div class="dash"></div>${meta}<div class="dash"></div>${items}<div class="dash"></div>${totals}${gstTable}${tail}
+  </body></html>`;
+}
+
+// Full-page A4 bill: the same figures as the roll bill, laid out as a table
+// for printing on paper or saving as a PDF to send to a customer.
+export function buildInvoiceA4Html(v) {
+  const isTax = v.kind === 'tax_invoice';
+  const s = v.seller || {};
+  const t = v.totals || {};
+  const ids = [
+    s.gstin ? `GSTIN ${esc(s.gstin)}` : '',
+    s.pan ? `PAN ${esc(s.pan)}` : '',
+    s.fssai ? `FSSAI ${esc(s.fssai)}` : '',
+  ].filter(Boolean).join('&nbsp;&nbsp;·&nbsp;&nbsp;');
+  const seller = [
+    `<div class="shop">${esc(s.name)}</div>`,
+    s.legal_name ? `<div>${esc(s.legal_name)}</div>` : '',
+    s.address ? `<div>${esc(s.address)}</div>` : '',
+    s.phone ? `<div>Phone ${esc(s.phone)}</div>` : '',
+    ids ? `<div class="b">${ids}</div>` : '',
+  ].join('');
+  const kv = (k, val) => (val ? `<tr><td class="k">${k}</td><td>${val}</td></tr>` : '');
+  const meta = `<table class="meta">${[
+    kv('Bill No', esc(v.invoice_number)),
+    kv('Date', formatWhen(v.date)),
+    kv('Order', esc(v.order_number)),
+    kv('Place of supply', esc(v.place_of_supply)),
+  ].join('')}</table>`;
+  const party = (label, lines) => (lines.filter(Boolean).length
+    ? `<div class="party"><div class="lbl">${label}</div>${lines.filter(Boolean).map((x) => `<div>${x}</div>`).join('')}</div>` : '');
+  const parties = [
+    v.bill_to ? party('Bill to', [
+      `<span class="b">${esc(v.bill_to.name)}</span>`,
+      v.bill_to.phone ? esc(v.bill_to.phone) : '',
+      v.buyer_gstin ? `GSTIN ${esc(v.buyer_gstin)}${v.buyer_legal_name ? ` · ${esc(v.buyer_legal_name)}` : ''}` : '',
+    ]) : '',
+    v.ship_to ? party('Ship to', [
+      `<span class="b">${esc(v.ship_to.name)}</span>`,
+      v.ship_to.phone ? esc(v.ship_to.phone) : '',
+      v.ship_to.address ? esc(v.ship_to.address) : '',
+    ]) : '',
+  ].join('');
+
+  const head = isTax
+    ? '<tr><th class="n">#</th><th>Item</th><th>HSN</th><th class="r">Qty</th><th class="r">Rate</th><th class="r">Disc</th><th class="r">GST</th><th class="r">Taxable</th><th class="r">CGST</th><th class="r">SGST</th><th class="r">Amount</th></tr>'
+    : '<tr><th class="n">#</th><th>Item</th><th class="r">Qty</th><th class="r">Rate</th><th class="r">Amount</th></tr>';
+  const lines = [...(v.lines || []), ...(v.delivery && isTax ? [v.delivery] : [])];
+  const body = lines.map((l, i) => (isTax
+    ? `<tr class="ln"><td class="n">${i + 1}</td><td>${esc(l.name)}</td><td>${esc(l.hsn || '')}</td><td class="r">${esc(l.qty)}</td><td class="r">${money(l.rate)}</td><td class="r">${l.discount > 0 ? money(l.discount) : ''}</td><td class="r">${esc(l.gst_rate)}%</td><td class="r">${money(l.taxable)}</td><td class="r">${money(l.cgst)}</td><td class="r">${money(l.sgst)}</td><td class="r">${money(l.amount)}</td></tr>`
+    : `<tr class="ln"><td class="n">${i + 1}</td><td>${esc(l.name)}</td><td class="r">${esc(l.qty)}</td><td class="r">${money(l.rate)}</td><td class="r">${money(l.amount)}</td></tr>`)).join('');
+
+  const tr = (k, val, cls = '') => `<tr class="${cls}"><td>${k}</td><td class="r">${val}</td></tr>`;
+  const totals = `<table class="tot">${[
+    tr('Items', money(t.items)),
+    t.tax_added > 0 ? tr('Tax', money(t.tax_added)) : '',
+    t.discount > 0 ? tr(`Discount${t.discount_label ? ` (${esc(t.discount_label)})` : ''}`, `-${money(t.discount)}`) : '',
+    t.delivery > 0 ? tr('Delivery', money(t.delivery)) : '',
+    t.round_off ? tr('Round off', `${t.round_off > 0 ? '+' : '-'}${money(Math.abs(t.round_off))}`) : '',
+    tr('Total', `₹ ${money(t.total)}`, 'grand'),
+    ...(v.payments || []).map((p) => tr(esc(payLine(p)), money(p.amount))),
+    v.due > 0.009 ? tr('Balance due', `₹ ${money(v.due)}`, 'due') : '',
+  ].join('')}</table>`;
+
+  let gst = '';
+  if (isTax && (v.tax_by_rate || []).length) {
+    const tt = v.tax_totals || {};
+    gst = `<table class="grid gst"><tr><th>GST rate</th><th class="r">Taxable</th><th class="r">CGST</th><th class="r">SGST</th><th class="r">Total GST</th></tr>${
+      v.tax_by_rate.map((r) => `<tr><td>${esc(r.rate)}%</td><td class="r">${money(r.taxable)}</td><td class="r">${money(r.cgst)}</td><td class="r">${money(r.sgst)}</td><td class="r">${money(r.total)}</td></tr>`).join('')
+    }<tr class="b"><td>Total</td><td class="r">${money(tt.taxable)}</td><td class="r">${money(tt.cgst)}</td><td class="r">${money(tt.sgst)}</td><td class="r">${money(tt.total)}</td></tr></table>`;
+  }
+
+  return `<html><head><meta charset="utf-8"><title>${esc(v.invoice_number || 'Bill')}</title><style>
+    @page { size: A4 portrait; margin: 14mm; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: Arial, Helvetica, sans-serif; font-size: 13px; line-height: 1.4; color: #000; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .b { font-weight: bold; } .r { text-align: right; } .n { width: 8mm; }
+    .top { display: flex; justify-content: space-between; gap: 10mm; border-bottom: 2px solid #000; padding-bottom: 4mm; }
+    .shop { font-size: 24px; font-weight: bold; }
+    .title { font-size: 22px; font-weight: bold; text-align: right; letter-spacing: 1px; }
+    .cancel { color: #B71C1C; font-size: 16px; font-weight: bold; text-align: right; }
+    table { border-collapse: collapse; }
+    .meta td { padding: 1px 0 1px 4mm; } .meta td.k { color: #333; text-align: right; }
+    .parties { display: flex; gap: 8mm; margin: 5mm 0; }
+    .party { flex: 1; border: 1px solid #000; border-radius: 2mm; padding: 3mm; }
+    .lbl { font-size: 11px; font-weight: bold; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 1mm; }
+    .grid { width: 100%; }
+    .grid th { background: #EEE; border: 1px solid #000; padding: 2mm; text-align: left; font-size: 12px; }
+    .grid td { border: 1px solid #000; padding: 2mm; vertical-align: top; }
+    .grid th.r, .grid td.r { text-align: right; }
+    .bottom { display: flex; justify-content: space-between; gap: 8mm; margin-top: 5mm; }
+    .left { flex: 1; } .tot { width: 75mm; } .tot td { padding: 1.2mm 0; }
+    .tot tr.grand td { font-size: 17px; font-weight: bold; border-top: 2px solid #000; border-bottom: 2px solid #000; padding: 2mm 0; }
+    .tot tr.due td { font-weight: bold; font-size: 15px; }
+    .gst { margin-top: 4mm; } .small { font-size: 11px; } .words { font-weight: bold; margin-bottom: 3mm; }
+    .foot { margin-top: 10mm; display: flex; justify-content: space-between; align-items: flex-end; }
+    .sign { text-align: center; border-top: 1px solid #000; padding-top: 1mm; width: 60mm; }
+  </style></head><body>
+    <div class="top"><div>${seller}</div><div><div class="title">${esc(v.title)}</div>${v.cancelled ? '<div class="cancel">CANCELLED</div>' : ''}${meta}</div></div>
+    ${parties ? `<div class="parties">${parties}</div>` : '<div style="height:5mm"></div>'}
+    <table class="grid items">${head}${body}</table>
+    <div class="bottom">
+      <div class="left">
+        ${v.words ? `<div class="words">${esc(v.words)}</div>` : ''}
+        ${isTax ? '<div class="small">Prices include GST. Reverse charge: No</div>' : ''}
+        ${gst}
+        ${v.terms ? `<div class="small" style="margin-top:4mm"><span class="b">Terms:</span> ${esc(v.terms)}</div>` : ''}
+      </div>
+      ${totals}
+    </div>
+    <div class="foot"><div>${v.footer ? esc(v.footer) : ''}</div><div class="sign">For ${esc(s.legal_name || s.name)}</div></div>
   </body></html>`;
 }
 
@@ -157,14 +269,14 @@ export function buildCreditNoteHtml(v) {
   return `<html><head><meta charset="utf-8"><title>${esc(v.credit_note_number || 'Refund')}</title><style>
     @page { size: 80mm auto; margin: 0; }
     * { box-sizing: border-box; }
-    body { width: 72mm; margin: 0 auto; padding: 3mm 0; font-family: 'Courier New', monospace; font-size: 11px; line-height: 1.35; color: #000; }
-    .shop { text-align: center; font-size: 15px; font-weight: bold; }
-    .c { text-align: center; } .b { font-weight: bold; } .small { font-size: 10px; }
-    .title { text-align: center; font-weight: bold; font-size: 13px; margin: 2mm 0 1mm; }
-    .row { display: flex; justify-content: space-between; gap: 2mm; } .row.big { font-size: 14px; font-weight: bold; }
-    .gt { display: flex; } .gt span { flex: 1; text-align: right; } .gt span:first-child { flex: 0.6; text-align: left; }
+    body { width: 72mm; margin: 0 auto; padding: 3mm 0; font-family: 'Courier New', monospace; font-size: 13px; font-weight: bold; line-height: 1.35; color: #000; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .shop { text-align: center; font-size: 18px; font-weight: bold; }
+    .c { text-align: center; } .b { font-weight: bold; } .small { font-size: 11.5px; }
+    .title { text-align: center; font-weight: bold; font-size: 15px; margin: 2mm 0 1mm; }
+    .row { display: flex; justify-content: space-between; gap: 2mm; } .row.big { font-size: 17px; font-weight: bold; }
+    .gt { display: flex; font-size: 11px; } .gt span { flex: 1; text-align: right; } .gt span:first-child { flex: 0.6; text-align: left; }
     .gt.hd, .gt.b { font-weight: bold; }
-    .dash { border-top: 1px dashed #000; margin: 1.5mm 0; } .dbl { border-top: 2px solid #000; margin: 1.5mm 0; }
+    .dash { border-top: 2px dashed #000; margin: 1.5mm 0; } .dbl { border-top: 2px solid #000; margin: 1.5mm 0; }
     .gap { margin-top: 2mm; }
   </style></head><body>
     ${head}<div class="dash"></div>${meta}<div class="dbl"></div>
