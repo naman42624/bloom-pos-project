@@ -110,7 +110,13 @@ A **petrol advance** is an expense whose item is marked **Rider petrol** and tha
 
 Petrol entered with only a typed name (no linked rider) is not matched. Picking a Rider petrol item in the Add expense sheet with a typed-only name shows "Pick the rider from the list so it counts against their km." The item flag is a new owner switch on the item page. It is turned on by default for any existing item whose name is "Petrol" (case- and space-insensitive), and when the owner first opens the Km rate setting they are shown which items count.
 
-Only petrol advances dated on or after the rider's account start, and not yet included in a settlement, count. Each is listed by date in the settle sheet.
+**Which settlement a petrol advance belongs to** (the user's rule: any petrol between two settled readings counts):
+- It belongs to the first settlement whose last covered Going home reading is at or after the time the expense was saved (`created_at`), and that has not already included it.
+- Petrol handed over after that reading, for example the next morning while the day is still open, waits for the next settlement.
+- An expense saved late for an older day is never lost. It falls into the next settlement.
+- The first settlement starts from the account start (§5).
+
+Each petrol advance is listed by date in the settle sheet.
 
 ## 9. Settling
 
@@ -141,7 +147,9 @@ Opened from the rider's line on the existing **Shopping money out** card (rename
 - **Petrol taken** — the petrol advances (§8).
 - **Carried from last time** — the previous settlement's carried balance (+ if the shop owed, − if the rider owed).
 - **Supply money with L** — the rider's open shopping money (piece 2), counted as cash the rider holds. Shopping money where the rider is still to say what was bought must first go through "L is back — what was bought?" (the existing flow, offered inline). The settle sheet counts only the change the rider still holds.
-- **COD with L** — only the **cash** part of COD the rider has collected and that no `settle-now` has settled (`delivery_collections.method = 'cash'`). UPI COD went straight to the shop's account, so the rider never held it and it is never taken off. A delivery paid partly each way counts only its cash part. Listed per order.
+- **COD with L** — only the **cash** part of COD the rider has collected and that no `settle-now` has settled (`delivery_collections.method = 'cash'`). UPI COD normally went straight to the shop's account, so it is not taken off by default. A delivery paid partly each way counts only its cash part. Listed per order.
+  - **UPI to the rider's own account:** each UPI COD order on the settle sheet has a switch, **Paid to L's own UPI** (off by default). Turning it on counts that amount as held by the rider, the same as cash. If the rider then pays it to the shop's UPI or hands over cash, it is handled by the normal buttons (**Take some now**, Cash or UPI) or simply netted against km money.
+  - The switch is saved on the settlement, so the record shows why the amount was taken off.
 
 **W** = K − petrol taken + carried − supply money with L − COD with L.
 
@@ -153,7 +161,7 @@ Opened from the rider's line on the existing **Shopping money out** card (rename
 **What one settlement writes** (one transaction):
 1. A settlement record with every line, the stretches/readings/advances/corrections/COD/shopping money it covered, and the amount paid or taken and the carry.
 2. **Petrol expense** for the true cost. Petrol taken was already in the expense book, so the settlement adds **K − petrol taken** as a Petrol expense given to L, paid by **Km account** (a new payment method that never touches the drawer, like Own pocket). If K < petrol taken, it adds a **money-back** row (`is_return`) for the difference. Either way, for that settlement: petrol advances + settlement row = K.
-3. COD covered is marked settled on the delivery (`cod_status` as `settle-now` leaves it, plus the new `deliveries.km_settlement_id`). **No `delivery_settlements` row is written**: register close adds every verified `delivery_settlements` row's cash into expected cash, which would move the drawer by COD that never crossed the counter. The Settlements screen's history lists km settlements as their own lines, so the record stays complete. `settle-now` stays available for riders: if L hands over COD cash on the day, the counter settles it as today, and the km settlement then only picks COD still open. Both paths lock the delivery rows (`FOR UPDATE`) so a COD can't be settled twice. Supply money covered is marked settled (the change the rider holds counts as handed in through the km account, not the drawer).
+3. COD covered is marked settled on the delivery (`cod_status` as `settle-now` leaves it, plus the new `deliveries.km_settlement_id`). **No `delivery_settlements` row is written**: register close adds every verified `delivery_settlements` row's cash into expected cash, which would move the drawer by COD that never crossed the counter. The Settlements screen's history lists km settlements as their own lines, so the record stays complete. Setting `cod_status = 'settled'` also removes the order from the Settlements screen's pending COD list (which shows only `collected`/`partial`), so **nothing has to be settled twice**: a COD netted in a km settlement is done everywhere. `settle-now` stays available for riders: if L hands over COD cash on the day, the counter settles it as today, and the km settlement then only picks COD still open. Both paths lock the delivery rows (`FOR UPDATE`) so a COD can't be settled twice. Supply money covered is marked settled (the change the rider holds counts as handed in through the km account, not the drawer).
 4. **Drawer:** only cash that physically crosses the counter moves expected cash: money paid to L (out) or taken from L (in). COD and supply money netted against km money do not touch the drawer, and neither does the carry. One register line: "L km settlement +₹X / −₹X".
 5. The carry becomes the new balance shown on the card and in the next settlement.
 
