@@ -1,12 +1,14 @@
 // Rider km account (spec 2026-11-15-rider-km-account-design.md): bike meter
-// readings, gaps, corrections, the Km rate and the account view. Settling
-// comes later. Async DB layer only. Helpers are default-denied by
+// readings, gaps, corrections, the Km rate, the account view and settling
+// (the maths and writes live in utils/rider-km-data.js). Async DB layer only. Helpers are default-denied by
 // authenticate (nothing here is in helper-routes.js).
 const express = require('express');
 const { getDb, withMoneyTx } = require('../config/database-async');
 const { authenticate } = require('../middleware/auth');
 const { buildChain, priceStretches } = require('../utils/rider-km');
-const { loadChainInputs, isRider, fmtLocal } = require('../utils/rider-km-data');
+const {
+  loadChainInputs, isRider, fmtLocal, computeSettlement, commitSettlement, SETTLE_MSG,
+} = require('../utils/rider-km-data');
 const { todayStr } = require('../utils/time');
 
 const router = express.Router();
@@ -106,6 +108,17 @@ function minBackDate() {
   return d.toISOString().slice(0, 10);
 }
 
+// 'YYYY-MM-DD HH:MM:SS' that is a real calendar date and clock time
+// (2026-02-30 or 25:00 is not).
+function realLocalTime(local) {
+  const m = local.match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/);
+  if (!m) return false;
+  const [y, mo, d, h, mi, se] = m.slice(1).map(Number);
+  if (h > 23 || mi > 59 || se > 59) return false;
+  const t = new Date(Date.UTC(y, mo - 1, d));
+  return t.getUTCFullYear() === y && t.getUTCMonth() === mo - 1 && t.getUTCDate() === d;
+}
+
 // A client time as a shop-local 'YYYY-MM-DD HH:MM:SS'. With no zone it is
 // taken as already shop-local; with a zone (Z or an offset) it is converted.
 function resolveReadAt(input) {
@@ -120,6 +133,7 @@ function resolveReadAt(input) {
     const m = s.match(/^(\d{4}-\d{2}-\d{2})(?:[ T](\d{2}:\d{2})(?::(\d{2}))?)?/);
     if (!m) throw httpError(400, MSG.badTime);
     local = `${m[1]} ${m[2] || '12:00'}:${m[3] || '00'}`;
+    if (!realLocalTime(local)) throw httpError(400, MSG.badTime);
   }
   if (local > fmtLocal(new Date(Date.now() + 5 * 60 * 1000))) throw httpError(400, MSG.future);
   return local;
@@ -267,9 +281,11 @@ router.get('/riders', authenticate, forGivers, async (req, res, next) => {
     const data = [];
     for (const r of riders) {
       const v = buildView(r, await loadChainInputs(db, r.id));
+      // The settle sheet's figure now; unknown while a gap is unanswered.
+      const s = await computeSettlement(db, r.id);
       data.push({
         id: Number(r.id), name: r.name, unsettled_km: v.priced.paidKm, open_day: v.chain.openDay,
-        gaps: v.gapsOpen, balance_paise: null,
+        gaps: v.gapsOpen, balance_paise: s.gapsOpen ? null : s.netPaise,
       });
     }
     res.json({ success: true, data });
@@ -577,6 +593,76 @@ router.put('/:userId/usual-home', authenticate, async (req, res, next) => {
     });
     res.json({ success: true, data: { km } });
   } catch (err) { sendError(res, next, err); }
+});
+
+// ─── POST /api/rider-km/:userId/settle ───────────────────────
+// { location_id, preview: true, upi_own_delivery_ids? } shows the settle sheet.
+// { location_id, expected_net_paise, last_settlement_id?, action, amount?,
+//   method?, upi_own_delivery_ids? } settles. amount is in rupees.
+const SETTLE_ACTIONS = ['pay', 'take', 'carry', 'zero', 'salary'];
+router.post('/:userId/settle', authenticate, forGivers, async (req, res, next) => {
+  try {
+    const riderId = parseId(req.params.userId);
+    if (!riderId) return res.status(404).json({ success: false, message: MSG.rider });
+    const b = req.body || {};
+    const locationId = parseId(b.location_id);
+    if (!locationId) return res.status(400).json({ success: false, message: MSG.location });
+    let upiOwn = [];
+    if (b.upi_own_delivery_ids !== undefined && b.upi_own_delivery_ids !== null) {
+      if (!Array.isArray(b.upi_own_delivery_ids) || b.upi_own_delivery_ids.length > 200
+          || b.upi_own_delivery_ids.some((x) => !parseId(x))) {
+        return res.status(400).json({ success: false, message: 'Pick the orders again.' });
+      }
+      upiOwn = [...new Set(b.upi_own_delivery_ids.map(Number))];
+    }
+    const db = await getDb();
+    if (!(await isRider(db, riderId, locationId))) return res.status(400).json({ success: false, message: MSG.rider });
+    if (req.user.role !== 'owner' && !(await isLinked(db, req.user.id, locationId))) {
+      return res.status(403).json({ success: false, message: MSG.notYourShop });
+    }
+
+    if (b.preview === true || b.preview === 'true') {
+      const s = await computeSettlement(db, riderId, { upiOwnIds: upiOwn });
+      if (s.gapsOpen) throw coded(409, 'GAPS_OPEN', SETTLE_MSG.gaps);
+      if (!s.anything) throw coded(409, 'NOTHING', SETTLE_MSG.nothing);
+      return res.json({
+        success: true,
+        data: {
+          lines: s.lines, net_paise: s.netPaise, cutoff_reading_id: s.cutoff ? Number(s.cutoff.id) : null,
+          last_settlement_id: s.lastSettlementId,
+        },
+      });
+    }
+
+    if (!SETTLE_ACTIONS.includes(b.action)) return res.status(400).json({ success: false, message: 'Pick Pay, Take, Carry or Settle.' });
+    if (b.action === 'salary' && req.user.role !== 'owner') return res.status(403).json({ success: false, message: MSG.forbidden });
+    const expected = Number(b.expected_net_paise);
+    if (b.expected_net_paise === null || b.expected_net_paise === '' || !Number.isInteger(expected)) {
+      throw coded(409, 'CHANGED', SETTLE_MSG.changed);
+    }
+    let amount = null;
+    if (b.action === 'pay' || b.action === 'take') {
+      const a = String(b.amount === undefined || b.amount === null ? '' : b.amount).trim();
+      if (!/^\d{1,7}(\.\d{1,2})?$/.test(a)) return res.status(400).json({ success: false, message: 'Type the amount, like 200.' });
+      amount = Number(a);
+    }
+    const has = (k) => Object.prototype.hasOwnProperty.call(b, k);
+    let lastId;
+    if (has('last_settlement_id')) {
+      lastId = b.last_settlement_id === null ? null : parseId(b.last_settlement_id);
+      if (b.last_settlement_id !== null && !lastId) throw coded(409, 'CHANGED', SETTLE_MSG.changed);
+    }
+    const out = await withMoneyTx((tx) => commitSettlement(tx, {
+      userId: riderId, locationId, actor: { id: req.user.id, role: req.user.role }, action: b.action, amount,
+      method: b.method || null, upiOwnIds: upiOwn, expectedNetPaise: expected, expectedLastSettlementId: lastId,
+    }));
+    res.status(201).json({ success: true, data: out });
+  } catch (err) {
+    // A lock wait that Postgres broke (deadlock) means another save moved the
+    // same money: ask for a fresh look rather than a server error.
+    if (err && (err.code === '40P01' || err.code === '40001')) return sendError(res, next, coded(409, 'CHANGED', SETTLE_MSG.changed));
+    sendError(res, next, err);
+  }
 });
 
 // ─── GET /api/rider-km/:userId ───────────────────────────────

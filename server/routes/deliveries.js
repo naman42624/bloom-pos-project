@@ -1239,6 +1239,7 @@ router.get('/settlements/pending-summary', authenticate, authorize('owner', 'man
         AND d.cod_collected > 0
         AND d.cod_status IN ('collected', 'partial')
         AND d.id NOT IN (SELECT delivery_id FROM delivery_settlement_items)
+        AND d.km_settlement_id IS NULL
         ${locFilter}
       GROUP BY d.delivery_partner_id, u.name, u.phone
       ORDER BY total_cod DESC
@@ -1273,6 +1274,7 @@ router.get('/settlements/unsettled', authenticate, authorize('owner', 'manager',
       WHERE d.delivery_partner_id = ? AND d.status = 'delivered'
         AND d.cod_collected > 0 AND d.cod_status IN ('collected', 'partial')
         AND d.id NOT IN (SELECT delivery_id FROM delivery_settlement_items)
+        AND d.km_settlement_id IS NULL
         ${locationId ? 'AND d.location_id = ?' : ''}
       ORDER BY d.delivered_time ASC
     `).all(...(locationId ? [partnerId, locationId] : [partnerId]));
@@ -1329,6 +1331,7 @@ router.post(
           WHERE d.delivery_partner_id = ? AND d.status = 'delivered'
             AND d.cod_collected > 0 AND d.cod_status IN ('collected', 'partial')
             AND d.id NOT IN (SELECT delivery_id FROM delivery_settlement_items)
+            AND d.km_settlement_id IS NULL
             ${locFilter}
         `).all(...locParam);
         delivery_ids = allUnsettled.map(d => d.id);
@@ -1368,8 +1371,10 @@ router.post(
           await db.prepare('SELECT id FROM deliveries WHERE id = ? FOR UPDATE').get(did);
         }
         for (const did of delivery_ids) {
+          // Read under the row lock. A COD already netted in a rider km
+          // settlement (km_settlement_id) is done and is not eligible here.
           const d = await db.prepare(
-            "SELECT * FROM deliveries WHERE id = ? AND delivery_partner_id = ? AND status = 'delivered' AND cod_collected > 0"
+            "SELECT * FROM deliveries WHERE id = ? AND delivery_partner_id = ? AND status = 'delivered' AND cod_collected > 0 AND km_settlement_id IS NULL"
           ).get(did, delivery_partner_id);
           if (!d) throw new Error(`Delivery #${did} not eligible for settlement`);
           // Checked again under the row lock (the check above ran before it).

@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 /**
- * Verification of the rider km account, Task 2: readings, gaps, corrections,
- * Km rate, the account view and the Rider petrol item flag (live API).
+ * Verification of the rider km account (live API). Task 2: readings, gaps,
+ * corrections, Km rate, the account view and the Rider petrol item flag.
+ * Task 3: settle (preview and commit), drawer, COD and shopping money.
+ * Cash checks open their own Test Loc register and close and remove it at
+ * the end; a register this run did not open is never touched.
  * Test rows are named VerifyRK. Cleans up only rows this run created and
  * puts the Km rate rows back as they were.
  * Usage: source test-env.sh; node server/scripts/verify-rider-km.js
@@ -16,6 +19,8 @@ const API_BASE = process.env.API_BASE_URL || 'http://localhost:3001/api';
 const checks = [];
 const createdUserIds = [];
 const createdItemIds = [];
+const createdRegisterIds = [];
+const createdSaleIds = [];
 let rateBefore = null;
 function check(name, fn) { checks.push({ name, fn }); }
 function assert(cond, msg) { if (!cond) throw new Error(msg); }
@@ -249,7 +254,7 @@ check('rider list shows unsettled km and gaps', async () => {
   const me = list.body.data.find((x) => x.id === r);
   assert(me, 'rider listed');
   eq(me.open_day, true, 'open day');
-  eq(me.balance_paise, null, 'balance null for now');
+  eq(me.balance_paise, 0, 'nothing to settle yet is a 0 balance');
 });
 
 check('rate: owner sets 4 from today; manager cannot', async () => {
@@ -338,9 +343,604 @@ check('roles: florist, helper, customer get 403 everywhere; the rider sees only 
   eq((await api('GET', '/rider-km/mine', c.counter)).status, 403, 'mine for counter');
 });
 
+// ─── Task 3: settle ──────────────────────────────────────────
+const COPY = {
+  gaps: 'Answer the gaps first, then settle.',
+  changed: 'Something changed — check the figures again.',
+  pay: 'Open the register to pay cash — or pick UPI.',
+  take: 'Open the register to take cash — or pick UPI.',
+  ownPetrol: "A rider's own petrol is covered by their km pay — no need to add it.",
+};
+function skip(msg) { const e = new Error(msg); e.skip = true; return e; }
+async function testLocRegister() {
+  return (await getDb()).prepare('SELECT id, expected_cash FROM cash_registers WHERE location_id = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1').get(TEST_LOCATION_ID);
+}
+async function openOwnRegister() {
+  const c = await getCast();
+  const open = await testLocRegister();
+  if (open) {
+    if (createdRegisterIds.includes(open.id)) return open.id;
+    throw skip(`Test Loc register #${open.id} is open and is not this run's; skipped.`);
+  }
+  const op = await api('POST', '/sales/register/open', c.owner, { location_id: TEST_LOCATION_ID, opening_balance: 5000 });
+  assert(op.status === 201, `open ${op.status} ${JSON.stringify(op.body)}`);
+  createdRegisterIds.push(op.body.data.id);
+  return op.body.data.id;
+}
+async function closeOwnRegister() {
+  const c = await getCast();
+  const open = await testLocRegister();
+  if (!open || !createdRegisterIds.includes(open.id)) return;
+  const r = await api('PUT', '/sales/register/close', c.owner, { location_id: TEST_LOCATION_ID, actual_cash: Math.max(0, Number(open.expected_cash) || 0) });
+  assert(r.status === 200, `close ${r.status} ${JSON.stringify(r.body)}`);
+}
+const drawer = async (id) => Number((await (await getDb()).prepare('SELECT expected_cash FROM cash_registers WHERE id = ?').get(id)).expected_cash);
+const P = (n) => Math.round(Number(n) * 100);
+let petrolItemId = null;
+async function petrolItem() {
+  if (petrolItemId) return petrolItemId;
+  const row = await (await getDb()).prepare('SELECT id FROM expense_items WHERE is_rider_petrol = TRUE ORDER BY id LIMIT 1').get();
+  assert(row, 'a Rider petrol item exists');
+  petrolItemId = Number(row.id);
+  return petrolItemId;
+}
+// A day of work: arrive 09:00 and leave 18:00, km apart. Returns the leave id.
+async function work(rider, daysAgo, km, meter) {
+  const c = await getCast();
+  const a = await post(c.mgr, rider, 'arrive', meter, at(daysAgo, '09:00'));
+  eq(a.status, 201, 'arrive ' + JSON.stringify(a.body));
+  const l = await post(c.mgr, rider, 'leave', meter + km, at(daysAgo, '18:00'));
+  eq(l.status, 201, 'leave ' + JSON.stringify(l.body));
+  return l.body.data.reading.id;
+}
+// Petrol given to the rider, saved at a shop-local time (created_at moved there).
+async function petrol(rider, amount, method, savedAtLocal) {
+  const c = await getCast();
+  const r = await api('POST', '/expenses', c.counter, {
+    location_id: TEST_LOCATION_ID, item_id: await petrolItem(), amount, payment_method: method, given_to_user_id: rider,
+  });
+  eq(r.status, 201, 'petrol ' + JSON.stringify(r.body));
+  await (await getDb()).prepare("UPDATE expenses SET created_at = ((CAST(? AS timestamp) AT TIME ZONE 'Asia/Kolkata') AT TIME ZONE 'UTC') WHERE id = ?")
+    .run(savedAtLocal, r.body.data.id);
+  return r.body.data.id;
+}
+// A delivered COD order for the rider, delivered now. parts: { cash, upi }.
+async function cod(rider, parts) {
+  const c = await getCast();
+  const db = await getDb();
+  const total = (parts.cash || 0) + (parts.upi || 0);
+  const sale = await db.prepare(`INSERT INTO sales (sale_number, location_id, created_by, order_type, status, payment_status, grand_total, subtotal)
+    VALUES (?, ?, ?, 'delivery', 'completed', 'paid', ?, ?) RETURNING id`).get('VRK-' + Date.now() + Math.floor(Math.random() * 1e4), TEST_LOCATION_ID, c.owner, total, total);
+  createdSaleIds.push(sale.id);
+  const d = await db.prepare(`INSERT INTO deliveries (sale_id, location_id, status, delivery_address, delivery_partner_id, cod_amount, cod_collected, cod_status, delivered_time)
+    VALUES (?, ?, 'delivered', 'VerifyRK street', ?, ?, ?, 'collected', (NOW() AT TIME ZONE 'UTC')) RETURNING id`).get(sale.id, TEST_LOCATION_ID, rider, total, total);
+  for (const m of ['cash', 'upi']) {
+    if (parts[m]) await db.prepare('INSERT INTO delivery_collections (delivery_id, amount, method, collected_by, created_at) VALUES (?, ?, ?, ?, CURRENT_DATE)').run(d.id, parts[m], m, rider);
+  }
+  return Number(d.id);
+}
+// Shopping money given by UPI; bills recorded so `held` is still with the rider.
+async function shopping(rider, amount, billsAmount) {
+  const c = await getCast();
+  const g = await api('POST', '/staff-money/shopping', c.owner, { location_id: TEST_LOCATION_ID, user_id: rider, amount, payment_method: 'upi' });
+  eq(g.status, 201, 'shopping ' + JSON.stringify(g.body));
+  if (billsAmount) {
+    const s = await api('POST', `/staff-money/${g.body.data.id}/settle`, c.owner, { bills: [{ description: 'VerifyRK Roses', category: 'supplies', amount: billsAmount }] });
+    eq(s.status, 200, 'bills ' + JSON.stringify(s.body));
+  }
+  return g.body.data.id;
+}
+async function preview(who, rider, extra) {
+  return api('POST', `/rider-km/${rider}/settle`, who, { location_id: TEST_LOCATION_ID, preview: true, ...(extra || {}) });
+}
+async function okPreview(who, rider, extra) {
+  const p = await preview(who, rider, extra);
+  eq(p.status, 200, 'preview ' + JSON.stringify(p.body));
+  return p.body.data;
+}
+async function commit(who, rider, pv, body) {
+  return api('POST', `/rider-km/${rider}/settle`, who, {
+    location_id: TEST_LOCATION_ID, expected_net_paise: pv.net_paise, last_settlement_id: pv.last_settlement_id, ...body,
+  });
+}
+const settlementRow = async (id) => (await getDb()).prepare('SELECT * FROM rider_km_settlements WHERE id = ?').get(id);
+const deliveryRow = async (id) => (await getDb()).prepare('SELECT * FROM deliveries WHERE id = ?').get(id);
+async function kRate(daysAgo) {
+  const c = await getCast();
+  const rates = (await api('GET', '/rider-km/rate', c.mgr)).body.data.history;
+  const date = at(daysAgo, '09:00').slice(0, 10);
+  return Number(rates.filter((x) => x.effective_from <= date).sort((a, b) => (a.effective_from < b.effective_from ? 1 : -1))[0].rate);
+}
+
+const flow = {};
+check('settle: three signs of net', async () => {
+  const c = await getCast();
+  const reg = await openOwnRegister();
+  const r = await freshRider();
+  const leaveId = await work(r, 3, 112, 1000);
+  const K = Math.round(112 * (await kRate(3)) * 100);
+  const petrolId = await petrol(r, 200, 'cash', at(3, '12:00'));
+  const lineId = await shopping(r, 300, 200);
+  const codId = await cod(r, { cash: 500 });
+  const pv = await okPreview(c.counter, r);
+  eq(pv.lines.km_paise, K, 'K');
+  eq(pv.lines.paid_km, 112, 'paid km');
+  eq(pv.lines.petrol_taken_paise, 20000, 'petrol taken');
+  eq(pv.lines.supply_held_paise, 10000, 'supply held');
+  eq(pv.lines.cod_held_paise, 50000, 'cod held');
+  eq(pv.lines.carried_in_paise, 0, 'carried in');
+  eq(pv.lines.cod.length, 1, 'one COD line');
+  eq(pv.lines.cod[0].cash_paise, 50000, 'cod cash');
+  eq(pv.lines.cod[0].upi_paise, 0, 'cod upi');
+  eq(pv.lines.petrol.length, 1, 'one petrol line');
+  eq(pv.lines.shopping.length, 1, 'one shopping line');
+  eq(pv.net_paise, K - 20000 - 10000 - 50000, 'net');
+  if (K === 33600) eq(pv.net_paise, -46400, 'net -464');
+  eq(pv.cutoff_reading_id, leaveId, 'cutoff');
+  Object.assign(flow, { r, reg, pv, petrolId, lineId, codId, K, leaveId });
+  // Positive: only km.
+  const r2 = await freshRider();
+  await work(r2, 3, 112, 2000);
+  eq((await okPreview(c.counter, r2)).net_paise, K, 'positive net');
+  // Zero: km equals petrol taken.
+  const r3 = await freshRider();
+  await work(r3, 3, 10, 3000);
+  const K3 = Math.round(10 * (await kRate(3)) * 100);
+  await petrol(r3, K3 / 100, 'upi', at(3, '10:00'));
+  const pz = await okPreview(c.counter, r3);
+  eq(pz.net_paise, 0, 'zero net');
+  const badPay = await commit(c.counter, r3, pz, { action: 'pay', amount: 1, method: 'upi' });
+  eq(badPay.status, 400, 'pay with net 0 ' + JSON.stringify(badPay.body));
+  const z = await commit(c.counter, r3, pz, { action: 'zero' });
+  eq(z.status, 201, 'zero ' + JSON.stringify(z.body));
+  eq(Number((await settlementRow(z.body.data.settlement_id)).carry_out), 0, 'zero carry');
+  const again = await preview(c.counter, r3);
+  eq(again.status, 409, 'nothing left ' + JSON.stringify(again.body));
+  eq(again.body.code, 'NOTHING', 'NOTHING code');
+  eq(again.body.message, 'Nothing to settle yet.', 'NOTHING copy');
+});
+
+check('settle: carry marks COD, shopping and readings settled; drawer unchanged', async () => {
+  const c = await getCast();
+  assert(flow.r, 'needs the three-signs flow');
+  const before = await drawer(flow.reg);
+  const res = await commit(c.counter, flow.r, flow.pv, { action: 'carry' });
+  eq(res.status, 201, 'carry ' + JSON.stringify(res.body));
+  const sid = res.body.data.settlement_id;
+  flow.sid = sid;
+  const s = await settlementRow(sid);
+  eq(P(s.carry_out), flow.pv.net_paise, 'carry_out');
+  eq(s.action, 'carry', 'action');
+  eq(P(s.net_amount), flow.pv.net_paise, 'net stored');
+  eq(s.register_id, null, 'no register');
+  assert(s.lines_json && s.lines_json.km_paise === flow.K, 'lines_json kept ' + JSON.stringify(s.lines_json).slice(0, 200));
+  const d = await deliveryRow(flow.codId);
+  eq(d.cod_status, 'settled', 'COD settled');
+  eq(Number(d.km_settlement_id), sid, 'COD linked');
+  const db = await getDb();
+  eq(Number((await db.prepare('SELECT COUNT(*) AS c FROM delivery_settlement_items WHERE delivery_id = ?').get(flow.codId)).c), 0, 'no delivery_settlements row');
+  const pend = await api('GET', `/deliveries/settlements/pending-summary?location_id=${TEST_LOCATION_ID}`, c.counter);
+  eq(pend.status, 200, 'pending list');
+  assert(!pend.body.data.partners.some((p) => Number(p.delivery_partner_id) === flow.r), 'rider gone from pending COD');
+  const uns = await api('GET', `/deliveries/settlements/unsettled?delivery_partner_id=${flow.r}&location_id=${TEST_LOCATION_ID}`, c.counter);
+  eq(uns.body.data.deliveries.length, 0, 'nothing unsettled for the rider');
+  const mo = await db.prepare('SELECT * FROM staff_money_out WHERE id = ?').get(flow.lineId);
+  eq(mo.status, 'settled', 'shopping line settled');
+  eq(Number(mo.km_settlement_id), sid, 'line linked');
+  assert(mo.closed_at, 'closed_at set');
+  const st = await db.prepare("SELECT * FROM staff_money_settles WHERE money_out_id = ? AND returned_method = 'km'").get(flow.lineId);
+  assert(st, 'km settle row');
+  eq(P(st.returned_amount), 10000, 'returned = remaining');
+  eq(st.register_id, null, 'settle row has no register');
+  eq(Number((await db.prepare('SELECT km_settlement_id FROM expenses WHERE id = ?').get(flow.petrolId)).km_settlement_id), sid, 'petrol linked');
+  const rd = await db.prepare('SELECT COUNT(*) AS c FROM rider_km_readings WHERE user_id = ? AND settlement_id = ?').get(flow.r, sid);
+  eq(Number(rd.c), 2, 'readings linked');
+  eq(await drawer(flow.reg), before, 'drawer unchanged by carry');
+  const au = await db.prepare("SELECT COUNT(*) AS c FROM audit_logs WHERE entity_type = 'rider_km' AND entity_id = ? AND action = 'km_settle'").get(sid);
+  eq(Number(au.c), 1, 'audit');
+  const list = await api('GET', `/rider-km/riders?location_id=${TEST_LOCATION_ID}`, c.counter);
+  eq(list.body.data.find((x) => x.id === flow.r).balance_paise, flow.pv.net_paise, 'card balance = carry');
+  const next = await okPreview(c.counter, flow.r);
+  eq(next.lines.carried_in_paise, flow.pv.net_paise, 'carried in next time');
+  eq(next.lines.cod.length, 0, 'COD not offered again');
+  eq(next.lines.shopping.length, 0, 'shopping not offered again');
+});
+
+check('settle: petrol book equals K', async () => {
+  assert(flow.sid, 'needs the carry flow');
+  const db = await getDb();
+  const rows = await db.prepare('SELECT * FROM expenses WHERE km_settlement_id = ? ORDER BY id').all(flow.sid);
+  const signed = rows.reduce((t, e) => t + (e.is_return ? -P(e.amount) : P(e.amount)), 0);
+  eq(signed, flow.K, 'petrol rows + settlement row = K');
+  const km = rows.find((e) => e.payment_method === 'km_account');
+  assert(km, 'km_account row');
+  eq(P(km.amount), flow.K - 20000, 'km row amount');
+  eq(Number(km.is_return), 0, 'not a return');
+  eq(Number(km.given_to_user_id), flow.r, 'given to the rider');
+  eq(km.category, 'transport', 'category');
+  eq(km.register_id, null, 'no register');
+  eq(Number((await settlementRow(flow.sid)).expense_id), Number(km.id), 'settlement links the row');
+  const it = await db.prepare('SELECT is_rider_petrol FROM expense_items WHERE id = ?').get(km.item_id);
+  eq(it && it.is_rider_petrol, true, 'Rider petrol item');
+  // Settled rows keep their money: no amount change and no removal; a note is fine.
+  const c = await getCast();
+  eq((await api('PUT', `/expenses/${km.id}`, c.owner, { amount: 1 })).status, 400, 'km row amount locked');
+  eq((await api('PUT', `/expenses/${flow.petrolId}`, c.owner, { amount: 1 })).status, 400, 'settled petrol amount locked');
+  eq((await api('DELETE', `/expenses/${flow.petrolId}`, c.owner)).status, 400, 'settled petrol not removable');
+  eq((await api('DELETE', `/expenses/${km.id}`, c.owner)).status, 400, 'km row not removable');
+  const note = await api('PUT', `/expenses/${km.id}`, c.owner, { note: 'VerifyRK note' });
+  eq(note.status, 200, 'note change ' + JSON.stringify(note.body));
+});
+
+check('settle: K below petrol books a money-back row', async () => {
+  const c = await getCast();
+  const r = await freshRider();
+  await work(r, 3, 10, 500);
+  const K = Math.round(10 * (await kRate(3)) * 100);
+  await petrol(r, 200, 'upi', at(3, '11:00'));
+  const pv = await okPreview(c.counter, r);
+  eq(pv.net_paise, K - 20000, 'net');
+  const res = await commit(c.counter, r, pv, { action: 'carry' });
+  eq(res.status, 201, 'carry ' + JSON.stringify(res.body));
+  const km = await (await getDb()).prepare("SELECT * FROM expenses WHERE km_settlement_id = ? AND payment_method = 'km_account'").get(res.body.data.settlement_id);
+  eq(P(km.amount), 20000 - K, 'money-back amount');
+  eq(Number(km.is_return), 1, 'is_return');
+});
+
+check("settle: own-pocket Rider petrol for a rider is refused", async () => {
+  const c = await getCast();
+  const r = await freshRider();
+  const base = { location_id: TEST_LOCATION_ID, item_id: await petrolItem(), amount: 50 };
+  const own = await api('POST', '/expenses', c.counter, { ...base, payment_method: 'own_pocket', paid_by_user_id: r });
+  eq(own.status, 400, 'create ' + JSON.stringify(own.body));
+  eq(own.body.message, COPY.ownPetrol, 'create copy');
+  const ok = await api('POST', '/expenses', c.counter, { ...base, payment_method: 'upi', given_to_user_id: r });
+  eq(ok.status, 201, 'upi petrol');
+  const ch = await api('PUT', `/expenses/${ok.body.data.id}`, c.owner, { payment_method: 'own_pocket', paid_by_user_id: r });
+  eq(ch.status, 400, 'change ' + JSON.stringify(ch.body));
+  eq(ch.body.message, COPY.ownPetrol, 'change copy');
+  const kmMethod = await api('POST', '/expenses', c.counter, { ...base, payment_method: 'km_account', given_to_user_id: r });
+  eq(kmMethod.status, 400, 'km_account is never typed in by hand');
+});
+
+check('settle: pay cash moves the drawer once; UPI does not; km_account never counts', async () => {
+  const c = await getCast();
+  const reg = await openOwnRegister();
+  const r = await freshRider();
+  await work(r, 3, 100, 700);
+  const K = Math.round(100 * (await kRate(3)) * 100);
+  await petrol(r, (K - 20000) / 100, 'upi', at(3, '10:00'));
+  const pv = await okPreview(c.counter, r);
+  eq(pv.net_paise, 20000, 'net +200');
+  const d0 = await drawer(reg);
+  const res = await commit(c.counter, r, pv, { action: 'pay', amount: 200, method: 'cash' });
+  eq(res.status, 201, 'pay ' + JSON.stringify(res.body));
+  const s = await settlementRow(res.body.data.settlement_id);
+  eq(P(s.moved_amount), 20000, 'moved');
+  eq(s.moved_method, 'cash', 'moved method');
+  eq(Number(s.register_id), reg, 'register');
+  eq(P(s.carry_out), 0, 'carry 0');
+  eq(P(await drawer(reg)), P(d0) - 20000, 'expected cash -200 once');
+  const pvClose = await api('PUT', '/sales/register/close', c.owner, { location_id: TEST_LOCATION_ID, actual_cash: 0, preview: true });
+  eq(pvClose.status, 200, 'close preview');
+  eq(P(pvClose.body.data.expected_cash), P(await drawer(reg)), 'close preview matches expected cash');
+  const st = await api('GET', `/sales/register/status?location_id=${TEST_LOCATION_ID}`, c.owner);
+  eq(P(st.body.data.km_paid_out), 20000, 'status shows km paid out');
+  // A km_account row, even one wrongly tied to the session, never moves the drawer.
+  const db = await getDb();
+  const e = await db.prepare(`INSERT INTO expenses (location_id, category, amount, description, payment_method, expense_date, created_by, register_id)
+    VALUES (?, 'transport', 999, 'VerifyRK km row', 'km_account', CURRENT_DATE, ?, ?) RETURNING id`).get(TEST_LOCATION_ID, c.owner, reg);
+  const pv2 = await api('PUT', '/sales/register/close', c.owner, { location_id: TEST_LOCATION_ID, actual_cash: 0, preview: true });
+  await db.prepare('DELETE FROM expenses WHERE id = ?').run(e.id);
+  eq(P(pv2.body.data.expected_cash), P(pvClose.body.data.expected_cash), 'km_account row ignored by close');
+  // UPI pay: no drawer change.
+  const r2 = await freshRider();
+  await work(r2, 3, 10, 900);
+  const pvu = await okPreview(c.counter, r2);
+  const d1 = await drawer(reg);
+  const u = await commit(c.counter, r2, pvu, { action: 'pay', amount: pvu.net_paise / 100, method: 'upi' });
+  eq(u.status, 201, 'pay upi ' + JSON.stringify(u.body));
+  eq(await drawer(reg), d1, 'UPI leaves the drawer');
+  const su = await settlementRow(u.body.data.settlement_id);
+  eq(su.register_id, null, 'UPI has no register');
+  eq(su.moved_method, 'upi', 'UPI method');
+});
+
+check('settle: take cash with the register closed is refused, UPI and carry allowed', async () => {
+  const c = await getCast();
+  await closeOwnRegister();
+  const foreign = await testLocRegister();
+  const r = await freshRider();
+  await work(r, 3, 10, 100);
+  const K = Math.round(10 * (await kRate(3)) * 100);
+  await petrol(r, (K + 7000) / 100, 'upi', at(3, '10:00'));
+  const pv = await okPreview(c.counter, r);
+  eq(pv.net_paise, -7000, 'rider owes 70');
+  if (!foreign) {
+    const t = await commit(c.counter, r, pv, { action: 'take', amount: 70, method: 'cash' });
+    eq(t.status, 409, 'take cash closed ' + JSON.stringify(t.body));
+    eq(t.body.message, COPY.take, 'take copy');
+  }
+  const big = await commit(c.counter, r, pv, { action: 'take', amount: 71, method: 'upi' });
+  eq(big.status, 400, 'more than owed');
+  const tu = await commit(c.counter, r, pv, { action: 'take', amount: 70, method: 'upi' });
+  eq(tu.status, 201, 'take upi ' + JSON.stringify(tu.body));
+  eq(P((await settlementRow(tu.body.data.settlement_id)).carry_out), 0, 'carry 0');
+  const r2 = await freshRider();
+  await work(r2, 3, 10, 200);
+  const p2 = await okPreview(c.counter, r2);
+  if (!foreign) {
+    const pc = await commit(c.counter, r2, p2, { action: 'pay', amount: 10, method: 'cash' });
+    eq(pc.status, 409, 'pay cash closed ' + JSON.stringify(pc.body));
+    eq(pc.body.message, COPY.pay, 'pay copy');
+  }
+  const cr = await commit(c.counter, r2, p2, { action: 'carry' });
+  eq(cr.status, 201, 'carry with register closed ' + JSON.stringify(cr.body));
+  if (foreign) throw skip(`Test Loc register #${foreign.id} is open and is not this run's; cash refusals skipped, UPI and carry passed.`);
+});
+
+check('settle: carry chains across three settlements', async () => {
+  const c = await getCast();
+  const r = await freshRider();
+  await work(r, 5, 10, 100);
+  const K5 = Math.round(10 * (await kRate(5)) * 100);
+  await petrol(r, 200, 'upi', at(5, '10:00'));
+  const p1 = await okPreview(c.counter, r);
+  const s1 = await commit(c.counter, r, p1, { action: 'carry' });
+  eq(s1.status, 201, 's1');
+  eq(P((await settlementRow(s1.body.data.settlement_id)).carry_out), K5 - 20000, 's1 carry');
+  await work(r, 4, 20, 112);
+  const K4 = Math.round(20 * (await kRate(4)) * 100);
+  const p2 = await okPreview(c.counter, r);
+  eq(p2.lines.carried_in_paise, K5 - 20000, 's2 carried in');
+  eq(p2.net_paise, K4 + K5 - 20000, 's2 net');
+  assert(p2.net_paise < 0, 's2 rider owes');
+  const s2 = await commit(c.counter, r, p2, { action: 'take', amount: -p2.net_paise / 100, method: 'upi' });
+  eq(s2.status, 201, 's2 ' + JSON.stringify(s2.body));
+  eq(P((await settlementRow(s2.body.data.settlement_id)).carry_out), 0, 's2 carry 0');
+  await work(r, 3, 5, 134);
+  const p3 = await okPreview(c.counter, r);
+  eq(p3.lines.carried_in_paise, 0, 's3 carried in 0');
+  const s3 = await commit(c.counter, r, p3, { action: 'pay', amount: p3.net_paise / 100, method: 'upi' });
+  eq(s3.status, 201, 's3 ' + JSON.stringify(s3.body));
+  eq(P((await settlementRow(s3.body.data.settlement_id)).carry_out), 0, 's3 carry 0');
+});
+
+check('settle: Paid to own UPI switch', async () => {
+  const c = await getCast();
+  const r = await freshRider();
+  await work(r, 3, 112, 100);
+  const own = await cod(r, { upi: 300 });
+  const other = await cod(r, { upi: 100 });
+  const pv = await okPreview(c.counter, r);
+  eq(pv.lines.cod_held_paise, 0, 'UPI not held by default');
+  const line = pv.lines.cod.find((x) => x.delivery_id === own);
+  eq(line && line.upi_paise, 30000, 'UPI part listed');
+  const stale = await commit(c.counter, r, pv, { action: 'carry', upi_own_delivery_ids: [own] });
+  eq(stale.status, 409, 'expected must include the switch');
+  eq(stale.body.code, 'CHANGED', 'code');
+  const ok = await commit(c.counter, r, { ...pv, net_paise: pv.net_paise - 30000 }, { action: 'carry', upi_own_delivery_ids: [own] });
+  eq(ok.status, 201, 'with switch ' + JSON.stringify(ok.body));
+  const s = await settlementRow(ok.body.data.settlement_id);
+  eq(P(s.cod_held), 30000, 'cod held 300');
+  eq(JSON.parse(s.upi_own_delivery_ids).map(Number).join(','), String(own), 'switch saved');
+  eq((await deliveryRow(own)).cod_status, 'settled', 'own UPI COD settled');
+  const o = await deliveryRow(other);
+  eq(o.cod_status, 'collected', 'shop UPI COD left for Settlements');
+  eq(o.km_settlement_id, null, 'not linked');
+});
+
+check('settle: stale expected_net is refused with CHANGED', async () => {
+  const c = await getCast();
+  const r = await freshRider();
+  await work(r, 3, 112, 100);
+  const pv = await okPreview(c.counter, r);
+  eq((await api('POST', '/rider-km/corrections', c.mgr, { user_id: r, km: 10, note: 'VerifyRK late trip' })).status, 201, 'correction');
+  const res = await commit(c.counter, r, pv, { action: 'carry' });
+  eq(res.status, 409, 'stale ' + JSON.stringify(res.body));
+  eq(res.body.code, 'CHANGED', 'code');
+  eq(res.body.message, COPY.changed, 'copy');
+  const n = await (await getDb()).prepare('SELECT COUNT(*) AS c FROM rider_km_settlements WHERE user_id = ?').get(r);
+  eq(Number(n.c), 0, 'nothing written');
+});
+
+check('settle: open gaps block settling', async () => {
+  const c = await getCast();
+  const r = await freshRider();
+  await post(c.mgr, r, 'arrive', 100, at(3, '09:00'));
+  await post(c.mgr, r, 'arrive', 500, at(3, '13:00'));
+  await post(c.mgr, r, 'leave', 540, at(3, '18:00'));
+  const p = await preview(c.counter, r);
+  eq(p.status, 409, 'gaps ' + JSON.stringify(p.body));
+  eq(p.body.code, 'GAPS_OPEN', 'code');
+  eq(p.body.message, COPY.gaps, 'copy');
+  const cm = await api('POST', `/rider-km/${r}/settle`, c.counter, { location_id: TEST_LOCATION_ID, expected_net_paise: 0, action: 'carry' });
+  eq(cm.status, 409, 'commit too');
+  eq(cm.body.code, 'GAPS_OPEN', 'commit code');
+  const list = await api('GET', `/rider-km/riders?location_id=${TEST_LOCATION_ID}`, c.counter);
+  eq(list.body.data.find((x) => x.id === r).balance_paise, null, 'balance null with gaps');
+  const v = await view(c.mgr, r);
+  const gap = v.stretches.find((s) => s.kind === 'gap');
+  eq((await api('POST', '/rider-km/gaps', c.counter, { user_id: r, from_reading_id: gap.from_reading_id, to_reading_id: gap.to_reading_id, answer: 'none' })).status, 200, 'answer');
+  eq((await preview(c.counter, r)).status, 200, 'settles after the answer');
+});
+
+check('settle: petrol window follows the cutoff reading and the account start', async () => {
+  const c = await getCast();
+  const r = await freshRider();
+  await work(r, 3, 10, 100);
+  const inside = await petrol(r, 50, 'upi', at(3, '17:59'));
+  const after = await petrol(r, 70, 'upi', at(3, '18:01'));
+  const before = await petrol(r, 90, 'upi', at(4, '12:00'));
+  const p1 = await okPreview(c.counter, r);
+  eq(p1.lines.petrol.map((x) => x.id).join(','), String(inside), 'only the petrol saved before the cutoff');
+  eq(p1.lines.petrol_taken_paise, 5000, 'petrol taken');
+  const s1 = await commit(c.counter, r, p1, { action: 'carry' });
+  eq(s1.status, 201, 's1');
+  await work(r, 2, 10, 112);
+  const p2 = await okPreview(c.counter, r);
+  eq(p2.lines.petrol.map((x) => x.id).join(','), String(after), 'the later petrol comes next time');
+  const db = await getDb();
+  eq((await db.prepare('SELECT km_settlement_id FROM expenses WHERE id = ?').get(before)).km_settlement_id, null, 'petrol before the account start ignored');
+});
+
+check('settle: settle-now and km settle race on one COD', async () => {
+  const c = await getCast();
+  await openOwnRegister();
+  for (let round = 0; round < 2; round++) {
+    const r = await freshRider();
+    await work(r, 3, 112, 100);
+    const d = await cod(r, { cash: 500 });
+    const pv = await okPreview(c.counter, r);
+    const sn = () => api('POST', '/deliveries/settlements/settle-now', c.counter, { delivery_partner_id: r, delivery_ids: [d], location_id: TEST_LOCATION_ID });
+    const km = () => commit(c.counter, r, pv, { action: 'carry' });
+    const [a, b] = round === 0 ? await Promise.all([sn(), km()]) : (await Promise.all([km(), sn()])).reverse();
+    const db = await getDb();
+    const items = Number((await db.prepare('SELECT COUNT(*) AS c FROM delivery_settlement_items WHERE delivery_id = ?').get(d)).c);
+    const row = await deliveryRow(d);
+    const viaKm = row.km_settlement_id != null ? 1 : 0;
+    eq(items + viaKm, 1, `round ${round}: settled exactly once (settle-now ${a.status}, km ${b.status})`);
+    if (viaKm) {
+      eq(b.status, 201, 'km won');
+      eq(a.status, 400, 'settle-now skipped it ' + JSON.stringify(a.body));
+    } else {
+      eq(a.status, 201, 'settle-now won ' + JSON.stringify(a.body));
+      eq(b.status, 409, 'km lost ' + JSON.stringify(b.body));
+      eq(b.body.code, 'CHANGED', 'km CHANGED');
+    }
+    eq(row.cod_status, 'settled', 'settled');
+    console.log(`   race round ${round}: ${viaKm ? 'km settlement' : 'settle-now'} won`);
+  }
+  // Round 3: the km settlement reaches the delivery row lock first (a test
+  // transaction holds the row, km queues, then settle-now queues behind it).
+  const { Client } = require('pg');
+  const r = await freshRider();
+  await work(r, 3, 112, 100);
+  const d = await cod(r, { cash: 500 });
+  const pv = await okPreview(c.counter, r);
+  const holder = new Client({ connectionString: process.env.DATABASE_URL });
+  await holder.connect();
+  let kmP; let snP;
+  try {
+    await holder.query('BEGIN');
+    await holder.query('SELECT id FROM deliveries WHERE id = $1 FOR UPDATE', [d]);
+    kmP = commit(c.counter, r, pv, { action: 'carry' });
+    await new Promise((ok) => setTimeout(ok, 700));
+    snP = api('POST', '/deliveries/settlements/settle-now', c.counter, { delivery_partner_id: r, delivery_ids: [d], location_id: TEST_LOCATION_ID });
+    await new Promise((ok) => setTimeout(ok, 700));
+  } finally {
+    await holder.query('ROLLBACK');
+    await holder.end();
+  }
+  const [k, n] = await Promise.all([kmP, snP]);
+  eq(k.status, 201, 'km got the row first ' + JSON.stringify(k.body));
+  eq(n.status, 400, 'settle-now then skipped it ' + JSON.stringify(n.body));
+  const row = await deliveryRow(d);
+  assert(row.km_settlement_id != null, 'km linked');
+  eq(Number((await (await getDb()).prepare('SELECT COUNT(*) AS c FROM delivery_settlement_items WHERE delivery_id = ?').get(d)).c), 0, 'no settle-now row');
+  const all = await api('POST', '/deliveries/settlements/settle-now', c.counter, { delivery_partner_id: r, location_id: TEST_LOCATION_ID });
+  eq(all.status, 400, 'settle all finds nothing left');
+});
+
+check('settle: two settles at once, one wins', async () => {
+  const c = await getCast();
+  const r = await freshRider();
+  await work(r, 3, 112, 100);
+  const pv = await okPreview(c.counter, r);
+  const both = await Promise.all([commit(c.counter, r, pv, { action: 'carry' }), commit(c.counter2, r, pv, { action: 'carry' })]);
+  const st = both.map((x) => x.status).sort().join(',');
+  eq(st, '201,409', 'one wins ' + JSON.stringify(both.map((x) => x.body)));
+  eq(both.find((x) => x.status === 409).body.code, 'CHANGED', 'loser CHANGED');
+  const n = await (await getDb()).prepare('SELECT COUNT(*) AS c FROM rider_km_settlements WHERE user_id = ?').get(r);
+  eq(Number(n.c), 1, 'one settlement');
+});
+
+check('settle: counter staff can settle; florist 403; salary action owner only', async () => {
+  const c = await getCast();
+  const r = await freshRider();
+  await work(r, 3, 10, 100);
+  for (const who of [c.florist, c.helper, c.customer, c.rider]) {
+    eq((await preview(who, r)).status, 403, 'preview 403 for ' + who);
+  }
+  eq((await api('GET', `/rider-km/riders?location_id=${TEST_LOCATION_ID}`, c.florist)).status, 403, 'florist list');
+  const pv = await okPreview(c.counter, r);
+  const ms = await commit(c.mgr, r, pv, { action: 'salary' });
+  eq(ms.status, 403, 'manager salary');
+  const cs = await commit(c.counter, r, pv, { action: 'salary' });
+  eq(cs.status, 403, 'counter salary');
+  const os = await commit(c.owner, r, pv, { action: 'salary' });
+  eq(os.status, 201, 'owner salary ' + JSON.stringify(os.body));
+  const s = await settlementRow(os.body.data.settlement_id);
+  eq(s.action, 'salary', 'action');
+  eq(P(s.carry_out), pv.net_paise, 'carry = net');
+  const r2 = await freshRider();
+  await work(r2, 3, 10, 100);
+  const cc = await commit(c.counter, r2, await okPreview(c.counter, r2), { action: 'carry' });
+  eq(cc.status, 201, 'counter settles');
+});
+
+check('gap answer is paid no more than the stretch after a reading change', async () => {
+  const c = await getCast();
+  const r = await freshRider();
+  await post(c.mgr, r, 'arrive', 100, at(2, '09:00'));
+  const a2 = await post(c.mgr, r, 'arrive', 500, at(2, '18:00'));
+  const v = await view(c.mgr, r);
+  const gap = v.stretches.find((s) => s.kind === 'gap');
+  eq((await api('POST', '/rider-km/gaps', c.counter, { user_id: r, from_reading_id: gap.from_reading_id, to_reading_id: gap.to_reading_id, answer: 'typed', work_km: 200 })).status, 200, 'answer 200');
+  eq((await api('PUT', `/rider-km/readings/${a2.body.data.reading.id}`, c.mgr, { meter: 200 })).status, 200, 'meter now 200');
+  eq((await view(c.mgr, r)).unsettled.paid_km, 100, 'paid no more than the 100 km stretch');
+});
+
+check('an impossible date is a plain 400', async () => {
+  const c = await getCast();
+  const r = await freshRider();
+  for (const t of ['2026-02-30 25:00', '2026-02-30 10:00', '2026-01-10 10:75']) {
+    const p = await post(c.mgr, r, 'arrive', 100, t);
+    eq(p.status, 400, t + ' ' + JSON.stringify(p.body));
+    eq(p.body.message, 'Pick the date and time again.', 'copy');
+  }
+});
+
+check('settle: rate back-dated after a settlement changes only unsettled km', async () => {
+  const c = await getCast();
+  const r = await freshRider();
+  await work(r, 4, 112, 100);
+  const pv = await okPreview(c.counter, r);
+  const s1 = await commit(c.counter, r, pv, { action: 'carry' });
+  eq(s1.status, 201, 's1');
+  const before = await settlementRow(s1.body.data.settlement_id);
+  const db = await getDb();
+  const eff = at(6, '09:00').slice(0, 10);
+  try {
+    const set = await api('PUT', '/rider-km/rate', c.owner, { rate: 7, effective_from: eff });
+    eq(set.status, 200, 'rate set ' + JSON.stringify(set.body));
+    await work(r, 2, 10, 215);
+    const p2 = await okPreview(c.counter, r);
+    eq(p2.lines.km_paise, 7000, 'new km at the new rate');
+    eq(p2.lines.carried_in_paise, pv.net_paise, 'settled amount carried unchanged');
+    const after = await settlementRow(s1.body.data.settlement_id);
+    eq(P(after.km_amount), P(before.km_amount), 'settled km amount never moves');
+    eq((await view(c.mgr, r)).unsettled.paid_km, 10, 'only unsettled km open');
+  } finally {
+    await db.prepare('DELETE FROM rider_km_rates WHERE effective_from = CAST(? AS date) AND rate = 7').run(eff);
+  }
+});
+
 async function cleanup() {
   const db = await getDb();
   const del = async (label, sql, ...p) => { try { await db.prepare(sql).run(...p); } catch (e) { console.error(`cleanup ${label}: ${e.message}`); } };
+  try { await closeOwnRegister(); } catch (e) { console.error('cleanup close: ' + e.message); }
+  for (const id of createdUserIds) {
+    await del('settle-now items', 'DELETE FROM delivery_settlement_items WHERE settlement_id IN (SELECT id FROM delivery_settlements WHERE delivery_partner_id = ?)', id);
+    await del('settle-now rows', 'DELETE FROM delivery_settlements WHERE delivery_partner_id = ?', id);
+    await del('collections', 'DELETE FROM delivery_collections WHERE delivery_id IN (SELECT id FROM deliveries WHERE delivery_partner_id = ?)', id);
+    await del('deliveries', 'DELETE FROM deliveries WHERE delivery_partner_id = ?', id);
+    await del('money settles', 'DELETE FROM staff_money_settles WHERE money_out_id IN (SELECT id FROM staff_money_out WHERE user_id = ?)', id);
+    await del('money audits', "DELETE FROM audit_logs WHERE entity_type = 'staff_money_out' AND entity_id IN (SELECT id FROM staff_money_out WHERE user_id = ?)", id);
+    await del('shop owes', 'DELETE FROM shop_owes WHERE user_id = ?', id);
+    await del('expenses on lines', 'DELETE FROM expenses WHERE money_out_id IN (SELECT id FROM staff_money_out WHERE user_id = ?)', id);
+  }
+  for (const id of createdSaleIds) await del('sale ' + id, 'DELETE FROM sales WHERE id = ?', id);
   if (rateBefore) {
     const keep = rateBefore.map((x) => x.id);
     await del('rates', `DELETE FROM rider_km_rates WHERE id NOT IN (${keep.map(() => '?').join(',') || '0'})`, ...keep);
@@ -360,6 +960,12 @@ async function cleanup() {
   for (const id of createdItemIds) {
     await del('item ' + id, "DELETE FROM expense_items WHERE id = ? AND name_key LIKE 'verifyrk%'", id);
   }
+  for (const id of createdUserIds) await del('money lines', 'DELETE FROM staff_money_out WHERE user_id = ?', id);
+  for (const id of createdRegisterIds) {
+    await del('register audits', "DELETE FROM audit_logs WHERE entity_type = 'cash_register' AND entity_id = ?", id);
+    await del('register expenses', 'DELETE FROM expenses WHERE register_id = ?', id);
+    await del('register ' + id, 'DELETE FROM cash_registers WHERE id = ?', id);
+  }
   for (const id of createdUserIds) {
     await del('links', 'DELETE FROM user_locations WHERE user_id = ?', id);
     await del('user ' + id, 'DELETE FROM users WHERE id = ?', id);
@@ -372,7 +978,10 @@ async function main() {
   try {
     for (const { name, fn } of checks) {
       try { await fn(); console.log(`PASS ${name}`); pass++; }
-      catch (err) { console.log(`FAIL ${name}\n   ${err.message}`); fail++; }
+      catch (err) {
+        if (err.skip) { console.log(`SKIP ${name}\n   ${err.message}`); continue; }
+        console.log(`FAIL ${name}\n   ${err.message}`); fail++;
+      }
     }
   } finally { await cleanup(); }
   console.log(`\n${pass}/${pass + fail} checks passed`);

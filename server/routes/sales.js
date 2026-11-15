@@ -627,7 +627,11 @@ router.get('/register/status', authenticate, async (req, res, next) => {
           COALESCE((SELECT SUM(ms.returned_amount) FROM staff_money_settles ms
                     WHERE ms.register_id = cr.id AND ms.returned_method = 'cash'), 0) as shopping_in,
           COALESCE((SELECT SUM(op.amount) FROM shop_owes_payments op
-                    WHERE op.register_id = cr.id AND op.method = 'cash'), 0) as owes_paid
+                    WHERE op.register_id = cr.id AND op.method = 'cash'), 0) as owes_paid,
+          COALESCE((SELECT SUM(k.moved_amount) FROM rider_km_settlements k
+                    WHERE k.register_id = cr.id AND k.moved_method = 'cash' AND k.action = 'pay'), 0) as km_paid_out,
+          COALESCE((SELECT SUM(k.moved_amount) FROM rider_km_settlements k
+                    WHERE k.register_id = cr.id AND k.moved_method = 'cash' AND k.action = 'take'), 0) as km_taken_in
         FROM cash_registers cr
         LEFT JOIN users u1 ON cr.opened_by = u1.id
         LEFT JOIN users u2 ON cr.closed_by = u2.id
@@ -643,6 +647,8 @@ router.get('/register/status', authenticate, async (req, res, next) => {
       shopping_out: r2(s.shopping_out),
       shopping_in: r2(s.shopping_in),
       owes_paid: r2(s.owes_paid),
+      km_paid_out: r2(s.km_paid_out),
+      km_taken_in: r2(s.km_taken_in),
     }));
 
     if (register) {
@@ -663,6 +669,9 @@ router.get('/register/status', authenticate, async (req, res, next) => {
       register.shopping_out = moneyLines.shoppingOut;
       register.shopping_in = moneyLines.shoppingIn;
       register.owes_paid = moneyLines.owesPaid;
+      // Rider km settlements: cash paid to or taken from a rider here.
+      register.km_paid_out = moneyLines.kmPaidOut;
+      register.km_taken_in = moneyLines.kmTakenIn;
 
       if (!register.closed_at) {
         // Open session: get net expenses that belong to THIS session (using register_id for
@@ -711,6 +720,8 @@ router.get('/register/status', authenticate, async (req, res, next) => {
                                - register.shopping_out
                                + register.shopping_in
                                - register.owes_paid
+                               - register.km_paid_out
+                               + register.km_taken_in
                                - (Number(register.expected_cash) || 0);
         register.total_expenses_cash = Math.round(inferredExpenses * 100) / 100;
       }
@@ -731,6 +742,7 @@ router.get('/register/status', authenticate, async (req, res, next) => {
           AND d.cod_collected > 0
           AND d.cod_status IN ('collected', 'partial')
           AND d.id NOT IN (SELECT delivery_id FROM delivery_settlement_items)
+          AND d.km_settlement_id IS NULL
       `).get(location_id);
       pendingCodTotal = Number(codRow?.total || 0);
       pendingCodDeliveries = Number(codRow?.count || 0);
@@ -890,6 +902,7 @@ router.put(
               AND d.cod_collected > 0
               AND d.cod_status IN ('collected', 'partial')
               AND d.id NOT IN (SELECT delivery_id FROM delivery_settlement_items)
+              AND d.km_settlement_id IS NULL
           `).get(location_id);
           pendingCod = Math.round(Number(codRow?.total || 0) * 100) / 100;
         } catch (_) { /* non-critical, preview still answers */ }
@@ -1002,7 +1015,11 @@ router.get('/register/history', authenticate, authorize('owner', 'manager'), asy
         COALESCE((SELECT SUM(ms.returned_amount) FROM staff_money_settles ms
                   WHERE ms.register_id = cr.id AND ms.returned_method = 'cash'), 0) as shopping_in,
         COALESCE((SELECT SUM(op.amount) FROM shop_owes_payments op
-                  WHERE op.register_id = cr.id AND op.method = 'cash'), 0) as owes_paid
+                  WHERE op.register_id = cr.id AND op.method = 'cash'), 0) as owes_paid,
+        COALESCE((SELECT SUM(k.moved_amount) FROM rider_km_settlements k
+                  WHERE k.register_id = cr.id AND k.moved_method = 'cash' AND k.action = 'pay'), 0) as km_paid_out,
+        COALESCE((SELECT SUM(k.moved_amount) FROM rider_km_settlements k
+                  WHERE k.register_id = cr.id AND k.moved_method = 'cash' AND k.action = 'take'), 0) as km_taken_in
       FROM cash_registers cr
       LEFT JOIN locations l ON cr.location_id = l.id
       LEFT JOIN users u1 ON cr.opened_by = u1.id
@@ -1023,6 +1040,8 @@ router.get('/register/history', authenticate, authorize('owner', 'manager'), asy
       shopping_out: Math.round((Number(r.shopping_out) || 0) * 100) / 100,
       shopping_in: Math.round((Number(r.shopping_in) || 0) * 100) / 100,
       owes_paid: Math.round((Number(r.owes_paid) || 0) * 100) / 100,
+      km_paid_out: Math.round((Number(r.km_paid_out) || 0) * 100) / 100,
+      km_taken_in: Math.round((Number(r.km_taken_in) || 0) * 100) / 100,
     }));
     res.json({ success: true, data: registers });
   } catch (err) { next(err); }

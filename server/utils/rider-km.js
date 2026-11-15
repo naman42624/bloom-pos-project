@@ -89,7 +89,9 @@ function rateOn(rates, dateStr) {
 
 function paidKmOf(s) {
   if (s.kind === 'work' || s.kind === 'typed') return s.km;
-  if (s.kind === 'gap' && s.answer && s.answer.answer === 'typed') return s.answer.work_km || 0;
+  // A reading changed after the gap was answered can shrink the stretch:
+  // never pay more than the stretch now is.
+  if (s.kind === 'gap' && s.answer && s.answer.answer === 'typed') return Math.max(0, Math.min(Number(s.answer.work_km) || 0, s.km));
   return 0;
 }
 
@@ -121,4 +123,4 @@ function netPaise({ kmPaise = 0, petrolTakenPaise = 0, carriedInPaise = 0, suppl
   return kmPaise - petrolTakenPaise + carriedInPaise - supplyHeldPaise - codHeldPaise;
 }
 
-module.exports = { buildChain, usualHome, rateOn, priceStretches, netPaise };
+module.exports = { buildChain, usualHome, rateOn, priceStretches, netPaise, paidKmOf, localDate };

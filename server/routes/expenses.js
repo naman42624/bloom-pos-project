@@ -597,6 +597,18 @@ const MERGE_TARGET_MESSAGE = 'Pick a different item to merge into.';
 const ITEM_NOT_FOUND_MESSAGE = 'That item was not found. Pull down to refresh.';
 
 const RIDER_PETROL_PICK_MESSAGE = 'Pick the rider from the list so it counts against their km.';
+const RIDER_OWN_PETROL_MESSAGE = "A rider's own petrol is covered by their km pay — no need to add it.";
+// Rows a rider km settlement wrote or counted (expenses.km_settlement_id).
+// Their money stays as settled; the settlement already netted it.
+const KM_SETTLED_CHANGE_MESSAGE = 'This is part of a settled km account, so the amount, method, item and person stay as they are. You can still change the note or photo.';
+const KM_SETTLED_REMOVE_MESSAGE = "This is part of a settled km account, so it can't be removed.";
+// Km account: the method of the settlement's petrol row. Written only by a
+// km settlement, never typed in, and never in any drawer sum (not cash).
+const KM_ACCOUNT = 'km_account';
+async function isRiderUser(db, userId) {
+  if (!userId) return false;
+  return !!(await db.prepare("SELECT 1 AS ok FROM users WHERE id = ? AND role = 'delivery_partner'").get(userId));
+}
 
 const itemOut = (r) => ({
   id: Number(r.id),
@@ -1222,6 +1234,10 @@ router.post(
       if (item && item.is_rider_petrol && givenTo.given_to_name && !givenTo.given_to_user_id) {
         return res.status(400).json({ success: false, message: RIDER_PETROL_PICK_MESSAGE });
       }
+      // A rider's own petrol is paid through km money, never owed back.
+      if (item && item.is_rider_petrol && ownPocket && (await isRiderUser(adb, paidBy))) {
+        return res.status(400).json({ success: false, message: RIDER_OWN_PETROL_MESSAGE });
+      }
       const itemId = item ? item.id : null;
       const finalDescription = composeDescription(item ? item.name : (description || ''), note);
 
@@ -1497,8 +1513,8 @@ router.put(
     body('category').optional().isIn(EXPENSE_CATEGORIES),
     body('amount').optional().isFloat({ min: 0.01, max: 10000000 }),
     body('description').optional({ nullable: true }).trim(),
-    // shopping_money is accepted only when unchanged (checked below).
-    body('payment_method').optional().isIn([...EXPENSE_METHODS, OWN_POCKET, SHOPPING_MONEY]),
+    // shopping_money and km_account are accepted only when unchanged (checked below).
+    body('payment_method').optional().isIn([...EXPENSE_METHODS, OWN_POCKET, SHOPPING_MONEY, KM_ACCOUNT]),
     body('expense_date').optional().matches(/^\d{4}-\d{2}-\d{2}$/),
     body('is_return').optional().isBoolean(),
     body('employee_id').optional({ nullable: true }).isInt(),
@@ -1547,6 +1563,9 @@ router.put(
       if (has('payment_method') && req.body.payment_method === SHOPPING_MONEY && current.payment_method !== SHOPPING_MONEY) {
         return res.status(400).json({ success: false, message: INTO_SHOPPING_MESSAGE });
       }
+      if (has('payment_method') && req.body.payment_method === KM_ACCOUNT && current.payment_method !== KM_ACCOUNT) {
+        return res.status(400).json({ success: false, message: KM_SETTLED_CHANGE_MESSAGE });
+      }
       // Whose pocket, checked before the lock when a new person is sent.
       const staysOwnPocket = (has('payment_method') ? req.body.payment_method : current.payment_method) === OWN_POCKET;
       if (staysOwnPocket && has('paid_by_user_id') && req.body.paid_by_user_id
@@ -1581,6 +1600,15 @@ router.put(
         const effUser = touchesGivenTo ? givenTo.given_to_user_id : current.given_to_user_id;
         if (petrolItem && petrolItem.is_rider_petrol && effName && !effUser) {
           return res.status(400).json({ success: false, message: RIDER_PETROL_PICK_MESSAGE });
+        }
+      }
+      // A rider's own petrol is paid through km money (same rule as adding).
+      if (staysOwnPocket) {
+        const petrolItem = item || (current.item_id ? await adb.prepare('SELECT is_rider_petrol FROM expense_items WHERE id = ?').get(current.item_id) : null);
+        const sentBy = has('paid_by_user_id') && req.body.paid_by_user_id ? Number(req.body.paid_by_user_id) : null;
+        const whose = sentBy || (current.payment_method === OWN_POCKET && current.paid_by_user_id ? Number(current.paid_by_user_id) : Number(req.user.id));
+        if (petrolItem && petrolItem.is_rider_petrol && (await isRiderUser(adb, whose))) {
+          return res.status(400).json({ success: false, message: RIDER_OWN_PETROL_MESSAGE });
         }
       }
 
@@ -1635,6 +1663,14 @@ router.put(
         }
         if ((nv.payment_method === SHOPPING_MONEY) !== (expense.payment_method === SHOPPING_MONEY)) {
           throw httpError(400, expense.payment_method === SHOPPING_MONEY ? MONEY_OUT_LINK_MESSAGE : INTO_SHOPPING_MESSAGE);
+        }
+        if (expense.km_settlement_id != null || expense.payment_method === KM_ACCOUNT || nv.payment_method === KM_ACCOUNT) {
+          const kmMoved = centsOf(nv.amount) !== centsOf(expense.amount)
+            || nv.payment_method !== expense.payment_method
+            || nv.is_return !== (expense.is_return ? 1 : 0)
+            || Number(nv.given_to_user_id || 0) !== Number(expense.given_to_user_id || 0)
+            || Number(nv.item_id || 0) !== Number(expense.item_id || 0);
+          if (kmMoved) throw httpError(400, KM_SETTLED_CHANGE_MESSAGE);
         }
         if (nv.payment_method === OWN_POCKET) {
           if (nv.is_return) throw httpError(400, OWN_POCKET_RETURN_MESSAGE);
@@ -1788,6 +1824,7 @@ router.delete('/:id', authenticate, authorize('owner', 'manager', 'employee', 'c
       const overspend = await lockOverspendOwes(tx, moneyOut);
       const owes = await lockLinkedOwes(tx, expenseId);
       const { expense, oldRegisterId } = await loadForChange(tx, expenseId, req.user);
+      if (expense.km_settlement_id != null || expense.payment_method === KM_ACCOUNT) throw httpError(400, KM_SETTLED_REMOVE_MESSAGE);
       if (advance && advanceTaken(advance)) throw httpError(400, ADVANCE_TAKEN_MESSAGE);
       // Own pocket: what the shop owes for it goes too, unless any was paid back.
       if (owes) {
