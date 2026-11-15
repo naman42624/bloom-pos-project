@@ -150,6 +150,7 @@ Opened from the rider's line on the existing **Shopping money out** card (rename
 - **COD with L** — only the **cash** part of COD the rider has collected and that no `settle-now` has settled (`delivery_collections.method = 'cash'`). UPI COD normally went straight to the shop's account, so it is not taken off by default. A delivery paid partly each way counts only its cash part. Listed per order.
   - **UPI to the rider's own account:** each UPI COD order on the settle sheet has a switch, **Paid to L's own UPI** (off by default). Turning it on counts that amount as held by the rider, the same as cash. If the rider then pays it to the shop's UPI or hands over cash, it is handled by the normal buttons (**Take some now**, Cash or UPI) or simply netted against km money.
   - The switch is saved on the settlement, so the record shows why the amount was taken off.
+  - **Deferred (user, 2026-11-15, rare case):** the delivery's payment still says UPI, so the shop's UPI-received total for that day includes money that went to the rider's own account. Fixing it needs a third COD method ("UPI to rider") in the delivery's COD entry flow; not part of this build.
 
 **W** = K − petrol taken + carried − supply money with L − COD with L.
 
