@@ -449,7 +449,7 @@ router.post('/gaps', authenticate, forGivers, async (req, res, next) => {
     if (!riderId || !fromId || !toId) return res.status(400).json({ success: false, message: MSG.gap });
     if (!['typed', 'none'].includes(b.answer)) return res.status(400).json({ success: false, message: MSG.answer });
     const db = await getDb();
-    if (!(await riderRow(db, riderId))) return res.status(400).json({ success: false, message: MSG.rider });
+    if (!(await riderRow(db, riderId, { includeInactive: true }))) return res.status(400).json({ success: false, message: MSG.rider });
     if (!(await sharesShop(db, req.user, riderId))) return res.status(403).json({ success: false, message: MSG.notYourShop });
 
     const out = await withMoneyTx(async (tx) => {
@@ -499,7 +499,7 @@ router.post('/corrections', authenticate, async (req, res, next) => {
       if (forDate > todayStr()) return res.status(400).json({ success: false, message: MSG.future });
     }
     const db = await getDb();
-    if (!(await riderRow(db, riderId))) return res.status(400).json({ success: false, message: MSG.rider });
+    if (!(await riderRow(db, riderId, { includeInactive: true }))) return res.status(400).json({ success: false, message: MSG.rider });
     if (!(await sharesShop(db, req.user, riderId))) return res.status(403).json({ success: false, message: MSG.notYourShop });
     const out = await withMoneyTx(async (tx) => {
       await lockRider(tx, riderId);

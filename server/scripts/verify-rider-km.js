@@ -1167,6 +1167,53 @@ check('a rider who has left can still be viewed and settled, but gets no new rea
   eq(P((await lastSettlementOf(r)).carry_out), 0, 'nothing left');
 });
 
+check('a rider who has left with an open gap can have it answered, then settle', async () => {
+  const c = await getCast();
+  const r = await freshRider();
+  eq((await post(c.mgr, r, 'arrive', 100, at(3, '09:00'))).status, 201, 'a1');
+  eq((await post(c.mgr, r, 'leave', 120, at(3, '18:00'))).status, 201, 'l1');
+  eq((await post(c.mgr, r, 'arrive', 500, at(2, '09:00'))).status, 201, 'a2');
+  eq((await post(c.mgr, r, 'leave', 520, at(2, '18:00'))).status, 201, 'l2');
+  await (await getDb()).prepare('UPDATE users SET is_active = 0 WHERE id = ?').run(r);
+  const blocked = await preview(c.counter, r);
+  eq(blocked.status, 409, 'gap first ' + JSON.stringify(blocked.body));
+  eq(blocked.body.code, 'GAPS_OPEN', 'GAPS_OPEN');
+  const gap = (await view(c.mgr, r)).stretches.find((x) => x.kind === 'gap');
+  assert(gap, 'gap listed');
+  const ans = await api('POST', '/rider-km/gaps', c.counter, { user_id: r, from_reading_id: gap.from_reading_id, to_reading_id: gap.to_reading_id, answer: 'none' });
+  eq(ans.status, 200, 'answer for a rider who left ' + JSON.stringify(ans.body));
+  const cor = await api('POST', '/rider-km/corrections', c.mgr, { user_id: r, km: 2, note: 'VerifyRK last trip' });
+  eq(cor.status, 201, 'correction for a rider who left ' + JSON.stringify(cor.body));
+  const pv = await okPreview(c.counter, r);
+  eq(pv.lines.paid_km, 42, 'two days + correction');
+  const res = await commit(c.counter, r, pv, { action: 'pay', amount: pv.net_paise / 100, method: 'upi' });
+  eq(res.status, 201, 'final settle ' + JSON.stringify(res.body));
+  eq(P((await lastSettlementOf(r)).carry_out), 0, 'nothing left');
+});
+
+check('applying a rider-owes carry in cash keeps it back from pay and the drawer adds up', async () => {
+  const c = await getCast();
+  const reg = await openOwnRegister();
+  const { r, carry } = await riderWithCarry({ codCash: 500, meter: 900 });
+  assert(carry < 0, 'rider owes ' + carry);
+  const closeExpected = async () => {
+    const p = await api('PUT', '/sales/register/close', c.owner, { location_id: TEST_LOCATION_ID, actual_cash: 0, preview: true });
+    eq(p.status, 200, 'close preview ' + JSON.stringify(p.body));
+    return P(p.body.data.expected_cash);
+  };
+  const before = await drawer(reg);
+  const beforeClose = await closeExpected();
+  const res = await payRider(r, payPeriod(), { payment_method: 'cash', apply_km_carry: true, expected_km_carry_paise: carry });
+  eq(res.status, 201, 'pay ' + JSON.stringify(res.body));
+  eq(P(res.body.data.net_amount), 1500000 + carry, 'pay less what the rider owes');
+  eq(P(before) - P(await drawer(reg)), 1500000 + carry, 'drawer down by salary less the carry');
+  eq(beforeClose - (await closeExpected()), 1500000 + carry, 'close count agrees with the drawer');
+  const s = await lastSettlementOf(r);
+  eq(Number(s.register_id), reg, 'register on the row');
+  eq(s.moved_method, 'cash', 'cash');
+  eq(P(s.carried_in), carry, 'carried in < 0');
+});
+
 check('an old own-pocket rider petrol row can still get a note', async () => {
   const c = await getCast();
   const db = await getDb();

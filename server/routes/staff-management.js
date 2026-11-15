@@ -638,7 +638,7 @@ router.post('/payroll/disburse', authorize('owner'), async (req, res) => {
     const applyKm = req.body.apply_km_carry === true;
     let expectedKmPaise = null;
     if (applyKm) {
-      const payee = db.prepare('SELECT role FROM users WHERE id = ?').get(user_id);
+      const payee = await (await getAsyncDb()).prepare('SELECT role FROM users WHERE id = ?').get(user_id);
       if (!payee || payee.role !== 'delivery_partner') {
         return res.status(400).json({ success: false, message: KM_RIDER_ONLY_MESSAGE });
       }
