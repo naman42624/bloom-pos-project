@@ -326,7 +326,7 @@ export { inr as rupeesText };
 
 const r2p = (p) => fromPaise(Math.round(p));
 
-// The three staff money lines of one register session (spec 4.6), in the
+// The staff money lines (and rider km cash) of one register session (spec 4.6), in the
 // order the screen shows them; only lines with money. sign -1 = left the
 // drawer, +1 = came into it. Names exact (spec 3, 4.6).
 export function registerMoneyLines(session) {
@@ -335,19 +335,24 @@ export function registerMoneyLines(session) {
     { key: 'shopping_out', label: 'Shopping money given', amount: fromPaise(toPaise(s.shopping_out)), sign: -1 },
     { key: 'shopping_in', label: 'Change brought back', amount: fromPaise(toPaise(s.shopping_in)), sign: 1 },
     { key: 'owes_paid', label: 'Shop owes paid back', amount: fromPaise(toPaise(s.owes_paid)), sign: -1 },
+    // Rider km settlements paid or taken in cash at this drawer.
+    { key: 'km_paid_out', label: 'Km paid to riders', amount: fromPaise(toPaise(s.km_paid_out)), sign: -1 },
+    { key: 'km_taken_in', label: 'Km taken from riders', amount: fromPaise(toPaise(s.km_taken_in)), sign: 1 },
   ].filter((l) => toPaise(l.amount) > 0);
 }
 
 // Net cash expenses of a closed session, worked back from its expected cash.
 // Same terms as the server's computeRegisterClose: expected = opening + cash
 // sales - cash refunds - expenses - helper floats + helper handovers -
-// shopping money given + change brought back - Shop owes paid back.
+// shopping money given + change brought back - Shop owes paid back - km
+// paid to riders + km taken from riders.
 export function inferredCashExpenses(session) {
   const s = session || {};
   return r2p(
     toPaise(s.opening_balance) + toPaise(s.total_cash_sales) - toPaise(s.total_refunds_cash)
     - toPaise(s.helper_floats) + toPaise(s.helper_handovers)
     - toPaise(s.shopping_out) + toPaise(s.shopping_in) - toPaise(s.owes_paid)
+    - toPaise(s.km_paid_out) + toPaise(s.km_taken_in)
     - toPaise(s.expected_cash)
   );
 }
@@ -360,13 +365,14 @@ export function expectedFromLines(s0) {
     - toPaise(s.total_expenses_cash)
     - toPaise(s.helper_floats) + toPaise(s.helper_handovers)
     - toPaise(s.shopping_out) + toPaise(s.shopping_in) - toPaise(s.owes_paid)
+    - toPaise(s.km_paid_out) + toPaise(s.km_taken_in)
   );
 }
 
 // The server now sends the per-session cash lines on every session today;
 // an older server sent them only on the current register, so copy them onto
 // the matching session (same values either way).
-const SESSION_LINE_KEYS = ['helper_floats', 'helper_handovers', 'shopping_out', 'shopping_in', 'owes_paid'];
+const SESSION_LINE_KEYS = ['helper_floats', 'helper_handovers', 'shopping_out', 'shopping_in', 'owes_paid', 'km_paid_out', 'km_taken_in'];
 export function withSessionLines(sessions, register) {
   const list = Array.isArray(sessions) ? sessions : [];
   if (!register || register.id == null) return list;

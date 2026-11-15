@@ -821,9 +821,11 @@ router.post('/items/:id/merge', ...OWNER_ONLY, async (req, res, next) => {
       if ((source.category === 'salary') !== (target.category === 'salary')) throw httpError(400, SALARY_ITEM_MESSAGE);
 
       // The exact rows and items that move are kept in the audit, so the merge
-      // can be undone later (POST /items/:id/unmerge).
-      const movedIds = (await tx.prepare('SELECT id FROM expenses WHERE item_id = ? ORDER BY id FOR UPDATE').all(sourceId)).map((r) => Number(r.id));
-      const moved = (await tx.prepare('UPDATE expenses SET item_id = ? WHERE item_id = ?').run(intoId, sourceId)).changes;
+      // can be undone later (POST /items/:id/unmerge). Rows a rider km
+      // settlement counted keep their item (same lock as PUT /:id); they still
+      // count under the target through merged_into.
+      const movedIds = (await tx.prepare('SELECT id FROM expenses WHERE item_id = ? AND km_settlement_id IS NULL ORDER BY id FOR UPDATE').all(sourceId)).map((r) => Number(r.id));
+      const moved = (await tx.prepare('UPDATE expenses SET item_id = ? WHERE item_id = ? AND km_settlement_id IS NULL').run(intoId, sourceId)).changes;
       // Items already merged into the source now point at the target (never chained).
       const repointedIds = (await tx.prepare('SELECT id FROM expense_items WHERE merged_into = ? ORDER BY id FOR UPDATE').all(sourceId)).map((r) => Number(r.id));
       const repointed = (await tx.prepare('UPDATE expense_items SET merged_into = ?, updated_at = CURRENT_TIMESTAMP WHERE merged_into = ?').run(intoId, sourceId)).changes;
@@ -883,7 +885,7 @@ router.post('/items/:id/unmerge', ...OWNER_ONLY, async (req, res, next) => {
       let movedBack = 0;
       if (movedIds && movedIds.length) {
         movedBack = (await tx.prepare(
-          `UPDATE expenses SET item_id = ? WHERE item_id = ? AND id IN (${movedIds.map(() => '?').join(',')})`
+          `UPDATE expenses SET item_id = ? WHERE item_id = ? AND km_settlement_id IS NULL AND id IN (${movedIds.map(() => '?').join(',')})`
         ).run(sourceId, intoId, ...movedIds)).changes;
       }
       let repointedBack = 0;
@@ -1026,8 +1028,8 @@ router.get('/sorted-earlier', ...OWNER_ONLY, async (req, res, next) => {
 });
 
 // POST /api/expenses/assign-items { assignments: [{ expense_id, item_id | item_name, category? }] }
-// One transaction; sets item_id only. Salary rows and rows that already have an
-// item are skipped. One audit row per call (entity_id 0).
+// One transaction; sets item_id only. Salary rows, rows that already have an
+// item and rows a rider km settlement counted are skipped. One audit row per call (entity_id 0).
 router.post('/assign-items', ...OWNER_ONLY, async (req, res, next) => {
   try {
     const list = req.body && req.body.assignments;
@@ -1049,8 +1051,9 @@ router.post('/assign-items', ...OWNER_ONLY, async (req, res, next) => {
       const done = [];
       for (const a of list) {
         const id = Number(a.expense_id);
-        const row = await tx.prepare('SELECT id, category, item_id FROM expenses WHERE id = ? FOR UPDATE').get(id);
-        if (!row || row.item_id || row.category === 'salary') { skipped.push(id); continue; }
+        const row = await tx.prepare('SELECT id, category, item_id, km_settlement_id FROM expenses WHERE id = ? FOR UPDATE').get(id);
+        // Rows a rider km settlement counted keep their item (same lock as PUT /:id).
+        if (!row || row.item_id || row.category === 'salary' || row.km_settlement_id != null) { skipped.push(id); continue; }
         const item = await resolveItem(tx, {
           item_id: a.item_id ? Number(a.item_id) : null, item_name: a.item_name,
           category: a.category || row.category, userId: req.user.id,
@@ -1093,7 +1096,7 @@ router.post('/assign-items/undo', ...OWNER_ONLY, async (req, res, next) => {
       const undone = [];
       const skipped = [];
       for (const p of pairs) {
-        const n = (await tx.prepare('UPDATE expenses SET item_id = NULL WHERE id = ? AND item_id = ?').run(p.expense_id, p.item_id)).changes;
+        const n = (await tx.prepare('UPDATE expenses SET item_id = NULL WHERE id = ? AND item_id = ? AND km_settlement_id IS NULL').run(p.expense_id, p.item_id)).changes;
         if (n) undone.push(p); else skipped.push(p.expense_id);
       }
       if (undone.length) await auditItem(tx, 0, req.user.id, 'expense_assign_items_undo', { assignments: undone }, { expense_ids: undone.map((d) => d.expense_id), item_id: null });

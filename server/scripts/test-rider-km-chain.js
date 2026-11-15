@@ -98,6 +98,12 @@ test('openDay', () => {
   assert.strictEqual(k.buildChain(seq([['leave', 1], ['arrive', 5]]), [], {}).openDay, true);
   assert.strictEqual(k.buildChain([], [], {}).openDay, false);
 });
+test('openDay with a shop today: only an Arriving dated today', () => {
+  const rows = seq([['leave', 1], ['arrive', 5]]);
+  const day = String(rows[1].read_at).slice(0, 10);
+  assert.strictEqual(k.buildChain(rows, [], { today: day }).openDay, true);
+  assert.strictEqual(k.buildChain(rows, [], { today: '2999-01-01' }).openDay, false);
+});
 
 let pass = 0;
 for (const t of tests) {

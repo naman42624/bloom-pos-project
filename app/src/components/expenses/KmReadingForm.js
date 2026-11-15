@@ -30,7 +30,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import api from '../../services/api';
 import useSubmitGuard from '../../hooks/useSubmitGuard';
 import { showAlert, showConfirm } from '../../utils/alert';
-import { suggestKind, workKmText, clockText, readAtFor, clampToNow } from '../../utils/riderKm';
+import { suggestKind, workKmText, clockText, lastReadingLine, readAtFor, clampToNow } from '../../utils/riderKm';
 import DateTimePickerModal from '../DateTimePickerModal';
 import { Colors, FontSize, Spacing, BorderRadius } from '../../constants/theme';
 
@@ -167,10 +167,10 @@ export default function KmReadingForm({ locationId, onBack, onClose, onDone, clo
     await send(false);
   };
 
-  const work = typedMode ? null : workKmText(last, meter.trim());
-  const lastLine = last && last.kind !== 'typed' && last.meter != null
-    ? `Last: ${KIND_WORDS[last.kind] || ''} ${Number(last.meter).toLocaleString('en-IN')} · ${clockText(last.read_at)}`
-    : null;
+  // Km of work only for a Going home after an Arriving (Arriving after
+  // Arriving is a gap, not work).
+  const work = typedMode || kind !== 'leave' ? null : workKmText(last, meter.trim());
+  const lastLine = lastReadingLine(last);
 
   return (
     <>

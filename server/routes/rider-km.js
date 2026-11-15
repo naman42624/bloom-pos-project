@@ -141,14 +141,15 @@ function resolveReadAt(input) {
   return local;
 }
 
-function chainOf(inputs) {
-  return buildChain(inputs.readings, inputs.answers, { usualHomeKm: inputs.usualOverrideKm });
+function chainOf(inputs, today) {
+  return buildChain(inputs.readings, inputs.answers, { usualHomeKm: inputs.usualOverrideKm, today });
 }
 const cutoffOf = (inputs) => (inputs.lastSettlement && inputs.lastSettlement.cutoff_read_at) || null;
 const isUnsettled = (s, cutoff) => !cutoff || String(s.endAt) > cutoff;
 
 function buildView(rider, inputs) {
-  const chain = chainOf(inputs);
+  // read_at is shop-local wall clock, so compare its date with the shop day.
+  const chain = chainOf(inputs, fmtLocal(new Date()).slice(0, 10));
   const cutoff = cutoffOf(inputs);
   const open = chain.stretches.filter((s) => isUnsettled(s, cutoff));
   const corrections = inputs.corrections.filter((c) => c.settlement_id == null);

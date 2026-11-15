@@ -839,6 +839,7 @@ function samePaymentSet(a, b) {
 }
 
 const HELD_CASH_EDIT_MESSAGE = "This sale's cash is with a helper. Undo it within 2 minutes, or refund it from the counter.";
+const KM_SETTLED_EDIT_MESSAGE = "This sale's COD was settled in the rider's km account, so its payment can't be changed here. Use Refund on the sale instead.";
 
 // Register close recompute, shared by the close and its preview so the two
 // can never disagree. Sync db layer (same as the route).
@@ -1323,6 +1324,17 @@ router.put('/:id', authenticate, authorize('owner', 'manager', 'employee', 'coun
         return res.status(409).json({ success: false, message: HELD_CASH_EDIT_MESSAGE });
       }
       payments = undefined;
+    }
+
+    // Rider km account: a COD a km settlement already counted (netted against
+    // the rider's km, deliveries.km_settlement_id) has moved its money there.
+    // Changing the method now would move register cash that settlement never
+    // put in the drawer, so a real payment change is refused the same way.
+    if (Array.isArray(payments) && !samePaymentSet(oldPayments.filter((p) => p.method !== WRITE_OFF_METHOD), payments)) {
+      const kmSettled = await db.prepare('SELECT 1 AS x FROM deliveries WHERE sale_id = ? AND km_settlement_id IS NOT NULL LIMIT 1').get(saleId);
+      if (kmSettled) {
+        return res.status(409).json({ success: false, message: KM_SETTLED_EDIT_MESSAGE });
+      }
     }
 
     if (items && Array.isArray(items)) {

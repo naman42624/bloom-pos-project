@@ -70,7 +70,11 @@ function buildChain(readings, answers, opts = {}) {
 
   return {
     stretches,
-    openDay: !!last && last.kind === 'arrive',
+    // Spec 7: the day is open when the last reading is an Arriving. With
+    // opts.today (shop-local 'YYYY-MM-DD') it must also be dated today, so a
+    // missed Going home on an earlier day is not a rider still out now.
+    openDay: !!last && last.kind === 'arrive'
+      && (!opts.today || String(last.read_at).slice(0, 10) === opts.today),
     usualHomeKm: override != null ? override : usualHome(stretches),
   };
 }

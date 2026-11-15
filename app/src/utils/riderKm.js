@@ -1,10 +1,24 @@
 // Pure helpers for the rider km account (Km reading form, account view).
 const trim1 = (n) => String(Math.round(Number(n) * 10) / 10);
 
-// Arriving and Going home alternate; start on Arriving.
-export function suggestKind(lastReading) {
-  if (!lastReading) return 'arrive';
-  return lastReading.kind === 'arrive' ? 'leave' : 'arrive';
+// Arriving and Going home alternate; start on Arriving. Only a last Arriving
+// dated today (shop day) suggests Going home: after a missed Going home the
+// next morning starts on Arriving again (spec 7).
+export function suggestKind(lastReading, today = shopToday()) {
+  if (!lastReading || lastReading.kind !== 'arrive') return 'arrive';
+  if (lastReading.read_at && String(lastReading.read_at).slice(0, 10) !== today) return 'arrive';
+  return 'leave';
+}
+
+const LAST_KIND_WORDS = { arrive: 'Arriving', leave: 'Going home' };
+
+// "Last: Arriving 12,340 · 9:12 am" today; the date instead of the time on
+// an earlier day ("Last: Arriving 1,000 · 14 Nov"). Null for a typed reading.
+export function lastReadingLine(last, today = shopToday()) {
+  if (!last || last.kind === 'typed' || last.meter == null) return null;
+  const day = String(last.read_at || '').slice(0, 10);
+  const when = day && day !== today ? dayLabel(last.read_at) : clockText(last.read_at);
+  return `Last: ${LAST_KIND_WORDS[last.kind] || ''} ${Number(last.meter).toLocaleString('en-IN')} · ${when}`;
 }
 
 // Shown under the meter: the work done since the last Arriving reading.
@@ -79,6 +93,14 @@ export function dayLabel(local) {
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(local || ''));
   if (!m) return '';
   return `${Number(m[3])} ${MONTHS[Number(m[2]) - 1]}`;
+}
+
+// When a Km rate counts from: "from 1 Nov", or "since the start" for the
+// first rate the server seeded (effective 2000-01-01), which has no real day.
+export const SEED_RATE_DATE = '2000-01-01';
+export function rateFromText(effectiveFrom) {
+  if (String(effectiveFrom || '').slice(0, 10) === SEED_RATE_DATE) return 'since the start';
+  return `from ${dayLabel(effectiveFrom)}`;
 }
 
 // "12–14 Nov", "12 Nov", or "31 Oct – 2 Nov" for two shop-local times.

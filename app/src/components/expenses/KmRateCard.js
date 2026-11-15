@@ -18,7 +18,7 @@ import { Ionicons } from '@expo/vector-icons';
 import api from '../../services/api';
 import useSubmitGuard from '../../hooks/useSubmitGuard';
 import { showAlert } from '../../utils/alert';
-import { kmRateProblem, dayLabel, shopToday } from '../../utils/riderKm';
+import { kmRateProblem, dayLabel, shopToday, rateFromText } from '../../utils/riderKm';
 import DateTimePickerModal from '../DateTimePickerModal';
 import { Colors, FontSize, Spacing, BorderRadius } from '../../constants/theme';
 
@@ -75,7 +75,7 @@ export default function KmRateCard({ navigation }) {
       const d = res.data || {};
       setText('');
       setFrom(null);
-      setNote(`Saved · ${rateText(d.rate)} a km from ${dayLabel(d.effective_from)}`);
+      setNote(`Saved · ${rateText(d.rate)} a km ${rateFromText(d.effective_from)}`);
       load();
     } catch (err) {
       showAlert('Not saved', err?.message || 'The rate was not saved. Check the connection and try again.');
@@ -92,7 +92,7 @@ export default function KmRateCard({ navigation }) {
       <View style={styles.head}>
         <Text style={styles.title}>Km rate</Text>
         {state === 'ready' && rate && rate.effective_from && (
-          <Text style={styles.now}>{`${rateText(rate.rate)} a km · from ${dayLabel(rate.effective_from)}`}</Text>
+          <Text style={styles.now}>{`${rateText(rate.rate)} a km · ${rateFromText(rate.effective_from)}`}</Text>
         )}
       </View>
       {state === 'loading' && <ActivityIndicator color={Colors.primary} style={{ marginVertical: Spacing.sm }} />}

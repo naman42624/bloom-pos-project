@@ -44,14 +44,15 @@ const HistoryCard = ({ session, isToday }) => {
   // received from helpers came into it. Neither is an expense.
   const helperFloats = Number(session.helper_floats || 0);
   const helperHandovers = Number(session.helper_handovers || 0);
-  // Staff money: shopping money given, change brought back and Shop owes
-  // paid back moved drawer cash but are not expenses either.
+  // Staff money: shopping money given, change brought back, Shop owes
+  // paid back and rider km cash moved drawer cash but are not expenses.
   const moneyLines = registerMoneyLines(session);
   
   // Dynamically derive Net Cash Expenses for closed sessions, with the same
   // terms as the server's computeRegisterClose:
   // netExpenses = opening + cashSales - cashRefunds - floats + handovers
-  //               - shopping given + change back - owes paid back - expected
+  //               - shopping given + change back - owes paid back
+  //               - km paid to riders + km taken from riders - expected
   const inferredExpenses = inferredCashExpenses(session);
   const hasDiscrepancy = Math.abs(discrepancy) >= 1;
 

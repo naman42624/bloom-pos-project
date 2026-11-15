@@ -255,8 +255,16 @@ check('rider list shows unsettled km and gaps', async () => {
   eq(list.status, 200, 'list');
   const me = list.body.data.find((x) => x.id === r);
   assert(me, 'rider listed');
-  eq(me.open_day, true, 'open day');
+  // Spec 7: only an Arriving dated today (shop day) leaves the day open; a
+  // missed Going home yesterday is not a rider still out today.
+  eq(me.open_day, false, 'an Arriving from yesterday is not an open day');
+  eq((await view(c.mgr, r)).open_day, false, 'account view: yesterday is not open');
   eq(me.balance_paise, 0, 'nothing to settle yet is a 0 balance');
+  eq((await post(c.counter, r, 'leave', 20, at(1, '18:00'))).status, 201, 'going home yesterday');
+  eq((await post(c.counter, r, 'arrive', 25, at(0, '00:01'))).status, 201, 'arriving today');
+  const me2 = (await api('GET', `/rider-km/riders?location_id=${TEST_LOCATION_ID}`, c.counter)).body.data.find((x) => x.id === r);
+  eq(me2.open_day, true, 'an Arriving today is an open day');
+  eq((await view(c.mgr, r)).open_day, true, 'account view: today is open');
 });
 
 check('rate: owner sets 4 from today; manager cannot', async () => {
@@ -454,6 +462,7 @@ async function kRate(daysAgo) {
   return Number(rates.filter((x) => x.effective_from <= date).sort((a, b) => (a.effective_from < b.effective_from ? 1 : -1))[0].rate);
 }
 
+const KM_SETTLED_SALE_COPY = "This sale's COD was settled in the rider's km account, so its payment can't be changed here. Use Refund on the sale instead.";
 const flow = {};
 check('settle: three signs of net', async () => {
   const c = await getCast();
@@ -546,6 +555,75 @@ check('settle: carry marks COD, shopping and readings settled; drawer unchanged'
   eq(next.lines.carried_in_paise, flow.pv.net_paise, 'carried in next time');
   eq(next.lines.cod.length, 0, 'COD not offered again');
   eq(next.lines.shopping.length, 0, 'shopping not offered again');
+});
+
+check('Edit Sale refuses a payment change on a sale whose COD a km settlement counted', async () => {
+  const c = await getCast();
+  assert(flow.sid, 'needs the carry flow');
+  const db = await getDb();
+  const saleId = Number((await deliveryRow(flow.codId)).sale_id);
+  // A COD payment row (the close counts it as cash, so it is removed again
+  // below to keep the later drawer checks to their own money).
+  await db.prepare("INSERT INTO payments (sale_id, method, amount, received_by) VALUES (?, 'cash', 500, ?)").run(saleId, flow.r);
+  try {
+    const before = await drawer(flow.reg);
+    const res = await api('PUT', `/sales/${saleId}`, c.owner, { payments: [{ method: 'upi', amount: 500 }] });
+    eq(res.status, 409, 'payment change refused ' + JSON.stringify(res.body));
+    eq(res.body.message, KM_SETTLED_SALE_COPY, 'copy');
+    const pays = await db.prepare('SELECT method, amount FROM payments WHERE sale_id = ?').all(saleId);
+    eq(pays.length, 1, 'payment row kept');
+    eq(pays[0].method, 'cash', 'method unchanged');
+    eq(await drawer(flow.reg), before, 'drawer unchanged');
+    // The same payments sent back unchanged with a note still save.
+    const ok = await api('PUT', `/sales/${saleId}`, c.owner, { payments: [{ method: 'cash', amount: 500 }], customer_notes: 'VerifyRK note' });
+    eq(ok.status, 200, 'unchanged payments + note ' + JSON.stringify(ok.body));
+  } finally {
+    await db.prepare('DELETE FROM payments WHERE sale_id = ?').run(saleId);
+  }
+});
+
+check('item merge and sorting leave km-settled rows on their item', async () => {
+  const c = await getCast();
+  assert(flow.sid, 'needs the carry flow');
+  const db = await getDb();
+  const tag = String(Date.now()).slice(-7);
+  const mk = async (n) => {
+    const row = await db.prepare("INSERT INTO expense_items (name, name_key, category) VALUES (?, ?, 'transport') RETURNING id").get(`VerifyRK Merge ${n} ${tag}`, `verifyrk merge ${n.toLowerCase()} ${tag}`);
+    createdItemIds.push(row.id);
+    return Number(row.id);
+  };
+  const a = await mk('A');
+  const b = await mk('B');
+  const exp = async (itemId, kmSid) => Number((await db.prepare(`INSERT INTO expenses (location_id, category, amount, description, payment_method, expense_date, created_by, item_id, km_settlement_id)
+    VALUES (?, 'transport', 10, 'VerifyRK merge row', 'upi', CURRENT_DATE, ?, ?, ?) RETURNING id`).get(TEST_LOCATION_ID, c.owner, itemId, kmSid)).id);
+  const plain = await exp(a, null);
+  const settled = await exp(a, flow.sid);
+  let loose = null;
+  try {
+    const m = await api('POST', `/expenses/items/${a}/merge`, c.owner, { into_id: b });
+    eq(m.status, 200, 'merge ' + JSON.stringify(m.body));
+    const itemOf = async (id) => Number((await db.prepare('SELECT item_id FROM expenses WHERE id = ?').get(id)).item_id);
+    eq(await itemOf(plain), b, 'plain row moved');
+    eq(await itemOf(settled), a, 'km-settled row kept its item');
+    eq(m.body.data.moved, 1, 'moved count leaves out the settled row');
+    // Sorting an entry with no item skips a km-settled row.
+    loose = Number((await db.prepare(`INSERT INTO expenses (location_id, category, amount, description, payment_method, expense_date, created_by, km_settlement_id)
+      VALUES (?, 'transport', 10, 'VerifyRK loose row', 'upi', CURRENT_DATE, ?, ?) RETURNING id`).get(TEST_LOCATION_ID, c.owner, flow.sid)).id);
+    const as = await api('POST', '/expenses/assign-items', c.owner, { assignments: [{ expense_id: loose, item_id: b }] });
+    eq(as.status, 200, 'assign ' + JSON.stringify(as.body));
+    eq(as.body.data.assigned, 0, 'nothing assigned');
+    assert(as.body.data.skipped.includes(loose), 'km-settled row skipped');
+    eq((await db.prepare('SELECT item_id FROM expenses WHERE id = ?').get(loose)).item_id, null, 'still no item');
+    // Take out (undo) never clears the item of a km-settled row either.
+    const un = await api('POST', '/expenses/assign-items/undo', c.owner, { assignments: [{ expense_id: settled, item_id: a }] });
+    eq(un.status, 200, 'undo ' + JSON.stringify(un.body));
+    eq(un.body.data.undone, 0, 'nothing undone');
+    eq(await itemOf(settled), a, 'km-settled row kept its item after undo');
+  } finally {
+    // These rows are not part of the settlement's money; remove them so the
+    // petrol book check below sees only the real settlement rows.
+    await db.prepare(`DELETE FROM expenses WHERE id IN (?, ?, ?)`).run(plain, settled, loose || 0);
+  }
 });
 
 check('settle: petrol book equals K', async () => {
@@ -1360,6 +1438,8 @@ async function cleanup() {
     await del('shop owes', 'DELETE FROM shop_owes WHERE user_id = ?', id);
     await del('expenses on lines', 'DELETE FROM expenses WHERE money_out_id IN (SELECT id FROM staff_money_out WHERE user_id = ?)', id);
   }
+  for (const id of createdSaleIds) await del('sale payments ' + id, 'DELETE FROM payments WHERE sale_id = ?', id);
+  for (const id of createdSaleIds) await del('sale audits ' + id, "DELETE FROM audit_logs WHERE entity_type = 'sale' AND entity_id = ?", id);
   for (const id of createdSaleIds) await del('sale ' + id, 'DELETE FROM sales WHERE id = ?', id);
   if (rateBefore) {
     const keep = rateBefore.map((x) => x.id);

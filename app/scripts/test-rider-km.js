@@ -20,6 +20,21 @@ test('suggestKind: none -> arrive', () => assert.strictEqual(k.suggestKind(null)
 test('suggestKind: last arrive -> leave', () => assert.strictEqual(k.suggestKind({ kind: 'arrive' }), 'leave'));
 test('suggestKind: last leave -> arrive', () => assert.strictEqual(k.suggestKind({ kind: 'leave' }), 'arrive'));
 test('suggestKind: last typed -> arrive', () => assert.strictEqual(k.suggestKind({ kind: 'typed' }), 'arrive'));
+// Ruling 18 / spec 7: only a last Arriving dated today means Going home next.
+test('suggestKind: last arrive today -> leave', () =>
+  assert.strictEqual(k.suggestKind({ kind: 'arrive', read_at: '2026-11-15 09:00:00' }, '2026-11-15'), 'leave'));
+test('suggestKind: last arrive on an earlier day -> arrive', () =>
+  assert.strictEqual(k.suggestKind({ kind: 'arrive', read_at: '2026-11-14 09:00:00' }, '2026-11-15'), 'arrive'));
+test('suggestKind: last leave yesterday -> arrive', () =>
+  assert.strictEqual(k.suggestKind({ kind: 'leave', read_at: '2026-11-14 19:00:00' }, '2026-11-15'), 'arrive'));
+test('lastReadingLine: time today, date on an earlier day', () => {
+  assert.strictEqual(k.lastReadingLine({ kind: 'arrive', meter: 12340, read_at: '2026-11-15 09:12:00' }, '2026-11-15'),
+    'Last: Arriving 12,340 · 9:12 am');
+  assert.strictEqual(k.lastReadingLine({ kind: 'arrive', meter: 1000, read_at: '2026-11-14 09:12:00' }, '2026-11-15'),
+    'Last: Arriving 1,000 · 14 Nov');
+  assert.strictEqual(k.lastReadingLine({ kind: 'typed', typed_km: 5, read_at: '2026-11-15 09:12:00' }, '2026-11-15'), null);
+  assert.strictEqual(k.lastReadingLine(null, '2026-11-15'), null);
+});
 
 test('workKmText: arrive then higher meter', () =>
   assert.strictEqual(k.workKmText({ kind: 'arrive', meter: 12340 }, 12386), '→ 46 km of work'));
@@ -277,6 +292,11 @@ test('kmApplyDefault: off while unsettled or nothing carried', () => {
   assert.strictEqual(k.kmApplyDefault({ carried_paise: 0, unsettled: false }), false);
   assert.strictEqual(k.kmApplyDefault({ carried_paise: -100, unsettled: false }), true);
   assert.strictEqual(k.kmApplyDefault(null), false);
+});
+test('rateFromText: the seed rate says since the start', () => {
+  assert.strictEqual(k.rateFromText('2000-01-01'), 'since the start');
+  assert.strictEqual(k.rateFromText('2026-11-01'), 'from 1 Nov');
+  assert.strictEqual(k.rateFromText('2026-11-01T00:00:00'), 'from 1 Nov');
 });
 test('kmRateProblem and usualHomeProblem match the server', () => {
   assert.strictEqual(k.kmRateProblem('3'), null);

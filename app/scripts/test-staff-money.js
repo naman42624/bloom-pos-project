@@ -304,6 +304,25 @@ test('withSessionLines: copies the current register lines onto its session only'
   assert.deepStrictEqual(out[1], { id: 8 });
   assert.deepStrictEqual(s.withSessionLines([{ id: 1 }], null), [{ id: 1 }]);
 });
+test('registerMoneyLines: km paid to riders (-) and taken from riders (+)', () => {
+  const l = s.registerMoneyLines({ shopping_out: 0, km_paid_out: 152, km_taken_in: '24.50' });
+  assert.deepStrictEqual(l.map((x) => [x.key, x.label, x.amount, x.sign]),
+    [['km_paid_out', 'Km paid to riders', 152, -1], ['km_taken_in', 'Km taken from riders', 24.5, 1]]);
+});
+test('inferredCashExpenses / expectedFromLines: km cash is not an expense', () => {
+  // opening 1000 + sales 500 - expenses 100 - km paid 152 + km taken 24 = 1272
+  const session = { opening_balance: 1000, total_cash_sales: 500, km_paid_out: 152, km_taken_in: 24, expected_cash: 1272 };
+  assert.strictEqual(s.inferredCashExpenses(session), 100);
+  assert.strictEqual(s.expectedFromLines({ ...session, total_expenses_cash: 100 }), 1272);
+  // Open session: the shown lines add up to Expected in Drawer.
+  const open = { opening_balance: 1000, total_cash_sales: 500, total_expenses_cash: 100, km_paid_out: 152, km_taken_in: 24 };
+  const sum = 1000 + 500 - 100 + s.registerMoneyLines(open).reduce((t, x) => t + x.sign * x.amount, 0);
+  assert.strictEqual(sum, s.expectedFromLines(open));
+});
+test('withSessionLines: copies km lines too', () => {
+  const out = s.withSessionLines([{ id: 7 }], { id: 7, km_paid_out: 152, km_taken_in: 0 });
+  assert.deepStrictEqual(out[0], { id: 7, km_paid_out: 152, km_taken_in: 0 });
+});
 test('stillOutLines: "₹500 still with Ramesh"', () => {
   assert.deepStrictEqual(s.stillOutLines([{ user_name: 'Ramesh Kumar', remaining: 500 }, { user_name: 'Asha', remaining: 0 }]),
     ['₹500 still with Ramesh']);
