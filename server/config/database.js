@@ -1193,6 +1193,104 @@ function ensureCompatibilityColumns() {
   runPsql("CREATE UNIQUE INDEX IF NOT EXISTS idx_shop_owes_own_pocket_expense ON shop_owes(expense_id) WHERE source = 'own_pocket' AND expense_id IS NOT NULL");
   runPsql('CREATE INDEX IF NOT EXISTS idx_expenses_money_out ON expenses(money_out_id)');
   runPsql('CREATE INDEX IF NOT EXISTS idx_expenses_paid_by_user ON expenses(paid_by_user_id)');
+
+  // Rider km account: bike meter readings, paid km and settlements. Additive only.
+  runPsql(`
+    CREATE TABLE IF NOT EXISTS rider_km_settlements (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id),
+      location_id INTEGER REFERENCES locations(id) ON DELETE SET NULL,
+      cutoff_reading_id INTEGER,
+      paid_km DECIMAL(10,1),
+      km_amount DECIMAL(10,2),
+      petrol_book DECIMAL(10,2),
+      petrol_taken DECIMAL(10,2),
+      carried_in DECIMAL(10,2),
+      supply_held DECIMAL(10,2),
+      cod_held DECIMAL(10,2),
+      net_amount DECIMAL(10,2),
+      action VARCHAR(10) CHECK (action IN ('pay','carry','take','salary','zero')),
+      moved_amount DECIMAL(10,2),
+      moved_method VARCHAR(10),
+      register_id INTEGER REFERENCES cash_registers(id) ON DELETE SET NULL,
+      carry_out DECIMAL(10,2),
+      expense_id INTEGER REFERENCES expenses(id) ON DELETE SET NULL,
+      upi_own_delivery_ids TEXT,
+      lines_json JSONB,
+      created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      salary_payment_id INTEGER
+    )
+  `);
+  runPsql(`
+    CREATE TABLE IF NOT EXISTS rider_km_readings (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id),
+      location_id INTEGER REFERENCES locations(id) ON DELETE SET NULL,
+      kind VARCHAR(10) NOT NULL CHECK (kind IN ('arrive','leave','typed')),
+      meter DECIMAL(10,1),
+      typed_km DECIMAL(10,1),
+      read_at TIMESTAMP NOT NULL,
+      note TEXT,
+      created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      settlement_id INTEGER REFERENCES rider_km_settlements(id) ON DELETE SET NULL,
+      removed_at TIMESTAMP,
+      removed_by INTEGER REFERENCES users(id) ON DELETE SET NULL
+    )
+  `);
+  runPsql(`
+    CREATE TABLE IF NOT EXISTS rider_km_gap_answers (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id),
+      from_reading_id INTEGER NOT NULL REFERENCES rider_km_readings(id),
+      to_reading_id INTEGER NOT NULL REFERENCES rider_km_readings(id),
+      answer VARCHAR(10) NOT NULL CHECK (answer IN ('typed','none')),
+      work_km DECIMAL(10,1),
+      answered_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      settlement_id INTEGER REFERENCES rider_km_settlements(id) ON DELETE SET NULL,
+      UNIQUE (from_reading_id, to_reading_id)
+    )
+  `);
+  runPsql(`
+    CREATE TABLE IF NOT EXISTS rider_km_corrections (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id),
+      km DECIMAL(10,1) NOT NULL,
+      note TEXT NOT NULL,
+      for_date DATE,
+      created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      settlement_id INTEGER REFERENCES rider_km_settlements(id) ON DELETE SET NULL
+    )
+  `);
+  runPsql(`
+    CREATE TABLE IF NOT EXISTS rider_km_rates (
+      id SERIAL PRIMARY KEY,
+      rate DECIMAL(10,2) NOT NULL,
+      effective_from DATE NOT NULL,
+      set_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  runPsql("INSERT INTO rider_km_rates (rate, effective_from) SELECT 3, '2000-01-01' WHERE NOT EXISTS (SELECT 1 FROM rider_km_rates)");
+  runPsql('CREATE INDEX IF NOT EXISTS idx_rider_km_readings_user_read ON rider_km_readings(user_id, read_at)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_rider_km_settlements_user ON rider_km_settlements(user_id, id)');
+  runPsql('CREATE INDEX IF NOT EXISTS idx_rider_km_settlements_register ON rider_km_settlements(register_id)');
+  ensureColumn('users', 'km_usual_home_ride', 'DECIMAL(10,1)');
+  ensureColumn('deliveries', 'km_settlement_id', 'INTEGER REFERENCES rider_km_settlements(id) ON DELETE SET NULL');
+  ensureColumn('expenses', 'km_settlement_id', 'INTEGER REFERENCES rider_km_settlements(id) ON DELETE SET NULL');
+  ensureColumn('staff_money_out', 'km_settlement_id', 'INTEGER REFERENCES rider_km_settlements(id) ON DELETE SET NULL');
+  // Which expense item is the rider petrol advance. Flagged once from the
+  // item named Petrol; the owner can change it later, so never re-run.
+  ensureColumn('expense_items', 'is_rider_petrol', 'BOOLEAN DEFAULT FALSE');
+  runPsql(`
+    UPDATE expense_items SET is_rider_petrol = TRUE
+    WHERE LOWER(REGEXP_REPLACE(name, '\\s+', '', 'g')) = 'petrol'
+      AND NOT EXISTS (SELECT 1 FROM settings WHERE key = 'rider_petrol_backfilled')
+  `);
+  runPsql(`INSERT INTO settings (key, value, description) VALUES ('rider_petrol_backfilled', 'done', 'Marker: rider petrol flag backfilled once from the item named Petrol') ON CONFLICT (key) DO NOTHING`);
   for (const [k, v, d] of [
     ['advance_daily_limit', '500', 'Most salary advance one person can get in a day without a manager or owner PIN'],
     ['advance_monthly_limit', '2000', 'Most salary advance one person can get in a month without a manager or owner PIN'],
