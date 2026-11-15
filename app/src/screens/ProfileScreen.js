@@ -10,6 +10,7 @@ import DismissKeyboard from '../components/DismissKeyboard';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import { appAlert } from '../utils/alert';
 import { myMoneySummary, rupeesText } from '../utils/staffMoney';
+import { myKmMoney } from '../utils/riderKm';
 
 // Who has "My money" (spec 5.1): GET /staff-money/mine answers these roles.
 const MY_MONEY_ROLES = ['manager', 'employee', 'counter_staff', 'florist_staff', 'delivery_partner'];
@@ -32,6 +33,8 @@ export default function ProfileScreen() {
   // My money (spec 4.5, 5.8): only the caller's own figures.
   const showMyMoney = MY_MONEY_ROLES.includes(user?.role);
   const [myMoney, setMyMoney] = useState(null);
+  // Riders: My km money (rider km account spec 10), from the same call.
+  const [myKm, setMyKm] = useState(null);
   const [myMoneyState, setMyMoneyState] = useState('loading'); // loading | ok | error
   const loadMyMoney = useCallback(async () => {
     if (!showMyMoney) return;
@@ -39,6 +42,7 @@ export default function ProfileScreen() {
     try {
       const res = await api.getMyStaffMoney();
       setMyMoney(myMoneySummary(res && res.data));
+      setMyKm(myKmMoney(res && res.data && res.data.km));
       setMyMoneyState('ok');
     } catch (e) {
       setMyMoneyState('error');
@@ -228,6 +232,35 @@ export default function ProfileScreen() {
         </View>
       )}
 
+      {/* My km money (riders only; read-only) */}
+      {showMyMoney && myKm && (
+        <View style={styles.section}>
+          <Text style={[styles.sectionTitle, { marginBottom: Spacing.sm }]}>My km money</Text>
+          <View style={styles.kmRow}>
+            <Text style={styles.kmLine}>{myKm.notSettled}</Text>
+            {myKm.taken ? <Text style={styles.kmLine}>{myKm.taken}</Text> : null}
+            <Text style={styles.kmBalance}>{myKm.balance}</Text>
+          </View>
+          {myKm.past.length > 0 && (
+            <View style={styles.kmRow}>
+              <Text style={styles.kmSubhead}>Past settlements</Text>
+              {myKm.past.map((p) => (
+                <Text key={p.id} style={styles.kmLine}>{p.text}</Text>
+              ))}
+            </View>
+          )}
+          <TouchableOpacity
+            style={[styles.moneyRow, styles.kmLink]}
+            onPress={() => navigation.navigate('RiderKm', { mine: true })}
+            accessibilityRole="button"
+            accessibilityLabel="See my km readings"
+          >
+            <Text style={styles.moneyLinkText}>Readings</Text>
+            <Ionicons name="chevron-forward" size={20} color={Colors.textSecondary} />
+          </TouchableOpacity>
+        </View>
+      )}
+
       {/* Change Password */}
       <View style={styles.section}>
         <TouchableOpacity
@@ -391,6 +424,11 @@ const styles = StyleSheet.create({
   moneySub: { fontSize: FontSize.sm, color: Colors.textSecondary },
   moneyError: { flex: 1, fontSize: FontSize.md, color: Colors.textSecondary },
   moneyLinkText: { flex: 1, fontSize: FontSize.md, color: Colors.text },
+  kmRow: { borderTopWidth: 1, borderTopColor: Colors.border, paddingVertical: Spacing.sm, gap: Spacing.xs },
+  kmLine: { fontSize: FontSize.md, color: Colors.text, fontVariant: ['tabular-nums'] },
+  kmBalance: { fontSize: FontSize.lg, fontWeight: '700', color: Colors.text, fontVariant: ['tabular-nums'] },
+  kmLink: { minHeight: 48 },
+  kmSubhead: { fontSize: FontSize.md, fontWeight: '600', color: Colors.textSecondary },
   versionText: {
     textAlign: 'center',
     fontSize: FontSize.xs,

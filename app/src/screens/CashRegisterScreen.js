@@ -12,6 +12,7 @@ import { buildQuickSalePayload, amountError, TOPUP_LABEL } from '../utils/quickS
 import { METHOD_COLOR } from '../components/quickSale/QuickSaleRoll';
 import useSubmitGuard from '../hooks/useSubmitGuard';
 import ReceiveCashSheet from '../components/helperCash/ReceiveCashSheet';
+import KmCloseReminder from '../components/expenses/KmCloseReminder';
 import { closeWarningLines, handoverDoneText } from '../utils/helperCash';
 import { lastCloseFromStatus, lastCloseCashText, lastCloseHint } from '../utils/lastClose';
 import { registerMoneyLines, inferredCashExpenses, expectedFromLines, withSessionLines, stillOutLines } from '../utils/staffMoney';
@@ -757,6 +758,8 @@ export default function CashRegisterScreen({ navigation, route }) {
         <View style={styles.formSection}>
           <Text style={styles.sectionTitle}>Close Session</Text>
           <View style={styles.formCard}>
+            {/* Riders still out: a reminder only, never in the close's way. */}
+            {isCashHandlingStaff && <KmCloseReminder locationId={selectedLocation} />}
             <Text style={styles.formLabel}>Actual Cash in Drawer</Text>
             <View style={styles.inputWrap}>
               <Text style={styles.inputSymbol}>₹</Text>

@@ -238,3 +238,94 @@ export function shopToday(now = new Date()) {
   for (const p of new Intl.DateTimeFormat('en-US', { timeZone: SHOP_TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(now)) parts[p.type] = p.value;
   return `${parts.year}-${parts.month}-${parts.day}`;
 }
+
+// ─── Task 7: rider view, settings, close reminder, payroll ───
+export function firstName(name) {
+  return String(name || '').trim().split(/\s+/)[0] || 'The rider';
+}
+
+// Register close: riders still out (last reading today is Arriving).
+// "L has no going-home reading — Add now".
+export function goingHomeReminders(list) {
+  return (list || [])
+    .filter((r) => r && r.open_day === true && r.is_active !== false)
+    .map((r) => ({
+      id: Number(r.id), name: r.name, first: firstName(r.name),
+      text: `${firstName(r.name)} has no going-home reading — Add now`,
+    }));
+}
+
+// My km money on Profile (spec 10), from the /staff-money/mine km block.
+export function myKmMoney(km) {
+  if (!km) return null;
+  const taken = [];
+  if (Number(km.petrol_taken_paise) > 0) taken.push(`Petrol taken ${rupees(km.petrol_taken_paise)}`);
+  if (Number(km.cod_held_paise) > 0) taken.push(`COD ${rupees(km.cod_held_paise)}`);
+  const b = km.balance_paise;
+  let balance;
+  if (Number(km.gaps_open) > 0 || b === null || b === undefined) balance = 'Some km need a check at the counter first.';
+  else if (Number(b) < 0) balance = `Owed by you now: ${rupees(b)}`;
+  else if (Number(b) > 0) balance = `Shop owes you now: ${rupees(b)}`;
+  else balance = 'Nothing owed now';
+  return {
+    notSettled: `Not settled yet: ${trim1(km.unsettled_km || 0)} km · ${rupees(km.unsettled_paise)}`,
+    taken: taken.length ? taken.join(' · ') : null,
+    balance,
+    past: (km.last || []).map((h) => ({
+      id: h.id,
+      text: pastSettlementText({
+        ...h,
+        moved_amount: (Number(h.moved_paise) || 0) / 100,
+        carry_out: (Number(h.carry_out_paise) || 0) / 100,
+      }),
+    })),
+  };
+}
+
+// Payroll's Km balance line. payPaise is the pay before the carry (what the
+// app sends as net_amount; the server applies the carry, Ruling 11). The
+// take-home shown is display only.
+export function payrollKmView(km, name, payPaise, apply) {
+  if (!km) return null;
+  const carry = Number(km.carried_paise) || 0;
+  const pay = Number(payPaise) || 0;
+  const first = firstName(name);
+  const tooBig = carry < 0 && pay + carry < 0;
+  const canApply = carry !== 0 && !tooBig;
+  const applied = !!apply && canApply;
+  let balanceText = 'Nothing carried';
+  if (carry > 0) balanceText = `Shop owes ${first} ${rupees(carry)}`;
+  if (carry < 0) balanceText = `${first} owes ${rupees(carry)}`;
+  return {
+    carry, balanceText, canApply, tooBig, applied,
+    unsettled: !!km.unsettled,
+    settleFirst: km.unsettled ? (km.settle_first_message || `${first} has km not settled — Settle km first`) : null,
+    takeHomePaise: pay + (applied ? carry : 0),
+  };
+}
+
+// The tick starts on only when nothing is waiting to be settled.
+export function kmApplyDefault(km) {
+  return !!km && !km.unsettled && (Number(km.carried_paise) || 0) !== 0;
+}
+
+// Extra disburse fields; empty unless the carry is applied.
+export function kmDisburseFields(view) {
+  if (!view || !view.applied) return {};
+  return { apply_km_carry: true, expected_km_carry_paise: view.carry };
+}
+
+// Km rate (owner): null when the text is a rate the server takes.
+export function kmRateProblem(text) {
+  const t = String(text === undefined || text === null ? '' : text).trim();
+  if (!/^\d{1,4}(\.\d{1,2})?$/.test(t) || Math.round(Number(t) * 100) <= 0) return 'Type a rate above ₹0, like 3.';
+  return null;
+}
+
+// Usual home ride (owner/manager): empty = work it out from the readings.
+export function usualHomeProblem(text) {
+  const t = String(text === undefined || text === null ? '' : text).trim();
+  if (t === '') return null;
+  if (!/^\d{1,3}(\.\d)?$/.test(t) || Number(t) <= 0 || Number(t) > 200) return 'Type the usual home ride in km, like 8, or leave it empty.';
+  return null;
+}

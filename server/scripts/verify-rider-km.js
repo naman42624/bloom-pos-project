@@ -239,7 +239,9 @@ check('corrections and usual home ride', async () => {
   eq((await api('PUT', `/rider-km/${r}/usual-home`, c.counter, { km: 8 })).status, 403, 'counter usual');
   eq((await api('PUT', `/rider-km/${r}/usual-home`, c.mgr, { km: 8 })).status, 200, 'manager usual');
   eq((await view(c.mgr, r)).usual_home_km, 8, 'usual shown');
+  eq((await view(c.mgr, r)).usual_home_set_km, 8, 'usual set by hand shown');
   eq((await api('PUT', `/rider-km/${r}/usual-home`, c.mgr, { km: null })).status, 200, 'clear');
+  eq((await view(c.mgr, r)).usual_home_set_km, null, 'cleared: worked out from the rides');
   const db = await getDb();
   const au = await db.prepare("SELECT COUNT(*) AS c FROM audit_logs WHERE entity_type = 'rider_km' AND action IN ('km_correction','km_usual_home_set') AND user_id = ?").get(c.mgr);
   assert(Number(au.c) >= 3, 'audit rows ' + au.c);

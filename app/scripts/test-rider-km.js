@@ -212,6 +212,85 @@ test('pastSettlementText: a Take from salary carry says payroll', () => {
   assert.strictEqual(k.pastSettlementText({ created_at: '2026-11-03T12:00:00.000Z', paid_km: 40, action: 'carry', for_salary: true, carry_out: -200 }), '3 Nov · 40 km · taken at payroll');
 });
 
+// ─── Task 7 ───
+test('goingHomeReminders: only active riders with an open day, first name', () => {
+  const out = k.goingHomeReminders([
+    { id: 1, name: 'Lakshman Rao', open_day: true, is_active: true },
+    { id: 2, name: 'Ravi', open_day: false },
+    { id: 3, name: 'Old', open_day: true, is_active: false },
+  ]);
+  assert.deepStrictEqual(out.map((r) => r.id), [1]);
+  assert.strictEqual(out[0].text, 'Lakshman has no going-home reading — Add now');
+  assert.deepStrictEqual(k.goingHomeReminders(null), []);
+});
+test('myKmMoney: spec 10 lines, rider owes', () => {
+  const m = k.myKmMoney({ unsettled_km: 112, unsettled_paise: 33600, petrol_taken_paise: 20000, cod_held_paise: 50000, gaps_open: 0, balance_paise: -40400, last: [] });
+  assert.strictEqual(m.notSettled, 'Not settled yet: 112 km · ₹336');
+  assert.strictEqual(m.taken, 'Petrol taken ₹200 · COD ₹500');
+  assert.strictEqual(m.balance, 'Owed by you now: ₹404');
+});
+test('myKmMoney: shop owes, nothing, gaps open, nothing taken', () => {
+  assert.strictEqual(k.myKmMoney({ balance_paise: 22600 }).balance, 'Shop owes you now: ₹226');
+  assert.strictEqual(k.myKmMoney({ balance_paise: 0 }).balance, 'Nothing owed now');
+  assert.strictEqual(k.myKmMoney({ gaps_open: 1, balance_paise: null }).balance, 'Some km need a check at the counter first.');
+  assert.strictEqual(k.myKmMoney({ balance_paise: 0 }).taken, null);
+  assert.strictEqual(k.myKmMoney(null), null);
+});
+test('myKmMoney: past lines from paise', () => {
+  const m = k.myKmMoney({ balance_paise: 0, last: [
+    { id: 9, action: 'pay', paid_km: 210, moved_paise: 38000, moved_method: 'upi', carry_out_paise: 0, created_at: '2026-11-08T12:00:00.000Z' },
+    { id: 8, action: 'carry', paid_km: 95, moved_paise: 0, carry_out_paise: -4000, created_at: '2026-11-03T12:00:00.000Z' },
+  ] });
+  assert.deepStrictEqual(m.past.map((p) => p.text), ['8 Nov · 210 km · paid ₹380 (UPI)', '3 Nov · 95 km · carried −₹40']);
+});
+test('payrollKmView: rider owes, applied -> take-home lower; net sent stays the pay', () => {
+  const v = k.payrollKmView({ carried_paise: -40400, unsettled: false }, 'Lakshman Rao', 1500000, true);
+  assert.strictEqual(v.balanceText, 'Lakshman owes ₹404');
+  assert.strictEqual(v.applied, true);
+  assert.strictEqual(v.takeHomePaise, 1459600);
+  assert.deepStrictEqual(k.kmDisburseFields(v), { apply_km_carry: true, expected_km_carry_paise: -40400 });
+});
+test('payrollKmView: shop owes adds; unticked changes nothing', () => {
+  const on = k.payrollKmView({ carried_paise: 22600 }, 'Ravi', 1000000, true);
+  assert.strictEqual(on.balanceText, 'Shop owes Ravi ₹226');
+  assert.strictEqual(on.takeHomePaise, 1022600);
+  const off = k.payrollKmView({ carried_paise: 22600 }, 'Ravi', 1000000, false);
+  assert.strictEqual(off.takeHomePaise, 1000000);
+  assert.deepStrictEqual(k.kmDisburseFields(off), {});
+});
+test('payrollKmView: owed more than the pay cannot be applied', () => {
+  const v = k.payrollKmView({ carried_paise: -50000 }, 'Ravi', 40000, true);
+  assert.strictEqual(v.tooBig, true);
+  assert.strictEqual(v.applied, false);
+  assert.strictEqual(v.takeHomePaise, 40000);
+  assert.deepStrictEqual(k.kmDisburseFields(v), {});
+});
+test('payrollKmView: unsettled gives the settle-first message; zero carry cannot apply', () => {
+  const v = k.payrollKmView({ carried_paise: 0, unsettled: true, settle_first_message: 'Ravi has km not settled — Settle km first' }, 'Ravi', 100, true);
+  assert.strictEqual(v.settleFirst, 'Ravi has km not settled — Settle km first');
+  assert.strictEqual(v.canApply, false);
+  assert.strictEqual(v.balanceText, 'Nothing carried');
+  assert.strictEqual(k.payrollKmView(null, 'x', 0, true), null);
+});
+test('kmApplyDefault: off while unsettled or nothing carried', () => {
+  assert.strictEqual(k.kmApplyDefault({ carried_paise: -100, unsettled: true }), false);
+  assert.strictEqual(k.kmApplyDefault({ carried_paise: 0, unsettled: false }), false);
+  assert.strictEqual(k.kmApplyDefault({ carried_paise: -100, unsettled: false }), true);
+  assert.strictEqual(k.kmApplyDefault(null), false);
+});
+test('kmRateProblem and usualHomeProblem match the server', () => {
+  assert.strictEqual(k.kmRateProblem('3'), null);
+  assert.strictEqual(k.kmRateProblem('3.50'), null);
+  assert.ok(k.kmRateProblem('0'));
+  assert.ok(k.kmRateProblem('3.505'));
+  assert.ok(k.kmRateProblem(''));
+  assert.strictEqual(k.usualHomeProblem(''), null);
+  assert.strictEqual(k.usualHomeProblem('8.5'), null);
+  assert.ok(k.usualHomeProblem('0'));
+  assert.ok(k.usualHomeProblem('201'));
+  assert.ok(k.usualHomeProblem('8.55'));
+});
+
 let failed = 0;
 for (const t of tests) {
   try { t.fn(); console.log(`ok   ${t.name}`); } catch (e) { failed++; console.log(`FAIL ${t.name}: ${e.message}`); }

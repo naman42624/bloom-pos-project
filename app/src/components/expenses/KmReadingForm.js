@@ -17,7 +17,9 @@
  *        closeRequest (bumps when the modal asks to close),
  *        presetRider? { id, name } (the rider is fixed, as on the rider km screen),
  *        startOn? a Date: open in "For another day" with the date picker on that day
- *        (Add the missed readings for a gap).
+ *        (Add the missed readings for a gap),
+ *        presetKind? 'arrive' | 'leave': start on that kind instead of the suggested
+ *        one (the register close reminder opens it on Going home).
  */
 import React, { useEffect, useRef, useState } from 'react';
 import {
@@ -41,13 +43,14 @@ const dayText = (d) => `${d.getDate()} ${MONTHS[d.getMonth()]}`;
 const num = (n) => Number(n).toLocaleString('en-IN', { maximumFractionDigits: 1 });
 const KIND_WORDS = { arrive: 'Arriving', leave: 'Going home', typed: 'Km of work' };
 
-export default function KmReadingForm({ locationId, onBack, onClose, onDone, closeRequest, presetRider, startOn }) {
+export default function KmReadingForm({ locationId, onBack, onClose, onDone, closeRequest, presetRider, startOn, presetKind }) {
   const [riders, setRiders] = useState([]);
   const [ridersState, setRidersState] = useState('loading');
   const [rider, setRider] = useState(null); // { id, name }
   const [last, setLast] = useState(null);
-  const [kind, setKind] = useState('arrive');
-  const [kindTouched, setKindTouched] = useState(false);
+  const [kind, setKind] = useState(presetKind === 'leave' || presetKind === 'arrive' ? presetKind : 'arrive');
+  // A pre-picked kind counts as picked: the last reading does not change it.
+  const [kindTouched, setKindTouched] = useState(presetKind === 'leave' || presetKind === 'arrive');
   const [typedMode, setTypedMode] = useState(false);
   const [meter, setMeter] = useState('');
   const [typedKm, setTypedKm] = useState('');

@@ -19,7 +19,10 @@
  * buttons by the sign of the total. Common case (shop pays by UPI):
  * card line → Settle km → UPI → Pay L ₹226 (UPI) = 4 taps.
  *
- * Params: { userId, name, locationId? }
+ * Params: { userId, name, locationId? } — or { mine: true } for the rider's
+ * own read-only view (Profile → My km money → Readings): the same lists from
+ * GET /rider-km/mine, with no buttons. Owner/manager also get "Usual home
+ * ride" (the km a ride home normally is; empty = worked out from the rides).
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -37,7 +40,7 @@ import { showAlert, showConfirm } from '../utils/alert';
 import {
   stretchLabel, netText, clockText, dayLabel, rangeLabel, moneyText, settleDays, settleMoneyLines,
   upiCodOrders, settleChoices, moveButtonLabel, checkMoveAmount, pastSettlementText,
-  trimUpiOwn, canChangeReading, withinBackDays, shopToday,
+  trimUpiOwn, canChangeReading, withinBackDays, shopToday, usualHomeProblem,
 } from '../utils/riderKm';
 import KmReadingForm from '../components/expenses/KmReadingForm';
 import MethodSwitch from '../components/expenses/MethodSwitch';
@@ -64,9 +67,11 @@ const dateFromLocal = (local) => {
 
 export default function RiderKmScreen({ route, navigation }) {
   const { user, activeLocation, locked } = useAuth();
-  const userId = Number(route.params?.userId);
-  const locationId = route.params?.locationId || activeLocation?.id || null;
   const role = user?.role;
+  // The rider's own view: read-only, from /rider-km/mine, never another rider.
+  const mine = route.params?.mine === true || role === 'delivery_partner';
+  const userId = mine ? Number(user?.id) : Number(route.params?.userId);
+  const locationId = route.params?.locationId || activeLocation?.id || null;
   const isBoss = role === 'owner' || role === 'manager';
   const isOwner = role === 'owner';
 
@@ -85,18 +90,21 @@ export default function RiderKmScreen({ route, navigation }) {
   const [correcting, setCorrecting] = useState(false);
   const [missedClose, setMissedClose] = useState(0); // bumps: the form asks before closing
   const [settleOpen, setSettleOpen] = useState(false);
+  const [usualOpen, setUsualOpen] = useState(false);
+
+  useEffect(() => { if (mine) navigation.setOptions({ title: 'My km' }); }, [mine, navigation]);
 
   const load = useCallback(async () => {
     if (!userId) return;
     try {
-      const res = await api.getRiderKm(userId);
+      const res = mine ? await api.getMyRiderKm() : await api.getRiderKm(userId);
       if (!alive.current) return;
       setAcct(res.data || null);
       setLoadState('ready');
     } catch {
       if (alive.current) setLoadState((s) => (s === 'ready' ? 'ready' : 'error'));
     }
-  }, [userId]);
+  }, [userId, mine]);
 
   useEffect(() => { alive.current = true; return () => { alive.current = false; clearTimeout(noteTimer.current); }; }, []);
   useFocusEffect(useCallback(() => { load(); }, [load]));
@@ -174,7 +182,7 @@ export default function RiderKmScreen({ route, navigation }) {
   if (loadState === 'error' && !acct) {
     return (
       <View style={styles.center}>
-        <Text style={styles.hint}>{`Couldn't load ${name}'s km.`}</Text>
+        <Text style={styles.hint}>{mine ? "Couldn't load your km." : `Couldn't load ${name}'s km.`}</Text>
         <TouchableOpacity style={styles.outlineBtn} onPress={() => { setLoadState('loading'); load(); }} accessibilityRole="button">
           <Text style={styles.outlineText}>Try again</Text>
         </TouchableOpacity>
@@ -196,9 +204,38 @@ export default function RiderKmScreen({ route, navigation }) {
           <Text style={styles.summaryText}>
             {`Not settled yet: ${num(unsettled.paid_km || 0)} km · ${moneyText(unsettled.amount_paise || 0)}`}
           </Text>
-          {acct.open_day && <Text style={styles.hint}>{`${name} is at work now (no Going home reading yet). Today is settled next time.`}</Text>}
-          {left && <Text style={styles.hint}>{`${name} has left. Settle the last time to close the account.`}</Text>}
+          {acct.open_day && (
+            <Text style={styles.hint}>
+              {mine
+                ? 'You are at work now (no Going home reading yet). Today is settled next time.'
+                : `${name} is at work now (no Going home reading yet). Today is settled next time.`}
+            </Text>
+          )}
+          {left && !mine && <Text style={styles.hint}>{`${name} has left. Settle the last time to close the account.`}</Text>}
         </View>
+
+        {isBoss && !mine && (
+          <View style={[styles.section, styles.usualRow]}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.sectionTitle}>Usual home ride</Text>
+              <Text style={styles.hint}>
+                {acct.usual_home_set_km != null
+                  ? `${num(acct.usual_home_set_km)} km (set by hand)`
+                  : acct.usual_home_km != null
+                    ? `${num(acct.usual_home_km)} km (from the last rides home)`
+                    : 'Not known yet. A ride home over 30 km is asked about.'}
+              </Text>
+            </View>
+            <TouchableOpacity
+              style={styles.smallBtn}
+              onPress={() => setUsualOpen(true)}
+              accessibilityRole="button"
+              accessibilityLabel="Change the usual home ride"
+            >
+              <Text style={styles.outlineText}>Change</Text>
+            </TouchableOpacity>
+          </View>
+        )}
 
         {!!note && (
           <View style={styles.note} accessibilityLiveRegion="polite">
@@ -220,7 +257,8 @@ export default function RiderKmScreen({ route, navigation }) {
                 <View key={key} style={styles.gapCard}>
                   <Text style={styles.gapTitle}>{`${rangeLabel(from ? from.read_at : g.end_at, g.end_at)} · ${stretchLabel(g)}`}</Text>
                   {!!GAP_WHY[g.reason] && <Text style={styles.gapWhy}>{GAP_WHY[g.reason]}</Text>}
-                  <View style={styles.gapBtns}>
+                  {mine && <Text style={styles.gapWhy}>The counter will ask you about this before settling.</Text>}
+                  {!mine && <View style={styles.gapBtns}>
                     <TouchableOpacity style={styles.gapBtn} onPress={() => openMissed(g)} accessibilityRole="button">
                       <Text style={styles.gapBtnText}>Add the missed readings</Text>
                     </TouchableOpacity>
@@ -236,7 +274,7 @@ export default function RiderKmScreen({ route, navigation }) {
                     >
                       {answering === key ? <ActivityIndicator color={Colors.primary} /> : <Text style={styles.gapBtnText}>No work</Text>}
                     </TouchableOpacity>
-                  </View>
+                  </View>}
                 </View>
               );
             })}
@@ -246,20 +284,22 @@ export default function RiderKmScreen({ route, navigation }) {
         <View style={styles.section}>
           <View style={styles.sectionHead}>
             <Text style={[styles.sectionTitle, { flex: 1 }]}>Readings</Text>
-            {isBoss && (
+            {isBoss && !mine && (
               <TouchableOpacity style={styles.linkBtn} onPress={() => setCorrecting(true)} accessibilityRole="button">
                 <Text style={styles.linkText}>Add correction</Text>
               </TouchableOpacity>
             )}
           </View>
           {days.length === 0 && (
-            <Text style={styles.hint}>No readings since the last settlement. Add one from Add expense → Km reading.</Text>
+            <Text style={styles.hint}>
+              {mine ? 'No readings since the last settlement.' : 'No readings since the last settlement. Add one from Add expense → Km reading.'}
+            </Text>
           )}
           {days.map((d) => (
             <View key={d.date}>
               <Text style={styles.dayHead}>{dayLabel(d.date)}</Text>
               {d.rows.map(({ reading: r, stretch: st }) => {
-                const canChange = canChangeReading(r, { role, userId: user?.id, today: shopToday() });
+                const canChange = !mine && canChangeReading(r, { role, userId: user?.id, today: shopToday() });
                 const body = (
                   <View style={{ flex: 1 }}>
                     <Text style={styles.readingText}>
@@ -272,7 +312,7 @@ export default function RiderKmScreen({ route, navigation }) {
                         {`→ ${stretchLabel(st)}`}
                       </Text>
                     )}
-                    {!canChange && <Text style={styles.readOnlyHint}>{ASK_BOSS}</Text>}
+                    {!canChange && !mine && <Text style={styles.readOnlyHint}>{ASK_BOSS}</Text>}
                   </View>
                 );
                 if (!canChange) return <View key={r.id} style={styles.readingRow}>{body}</View>;
@@ -315,12 +355,16 @@ export default function RiderKmScreen({ route, navigation }) {
         )}
       </ScrollView>
 
-      <View style={styles.footer}>
-        {openGaps.length > 0 && <Text style={styles.footerHint}>Answer the gaps first, then settle.</Text>}
-        <TouchableOpacity style={styles.primaryBtn} onPress={() => setSettleOpen(true)} accessibilityRole="button">
-          <Text style={styles.primaryText}>Settle km</Text>
-        </TouchableOpacity>
-      </View>
+      {!mine && (
+        <View style={styles.footer}>
+          {openGaps.length > 0 && <Text style={styles.footerHint}>Answer the gaps first, then settle.</Text>}
+          <TouchableOpacity style={styles.primaryBtn} onPress={() => setSettleOpen(true)} accessibilityRole="button">
+            <Text style={styles.primaryText}>Settle km</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+      {mine ? null : (
+      <>
 
       <SettleSheet
         visible={settleOpen}
@@ -349,6 +393,18 @@ export default function RiderKmScreen({ route, navigation }) {
       <TypedGapSheet gap={typedGap} userId={userId} onClose={() => setTypedGap(null)} onDone={(t) => { setTypedGap(null); done(t); }} />
       <EditReadingSheet reading={editing} onClose={() => setEditing(null)} onDone={(t) => { setEditing(null); done(t); }} />
       <CorrectionSheet visible={correcting} userId={userId} name={name} onClose={() => setCorrecting(false)} onDone={(t) => { setCorrecting(false); done(t); }} />
+      {isBoss && (
+        <UsualHomeSheet
+          visible={usualOpen}
+          userId={userId}
+          name={name}
+          current={acct.usual_home_set_km}
+          onClose={() => setUsualOpen(false)}
+          onDone={(t) => { setUsualOpen(false); done(t); }}
+        />
+      )}
+      </>
+      )}
     </View>
   );
 }
@@ -842,6 +898,67 @@ function CorrectionSheet({ visible, userId, name, onClose, onDone }) {
   );
 }
 
+// ─── Usual home ride (owner / manager) ───────────────────────
+function UsualHomeSheet({ visible, userId, name, current, onClose, onDone }) {
+  const [km, setKm] = useState('');
+  const [error, setError] = useState('');
+  const [saving, setSaving] = useState(null); // 'save' | 'clear'
+  useEffect(() => {
+    if (visible) { setKm(current != null ? String(current) : ''); setError(''); setSaving(null); }
+  }, [visible]);
+  const guard = useSubmitGuard();
+  const send = async (value, which) => {
+    setSaving(which);
+    try {
+      await api.setKmUsualHome(userId, value);
+      setSaving(null);
+      onDone(value == null ? 'Saved · worked out from the rides home' : `Saved · usual home ride ${num(value)} km`);
+    } catch (err) {
+      setSaving(null);
+      showAlert('Not saved', err?.message || 'Nothing was saved. Check the connection and try again.');
+    }
+  };
+  const save = guard(async () => {
+    const t = km.trim();
+    const problem = usualHomeProblem(t);
+    if (problem) { setError(problem); return; }
+    await send(t === '' ? null : t, 'save');
+  });
+  const clear = guard(async () => { await send(null, 'clear'); });
+  return (
+    <SheetModal visible={visible} onClose={onClose}>
+      <View style={{ gap: Spacing.sm }}>
+        <SheetHeader title="Usual home ride" onClose={onClose} />
+        <Text style={styles.hint}>
+          {`How far ${name}'s ride home normally is. A ride home over twice this is asked about before settling. Leave it empty to work it out from the last rides home.`}
+        </Text>
+        <View style={[styles.inputRow, !!error && styles.inputError]}>
+          <TextInput
+            style={styles.inputBig}
+            value={km}
+            onChangeText={(t) => { setKm(t.replace(/[^0-9.]/g, '')); setError(''); }}
+            keyboardType="decimal-pad"
+            autoFocus
+            placeholder="Empty"
+            placeholderTextColor={Colors.textLight}
+            accessibilityLabel="Usual home ride in km"
+          />
+          <Text style={styles.unit}>km</Text>
+        </View>
+        {!!error && <Text style={styles.error}>{error}</Text>}
+        <TouchableOpacity style={[styles.primaryBtn, !!saving && styles.btnOff]} onPress={save} disabled={!!saving} accessibilityRole="button">
+          {saving === 'save' ? <ActivityIndicator color={Colors.white} /> : <Text style={styles.primaryText}>Save</Text>}
+        </TouchableOpacity>
+        {current != null && (
+          <TouchableOpacity style={[styles.outlineBtn, !!saving && styles.btnOff]} onPress={clear} disabled={!!saving} accessibilityRole="button">
+            {saving === 'clear' ? <ActivityIndicator color={Colors.primary} /> : <Text style={styles.outlineText}>Work it out from the rides</Text>}
+          </TouchableOpacity>
+        )}
+      </View>
+    </SheetModal>
+  );
+}
+
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: Spacing.lg, gap: Spacing.md, backgroundColor: Colors.background },
@@ -884,6 +1001,11 @@ const styles = StyleSheet.create({
   readOnlyHint: { fontSize: FontSize.md, color: Colors.textSecondary },
   histRow: { minHeight: 44, justifyContent: 'center', borderTopWidth: 1, borderTopColor: Colors.border },
   linkBtn: { minHeight: 48, justifyContent: 'center' },
+  usualRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
+  smallBtn: {
+    minHeight: 48, minWidth: 88, borderRadius: BorderRadius.md, borderWidth: 1, borderColor: Colors.primary,
+    backgroundColor: Colors.surface, alignItems: 'center', justifyContent: 'center', paddingHorizontal: Spacing.md,
+  },
   linkText: { fontSize: FontSize.md, fontWeight: '700', color: Colors.primary },
   footer: {
     padding: Spacing.md, borderTopWidth: 1, borderTopColor: Colors.border, backgroundColor: Colors.surface, gap: Spacing.xs,

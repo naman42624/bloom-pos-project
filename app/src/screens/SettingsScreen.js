@@ -10,6 +10,7 @@ import DismissKeyboard from '../components/DismissKeyboard';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import { showAlert, appAlert } from '../utils/alert';
 import { LIMIT_SETTINGS, limitSettingProblem } from '../utils/staffMoney';
+import KmRateCard from '../components/expenses/KmRateCard';
 
 const LIMIT_KEYS = LIMIT_SETTINGS.map((d) => d.key);
 
@@ -300,6 +301,9 @@ export default function SettingsScreen() {
               <Ionicons name="chevron-forward" size={22} color={Colors.textSecondary} />
             </TouchableOpacity>
           )}
+
+          {/* ─── Km rate (Owner only): rider km account, and the Rider petrol items ─── */}
+          {isOwner && <KmRateCard navigation={navigation} />}
 
           {/* ─── Expenses: salary advance and shopping money limits (Owner only, spec 4.7) ─── */}
           {isOwner && LIMIT_SETTINGS.some((d) => settings[d.key] !== undefined) && (

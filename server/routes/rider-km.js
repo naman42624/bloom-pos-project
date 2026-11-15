@@ -167,6 +167,8 @@ function buildView(rider, inputs) {
       open_day: chain.openDay,
       gaps_open: gapsOpen,
       usual_home_km: inputs.usualHomeKm,
+      // The km an owner or manager typed (null = worked out from the readings).
+      usual_home_set_km: inputs.usualOverrideKm == null ? null : Number(inputs.usualOverrideKm),
       unsettled: {
         paid_km: priced.paidKm,
         by_rate: priced.byRate.map((g) => ({ rate: g.rate, km: g.km, amount_paise: g.amountPaise })),

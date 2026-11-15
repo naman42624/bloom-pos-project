@@ -649,6 +649,8 @@ function AttendanceStack() {
       <Stack.Screen name="SalaryAdvances" component={SalaryAdvancesScreen} options={{ title: 'Salary Advances' }} />
       <Stack.Screen name="ShiftManagement" component={ShiftManagementScreen} options={{ title: 'Shift Management' }} />
       <Stack.Screen name="SalaryManagement" component={SalaryManagementScreen} options={{ title: 'Salary Management' }} />
+      {/* Payroll's "Settle km first" opens the rider's km account. */}
+      <Stack.Screen name="RiderKm" component={RiderKmScreen} options={({ route }) => ({ title: route.params?.name ? `${route.params.name} · Km` : 'Km account' })} />
       <Stack.Screen name="LiveDeliveryMap" component={LiveDeliveryMapScreen} options={{ title: 'Live Tracking' }} />
     </Stack.Navigator>
   );
