@@ -261,3 +261,12 @@ export function savedTimeLabel(createdAt, expenseDate) {
   const dm = d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', timeZone: tz });
   return `saved ${dm}, ${time}`;
 }
+
+// What was typed for an entry that sits in an item, when it differs from the
+// item's name (spaces and case ignored); null otherwise. Shown as "Typed: ..."
+// so an entry sorted into the wrong item can be spotted.
+export function typedText(e) {
+  if (!e || !e.item_name || !e.description) return null;
+  const norm = (v) => String(v).trim().replace(/\s+/g, ' ').toLowerCase();
+  return norm(e.item_name) === norm(e.description) ? null : String(e.description).trim();
+}

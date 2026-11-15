@@ -19,6 +19,7 @@ import { entriesText } from '../utils/expenseBook';
 import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import Button from '../components/Button';
 import { shortDate } from '../components/expenses/ExpenseRow';
+import SortedEarlierList from '../components/expenses/SortedEarlierList';
 import { categoryLabel, rupees } from '../components/expenses/AddExpenseSheet';
 
 const PAGE = 50;
@@ -28,6 +29,9 @@ export default function SortExpensesScreen({ navigation }) {
   const { user } = useAuth();
   const isOwner = user?.role === 'owner';
 
+  // 'todo' = To sort, 'done' = Sorted earlier (fix an entry put in the wrong item).
+  const [tab, setTab] = useState('todo');
+  const todoStale = useRef(false);
   const [rows, setRows] = useState([]);
   // Paging: the server sends 50 at a time; nextAfter is where the next page starts.
   const [total, setTotal] = useState(0);
@@ -212,6 +216,32 @@ export default function SortExpensesScreen({ navigation }) {
     }
   });
 
+  // Back on To sort after a Take out: reload, unless picks are waiting to be saved
+  // (the taken-out entry then shows after Save).
+  const switchTab = (next) => {
+    setTab(next);
+    if (next === 'todo' && todoStale.current && !dirty.current) {
+      todoStale.current = false;
+      load();
+    }
+  };
+
+  const tabs = (
+    <View style={styles.tabs} accessibilityRole="tablist">
+      {[['todo', 'To sort'], ['done', 'Sorted earlier']].map(([key, label]) => (
+        <TouchableOpacity
+          key={key}
+          style={[styles.tab, tab === key && styles.tabOn]}
+          onPress={() => switchTab(key)}
+          accessibilityRole="tab"
+          accessibilityState={{ selected: tab === key }}
+        >
+          <Text style={[styles.tabText, tab === key && styles.tabTextOn]}>{label}</Text>
+        </TouchableOpacity>
+      ))}
+    </View>
+  );
+
   if (!isOwner) {
     return (
       <View style={styles.center}>
@@ -352,8 +382,18 @@ export default function SortExpensesScreen({ navigation }) {
     );
   };
 
+  if (tab === 'done') {
+    return (
+      <View style={styles.container}>
+        {tabs}
+        <SortedEarlierList onTakenOut={() => { todoStale.current = true; }} />
+      </View>
+    );
+  }
+
   return (
     <View style={styles.container}>
+      {tabs}
       <FlatList
         data={error ? [] : rows}
         keyExtractor={(r) => String(r.id)}
@@ -410,6 +450,17 @@ export default function SortExpensesScreen({ navigation }) {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
+  tabs: {
+    flexDirection: 'row', gap: Spacing.sm, paddingHorizontal: Spacing.md, paddingTop: Spacing.md,
+    width: '100%', maxWidth: 800, alignSelf: 'center',
+  },
+  tab: {
+    flex: 1, minHeight: 48, justifyContent: 'center', alignItems: 'center', borderRadius: BorderRadius.md,
+    borderWidth: 1, borderColor: Colors.border, backgroundColor: Colors.surface,
+  },
+  tabOn: { backgroundColor: Colors.primary, borderColor: Colors.primary },
+  tabText: { fontSize: FontSize.md, fontWeight: '700', color: Colors.text },
+  tabTextOn: { color: Colors.white },
   content: { padding: Spacing.md, paddingBottom: Spacing.xxl, width: '100%', maxWidth: 800, alignSelf: 'center' },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: Spacing.lg, backgroundColor: Colors.background },
   flex: { flex: 1 },

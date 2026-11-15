@@ -1038,6 +1038,51 @@ check('unsorted pages reach every row once, even when a row is sorted between pa
   assert(bad.status === 400, 'bad after_id ' + bad.status);
 });
 
+check('sorted-earlier lists sorted entries with what was typed, pages, and Take out removes one', async () => {
+  const db = await getDb();
+  const T = await newItem('VerifyEB Sorted Item');
+  const mine = [];
+  for (let i = 0; i < 3; i += 1) {
+    const r = await db.prepare(`INSERT INTO expenses (location_id, category, amount, description, payment_method, expense_date, created_by)
+      VALUES (?, 'other', ?, ?, 'upi', ?, ?) RETURNING id`).get(TEST_LOCATION_ID, 7 + i, `VerifyEB typed ${i}`, dayAgo(40), OWNER_ID);
+    createdExpenseIds.push(r.id);
+    mine.push(Number(r.id));
+  }
+  const save = await trackAudits('expense_assign_items', () => api('POST', '/expenses/assign-items', ownerT(), { assignments: mine.map((id) => ({ expense_id: id, item_id: T.id })) }));
+  assert(save.status === 200 && save.body.data.assigned === 3, 'assign ' + save.status);
+  const first = await api('GET', '/expenses/sorted-earlier?limit=2', ownerT());
+  assert(first.status === 200 && first.body.data.length === 2 && first.body.next_after, 'first page');
+  // Newest sort first: the 2 shown are from this save, typed text and item both there.
+  for (const r of first.body.data) {
+    assert(mine.includes(Number(r.id)), `unexpected row ${r.id} on page 1`);
+    assert(/^VerifyEB typed /.test(r.description) && r.item_name === 'VerifyEB Sorted Item' && r.sorted_item_id === Number(T.id), 'row shape');
+  }
+  const seen = [];
+  let after = null;
+  let pages = 0;
+  do {
+    const r = await api('GET', `/expenses/sorted-earlier?limit=2${after ? `&after=${after}` : ''}`, ownerT());
+    r.body.data.forEach((x) => seen.push(Number(x.id)));
+    after = r.body.next_after;
+    pages += 1;
+  } while (after && pages < 500);
+  assert(new Set(seen).size === seen.length, 'a row came twice');
+  assert(mine.every((id) => seen.includes(id)), 'a sorted row missing');
+  assert(seen.length === first.body.total, `saw ${seen.length} of ${first.body.total}`);
+  // Take out one: it leaves the list and goes back to unsorted.
+  const out = await trackAudits('expense_assign_items_undo', () => api('POST', '/expenses/assign-items/undo', ownerT(), { assignments: [{ expense_id: mine[0], item_id: T.id }] }));
+  assert(out.status === 200 && out.body.data.undone === 1, 'take out ' + out.status);
+  const after1 = await api('GET', '/expenses/sorted-earlier?limit=200', ownerT());
+  assert(!after1.body.data.some((x) => Number(x.id) === mine[0]), 'taken-out row still listed');
+  assert(after1.body.total === first.body.total - 1, 'total did not drop');
+  const row = await db.prepare('SELECT item_id FROM expenses WHERE id = ?').get(mine[0]);
+  assert(row.item_id === null, 'row not unsorted');
+  const bad = await api('GET', '/expenses/sorted-earlier?after=1', ownerT());
+  assert(bad.status === 400, 'bad after ' + bad.status);
+  const mgr = await api('GET', '/expenses/sorted-earlier', managerT());
+  assert(mgr.status === 403, 'manager ' + mgr.status);
+});
+
 check('a manager gets 403 on unsorted and assign-items', async () => {
   const a = await api('GET', '/expenses/unsorted', managerT());
   const b = await api('POST', '/expenses/assign-items', managerT(), { assignments: [] });

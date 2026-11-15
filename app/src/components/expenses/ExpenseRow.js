@@ -12,7 +12,7 @@ import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors, FontSize, Spacing, BorderRadius } from '../../constants/theme';
 import { formatTime } from '../../utils/datetime';
-import { givenToText, methodLabel, savedTimeLabel } from '../../utils/expenseBook';
+import { givenToText, methodLabel, savedTimeLabel, typedText } from '../../utils/expenseBook';
 import { getApiOrigin } from '../../services/api';
 import ImageModal from '../ImageModal';
 import { EXPENSE_CATEGORIES, rupees } from './AddExpenseSheet';
@@ -34,6 +34,9 @@ export default function ExpenseRow({ expense, canChange, onChange, onReturn, sho
   const e = expense || {};
   const cat = catInfo(e.category);
   const title = e.item_name || e.description || cat.label;
+  // When the row sits in an item, also show what was typed if it differs,
+  // so an entry sorted into the wrong item can be spotted.
+  const typed = typedText(e);
   // "Cash", "Own pocket · Owner", "Shopping money · Ramesh" (the holder is
   // the bill's Given to, so it is not named twice).
   const method = methodLabel(e);
@@ -52,6 +55,7 @@ export default function ExpenseRow({ expense, canChange, onChange, onReturn, sho
           <Text style={styles.title}>
             {e.is_return ? 'Money back: ' : ''}{title}
           </Text>
+          {!!typed && <Text style={styles.typed} numberOfLines={2}>{`Typed: ${typed}`}</Text>}
           <Text style={styles.meta}>
             {showDate && e.expense_date ? `${shortDate(e.expense_date)} · ` : ''}{cat.label}
           </Text>
@@ -124,6 +128,7 @@ const styles = StyleSheet.create({
   center: { flex: 1 },
   title: { fontSize: FontSize.md, fontWeight: '600', color: Colors.text },
   meta: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: 2 },
+  typed: { fontSize: FontSize.sm, color: Colors.text, fontStyle: 'italic', marginTop: 2 },
   note: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: 2, fontStyle: 'italic' },
   session: { fontSize: FontSize.xs, color: Colors.textSecondary, marginTop: 2 },
   right: { alignItems: 'flex-end', marginLeft: Spacing.sm, gap: Spacing.xs },

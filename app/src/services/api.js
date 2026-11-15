@@ -892,6 +892,10 @@ class ApiService {
     return this.request('/expenses/assign-items/undo', { method: 'POST', body: JSON.stringify({ assignments }) });
   }
 
+  getSortedEarlierExpenses(params = {}) {
+    return this.request(`/expenses/sorted-earlier${this._expenseQuery(params)}`);
+  }
+
   getUnsortedExpenses(params = {}) {
     return this.request(`/expenses/unsorted${this._expenseQuery(params)}`);
   }
