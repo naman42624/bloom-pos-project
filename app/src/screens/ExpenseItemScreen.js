@@ -98,6 +98,8 @@ export default function ExpenseItemScreen({ navigation, route }) {
   const [mergeResults, setMergeResults] = useState([]);
   const [mergeSearching, setMergeSearching] = useState(false);
   const [merging, setMerging] = useState(false);
+  const [mergedIn, setMergedIn] = useState([]); // items merged into this one
+  const [separating, setSeparating] = useState(false);
   const mergeSeq = useRef(0);
   const guardSubmit = useSubmitGuard();
 
@@ -142,6 +144,7 @@ export default function ExpenseItemScreen({ navigation, route }) {
       if (id !== reqId.current) return;
       const data = res.data || {};
       setItem(data.item || null);
+      setMergedIn(Array.isArray(data.merged_in) ? data.merged_in : []);
       setMonths(data.months || []);
       setEntries((data.entries || []).map((r) => ({ ...r, amount: Number(r.amount) || 0 })));
       setLoadedKey(viewKey);
@@ -273,14 +276,52 @@ export default function ExpenseItemScreen({ navigation, route }) {
       const res = await api.mergeExpenseItem(itemId, target.id);
       const moved = Number(res.data?.moved) || 0;
       const intoName = res.data?.into_name || target.name;
-      showAlert('Merged', `${entriesText(moved)} moved into "${intoName}". "${item?.name}" is now hidden.`);
-      navigation.replace('ExpenseItem', { itemId: Number(target.id), from: route.params?.from, to: route.params?.to, locationId });
+      setTool(null);
+      load();
+      // OK opens the item it went into; Undo separates it again and stays here.
+      showConfirm(
+        'Merged',
+        `${entriesText(moved)} moved into "${intoName}". "${item?.name}" is now hidden.`,
+        () => separate(itemId, item?.name || ''),
+        {
+          confirmLabel: 'Undo',
+          cancelLabel: 'OK',
+          onCancel: () => navigation.replace('ExpenseItem', { itemId: Number(target.id), from: route.params?.from, to: route.params?.to, locationId }),
+        },
+      );
     } catch (err) {
       showAlert('Could not merge', err?.message || 'Nothing was moved. Check the internet, then try again.');
     } finally {
       setMerging(false);
     }
   });
+
+  // ── Separate again (undo a merge) ──
+  const separate = async (id, name) => {
+    if (separating) return;
+    setSeparating(true);
+    try {
+      const res = await api.unmergeExpenseItem(id);
+      const d = res.data || {};
+      const back = Number(d.moved_back) || 0;
+      let msg = `"${d.name || name}" is back with ${entriesText(back)}.`;
+      if (d.older_merge) msg = `"${d.name || name}" is back. It was merged before the app kept a list, so its old entries stay in "${d.into_name || 'the other item'}". Change those one by one if needed.`;
+      else if (d.skipped) msg += ` ${entriesText(d.skipped)} changed since the merge, so ${Number(d.skipped) === 1 ? 'it stays' : 'they stay'} where ${Number(d.skipped) === 1 ? 'it is' : 'they are'}.`;
+      showAlert('Separated', msg);
+      load();
+    } catch (err) {
+      showAlert('Could not separate', err?.message || 'Nothing was changed. Check the internet, then try again.');
+    } finally {
+      setSeparating(false);
+    }
+  };
+
+  const askSeparate = (id, name) => showConfirm(
+    'Separate again?',
+    `"${name}" comes back as its own item, with the entries the merge moved.`,
+    () => separate(id, name),
+    { confirmLabel: 'Separate' },
+  );
 
   const askMerge = (target) => {
     showConfirm(
@@ -505,6 +546,35 @@ export default function ExpenseItemScreen({ navigation, route }) {
             >
               <Text style={styles.noticeBtnText}>Open it</Text>
             </TouchableOpacity>
+            {isOwner && (
+              <TouchableOpacity
+                style={styles.noticeBtn}
+                onPress={() => askSeparate(itemId, item?.name || '')}
+                disabled={separating}
+                accessibilityRole="button"
+              >
+                <Text style={styles.noticeBtnText}>{separating ? 'Separating…' : 'Separate again'}</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        )}
+        {isOwner && mergedIn.length > 0 && (
+          <View style={styles.mergedIn}>
+            <Text style={styles.mergedInTitle}>Merged into this</Text>
+            {mergedIn.map((m) => (
+              <View key={m.id} style={styles.mergedInRow}>
+                <Text style={styles.mergedInName} numberOfLines={2}>{m.name}</Text>
+                <TouchableOpacity
+                  style={styles.noticeBtn}
+                  onPress={() => askSeparate(m.id, m.name)}
+                  disabled={separating}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Separate ${m.name} again`}
+                >
+                  <Text style={styles.noticeBtnText}>Separate</Text>
+                </TouchableOpacity>
+              </View>
+            ))}
           </View>
         )}
         {hidden && (
@@ -636,6 +706,10 @@ const styles = StyleSheet.create({
   noticeText: { flex: 1, fontSize: FontSize.md, color: Colors.text, minWidth: 180 },
   noticeBtn: { minHeight: 44, justifyContent: 'center', paddingHorizontal: Spacing.md, borderRadius: BorderRadius.md, borderWidth: 1, borderColor: Colors.primary },
   noticeBtnText: { color: Colors.primary, fontWeight: '700', fontSize: FontSize.md },
+  mergedIn: { marginTop: Spacing.md, borderTopWidth: 1, borderTopColor: Colors.border, paddingTop: Spacing.sm },
+  mergedInTitle: { fontSize: FontSize.sm, color: Colors.textSecondary, fontWeight: '600', marginBottom: Spacing.xs },
+  mergedInRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: Spacing.sm, paddingVertical: Spacing.xs },
+  mergedInName: { flex: 1, fontSize: FontSize.md, color: Colors.text },
   toast: {
     flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, marginBottom: Spacing.md,
     padding: Spacing.sm, borderRadius: BorderRadius.md, backgroundColor: Colors.successLight,

@@ -35,6 +35,8 @@ export default function SortExpensesScreen({ navigation }) {
   const [choices, setChoices] = useState({});
   const [saving, setSaving] = useState(false);
   const [doneNote, setDoneNote] = useState('');
+  const [lastDone, setLastDone] = useState(null); // the last save, for Undo
+  const [undoing, setUndoing] = useState(false);
   const guardSubmit = useSubmitGuard();
 
   // "Pick item" search, one row at a time.
@@ -148,12 +150,31 @@ export default function SortExpensesScreen({ navigation }) {
       const skipped = (res.data?.skipped || []).length;
       setChoices({});
       dirty.current = false;
+      setLastDone(Array.isArray(res.data?.done) && res.data.done.length ? res.data.done : null);
       setDoneNote(`Sorted ${entriesText(assigned)}.${skipped ? ` ${entriesText(skipped)} had already been sorted, so ${skipped === 1 ? 'it was' : 'they were'} left as is.` : ''}`);
       await load();
     } catch (err) {
       showAlert('Could not save', err?.message || 'Nothing was changed. Check the internet, then tap Save again.');
     } finally {
       setSaving(false);
+    }
+  });
+
+  // Undo the last save: those rows lose their item and come back to this list.
+  const handleUndo = guardSubmit(async () => {
+    if (!lastDone) return;
+    setUndoing(true);
+    try {
+      const res = await api.undoAssignExpenseItems(lastDone);
+      const undone = Number(res.data?.undone) || 0;
+      const skipped = (res.data?.skipped || []).length;
+      setLastDone(null);
+      setDoneNote(`Undone: ${entriesText(undone)} back in this list.${skipped ? ` ${entriesText(skipped)} changed since, so ${skipped === 1 ? 'it was' : 'they were'} left as is.` : ''}`);
+      await load();
+    } catch (err) {
+      showAlert('Could not undo', err?.message || 'Nothing was changed. Check the internet, then tap Undo again.');
+    } finally {
+      setUndoing(false);
     }
   });
 
@@ -174,6 +195,17 @@ export default function SortExpensesScreen({ navigation }) {
         <View style={styles.doneNote} accessibilityLiveRegion="polite">
           <Ionicons name="checkmark-circle" size={20} color={Colors.success} />
           <Text style={styles.doneText}>{doneNote}</Text>
+          {!!lastDone && (
+            <TouchableOpacity
+              style={styles.undoBtn}
+              onPress={handleUndo}
+              disabled={undoing}
+              accessibilityRole="button"
+              accessibilityLabel="Undo this sort"
+            >
+              <Text style={styles.undoText}>{undoing ? 'Undoing…' : 'Undo'}</Text>
+            </TouchableOpacity>
+          )}
         </View>
       )}
       {withSuggestion.length > 1 && !allAccepted && (
@@ -331,6 +363,11 @@ const styles = StyleSheet.create({
     borderRadius: BorderRadius.md, backgroundColor: Colors.successLight,
   },
   doneText: { flex: 1, fontSize: FontSize.md, fontWeight: '600', color: Colors.text },
+  undoBtn: {
+    minHeight: 44, minWidth: 64, justifyContent: 'center', alignItems: 'center', paddingHorizontal: Spacing.md,
+    borderRadius: BorderRadius.md, borderWidth: 1, borderColor: Colors.primary, backgroundColor: Colors.surface,
+  },
+  undoText: { color: Colors.primary, fontWeight: '700', fontSize: FontSize.md },
   acceptAll: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.sm, minHeight: 48,
     borderRadius: BorderRadius.md, borderWidth: 1, borderColor: Colors.primary, backgroundColor: Colors.surface,
