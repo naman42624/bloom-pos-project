@@ -18,7 +18,7 @@
 
 - Schema is additive only (new tables/columns via `database.js` patches; `ensureColumn`). Existing expense, shopping money, owes and COD rows are never rewritten except to set the new link columns and the statuses the existing flows already use.
 - No apostrophes inside `--` SQL comments (`bindParams` footgun). Use the async layer only.
-- Every money write runs in `withMoneyTx`. Lock order: rider advisory lock (`pg_advisory_xact_lock(7304, riderId)`) first, then the open register row (`lockOpenRegister`), then delivery / `staff_money_out` rows `FOR UPDATE`. Never take the rider lock after a register lock.
+- Every money write runs in `withMoneyTx`. Lock order: rider advisory lock (`pg_advisory_xact_lock(7304, riderId)`) first, then delivery / `staff_money_out` / expense rows `FOR UPDATE`, then the open register row (`lockOpenRegister`) last — the same rows-then-register order every existing money route uses (Ruling 7). Never take the rider lock after any row or register lock.
 - All amounts are compared and summed in whole paise (`toPaise`).
 - App dialogs: `showAlert` / `showConfirm` only, never `Alert.alert`. Every write button is wrapped with `useSubmitGuard`.
 - Copy is plain and says what to do next. Use these exact strings:
