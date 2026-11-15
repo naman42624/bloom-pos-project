@@ -596,6 +596,8 @@ const SALARY_ITEM_MESSAGE = "Salary items can't be moved to another kind. Use Pa
 const MERGE_TARGET_MESSAGE = 'Pick a different item to merge into.';
 const ITEM_NOT_FOUND_MESSAGE = 'That item was not found. Pull down to refresh.';
 
+const RIDER_PETROL_PICK_MESSAGE = 'Pick the rider from the list so it counts against their km.';
+
 const itemOut = (r) => ({
   id: Number(r.id),
   name: r.name,
@@ -605,6 +607,7 @@ const itemOut = (r) => ({
   pin_order: r.pin_order == null ? null : Number(r.pin_order),
   is_active: r.is_active !== false,
   merged_into: r.merged_into == null ? null : Number(r.merged_into),
+  is_rider_petrol: !!r.is_rider_petrol,
   ...(r.use_count !== undefined ? { use_count: Number(r.use_count) || 0 } : {}),
 });
 const pickItemAudit = (r) => ({
@@ -639,7 +642,7 @@ router.get('/items', ...OWNER_ONLY, async (req, res, next) => {
       params.push(`%${q.replace(/[\\%_]/g, (c) => '\\' + c)}%`);
     }
     const rows = await db.prepare(`
-      SELECT i.id, i.name, i.category, i.usual_amount, i.pinned, i.pin_order, i.is_active, i.merged_into,
+      SELECT i.id, i.name, i.category, i.usual_amount, i.pinned, i.pin_order, i.is_active, i.merged_into, i.is_rider_petrol,
              (SELECT COUNT(*) FROM expenses e WHERE e.item_id = i.id) AS use_count
         FROM expense_items i${where}
        ORDER BY i.pinned DESC NULLS LAST, i.pin_order ASC NULLS LAST, i.name ASC
@@ -678,6 +681,28 @@ router.put('/items/pins', ...OWNER_ONLY, async (req, res, next) => {
     res.json({ success: true, data: { ids } });
   } catch (err) {
     sendItemError(res, next, err);
+  }
+});
+
+// PUT /api/expenses/items/:id/rider-petrol { on }: which item is the rider petrol advance.
+router.put('/items/:id/rider-petrol', ...OWNER_ONLY, async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) return res.status(404).json({ success: false, message: ITEM_NOT_FOUND_MESSAGE });
+    const on = req.body && req.body.on;
+    if (typeof on !== 'boolean') return res.status(400).json({ success: false, message: 'Pick On or Off.' });
+    const db = await getAsyncDb();
+    const item = await db.prepare('SELECT * FROM expense_items WHERE id = ?').get(id);
+    if (!item) return res.status(404).json({ success: false, message: ITEM_NOT_FOUND_MESSAGE });
+    await db.prepare('UPDATE expense_items SET is_rider_petrol = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(on, id);
+    await db.prepare(`
+      INSERT INTO audit_logs (entity_type, entity_id, user_id, action, previous_state, new_state, created_at)
+      VALUES ('expense_item', ?, ?, 'item_rider_petrol', ?, ?, CURRENT_TIMESTAMP)
+    `).run(id, req.user.id, JSON.stringify({ is_rider_petrol: !!item.is_rider_petrol }), JSON.stringify({ is_rider_petrol: on }));
+    const fresh = await db.prepare('SELECT * FROM expense_items WHERE id = ?').get(id);
+    res.json({ success: true, data: itemOut(fresh) });
+  } catch (err) {
+    next(err);
   }
 });
 
@@ -1194,6 +1219,9 @@ router.post(
       if (wantsItem && !item) {
         item = await resolveItem(adb, { item_id: req.body.item_id, item_name: req.body.item_name, category, userId: req.user.id });
       }
+      if (item && item.is_rider_petrol && givenTo.given_to_name && !givenTo.given_to_user_id) {
+        return res.status(400).json({ success: false, message: RIDER_PETROL_PICK_MESSAGE });
+      }
       const itemId = item ? item.id : null;
       const finalDescription = composeDescription(item ? item.name : (description || ''), note);
 
@@ -1490,7 +1518,7 @@ router.put(
 
       // Checks before the item is resolved, so a refused change never
       // creates an item. The transaction below checks again under locks.
-      const current = await adb.prepare('SELECT id, location_id, created_by, expense_date, item_id, note, description, category, employee_id, payment_method, paid_by_user_id FROM expenses WHERE id = ?').get(expenseId);
+      const current = await adb.prepare('SELECT id, location_id, created_by, expense_date, item_id, note, description, category, employee_id, payment_method, paid_by_user_id, given_to_user_id, given_to_name FROM expenses WHERE id = ?').get(expenseId);
       if (!current) return res.status(404).json({ success: false, message: 'This expense was not found. It may have been removed already — pull down to refresh.' });
       if (!isBoss && Number(current.created_by) !== Number(req.user.id)) {
         return res.status(403).json({ success: false, message: NOT_YOURS_MESSAGE });
@@ -1544,6 +1572,16 @@ router.put(
         if (crossesSalary(item.category)) return res.status(400).json({ success: false, message: SALARY_ROW_MESSAGE });
       } else if (current.item_id && (has('note') || has('description'))) {
         item = await adb.prepare('SELECT * FROM expense_items WHERE id = ?').get(current.item_id);
+      }
+
+      // Rider petrol needs the rider picked from the list, not a typed name.
+      if (wantsItem || touchesGivenTo) {
+        const petrolItem = item || (current.item_id ? await adb.prepare('SELECT is_rider_petrol FROM expense_items WHERE id = ?').get(current.item_id) : null);
+        const effName = touchesGivenTo ? givenTo.given_to_name : current.given_to_name;
+        const effUser = touchesGivenTo ? givenTo.given_to_user_id : current.given_to_user_id;
+        if (petrolItem && petrolItem.is_rider_petrol && effName && !effUser) {
+          return res.status(400).json({ success: false, message: RIDER_PETROL_PICK_MESSAGE });
+        }
       }
 
       const updated = await withMoneyTx(async (tx) => {
