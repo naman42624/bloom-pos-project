@@ -8,7 +8,7 @@ import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import { formatDate } from '../utils/datetime';
 import DateTimePickerModal from '../components/DateTimePickerModal';
 import { appAlert, showAlert, showConfirm } from '../utils/alert';
-import { buildDisburseBody, takeFromPayLabel, calculateAgainMessage } from '../utils/staffMoney';
+import { buildDisburseBody, takeFromPayLabel, calculateAgainMessage, advanceTakenNow } from '../utils/staffMoney';
 import { payrollKmView, kmApplyDefault, kmDisburseFields } from '../utils/riderKm';
 import useSubmitGuard from '../hooks/useSubmitGuard';
 
@@ -774,12 +774,23 @@ export default function SalaryManagementScreen() {
                     <Text style={[styles.breakdownValue, { color: Colors.error }]}>−{formatCurrency(payrollCalc.calculation.deductions)}</Text>
                   </View>
                 )}
-                {payrollCalc.calculation.pending_advances > 0 && (
-                  <View style={styles.breakdownRow}>
-                    <Text style={[styles.breakdownLabel, { color: Colors.warning }]}>Advance Deduction</Text>
-                    <Text style={[styles.breakdownValue, { color: Colors.warning }]}>−{formatCurrency(payrollCalc.calculation.pending_advances)}</Text>
-                  </View>
-                )}
+                {payrollCalc.calculation.pending_advances > 0 && (() => {
+                  // Only what this pay can cover comes off; the rest waits for the next pay.
+                  const adv = advanceTakenNow(payrollCalc.calculation, Number(bonusAmount) || 0);
+                  return (
+                    <>
+                      <View style={styles.breakdownRow}>
+                        <Text style={[styles.breakdownLabel, { color: Colors.warning }]}>Advance Deduction</Text>
+                        <Text style={[styles.breakdownValue, { color: Colors.warning }]}>−{formatCurrency(adv.takenPaise / 100)}</Text>
+                      </View>
+                      {adv.leftPaise > 0 && (
+                        <Text style={styles.kmHint}>
+                          {`${formatCurrency(adv.leftPaise / 100)} of the advance is more than this pay. It stays and comes off the next pay.`}
+                        </Text>
+                      )}
+                    </>
+                  );
+                })()}
                 {/* Take from pay: its own line, never mixed into the advances.
                     Riders and staff with no open shopping money get 0, so no line. */}
                 {Number(payrollCalc.calculation.open_shopping_money_total) > 0 && (

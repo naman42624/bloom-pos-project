@@ -453,7 +453,31 @@ router.get('/people', authenticate, authorize('owner', 'manager', 'employee', 'c
         AND (u.role = 'owner' OR EXISTS (SELECT 1 FROM user_locations ul WHERE ul.user_id = u.id AND ul.location_id = ?))
       ORDER BY u.name ASC
     `).all(...GIVEN_TO_ROLES, locationId);
-    res.json({ success: true, data: people.map((p) => ({ id: Number(p.id), name: p.name, role: p.role })) });
+    // Names typed into Given to at this shop, so they can be picked next time.
+    // One per name whatever the case or spacing, in the latest spelling,
+    // newest first. A name that is a listed person is left out (pick them).
+    const typedRows = await db.prepare(`
+      SELECT DISTINCT ON (k) k, name, last_at FROM (
+        SELECT LOWER(REGEXP_REPLACE(BTRIM(given_to_name), '\\s+', ' ', 'g')) AS k,
+               REGEXP_REPLACE(BTRIM(given_to_name), '\\s+', ' ', 'g') AS name,
+               created_at AS last_at
+        FROM expenses
+        WHERE location_id = ? AND given_to_user_id IS NULL
+          AND given_to_name IS NOT NULL AND BTRIM(given_to_name) <> ''
+      ) t
+      ORDER BY k, last_at DESC
+    `).all(locationId);
+    const staffKeys = new Set(people.map((p) => String(p.name || '').trim().replace(/\s+/g, ' ').toLowerCase()));
+    const typedNames = typedRows
+      .filter((r) => !staffKeys.has(r.k))
+      .sort((a, b) => new Date(b.last_at) - new Date(a.last_at))
+      .slice(0, 20)
+      .map((r) => ({ name: r.name }));
+    res.json({
+      success: true,
+      data: people.map((p) => ({ id: Number(p.id), name: p.name, role: p.role })),
+      typed_names: typedNames,
+    });
   } catch (err) {
     next(err);
   }

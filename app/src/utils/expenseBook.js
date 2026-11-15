@@ -224,6 +224,21 @@ export function suggestionSections(res, { hideSalary } = {}) {
 
 // The 3 Given to chips: people last given money on the suggested items (in
 // list order), then the shop's people list. The chosen person always shows.
+// A name typed into Given to. The same name in any case or spacing picks the
+// staff member of that name, else a name typed before (its first spelling),
+// else the new name, trimmed. Blank is nobody.
+export function givenToFromTyped(text, people = [], typedNames = []) {
+  const n = String(text || '').trim().replace(/\s+/g, ' ');
+  if (!n) return null;
+  const key = n.toLowerCase();
+  const same = (x) => String(x || '').trim().replace(/\s+/g, ' ').toLowerCase() === key;
+  const p = (Array.isArray(people) ? people : []).find((u) => u && same(u.name));
+  if (p) return { user_id: Number(p.id), name: p.name, display_name: p.name };
+  const t = (Array.isArray(typedNames) ? typedNames : []).find((x) => x && same(x.name));
+  const name = t ? String(t.name).trim().replace(/\s+/g, ' ') : n;
+  return { user_id: null, name, display_name: name };
+}
+
 export function recentPeopleChips(items, people, value, max = 3) {
   const out = [];
   const seen = new Set();

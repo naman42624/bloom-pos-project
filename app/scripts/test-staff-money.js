@@ -406,6 +406,20 @@ test('deactivateWarning: shopping money and Shop owes across shops, this person 
   assert.strictEqual(s.deactivateWarning('Asha', 7, [null]), null);
 });
 
+test('advanceTakenNow: whole advance when the pay covers it', () => {
+  assert.deepStrictEqual(s.advanceTakenNow({ pending_advances: 200, net_amount: 10000 }, 0), { takenPaise: 20000, leftPaise: 0 });
+});
+test('advanceTakenNow: pay 0 -> nothing taken, all left for next pay', () => {
+  assert.deepStrictEqual(s.advanceTakenNow({ pending_advances: 200, net_amount: 0 }, 0), { takenPaise: 0, leftPaise: 20000 });
+});
+test('advanceTakenNow: bonus counts toward what can be taken; paise exact', () => {
+  assert.deepStrictEqual(s.advanceTakenNow({ pending_advances: 500.5, net_amount: 100 }, 250.25), { takenPaise: 35025, leftPaise: 15025 });
+});
+test('advanceTakenNow: no advance -> zeros', () => {
+  assert.deepStrictEqual(s.advanceTakenNow({ net_amount: 5000 }, 0), { takenPaise: 0, leftPaise: 0 });
+  assert.deepStrictEqual(s.advanceTakenNow(null), { takenPaise: 0, leftPaise: 0 });
+});
+
 let failed = 0;
 for (const t of tests) {
   try { t.fn(); console.log('  ok   ' + t.name); } catch (err) { failed++; console.log('  FAIL ' + t.name + '\n       ' + err.message); }

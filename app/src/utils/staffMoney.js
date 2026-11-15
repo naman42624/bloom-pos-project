@@ -459,6 +459,17 @@ export function buildDisburseBody(calc, { take = false, bonus = 0 } = {}) {
   return body;
 }
 
+// How much of the pending advance this pay really takes. Disburse caps the
+// advance at what the pay is worth (pay after absence + bonus), so a small or
+// zero pay takes less and the rest stays pending for the next pay.
+export function advanceTakenNow(calc, bonus = 0) {
+  const c = calc || {};
+  const pending = toPaise(c.pending_advances);
+  const payable = Math.max(0, toPaise(c.net_amount) + toPaise(bonus));
+  const taken = Math.min(pending, payable);
+  return { takenPaise: taken, leftPaise: pending - taken };
+}
+
 // The two "tap Calculate again" refusals from disburse (409). Returns the
 // server's message, or null for any other error.
 const CALC_AGAIN = [
