@@ -7,7 +7,7 @@ const { getDb, withMoneyTx } = require('../config/database-async');
 const { authenticate } = require('../middleware/auth');
 const { buildChain, priceStretches } = require('../utils/rider-km');
 const {
-  loadChainInputs, isRider, fmtLocal, computeSettlement, commitSettlement, SETTLE_MSG,
+  loadChainInputs, isRider, fmtLocal, computeSettlement, commitSettlement, collectOpenItems, SETTLE_MSG,
 } = require('../utils/rider-km-data');
 const { todayStr } = require('../utils/time');
 
@@ -190,11 +190,12 @@ const outReading = (r) => ({
   id: Number(r.id), kind: r.kind, meter: r.meter == null ? null : Number(r.meter),
   typed_km: r.typed_km == null ? null : Number(r.typed_km), read_at: r.read_at, note: r.note || null,
   location_id: r.location_id == null ? null : Number(r.location_id),
+  created_by: r.created_by == null ? null : Number(r.created_by),
 });
 
 async function history(db, userId) {
   const rows = await db.prepare(`
-    SELECT id, action, paid_km, km_amount, net_amount, moved_amount, moved_method, carry_out, created_at
+    SELECT id, action, paid_km, km_amount, net_amount, moved_amount, moved_method, carry_out, created_at, lines_json
     FROM rider_km_settlements WHERE user_id = ? ORDER BY id DESC LIMIT 20
   `).all(userId);
   return rows.map((r) => ({
@@ -205,6 +206,7 @@ async function history(db, userId) {
     moved_amount: r.moved_amount == null ? null : Number(r.moved_amount),
     moved_method: r.moved_method, carry_out: r.carry_out == null ? null : Number(r.carry_out),
     created_at: r.created_at,
+    for_salary: !!(r.lines_json && r.lines_json.for_salary === true),
   }));
 }
 
@@ -292,7 +294,10 @@ router.get('/riders', authenticate, forGivers, async (req, res, next) => {
       const v = buildView(r, inputs);
       // The settle sheet's figure now; unknown while a gap is unanswered.
       const s = await computeSettlement(db, r.id);
-      if (!active && !(s.anything || s.gapsOpen > 0 || v.gapsOpen > 0 || v.priced.paidKm > 0)) continue;
+      // Petrol handed over after the last going-home reading waits for a
+      // settle (the same check payroll makes), so it keeps a leaver listed.
+      if (!active && !(s.anything || s.gapsOpen > 0 || v.gapsOpen > 0 || v.priced.paidKm > 0
+        || (await collectOpenItems(db, r.id, fmtLocal(new Date()))).petrolRows.length > 0)) continue;
       data.push({
         id: Number(r.id), name: r.name, is_active: active,
         has_account: inputs.readings.length > 0 || !!inputs.lastSettlement,

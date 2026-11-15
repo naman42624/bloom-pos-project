@@ -1304,12 +1304,42 @@ check('rider list keeps a rider who has left while money is still open', async (
   eq((await commit(c.counter, done, pd, { action: 'pay', amount: pd.net_paise / 100, method: 'upi' })).status, 201, 'paid');
   await db.prepare('UPDATE users SET is_active = 0 WHERE id = ?').run(done);
   eq(await listed(done), undefined, 'settled leaver not listed');
+  // Left after a settlement, with petrol handed over since: listed.
+  const petrolLeaver = await freshRider();
+  await work(petrolLeaver, 2, 10, 600);
+  const pp = await okPreview(c.counter, petrolLeaver);
+  eq((await commit(c.counter, petrolLeaver, pp, { action: 'pay', amount: pp.net_paise / 100, method: 'upi' })).status, 201, 'paid before petrol');
+  await petrol(petrolLeaver, 80, 'upi', at(0, '00:01'));
+  await db.prepare('UPDATE users SET is_active = 0 WHERE id = ?').run(petrolLeaver);
+  assert(await listed(petrolLeaver), 'leaver with petrol since the last settlement listed');
+  // Left after a settlement, with COD collected since: listed.
+  const codLeaver = await freshRider();
+  await work(codLeaver, 2, 10, 800);
+  const pc = await okPreview(c.counter, codLeaver);
+  eq((await commit(c.counter, codLeaver, pc, { action: 'pay', amount: pc.net_paise / 100, method: 'upi' })).status, 201, 'paid before COD');
+  await cod(codLeaver, { cash: 120 });
+  await db.prepare('UPDATE users SET is_active = 0 WHERE id = ?').run(codLeaver);
+  assert(await listed(codLeaver), 'leaver with COD since the last settlement listed');
   // Active riders are marked active; one with no readings has no account.
   const fresh = await freshRider();
   const f = await listed(fresh);
   assert(f, 'active rider listed');
   eq(f.is_active, true, 'active');
   eq(f.has_account, false, 'no readings yet');
+});
+
+check('account view: readings carry created_by; a Take from salary settlement says for_salary', async () => {
+  const c = await getCast();
+  const r = await freshRider();
+  await work(r, 2, 12, 900);
+  const v = await view(c.mgr, r);
+  eq(v.readings[0].created_by, c.mgr, 'created_by on a reading');
+  const pv = await okPreview(c.owner, r);
+  const res = await commit(c.owner, r, pv, { action: 'salary' });
+  eq(res.status, 201, 'salary ' + JSON.stringify(res.body));
+  const h = (await view(c.mgr, r)).history[0];
+  eq(h.for_salary, true, 'for_salary in history');
+  eq(h.action, 'carry', 'saved as a carry');
 });
 
 async function cleanup() {

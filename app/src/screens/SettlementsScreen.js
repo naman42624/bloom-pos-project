@@ -41,6 +41,7 @@ export default function SettlementsScreen({ navigation, route }) {
   const [tab, setTab] = useState('pending'); // pending | history
   const [partners, setPartners] = useState([]);          // pending COD grouped by partner
   const [history, setHistory] = useState([]);            // past settlement records
+  const [kmFailed, setKmFailed] = useState(false);       // km settlements did not load
   const [loading, setLoading] = useState(true);
   const [settling, setSettling] = useState(false);
 
@@ -74,6 +75,7 @@ export default function SettlementsScreen({ navigation, route }) {
           api.getSettlements(params),
           api.getKmSettlements({ location_id: locId || undefined, limit: 50 }).catch(() => null),
         ]);
+        setKmFailed(!km);
         setHistory(mergeSettlementHistory(res.data || [], (km && km.data) || []));
       }
     } catch (err) {
@@ -543,6 +545,9 @@ export default function SettlementsScreen({ navigation, route }) {
             data={history}
             renderItem={renderHistoryRow}
             keyExtractor={row => row.key}
+            ListHeaderComponent={kmFailed ? (
+              <Text style={styles.kmFailed}>Km settlements couldn't load. Pull down to try again.</Text>
+            ) : null}
             contentContainerStyle={styles.listContent}
             refreshing={loading}
             onRefresh={() => fetchData(selectedLocation)}
@@ -742,6 +747,7 @@ const styles = StyleSheet.create({
   },
   verifiedText: { fontSize: 11, fontWeight: '600', color: Colors.success },
   histFooter: { fontSize: FontSize.xs, color: Colors.textLight, marginTop: 8 },
+  kmFailed: { fontSize: FontSize.md, color: Colors.textSecondary, marginBottom: Spacing.sm },
   kmMeta: { fontSize: FontSize.md, color: Colors.textSecondary, marginTop: 3 },
 
   // History Details

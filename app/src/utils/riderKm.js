@@ -185,10 +185,10 @@ export function pastSettlementText(h) {
   const head = `${shopDayOf(h.created_at)} · ${trim1(h.paid_km || 0)} km`;
   const paise = (rs) => Math.round((Number(rs) || 0) * 100);
   const m = METHOD_WORDS[h.moved_method];
+  if (h.for_salary || h.action === 'salary') return `${head} · taken at payroll`;
   if (h.action === 'pay') return `${head} · paid ${rupees(paise(h.moved_amount))}${m ? ` (${m})` : ''}`;
   if (h.action === 'take') return `${head} · took ${rupees(paise(h.moved_amount))}${m ? ` (${m})` : ''}`;
   if (h.action === 'carry') return `${head} · carried ${moneyText(paise(h.carry_out), true)}`;
-  if (h.action === 'salary') return `${head} · taken at payroll`;
   return `${head} · settled`;
 }
 
@@ -205,4 +205,36 @@ export function mergeSettlementHistory(deliveryRows, kmRows) {
     ...(deliveryRows || []).map((x) => ({ kind: 'delivery', key: `d${x.id}`, at: t(x), item: x })),
     ...(kmRows || []).map((x) => ({ kind: 'km', key: `km${x.id}`, at: t(x), item: x })),
   ].sort((a, b) => b.at - a.at);
+}
+
+// The own-UPI picks still on the sheet: an order settled elsewhere drops out
+// of the preview, and a pick left behind would make every commit CHANGED.
+export function trimUpiOwn(ids, lines) {
+  const onSheet = new Set(upiCodOrders(lines).map((d) => Number(d.delivery_id)));
+  return (ids || []).filter((id) => onSheet.has(Number(id)));
+}
+
+// Counter staff may add or change readings back to 7 days before the shop
+// day (server minBackDate); today is "YYYY-MM-DD".
+export function withinBackDays(local, today, days = 7) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(today || ''));
+  if (!m) return true;
+  const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+  d.setUTCDate(d.getUTCDate() - days);
+  return String(local || '').slice(0, 10) >= d.toISOString().slice(0, 10);
+}
+
+// The server's change/remove rule: owner and manager any unsettled reading;
+// others only their own, within the last 7 days.
+export function canChangeReading(reading, { role, userId, today }) {
+  if (role === 'owner' || role === 'manager') return true;
+  if (!reading || reading.created_by == null || Number(reading.created_by) !== Number(userId)) return false;
+  return withinBackDays(reading.read_at, today);
+}
+
+// Today's shop date, "YYYY-MM-DD".
+export function shopToday(now = new Date()) {
+  const parts = {};
+  for (const p of new Intl.DateTimeFormat('en-US', { timeZone: SHOP_TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(now)) parts[p.type] = p.value;
+  return `${parts.year}-${parts.month}-${parts.day}`;
 }

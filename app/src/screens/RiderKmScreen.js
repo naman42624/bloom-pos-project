@@ -37,6 +37,7 @@ import { showAlert, showConfirm } from '../utils/alert';
 import {
   stretchLabel, netText, clockText, dayLabel, rangeLabel, moneyText, settleDays, settleMoneyLines,
   upiCodOrders, settleChoices, moveButtonLabel, checkMoveAmount, pastSettlementText,
+  trimUpiOwn, canChangeReading, withinBackDays, shopToday,
 } from '../utils/riderKm';
 import KmReadingForm from '../components/expenses/KmReadingForm';
 import MethodSwitch from '../components/expenses/MethodSwitch';
@@ -52,6 +53,8 @@ const GAP_WHY = {
   long_home: 'Much longer than the usual ride home.',
 };
 const NOTE_MS = 6000;
+const BACK_DAYS_MSG = 'Counter staff can only add or change readings from the last 7 days. Ask the owner or a manager.';
+const ASK_BOSS = 'Ask the owner or a manager to change it.';
 const num = (n) => Number(n).toLocaleString('en-IN', { maximumFractionDigits: 1 });
 const rupeesOf = (paise) => String(Math.abs(Number(paise) || 0) / 100);
 const dateFromLocal = (local) => {
@@ -131,6 +134,22 @@ export default function RiderKmScreen({ route, navigation }) {
   const readingById = useMemo(() => new Map(((acct && acct.readings) || []).map((r) => [Number(r.id), r])), [acct]);
   const openGaps = useMemo(() => ((acct && acct.stretches) || []).filter((s) => s.kind === 'gap' && !s.answer), [acct]);
 
+  // Counter staff: the form opens on a day the server takes (the last 7
+  // days); a gap that ended before that is for the owner or a manager.
+  const openMissed = (g) => {
+    if (isBoss) { setMissedGap(g); return; }
+    const today = shopToday();
+    if (!withinBackDays(g.end_at, today)) { showAlert('Too far back', BACK_DAYS_MSG); return; }
+    setMissedGap(g);
+  };
+  const missedStart = (g) => {
+    const from = (readingById.get(Number(g.from_reading_id)) || {}).read_at || g.end_at;
+    if (isBoss || withinBackDays(from, shopToday())) return dateFromLocal(from);
+    const d = dateFromLocal(shopToday());
+    d.setDate(d.getDate() - 7);
+    return d;
+  };
+
   const guard = useSubmitGuard();
   const [answering, setAnswering] = useState(null);
   const noWork = guard(async (gap) => {
@@ -202,7 +221,7 @@ export default function RiderKmScreen({ route, navigation }) {
                   <Text style={styles.gapTitle}>{`${rangeLabel(from ? from.read_at : g.end_at, g.end_at)} · ${stretchLabel(g)}`}</Text>
                   {!!GAP_WHY[g.reason] && <Text style={styles.gapWhy}>{GAP_WHY[g.reason]}</Text>}
                   <View style={styles.gapBtns}>
-                    <TouchableOpacity style={styles.gapBtn} onPress={() => setMissedGap(g)} accessibilityRole="button">
+                    <TouchableOpacity style={styles.gapBtn} onPress={() => openMissed(g)} accessibilityRole="button">
                       <Text style={styles.gapBtnText}>Add the missed readings</Text>
                     </TouchableOpacity>
                     <TouchableOpacity style={styles.gapBtn} onPress={() => setTypedGap(g)} accessibilityRole="button">
@@ -239,14 +258,9 @@ export default function RiderKmScreen({ route, navigation }) {
           {days.map((d) => (
             <View key={d.date}>
               <Text style={styles.dayHead}>{dayLabel(d.date)}</Text>
-              {d.rows.map(({ reading: r, stretch: st }) => (
-                <TouchableOpacity
-                  key={r.id}
-                  style={styles.readingRow}
-                  onPress={() => setEditing(r)}
-                  accessibilityRole="button"
-                  accessibilityLabel={`${KIND_WORDS[r.kind]} reading at ${clockText(r.read_at)}. Tap to change or remove.`}
-                >
+              {d.rows.map(({ reading: r, stretch: st }) => {
+                const canChange = canChangeReading(r, { role, userId: user?.id, today: shopToday() });
+                const body = (
                   <View style={{ flex: 1 }}>
                     <Text style={styles.readingText}>
                       {r.kind === 'typed'
@@ -258,10 +272,23 @@ export default function RiderKmScreen({ route, navigation }) {
                         {`→ ${stretchLabel(st)}`}
                       </Text>
                     )}
+                    {!canChange && <Text style={styles.readOnlyHint}>{ASK_BOSS}</Text>}
                   </View>
-                  <Ionicons name="create-outline" size={20} color={Colors.textSecondary} />
-                </TouchableOpacity>
-              ))}
+                );
+                if (!canChange) return <View key={r.id} style={styles.readingRow}>{body}</View>;
+                return (
+                  <TouchableOpacity
+                    key={r.id}
+                    style={styles.readingRow}
+                    onPress={() => setEditing(r)}
+                    accessibilityRole="button"
+                    accessibilityLabel={`${KIND_WORDS[r.kind]} reading at ${clockText(r.read_at)}. Tap to change or remove.`}
+                  >
+                    {body}
+                    <Ionicons name="create-outline" size={20} color={Colors.textSecondary} />
+                  </TouchableOpacity>
+                );
+              })}
             </View>
           ))}
           {(acct.corrections || []).length > 0 && (
@@ -311,7 +338,7 @@ export default function RiderKmScreen({ route, navigation }) {
           <KmReadingForm
             locationId={locationId}
             presetRider={{ id: userId, name }}
-            startOn={dateFromLocal((readingById.get(Number(missedGap.from_reading_id)) || {}).read_at || missedGap.end_at)}
+            startOn={missedStart(missedGap)}
             closeRequest={missedClose}
             onClose={() => setMissedGap(null)}
             onDone={(r) => { setMissedGap(null); done(r && r.message); }}
@@ -371,6 +398,7 @@ function SettleSheet({ visible, userId, name, locationId, isOwner, navigation, o
       if (n !== req.current) return;
       setPvBusy(false);
       setPv(res.data);
+      setUpiOwn(trimUpiOwn(own, res.data && res.data.lines));
       setAmount(rupeesOf(res.data.net_paise));
       setPvState('ready');
     } catch (err) {
@@ -683,7 +711,7 @@ function EditReadingSheet({ reading, onClose, onDone }) {
     } catch (err) {
       setSaving(null);
       if (err && err.code === 'CONFIRM_BIG') {
-        showConfirm('Check the meter', err.raw_message || err.message, () => { send(true); },
+        showConfirm('Check the meter', err.raw_message || err.message, guard(() => send(true)),
           { confirmLabel: 'Yes, save it', cancelLabel: 'No, fix it' });
         return;
       }
@@ -853,6 +881,7 @@ const styles = StyleSheet.create({
   },
   readingText: { fontSize: FontSize.md, color: Colors.text, fontVariant: ['tabular-nums'] },
   stretchText: { fontSize: FontSize.md, color: Colors.textSecondary },
+  readOnlyHint: { fontSize: FontSize.md, color: Colors.textSecondary },
   histRow: { minHeight: 44, justifyContent: 'center', borderTopWidth: 1, borderTopColor: Colors.border },
   linkBtn: { minHeight: 48, justifyContent: 'center' },
   linkText: { fontSize: FontSize.md, fontWeight: '700', color: Colors.primary },

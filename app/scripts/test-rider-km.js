@@ -186,6 +186,32 @@ test('mergeSettlementHistory: newest first by created_at, km rows tagged', () =>
   assert.strictEqual(out[1].kind, 'delivery');
 });
 
+// ─── Task 6 fix round 1 ──────────────────────────────────────
+test('trimUpiOwn: drops ids whose UPI order is no longer on the sheet', () => {
+  const lines = { cod: [{ delivery_id: 5, cash_paise: 100, upi_paise: 0 }, { delivery_id: 6, cash_paise: 0, upi_paise: 300 }] };
+  assert.deepStrictEqual(k.trimUpiOwn([6, 9, 5], lines), [6]);
+  assert.deepStrictEqual(k.trimUpiOwn([], lines), []);
+  assert.deepStrictEqual(k.trimUpiOwn([6], { cod: [] }), []);
+});
+test('canChangeReading: owner/manager any; counter only own and within 7 days', () => {
+  const r = { created_by: 7, read_at: '2026-11-08 10:00:00' };
+  assert.strictEqual(k.canChangeReading(r, { role: 'owner', userId: 1, today: '2026-11-15' }), true);
+  assert.strictEqual(k.canChangeReading(r, { role: 'manager', userId: 1, today: '2026-11-15' }), true);
+  assert.strictEqual(k.canChangeReading(r, { role: 'counter_staff', userId: 7, today: '2026-11-15' }), true);
+  assert.strictEqual(k.canChangeReading(r, { role: 'employee', userId: 7, today: '2026-11-16' }), false);
+  assert.strictEqual(k.canChangeReading(r, { role: 'counter_staff', userId: 8, today: '2026-11-15' }), false);
+  assert.strictEqual(k.canChangeReading({ read_at: '2026-11-15 09:00:00' }, { role: 'counter_staff', userId: 7, today: '2026-11-15' }), false);
+});
+test('withinBackDays: 7 days back from the shop day, month edge', () => {
+  assert.strictEqual(k.withinBackDays('2026-11-08', '2026-11-15'), true);
+  assert.strictEqual(k.withinBackDays('2026-11-07 23:00:00', '2026-11-15'), false);
+  assert.strictEqual(k.withinBackDays('2026-10-29', '2026-11-05'), true);
+  assert.strictEqual(k.withinBackDays('2026-10-28', '2026-11-05'), false);
+});
+test('pastSettlementText: a Take from salary carry says payroll', () => {
+  assert.strictEqual(k.pastSettlementText({ created_at: '2026-11-03T12:00:00.000Z', paid_km: 40, action: 'carry', for_salary: true, carry_out: -200 }), '3 Nov · 40 km · taken at payroll');
+});
+
 let failed = 0;
 for (const t of tests) {
   try { t.fn(); console.log(`ok   ${t.name}`); } catch (e) { failed++; console.log(`FAIL ${t.name}: ${e.message}`); }
