@@ -29,6 +29,12 @@ export default function SortExpensesScreen({ navigation }) {
   const isOwner = user?.role === 'owner';
 
   const [rows, setRows] = useState([]);
+  // Paging: the server sends 50 at a time; nextAfter is where the next page starts.
+  const [total, setTotal] = useState(0);
+  const [nextAfter, setNextAfter] = useState(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [moreError, setMoreError] = useState('');
+  const moreSeq = useRef(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   // expense_id → { item_id, name } or { item_name, name }
@@ -55,7 +61,12 @@ export default function SortExpensesScreen({ navigation }) {
     setError('');
     try {
       const res = await api.getUnsortedExpenses({ limit: PAGE });
-      setRows((res.data || []).map((r) => ({ ...r, amount: Number(r.amount) || 0 })));
+      moreSeq.current += 1; // a page still loading from before is dropped
+      const list = (res.data || []).map((r) => ({ ...r, amount: Number(r.amount) || 0 }));
+      setRows(list);
+      setTotal(Number.isFinite(Number(res.total)) ? Number(res.total) : list.length);
+      setNextAfter(res.next_after_id || null);
+      setMoreError('');
       setChoices({});
       setPickingId(null);
     } catch {
@@ -64,6 +75,29 @@ export default function SortExpensesScreen({ navigation }) {
       setLoading(false);
     }
   }, []);
+
+  // Next 50, added below. Picks already made stay.
+  const loadMore = useCallback(async () => {
+    if (!nextAfter || loadingMore || loading) return;
+    const id = ++moreSeq.current;
+    setLoadingMore(true);
+    setMoreError('');
+    try {
+      const res = await api.getUnsortedExpenses({ limit: PAGE, after_id: nextAfter });
+      if (id !== moreSeq.current) return;
+      const list = (res.data || []).map((r) => ({ ...r, amount: Number(r.amount) || 0 }));
+      setRows((prev) => {
+        const have = new Set(prev.map((r) => r.id));
+        return prev.concat(list.filter((r) => !have.has(r.id)));
+      });
+      if (Number.isFinite(Number(res.total))) setTotal(Number(res.total));
+      setNextAfter(res.next_after_id || null);
+    } catch {
+      if (id === moreSeq.current) setMoreError('Could not load more. Check the internet, then tap Show more.');
+    } finally {
+      if (id === moreSeq.current) setLoadingMore(false);
+    }
+  }, [nextAfter, loadingMore, loading]);
 
   useFocusEffect(useCallback(() => {
     if (isOwner && !dirty.current) load();
@@ -191,6 +225,9 @@ export default function SortExpensesScreen({ navigation }) {
       <Text style={styles.intro}>
         These were saved before items existed. Pick the item for each one. Only the item changes; the amount, date and kind stay the same.
       </Text>
+      {total > 0 && (
+        <Text style={styles.totalLine}>{`${entriesText(total)} still to sort`}</Text>
+      )}
       {!!doneNote && (
         <View style={styles.doneNote} accessibilityLiveRegion="polite">
           <Ionicons name="checkmark-circle" size={20} color={Colors.success} />
@@ -323,6 +360,26 @@ export default function SortExpensesScreen({ navigation }) {
         renderItem={renderRow}
         extraData={{ choices, pickingId, query, results, searching }}
         ListHeaderComponent={header}
+        onEndReached={loadMore}
+        onEndReachedThreshold={0.5}
+        ListFooterComponent={!error && rows.length > 0 && (nextAfter || moreError) ? (
+          <View style={styles.moreBox}>
+            {!!moreError && <Text style={styles.moreError}>{moreError}</Text>}
+            <TouchableOpacity
+              style={styles.moreBtn}
+              onPress={loadMore}
+              disabled={loadingMore}
+              accessibilityRole="button"
+              accessibilityLabel="Show more entries"
+            >
+              {loadingMore ? <ActivityIndicator color={Colors.primary} /> : (
+                <Text style={styles.moreText}>
+                  {total > rows.length ? `Show more (${total - rows.length} more)` : 'Show more'}
+                </Text>
+              )}
+            </TouchableOpacity>
+          </View>
+        ) : null}
         contentContainerStyle={styles.content}
         keyboardShouldPersistTaps="handled"
         ListEmptyComponent={!error && (
@@ -358,6 +415,14 @@ const styles = StyleSheet.create({
   flex: { flex: 1 },
   muted: { fontSize: FontSize.md, color: Colors.textSecondary, textAlign: 'center' },
   intro: { fontSize: FontSize.md, color: Colors.textSecondary, marginBottom: Spacing.md },
+  totalLine: { fontSize: FontSize.md, fontWeight: '700', color: Colors.text, marginBottom: Spacing.md },
+  moreBox: { paddingVertical: Spacing.md, gap: Spacing.sm },
+  moreError: { fontSize: FontSize.md, color: Colors.error, textAlign: 'center' },
+  moreBtn: {
+    minHeight: 48, justifyContent: 'center', alignItems: 'center', borderRadius: BorderRadius.md,
+    borderWidth: 1, borderColor: Colors.primary, backgroundColor: Colors.surface,
+  },
+  moreText: { fontSize: FontSize.md, fontWeight: '700', color: Colors.primary },
   doneNote: {
     flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, padding: Spacing.sm, marginBottom: Spacing.md,
     borderRadius: BorderRadius.md, backgroundColor: Colors.successLight,

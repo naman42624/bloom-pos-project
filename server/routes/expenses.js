@@ -894,19 +894,40 @@ function suggestItem(items, description) {
   return best ? { id: best.id, name: best.name } : null;
 }
 
-// GET /api/expenses/unsorted?limit=50: rows with no item (not salary), newest first.
+// GET /api/expenses/unsorted?limit=50&after_id=N: rows with no item (not salary),
+// newest first. after_id is the last row of the previous page: the next page
+// starts right after it in this order (keyset, so rows sorted in between never
+// make a page skip or repeat a row). Also returns total (rows left to sort)
+// and next_after_id (null on the last page).
+const UNSORTED_WHERE = "e.item_id IS NULL AND e.category <> 'salary'";
+const UNSORTED_KEY = "(e.expense_date, COALESCE(e.created_at, TIMESTAMP 'epoch'), e.id)";
 router.get('/unsorted', ...OWNER_ONLY, async (req, res, next) => {
   try {
     const db = await getAsyncDb();
     const asked = parseInt(req.query.limit, 10);
     const limit = Math.min(asked > 0 ? asked : 50, 200);
+    const afterRaw = req.query.after_id;
+    const afterId = afterRaw === undefined || afterRaw === '' ? null : Number(afterRaw);
+    if (afterId !== null && (!Number.isInteger(afterId) || afterId <= 0)) {
+      return res.status(400).json({ success: false, message: 'Pull down to refresh the list.' });
+    }
+    const params = [];
+    let where = ` WHERE ${UNSORTED_WHERE}`;
+    if (afterId) {
+      where += ` AND ${UNSORTED_KEY} < (SELECT a.expense_date, COALESCE(a.created_at, TIMESTAMP 'epoch'), a.id FROM expenses a WHERE a.id = ?)`;
+      params.push(afterId);
+    }
+    // One extra row tells whether another page follows.
     const rows = await db.prepare(
-      `${EXPENSE_ROW_SELECT}      WHERE e.item_id IS NULL AND e.category <> 'salary'
-      ORDER BY e.expense_date DESC, e.created_at DESC, e.id DESC LIMIT ${limit}`
-    ).all();
+      `${EXPENSE_ROW_SELECT}${where}
+      ORDER BY e.expense_date DESC, COALESCE(e.created_at, TIMESTAMP 'epoch') DESC, e.id DESC LIMIT ${limit + 1}`
+    ).all(...params);
+    const more = rows.length > limit;
+    const page = more ? rows.slice(0, limit) : rows;
+    const total = Number((await db.prepare(`SELECT COUNT(*) AS c FROM expenses e WHERE ${UNSORTED_WHERE}`).get()).c) || 0;
     const items = await db.prepare('SELECT id, name, name_key FROM expense_items WHERE is_active = TRUE AND merged_into IS NULL AND category <> \'salary\'').all();
-    const data = rows.map(normalizeExpenseRow).map((r) => ({ ...r, suggested_item: suggestItem(items, r.description) }));
-    res.json({ success: true, data });
+    const data = page.map(normalizeExpenseRow).map((r) => ({ ...r, suggested_item: suggestItem(items, r.description) }));
+    res.json({ success: true, data, total, next_after_id: more && page.length ? Number(page[page.length - 1].id) : null });
   } catch (err) {
     next(err);
   }

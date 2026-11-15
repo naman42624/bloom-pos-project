@@ -996,6 +996,48 @@ check('assign-items refuses salary and invalid categories, changing nothing', as
   assert(neg.status === 200, 'negative limit ' + neg.status);
 });
 
+check('unsorted pages reach every row once, even when a row is sorted between pages, with a total', async () => {
+  const db = await getDb();
+  const mine = [];
+  for (let i = 0; i < 7; i += 1) {
+    const r = await db.prepare(`INSERT INTO expenses (location_id, category, amount, description, payment_method, expense_date, created_by)
+      VALUES (?, 'other', ?, ?, 'upi', ?, ?) RETURNING id`).get(TEST_LOCATION_ID, 5 + i, `VerifyEB page row ${i}`, dayAgo(50 + (i % 3)), OWNER_ID);
+    createdExpenseIds.push(r.id);
+    mine.push(Number(r.id));
+  }
+  const want = Number((await db.prepare("SELECT COUNT(*) AS c FROM expenses WHERE item_id IS NULL AND category <> 'salary'").get()).c);
+  const seen = [];
+  let after = null;
+  let pages = 0;
+  let sortedMidway = null;
+  let total = null;
+  do {
+    const r = await api('GET', `/expenses/unsorted?limit=3${after ? `&after_id=${after}` : ''}`, ownerT());
+    assert(r.status === 200 && Array.isArray(r.body.data) && r.body.data.length <= 3, `page ${pages}: ${r.status}`);
+    if (pages === 0) total = r.body.total;
+    r.body.data.forEach((x) => seen.push(Number(x.id)));
+    after = r.body.next_after_id;
+    pages += 1;
+    // Sort one of the test rows not seen yet, between pages: the next page must not skip anything else.
+    if (pages === 1 && !sortedMidway) {
+      sortedMidway = mine.find((id) => !seen.includes(id)) || null;
+      if (sortedMidway) {
+        const T = await newItem('VerifyEB Page Item');
+        await db.prepare('UPDATE expenses SET item_id = ? WHERE id = ?').run(T.id, sortedMidway);
+      }
+    }
+  } while (after && pages < 500);
+  assert(total === want, `total ${total} vs ${want}`);
+  assert(new Set(seen).size === seen.length, 'a row came twice');
+  for (const id of mine) {
+    if (id === sortedMidway) continue;
+    assert(seen.includes(id), `row ${id} never shown`);
+  }
+  assert(seen.length >= want - (sortedMidway ? 1 : 0), `saw ${seen.length} of ${want}`);
+  const bad = await api('GET', '/expenses/unsorted?after_id=abc', ownerT());
+  assert(bad.status === 400, 'bad after_id ' + bad.status);
+});
+
 check('a manager gets 403 on unsorted and assign-items', async () => {
   const a = await api('GET', '/expenses/unsorted', managerT());
   const b = await api('POST', '/expenses/assign-items', managerT(), { assignments: [] });
