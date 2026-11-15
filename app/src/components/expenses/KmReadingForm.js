@@ -14,7 +14,10 @@
  * (3 taps and one typed number; the meter box takes focus after the rider).
  *
  * Props: locationId, onBack(), onClose(), onDone({ expense: null, removed: false, message }),
- *        closeRequest (bumps when the modal asks to close)
+ *        closeRequest (bumps when the modal asks to close),
+ *        presetRider? { id, name } (the rider is fixed, as on the rider km screen),
+ *        startOn? a Date: open in "For another day" with the date picker on that day
+ *        (Add the missed readings for a gap).
  */
 import React, { useEffect, useRef, useState } from 'react';
 import {
@@ -38,7 +41,7 @@ const dayText = (d) => `${d.getDate()} ${MONTHS[d.getMonth()]}`;
 const num = (n) => Number(n).toLocaleString('en-IN', { maximumFractionDigits: 1 });
 const KIND_WORDS = { arrive: 'Arriving', leave: 'Going home', typed: 'Km of work' };
 
-export default function KmReadingForm({ locationId, onBack, onClose, onDone, closeRequest }) {
+export default function KmReadingForm({ locationId, onBack, onClose, onDone, closeRequest, presetRider, startOn }) {
   const [riders, setRiders] = useState([]);
   const [ridersState, setRidersState] = useState('loading');
   const [rider, setRider] = useState(null); // { id, name }
@@ -49,7 +52,7 @@ export default function KmReadingForm({ locationId, onBack, onClose, onDone, clo
   const [meter, setMeter] = useState('');
   const [typedKm, setTypedKm] = useState('');
   const [when, setWhen] = useState(null); // a Date picked under For another day
-  const [pickDate, setPickDate] = useState(false);
+  const [pickDate, setPickDate] = useState(!!startOn);
   const [pickTime, setPickTime] = useState(false);
   const [pendingDate, setPendingDate] = useState(null);
   const [errors, setErrors] = useState({});
@@ -64,7 +67,8 @@ export default function KmReadingForm({ locationId, onBack, onClose, onDone, clo
     setRidersState('loading');
     try {
       const res = await api.getKmRiders(locationId);
-      let list = res.data || [];
+      // A rider who has left is listed only for the final settlement.
+      let list = (res.data || []).filter((r) => r.is_active !== false);
       let lastId = null;
       try { lastId = Number(await AsyncStorage.getItem(LAST_RIDER_KEY)); } catch { /* none remembered */ }
       if (lastId) list = [...list.filter((r) => Number(r.id) === lastId), ...list.filter((r) => Number(r.id) !== lastId)];
@@ -74,7 +78,15 @@ export default function KmReadingForm({ locationId, onBack, onClose, onDone, clo
       setRidersState('error');
     }
   };
-  useEffect(() => { if (locationId) loadRiders(); }, [locationId]);
+  useEffect(() => {
+    if (presetRider) {
+      setRiders([presetRider]);
+      setRidersState('ready');
+      pickRider(presetRider);
+      return;
+    }
+    if (locationId) loadRiders();
+  }, [locationId, presetRider && presetRider.id]);
 
   const pickRider = (r) => {
     setRider({ id: Number(r.id), name: r.name });
@@ -90,10 +102,10 @@ export default function KmReadingForm({ locationId, onBack, onClose, onDone, clo
         if (!kindTouched) setKind(suggestKind(lr));
       })
       .catch(() => { if (req === riderReq.current) setLastFailed(true); });
-    setTimeout(() => (typedMode ? null : meterRef.current?.focus()), 50);
+    if (!startOn) setTimeout(() => (typedMode ? null : meterRef.current?.focus()), 50);
   };
 
-  const dirty = !!rider || meter !== '' || typedKm !== '';
+  const dirty = (!!rider && !presetRider) || meter !== '' || typedKm !== '';
   const leave = (then) => {
     if (saving) return;
     if (!dirty) { then(); return; }
@@ -160,9 +172,11 @@ export default function KmReadingForm({ locationId, onBack, onClose, onDone, clo
   return (
     <>
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => leave(onBack)} style={styles.backBtn} accessibilityRole="button" accessibilityLabel="Back to Add expense">
-          <Ionicons name="chevron-back" size={26} color={Colors.textSecondary} />
-        </TouchableOpacity>
+        {!!onBack && (
+          <TouchableOpacity onPress={() => leave(onBack)} style={styles.backBtn} accessibilityRole="button" accessibilityLabel="Back to Add expense">
+            <Ionicons name="chevron-back" size={26} color={Colors.textSecondary} />
+          </TouchableOpacity>
+        )}
         <Text style={styles.title}>Km reading</Text>
         <TouchableOpacity onPress={() => leave(onClose)} style={styles.closeBtn} accessibilityRole="button" accessibilityLabel="Close">
           <Ionicons name="close" size={26} color={Colors.textSecondary} />
@@ -277,7 +291,7 @@ export default function KmReadingForm({ locationId, onBack, onClose, onDone, clo
       <DateTimePickerModal
         visible={pickDate}
         mode="date"
-        value={when || new Date()}
+        value={when || startOn || new Date()}
         maximumDate={new Date()}
         title="Which day was it?"
         onCancel={() => setPickDate(false)}

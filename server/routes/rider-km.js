@@ -274,19 +274,29 @@ router.get('/riders', authenticate, forGivers, async (req, res, next) => {
     if (req.user.role !== 'owner' && !(await isLinked(db, req.user.id, locationId))) {
       return res.status(403).json({ success: false, message: MSG.notYourShop });
     }
+    // Active riders, and riders who have left while km, COD, supply money or
+    // a carry is still open (so their final settlement can be reached).
     const riders = await db.prepare(`
-      SELECT u.id, u.name FROM users u
-      WHERE u.role = 'delivery_partner' AND u.is_active = 1
+      SELECT u.id, u.name, u.is_active FROM users u
+      WHERE u.role = 'delivery_partner'
         AND EXISTS (SELECT 1 FROM user_locations ul WHERE ul.user_id = u.id AND ul.location_id = ?)
+        AND (u.is_active = 1
+          OR EXISTS (SELECT 1 FROM rider_km_readings r WHERE r.user_id = u.id AND r.removed_at IS NULL)
+          OR EXISTS (SELECT 1 FROM rider_km_settlements s WHERE s.user_id = u.id))
       ORDER BY u.name ASC, u.id ASC
     `).all(locationId);
     const data = [];
     for (const r of riders) {
-      const v = buildView(r, await loadChainInputs(db, r.id));
+      const active = Number(r.is_active) === 1;
+      const inputs = await loadChainInputs(db, r.id);
+      const v = buildView(r, inputs);
       // The settle sheet's figure now; unknown while a gap is unanswered.
       const s = await computeSettlement(db, r.id);
+      if (!active && !(s.anything || s.gapsOpen > 0 || v.gapsOpen > 0 || v.priced.paidKm > 0)) continue;
       data.push({
-        id: Number(r.id), name: r.name, unsettled_km: v.priced.paidKm, open_day: v.chain.openDay,
+        id: Number(r.id), name: r.name, is_active: active,
+        has_account: inputs.readings.length > 0 || !!inputs.lastSettlement,
+        unsettled_km: v.priced.paidKm, open_day: v.chain.openDay,
         gaps: v.gapsOpen, balance_paise: s.gapsOpen ? null : s.netPaise,
       });
     }
@@ -668,6 +678,52 @@ router.post('/:userId/settle', authenticate, forGivers, async (req, res, next) =
     if (err && (err.code === '40P01' || err.code === '40001')) return sendError(res, next, coded(409, 'CHANGED', SETTLE_MSG.changed));
     sendError(res, next, err);
   }
+});
+
+// ─── GET /api/rider-km/settlements?location_id=&limit= ───────
+// Km settlements for the Settlements history, newest first. COD netted here
+// has no delivery_settlements row, so this is its record.
+router.get('/settlements', authenticate, forGivers, async (req, res, next) => {
+  try {
+    const db = await getDb();
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 200);
+    const locationId = req.query.location_id ? parseId(req.query.location_id) : null;
+    if (req.query.location_id && !locationId) return res.status(400).json({ success: false, message: MSG.location });
+    if (locationId && req.user.role !== 'owner' && !(await isLinked(db, req.user.id, locationId))) {
+      return res.status(403).json({ success: false, message: MSG.notYourShop });
+    }
+    const where = [];
+    const args = [];
+    if (locationId) { where.push('s.location_id = ?'); args.push(locationId); }
+    if (req.user.role !== 'owner') {
+      where.push('s.location_id IN (SELECT location_id FROM user_locations WHERE user_id = ?)');
+      args.push(req.user.id);
+    }
+    const rows = await db.prepare(`
+      SELECT s.id, s.user_id, u.name AS rider_name, s.location_id, s.paid_km, s.cod_held, s.net_amount, s.action,
+        s.moved_amount, s.moved_method, s.carry_out, s.created_at, cb.name AS created_by_name,
+        (s.lines_json ->> 'for_salary') AS for_salary,
+        (SELECT COUNT(*) FROM deliveries d WHERE d.km_settlement_id = s.id) AS cod_orders
+      FROM rider_km_settlements s
+      LEFT JOIN users u ON u.id = s.user_id
+      LEFT JOIN users cb ON cb.id = s.created_by
+      ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+      ORDER BY s.created_at DESC, s.id DESC
+      LIMIT ?
+    `).all(...args, limit);
+    res.json({
+      success: true,
+      data: rows.map((r) => ({
+        id: Number(r.id), user_id: Number(r.user_id), rider_name: r.rider_name,
+        location_id: r.location_id == null ? null : Number(r.location_id),
+        paid_km: r.paid_km == null ? 0 : Number(r.paid_km),
+        cod_held_paise: toPaise(r.cod_held), cod_orders: Number(r.cod_orders) || 0,
+        net_paise: toPaise(r.net_amount), action: r.action, for_salary: r.for_salary === 'true',
+        moved_paise: toPaise(r.moved_amount), moved_method: r.moved_method || null,
+        carry_out_paise: toPaise(r.carry_out), created_at: r.created_at, created_by_name: r.created_by_name || null,
+      })),
+    });
+  } catch (err) { next(err); }
 });
 
 // ─── GET /api/rider-km/:userId ───────────────────────────────

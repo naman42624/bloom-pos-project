@@ -1239,6 +1239,79 @@ check('an old own-pocket rider petrol row can still get a note', async () => {
   }
 });
 
+// ─── Task 6: settlements history and riders who have left ────
+check('km settlements history lists a settlement with its COD total', async () => {
+  const c = await getCast();
+  const r = await freshRider();
+  await work(r, 2, 30, 700);
+  await cod(r, { cash: 250 });
+  await cod(r, { cash: 100, upi: 50 });
+  const pv = await okPreview(c.counter, r);
+  eq(pv.lines.cod_held_paise, 35000, 'cash COD held');
+  const res = await commit(c.counter, r, pv, { action: 'carry' });
+  eq(res.status, 201, 'carry ' + JSON.stringify(res.body));
+  const sid = res.body.data.settlement_id;
+  const list = await api('GET', `/rider-km/settlements?location_id=${TEST_LOCATION_ID}&limit=50`, c.counter);
+  eq(list.status, 200, 'list ' + JSON.stringify(list.body));
+  const row = list.body.data.find((x) => x.id === sid);
+  assert(row, 'settlement listed');
+  eq(row.user_id, r, 'rider id');
+  eq(row.rider_name, 'VerifyRK Rider ' + (createdUserIds.indexOf(r)), 'rider name');
+  eq(row.paid_km, 30, 'km');
+  eq(row.cod_held_paise, 35000, 'COD settled');
+  eq(row.cod_orders, 2, 'COD orders');
+  eq(row.net_paise, pv.net_paise, 'net');
+  eq(row.action, 'carry', 'action');
+  eq(row.moved_paise, 0, 'nothing moved');
+  eq(row.moved_method, null, 'no method');
+  eq(row.carry_out_paise, pv.net_paise, 'carry out');
+  assert(row.created_at, 'created_at');
+  const ids = list.body.data.map((x) => x.id);
+  assert(ids.every((id, i) => i === 0 || ids[i - 1] > id), 'newest first');
+  eq((await api('GET', `/rider-km/settlements?location_id=${TEST_LOCATION_ID}`, c.florist)).status, 403, 'florist 403');
+  eq((await api('GET', `/rider-km/settlements?location_id=${TEST_LOCATION_ID}`, c.rider)).status, 403, 'rider 403');
+  const other = await api('GET', '/rider-km/settlements?location_id=999999', c.counter);
+  eq(other.status, 403, 'not their shop ' + JSON.stringify(other.body));
+});
+
+check('rider list keeps a rider who has left while money is still open', async () => {
+  const c = await getCast();
+  const db = await getDb();
+  const listed = async (id) => (await api('GET', `/rider-km/riders?location_id=${TEST_LOCATION_ID}`, c.counter)).body.data.find((x) => x.id === id);
+  // Left with km not settled: listed, marked inactive.
+  const open = await freshRider();
+  await work(open, 2, 15, 300);
+  await db.prepare('UPDATE users SET is_active = 0 WHERE id = ?').run(open);
+  const o = await listed(open);
+  assert(o, 'left rider with unsettled km listed');
+  eq(o.is_active, false, 'marked as left');
+  eq(o.unsettled_km, 15, 'unsettled km');
+  eq(o.has_account, true, 'has account');
+  // Left with a carry and nothing else: listed.
+  const carried = await freshRider();
+  await work(carried, 2, 10, 400);
+  await cod(carried, { cash: 900 });
+  const pv = await okPreview(c.counter, carried);
+  eq((await commit(c.counter, carried, pv, { action: 'carry' })).status, 201, 'carry');
+  await db.prepare('UPDATE users SET is_active = 0 WHERE id = ?').run(carried);
+  const cr = await listed(carried);
+  assert(cr, 'left rider with a carry listed');
+  eq(cr.balance_paise, pv.net_paise, 'carry shown');
+  // Left and fully settled: not listed.
+  const done = await freshRider();
+  await work(done, 2, 10, 500);
+  const pd = await okPreview(c.counter, done);
+  eq((await commit(c.counter, done, pd, { action: 'pay', amount: pd.net_paise / 100, method: 'upi' })).status, 201, 'paid');
+  await db.prepare('UPDATE users SET is_active = 0 WHERE id = ?').run(done);
+  eq(await listed(done), undefined, 'settled leaver not listed');
+  // Active riders are marked active; one with no readings has no account.
+  const fresh = await freshRider();
+  const f = await listed(fresh);
+  assert(f, 'active rider listed');
+  eq(f.is_active, true, 'active');
+  eq(f.has_account, false, 'no readings yet');
+});
+
 async function cleanup() {
   const db = await getDb();
   const del = async (label, sql, ...p) => { try { await db.prepare(sql).run(...p); } catch (e) { console.error(`cleanup ${label}: ${e.message}`); } };

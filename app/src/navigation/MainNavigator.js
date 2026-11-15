@@ -64,6 +64,7 @@ import AddPaymentScreen from '../screens/AddPaymentScreen';
 import ExpensesScreen from '../screens/ExpensesScreen';
 import ExpenseItemScreen from '../screens/ExpenseItemScreen';
 import ShoppingMoneyBackScreen from '../screens/ShoppingMoneyBackScreen';
+import RiderKmScreen from '../screens/RiderKmScreen';
 import ShoppingMoneyHistoryScreen from '../screens/ShoppingMoneyHistoryScreen';
 import ExpenseItemsScreen from '../screens/ExpenseItemsScreen';
 import SortExpensesScreen from '../screens/SortExpensesScreen';
@@ -217,6 +218,7 @@ function DashboardStack() {
       <Stack.Screen name="RefundSale" component={RefundSaleScreen} options={{ title: 'Refund' }} />
       <Stack.Screen name="MaterialDetail" component={MaterialDetailScreen} options={{ title: 'Material Details' }} />
       <Stack.Screen name="ShoppingMoneyBack" component={ShoppingMoneyBackScreen} options={{ title: 'Shopping money' }} />
+      <Stack.Screen name="RiderKm" component={RiderKmScreen} options={({ route }) => ({ title: route.params?.name ? `${route.params.name} · Km` : 'Km account' })} />
       <Stack.Screen name="ShoppingMoneyHistory" component={ShoppingMoneyHistoryScreen} options={{ title: 'Shopping money history' }} />
     </Stack.Navigator>
   );
@@ -374,6 +376,7 @@ function ProfileStack() {
       <Stack.Screen name="BillSettings" component={BillSettingsScreen} options={{ title: 'Bill and GST' }} />
       <Stack.Screen name="ExpenseItem" component={ExpenseItemScreen} options={{ title: 'Expense item' }} />
       <Stack.Screen name="ShoppingMoneyBack" component={ShoppingMoneyBackScreen} options={{ title: 'Shopping money' }} />
+      <Stack.Screen name="RiderKm" component={RiderKmScreen} options={({ route }) => ({ title: route.params?.name ? `${route.params.name} · Km` : 'Km account' })} />
       <Stack.Screen name="ShoppingMoneyHistory" component={ShoppingMoneyHistoryScreen} options={{ title: 'Shopping money history' }} />
       <Stack.Screen name="ExpenseItems" component={ExpenseItemsScreen} options={{ title: 'Expense items' }} />
       <Stack.Screen name="SortExpenses" component={SortExpensesScreen} options={{ title: 'Sort older entries' }} />
@@ -416,6 +419,7 @@ function POSStack() {
       <Stack.Screen name="Expenses" component={ExpensesScreen} options={{ title: 'Expenses' }} />
       <Stack.Screen name="ExpenseItem" component={ExpenseItemScreen} options={{ title: 'Expense item' }} />
       <Stack.Screen name="ShoppingMoneyBack" component={ShoppingMoneyBackScreen} options={{ title: 'Shopping money' }} />
+      <Stack.Screen name="RiderKm" component={RiderKmScreen} options={({ route }) => ({ title: route.params?.name ? `${route.params.name} · Km` : 'Km account' })} />
       <Stack.Screen name="ShoppingMoneyHistory" component={ShoppingMoneyHistoryScreen} options={{ title: 'Shopping money history' }} />
       <Stack.Screen name="ExpenseItems" component={ExpenseItemsScreen} options={{ title: 'Expense items' }} />
       <Stack.Screen name="SortExpenses" component={SortExpensesScreen} options={{ title: 'Sort older entries' }} />
@@ -441,6 +445,7 @@ function SalesStack() {
       <Stack.Screen name="Expenses" component={ExpensesScreen} options={{ title: 'Expenses' }} />
       <Stack.Screen name="ExpenseItem" component={ExpenseItemScreen} options={{ title: 'Expense item' }} />
       <Stack.Screen name="ShoppingMoneyBack" component={ShoppingMoneyBackScreen} options={{ title: 'Shopping money' }} />
+      <Stack.Screen name="RiderKm" component={RiderKmScreen} options={({ route }) => ({ title: route.params?.name ? `${route.params.name} · Km` : 'Km account' })} />
       <Stack.Screen name="ShoppingMoneyHistory" component={ShoppingMoneyHistoryScreen} options={{ title: 'Shopping money history' }} />
       <Stack.Screen name="ExpenseItems" component={ExpenseItemsScreen} options={{ title: 'Expense items' }} />
       <Stack.Screen name="SortExpenses" component={SortExpensesScreen} options={{ title: 'Sort older entries' }} />
@@ -474,6 +479,7 @@ function OrdersStack() {
       <Stack.Screen name="Expenses" component={ExpensesScreen} options={{ title: 'Expenses' }} />
       <Stack.Screen name="ExpenseItem" component={ExpenseItemScreen} options={{ title: 'Expense item' }} />
       <Stack.Screen name="ShoppingMoneyBack" component={ShoppingMoneyBackScreen} options={{ title: 'Shopping money' }} />
+      <Stack.Screen name="RiderKm" component={RiderKmScreen} options={({ route }) => ({ title: route.params?.name ? `${route.params.name} · Km` : 'Km account' })} />
       <Stack.Screen name="ShoppingMoneyHistory" component={ShoppingMoneyHistoryScreen} options={{ title: 'Shopping money history' }} />
       <Stack.Screen name="ExpenseItems" component={ExpenseItemsScreen} options={{ title: 'Expense items' }} />
       <Stack.Screen name="SortExpenses" component={SortExpensesScreen} options={{ title: 'Sort older entries' }} />
@@ -594,6 +600,7 @@ function MoreStack() {
       <Stack.Screen name="Expenses" component={ExpensesScreen} options={{ title: 'Expenses' }} />
       <Stack.Screen name="ExpenseItem" component={ExpenseItemScreen} options={{ title: 'Expense item' }} />
       <Stack.Screen name="ShoppingMoneyBack" component={ShoppingMoneyBackScreen} options={{ title: 'Shopping money' }} />
+      <Stack.Screen name="RiderKm" component={RiderKmScreen} options={({ route }) => ({ title: route.params?.name ? `${route.params.name} · Km` : 'Km account' })} />
       <Stack.Screen name="ShoppingMoneyHistory" component={ShoppingMoneyHistoryScreen} options={{ title: 'Shopping money history' }} />
       <Stack.Screen name="ExpenseItems" component={ExpenseItemsScreen} options={{ title: 'Expense items' }} />
       <Stack.Screen name="SortExpenses" component={SortExpensesScreen} options={{ title: 'Sort older entries' }} />

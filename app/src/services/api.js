@@ -1499,6 +1499,10 @@ class ApiService {
     return this.request(`/rider-km/${userId}/usual-home`, { method: 'PUT', body: JSON.stringify({ km }) });
   }
 
+  getKmSettlements(params = {}) {
+    return this.request(`/rider-km/settlements${this._expenseQuery(params)}`);
+  }
+
   settleKm(userId, body) {
     return this.request(`/rider-km/${userId}/settle`, { method: 'POST', body: JSON.stringify(body) });
   }
