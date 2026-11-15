@@ -45,6 +45,29 @@ test('netText', () => {
   assert.strictEqual(k.netText('L', 22650), 'Shop pays L ₹226.5');
 });
 
+test('readAtFor: nothing picked -> undefined', () => assert.strictEqual(k.readAtFor({ typedMode: true, when: null }), undefined));
+test('readAtFor: typed today before noon -> undefined (no future time)', () => {
+  const now = new Date(2026, 10, 15, 9, 5);
+  assert.strictEqual(k.readAtFor({ typedMode: true, when: new Date(2026, 10, 15), now }), undefined);
+});
+test('readAtFor: typed past day -> 12:00', () => {
+  const now = new Date(2026, 10, 15, 9, 5);
+  assert.strictEqual(k.readAtFor({ typedMode: true, when: new Date(2026, 10, 13, 7, 0), now }), '2026-11-13 12:00');
+});
+test('readAtFor: picked past time -> YYYY-MM-DD HH:MM', () => {
+  const now = new Date(2026, 10, 15, 9, 5);
+  assert.strictEqual(k.readAtFor({ typedMode: false, when: new Date(2026, 10, 14, 18, 7), now }), '2026-11-14 18:07');
+});
+test('readAtFor: picked time later today is held back to now', () => {
+  const now = new Date(2026, 10, 15, 9, 5);
+  assert.strictEqual(k.readAtFor({ typedMode: false, when: new Date(2026, 10, 15, 17, 0), now }), '2026-11-15 09:05');
+});
+test('clampToNow', () => {
+  const now = new Date(2026, 10, 15, 9, 5);
+  assert.strictEqual(k.clampToNow(new Date(2026, 10, 15, 10, 0), now).getHours(), 9);
+  assert.strictEqual(k.clampToNow(new Date(2026, 10, 15, 8, 0), now).getHours(), 8);
+});
+
 let failed = 0;
 for (const t of tests) {
   try { t.fn(); console.log(`ok   ${t.name}`); } catch (e) { failed++; console.log(`FAIL ${t.name}: ${e.message}`); }

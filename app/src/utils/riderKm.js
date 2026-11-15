@@ -41,3 +41,21 @@ export function clockText(readAt) {
   const h = Number(m[1]);
   return `${h % 12 === 0 ? 12 : h % 12}:${m[2]} ${h >= 12 ? 'pm' : 'am'}`;
 }
+
+const pad2 = (n) => String(n).padStart(2, '0');
+const dateOf = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+const dateTimeOf = (d) => `${dateOf(d)} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+
+// A picked time can never be later than now (the server refuses the future).
+export function clampToNow(picked, now = new Date()) {
+  return picked.getTime() > now.getTime() ? new Date(now.getTime()) : picked;
+}
+
+// The read_at to send, or undefined to let the server stamp now.
+// Typed km: today -> undefined; an earlier day -> noon. Meter: the picked
+// date and time, held back to now.
+export function readAtFor({ typedMode, when, now = new Date() }) {
+  if (!when) return undefined;
+  if (typedMode) return dateOf(when) === dateOf(now) ? undefined : `${dateOf(when)} 12:00`;
+  return dateTimeOf(clampToNow(when, now));
+}

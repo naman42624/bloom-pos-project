@@ -25,7 +25,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import api from '../../services/api';
 import useSubmitGuard from '../../hooks/useSubmitGuard';
 import { showAlert, showConfirm } from '../../utils/alert';
-import { suggestKind, workKmText, clockText } from '../../utils/riderKm';
+import { suggestKind, workKmText, clockText, readAtFor, clampToNow } from '../../utils/riderKm';
 import DateTimePickerModal from '../DateTimePickerModal';
 import { Colors, FontSize, Spacing, BorderRadius } from '../../constants/theme';
 
@@ -54,6 +54,8 @@ export default function KmReadingForm({ locationId, onBack, onClose, onDone, clo
   const [pendingDate, setPendingDate] = useState(null);
   const [errors, setErrors] = useState({});
   const [saving, setSaving] = useState(false);
+  const [lastFailed, setLastFailed] = useState(false);
+  const riderReq = useRef(0);
   const meterRef = useRef(null);
   const scrollRef = useRef(null);
 
@@ -78,13 +80,16 @@ export default function KmReadingForm({ locationId, onBack, onClose, onDone, clo
     setRider({ id: Number(r.id), name: r.name });
     setErrors((e) => ({ ...e, rider: undefined }));
     setLast(null);
+    setLastFailed(false);
+    const req = ++riderReq.current;
     api.getRiderKm(r.id)
       .then((res) => {
+        if (req !== riderReq.current) return; // another rider was picked since
         const lr = res.data?.last_reading || null;
         setLast(lr);
         if (!kindTouched) setKind(suggestKind(lr));
       })
-      .catch(() => {});
+      .catch(() => { if (req === riderReq.current) setLastFailed(true); });
     setTimeout(() => (typedMode ? null : meterRef.current?.focus()), 50);
   };
 
@@ -103,7 +108,8 @@ export default function KmReadingForm({ locationId, onBack, onClose, onDone, clo
   const buildBody = () => {
     const body = { location_id: locationId, user_id: rider.id };
     if (typedMode) { body.kind = 'typed'; body.typed_km = typedKm; } else { body.kind = kind; body.meter = meter; }
-    if (when) body.read_at = typedMode ? `${localDate(when)} 12:00` : localDateTime(when);
+    const readAt = readAtFor({ typedMode, when });
+    if (readAt) body.read_at = readAt;
     return body;
   };
 
@@ -234,6 +240,7 @@ export default function KmReadingForm({ locationId, onBack, onClose, onDone, clo
         {!!errors.meter && <Text style={styles.error}>{errors.meter}</Text>}
         {!!errors.km && <Text style={styles.error}>{errors.km}</Text>}
         {!typedMode && !!lastLine && <Text style={styles.hint}>{lastLine}</Text>}
+        {!typedMode && lastFailed && <Text style={styles.hint}>Couldn't load the last reading. You can still save.</Text>}
         {!!work && <Text style={styles.work}>{work}</Text>}
 
         <View style={styles.linksRow}>
@@ -291,7 +298,7 @@ export default function KmReadingForm({ locationId, onBack, onClose, onDone, clo
           setPickTime(false);
           const d = new Date(pendingDate || new Date());
           d.setHours(t.getHours(), t.getMinutes(), 0, 0);
-          setWhen(d);
+          setWhen(clampToNow(d));
         }}
       />
     </>
