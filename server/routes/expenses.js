@@ -933,6 +933,61 @@ router.get('/unsorted', ...OWNER_ONLY, async (req, res, next) => {
   }
 });
 
+// GET /api/expenses/sorted-earlier?limit=&after=<log_id>:<expense_id>
+// Entries put into an item by Sort older entries, newest sort first, read from
+// the expense_assign_items audit rows. Only entries still in the item they were
+// sorted into are listed (Take out = POST /assign-items/undo). Paged by a
+// keyset on (audit row id, expense id); returns total and next_after.
+const SORTED_EARLIER_CTE = `
+  WITH s AS (
+    SELECT DISTINCT ON (x.expense_id) x.expense_id, x.item_id, al.id AS log_id, al.created_at AS sorted_at
+    FROM audit_logs al
+    CROSS JOIN LATERAL jsonb_to_recordset(
+      CASE WHEN jsonb_typeof(al.new_state -> 'assignments') = 'array' THEN al.new_state -> 'assignments' ELSE '[]'::jsonb END
+    ) AS x(expense_id int, item_id int)
+    WHERE al.entity_type = 'expense_item' AND al.action = 'expense_assign_items'
+    ORDER BY x.expense_id, al.id DESC
+  ), cur AS (
+    SELECT s.* FROM s JOIN expenses e ON e.id = s.expense_id AND e.item_id = s.item_id
+  )`;
+router.get('/sorted-earlier', ...OWNER_ONLY, async (req, res, next) => {
+  try {
+    const db = await getAsyncDb();
+    const asked = parseInt(req.query.limit, 10);
+    const limit = Math.min(asked > 0 ? asked : 50, 200);
+    let after = null;
+    if (req.query.after !== undefined && req.query.after !== '') {
+      const m = /^(\d+):(\d+)$/.exec(String(req.query.after));
+      if (!m) return res.status(400).json({ success: false, message: 'Pull down to refresh the list.' });
+      after = [Number(m[1]), Number(m[2])];
+    }
+    const keys = await db.prepare(
+      `${SORTED_EARLIER_CTE}
+      SELECT expense_id, item_id, log_id, sorted_at FROM cur
+      ${after ? 'WHERE (log_id, expense_id) < (?, ?)' : ''}
+      ORDER BY log_id DESC, expense_id DESC LIMIT ${limit + 1}`
+    ).all(...(after || []));
+    const more = keys.length > limit;
+    const page = more ? keys.slice(0, limit) : keys;
+    const total = Number((await db.prepare(`${SORTED_EARLIER_CTE} SELECT COUNT(*) AS c FROM cur`).get()).c) || 0;
+    let data = [];
+    if (page.length) {
+      const rows = await db.prepare(`${EXPENSE_ROW_SELECT} WHERE e.id IN (${page.map(() => '?').join(', ')})`)
+        .all(...page.map((k) => k.expense_id));
+      const byId = new Map(rows.map((r) => [Number(r.id), normalizeExpenseRow(r)]));
+      data = page.filter((k) => byId.has(Number(k.expense_id))).map((k) => ({
+        ...byId.get(Number(k.expense_id)),
+        sorted_item_id: Number(k.item_id),
+        sorted_at: k.sorted_at,
+      }));
+    }
+    const last = page[page.length - 1];
+    res.json({ success: true, data, total, next_after: more && last ? `${last.log_id}:${last.expense_id}` : null });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // POST /api/expenses/assign-items { assignments: [{ expense_id, item_id | item_name, category? }] }
 // One transaction; sets item_id only. Salary rows and rows that already have an
 // item are skipped. One audit row per call (entity_id 0).

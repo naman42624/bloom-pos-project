@@ -133,6 +133,14 @@ test('savedTimeLabel missing', () => {
   assert.strictEqual(e.savedTimeLabel(null, '2026-11-13'), '');
   assert.strictEqual(e.savedTimeLabel('garbage', '2026-11-13'), '');
 });
+test('typedText shows only a different typed text', () => {
+  assert.strictEqual(e.typedText({ item_name: 'Petrol', description: 'bike repair' }), 'bike repair');
+  assert.strictEqual(e.typedText({ item_name: 'Petrol', description: '  petrol ' }), null);
+  assert.strictEqual(e.typedText({ item_name: 'Tea', description: 'tea  ' }), null);
+  assert.strictEqual(e.typedText({ item_name: null, description: 'bike repair' }), null);
+  assert.strictEqual(e.typedText({ item_name: 'Petrol', description: '' }), null);
+  assert.strictEqual(e.typedText(null), null);
+});
 
 let failed = 0;
 for (const t of tests) {
