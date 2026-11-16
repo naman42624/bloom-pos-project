@@ -629,6 +629,17 @@ function ensureCoreTables() {
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
   `);
+  // Pay visibility (additive): which employees a manager may see pay for.
+  runPsql(`
+    CREATE TABLE IF NOT EXISTS pay_viewers (
+      id SERIAL PRIMARY KEY,
+      manager_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      employee_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      created_by INT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(manager_id, employee_id)
+    )
+  `);
   ensureColumn('sales', 'client_ref', 'VARCHAR(64)');
   runPsql('CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_created_by_client_ref ON sales(created_by, client_ref) WHERE client_ref IS NOT NULL');
   runPsql(`INSERT INTO settings (key, value, description) SELECT 'discount_helper_threshold', COALESCE((SELECT value FROM settings WHERE key = 'discount_manager_threshold'), '20'), 'Largest discount percent a helper can give without a PIN override' WHERE NOT EXISTS (SELECT 1 FROM settings WHERE key = 'discount_helper_threshold')`);

@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { getDb } = require('../config/database');
-const { getDb: getAsyncDb, withMoneyTx } = require('../config/database-async');
+const { getDb: getAsyncDb, withMoneyTx, withTransaction } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
 const { nowLocal, todayStr } = require('../utils/time');
 const { computeShiftWork, findPartialDays, normalizeSegments, matchSegmentForTime, lateMinutesFor, timestampToMinutes } = require('../utils/shift-work');
@@ -11,6 +11,65 @@ const { payrollShopping, remainingPaise } = require('../utils/staff-money');
 const { payrollKm, lockCarryForPayroll, applyCarryAtPayroll, SETTLE_MSG: KM_MSG } = require('../utils/rider-km-data');
 
 router.use(authenticate);
+
+// ═══════════════════════════════════════════════════════════════
+// PAY VIEWERS (owner picks whose pay a manager may see)
+// ═══════════════════════════════════════════════════════════════
+const PAY_PICKABLE_ROLES = ['manager', 'employee', 'counter_staff', 'florist_staff', 'delivery_partner', 'helper'];
+
+router.get('/pay-viewers/:managerId', authorize('owner'), async (req, res) => {
+  try {
+    const db = await getAsyncDb();
+    const managerId = Number(req.params.managerId);
+    const mgr = Number.isInteger(managerId)
+      ? await db.prepare("SELECT id FROM users WHERE id = ? AND role = 'manager' AND is_active = 1").get(managerId)
+      : null;
+    if (!mgr) return res.status(400).json({ success: false, message: 'Pick a manager.' });
+    const rows = await db.prepare('SELECT employee_id FROM pay_viewers WHERE manager_id = ? ORDER BY employee_id').all(managerId);
+    res.json({ success: true, data: { employee_ids: rows.map((r) => Number(r.employee_id)) } });
+  } catch (error) {
+    console.error('Get pay viewers error:', error);
+    res.status(500).json({ success: false, message: 'Could not load this list. Try again.' });
+  }
+});
+
+router.put('/pay-viewers/:managerId', authorize('owner'), async (req, res) => {
+  try {
+    const managerId = Number(req.params.managerId);
+    const raw = req.body && req.body.employee_ids;
+    if (!Array.isArray(raw)) return res.status(400).json({ success: false, message: 'One of those people can\'t be picked. Refresh and try again.' });
+    const ids = [...new Set(raw.map(Number))];
+    const result = await withTransaction(async (tx) => {
+      const mgr = Number.isInteger(managerId)
+        ? await tx.prepare("SELECT id FROM users WHERE id = ? AND role = 'manager' AND is_active = 1").get(managerId)
+        : null;
+      if (!mgr) return { error: 'Pick a manager.' };
+      if (ids.some((i) => !Number.isInteger(i) || i <= 0)) return { error: 'One of those people can\'t be picked. Refresh and try again.' };
+      if (ids.length) {
+        const ok = await tx.prepare(
+          `SELECT id FROM users WHERE is_active = 1 AND role IN (${PAY_PICKABLE_ROLES.map(() => '?').join(',')}) AND id IN (${ids.map(() => '?').join(',')})`
+        ).all(...PAY_PICKABLE_ROLES, ...ids);
+        if (ok.length !== ids.length) return { error: 'One of those people can\'t be picked. Refresh and try again.' };
+      }
+      const before = (await tx.prepare('SELECT employee_id FROM pay_viewers WHERE manager_id = ? ORDER BY employee_id').all(managerId)).map((r) => Number(r.employee_id));
+      await tx.prepare('DELETE FROM pay_viewers WHERE manager_id = ?').run(managerId);
+      for (const id of ids) {
+        await tx.prepare('INSERT INTO pay_viewers (manager_id, employee_id, created_by) VALUES (?, ?, ?)').run(managerId, id, req.user.id);
+      }
+      const after = [...ids].sort((a, b) => a - b);
+      await tx.prepare(`
+        INSERT INTO audit_logs (entity_type, entity_id, user_id, action, previous_state, new_state, created_at)
+        VALUES ('pay_viewers', ?, ?, 'pay_viewers_set', ?, ?, CURRENT_TIMESTAMP)
+      `).run(managerId, req.user.id, JSON.stringify({ employee_ids: before }), JSON.stringify({ employee_ids: after }));
+      return { employee_ids: after };
+    });
+    if (result.error) return res.status(400).json({ success: false, message: result.error });
+    res.json({ success: true, data: { employee_ids: result.employee_ids } });
+  } catch (error) {
+    console.error('Set pay viewers error:', error);
+    res.status(500).json({ success: false, message: 'Could not save this list. Try again.' });
+  }
+});
 
 // ═══════════════════════════════════════════════════════════════
 // EMPLOYEE SHIFTS / SCHEDULES
