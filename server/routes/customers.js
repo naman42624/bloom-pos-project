@@ -815,7 +815,10 @@ router.post(
 router.post(
   '/:id/add-due',
   authenticate,
-  authorize('owner', 'manager'),
+  // Counter staff add dues a customer owed from before the app (2026-11-16,
+  // owner asked). No cash moves; recorded_by keeps who added it; editing or
+  // deleting a record stays owner-only.
+  authorize('owner', 'manager', 'employee', 'counter_staff'),
   [
     body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be positive'),
     body('date').optional().trim(),
