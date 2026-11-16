@@ -12,6 +12,7 @@ const {
 } = require('../utils/expense-items');
 
 const { previousRange, changePct, round2, lastMonths, SIGNED_AMOUNT, EXPENSE_ROW_SELECT, normalizeExpenseRow } = require('../utils/expense-book');
+const { payVisibleIds, salarySqlFilter } = require('../utils/pay-access');
 
 const router = express.Router();
 
@@ -65,6 +66,7 @@ router.get('/', authenticate, authorize('owner', 'manager', 'employee', 'counter
     const { location_id, category, start_date, end_date, employee_id, item_id, created_by, given_to_user_id } = req.query;
     const q = String(req.query.q || '').trim().slice(0, 80);
     const isBoss = isBossRole(req.user.role);
+    const visible = await payVisibleIds(db, req.user);
 
     // register_opened_at/register_closed_at let the client show which
     // session an expense belongs to (multiple sessions a day are normal).
@@ -96,9 +98,10 @@ router.get('/', authenticate, authorize('owner', 'manager', 'employee', 'counter
     if (item_id) { sql += ' AND e.item_id = ?'; params.push(Number(item_id)); }
     if (created_by) { sql += ' AND e.created_by = ?'; params.push(Number(created_by)); }
     if (given_to_user_id) { sql += ' AND e.given_to_user_id = ?'; params.push(Number(given_to_user_id)); }
-    if (!isBoss && (q || employee_id || given_to_user_id)) {
+    if (q || employee_id || given_to_user_id) {
       // A search or filter must not reveal what a hidden salary row says.
-      sql += " AND (e.category <> 'salary' OR e.employee_id = ?)"; params.push(req.user.id);
+      const f = salarySqlFilter(visible);
+      sql += f.sql; params.push(...f.params);
     }
     if (q) {
       const like = `%${q.toLowerCase().replace(/[\\%_]/g, (c) => '\\' + c)}%`;
@@ -114,7 +117,7 @@ router.get('/', authenticate, authorize('owner', 'manager', 'employee', 'counter
     let truncated = false;
     if (isBoss && expenses.length > CAP) { truncated = true; expenses = expenses.slice(0, CAP); }
 
-    const normalizedExpenses = expenses.map(normalizeExpenseRow).map((r) => (isBoss ? r : hideSalaryNames(r, req.user.id)));
+    const normalizedExpenses = expenses.map(normalizeExpenseRow).map((r) => hideSalaryNames(r, visible));
 
     // Calculate totals using numeric amounts so the client always receives numbers.
     const total = normalizedExpenses.reduce((sum, expense) => sum + (expense.is_return ? -expense.amount : expense.amount), 0);
@@ -145,12 +148,22 @@ const BAD_PHOTO_MESSAGE = 'That photo could not be used. Take the photo again.';
 const isBossRole = (role) => role === 'owner' || role === 'manager';
 // Counter staff never log a Salary expense; they use Salary advance instead.
 const SALARY_ADVANCE_MESSAGE = 'Use Salary advance for money given to staff.';
-// Other people's salary rows, as counter staff see them: no names at all.
-function hideSalaryNames(row, viewerId) {
-  if (row.category !== 'salary' || Number(row.employee_id) === Number(viewerId)) return row;
+const SALARY_HIDDEN_PERSON_MESSAGE = "You can't pay this person's salary. Ask the owner.";
+const EXPENSE_NOT_FOUND_MESSAGE = 'This expense was not found. It may have been removed already — pull down to refresh.';
+// A salary row the viewer may not see: treated as not there at all.
+async function salaryRowHidden(db, user, row) {
+  if (!row || row.category !== 'salary') return false;
+  const visible = await payVisibleIds(db, user);
+  return visible !== 'all' && !(row.employee_id != null && visible.includes(Number(row.employee_id)));
+}
+// Salary rows of people whose pay the viewer may not see (and salary rows
+// with no person): amount kept, no names at all. visible from payVisibleIds.
+function hideSalaryNames(row, visible) {
+  if (visible === 'all' || row.category !== 'salary') return row;
+  if (row.employee_id != null && visible.includes(Number(row.employee_id))) return row;
   return {
     ...row,
-    description: 'Salary advance',
+    description: 'Staff pay',
     note: null,
     item_id: null,
     item_name: null,
@@ -285,10 +298,12 @@ async function rememberAfterSave(itemId, saved) {
 const BOSS_ONLY = [authenticate, authorize('owner', 'manager')];
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
-async function sumByItem(db, from, to, locationId) {
+async function sumByItem(db, from, to, locationId, visible) {
   const params = [from, to];
   let loc = '';
   if (locationId) { loc = ' AND e.location_id = ?'; params.push(locationId); }
+  const pay = salarySqlFilter(visible);
+  loc += pay.sql; params.push(...pay.params);
   // Rows of a merged item count under the item it was merged into.
   const rows = await db.prepare(`
     SELECT e.category, COALESCE(ei.merged_into, e.item_id) AS item_id,
@@ -323,7 +338,8 @@ router.get('/summary-by-item', ...BOSS_ONLY, async (req, res, next) => {
       prev = previousRange(from, to);
     }
     const db = await getAsyncDb();
-    const [cur, before] = await Promise.all([sumByItem(db, from, to, locationId), sumByItem(db, prev.from, prev.to, locationId)]);
+    const visible = await payVisibleIds(db, req.user);
+    const [cur, before] = await Promise.all([sumByItem(db, from, to, locationId, visible), sumByItem(db, prev.from, prev.to, locationId, visible)]);
 
     // One row per category and item over both periods, so an item that
     // stopped being bought still shows (amount 0, previous_amount X).
@@ -411,8 +427,11 @@ router.get('/items/:id/history', ...BOSS_ONLY, async (req, res, next) => {
       const p = [id, id, a, b];
       if (location_id) { w += ' AND e.location_id = ?'; p.push(Number(location_id)); }
       if (given_to_user_id) { w += ' AND e.given_to_user_id = ?'; p.push(Number(given_to_user_id)); }
+      w += pay.sql; p.push(...pay.params);
       return { w, p };
     };
+    const visible = await payVisibleIds(db, req.user);
+    const pay = salarySqlFilter(visible);
     const strip = whereFor(windowStart, today);
     const list = whereFor(start, end);
 
@@ -1196,6 +1215,12 @@ router.post(
       if (category === 'salary' && !employee_id) {
         return res.status(400).json({ success: false, message: 'Select which employee this salary payment is for.' });
       }
+      if (category === 'salary') {
+        const visible = await payVisibleIds(adb, req.user);
+        if (visible !== 'all' && !visible.includes(Number(employee_id))) {
+          return res.status(403).json({ success: false, message: SALARY_HIDDEN_PERSON_MESSAGE });
+        }
+      }
 
       if (category === 'salary' && employee_id) {
         // Same overlap-safety principle as POST /staff/payroll/disburse's
@@ -1368,7 +1393,7 @@ async function moveDrawer(tx, registerId, delta, { shiftLock = false } = {}) {
 // Locks the expense and the shop's open register, then checks who may touch it.
 async function loadForChange(tx, expenseId, user) {
   const expense = await tx.prepare('SELECT * FROM expenses WHERE id = ? FOR UPDATE').get(expenseId);
-  if (!expense) throw httpError(404, 'This expense was not found. It may have been removed already — pull down to refresh.');
+  if (!expense || await salaryRowHidden(tx, user, expense)) throw httpError(404, EXPENSE_NOT_FOUND_MESSAGE);
   const openRegister = await lockOpenRegister(tx, expense.location_id);
   const isBoss = user.role === 'owner' || user.role === 'manager';
   if (!isBoss) {
@@ -1538,7 +1563,10 @@ router.put(
       // Checks before the item is resolved, so a refused change never
       // creates an item. The transaction below checks again under locks.
       const current = await adb.prepare('SELECT id, location_id, created_by, expense_date, item_id, note, description, category, employee_id, payment_method, paid_by_user_id, given_to_user_id, given_to_name FROM expenses WHERE id = ?').get(expenseId);
-      if (!current) return res.status(404).json({ success: false, message: 'This expense was not found. It may have been removed already — pull down to refresh.' });
+      if (!current) return res.status(404).json({ success: false, message: EXPENSE_NOT_FOUND_MESSAGE });
+      if (isBoss && await salaryRowHidden(adb, req.user, current)) {
+        return res.status(404).json({ success: false, message: EXPENSE_NOT_FOUND_MESSAGE });
+      }
       if (!isBoss && Number(current.created_by) !== Number(req.user.id)) {
         return res.status(403).json({ success: false, message: NOT_YOURS_MESSAGE });
       }
@@ -1866,14 +1894,21 @@ router.get('/summary', authenticate, authorize('owner', 'manager', 'employee', '
     const db = await getAsyncDb();
     const { location_id, start_date, end_date } = req.query;
 
-    let sql = 'SELECT category, SUM(CASE WHEN is_return = 1 THEN -amount ELSE amount END) as total, COUNT(*) as count FROM expenses WHERE 1=1';
+    let sql = 'SELECT e.category, SUM(CASE WHEN e.is_return = 1 THEN -e.amount ELSE e.amount END) as total, COUNT(*) as count FROM expenses e WHERE 1=1';
     const params = [];
 
-    if (location_id) { sql += ' AND location_id = ?'; params.push(location_id); }
-    if (start_date) { sql += ' AND expense_date >= ?'; params.push(start_date); }
-    if (end_date) { sql += ' AND expense_date <= ?'; params.push(end_date); }
+    if (location_id) { sql += ' AND e.location_id = ?'; params.push(location_id); }
+    if (start_date) { sql += ' AND e.expense_date >= ?'; params.push(start_date); }
+    if (end_date) { sql += ' AND e.expense_date <= ?'; params.push(end_date); }
+    // Owner: all salary. Manager: allowed people only. Others: no salary.
+    if (req.user.role === 'manager') {
+      const pay = salarySqlFilter(await payVisibleIds(db, req.user));
+      sql += pay.sql; params.push(...pay.params);
+    } else if (req.user.role !== 'owner') {
+      sql += " AND e.category <> 'salary'";
+    }
 
-    sql += ' GROUP BY category ORDER BY total DESC';
+    sql += ' GROUP BY e.category ORDER BY total DESC';
 
     const summary = await db.prepare(sql).all(...params);
     const normalizedSummary = summary.map((row) => ({

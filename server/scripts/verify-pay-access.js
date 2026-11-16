@@ -220,8 +220,123 @@ check('a person still sees their own advances and salary', async () => {
   eq(ids, [c.adv1], 'own advances');
 });
 
+// ── Task 3: expenses list, search, summaries, edits ──
+const createdExpenseIds = [];
+const { todayStr } = require('../utils/time');
+async function expCtx() {
+  const c = await payCtx();
+  if (c.exp) return c;
+  c.today = todayStr();
+  const seed = async (empId, amt, desc) => {
+    const r = await c.db.prepare(`INSERT INTO expenses (location_id, category, amount, description, payment_method, expense_date, created_by, is_return, employee_id, given_to_user_id)
+      VALUES (?, 'salary', ?, ?, 'upi', ?, ?, 0, ?, ?) RETURNING id`).get(TEST_LOCATION_ID, amt, desc, c.today, c.owner, empId, empId);
+    createdExpenseIds.push(r.id);
+    return r.id;
+  };
+  c.x1 = await seed(c.e1, 7311, 'VerifyPA salary VerifyPA Staff One');
+  c.x2 = await seed(c.e2, 8423, 'VerifyPA salary VerifyPA Staff Two');
+  c.x0 = await seed(null, 6197, 'VerifyPA salary nobody');
+  c.exp = true;
+  return c;
+}
+const dayQ = (c) => `location_id=${TEST_LOCATION_ID}&start_date=${c.today}&end_date=${c.today}`;
+const salaryTotal = (body) => {
+  const row = (body.data || []).find((r) => r.category === 'salary');
+  return row ? Number(row.total) : 0;
+};
+
+check('manager expense list: allowed salary named, others titled Staff pay with no name', async () => {
+  const c = await expCtx();
+  const r = await api('GET', `/expenses?${dayQ(c)}`, c.mgr);
+  eq(r.status, 200, 'status');
+  const by = (id) => r.body.data.find((x) => x.id === id);
+  const a = by(c.x1), b = by(c.x2), n = by(c.x0);
+  assert(a && b && n, 'rows present');
+  eq(a.employee_id, c.e1, 'E1 employee');
+  eq(a.given_to_display, 'VerifyPA Staff One', 'E1 name');
+  for (const [row, amt] of [[b, 8423], [n, 6197]]) {
+    eq(row.description, 'Staff pay', 'hidden description');
+    eq(row.employee_id, null, 'hidden employee');
+    eq(row.given_to_display, null, 'hidden name');
+    eq(row.amount, amt, 'hidden amount kept');
+  }
+  assert(!JSON.stringify(r.body).includes('Staff Two'), 'E2 name leaked');
+});
+check('manager search by a hidden name finds no salary row', async () => {
+  const c = await expCtx();
+  const r = await api('GET', `/expenses?${dayQ(c)}&q=${encodeURIComponent('VerifyPA Staff Two')}`, c.mgr);
+  eq(r.status, 200, 'status');
+  assert(!r.body.data.some((x) => x.category === 'salary'), 'salary row found by search');
+  const f = await api('GET', `/expenses?${dayQ(c)}&employee_id=${c.e2}`, c.mgr);
+  eq(f.body.data.length, 0, 'employee filter');
+});
+check('expense summary: manager salary = allowed only, no-access manager 0, counter none', async () => {
+  const c = await expCtx();
+  eq(salaryTotal((await api('GET', `/expenses/summary?${dayQ(c)}`, c.mgr)).body), 7311, 'MA salary');
+  eq(salaryTotal((await api('GET', `/expenses/summary?${dayQ(c)}`, c.mgr2)).body), 0, 'MB salary');
+  const s = await api('GET', `/expenses/summary?${dayQ(c)}`, c.e1);
+  eq(s.status, 200, 'counter status');
+  assert(!s.body.data.some((r) => r.category === 'salary'), 'counter sees salary category');
+  const o = salaryTotal((await api('GET', `/expenses/summary?${dayQ(c)}`, c.owner)).body);
+  assert(o >= 7311 + 8423 + 6197, 'owner sees all salary');
+});
+check('counter list shows another person salary as Staff pay with amount and no name', async () => {
+  const c = await expCtx();
+  const r = await api('GET', `/expenses?${dayQ(c)}`, c.e1);
+  eq(r.status, 200, 'status');
+  const b = r.body.data.find((x) => x.id === c.x2);
+  assert(b, 'E2 row present');
+  eq(b.description, 'Staff pay', 'description');
+  eq(b.amount, 8423, 'amount');
+  eq(b.employee_id, null, 'employee');
+  assert(!JSON.stringify(b).includes('Staff Two'), 'name leaked');
+  const own = r.body.data.find((x) => x.id === c.x1);
+  eq(own.given_to_display, 'VerifyPA Staff One', 'own row named');
+});
+check('manager cannot change or remove a hidden salary row', async () => {
+  const c = await expCtx();
+  const notFound = 'This expense was not found. It may have been removed already — pull down to refresh.';
+  const p = await api('PUT', `/expenses/${c.x2}`, c.mgr, { note: 'VerifyPA edit' });
+  eq(p.status, 404, 'put status');
+  eq(p.body.message, notFound, 'put message');
+  const d = await api('DELETE', `/expenses/${c.x0}`, c.mgr);
+  eq(d.status, 404, 'delete status');
+  eq(d.body.message, notFound, 'delete message');
+  const still = await c.db.prepare('SELECT note FROM expenses WHERE id = ?').get(c.x2);
+  eq(still.note, null, 'unchanged');
+});
+check('manager salary expense: refused for a hidden person, saved for an allowed one', async () => {
+  const c = await expCtx();
+  const body = (emp) => ({ location_id: TEST_LOCATION_ID, category: 'salary', amount: 10, description: 'VerifyPA posted salary', payment_method: 'upi', employee_id: emp });
+  const no = await api('POST', '/expenses', c.mgr, body(c.e2));
+  eq(no.status, 403, 'hidden status');
+  eq(no.body.message, "You can't pay this person's salary. Ask the owner.", 'hidden message');
+  const yes = await api('POST', '/expenses', c.mgr, body(c.e1));
+  if (yes.body && yes.body.data && yes.body.data.id) createdExpenseIds.push(yes.body.data.id);
+  eq(yes.status, 201, 'allowed status');
+});
+check('manager summary-by-item salary = allowed only', async () => {
+  const c = await expCtx();
+  const r = await api('GET', `/expenses/summary-by-item?from=${c.today}&to=${c.today}&location_id=${TEST_LOCATION_ID}`, c.mgr);
+  eq(r.status, 200, 'status');
+  const d = r.body.data;
+  const sal = [...d.categories, ...d.older].filter((x) => x.category === 'salary').reduce((s, x) => s + x.amount, 0);
+  eq(sal, 7311 + 10, 'MA salary by item (seeded + posted for E1)');
+});
+
 async function cleanup() {
   const db = await getDb();
+  try {
+    // A refused POST that was saved anyway (before the fix) is caught here too.
+    const stray = await db.prepare("SELECT id FROM expenses WHERE description = 'VerifyPA posted salary'").all();
+    for (const r of stray) if (!createdExpenseIds.includes(r.id)) createdExpenseIds.push(r.id);
+  } catch (e) { console.error('cleanup stray: ' + e.message); }
+  for (const id of createdExpenseIds) {
+    try {
+      await db.prepare("DELETE FROM audit_logs WHERE entity_type = 'expense' AND entity_id = ?").run(id);
+      await db.prepare('DELETE FROM expenses WHERE id = ?').run(id);
+    } catch (e) { console.error('cleanup expense ' + id + ': ' + e.message); }
+  }
   try {
     const ids = createdUserIds.length ? createdUserIds : [0];
     const ph = ids.map(() => '?').join(',');
