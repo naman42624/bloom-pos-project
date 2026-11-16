@@ -315,3 +315,51 @@ pending advance, so it is cut at payroll by today's code and later shows in
 the account like every advance. Every PR carries its own tests from §10 and,
 for any new pay route, its entry in the PR 1 access test (if PR 1 is merged;
 otherwise the new route is owner-only until it is).
+
+## 13. Settled after the builder check (Claude's calls unless marked)
+
+1. **Go-live per employee.** An employee joins the pay account when the owner
+   saves their new salary card and picks "Start from" (a cycle start, default
+   the current cycle). Old months are never worked out again. The opening
+   balance = the unpaid part of every approved advance (`amount −
+   repaid_amount`) given before that cycle, entered as one `carry` line with
+   the advance ids listed. From then on `POST /payroll/disburse` refuses that
+   employee (409 "Ramesh is on the new pay account. Pay from Payroll →
+   Ramesh."). Employees not moved yet, and daily/hourly `salary_type`, keep the
+   old route unchanged.
+2. **Attendance is confirmed, not trusted blindly.** The Payroll screen lists
+   every day off and every possible half day in the cycle (from attendance
+   and the existing `findPartialDays`), and the owner can mark each one
+   Present / Half day / Leave / Absent before paying. The owner's marks are
+   saved for that cycle (`pay_day_marks`, additive) and are what the
+   calculation uses. No dependency on "Fix this day".
+3. **Shopping money taken from pay and rider km carry** become `pay_lines`
+   kinds `shopping_take` and `km_carry` and are in Due, exactly as today's
+   Payroll applies them. Goal 2 is refined: every line where **money leaves the
+   drawer or bank** (salary, advance, loan) is also a Salary expense; these two
+   are transfers already booked elsewhere (shopping bills, km settlement) and
+   write no new expense, as today.
+4. **Limits:** the per-person `advance_limit` replaces the shop-wide monthly
+   advance limit for that person (per pay cycle); the shop daily limit stays
+   for everyone; a person with no card limit falls back to the shop monthly
+   limit. Never looser than today.
+5. **PR 2's advance row** is `status = 'approved'`, `source = 'old_expense'`,
+   `expense_id` linked, `repaid_amount = 0`, no drawer move (never `pending`,
+   which would pay it again on approval). Later edits of the expense follow
+   the existing advance-linked rules until the cycle is locked (item 6).
+6. **After a cycle is locked**, editing or removing an expense linked to a
+   pay line in it, or turning an advance from it into a loan, is refused
+   ("This month's pay is closed. Add a correction on next month's pay
+   instead.").
+7. **Full stay:** earned = monthly salary − day rate × days cut (any cycle
+   length). **Partial stay:** earned = day rate × days in stay − day rate ×
+   days cut.
+8. **Visibility of approvals:** a manager may enter their PIN for an over-limit
+   advance to anyone at their shop (as today), but sees only the amount being
+   given. `unpaid_after` is returned only to callers who may see that
+   person's pay. The advance limit is shown only to the owner — managers do
+   not see it, their own included.
+9. **Cash salary** comes from the register of the shop picked on the Pay
+   sheet (default: the employee's primary shop); each part payment records its
+   own register. The period-overlap check is replaced by the cycle rule for
+   employees on the new account.
