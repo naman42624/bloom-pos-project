@@ -1,6 +1,6 @@
 # Staff pay account: salary, advances, loans and who sees what — design
 
-Date: 2026-11-16. Status: draft for owner approval.
+Date: 2026-11-16. Status: approved by the owner (2026-11-16).
 
 ## 1. Why
 
@@ -363,3 +363,12 @@ otherwise the new route is owner-only until it is).
    sheet (default: the employee's primary shop); each part payment records its
    own register. The period-overlap check is replaced by the cycle rule for
    employees on the new account.
+10. **Partial stay = paid per day, no paid leaves (owner, 2026-11-16).** A
+    cycle in which the employee joined or left (stay shorter than the full
+    cycle) gets no paid leaves and no carried leave: earned = day rate ×
+    (present days + 0.5 × half days). Every day off in that cycle, Sundays
+    included, is unpaid. Replaces item 7's partial-stay formula. Example:
+    ₹5,000, 4 paid leaves, joins on the 16th of a 30-day cycle, present 13
+    days and off 2 Sundays → ₹166.67 × 13 = ₹2,166.67.
+
+Status: approved by the owner, 2026-11-16.
