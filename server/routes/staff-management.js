@@ -4,6 +4,7 @@ const { getDb } = require('../config/database');
 const { getDb: getAsyncDb, withMoneyTx, withTransaction } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
 const { nowLocal, todayStr } = require('../utils/time');
+const { payVisibleIds, canSeePay } = require('../utils/pay-access');
 const { computeShiftWork, findPartialDays, normalizeSegments, matchSegmentForTime, lateMinutesFor, timestampToMinutes } = require('../utils/shift-work');
 const { hasOpenRegister, lockOpenRegister, REGISTER_CLOSED_MESSAGE } = require('../utils/register-guard');
 const { createNotification } = require('./notifications');
@@ -266,6 +267,26 @@ router.get('/salaries', authorize('owner', 'manager', 'employee', 'counter_staff
       JOIN users u ON es.user_id = u.id
       WHERE es.user_id = ?
     `).get(req.user.id);
+
+    if (req.user.role === 'manager') {
+      // Managers also see the people the owner switched on for them
+      const allowed = (await payVisibleIds(db, req.user)).filter(id => id !== Number(req.user.id));
+      const salaries = allowed.length ? await db.prepare(`
+        SELECT es.*, u.name as user_name, u.phone as user_phone, u.role as user_role,
+               up.name as updater_name,
+               COALESCE((
+                 SELECT SUM(sa.amount - sa.repaid_amount) FROM salary_advances sa
+                 WHERE sa.user_id = es.user_id AND sa.status = 'approved' AND sa.repaid_amount < sa.amount
+               ), 0) as pending_advance_amount
+        FROM employee_salaries es
+        JOIN users u ON es.user_id = u.id
+        LEFT JOIN users up ON es.updated_by = up.id
+        WHERE u.role IN ('manager', 'employee', 'counter_staff', 'florist_staff', 'delivery_partner') AND u.is_active = 1
+          AND es.user_id IN (${allowed.map(() => '?').join(',')})
+        ORDER BY u.name
+      `).all(...allowed) : [];
+      return res.json({ success: true, data: { salary: salary || null, salaries } });
+    }
 
     res.json({ success: true, data: { salary: salary || null } });
   } catch (error) {
@@ -934,7 +955,13 @@ router.get('/payroll/history', authorize('owner', 'manager', 'employee', 'counte
     let where = [];
     const params = [];
 
-    if (req.user.role !== 'owner') {
+    if (req.user.role === 'manager' && user_id && Number(user_id) !== Number(req.user.id)) {
+      if (!(await canSeePay(db, req.user, user_id))) {
+        return res.status(403).json({ success: false, message: "You can't see this person's pay. Ask the owner." });
+      }
+      where.push('sp.user_id = ?');
+      params.push(Number(user_id));
+    } else if (req.user.role !== 'owner') {
       where.push('sp.user_id = ?');
       params.push(req.user.id);
     } else if (user_id) {

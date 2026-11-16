@@ -128,8 +128,106 @@ check('salarySqlFilter shapes', async () => {
   eq(salarySqlFilter([]), { sql: " AND e.category <> 'salary'", params: [] }, 'empty');
 });
 
+// ── Task 2: salary, payroll history and advance routes ──
+const createdSalaryUserIds = [];
+async function payCtx() {
+  const c = await setup();
+  if (c.pay) return c;
+  c.e2 = await makeUser(c.db, { role: 'counter_staff', name: 'VerifyPA Staff Two' });
+  c.e3 = await makeUser(c.db, { role: 'counter_staff', name: 'VerifyPA Staff Elsewhere' });
+  await c.db.prepare('DELETE FROM user_locations WHERE user_id = ?').run(c.e3);
+  for (const [id, amt] of [[c.e1, 7311], [c.e2, 8423]]) {
+    await c.db.prepare('INSERT INTO employee_salaries (user_id, monthly_salary, updated_by) VALUES (?, ?, ?)').run(id, amt, c.owner);
+    createdSalaryUserIds.push(id);
+  }
+  const adv = async (uid, amt, status) => (await c.db.prepare("INSERT INTO salary_advances (user_id, amount, status, reason) VALUES (?, ?, ?, 'VerifyPA') RETURNING id").get(uid, amt, status)).id;
+  c.adv1 = await adv(c.e1, 111, 'approved');
+  c.adv2 = await adv(c.e2, 222, 'approved');
+  c.advPend = await adv(c.e2, 333, 'pending');
+  c.advElse = await adv(c.e3, 444, 'pending');
+  await api('PUT', `/staff/pay-viewers/${c.mgr}`, c.owner, { employee_ids: [c.e1] });
+  c.pay = true;
+  return c;
+}
+
+check('manager with access sees that salary only, not others', async () => {
+  const c = await payCtx();
+  const r = await api('GET', '/staff/salaries', c.mgr);
+  eq(r.status, 200, 'status');
+  const t = JSON.stringify(r.body);
+  assert(t.includes('7311'), 'should contain E1 salary');
+  assert(!t.includes('8423'), 'must not contain E2 salary');
+  assert(Array.isArray(r.body.data.salaries), 'salaries list');
+  assert('salary' in r.body.data, 'own salary key');
+});
+check('manager with no access sees neither salary', async () => {
+  const c = await payCtx();
+  const t = JSON.stringify((await api('GET', '/staff/salaries', c.mgr2)).body);
+  assert(!t.includes('7311') && !t.includes('8423'), 'leak');
+});
+check('counter staff sees neither salary from the list route', async () => {
+  const c = await payCtx();
+  const r = await api('GET', '/staff/salaries', c.e3);
+  const t = JSON.stringify(r.body);
+  assert(!t.includes('7311') && !t.includes('8423'), 'leak');
+  const own = await api('GET', '/staff/salaries', c.e1);
+  assert(JSON.stringify(own.body).includes('7311') && !JSON.stringify(own.body).includes('8423'), 'own only');
+});
+check('manager payroll history for a hidden person is refused', async () => {
+  const c = await payCtx();
+  const r = await api('GET', `/staff/payroll/history?user_id=${c.e2}`, c.mgr);
+  eq(r.status, 403, 'status');
+  eq(r.body.message, "You can't see this person's pay. Ask the owner.", 'message');
+  eq((await api('GET', `/staff/payroll/history?user_id=${c.e1}`, c.mgr)).status, 200, 'allowed person');
+  eq((await api('GET', '/staff/payroll/history', c.mgr)).status, 200, 'own');
+});
+check('manager advances list: allowed person, plus pending at own shop, not others approved', async () => {
+  const c = await payCtx();
+  const r = await api('GET', '/attendance/salary-advances', c.mgr);
+  eq(r.status, 200, 'status');
+  const ids = r.body.data.map(a => a.id);
+  assert(ids.includes(c.adv1), 'E1 advance');
+  assert(!ids.includes(c.adv2), 'E2 approved must be hidden');
+  assert(ids.includes(c.advPend), 'E2 pending request shown');
+  assert(!ids.includes(c.advElse), 'pending at another shop hidden');
+  const q = await api('GET', `/attendance/salary-advances?user_id=${c.e2}`, c.mgr);
+  const qids = q.body.data.map(a => a.id);
+  assert(qids.includes(c.advPend) && !qids.includes(c.adv2), 'user_id filter only shows pending');
+});
+check('manager with no access sees only pending requests', async () => {
+  const c = await payCtx();
+  const ids = (await api('GET', '/attendance/salary-advances', c.mgr2)).body.data.map(a => a.id);
+  assert(!ids.includes(c.adv1) && !ids.includes(c.adv2), 'approved leak');
+  assert(ids.includes(c.advPend), 'pending shown');
+});
+check('manager without access cannot mark repaid; with access can', async () => {
+  const c = await payCtx();
+  const r = await api('PUT', `/attendance/salary-advance/${c.adv1}/repay`, c.mgr2, { amount: 1 });
+  eq(r.status, 403, 'status');
+  eq(r.body.message, "You can't see this person's pay. Ask the owner.", 'message');
+  eq((await api('PUT', `/attendance/salary-advance/${c.adv1}/repay`, c.mgr, { amount: 1 })).status, 200, 'allowed');
+});
+check('manager cannot reject a request from staff at another shop', async () => {
+  const c = await payCtx();
+  const r = await api('PUT', `/attendance/salary-advance/${c.advElse}/reject`, c.mgr, {});
+  eq(r.status, 403, 'status');
+  eq(r.body.message, "This person isn't at your shop.", 'message');
+  eq((await api('PUT', `/attendance/salary-advance/${c.advPend}/reject`, c.mgr, {})).status, 200, 'own shop reject');
+});
+check('a person still sees their own advances and salary', async () => {
+  const c = await payCtx();
+  const ids = (await api('GET', '/attendance/salary-advances', c.e1)).body.data.map(a => a.id);
+  eq(ids, [c.adv1], 'own advances');
+});
+
 async function cleanup() {
   const db = await getDb();
+  try {
+    const ids = createdUserIds.length ? createdUserIds : [0];
+    const ph = ids.map(() => '?').join(',');
+    await db.prepare(`DELETE FROM salary_advances WHERE user_id IN (${ph})`).run(...ids);
+    await db.prepare(`DELETE FROM employee_salaries WHERE user_id IN (${ph})`).run(...ids);
+  } catch (e) { console.error('cleanup pay rows: ' + e.message); }
   for (const id of createdUserIds) {
     try {
       await db.prepare("DELETE FROM audit_logs WHERE entity_type = 'pay_viewers' AND entity_id = ?").run(id);
