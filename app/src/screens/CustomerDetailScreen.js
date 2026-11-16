@@ -20,6 +20,8 @@ export default function CustomerDetailScreen({ route, navigation }) {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const canManage = user?.role === 'owner' || user?.role === 'manager';
+  // Old dues from before the app: counter staff too (server allows the same roles).
+  const canAddDue = canManage || user?.role === 'employee' || user?.role === 'counter_staff';
 
   // Credit payment modal
   const [showCreditModal, setShowCreditModal] = useState(false);
@@ -356,12 +358,12 @@ export default function CustomerDetailScreen({ route, navigation }) {
         </View>
 
         {/* Credit Balance Section */}
-        {(customer.credit_balance > 0 || canManage) && (
+        {(customer.credit_balance > 0 || canAddDue) && (
           <View style={styles.creditSection}>
             <View style={styles.sectionHeader}>
               <Text style={styles.sectionTitle}>Outstanding Dues</Text>
               <View style={{ flexDirection: 'row', gap: Spacing.sm }}>
-                {canManage && (
+                {canAddDue && (
                   <TouchableOpacity style={styles.addBtn} onPress={() => setShowAddDueModal(true)}>
                     <Ionicons name="add-circle" size={16} color={Colors.warning} />
                     <Text style={[styles.addBtnText, { color: Colors.warning }]}>Add Past Due</Text>
