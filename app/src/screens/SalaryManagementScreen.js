@@ -8,7 +8,7 @@ import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import { formatDate } from '../utils/datetime';
 import DateTimePickerModal from '../components/DateTimePickerModal';
 import { appAlert, showAlert, showConfirm } from '../utils/alert';
-import { buildDisburseBody, takeFromPayLabel, calculateAgainMessage, advanceTakenNow } from '../utils/staffMoney';
+import { buildDisburseBody, takeFromPayLabel, calculateAgainMessage, advanceTakenNow, parseLimitInput, sameLimit, LIMIT_INPUT_MESSAGE } from '../utils/staffMoney';
 import { payrollKmView, kmApplyDefault, kmDisburseFields } from '../utils/riderKm';
 import useSubmitGuard from '../hooks/useSubmitGuard';
 
@@ -62,6 +62,8 @@ export default function SalaryManagementScreen() {
   const [amount, setAmount] = useState('');
   const [salaryType, setSalaryType] = useState('monthly');
   const [notes, setNotes] = useState('');
+  const [advanceLimit, setAdvanceLimit] = useState('');
+  const [savedLimit, setSavedLimit] = useState(null);
 
   // Payroll state
   const [viewTab, setViewTab] = useState('salaries'); // 'salaries' | 'payroll'
@@ -127,12 +129,20 @@ export default function SalaryManagementScreen() {
     setAmount(existing ? String(existing.monthly_salary) : '');
     setSalaryType(existing?.salary_type || 'monthly');
     setNotes('');
+    const lim = existing && existing.advance_limit != null && existing.advance_limit !== '' ? Number(existing.advance_limit) : null;
+    setSavedLimit(lim);
+    setAdvanceLimit(lim == null ? '' : String(lim));
     setModal(true);
   };
 
   const handleSave = async () => {
     if (!editUser || !amount || Number(amount) <= 0) {
       appAlert('Error', 'Please enter a valid salary amount.');
+      return;
+    }
+    const limit = parseLimitInput(advanceLimit);
+    if (!limit.ok) {
+      showAlert('Advance limit', LIMIT_INPUT_MESSAGE);
       return;
     }
     setSaving(true);
@@ -143,6 +153,15 @@ export default function SalaryManagementScreen() {
         salary_type: salaryType,
         notes: notes.trim() || undefined,
       });
+      if (!sameLimit(limit.value, savedLimit)) {
+        try {
+          await api.setAdvanceLimit(editUser.id || editUser.user_id, limit.value);
+        } catch (e) {
+          showAlert('Salary saved', e.raw_message || e.message || 'The advance limit was not saved. Try again.');
+          fetchData();
+          return;
+        }
+      }
       setModal(false);
       await fetchData();
     } catch (e) {
@@ -451,6 +470,9 @@ export default function SalaryManagementScreen() {
                   </Text>
                 </View>
               </View>
+              {s.advance_limit != null && s.advance_limit !== '' && (
+                <Text style={styles.salaryType}>Advance limit {formatCurrency(Number(s.advance_limit))} a month</Text>
+              )}
               <View style={styles.cardFooter}>
                 <TouchableOpacity style={styles.linkBtn} onPress={() => openSetModal(s, s)}>
                   <Ionicons name="create-outline" size={16} color={Colors.primary} />
@@ -581,6 +603,19 @@ export default function SalaryManagementScreen() {
                 </TouchableOpacity>
               ))}
             </View>
+
+            <Text style={styles.label}>Monthly advance limit (₹)</Text>
+            <TextInput
+              style={styles.input}
+              value={advanceLimit}
+              onChangeText={setAdvanceLimit}
+              keyboardType="numeric"
+              placeholder="Shop limit"
+              placeholderTextColor={Colors.textLight}
+            />
+            <Text style={{ fontSize: FontSize.xs, color: Colors.textLight, marginTop: 4 }}>
+              Leave empty to use the shop limit. Above this, an advance needs a manager or owner PIN.
+            </Text>
 
             <Text style={styles.label}>Reason / Notes</Text>
             <TextInput

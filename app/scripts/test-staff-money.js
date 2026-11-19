@@ -420,6 +420,30 @@ test('advanceTakenNow: no advance -> zeros', () => {
   assert.deepStrictEqual(s.advanceTakenNow(null), { takenPaise: 0, leftPaise: 0 });
 });
 
+const OVER_LIMIT_MESSAGE = 'This needs an OK from a manager or the owner. They can confirm with their PIN.';
+test('needsPinOf accepts over_limit', () => {
+  assert.strictEqual(s.needsPinOf({ status: 409, body: { needs_pin: 'over_limit' } }), 'over_limit');
+});
+test('pinMessage over_limit is the generic copy, no amount or name', () => {
+  assert.strictEqual(s.pinMessage('over_limit', { limits, name: 'Ramesh' }), OVER_LIMIT_MESSAGE);
+});
+test('parseLimitInput', () => {
+  assert.deepStrictEqual(s.parseLimitInput(''), { ok: true, value: null });
+  assert.deepStrictEqual(s.parseLimitInput('  '), { ok: true, value: null });
+  assert.deepStrictEqual(s.parseLimitInput(null), { ok: true, value: null });
+  assert.deepStrictEqual(s.parseLimitInput('2000'), { ok: true, value: 2000 });
+  assert.deepStrictEqual(s.parseLimitInput('0'), { ok: true, value: 0 });
+  assert.deepStrictEqual(s.parseLimitInput('1.5'), { ok: true, value: 1.5 });
+  for (const bad of ['-5', 'abc', '1.234']) assert.deepStrictEqual(s.parseLimitInput(bad), { ok: false });
+});
+test('sameLimit compares null and paise', () => {
+  assert.strictEqual(s.sameLimit(null, undefined), true);
+  assert.strictEqual(s.sameLimit(2000, '2000.00'), true);
+  assert.strictEqual(s.sameLimit(null, 0), false);
+  assert.strictEqual(s.sameLimit(0.3, 0.1 + 0.2), true);
+  assert.strictEqual(s.sameLimit(1000, null), false);
+});
+
 let failed = 0;
 for (const t of tests) {
   try { t.fn(); console.log('  ok   ' + t.name); } catch (err) { failed++; console.log('  FAIL ' + t.name + '\n       ' + err.message); }
