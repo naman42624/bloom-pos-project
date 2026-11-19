@@ -168,6 +168,14 @@ router.delete('/shifts/:id', authorize('owner', 'manager'), (req, res) => {
 // ═══════════════════════════════════════════════════════════════
 
 // Get salaries — owner sees all, staff sees own
+// The advance limit is for the owner only. Every non-owner return in the
+// GET /salaries route must go through withoutOwnerOnly.
+function withoutOwnerOnly(row) {
+  if (!row) return row;
+  const { advance_limit, ...rest } = row;
+  return rest;
+}
+
 router.get('/salaries', authorize('owner', 'manager', 'employee', 'counter_staff', 'florist_staff', 'delivery_partner'), async (req, res) => {
   try {
     const db = await getAsyncDb();
@@ -208,9 +216,7 @@ router.get('/salaries', authorize('owner', 'manager', 'employee', 'counter_staff
       WHERE es.user_id = ?
     `).get(req.user.id);
 
-    // The advance limit is for the owner only; never send it to anyone else
-    if (salary) delete salary.advance_limit;
-    res.json({ success: true, data: { salary: salary || null } });
+    res.json({ success: true, data: { salary: salary ? withoutOwnerOnly(salary) : null } });
   } catch (error) {
     console.error('Get salaries error:', error);
     res.status(500).json({ success: false, message: 'Failed to get salaries.' });

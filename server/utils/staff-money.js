@@ -89,9 +89,18 @@ async function personAdvanceLimit(db, userId) {
 }
 
 // What the counter is told. An advance over the day or month limit is one
-// answer, so no limit or amount can be worked out from it.
+// answer, so no limit or amount can be worked out from it. It carries the old
+// over_day reason so every app version opens the PIN box; the message (see
+// publicMessage) is the generic one.
+function isAdvanceOver(reason, kind) {
+  return kind === 'advance' && (reason === 'over_day' || reason === 'over_month');
+}
 function publicReason(reason, kind) {
-  return kind === 'advance' && (reason === 'over_day' || reason === 'over_month') ? 'over_limit' : reason;
+  return isAdvanceOver(reason, kind) ? 'over_day' : reason;
+}
+function publicMessage(reason, { limits, kind } = {}) {
+  if (isAdvanceOver(reason, kind)) return OVER_LIMIT_MESSAGE;
+  return needsPinMessage(reason, { limits, kind });
 }
 
 // Pure. giver = { id, role }. Returns null when no PIN is needed, else
@@ -161,4 +170,4 @@ async function payrollShopping(db, { userId, forUpdate = false }) {
   return { rows, totalPaise: rows.reduce((t, r) => t + remainingPaise(r), 0) };
 }
 
-module.exports = { payrollShopping, getLimits, totals, personAdvanceLimit, publicReason, OVER_LIMIT_MESSAGE, needsPin, needsPinMessage, checkApprover, remaining, remainingPaise, wrongPinMessage };
+module.exports = { payrollShopping, getLimits, totals, personAdvanceLimit, publicReason, publicMessage, OVER_LIMIT_MESSAGE, needsPin, needsPinMessage, checkApprover, remaining, remainingPaise, wrongPinMessage };

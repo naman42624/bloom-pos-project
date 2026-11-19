@@ -181,7 +181,7 @@ async function prepareGive(req, kind) {
   });
   const needsPinError = (reason) => {
     const shown = sm.publicReason(reason, kind);
-    return httpError(409, sm.needsPinMessage(shown, { limits, kind }), { needs_pin: shown });
+    return httpError(409, sm.publicMessage(reason, { limits, kind }), { needs_pin: shown });
   };
 
   let approver = null;

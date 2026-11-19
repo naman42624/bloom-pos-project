@@ -52,7 +52,7 @@ export const LIMIT_INPUT_MESSAGE = 'Type the monthly advance limit in rupees, or
 // Owner's "Monthly advance limit" box: empty = no personal limit (null);
 // otherwise a number >= 0 with at most 2 decimals.
 export function parseLimitInput(text) {
-  const t = String(text == null ? '' : text).trim();
+  const t = String(text == null ? '' : text).replace(/,/g, '').trim();
   if (t === '') return { ok: true, value: null };
   if (!/^\d+(\.\d{1,2})?$/.test(t)) return { ok: false };
   return { ok: true, value: Number(t) };
@@ -516,4 +516,11 @@ export function deactivateWarning(name, userId, openResults) {
   if (held > 0) lines.push(`${n} still has ${inr(fromPaise(held))} shopping money. Settle or write it off first.`);
   if (owed > 0) lines.push(`The shop still owes ${n} ${inr(fromPaise(owed))}. Pay it back first.`);
   return lines.length ? lines.join('\n') : null;
+}
+
+// The user id behind a salary form target. A salary row (GET /staff/salaries)
+// has its own id, so user_id wins; a plain user row only has id.
+export function salaryTargetId(row) {
+  if (!row) return null;
+  return row.user_id ?? row.id;
 }

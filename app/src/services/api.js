@@ -1441,8 +1441,9 @@ class ApiService {
 
   // ─── Staff money (salary advance, shopping money, shop owes) ─────
   // A 409 from giveAdvance/giveShoppingMoney carries needs_pin in the thrown
-  // error's body: err.body.needs_pin ('over_day' | 'over_month' | 'over_limit' | 'self'); advances
-  // always answer 'over_limit' (no amount in the copy), shopping money 'over_day'..
+  // error's body: err.body.needs_pin ('over_day' | 'over_month' | 'self'; newer apps also
+  // accept 'over_limit'). Advances over a limit answer 'over_day' with generic copy that names no
+  // amount; shopping money answers 'over_day' with its daily copy.
   getStaffMoneyPeople(params = {}) {
     return this.request(`/staff-money/people?${new URLSearchParams(params).toString()}`);
   }

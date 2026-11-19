@@ -76,9 +76,11 @@ check('needsPin: the daily limit still applies with a high personal limit', asyn
 check('needsPin: shopping ignores personLimit', async () => {
   eq(np({ kind: 'shopping', amount: 1000, personLimit: 0 }), null, 'shopping');
 });
-check('publicReason maps advance day and month to over_limit', async () => {
-  eq(sm.publicReason('over_day', 'advance'), 'over_limit', 'day');
-  eq(sm.publicReason('over_month', 'advance'), 'over_limit', 'month');
+check('publicReason keeps the old over_day reason for advances; message is generic', async () => {
+  eq(sm.publicReason('over_day', 'advance'), 'over_day', 'day');
+  eq(sm.publicReason('over_month', 'advance'), 'over_day', 'month');
+  eq(sm.publicMessage('over_month', { limits, kind: 'advance' }), sm.OVER_LIMIT_MESSAGE, 'month msg');
+  eq(sm.publicMessage('over_day', { limits, kind: 'advance' }), sm.OVER_LIMIT_MESSAGE, 'day msg');
   eq(sm.publicReason('over_day', 'shopping'), 'over_day', 'shopping');
   eq(sm.publicReason('self', 'advance'), 'self', 'self');
 });
@@ -129,7 +131,7 @@ check('live: personal limit reached gives 409 over_limit with no amount; manager
   eq((await give(c.counter, { user_id: r, amount: 200 })).status, 201, 'first 200');
   const over = await give(c.counter, { user_id: r, amount: 200 });
   eq(over.status, 409, 'status ' + JSON.stringify(over.body));
-  eq(over.body.needs_pin, 'over_limit', 'reason');
+  eq(over.body.needs_pin, 'over_day', 'reason');
   eq(over.body.message, sm.OVER_LIMIT_MESSAGE, 'copy');
   assert(noDigits(over.body.message), 'message has a digit');
   const ok = await give(c.counter, { user_id: r, amount: 200, approver_id: c.mgr, approver_pin: '5932' });
@@ -147,7 +149,7 @@ check('live: over the day limit only and over the month limit only answer identi
   const month = await give(c.counter, { user_id: b, amount: 2 });
   eq(month.status, 409, 'month status ' + JSON.stringify(month.body));
   eq(JSON.stringify({ n: day.body.needs_pin, m: day.body.message }), JSON.stringify({ n: month.body.needs_pin, m: month.body.message }), 'same answer');
-  eq(day.body.needs_pin, 'over_limit', 'reason');
+  eq(day.body.needs_pin, 'over_day', 'reason');
 });
 
 check('live: a personal limit above the shop limit lets advances through, daily limit still applies', async () => {
@@ -159,7 +161,7 @@ check('live: a personal limit above the shop limit lets advances through, daily 
   eq(ok.status, 201, 'past the shop month limit ' + JSON.stringify(ok.body));
   const over = await give(c.counter, { user_id: r, amount: c.limits.advanceDay - amt + 1 });
   eq(over.status, 409, 'daily limit still applies ' + JSON.stringify(over.body));
-  eq(over.body.needs_pin, 'over_limit', 'reason');
+  eq(over.body.needs_pin, 'over_day', 'reason');
 });
 
 check('live: personal limit 0 makes every advance need a PIN', async () => {
@@ -167,7 +169,7 @@ check('live: personal limit 0 makes every advance need a PIN', async () => {
   const r = await recipient('VerifyAL Zero', 0);
   const res = await give(c.counter, { user_id: r, amount: 1 });
   eq(res.status, 409, 'status ' + JSON.stringify(res.body));
-  eq(res.body.needs_pin, 'over_limit', 'reason');
+  eq(res.body.needs_pin, 'over_day', 'reason');
 });
 
 check('live: a person with a salary row but no limit falls back to the shop limit', async () => {
@@ -176,7 +178,7 @@ check('live: a person with a salary row but no limit falls back to the shop limi
   await seedMonth(r, c.limits.advanceMonth - 1);
   const res = await give(c.counter, { user_id: r, amount: 2 });
   eq(res.status, 409, 'status ' + JSON.stringify(res.body));
-  eq(res.body.needs_pin, 'over_limit', 'reason');
+  eq(res.body.needs_pin, 'over_day', 'reason');
 });
 
 // ── Owner sets the limit (Task 2) ──
@@ -276,16 +278,17 @@ async function cleanup() {
 async function main() {
   assertLocalTarget();
   let pass = 0, fail = 0, skipped = 0;
+  const skippedNames = [];
   try {
     for (const { name, fn } of checks) {
       try { await fn(); console.log(`PASS ${name}`); pass++; }
       catch (err) {
-        if (err.skip) { console.log(`SKIP ${name}\n   ${err.message}`); skipped++; continue; }
+        if (err.skip) { console.log(`SKIP ${name}\n   ${err.message}`); skipped++; skippedNames.push(name); continue; }
         console.log(`FAIL ${name}\n   ${err.message}`); fail++;
       }
     }
   } finally { await cleanup(); }
-  console.log(`\n${pass}/${pass + fail} checks passed${skipped ? `, ${skipped} skipped` : ''}`);
+  console.log(`\n${pass}/${pass + fail} checks passed${skipped ? `, ${skipped} skipped: ${skippedNames.join('; ')}` : ''}`);
   process.exit(fail > 0 ? 1 : 0);
 }
 main();

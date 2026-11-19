@@ -8,7 +8,7 @@ import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 import { formatDate } from '../utils/datetime';
 import DateTimePickerModal from '../components/DateTimePickerModal';
 import { appAlert, showAlert, showConfirm } from '../utils/alert';
-import { buildDisburseBody, takeFromPayLabel, calculateAgainMessage, advanceTakenNow, parseLimitInput, sameLimit, LIMIT_INPUT_MESSAGE } from '../utils/staffMoney';
+import { buildDisburseBody, takeFromPayLabel, calculateAgainMessage, advanceTakenNow, parseLimitInput, sameLimit, salaryTargetId, LIMIT_INPUT_MESSAGE } from '../utils/staffMoney';
 import { payrollKmView, kmApplyDefault, kmDisburseFields } from '../utils/riderKm';
 import useSubmitGuard from '../hooks/useSubmitGuard';
 
@@ -59,6 +59,7 @@ export default function SalaryManagementScreen() {
 
   // Form state
   const [editUser, setEditUser] = useState(null);
+  const [openedSalary, setOpenedSalary] = useState(null); // what the form opened with; null = salary not set yet
   const [amount, setAmount] = useState('');
   const [salaryType, setSalaryType] = useState('monthly');
   const [notes, setNotes] = useState('');
@@ -129,6 +130,7 @@ export default function SalaryManagementScreen() {
     setAmount(existing ? String(existing.monthly_salary) : '');
     setSalaryType(existing?.salary_type || 'monthly');
     setNotes('');
+    setOpenedSalary(existing ? { amount: String(existing.monthly_salary), type: existing.salary_type || 'monthly' } : null);
     const lim = existing && existing.advance_limit != null && existing.advance_limit !== '' ? Number(existing.advance_limit) : null;
     setSavedLimit(lim);
     setAdvanceLimit(lim == null ? '' : String(lim));
@@ -147,18 +149,28 @@ export default function SalaryManagementScreen() {
     }
     setSaving(true);
     try {
-      await api.setSalary({
-        user_id: editUser.id || editUser.user_id,
-        monthly_salary: Number(amount),
-        salary_type: salaryType,
-        notes: notes.trim() || undefined,
-      });
+      const targetId = salaryTargetId(editUser);
+      const salaryChanged = !openedSalary
+        || String(amount) !== openedSalary.amount
+        || salaryType !== openedSalary.type
+        || notes.trim() !== '';
+      if (salaryChanged) {
+        await api.setSalary({
+          user_id: targetId,
+          monthly_salary: Number(amount),
+          salary_type: salaryType,
+          notes: notes.trim() || undefined,
+        });
+        // The salary is saved now; a retry must not write it again
+        setOpenedSalary({ amount: String(amount), type: salaryType });
+        setNotes('');
+      }
       if (!sameLimit(limit.value, savedLimit)) {
         try {
-          await api.setAdvanceLimit(editUser.id || editUser.user_id, limit.value);
+          await api.setAdvanceLimit(targetId, limit.value);
         } catch (e) {
-          showAlert('Salary saved', e.raw_message || e.message || 'The advance limit was not saved. Try again.');
-          fetchData();
+          showAlert(salaryChanged ? 'Salary saved' : 'Advance limit', e.raw_message || e.message || 'The advance limit was not saved. Try again.');
+          await fetchData();
           return;
         }
       }

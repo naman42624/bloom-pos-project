@@ -427,6 +427,11 @@ test('needsPinOf accepts over_limit', () => {
 test('pinMessage over_limit is the generic copy, no amount or name', () => {
   assert.strictEqual(s.pinMessage('over_limit', { limits, name: 'Ramesh' }), OVER_LIMIT_MESSAGE);
 });
+test('salaryTargetId', () => {
+  assert.strictEqual(s.salaryTargetId({ id: 9, user_id: 4 }), 4);
+  assert.strictEqual(s.salaryTargetId({ id: 4 }), 4);
+  assert.strictEqual(s.salaryTargetId(null), null);
+});
 test('parseLimitInput', () => {
   assert.deepStrictEqual(s.parseLimitInput(''), { ok: true, value: null });
   assert.deepStrictEqual(s.parseLimitInput('  '), { ok: true, value: null });
@@ -434,6 +439,8 @@ test('parseLimitInput', () => {
   assert.deepStrictEqual(s.parseLimitInput('2000'), { ok: true, value: 2000 });
   assert.deepStrictEqual(s.parseLimitInput('0'), { ok: true, value: 0 });
   assert.deepStrictEqual(s.parseLimitInput('1.5'), { ok: true, value: 1.5 });
+  assert.deepStrictEqual(s.parseLimitInput('2,000'), { ok: true, value: 2000 });
+  assert.deepStrictEqual(s.parseLimitInput('1,25,000'), { ok: true, value: 125000 });
   for (const bad of ['-5', 'abc', '1.234']) assert.deepStrictEqual(s.parseLimitInput(bad), { ok: false });
 });
 test('sameLimit compares null and paise', () => {

@@ -344,7 +344,7 @@ check('B2: over the day limit needs a PIN (409, spec copy); wrong PIN refused; m
   const amt = left + 1;
   const r = await give(c.counter, { user_id: c.r1, amount: amt });
   eq(r.status, 409, 'status ' + JSON.stringify(r.body));
-  eq(r.body.needs_pin, 'over_limit', 'reason');
+  eq(r.body.needs_pin, 'over_day', 'reason');
   eq(r.body.message, sm.OVER_LIMIT_MESSAGE, 'copy');
   const bad = await give(c.counter, { user_id: c.r1, amount: amt, approver_id: c.mgr, approver_pin: '0000' });
   eq(bad.status, 401, 'wrong pin');
@@ -383,7 +383,7 @@ check('B2: over the month limit needs a PIN with the spec copy', async () => {
   createdAdvanceIds.push(seeded.id);
   const r = await give(c.counter, { user_id: c.r3, amount: 2, payment_method: 'upi' });
   eq(r.status, 409, 'status ' + JSON.stringify(r.body));
-  eq(r.body.needs_pin, 'over_limit', 'reason');
+  eq(r.body.needs_pin, 'over_day', 'reason');
   eq(r.body.message, sm.OVER_LIMIT_MESSAGE, 'copy');
 });
 
@@ -427,7 +427,7 @@ check('B2 RF3: an approved in-app request counts toward limits and writes the sa
   eq(await drawer(reg), before - 400, 'drawer');
   const over = await give(c.counter, { user_id: c.r4, amount: c.limits.advanceDay - 400 + 1, payment_method: 'upi' });
   eq(over.status, 409, 'request counted toward the day limit');
-  eq(over.body.needs_pin, 'over_limit', 'reason');
+  eq(over.body.needs_pin, 'over_day', 'reason');
 });
 
 check('B2: removing the advance expense cancels the advance, puts the cash back, audits it', async () => {
