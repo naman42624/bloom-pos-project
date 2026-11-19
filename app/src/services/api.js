@@ -1430,13 +1430,20 @@ class ApiService {
     return this.request('/staff/salaries', { method: 'POST', body: JSON.stringify(data) });
   }
 
+  // Owner only. advanceLimit: number, or null to use the shop limit.
+  setAdvanceLimit(userId, advanceLimit) {
+    return this.request(`/staff/salaries/${userId}/advance-limit`, { method: 'PUT', body: JSON.stringify({ advance_limit: advanceLimit }) });
+  }
+
   getSalaryHistory(userId) {
     return this.request(`/staff/salaries/${userId}/history`);
   }
 
   // ─── Staff money (salary advance, shopping money, shop owes) ─────
   // A 409 from giveAdvance/giveShoppingMoney carries needs_pin in the thrown
-  // error's body: err.body.needs_pin ('over_day' | 'over_month' | 'self').
+  // error's body: err.body.needs_pin ('over_day' | 'over_month' | 'self'; newer apps also
+  // accept 'over_limit'). Advances over a limit answer 'over_day' with generic copy that names no
+  // amount; shopping money answers 'over_day' with its daily copy.
   getStaffMoneyPeople(params = {}) {
     return this.request(`/staff-money/people?${new URLSearchParams(params).toString()}`);
   }

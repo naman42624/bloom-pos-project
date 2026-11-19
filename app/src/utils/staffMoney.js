@@ -45,11 +45,31 @@ export function heldLabel(createdAt, now = new Date(), lateDays = 3) {
   return { days, text, late: days > Number(lateDays) };
 }
 
+// Same words as the server. Names no amount, so counter staff never learn a limit.
+export const OVER_LIMIT_MESSAGE = 'This needs an OK from a manager or the owner. They can confirm with their PIN.';
+export const LIMIT_INPUT_MESSAGE = 'Type the monthly advance limit in rupees, or leave it empty to use the shop limit.';
+
+// Owner's "Monthly advance limit" box: empty = no personal limit (null);
+// otherwise a number >= 0 with at most 2 decimals.
+export function parseLimitInput(text) {
+  const t = String(text == null ? '' : text).replace(/,/g, '').trim();
+  if (t === '') return { ok: true, value: null };
+  if (!/^\d+(\.\d{1,2})?$/.test(t)) return { ok: false };
+  return { ok: true, value: Number(t) };
+}
+
+// Is the typed limit the same as the saved one? null = no limit; paise compare.
+export function sameLimit(a, b) {
+  const norm = (v) => (v == null || v === '' ? null : toPaise(v));
+  return norm(a) === norm(b);
+}
+
 // Plain copy for a 409 needs_pin answer (spec 5.10). limits is
 // { advanceDay, advanceMonth, shoppingDay }; kind is 'advance' (default) or
 // 'shopping'. Same wording as the server's message, so the box can show its
 // own copy when the thrown error carries none.
 export function pinMessage(needsPin, { limits = {}, name, kind = 'advance' } = {}) {
+  if (needsPin === 'over_limit') return OVER_LIMIT_MESSAGE;
   if (needsPin === 'self') return 'A manager or owner needs to confirm money for yourself.';
   if (needsPin === 'over_month') {
     return `That would take ${name || 'this person'} over the ${inr(limits.advanceMonth)} monthly advance limit. A manager or owner can confirm with their PIN.`;
@@ -61,7 +81,7 @@ export function pinMessage(needsPin, { limits = {}, name, kind = 'advance' } = {
 // The needs_pin reason from a thrown api error (409 body), or null.
 export function needsPinOf(err) {
   const r = err && err.status === 409 && err.body ? err.body.needs_pin : null;
-  return ['over_day', 'over_month', 'self'].includes(r) ? r : null;
+  return ['over_day', 'over_month', 'over_limit', 'self'].includes(r) ? r : null;
 }
 
 // ── The add sheet: Salary advance, Shopping money, Own pocket (B7) ──
@@ -496,4 +516,11 @@ export function deactivateWarning(name, userId, openResults) {
   if (held > 0) lines.push(`${n} still has ${inr(fromPaise(held))} shopping money. Settle or write it off first.`);
   if (owed > 0) lines.push(`The shop still owes ${n} ${inr(fromPaise(owed))}. Pay it back first.`);
   return lines.length ? lines.join('\n') : null;
+}
+
+// The user id behind a salary form target. A salary row (GET /staff/salaries)
+// has its own id, so user_id wins; a plain user row only has id.
+export function salaryTargetId(row) {
+  if (!row) return null;
+  return row.user_id ?? row.id;
 }

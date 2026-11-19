@@ -1119,6 +1119,8 @@ function ensureCompatibilityColumns() {
   ensureColumn('salary_advances', 'source', 'VARCHAR(30)');
   ensureColumn('salary_advances', 'payment_method', 'VARCHAR(30)');
   ensureColumn('salary_advances', 'location_id', 'INTEGER REFERENCES locations(id) ON DELETE SET NULL');
+  // Per-person monthly advance limit (owner sets it). NULL = use the shop limit.
+  ensureColumn('employee_salaries', 'advance_limit', 'NUMERIC(10,2)');
   ensureColumn('salary_advances', 'expense_id', 'INTEGER REFERENCES expenses(id) ON DELETE SET NULL');
   // Expense change and remove look up the linked advance by expense_id.
   runPsql('CREATE INDEX IF NOT EXISTS idx_salary_advances_expense ON salary_advances(expense_id)');
