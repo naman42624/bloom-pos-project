@@ -683,11 +683,16 @@ export default function UserFormScreen({ route, navigation }) {
                           ? <Text style={styles.payRole}>{p.note}</Text>
                           : <Text style={styles.payRole}>{ROLE_LABELS[p.role] || p.role}</Text>}
                       </View>
-                      <Switch
-                        value={on}
-                        onValueChange={() => togglePay(p.id)}
-                        trackColor={{ true: Colors.primary, false: Colors.border }}
-                      />
+                      {/* The row handles the tap; the switch only shows the state.
+                          Giving the switch its own handler flips it twice on web. */}
+                      <View pointerEvents="none">
+                        <Switch
+                          value={on}
+                          trackColor={{ true: Colors.primary, false: Colors.border }}
+                          accessibilityElementsHidden
+                          importantForAccessibility="no-hide-descendants"
+                        />
+                      </View>
                     </TouchableOpacity>
                   );
                 })
