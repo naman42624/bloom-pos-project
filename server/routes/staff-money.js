@@ -177,8 +177,12 @@ async function prepareGive(req, kind) {
   const limits = await sm.getLimits(db);
   const reasonFor = async (handle) => sm.needsPin({
     giver, recipientId: userId, kind, amount, limits, totals: await sm.totals(handle, { userId }),
+    personLimit: kind === 'advance' ? await sm.personAdvanceLimit(handle, userId) : null,
   });
-  const needsPinError = (reason) => httpError(409, sm.needsPinMessage(reason, { name: firstName(recipient.name), limits, kind }), { needs_pin: reason });
+  const needsPinError = (reason) => {
+    const shown = sm.publicReason(reason, kind);
+    return httpError(409, sm.needsPinMessage(shown, { limits, kind }), { needs_pin: shown });
+  };
 
   let approver = null;
   const hasApprover = b.approver_id !== undefined && b.approver_id !== null && b.approver_id !== '';

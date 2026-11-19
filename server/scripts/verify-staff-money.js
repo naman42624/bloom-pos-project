@@ -168,10 +168,9 @@ check('checkApprover rules', async () => {
 });
 
 check('needsPinMessage copy', async () => {
-  const m = sm.needsPinMessage('over_day', { limits, kind: 'advance' });
-  assert(m.includes('₹500 daily advance limit') && m.includes('PIN'), m);
-  const m2 = sm.needsPinMessage('over_month', { name: 'Ramesh', limits });
-  assert(m2.startsWith('That would take Ramesh over the ₹2,000 monthly advance limit'), m2);
+  const m = sm.needsPinMessage('over_day', { limits, kind: 'shopping' });
+  assert(m.includes('₹1,000 daily shopping money limit') && m.includes('PIN'), m);
+  eq(sm.needsPinMessage('over_limit', { limits, kind: 'advance' }), sm.OVER_LIMIT_MESSAGE, 'advance over limit');
   eq(sm.needsPinMessage('self', {}), 'A manager or owner needs to confirm money for yourself.', 'self');
 });
 
@@ -345,8 +344,8 @@ check('B2: over the day limit needs a PIN (409, spec copy); wrong PIN refused; m
   const amt = left + 1;
   const r = await give(c.counter, { user_id: c.r1, amount: amt });
   eq(r.status, 409, 'status ' + JSON.stringify(r.body));
-  eq(r.body.needs_pin, 'over_day', 'reason');
-  eq(r.body.message, `That's more than the ₹${c.limits.advanceDay.toLocaleString('en-IN')} daily advance limit. A manager or owner can confirm with their PIN.`, 'copy');
+  eq(r.body.needs_pin, 'over_limit', 'reason');
+  eq(r.body.message, sm.OVER_LIMIT_MESSAGE, 'copy');
   const bad = await give(c.counter, { user_id: c.r1, amount: amt, approver_id: c.mgr, approver_pin: '0000' });
   eq(bad.status, 401, 'wrong pin');
   assert(/^That PIN didn't match\. \d+ tries left\.$/.test(bad.body.message), 'wrong pin copy ' + bad.body.message);
@@ -384,8 +383,8 @@ check('B2: over the month limit needs a PIN with the spec copy', async () => {
   createdAdvanceIds.push(seeded.id);
   const r = await give(c.counter, { user_id: c.r3, amount: 2, payment_method: 'upi' });
   eq(r.status, 409, 'status ' + JSON.stringify(r.body));
-  eq(r.body.needs_pin, 'over_month', 'reason');
-  eq(r.body.message, `That would take VerifySM over the ₹${c.limits.advanceMonth.toLocaleString('en-IN')} monthly advance limit. A manager or owner can confirm with their PIN.`, 'copy');
+  eq(r.body.needs_pin, 'over_limit', 'reason');
+  eq(r.body.message, sm.OVER_LIMIT_MESSAGE, 'copy');
 });
 
 check('B2: counter staff money for themselves needs a PIN', async () => {
@@ -428,7 +427,7 @@ check('B2 RF3: an approved in-app request counts toward limits and writes the sa
   eq(await drawer(reg), before - 400, 'drawer');
   const over = await give(c.counter, { user_id: c.r4, amount: c.limits.advanceDay - 400 + 1, payment_method: 'upi' });
   eq(over.status, 409, 'request counted toward the day limit');
-  eq(over.body.needs_pin, 'over_day', 'reason');
+  eq(over.body.needs_pin, 'over_limit', 'reason');
 });
 
 check('B2: removing the advance expense cancels the advance, puts the cash back, audits it', async () => {

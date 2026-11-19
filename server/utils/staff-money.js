@@ -80,9 +80,23 @@ async function totals(db, { userId }) {
   };
 }
 
+// The person's own monthly advance limit, or null when none is set.
+async function personAdvanceLimit(db, userId) {
+  const row = await db.prepare('SELECT advance_limit FROM employee_salaries WHERE user_id = ?').get(userId);
+  if (!row || row.advance_limit === null || row.advance_limit === undefined) return null;
+  const n = Number(row.advance_limit);
+  return Number.isFinite(n) ? n : null;
+}
+
+// What the counter is told. An advance over the day or month limit is one
+// answer, so no limit or amount can be worked out from it.
+function publicReason(reason, kind) {
+  return kind === 'advance' && (reason === 'over_day' || reason === 'over_month') ? 'over_limit' : reason;
+}
+
 // Pure. giver = { id, role }. Returns null when no PIN is needed, else
 // 'self' | 'over_day' | 'over_month'. Self is checked before limits.
-function needsPin({ giver, recipientId, kind, amount, totals: t, limits }) {
+function needsPin({ giver, recipientId, kind, amount, totals: t, limits, personLimit }) {
   if (giver.role === 'owner') return null;
   if (Number(giver.id) === Number(recipientId)) return giver.role === 'manager' ? null : 'self';
   const add = toPaise(amount);
@@ -90,11 +104,14 @@ function needsPin({ giver, recipientId, kind, amount, totals: t, limits }) {
     return toPaise(t.shoppingToday) + add > toPaise(limits.shoppingDay) ? 'over_day' : null;
   }
   if (toPaise(t.advanceToday) + add > toPaise(limits.advanceDay)) return 'over_day';
-  if (toPaise(t.advanceMonth) + add > toPaise(limits.advanceMonth)) return 'over_month';
+  // A personal limit (even 0) replaces the shop monthly limit for this person.
+  const monthCap = personLimit === null || personLimit === undefined ? limits.advanceMonth : personLimit;
+  if (toPaise(t.advanceMonth) + add > toPaise(monthCap)) return 'over_month';
   return null;
 }
 
 const wrongPinMessage = (left) => `That PIN didn't match. ${left} tries left.`;
+const OVER_LIMIT_MESSAGE = 'This needs an OK from a manager or the owner. They can confirm with their PIN.';
 const CANT_CONFIRM = "That person can't confirm this. Pick a manager or the owner who has an approval PIN.";
 
 // Confirms a manager or owner by PIN. Never call inside a transaction that can
@@ -122,14 +139,11 @@ async function checkApprover(db, { approverId, pin, locationId, recipientId }) {
 }
 
 // Plain copy for a needs_pin answer (spec 5.10). name is the recipient's first name.
-function needsPinMessage(reason, { name, limits, kind } = {}) {
+function needsPinMessage(reason, { limits, kind } = {}) {
   const inr = (n) => `₹${Number(n).toLocaleString('en-IN')}`;
   if (reason === 'self') return 'A manager or owner needs to confirm money for yourself.';
-  if (reason === 'over_month') {
-    return `That would take ${name || 'this person'} over the ${inr(limits.advanceMonth)} monthly advance limit. A manager or owner can confirm with their PIN.`;
-  }
-  const lim = kind === 'shopping' ? limits.shoppingDay : limits.advanceDay;
-  return `That's more than the ${inr(lim)} daily ${kind === 'shopping' ? 'shopping money' : 'advance'} limit. A manager or owner can confirm with their PIN.`;
+  if (reason === 'over_limit') return OVER_LIMIT_MESSAGE;
+  return `That's more than the ${inr(limits.shoppingDay)} daily shopping money limit. A manager or owner can confirm with their PIN.`;
 }
 
 // Payroll (spec 5.6): the open shopping money payroll may take from pay.
@@ -147,4 +161,4 @@ async function payrollShopping(db, { userId, forUpdate = false }) {
   return { rows, totalPaise: rows.reduce((t, r) => t + remainingPaise(r), 0) };
 }
 
-module.exports = { payrollShopping, getLimits, totals, needsPin, needsPinMessage, checkApprover, remaining, remainingPaise, wrongPinMessage };
+module.exports = { payrollShopping, getLimits, totals, personAdvanceLimit, publicReason, OVER_LIMIT_MESSAGE, needsPin, needsPinMessage, checkApprover, remaining, remainingPaise, wrongPinMessage };
