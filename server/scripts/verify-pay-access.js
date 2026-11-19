@@ -377,6 +377,134 @@ check('manager cannot re-point a salary row to a hidden person', async () => {
   eq(ok.status, 200, 'allowed edit');
 });
 
+// ── Task 4: advance figures at the counter, pay-access, manager own pay, approve, role sweep ──
+check('advance at the counter: unpaid_after only for someone who may see that pay', async () => {
+  const c = await expCtx();
+  await openOwnRegister(c);
+  const hidden = await giveAdvance(c, c.mgr2, c.e2);
+  assert(!('unpaid_after' in hidden), `MB must not get unpaid_after: ${JSON.stringify(hidden)}`);
+  const shown = await giveAdvance(c, c.mgr, c.e1);
+  assert('unpaid_after' in shown, `MA should get unpaid_after: ${JSON.stringify(shown)}`);
+  const coworker = await giveAdvance(c, c.e1, c.e2);
+  assert(!('unpaid_after' in coworker), 'counter must not get a coworker unpaid_after');
+  const owner = await giveAdvance(c, c.owner, c.e2);
+  assert('unpaid_after' in owner, 'owner gets unpaid_after');
+});
+
+check('GET /staff/pay-access answers each caller with their own visibility', async () => {
+  const c = await payCtx();
+  const o = await api('GET', '/staff/pay-access', c.owner);
+  eq(o.status, 200, 'owner status');
+  eq(o.body.data, { all: true, ids: [] }, 'owner');
+  const m = await api('GET', '/staff/pay-access', c.mgr);
+  eq(m.body.data, { all: false, ids: [c.mgr, c.e1] }, 'MA');
+  eq((await api('GET', '/staff/pay-access', c.mgr2)).body.data, { all: false, ids: [c.mgr2] }, 'MB');
+  eq((await api('GET', '/staff/pay-access', c.e1)).body.data, { all: false, ids: [c.e1] }, 'counter');
+  eq((await api('GET', '/staff/pay-access', c.cust)).status, 403, 'customer refused');
+});
+
+check('a manager reads their own salary row and own advance', async () => {
+  const c = await payCtx();
+  await c.db.prepare('INSERT INTO employee_salaries (user_id, monthly_salary, updated_by) VALUES (?, ?, ?)').run(c.mgr, 5150, c.owner);
+  const advId = (await c.db.prepare("INSERT INTO salary_advances (user_id, amount, status, reason) VALUES (?, 515, 'approved', 'VerifyPA') RETURNING id").get(c.mgr)).id;
+  const s = await api('GET', '/staff/salaries', c.mgr);
+  eq(s.status, 200, 'salaries status');
+  eq(Number(s.body.data.salary && s.body.data.salary.monthly_salary), 5150, 'own salary');
+  const a = await api('GET', '/attendance/salary-advances', c.mgr);
+  assert(a.body.data.some((x) => x.id === advId), 'own advance listed');
+  const mb = await api('GET', '/attendance/salary-advances', c.mgr2);
+  assert(!mb.body.data.some((x) => x.id === advId), 'MB must not see MA advance');
+});
+
+check('manager approves a pending request at their shop; another shop is refused', async () => {
+  const c = await payCtx();
+  await openOwnRegister(c);
+  const pend = (await c.db.prepare("INSERT INTO salary_advances (user_id, amount, status, reason) VALUES (?, 12, 'pending', 'VerifyPA') RETURNING id").get(c.e2)).id;
+  createdAdvanceIds.push(pend);
+  const ok = await api('PUT', `/attendance/salary-advance/${pend}/approve`, c.mgr2, {});
+  const row = await c.db.prepare('SELECT status, expense_id FROM salary_advances WHERE id = ?').get(pend);
+  if (row && row.expense_id) createdExpenseIds.push(Number(row.expense_id));
+  eq(ok.status, 200, `approve ${JSON.stringify(ok.body)}`);
+  eq(row.status, 'approved', 'approved');
+  const no = await api('PUT', `/attendance/salary-advance/${c.advElse}/approve`, c.mgr2, {});
+  eq(no.status, 403, 'other shop status');
+  eq(no.body.message, "This person isn't at your shop.", 'other shop message');
+  const still = await c.db.prepare('SELECT status FROM salary_advances WHERE id = ?').get(c.advElse);
+  eq(still.status, 'pending', 'other shop unchanged');
+});
+
+// Leaf values (not ids, phones or times) that equal a salary figure.
+function salaryFigures(body) {
+  const found = [];
+  const walk = (v, key) => {
+    if (Array.isArray(v)) return v.forEach((x) => walk(x, key));
+    if (v && typeof v === 'object') {
+      if (v.description === 'Staff pay') return; // hidden row: amount kept on purpose (spec 6.1)
+      return Object.entries(v).forEach(([k, x]) => walk(x, k));
+    }
+    if (v === null || v === undefined) return;
+    if (/(^|_)id$|phone|_at$|date|token/i.test(String(key || ''))) return;
+    for (const n of ['8423', '7311']) if (new RegExp(`(^|[^\\d])${n}([^\\d]|$)`).test(String(v))) found.push(n);
+  };
+  walk(body, '');
+  return found;
+}
+
+check('role sweep: no salary figure reaches anyone who may not see it', async () => {
+  const c = await expCtx();
+  const florist = await makeUser(c.db, { role: 'florist_staff', name: 'VerifyPA Florist' });
+  const rider = await makeUser(c.db, { role: 'delivery_partner', name: 'VerifyPA Rider' });
+  const helper = await makeUser(c.db, { role: 'helper', name: 'VerifyPA Helper' });
+  await c.db.prepare("UPDATE users SET access_until = CAST('2099-12-31' AS date) WHERE id = ?").run(helper);
+  const loc = `location_id=${TEST_LOCATION_ID}`;
+  const ROUTES = [
+    '/staff/salaries',
+    '/staff/payroll/history',
+    `/staff/payroll/history?user_id=${c.e2}`,
+    `/staff/payroll/history?user_id=${c.e1}`,
+    `/staff/salaries/${c.e2}/history`,
+    `/staff/pay-viewers/${c.mgr}`,
+    '/staff/pay-access',
+    '/attendance/salary-advances',
+    `/attendance/salary-advances?user_id=${c.e2}`,
+    `/expenses?${dayQ(c)}`,
+    `/expenses?${dayQ(c)}&q=${encodeURIComponent('VerifyPA Staff Two')}`,
+    `/expenses/summary?${dayQ(c)}`,
+    `/expenses/summary-by-item?from=${c.today}&to=${c.today}&${loc}`,
+    `/expenses/people?${loc}`,
+    `/expenses/suggest?${loc}`,
+    '/staff-money/mine',
+    `/staff-money/people?${loc}`,
+    `/staff-money/open?${loc}`,
+    `/staff-money/history?${loc}`,
+  ];
+  // [caller, label, figures they may see]
+  const callers = [
+    [c.owner, 'owner', ['8423', '7311']],
+    [c.mgr, 'MA', ['7311']],
+    [c.mgr2, 'MB', []],
+    [c.e1, 'counter (E1)', ['7311']],
+    [florist, 'florist', []],
+    [rider, 'rider', []],
+    [helper, 'helper', []],
+  ];
+  const problems = [];
+  let ownerSaw = false;
+  for (const [uid, label, may] of callers) {
+    for (const path of ROUTES) {
+      const r = await api('GET', path, uid);
+      if (r.status >= 500) problems.push(`${label} ${path}: ${r.status}`);
+      if (label === 'helper' && r.status !== 403) problems.push(`helper ${path}: expected 403, got ${r.status}`);
+      const seen = salaryFigures(r.body);
+      if (label === 'owner' && seen.includes('8423')) ownerSaw = true;
+      const bad = seen.filter((n) => !may.includes(n));
+      if (bad.length) problems.push(`${label} ${path}: saw ${[...new Set(bad)].join(',')}`);
+    }
+  }
+  assert(ownerSaw, 'sweep sanity: owner should see 8423 somewhere');
+  assert(!problems.length, problems.join('\n   '));
+});
+
 async function cleanup() {
   const db = await getDb();
   try {

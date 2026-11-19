@@ -72,6 +72,19 @@ router.put('/pay-viewers/:managerId', authorize('owner'), async (req, res) => {
   }
 });
 
+// Whose pay the caller may see: { all: true } for the owner, else the ids
+// (their own first). The app uses it to decide what to show.
+router.get('/pay-access', authorize('owner', 'manager', 'employee', 'counter_staff', 'florist_staff', 'delivery_partner'), async (req, res) => {
+  try {
+    const db = await getAsyncDb();
+    const visible = await payVisibleIds(db, req.user);
+    res.json({ success: true, data: visible === 'all' ? { all: true, ids: [] } : { all: false, ids: visible } });
+  } catch (error) {
+    console.error('Get pay access error:', error);
+    res.status(500).json({ success: false, message: 'Could not load this. Try again.' });
+  }
+});
+
 // ═══════════════════════════════════════════════════════════════
 // EMPLOYEE SHIFTS / SCHEDULES
 // ═══════════════════════════════════════════════════════════════

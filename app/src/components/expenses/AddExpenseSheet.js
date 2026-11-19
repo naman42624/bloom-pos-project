@@ -1000,6 +1000,15 @@ function SalaryEmployeePicker({ locationId, value, onChange, error }) {
   const [loaded, setLoaded] = useState(false);
   const [recentPayroll, setRecentPayroll] = useState(null);
   const [recentSalary, setRecentSalary] = useState(null);
+  // Whose pay I may see (owner: all; manager: own + the owner's picks; others: own).
+  const [payAccess, setPayAccess] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    api.getPayAccess()
+      .then((res) => { if (!cancelled) setPayAccess(res.data || null); })
+      .catch(() => { if (!cancelled) setPayAccess(null); });
+    return () => { cancelled = true; };
+  }, []);
 
   // GET /users is owner/manager only. Counter staff use assignable-staff;
   // 'employee' is refused there too, so it falls back to staff-roster.
@@ -1022,12 +1031,13 @@ function SalaryEmployeePicker({ locationId, value, onChange, error }) {
   }, [locationId]);
 
   // Awareness only, never blocking: the server refuses a real overlap.
-  // Payroll history is only trustworthy for the owner, or for yourself
-  // (the server filters everyone else to the caller's own records).
+  // Payroll history only for people whose pay I may see (the server refuses
+  // or filters everyone else).
   useEffect(() => {
     if (!value) { setRecentPayroll(null); setRecentSalary(null); return undefined; }
     let cancelled = false;
-    const canRead = user?.role === 'owner' || value.id === user?.id;
+    const canRead = Number(value.id) === Number(user?.id)
+      || (!!payAccess && (payAccess.all || (payAccess.ids || []).map(Number).includes(Number(value.id))));
     Promise.all([
       canRead
         ? api.getPayrollHistory({ user_id: value.id, limit: 3 }).catch(() => ({ data: { payments: [] } }))
@@ -1043,7 +1053,7 @@ function SalaryEmployeePicker({ locationId, value, onChange, error }) {
       setRecentSalary(rows[0] || null);
     });
     return () => { cancelled = true; };
-  }, [value?.id]);
+  }, [value?.id, payAccess]);
 
   return (
     <View>

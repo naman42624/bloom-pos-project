@@ -60,7 +60,17 @@ export default function MoneyToStaffForm({
   const w = WORDS[kind] || WORDS.advance;
   const { user } = useAuth();
   const meId = Number(user?.id);
-  const isBoss = user?.role === 'owner' || user?.role === 'manager';
+  // Whose pay I may see (owner: all; manager: own + the owner's picks; others: own).
+  const [payAccess, setPayAccess] = useState(null);
+  useEffect(() => {
+    if (kind !== 'advance') return undefined;
+    let cancelled = false;
+    api.getPayAccess()
+      .then((res) => { if (!cancelled) setPayAccess(res.data || null); })
+      .catch(() => { if (!cancelled) setPayAccess(null); });
+    return () => { cancelled = true; };
+  }, [kind]);
+  const canSeePayOf = (id) => !!payAccess && (payAccess.all || (payAccess.ids || []).map(Number).includes(Number(id)));
 
   // ── Who ──
   const [people, setPeople] = useState([]);
@@ -119,16 +129,16 @@ export default function MoneyToStaffForm({
     if (!who || kind !== 'advance') return undefined;
     let cancelled = false;
     const id = Number(who.id);
-    // Counter staff see only their own advances (spec 5.8), so the line is
-    // shown to them for themselves only.
+    // Another person's unpaid advances show only to someone who may see that
+    // person's pay (spec 5.8, 13.8); everyone sees their own.
     const load = id === meId
       ? api.getMyStaffMoney().then((res) => Number(res.data?.advances_unpaid) || 0)
-      : isBoss
+      : canSeePayOf(id)
         ? api.getSalaryAdvances({ user_id: id, status: 'approved' }).then((res) => unpaidAdvances(res.data, id))
         : null;
     if (load) load.then((amt) => { if (!cancelled) setFigure({ userId: id, amount: amt }); }).catch(() => {});
     return () => { cancelled = true; };
-  }, [who?.id, kind]);
+  }, [who?.id, kind, payAccess]);
   const figureAmount = kind === 'shopping'
     ? (who ? heldBy(openShopping, who.id).amount : 0)
     : (figure && who && figure.userId === Number(who.id) ? figure.amount : 0);

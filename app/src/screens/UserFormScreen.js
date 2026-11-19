@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, KeyboardAvoidingView, Platform, ScrollView, TouchableOpacity, Modal } from 'react-native';
+import { View, Text, StyleSheet, KeyboardAvoidingView, Platform, ScrollView, TouchableOpacity, Modal, Switch, ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
@@ -37,6 +37,9 @@ const ROLE_LABELS = {
   helper: 'Helper',
 };
 
+// Who a manager may be switched on to see the pay of (same list as the server's PAY_PICKABLE_ROLES).
+const PAY_PICKABLE_ROLES = ['manager', 'employee', 'counter_staff', 'florist_staff', 'delivery_partner', 'helper'];
+
 export default function UserFormScreen({ route, navigation }) {
   const existingUser = route.params?.user;
   const isEditing = !!existingUser;
@@ -58,6 +61,8 @@ export default function UserFormScreen({ route, navigation }) {
   const [locations, setLocations] = useState([]);
   const [selectedLocationIds, setSelectedLocationIds] = useState([]);
   const [userLocsLoaded, setUserLocsLoaded] = useState(false);
+  // The shops this user is saved at (not the unsaved ticks below).
+  const [savedLocationIds, setSavedLocationIds] = useState([]);
 
   // Role change state (edit mode, owner only)
   const [selectedNewRole, setSelectedNewRole] = useState(null);
@@ -83,6 +88,13 @@ export default function UserFormScreen({ route, navigation }) {
   const isOwner = currentUser?.role === 'owner';
   const showApprovalPin = isEditing && isOwner && ['manager', 'owner'].includes(existingUser?.role);
   const canChangeRole = isEditing && isOwner && existingUser?.id !== currentUser?.id;
+  // Owner editing a manager: whose salary, payroll and advances this manager may see.
+  const showPayViewers = isEditing && isOwner && existingUser?.role === 'manager';
+  const [payStaff, setPayStaff] = useState([]); // active staff at the manager's shops
+  const [payOn, setPayOn] = useState([]); // ids switched on now
+  const [paySaved, setPaySaved] = useState([]); // ids saved on the server
+  const [payState, setPayState] = useState('loading'); // 'loading' | 'ready' | 'error'
+  const [paySaving, setPaySaving] = useState(false);
 
   // Manager can only create employee/counter_staff/florist_staff/delivery_partner/customer
   const availableRoles = isOwner
@@ -105,6 +117,7 @@ export default function UserFormScreen({ route, navigation }) {
       const response = await api.getUser(userId);
       const userLocations = response.data?.locations || [];
       setSelectedLocationIds(userLocations.map((l) => l.id));
+      setSavedLocationIds(userLocations.map((l) => l.id));
       setUserLocsLoaded(true);
     } catch {
       // non-critical
@@ -117,6 +130,51 @@ export default function UserFormScreen({ route, navigation }) {
       setLocations(response.data?.locations || []);
     } catch {
       // non-critical
+    }
+  };
+
+  // Staff list: GET /users?location_id= for each shop the manager is saved at
+  // (owner-readable, covers every staff role incl. riders and managers).
+  const loadPayViewers = async () => {
+    setPayState('loading');
+    try {
+      const [viewers, ...perShop] = await Promise.all([
+        api.getPayViewers(existingUser.id),
+        ...savedLocationIds.map((locId) => api.getUsers({ location_id: locId, is_active: 1, limit: 100 })),
+      ]);
+      const byId = new Map();
+      perShop.forEach((res) => (res.data?.users || []).forEach((u) => {
+        if (PAY_PICKABLE_ROLES.includes(u.role) && u.is_active && u.id !== existingUser.id) byId.set(u.id, u);
+      }));
+      const list = [...byId.values()].sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
+      const ids = (viewers.data?.employee_ids || []).map(Number);
+      setPayStaff(list);
+      setPayOn(ids);
+      setPaySaved(ids);
+      setPayState('ready');
+    } catch {
+      setPayState('error');
+    }
+  };
+  useEffect(() => {
+    if (showPayViewers && userLocsLoaded) loadPayViewers();
+  }, [showPayViewers, userLocsLoaded]);
+
+  const togglePay = (id) => setPayOn((on) => (on.includes(id) ? on.filter((x) => x !== id) : [...on, id]));
+  const payChanged = [...payOn].sort().join(',') !== [...paySaved].sort().join(',');
+  const savePayViewers = async () => {
+    setPaySaving(true);
+    try {
+      // People switched on earlier who are no longer at these shops stay on.
+      const res = await api.setPayViewers(existingUser.id, payOn);
+      const ids = (res.data?.employee_ids || payOn).map(Number);
+      setPayOn(ids);
+      setPaySaved(ids);
+      showAlert('Saved', `${existingUser.name} can now see the pay of the people switched on.`);
+    } catch (err) {
+      showAlert("Couldn't save", err?.message || 'Check the internet and tap Save again.');
+    } finally {
+      setPaySaving(false);
     }
   };
 
@@ -585,6 +643,57 @@ export default function UserFormScreen({ route, navigation }) {
             </View>
           )}
 
+          {showPayViewers && (
+            <View style={styles.pinSection}>
+              <Text style={styles.sectionLabel}>Can see pay of</Text>
+              <Text style={styles.approvalHint}>Off: they can't see this person's salary, payroll or advances.</Text>
+              {payState === 'loading' ? (
+                <ActivityIndicator color={Colors.primary} style={{ paddingVertical: Spacing.md }} />
+              ) : payState === 'error' ? (
+                <TouchableOpacity style={styles.payRow} onPress={loadPayViewers} accessibilityRole="button">
+                  <Ionicons name="refresh" size={20} color={Colors.primary} />
+                  <Text style={[styles.payName, { color: Colors.primary }]}>Couldn't load the list. Tap to try again.</Text>
+                </TouchableOpacity>
+              ) : payStaff.length === 0 ? (
+                <Text style={styles.approvalHint}>No other staff at this manager's shops yet.</Text>
+              ) : (
+                payStaff.map((p) => {
+                  const on = payOn.includes(p.id);
+                  return (
+                    <TouchableOpacity
+                      key={p.id}
+                      style={styles.payRow}
+                      onPress={() => togglePay(p.id)}
+                      accessibilityRole="switch"
+                      accessibilityState={{ checked: on }}
+                      accessibilityLabel={`${p.name}: ${on ? 'can see pay' : 'cannot see pay'}`}
+                    >
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.payName}>{p.name}</Text>
+                        <Text style={styles.payRole}>{ROLE_LABELS[p.role] || p.role}</Text>
+                      </View>
+                      <Switch
+                        value={on}
+                        onValueChange={() => togglePay(p.id)}
+                        trackColor={{ true: Colors.primary, false: Colors.border }}
+                      />
+                    </TouchableOpacity>
+                  );
+                })
+              )}
+              {payState === 'ready' && payStaff.length > 0 && (
+                <Button
+                  title="Save who they can see"
+                  variant="outline"
+                  onPress={guardSubmit(savePayViewers)}
+                  loading={paySaving}
+                  disabled={paySaving || !payChanged}
+                  style={{ marginTop: Spacing.sm }}
+                />
+              )}
+            </View>
+          )}
+
           <Button
             title={helperOff ? 'Save and let them work again' : isEditing ? 'Update Staff' : 'Add Staff'}
             onPress={guardSubmit(handleSubmit)}
@@ -731,6 +840,12 @@ const styles = StyleSheet.create({
   deactivateBtnText: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.error },
 
   // Shared-device login (employee code + PIN)
+  payRow: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, minHeight: 56,
+    paddingVertical: Spacing.sm, borderBottomWidth: 1, borderBottomColor: Colors.border,
+  },
+  payName: { fontSize: FontSize.md, fontWeight: '600', color: Colors.text },
+  payRole: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: 2 },
   pinSection: { marginTop: Spacing.lg, padding: Spacing.md, backgroundColor: Colors.background, borderRadius: BorderRadius.md },
   sectionLabel: { fontSize: FontSize.sm, fontWeight: '700', color: Colors.textSecondary, marginBottom: Spacing.sm },
   employeeCodeText: { fontSize: FontSize.md, color: Colors.text, marginBottom: Spacing.sm },

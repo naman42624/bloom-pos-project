@@ -21,6 +21,17 @@ export default function AttendanceHubScreen({ navigation }) {
   const isOwner = user?.role === 'owner';
   const [tab, setTab] = useState('today');
   const [advancesPendingCount, setAdvancesPendingCount] = useState(0);
+  // A manager the owner switched on for at least one person sees Salaries & Payroll (view only).
+  const [mgrSeesPay, setMgrSeesPay] = useState(false);
+
+  useEffect(() => {
+    if (user?.role !== 'manager') return undefined;
+    let cancelled = false;
+    api.getPayAccess().then((res) => {
+      if (!cancelled) setMgrSeesPay(((res.data && res.data.ids) || []).length > 1);
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [user?.role]);
 
   useEffect(() => {
     api.getSalaryAdvances({ status: 'pending' }).then((res) => {
@@ -38,7 +49,7 @@ export default function AttendanceHubScreen({ navigation }) {
     { key: 'ShiftManagement', label: 'Shifts', icon: 'calendar' },
     { key: 'SalaryAdvances', label: 'Advances', icon: 'cash', badge: advancesPendingCount },
     { key: 'AttendanceReport', label: 'Reports', icon: 'bar-chart' },
-    ...(isOwner ? [{ key: 'SalaryManagement', label: 'Salaries & Payroll', icon: 'wallet' }] : []),
+    ...(isOwner || mgrSeesPay ? [{ key: 'SalaryManagement', label: 'Salaries & Payroll', icon: 'wallet' }] : []),
   ].filter((l) => l.showFor !== false);
 
   return (

@@ -1421,6 +1421,20 @@ class ApiService {
   }
 
   // ─── Salary Management ───────────────────────────────────
+  // Whose pay I may see: { all: true } for the owner, else { all: false, ids } (own id first).
+  getPayAccess() {
+    return this.request('/staff/pay-access');
+  }
+
+  // Owner only: the people whose pay a manager may see.
+  getPayViewers(managerId) {
+    return this.request(`/staff/pay-viewers/${managerId}`);
+  }
+
+  setPayViewers(managerId, employeeIds) {
+    return this.request(`/staff/pay-viewers/${managerId}`, { method: 'PUT', body: JSON.stringify({ employee_ids: employeeIds }) });
+  }
+
   getSalaries(params = {}) {
     const q = new URLSearchParams(params).toString();
     return this.request(`/staff/salaries${q ? `?${q}` : ''}`);

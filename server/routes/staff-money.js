@@ -14,6 +14,7 @@ const { todayStr } = require('../utils/time');
 const { resolveItem, composeDescription } = require('../utils/expense-items');
 const { notifyByRole } = require('./notifications');
 const { riderMoneySummary } = require('../utils/rider-km-data');
+const { canSeePay } = require('../utils/pay-access');
 
 const router = express.Router();
 
@@ -253,9 +254,9 @@ router.post('/advance', authenticate, authorize(...GIVER_ROLES), async (req, res
       data: { screen: 'Expenses', advanceId: result.advanceId, userId: g.userId },
     });
     const data = { advance_id: result.advanceId, expense_id: result.expenseId };
-    // A colleague's unpaid advances are private (spec 5.8): only the owner,
-    // a manager, or the person themself sees the total.
-    if (isBoss(g.giver.role) || Number(g.giver.id) === Number(g.userId)) {
+    // A colleague's unpaid advances are private (spec 5.8, 13.8): only
+    // someone who may see this person's pay (utils/pay-access.js) gets the total.
+    if (await canSeePay(g.db, g.giver, g.userId)) {
       const after = await sm.totals(g.db, { userId: g.userId });
       data.unpaid_after = after.advancesUnpaid;
     }
