@@ -327,6 +327,7 @@ check('manager summary-by-item salary = allowed only', async () => {
 // ── Task 3 fix: hidden-row check is for managers only; no re-pointing ──
 const createdRegisterIds = [];
 const createdAdvanceIds = [];
+const createdItemIds = [];
 async function openOwnRegister(c) {
   const open = await c.db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1').get(TEST_LOCATION_ID);
   if (open) {
@@ -456,7 +457,19 @@ check('role sweep: no salary figure reaches anyone who may not see it', async ()
   const rider = await makeUser(c.db, { role: 'delivery_partner', name: 'VerifyPA Rider' });
   const helper = await makeUser(c.db, { role: 'helper', name: 'VerifyPA Helper' });
   await c.db.prepare("UPDATE users SET access_until = CAST('2099-12-31' AS date) WHERE id = ?").run(helper);
+  // A salary expense item on the seeded salary rows, so item history has pay to leak.
+  const key = 'verifypa salary item ' + Date.now();
+  const item = (await c.db.prepare("INSERT INTO expense_items (name, name_key, category, created_by) VALUES (?, ?, 'salary', ?) RETURNING id").get('VerifyPA salary item', key, c.owner)).id;
+  createdItemIds.push(item);
+  await c.db.prepare('UPDATE expenses SET item_id = ? WHERE id IN (?, ?, ?)').run(item, c.x1, c.x2, c.x0);
   const loc = `location_id=${TEST_LOCATION_ID}`;
+  const itemPath = `/expenses/items/${item}/history?from=${c.today}&to=${c.today}&${loc}`;
+  const ih = async (uid) => salaryFigures((await api('GET', itemPath, uid)).body);
+  const ownerItem = await ih(c.owner);
+  assert(ownerItem.includes('8423') && ownerItem.includes('7311'), `owner item history: ${ownerItem}`);
+  const maItem = await ih(c.mgr);
+  assert(maItem.includes('7311') && !maItem.includes('8423'), `MA item history: ${maItem}`);
+  eq((await ih(c.mgr2)).length, 0, 'MB item history figures');
   const ROUTES = [
     '/staff/salaries',
     '/staff/payroll/history',
@@ -477,6 +490,7 @@ check('role sweep: no salary figure reaches anyone who may not see it', async ()
     `/staff-money/people?${loc}`,
     `/staff-money/open?${loc}`,
     `/staff-money/history?${loc}`,
+    itemPath,
   ];
   // [caller, label, figures they may see]
   const callers = [
@@ -505,6 +519,25 @@ check('role sweep: no salary figure reaches anyone who may not see it', async ()
   assert(!problems.length, problems.join('\n   '));
 });
 
+check('pay-viewers: a saved person who stopped working is dropped on save, a new inactive id is refused', async () => {
+  const c = await payCtx();
+  const put = (ids) => api('PUT', `/staff/pay-viewers/${c.mgr}`, c.owner, { employee_ids: ids });
+  eq((await put([c.e1, c.e3])).status, 200, 'save E1 + E3');
+  await c.db.prepare('UPDATE users SET is_active = 0 WHERE id = ?').run(c.e3);
+  const g = await api('GET', `/staff/pay-viewers/${c.mgr}`, c.owner);
+  const p3 = (g.body.data.people || []).find((x) => x.id === c.e3);
+  assert(p3 && p3.pickable === false && p3.name === 'VerifyPA Staff Elsewhere', `people entry for E3: ${JSON.stringify(g.body.data)}`);
+  const r = await put([c.e1, c.e3]);
+  eq(r.status, 200, `stale id ${JSON.stringify(r.body)}`);
+  eq(r.body.data.employee_ids, [c.e1], 'saved list');
+  eq(await payVisibleIds(c.db, { id: c.mgr, role: 'manager' }), [c.mgr, c.e1], 'MA visible');
+  const gone = await makeUser(c.db, { role: 'counter_staff', name: 'VerifyPA Gone' });
+  await c.db.prepare('UPDATE users SET is_active = 0 WHERE id = ?').run(gone);
+  const bad = await put([c.e1, gone]);
+  eq(bad.status, 400, 'new inactive id');
+  eq(bad.body.message, "One of those people can't be picked. Refresh and try again.", 'message');
+});
+
 async function cleanup() {
   const db = await getDb();
   try {
@@ -527,6 +560,12 @@ async function cleanup() {
   for (const id of createdAdvanceIds) {
     try { await db.prepare("DELETE FROM audit_logs WHERE entity_type = 'salary_advance' AND entity_id = ?").run(id); }
     catch (e) { console.error('cleanup advance audit ' + id + ': ' + e.message); }
+  }
+  for (const id of createdItemIds) {
+    try {
+      await db.prepare('UPDATE expenses SET item_id = NULL WHERE item_id = ?').run(id);
+      await db.prepare('DELETE FROM expense_items WHERE id = ?').run(id);
+    } catch (e) { console.error('cleanup item ' + id + ': ' + e.message); }
   }
   for (const id of createdRegisterIds) {
     try {

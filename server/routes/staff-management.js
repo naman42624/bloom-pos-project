@@ -26,8 +26,23 @@ router.get('/pay-viewers/:managerId', authorize('owner'), async (req, res) => {
       ? await db.prepare("SELECT id FROM users WHERE id = ? AND role = 'manager' AND is_active = 1").get(managerId)
       : null;
     if (!mgr) return res.status(400).json({ success: false, message: 'Pick a manager.' });
-    const rows = await db.prepare('SELECT employee_id FROM pay_viewers WHERE manager_id = ? ORDER BY employee_id').all(managerId);
-    res.json({ success: true, data: { employee_ids: rows.map((r) => Number(r.employee_id)) } });
+    const rows = await db.prepare(`
+      SELECT pv.employee_id, u.name, u.role, u.is_active
+        FROM pay_viewers pv LEFT JOIN users u ON u.id = pv.employee_id
+       WHERE pv.manager_id = ? ORDER BY pv.employee_id
+    `).all(managerId);
+    // people: names for the saved ids, so the owner can switch off someone
+    // who left the shop or stopped working (pickable false).
+    res.json({
+      success: true,
+      data: {
+        employee_ids: rows.map((r) => Number(r.employee_id)),
+        people: rows.map((r) => ({
+          id: Number(r.employee_id), name: r.name || null, role: r.role || null,
+          pickable: !!r.is_active && PAY_PICKABLE_ROLES.includes(r.role),
+        })),
+      },
+    });
   } catch (error) {
     console.error('Get pay viewers error:', error);
     res.status(500).json({ success: false, message: 'Could not load this list. Try again.' });
@@ -39,20 +54,23 @@ router.put('/pay-viewers/:managerId', authorize('owner'), async (req, res) => {
     const managerId = Number(req.params.managerId);
     const raw = req.body && req.body.employee_ids;
     if (!Array.isArray(raw)) return res.status(400).json({ success: false, message: 'One of those people can\'t be picked. Refresh and try again.' });
-    const ids = [...new Set(raw.map(Number))];
+    let ids = [...new Set(raw.map(Number))];
     const result = await withTransaction(async (tx) => {
       const mgr = Number.isInteger(managerId)
         ? await tx.prepare("SELECT id FROM users WHERE id = ? AND role = 'manager' AND is_active = 1").get(managerId)
         : null;
       if (!mgr) return { error: 'Pick a manager.' };
       if (ids.some((i) => !Number.isInteger(i) || i <= 0)) return { error: 'One of those people can\'t be picked. Refresh and try again.' };
-      if (ids.length) {
-        const ok = await tx.prepare(
-          `SELECT id FROM users WHERE is_active = 1 AND role IN (${PAY_PICKABLE_ROLES.map(() => '?').join(',')}) AND id IN (${ids.map(() => '?').join(',')})`
-        ).all(...PAY_PICKABLE_ROLES, ...ids);
-        if (ok.length !== ids.length) return { error: 'One of those people can\'t be picked. Refresh and try again.' };
-      }
       const before = (await tx.prepare('SELECT employee_id FROM pay_viewers WHERE manager_id = ? ORDER BY employee_id').all(managerId)).map((r) => Number(r.employee_id));
+      if (ids.length) {
+        const ok = new Set((await tx.prepare(
+          `SELECT id FROM users WHERE is_active = 1 AND role IN (${PAY_PICKABLE_ROLES.map(() => '?').join(',')}) AND id IN (${ids.map(() => '?').join(',')})`
+        ).all(...PAY_PICKABLE_ROLES, ...ids)).map((r) => Number(r.id)));
+        // A new id must be pickable. An id already saved that has since left
+        // or changed role is dropped quietly, so the owner is never locked out.
+        if (ids.some((i) => !ok.has(i) && !before.includes(i))) return { error: 'One of those people can\'t be picked. Refresh and try again.' };
+        ids = ids.filter((i) => ok.has(i));
+      }
       await tx.prepare('DELETE FROM pay_viewers WHERE manager_id = ?').run(managerId);
       for (const id of ids) {
         await tx.prepare('INSERT INTO pay_viewers (manager_id, employee_id, created_by) VALUES (?, ?, ?)').run(managerId, id, req.user.id);

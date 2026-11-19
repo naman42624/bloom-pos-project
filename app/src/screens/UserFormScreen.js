@@ -148,6 +148,16 @@ export default function UserFormScreen({ route, navigation }) {
       }));
       const list = [...byId.values()].sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
       const ids = (viewers.data?.employee_ids || []).map(Number);
+      // Saved people not listed above (left these shops or stopped working)
+      // still get a row, switched on, so the owner can turn them off.
+      const people = viewers.data?.people || [];
+      ids.filter((id) => !byId.has(id)).forEach((id) => {
+        const p = people.find((x) => Number(x.id) === id) || {};
+        list.push({
+          id, name: p.name || 'Someone', role: p.role,
+          note: p.pickable === false ? 'No longer working here' : "Not at this manager's shop",
+        });
+      });
       setPayStaff(list);
       setPayOn(ids);
       setPaySaved(ids);
@@ -165,11 +175,10 @@ export default function UserFormScreen({ route, navigation }) {
   const savePayViewers = async () => {
     setPaySaving(true);
     try {
-      // People switched on earlier who are no longer at these shops stay on.
-      const res = await api.setPayViewers(existingUser.id, payOn);
-      const ids = (res.data?.employee_ids || payOn).map(Number);
-      setPayOn(ids);
-      setPaySaved(ids);
+      // The server quietly drops saved people who stopped working; reload so
+      // the list matches what was saved.
+      await api.setPayViewers(existingUser.id, payOn);
+      await loadPayViewers();
       showAlert('Saved', `${existingUser.name} can now see the pay of the people switched on.`);
     } catch (err) {
       showAlert("Couldn't save", err?.message || 'Check the internet and tap Save again.');
@@ -654,7 +663,7 @@ export default function UserFormScreen({ route, navigation }) {
                   <Ionicons name="refresh" size={20} color={Colors.primary} />
                   <Text style={[styles.payName, { color: Colors.primary }]}>Couldn't load the list. Tap to try again.</Text>
                 </TouchableOpacity>
-              ) : payStaff.length === 0 ? (
+              ) : payStaff.length === 0 && paySaved.length === 0 ? (
                 <Text style={styles.approvalHint}>No other staff at this manager's shops yet.</Text>
               ) : (
                 payStaff.map((p) => {
@@ -670,7 +679,9 @@ export default function UserFormScreen({ route, navigation }) {
                     >
                       <View style={{ flex: 1 }}>
                         <Text style={styles.payName}>{p.name}</Text>
-                        <Text style={styles.payRole}>{ROLE_LABELS[p.role] || p.role}</Text>
+                        {p.note
+                          ? <Text style={styles.payRole}>{p.note}</Text>
+                          : <Text style={styles.payRole}>{ROLE_LABELS[p.role] || p.role}</Text>}
                       </View>
                       <Switch
                         value={on}
@@ -681,7 +692,7 @@ export default function UserFormScreen({ route, navigation }) {
                   );
                 })
               )}
-              {payState === 'ready' && payStaff.length > 0 && (
+              {payState === 'ready' && (payStaff.length > 0 || paySaved.length > 0) && (
                 <Button
                   title="Save who they can see"
                   variant="outline"
