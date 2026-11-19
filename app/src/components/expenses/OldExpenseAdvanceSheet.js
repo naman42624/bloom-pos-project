@@ -138,7 +138,9 @@ function Body({ expense, mode, onClose, onDone }) {
           <Ionicons name="close" size={26} color={Colors.textSecondary} />
         </TouchableOpacity>
       </View>
-      <Text style={styles.line}>{sheetLine(expense.amount, String(expense.expense_date || '').slice(0, 10))}</Text>
+      <Text style={styles.line}>{changing
+        ? 'Pick who really got this money. It will be taken off their next salary instead.'
+        : sheetLine(expense.amount, String(expense.expense_date || '').slice(0, 10))}</Text>
 
       <ScrollView style={styles.list} keyboardShouldPersistTaps="handled">
         {staff === null && (
