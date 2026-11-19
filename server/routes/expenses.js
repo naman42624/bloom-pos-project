@@ -150,11 +150,21 @@ const isBossRole = (role) => role === 'owner' || role === 'manager';
 const SALARY_ADVANCE_MESSAGE = 'Use Salary advance for money given to staff.';
 const SALARY_HIDDEN_PERSON_MESSAGE = "You can't pay this person's salary. Ask the owner.";
 const EXPENSE_NOT_FOUND_MESSAGE = 'This expense was not found. It may have been removed already — pull down to refresh.';
-// A salary row the viewer may not see: treated as not there at all.
+// A manager changing a salary row they may not see: treated as not there.
+// Only managers: counter staff are limited to their own rows by other rules
+// (their own advance to a coworker must stay removable), and a row the
+// manager created themself (an advance they gave) stays theirs to fix.
 async function salaryRowHidden(db, user, row) {
-  if (!row || row.category !== 'salary') return false;
+  if (!row || row.category !== 'salary' || user.role !== 'manager') return false;
+  if (Number(row.created_by) === Number(user.id)) return false;
   const visible = await payVisibleIds(db, user);
   return visible !== 'all' && !(row.employee_id != null && visible.includes(Number(row.employee_id)));
+}
+// A manager pointing a salary row at a person whose pay they may not see.
+async function salaryTargetHidden(db, user, employeeId) {
+  if (user.role !== 'manager' || employeeId == null || employeeId === '') return false;
+  const visible = await payVisibleIds(db, user);
+  return visible !== 'all' && !visible.includes(Number(employeeId));
 }
 // Salary rows of people whose pay the viewer may not see (and salary rows
 // with no person): amount kept, no names at all. visible from payVisibleIds.
@@ -1564,8 +1574,13 @@ router.put(
       // creates an item. The transaction below checks again under locks.
       const current = await adb.prepare('SELECT id, location_id, created_by, expense_date, item_id, note, description, category, employee_id, payment_method, paid_by_user_id, given_to_user_id, given_to_name FROM expenses WHERE id = ?').get(expenseId);
       if (!current) return res.status(404).json({ success: false, message: EXPENSE_NOT_FOUND_MESSAGE });
-      if (isBoss && await salaryRowHidden(adb, req.user, current)) {
+      if (await salaryRowHidden(adb, req.user, current)) {
         return res.status(404).json({ success: false, message: EXPENSE_NOT_FOUND_MESSAGE });
+      }
+      const repointsSalary = (row) => (row.category === 'salary' || req.body.category === 'salary')
+        && has('employee_id') && Number(req.body.employee_id || 0) !== Number(row.employee_id || 0);
+      if (repointsSalary(current) && await salaryTargetHidden(adb, req.user, req.body.employee_id)) {
+        return res.status(403).json({ success: false, message: SALARY_HIDDEN_PERSON_MESSAGE });
       }
       if (!isBoss && Number(current.created_by) !== Number(req.user.id)) {
         return res.status(403).json({ success: false, message: NOT_YOURS_MESSAGE });
@@ -1653,6 +1668,9 @@ router.put(
         const moneyOut = await lockLinkedMoneyOut(tx, expenseId);
         const owes = await lockLinkedOwes(tx, expenseId);
         const { expense, openRegister, oldRegisterId } = await loadForChange(tx, expenseId, req.user);
+        if (repointsSalary(expense) && await salaryTargetHidden(tx, req.user, req.body.employee_id)) {
+          throw httpError(403, SALARY_HIDDEN_PERSON_MESSAGE);
+        }
         const nv = {
           category: has('category') ? req.body.category : (wantsItem ? item.category : expense.category),
           amount: has('amount') ? Math.round(Number(req.body.amount) * 100) / 100 : Number(expense.amount),

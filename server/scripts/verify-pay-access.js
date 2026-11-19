@@ -324,6 +324,59 @@ check('manager summary-by-item salary = allowed only', async () => {
   eq(sal, 7311 + 10, 'MA salary by item (seeded + posted for E1)');
 });
 
+// ── Task 3 fix: hidden-row check is for managers only; no re-pointing ──
+const createdRegisterIds = [];
+const createdAdvanceIds = [];
+async function openOwnRegister(c) {
+  const open = await c.db.prepare('SELECT id FROM cash_registers WHERE location_id = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1').get(TEST_LOCATION_ID);
+  if (open) {
+    if (createdRegisterIds.includes(open.id)) return open.id;
+    throw new Error(`Test Loc register #${open.id} is open and is not this run's; close it and run again.`);
+  }
+  const op = await api('POST', '/sales/register/open', c.owner, { location_id: TEST_LOCATION_ID, opening_balance: 0 });
+  assert(op.status === 201, `open register ${op.status} ${JSON.stringify(op.body)}`);
+  createdRegisterIds.push(op.body.data.id);
+  return op.body.data.id;
+}
+async function giveAdvance(c, giver, userId) {
+  const r = await api('POST', '/staff-money/advance', giver, { location_id: TEST_LOCATION_ID, user_id: userId, amount: 10, payment_method: 'upi' });
+  eq(r.status, 201, `advance ${JSON.stringify(r.body)}`);
+  createdAdvanceIds.push(r.body.data.advance_id);
+  createdExpenseIds.push(r.body.data.expense_id);
+  return r.body.data;
+}
+check('counter staff can still remove an advance they gave a coworker', async () => {
+  const c = await expCtx();
+  await openOwnRegister(c);
+  const a = await giveAdvance(c, c.e1, c.e2);
+  const d = await api('DELETE', `/expenses/${a.expense_id}`, c.e1);
+  eq(d.status, 200, `delete ${JSON.stringify(d.body)}`);
+  const adv = await c.db.prepare('SELECT status FROM salary_advances WHERE id = ?').get(a.advance_id);
+  eq(adv && adv.status, 'cancelled', 'advance cancelled');
+});
+check('manager can remove an advance they gave a hidden person', async () => {
+  const c = await expCtx();
+  await openOwnRegister(c);
+  const a = await giveAdvance(c, c.mgr, c.e2);
+  const d = await api('DELETE', `/expenses/${a.expense_id}`, c.mgr);
+  eq(d.status, 200, `delete ${JSON.stringify(d.body)}`);
+  const adv = await c.db.prepare('SELECT status FROM salary_advances WHERE id = ?').get(a.advance_id);
+  eq(adv && adv.status, 'cancelled', 'advance cancelled');
+});
+check('manager cannot re-point a salary row to a hidden person', async () => {
+  const c = await expCtx();
+  const p = await api('POST', '/expenses', c.mgr, { location_id: TEST_LOCATION_ID, category: 'salary', amount: 10, description: 'VerifyPA posted salary', payment_method: 'upi', employee_id: c.e1 });
+  eq(p.status, 201, 'post');
+  createdExpenseIds.push(p.body.data.id);
+  const r = await api('PUT', `/expenses/${p.body.data.id}`, c.mgr, { employee_id: c.e2 });
+  eq(r.status, 403, 'status');
+  eq(r.body.message, "You can't pay this person's salary. Ask the owner.", 'message');
+  const row = await c.db.prepare('SELECT employee_id FROM expenses WHERE id = ?').get(p.body.data.id);
+  eq(Number(row.employee_id), c.e1, 'unchanged');
+  const ok = await api('PUT', `/expenses/${p.body.data.id}`, c.mgr, { note: 'VerifyPA ok' });
+  eq(ok.status, 200, 'allowed edit');
+});
+
 async function cleanup() {
   const db = await getDb();
   try {
@@ -343,6 +396,16 @@ async function cleanup() {
     await db.prepare(`DELETE FROM salary_advances WHERE user_id IN (${ph})`).run(...ids);
     await db.prepare(`DELETE FROM employee_salaries WHERE user_id IN (${ph})`).run(...ids);
   } catch (e) { console.error('cleanup pay rows: ' + e.message); }
+  for (const id of createdAdvanceIds) {
+    try { await db.prepare("DELETE FROM audit_logs WHERE entity_type = 'salary_advance' AND entity_id = ?").run(id); }
+    catch (e) { console.error('cleanup advance audit ' + id + ': ' + e.message); }
+  }
+  for (const id of createdRegisterIds) {
+    try {
+      await db.prepare("DELETE FROM audit_logs WHERE entity_type = 'cash_register' AND entity_id = ?").run(id);
+      await db.prepare('DELETE FROM cash_registers WHERE id = ?').run(id);
+    } catch (e) { console.error('cleanup register ' + id + ': ' + e.message); }
+  }
   for (const id of createdUserIds) {
     try {
       await db.prepare("DELETE FROM audit_logs WHERE entity_type = 'pay_viewers' AND entity_id = ?").run(id);
