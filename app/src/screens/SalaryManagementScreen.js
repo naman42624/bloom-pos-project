@@ -461,7 +461,9 @@ export default function SalaryManagementScreen() {
         {salaries.length === 0 && unsetStaff.length === 0 ? (
           <View style={styles.empty}>
             <Ionicons name="wallet-outline" size={48} color={Colors.textLight} />
-            <Text style={styles.emptyText}>No staff members yet</Text>
+            <Text style={styles.emptyText}>
+              {isOwner ? 'No staff members yet' : 'No salary set yet for the people you can see.'}
+            </Text>
           </View>
         ) : (
           salaries.map(s => (
