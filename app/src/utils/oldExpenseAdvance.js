@@ -51,12 +51,23 @@ export function sheetLine(amount, expenseDate) {
 export function paidAfterWarning(name, salaryPaidAfter) {
   const list = Array.isArray(salaryPaidAfter) ? salaryPaidAfter : [];
   if (list.length === 0) return null;
-  // The server sends newest first.
-  return `${name} was already paid salary on ${dayMonth(list[0].paid_on)}. If you already took this off that pay, don't mark it.`;
+  // The server sends newest first; warn with the earliest pay on or after the expense day.
+  return `${name} was already paid salary on ${dayMonth(list[list.length - 1].paid_on)}. If you already took this off that pay, don't mark it.`;
 }
 
 export function successAlert(amount, name) {
   return { title: 'Marked as salary advance', message: `${inr(amount)} will be taken off ${name}'s next salary.` };
+}
+
+// Owner: an untaken advance made from an old expense can be moved to the
+// right person. The row carries old_expense_advance from the server
+// (approved, source old_expense, nothing taken from pay yet).
+export function canChangeAdvancePerson(row) {
+  return !!row && row.category === 'salary' && row.old_expense_advance === true;
+}
+
+export function changedAlert(amount, name) {
+  return { title: 'Changed', message: `${inr(amount)} will be taken off ${name}'s next salary.` };
 }
 
 // Active staff in the Payroll roles, sorted by name.

@@ -58,7 +58,7 @@ import MethodSwitch from './MethodSwitch';
 import MoneyToStaffForm from './MoneyToStaffForm';
 import KmReadingForm from './KmReadingForm';
 import OldExpenseAdvanceSheet from './OldExpenseAdvanceSheet';
-import { canMarkSalaryAdvance } from '../../utils/oldExpenseAdvance';
+import { canMarkSalaryAdvance, canChangeAdvancePerson } from '../../utils/oldExpenseAdvance';
 import { moneyLinksFor, heldBy, isBackHint } from '../../utils/staffMoney';
 import { Colors, FontSize, Spacing, BorderRadius } from '../../constants/theme';
 
@@ -573,6 +573,8 @@ function SheetBody({
   // Hidden when the server would refuse it (canMarkSalaryAdvance); the
   // server stays the guard. Shop-local day, as the server's todayStr.
   const canMarkAdvance = editing && user?.role === 'owner' && canMarkSalaryAdvance(expense, today);
+  // Owner: an untaken advance made from an old expense can go to the right person.
+  const canChangeAdvance = editing && user?.role === 'owner' && canChangeAdvancePerson(expense);
   const [showOldAdvance, setShowOldAdvance] = useState(false);
   const openOldAdvance = () => {
     if (saving || removing) return;
@@ -940,16 +942,16 @@ function SheetBody({
             </Text>
           </TouchableOpacity>
         )}
-        {canMarkAdvance && (
+        {(canMarkAdvance || canChangeAdvance) && (
           <TouchableOpacity
             style={styles.advanceBtn}
             onPress={openOldAdvance}
             disabled={busy}
             accessibilityRole="button"
-            accessibilityLabel="This was a salary advance"
+            accessibilityLabel={canChangeAdvance ? 'Change who this advance is for' : 'This was a salary advance'}
           >
             <Ionicons name="people-outline" size={20} color={Colors.primary} />
-            <Text style={styles.advanceText}>This was a salary advance</Text>
+            <Text style={styles.advanceText}>{canChangeAdvance ? 'Change who this advance is for' : 'This was a salary advance'}</Text>
           </TouchableOpacity>
         )}
         {editing && (
@@ -973,10 +975,11 @@ function SheetBody({
           : <Text style={styles.saveText}>{saveText}</Text>}
       </TouchableOpacity>
 
-      {canMarkAdvance && (
+      {(canMarkAdvance || canChangeAdvance) && (
         <OldExpenseAdvanceSheet
           visible={showOldAdvance}
           expense={expense}
+          mode={canChangeAdvance ? 'change' : 'mark'}
           onClose={() => setShowOldAdvance(false)}
           onDone={(result) => { setShowOldAdvance(false); onSaved && onSaved(result); }}
         />

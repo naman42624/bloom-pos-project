@@ -58,9 +58,29 @@ test('copy: sheet line, warning, success', () => {
   assert.strictEqual(o.paidAfterWarning('Ramesh', []), null);
   assert.strictEqual(
     o.paidAfterWarning('Ramesh', [{ id: 9, paid_on: '2026-11-07', net_amount: 9000 }, { id: 4, paid_on: '2026-11-03', net_amount: 1 }]),
-    "Ramesh was already paid salary on 7 Nov. If you already took this off that pay, don't mark it."
+    "Ramesh was already paid salary on 3 Nov. If you already took this off that pay, don't mark it."
   );
   assert.deepStrictEqual(o.successAlert(250, 'Asha'), { title: 'Marked as salary advance', message: "₹250 will be taken off Asha's next salary." });
+});
+test('warning names the earliest pay when there is one', () => {
+  assert.strictEqual(
+    o.paidAfterWarning('Asha', [{ id: 2, paid_on: '2026-11-12', net_amount: 5 }]),
+    "Asha was already paid salary on 12 Nov. If you already took this off that pay, don't mark it."
+  );
+});
+test('a converted row is not offered "This was a salary advance" again', () => {
+  assert.strictEqual(o.canMarkSalaryAdvance(row({ category: 'salary', old_expense_advance: true }), TODAY), false);
+});
+test('canChangeAdvancePerson: only a salary row the server flags', () => {
+  assert.strictEqual(o.canChangeAdvancePerson(row({ category: 'salary', old_expense_advance: true })), true);
+  assert.strictEqual(o.canChangeAdvancePerson(row({ category: 'salary', old_expense_advance: false })), false);
+  assert.strictEqual(o.canChangeAdvancePerson(row({ category: 'salary' })), false);
+  assert.strictEqual(o.canChangeAdvancePerson(row({ category: 'salary', old_expense_advance: 1 })), false);
+  assert.strictEqual(o.canChangeAdvancePerson(row({ category: 'food', old_expense_advance: true })), false);
+  assert.strictEqual(o.canChangeAdvancePerson(null), false);
+});
+test('changed alert copy', () => {
+  assert.deepStrictEqual(o.changedAlert(1500, 'Mohan'), { title: 'Changed', message: "₹1,500 will be taken off Mohan's next salary." });
 });
 test('payrollPeople: active payroll roles, sorted by name', () => {
   const list = o.payrollPeople([

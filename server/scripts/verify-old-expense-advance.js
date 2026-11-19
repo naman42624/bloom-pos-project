@@ -19,6 +19,7 @@ const NOT_PLAIN = "This expense is linked to shopping money, a km account or mon
 const RETURN = "A return can't be marked as a salary advance.";
 const ALREADY = 'This is already a salary entry. Pull down to refresh.';
 const PERSON = 'Pick the employee this money was given to.';
+const OWNER_ONLY = 'Only the owner can change or remove this salary advance.';
 const ADVANCE_TAKEN = "This advance was already taken from pay, so it can't be changed or removed.";
 
 const checks = [];
@@ -86,6 +87,7 @@ async function getCast() {
   };
   await db.prepare("UPDATE users SET access_until = CAST(? AS date) + 30 WHERE id = ?").run(shopDay(0), cast.helper);
   await db.prepare('INSERT INTO employee_salaries (user_id, monthly_salary, updated_by) VALUES (?, 5000, ?)').run(cast.emp, cast.owner);
+  await db.prepare('INSERT INTO employee_salaries (user_id, monthly_salary, updated_by) VALUES (?, 5000, ?)').run(cast.emp2, cast.owner);
   return cast;
 }
 
@@ -293,10 +295,14 @@ check('two calls at once make one advance', async () => {
   const c = await getCast();
   const id = await makeExpense({ amount: 250 });
   const [a, b] = await Promise.all([mark(id, c.owner, { employee_id: c.emp2 }), mark(id, c.owner, { employee_id: c.emp2 })]);
-  const statuses = [a.status, b.status].sort();
-  eq(JSON.stringify(statuses), JSON.stringify([200, 409]), 'statuses ' + JSON.stringify([a.body, b.body]));
-  const loser = a.status === 409 ? a : b;
-  eq(loser.body.message, ALREADY, '409 copy');
+  // The loser either met the winner mid-call (409) or arrived after it
+  // committed, when the row is already this person's advance (400 same person).
+  const winner = a.status === 200 ? a : b;
+  const loser = winner === a ? b : a;
+  eq(winner.status, 200, 'one 200 ' + JSON.stringify([a.body, b.body]));
+  const lostOk = (loser.status === 409 && loser.body.message === ALREADY)
+    || (loser.status === 400 && loser.body.message === 'This advance is already for VerifyOEA Emp Two.');
+  assert(lostOk, 'loser ' + loser.status + ' ' + JSON.stringify(loser.body));
   eq((await advFor(id)).length, 1, 'advance rows');
 });
 
@@ -358,6 +364,148 @@ check('audited', async () => {
   eq(ns.source, 'old_expense', 'audit source');
   eq(Number(ns.expense_id), id, 'audit expense_id');
   eq(ns.register_id, null, 'audit register_id');
+});
+
+// ── Final review fix wave ──
+const lockedCount = async (id) => (await getDb()).prepare('SELECT expected_cash, close_count_locked FROM cash_registers WHERE id = ?').get(id);
+const pendingFor = async (ownerId, userId) => {
+  const r = await api('POST', '/staff/payroll/calculate', ownerId, { user_id: userId, period_start: shopDay(-30), period_end: shopDay(0) });
+  assert(r.status === 200, 'calculate ' + JSON.stringify(r.body));
+  return Number(r.body.data.calculation.pending_advances);
+};
+
+// 11
+check('fix 1: edit and delete of a converted cash row never move a locked blind count', async () => {
+  const c = await getCast();
+  const db = await getDb();
+  const reg = await openOwnRegister();
+  const id = await makeExpense({ amount: 250, method: 'cash', daysAgo: 0, registerId: reg });
+  const r = await mark(id, c.owner, { employee_id: c.emp2 });
+  eq(r.status, 200, 'convert ' + JSON.stringify(r.body));
+  await db.prepare('UPDATE cash_registers SET close_count_locked = 1000 WHERE id = ?').run(reg);
+  try {
+    const b0 = await lockedCount(reg);
+    const put = await api('PUT', `/expenses/${id}`, c.owner, { amount: 200 });
+    eq(put.status, 200, 'PUT ' + JSON.stringify(put.body));
+    const b1 = await lockedCount(reg);
+    eq(Number(b1.expected_cash), Number(b0.expected_cash) + 50, 'expected_cash after PUT');
+    eq(Number(b1.close_count_locked), 1000, 'locked count after PUT');
+    const del = await api('DELETE', `/expenses/${id}`, c.owner);
+    eq(del.status, 200, 'DELETE ' + JSON.stringify(del.body));
+    const b2 = await lockedCount(reg);
+    eq(Number(b2.expected_cash), Number(b1.expected_cash) + 200, 'expected_cash after DELETE');
+    eq(Number(b2.close_count_locked), 1000, 'locked count after DELETE');
+  } finally {
+    await db.prepare('UPDATE cash_registers SET close_count_locked = NULL WHERE id = ?').run(reg);
+  }
+});
+
+// 12
+check('fix 2: only the owner can change or remove a converted row', async () => {
+  const c = await getCast();
+  const reg = await openOwnRegister();
+  const id = await makeExpense({ amount: 90, method: 'cash', daysAgo: 0, registerId: reg });
+  const r = await mark(id, c.owner, { employee_id: c.emp2 });
+  eq(r.status, 200, 'convert ' + JSON.stringify(r.body));
+  const before = JSON.stringify(await expRow(id));
+  const regBefore = await regJson(reg);
+  for (const [who, method, body] of [['counter', 'DELETE'], ['counter', 'PUT', { amount: 80 }], ['manager', 'DELETE']]) {
+    const x = await api(method, `/expenses/${id}`, c[who], body);
+    eq(x.status, 403, `${who} ${method} ` + JSON.stringify(x.body));
+    eq(x.body.message, OWNER_ONLY, `${who} ${method} copy`);
+  }
+  eq((await advFor(id))[0].status, 'approved', 'advance still approved');
+  eq(JSON.stringify(await expRow(id)), before, 'expense changed');
+  eq(await regJson(reg), regBefore, 'register changed');
+  await closeOwnRegister();
+});
+
+// 13
+check('fix 3: the owner re-points an untaken advance to another person', async () => {
+  const c = await getCast();
+  const db = await getDb();
+  const id = await makeExpense({ amount: 500, method: 'upi', daysAgo: 4 });
+  const r = await mark(id, c.owner, { employee_id: c.emp });
+  eq(r.status, 200, 'convert ' + JSON.stringify(r.body));
+  eq(r.body.data.expense.old_expense_advance, true, 'row flag after convert');
+  const advId = Number(r.body.data.advance_id);
+  const list = await api('GET', `/expenses?location_id=${TEST_LOCATION_ID}&start_date=${shopDay(-4)}&end_date=${shopDay(-4)}`, c.owner);
+  eq(list.status, 200, 'list');
+  const rows = (list.body.data && (list.body.data.expenses || list.body.data)) || [];
+  const listed = rows.find((x) => Number(x.id) === id);
+  assert(listed, 'row not in list');
+  eq(listed.old_expense_advance, true, 'list flag');
+  const plain = rows.find((x) => Number(x.id) !== id);
+  if (plain) eq(typeof plain.old_expense_advance, 'boolean', 'flag on other rows');
+
+  const pe0 = await pendingFor(c.owner, c.emp);
+  const pf0 = await pendingFor(c.owner, c.emp2);
+  const pv = await mark(id, c.owner, { employee_id: c.emp2, preview: true });
+  eq(pv.status, 200, 'preview ' + JSON.stringify(pv.body));
+  eq(pv.body.data.employee.name, 'VerifyOEA Emp Two', 'preview person');
+  eq(Number((await advFor(id))[0].user_id), c.emp, 'preview wrote');
+
+  const rp = await mark(id, c.owner, { employee_id: c.emp2 });
+  eq(rp.status, 200, 're-point ' + JSON.stringify(rp.body));
+  eq(Number(rp.body.data.advance_id), advId, 'same advance');
+  const adv = (await advFor(id));
+  eq(adv.length, 1, 'advance rows');
+  eq(Number(adv[0].user_id), c.emp2, 'advance user');
+  eq(adv[0].status, 'approved', 'advance status');
+  const e = await expRow(id);
+  eq(Number(e.employee_id), c.emp2, 'employee_id');
+  eq(Number(e.given_to_user_id), c.emp2, 'given_to_user_id');
+  eq(e.category, 'salary', 'category');
+  eq(e.description, 'Salary advance — VerifyOEA Emp Two (was: VerifyOEA flowers)', 'description');
+  eq(await pendingFor(c.owner, c.emp), pe0 - 500, 'pending for E');
+  eq(await pendingFor(c.owner, c.emp2), pf0 + 500, 'pending for F');
+  const aa = await db.prepare("SELECT COUNT(*) AS n FROM audit_logs WHERE entity_type = 'salary_advance' AND entity_id = ? AND action = 'salary_advance_person_changed'").get(advId);
+  eq(Number(aa.n), 1, 'advance audit');
+  const ea = await db.prepare("SELECT COUNT(*) AS n FROM audit_logs WHERE entity_type = 'expense' AND entity_id = ? AND action = 'expense_edit'").get(id);
+  eq(Number(ea.n), 1, 'expense audit');
+
+  const same = await mark(id, c.owner, { employee_id: c.emp2 });
+  eq(same.status, 400, 'same person ' + JSON.stringify(same.body));
+  eq(same.body.message, 'This advance is already for VerifyOEA Emp Two.', 'same person copy');
+  const badPerson = await mark(id, c.owner, { employee_id: c.customer });
+  eq(badPerson.status, 400, 'customer');
+  eq(badPerson.body.message, PERSON, 'customer copy');
+  for (const who of ['manager', 'counter']) eq((await mark(id, c[who], { employee_id: c.emp })).status, 403, who);
+
+  await db.prepare('UPDATE salary_advances SET repaid_amount = 100 WHERE id = ?').run(advId);
+  const taken = await mark(id, c.owner, { employee_id: c.emp });
+  eq(taken.status, 400, 'taken ' + JSON.stringify(taken.body));
+  eq(taken.body.message, ADVANCE_TAKEN, 'taken copy');
+  eq(Number((await advFor(id))[0].user_id), c.emp2, 'taken re-pointed');
+  const g = await api('GET', `/expenses?location_id=${TEST_LOCATION_ID}&start_date=${shopDay(-4)}&end_date=${shopDay(-4)}`, c.owner);
+  const gr = ((g.body.data && (g.body.data.expenses || g.body.data)) || []).find((x) => Number(x.id) === id);
+  eq(gr && gr.old_expense_advance, false, 'flag once taken');
+
+  // A payAdvance row (counter salary advance) is never re-pointed.
+  const pa = await makeExpense({ amount: 75, method: 'upi', daysAgo: 1, category: 'salary', description: 'Salary advance — VerifyOEA Emp' });
+  await db.prepare('UPDATE expenses SET employee_id = ?, given_to_user_id = ? WHERE id = ?').run(c.emp, c.emp, pa);
+  await db.prepare(`INSERT INTO salary_advances (user_id, amount, repaid_amount, reason, status, approved_by, given_by, source, payment_method, location_id, expense_id, date)
+    VALUES (?, 75, 0, '', 'approved', ?, ?, 'counter', 'upi', ?, ?, CAST(? AS date))`).run(c.emp, c.owner, c.counter, TEST_LOCATION_ID, pa, shopDay(-1));
+  const pr = await mark(pa, c.owner, { employee_id: c.emp2 });
+  eq(pr.status, 409, 'payAdvance row ' + JSON.stringify(pr.body));
+  eq(pr.body.message, ALREADY, 'payAdvance copy');
+});
+
+// 14
+check('fix 4: the note stays a note, so a later note edit replaces it', async () => {
+  const c = await getCast();
+  const db = await getDb();
+  const id = await makeExpense({ amount: 60, method: 'upi', daysAgo: 3, description: 'VerifyOEA roses — for Asha' });
+  await db.prepare("UPDATE expenses SET note = 'for Asha' WHERE id = ?").run(id);
+  const r = await mark(id, c.owner, { employee_id: c.emp2 });
+  eq(r.status, 200, 'convert ' + JSON.stringify(r.body));
+  eq((await expRow(id)).description, 'Salary advance — VerifyOEA Emp Two (was: VerifyOEA roses) — for Asha', 'description after convert');
+  const put = await api('PUT', `/expenses/${id}`, c.owner, { note: 'new note' });
+  eq(put.status, 200, 'PUT ' + JSON.stringify(put.body));
+  const d = (await expRow(id)).description;
+  assert(d.endsWith(' — new note'), 'does not end with the new note: ' + d);
+  assert(d.split('for Asha').length - 1 <= 1, 'old note twice: ' + d);
+  eq(d, 'Salary advance — VerifyOEA Emp Two (was: VerifyOEA roses) — new note', 'description after note edit');
 });
 
 async function cleanup() {

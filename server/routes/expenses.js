@@ -195,7 +195,9 @@ function readGivenTo(b) {
 async function loadExpenseRow(db, id) {
   const row = await db.prepare(`
     SELECT e.*, l.name as location_name, u.name as created_by_name,
-           ei.name as item_name, gu.name as given_to_user_name, pb.name as paid_by_user_name
+           ei.name as item_name, gu.name as given_to_user_name, pb.name as paid_by_user_name,
+             CASE WHEN EXISTS (SELECT 1 FROM salary_advances sa WHERE sa.expense_id = e.id AND sa.source = 'old_expense'
+                               AND sa.status = 'approved' AND COALESCE(sa.repaid_amount, 0) = 0) THEN 1 ELSE 0 END AS old_expense_advance
     FROM expenses e
     JOIN locations l ON e.location_id = l.id
     JOIN users u ON e.created_by = u.id
@@ -214,6 +216,7 @@ async function loadExpenseRow(db, id) {
     register_id: row.register_id == null ? null : Number(row.register_id),
     paid_by_user_id: row.paid_by_user_id == null ? null : Number(row.paid_by_user_id),
     given_to_display: given_to_user_name || row.given_to_name || null,
+    old_expense_advance: Number(row.old_expense_advance) === 1,
   };
 }
 
@@ -1537,23 +1540,52 @@ async function unsettleBill(tx, mo, owes, expense, userId) {
 // an employee: it becomes the same salary expense payAdvance writes, plus an
 // approved advance (source old_expense) that Payroll cuts. No drawer move:
 // the cash left the drawer when the expense was first saved.
+// The same route changes who an untaken old_expense advance is for.
 const OLD_ADV_TOO_OLD_MESSAGE = 'Only expenses from the last 60 days can be marked as a salary advance.';
 const OLD_ADV_METHOD_MESSAGE = 'Only a Cash or UPI expense can be marked as a salary advance.';
 const OLD_ADV_NOT_PLAIN_MESSAGE = "This expense is linked to shopping money, a km account or money the shop owes, so it can't be marked as a salary advance.";
 const OLD_ADV_RETURN_MESSAGE = "A return can't be marked as a salary advance.";
 const OLD_ADV_ALREADY_MESSAGE = 'This is already a salary entry. Pull down to refresh.';
 const OLD_ADV_PERSON_MESSAGE = 'Pick the employee this money was given to.';
+const OLD_ADV_OWNER_ONLY_MESSAGE = 'Only the owner can change or remove this salary advance.';
+const oldAdvSamePersonMessage = (name) => `This advance is already for ${name}.`;
 const OLD_ADV_REASON = 'Old expense marked as salary advance';
 const OLD_ADV_MAX_DAYS = 60;
 const PAYROLL_ROLES = ['manager', 'employee', 'counter_staff', 'florist_staff', 'delivery_partner'];
 const EXPENSE_NOT_FOUND_MESSAGE = 'This expense was not found. It may have been removed already — pull down to refresh.';
+const SALARY_ADVANCE_PREFIX = 'Salary advance — ';
+
+// PUT and DELETE: an advance the owner made from an old expense is changed
+// or removed by the owner only (whoever logged the expense can not undo it).
+function assertOldAdvanceOwner(advance, user) {
+  if (advance && advance.source === 'old_expense' && user.role !== 'owner') {
+    throw httpError(403, OLD_ADV_OWNER_ONLY_MESSAGE);
+  }
+}
+
+// "Salary advance — <name> (was: <old>)" plus the note, composed the same
+// way every other row is, so a later note edit replaces the note cleanly.
+function oldAdvanceDescription(name, wasBase, note) {
+  const was = String(wasBase || '').trim();
+  return composeDescription(`${SALARY_ADVANCE_PREFIX}${name}${was ? ` (was: ${was})` : ''}`, note);
+}
+
+async function checkPerson(db, rawEmployeeId) {
+  const employeeId = Number(rawEmployeeId);
+  if (!Number.isInteger(employeeId) || employeeId <= 0) throw httpError(400, OLD_ADV_PERSON_MESSAGE);
+  const employee = await db.prepare('SELECT id, name, role, is_active FROM users WHERE id = ?').get(employeeId);
+  if (!employee || !Number(employee.is_active) || !PAYROLL_ROLES.includes(employee.role)) {
+    throw httpError(400, OLD_ADV_PERSON_MESSAGE);
+  }
+  return { id: Number(employee.id), name: employee.name };
+}
 
 // Every rule, in one place. With lock: money rows first (advance, then shop
-// owes), then the expense, as everywhere in this file. Returns what the
-// preview and the commit need, or throws an httpError.
+// owes), then the expense, as everywhere in this file. Returns
+// { mode: 'mark' | 'repoint', expense, employee, advance } or throws.
 async function checkOldAdvance(db, expenseId, rawEmployeeId, { lock }) {
   const forUpdate = lock ? ' FOR UPDATE' : '';
-  let advance = lock ? await lockLinkedAdvance(db, expenseId) : null;
+  const lockedAdvance = lock ? await lockLinkedAdvance(db, expenseId) : null;
   const owes = lock
     ? await lockLinkedOwes(db, expenseId)
     : ((await db.prepare("SELECT id FROM shop_owes WHERE expense_id = ? AND source = 'own_pocket' LIMIT 1").get(expenseId)) || null);
@@ -1565,20 +1597,35 @@ async function checkOldAdvance(db, expenseId, rawEmployeeId, { lock }) {
   `).get(localToday(), expenseId);
   if (!expense) throw httpError(404, EXPENSE_NOT_FOUND_MESSAGE);
   // Read again under the expense lock: a call that won the race has committed by now.
-  advance = (await db.prepare('SELECT id FROM salary_advances WHERE expense_id = ? LIMIT 1').get(expenseId)) || advance;
-  if (advance || expense.category === 'salary') throw httpError(409, OLD_ADV_ALREADY_MESSAGE);
+  const seen = (await db.prepare('SELECT * FROM salary_advances WHERE expense_id = ? ORDER BY id LIMIT 1').get(expenseId)) || null;
+  // Only an advance held locked from the start may be re-pointed (never one that appeared mid-call).
+  const advance = lock ? lockedAdvance : seen;
+
+  if (expense.category === 'salary' && advance && advance.source === 'old_expense') {
+    if (advanceTaken(advance)) throw httpError(400, ADVANCE_TAKEN_MESSAGE);
+    if (advance.status !== 'approved') throw httpError(409, OLD_ADV_ALREADY_MESSAGE);
+    const employee = await checkPerson(db, rawEmployeeId);
+    if (employee.id === Number(advance.user_id)) throw httpError(400, oldAdvSamePersonMessage(employee.name));
+    return { mode: 'repoint', expense, employee, advance };
+  }
+  if (seen || lockedAdvance || expense.category === 'salary') throw httpError(409, OLD_ADV_ALREADY_MESSAGE);
   if (Number(expense.recent) !== 1) throw httpError(400, OLD_ADV_TOO_OLD_MESSAGE);
   if (expense.is_return) throw httpError(400, OLD_ADV_RETURN_MESSAGE);
   if (!ADVANCE_METHODS.includes(expense.payment_method)) throw httpError(400, OLD_ADV_METHOD_MESSAGE);
   if (expense.money_out_id != null || expense.km_settlement_id != null || owes) throw httpError(400, OLD_ADV_NOT_PLAIN_MESSAGE);
+  const employee = await checkPerson(db, rawEmployeeId);
+  return { mode: 'mark', expense, employee, advance: null };
+}
 
-  const employeeId = Number(rawEmployeeId);
-  if (!Number.isInteger(employeeId) || employeeId <= 0) throw httpError(400, OLD_ADV_PERSON_MESSAGE);
-  const employee = await db.prepare('SELECT id, name, role, is_active FROM users WHERE id = ?').get(employeeId);
-  if (!employee || !Number(employee.is_active) || !PAYROLL_ROLES.includes(employee.role)) {
-    throw httpError(400, OLD_ADV_PERSON_MESSAGE);
-  }
-  return { expense, employee: { id: Number(employee.id), name: employee.name } };
+// The "(was: ...)" part of a converted row, without its note.
+async function wasPartOf(db, expense, advance) {
+  const head = stripNote(expense.description || '', expense.note);
+  const old = await db.prepare('SELECT name FROM users WHERE id = ?').get(advance.user_id);
+  const oldHead = `${SALARY_ADVANCE_PREFIX}${old ? old.name : ''}`;
+  const m = head.startsWith(oldHead) ? /^ \(was: ([\s\S]*)\)$/.exec(head.slice(oldHead.length)) : null;
+  if (m) return m[1];
+  const i = head.indexOf(' (was: ');
+  return i >= 0 && head.endsWith(')') ? head.slice(i + 7, -1) : '';
 }
 
 // The day a salary payment was made, in shop-local days. paid_at is a
@@ -1617,9 +1664,21 @@ router.post('/:id/salary-advance', authenticate, authorize('owner'), async (req,
     }
 
     const advanceId = await withMoneyTx(async (tx) => {
-      const { expense, employee } = await checkOldAdvance(tx, expenseId, employeeIdIn, { lock: true });
-      const oldDescription = String(expense.description || '').trim();
-      const description = `Salary advance — ${employee.name}${oldDescription ? ` (was: ${oldDescription})` : ''}`;
+      const { mode, expense, employee, advance } = await checkOldAdvance(tx, expenseId, employeeIdIn, { lock: true });
+
+      if (mode === 'repoint') {
+        const description = oldAdvanceDescription(employee.name, await wasPartOf(tx, expense, advance), expense.note);
+        await tx.prepare('UPDATE expenses SET employee_id = ?, given_to_user_id = ?, given_to_name = NULL, description = ? WHERE id = ?')
+          .run(employee.id, employee.id, description, expenseId);
+        const after = { ...expense, employee_id: employee.id, given_to_user_id: employee.id, given_to_name: null, description };
+        await auditExpense(tx, expenseId, req.user.id, 'expense_edit', pickAudit(expense), pickAudit(after));
+        await tx.prepare('UPDATE salary_advances SET user_id = ? WHERE id = ?').run(employee.id, advance.id);
+        await auditAdvance(tx, advance.id, req.user.id, 'salary_advance_person_changed',
+          pickAdvance(advance), pickAdvance({ ...advance, user_id: employee.id }));
+        return Number(advance.id);
+      }
+
+      const description = oldAdvanceDescription(employee.name, stripNote(expense.description || '', expense.note), expense.note);
       // Only the salary shape changes; amount, method, day, register, note,
       // photo and who added it stay as they were. No cash_registers write.
       await tx.prepare(`
@@ -1689,6 +1748,10 @@ router.put(
       // creates an item. The transaction below checks again under locks.
       const current = await adb.prepare('SELECT id, location_id, created_by, expense_date, item_id, note, description, category, employee_id, payment_method, paid_by_user_id, given_to_user_id, given_to_name FROM expenses WHERE id = ?').get(expenseId);
       if (!current) return res.status(404).json({ success: false, message: 'This expense was not found. It may have been removed already — pull down to refresh.' });
+      if (req.user.role !== 'owner' && current.category === 'salary') {
+        // Checked again under the lock (assertOldAdvanceOwner).
+        assertOldAdvanceOwner(await adb.prepare('SELECT source FROM salary_advances WHERE expense_id = ? LIMIT 1').get(expenseId), req.user);
+      }
       if (!isBoss && Number(current.created_by) !== Number(req.user.id)) {
         return res.status(403).json({ success: false, message: NOT_YOURS_MESSAGE });
       }
@@ -1772,6 +1835,7 @@ router.put(
 
       const updated = await withMoneyTx(async (tx) => {
         const advance = await lockLinkedAdvance(tx, expenseId);
+        assertOldAdvanceOwner(advance, req.user);
         const moneyOut = await lockLinkedMoneyOut(tx, expenseId);
         const owes = await lockLinkedOwes(tx, expenseId);
         const { expense, openRegister, oldRegisterId } = await loadForChange(tx, expenseId, req.user);
@@ -1880,7 +1944,8 @@ router.put(
               if (!newRegisterId) throw registerClosedError();
             }
           }
-          const lockOpt = { shiftLock: !!advance };
+          // An old expense marked as an advance never moved a locked count, so its edits do not either.
+          const lockOpt = { shiftLock: !!advance && advance.source !== 'old_expense' };
           if (oldRegisterId && oldRegisterId === newRegisterId) {
             await moveDrawer(tx, oldRegisterId, newEffect - oldEffect, lockOpt);
           } else {
@@ -1978,6 +2043,7 @@ router.delete('/:id', authenticate, authorize('owner', 'manager', 'employee', 'c
     const expenseId = Number(req.params.id);
     await withMoneyTx(async (tx) => {
       const advance = await lockLinkedAdvance(tx, expenseId);
+      assertOldAdvanceOwner(advance, req.user);
       const moneyOut = await lockLinkedMoneyOut(tx, expenseId);
       const overspend = await lockOverspendOwes(tx, moneyOut);
       const owes = await lockLinkedOwes(tx, expenseId);
@@ -1993,7 +2059,7 @@ router.delete('/:id', authenticate, authorize('owner', 'manager', 'employee', 'c
       // A shopping money bill: its amount is still with that person again.
       if (moneyOut) await unsettleBill(tx, moneyOut, overspend, expense, req.user.id);
       // Put the cash back on the session it came out of.
-      await moveDrawer(tx, oldRegisterId, -drawerEffect(expense), { shiftLock: !!advance });
+      await moveDrawer(tx, oldRegisterId, -drawerEffect(expense), { shiftLock: !!advance && advance.source !== 'old_expense' });
       if (advance && advance.status === 'approved') {
         // Removing the advance expense cancels the advance (spec 5.3).
         await tx.prepare("UPDATE salary_advances SET status = 'cancelled' WHERE id = ?").run(advance.id);

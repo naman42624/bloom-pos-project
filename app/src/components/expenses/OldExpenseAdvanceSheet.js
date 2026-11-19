@@ -20,7 +20,11 @@
  * Staff list: GET /api/users (owner can read it), active users in the
  * Payroll roles, sorted by name.
  *
- * Props: visible, expense, onClose(), onDone(result)
+ * Change mode (mode="change", owner, an untaken advance made this way):
+ * titled "Change whose advance?", the current person is left out of the
+ * list, and the same route moves the advance; success says "Changed".
+ *
+ * Props: visible, expense, mode ('mark' | 'change'), onClose(), onDone(result)
  *   result = { expense, removed: false } after a save
  */
 import React, { useEffect, useRef, useState } from 'react';
@@ -30,7 +34,7 @@ import api from '../../services/api';
 import useSubmitGuard from '../../hooks/useSubmitGuard';
 import { bumpActivity } from '../../hooks/useIdleLock';
 import { showAlert } from '../../utils/alert';
-import { sheetLine, paidAfterWarning, successAlert, payrollPeople } from '../../utils/oldExpenseAdvance';
+import { sheetLine, paidAfterWarning, successAlert, changedAlert, payrollPeople } from '../../utils/oldExpenseAdvance';
 import { Colors, FontSize, Spacing, BorderRadius } from '../../constants/theme';
 
 const ROLE_LABELS = {
@@ -52,19 +56,21 @@ async function loadStaff() {
   return payrollPeople(all);
 }
 
-export default function OldExpenseAdvanceSheet({ visible, expense, onClose, onDone }) {
+export default function OldExpenseAdvanceSheet({ visible, expense, mode = 'mark', onClose, onDone }) {
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
       <View style={styles.overlay}>
         <View onTouchStart={bumpActivity} style={styles.sheet}>
-          {visible && !!expense && <Body expense={expense} onClose={onClose} onDone={onDone} />}
+          {visible && !!expense && <Body expense={expense} mode={mode} onClose={onClose} onDone={onDone} />}
         </View>
       </View>
     </Modal>
   );
 }
 
-function Body({ expense, onClose, onDone }) {
+function Body({ expense, mode, onClose, onDone }) {
+  const changing = mode === 'change';
+  const currentId = changing ? Number(expense.employee_id || expense.given_to_user_id || 0) : 0;
   const [staff, setStaff] = useState(null); // null = loading
   const [loadFailed, setLoadFailed] = useState(false);
   const [picked, setPicked] = useState(null); // { id, name }
@@ -78,7 +84,7 @@ function Body({ expense, onClose, onDone }) {
     setLoadFailed(false);
     setStaff(null);
     loadStaff()
-      .then(setStaff)
+      .then((list) => setStaff(currentId ? list.filter((p) => Number(p.id) !== currentId) : list))
       .catch(() => { setStaff([]); setLoadFailed(true); });
   };
   useEffect(load, []);
@@ -96,7 +102,7 @@ function Body({ expense, onClose, onDone }) {
     } catch (err) {
       if (id !== reqId.current) return;
       setPicked(null);
-      showAlert('Could not mark it', err?.message || 'Check the connection and try again.');
+      showAlert(changing ? 'Could not change it' : 'Could not mark it', err?.message || 'Check the connection and try again.');
     } finally {
       if (id === reqId.current) setChecking(false);
     }
@@ -111,12 +117,12 @@ function Body({ expense, onClose, onDone }) {
       const res = await api.markExpenseSalaryAdvance(expense.id, { employee_id: picked.id });
       setSaving(false);
       const name = preview.employee?.name || picked.name;
-      const a = successAlert(preview.amount ?? expense.amount, name);
+      const a = (changing ? changedAlert : successAlert)(preview.amount ?? expense.amount, name);
       showAlert(a.title, a.message);
       onDone && onDone({ expense: res.data?.expense || null, removed: false });
     } catch (err) {
       setSaving(false);
-      showAlert('Could not mark it', err?.message || 'It was not saved. Check the connection and try again.');
+      showAlert(changing ? 'Could not change it' : 'Could not mark it', err?.message || 'It was not saved. Check the connection and try again.');
     }
   };
 
@@ -127,7 +133,7 @@ function Body({ expense, onClose, onDone }) {
   return (
     <>
       <View style={styles.header}>
-        <Text style={styles.title}>Whose advance?</Text>
+        <Text style={styles.title}>{changing ? 'Change whose advance?' : 'Whose advance?'}</Text>
         <TouchableOpacity onPress={requestClose} accessibilityRole="button" accessibilityLabel="Close" style={styles.closeBtn}>
           <Ionicons name="close" size={26} color={Colors.textSecondary} />
         </TouchableOpacity>
