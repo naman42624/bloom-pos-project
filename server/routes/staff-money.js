@@ -780,11 +780,12 @@ router.get('/history', authenticate, authorize('owner', 'manager'), async (req, 
       where.push('mo.user_id = ?'); params.push(userId);
     }
     const db = await getDb();
-    // A to_salary line is a pay cut (spec 13.3): a manager sees only people
-    // whose pay they may see, plus money they gave themself.
+    // A to_salary line is a pay cut (spec 13.3): a manager sees those lines only
+    // for people whose pay they may see, plus money they gave themself.
+    // Ordinary shopping money stays visible to managers.
     const visible = await payVisibleIds(db, req.user);
     if (visible !== 'all') {
-      where.push(`(mo.user_id IN (${visible.map(() => '?').join(', ')}) OR mo.given_by = ?)`);
+      where.push(`(mo.status <> 'to_salary' OR mo.user_id IN (${visible.map(() => '?').join(', ')}) OR mo.given_by = ?)`);
       params.push(...visible, Number(req.user.id));
     }
     const rows = await db.prepare(`
