@@ -876,7 +876,7 @@ router.put('/salary-advance/:id/:action', authorize('owner', 'manager'), async (
     }
 
     if (req.user.role === 'manager') {
-      const shared = db.prepare(`SELECT 1 AS ok FROM user_locations ul_s JOIN user_locations ul_m ON ul_m.location_id = ul_s.location_id AND ul_m.user_id = ? WHERE ul_s.user_id = ? LIMIT 1`).get(req.user.id, advance.user_id);
+      const shared = await (await getAsyncDb()).prepare(`SELECT 1 AS ok FROM user_locations ul_s JOIN user_locations ul_m ON ul_m.location_id = ul_s.location_id AND ul_m.user_id = ? WHERE ul_s.user_id = ? LIMIT 1`).get(req.user.id, advance.user_id);
       if (!shared) {
         return res.status(403).json({ success: false, message: "This person isn't at your shop." });
       }

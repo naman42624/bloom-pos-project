@@ -1006,7 +1006,8 @@ function SalaryEmployeePicker({ locationId, value, onChange, error }) {
     let cancelled = false;
     api.getPayAccess()
       .then((res) => { if (!cancelled) setPayAccess(res.data || null); })
-      .catch(() => { if (!cancelled) setPayAccess(null); });
+      // Not loaded: fall back to own pay only, so the list never waits forever.
+      .catch(() => { if (!cancelled) setPayAccess({ all: false, ids: [Number(user?.id)] }); });
     return () => { cancelled = true; };
   }, []);
 
@@ -1055,11 +1056,19 @@ function SalaryEmployeePicker({ locationId, value, onChange, error }) {
     return () => { cancelled = true; };
   }, [value?.id, payAccess]);
 
+  // A manager is offered only the people whose pay they may see (spec 6.3);
+  // the owner sees everyone.
+  const isManager = user?.role === 'manager';
+  const shown = isManager
+    ? (payAccess ? staff.filter((u) => (payAccess.ids || []).map(Number).includes(Number(u.id))) : [])
+    : staff;
+  const listReady = loaded && (!isManager || !!payAccess);
+
   return (
     <View>
       <Text style={styles.label}>Which employee is this for?</Text>
       <View style={styles.chipWrap}>
-        {staff.map((u) => {
+        {shown.map((u) => {
           const active = value && Number(value.id) === Number(u.id);
           return (
             <TouchableOpacity
@@ -1074,9 +1083,11 @@ function SalaryEmployeePicker({ locationId, value, onChange, error }) {
           );
         })}
       </View>
-      {!loaded && <ActivityIndicator color={Colors.primary} style={{ marginTop: Spacing.sm }} />}
-      {loaded && staff.length === 0 && (
-        <Text style={styles.hint}>No staff found here — log this from Salary Management instead, or check Staff under More.</Text>
+      {!listReady && <ActivityIndicator color={Colors.primary} style={{ marginTop: Spacing.sm }} />}
+      {listReady && shown.length === 0 && (
+        <Text style={styles.hint}>{isManager
+          ? "There is nobody here whose salary you can log. Ask the owner to switch them on for you."
+          : 'No staff found here — log this from Salary Management instead, or check Staff under More.'}</Text>
       )}
       {!!error && <Text style={styles.error}>{error}</Text>}
       {(recentPayroll || recentSalary) && (

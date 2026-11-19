@@ -117,7 +117,7 @@ router.get('/', authenticate, authorize('owner', 'manager', 'employee', 'counter
     let truncated = false;
     if (isBoss && expenses.length > CAP) { truncated = true; expenses = expenses.slice(0, CAP); }
 
-    const normalizedExpenses = expenses.map(normalizeExpenseRow).map((r) => hideSalaryNames(r, visible));
+    const normalizedExpenses = expenses.map(normalizeExpenseRow).map((r) => hideSalaryNames(r, visible, req.user));
 
     // Calculate totals using numeric amounts so the client always receives numbers.
     const total = normalizedExpenses.reduce((sum, expense) => sum + (expense.is_return ? -expense.amount : expense.amount), 0);
@@ -168,9 +168,12 @@ async function salaryTargetHidden(db, user, employeeId) {
 }
 // Salary rows of people whose pay the viewer may not see (and salary rows
 // with no person): amount kept, no names at all. visible from payVisibleIds.
-function hideSalaryNames(row, visible) {
+// A manager still sees a row they created (same carve-out as salaryRowHidden:
+// they gave it, so they already know, and can fix it).
+function hideSalaryNames(row, visible, viewer) {
   if (visible === 'all' || row.category !== 'salary') return row;
   if (row.employee_id != null && visible.includes(Number(row.employee_id))) return row;
+  if (viewer && viewer.role === 'manager' && Number(row.created_by) === Number(viewer.id)) return row;
   return {
     ...row,
     description: 'Staff pay',

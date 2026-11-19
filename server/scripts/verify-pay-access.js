@@ -445,7 +445,7 @@ function salaryFigures(body) {
     }
     if (v === null || v === undefined) return;
     if (/(^|_)id$|phone|_at$|date|token/i.test(String(key || ''))) return;
-    for (const n of ['8423', '7311']) if (new RegExp(`(^|[^\\d])${n}([^\\d]|$)`).test(String(v))) found.push(n);
+    for (const n of ['8423', '7311', '222']) if (new RegExp(`(^|[^\\d])${n}([^\\d]|$)`).test(String(v))) found.push(n);
   };
   walk(body, '');
   return found;
@@ -494,7 +494,7 @@ check('role sweep: no salary figure reaches anyone who may not see it', async ()
   ];
   // [caller, label, figures they may see]
   const callers = [
-    [c.owner, 'owner', ['8423', '7311']],
+    [c.owner, 'owner', ['8423', '7311', '222']],
     [c.mgr, 'MA', ['7311']],
     [c.mgr2, 'MB', []],
     [c.e1, 'counter (E1)', ['7311']],
@@ -538,6 +538,66 @@ check('pay-viewers: a saved person who stopped working is dropped on save, a new
   eq(bad.body.message, "One of those people can't be picked. Refresh and try again.", 'message');
 });
 
+// ── Final review fix wave ──
+check('manager sees the real row of an advance they gave a hidden person; a note edit keeps it', async () => {
+  const c = await expCtx();
+  await openOwnRegister(c);
+  const a = await giveAdvance(c, c.mgr, c.e2);
+  const before = await c.db.prepare('SELECT description FROM expenses WHERE id = ?').get(a.expense_id);
+  const list = await api('GET', `/expenses?${dayQ(c)}`, c.mgr);
+  const row = list.body.data.find((x) => x.id === a.expense_id);
+  assert(row, 'row listed');
+  eq(row.description, before.description, 'real description');
+  eq(row.employee_id, c.e2, 'real person');
+  const p = await api('PUT', `/expenses/${a.expense_id}`, c.mgr, { note: 'VerifyPA note' });
+  eq(p.status, 200, `put ${JSON.stringify(p.body)}`);
+  const after = await c.db.prepare('SELECT description, note FROM expenses WHERE id = ?').get(a.expense_id);
+  // The note is appended to the description (composeDescription), as for any row.
+  assert(after.description.startsWith(before.description) && !after.description.includes('Staff pay'), `description kept: ${after.description}`);
+  eq(after.note, 'VerifyPA note', 'note saved');
+});
+
+const createdMoneyOutIds = [];
+check('staff-money history: a manager does not see a hidden person to_salary row given by someone else', async () => {
+  const c = await payCtx();
+  const mk = async (uid, by) => (await c.db.prepare(`INSERT INTO staff_money_out (location_id, user_id, amount, payment_method, given_by, approved_by, status, note, closed_at, close_reason)
+    VALUES (?, ?, 77, 'upi', ?, ?, 'to_salary', 'VerifyPA', CURRENT_TIMESTAMP, 'to_salary') RETURNING id`).get(TEST_LOCATION_ID, uid, by, by)).id;
+  const hidden = await mk(c.e2, c.owner);
+  const allowed = await mk(c.e1, c.owner);
+  const ownGiven = await mk(c.e2, c.mgr);
+  createdMoneyOutIds.push(hidden, allowed, ownGiven);
+  const ids = async (uid) => (await api('GET', `/staff-money/history?location_id=${TEST_LOCATION_ID}`, uid)).body.data.map((r) => r.id);
+  const ma = await ids(c.mgr);
+  assert(!ma.includes(hidden), 'MA sees hidden to_salary row');
+  assert(ma.includes(allowed), 'MA should see allowed person row');
+  assert(ma.includes(ownGiven), 'MA should see a row they gave');
+  const o = await ids(c.owner);
+  assert(o.includes(hidden) && o.includes(allowed), 'owner sees all');
+});
+
+check('dashboard and sales summary: a manager expense total leaves out hidden salary', async () => {
+  const c = await expCtx();
+  const q = `location_id=${TEST_LOCATION_ID}`;
+  const dash = async (uid) => Number((await api('GET', `/reports/dashboard?${q}`, uid)).body.data.today.expenses);
+  const sum = async (uid) => Number((await api('GET', `/reports/sales-summary?${q}&from=${c.today}&to=${c.today}`, uid)).body.data.totals.total_expenses);
+  const od = await dash(c.owner), md = await dash(c.mgr);
+  assert(od - md >= 8423 + 6197, `dashboard owner ${od} vs MA ${md}`);
+  const os = await sum(c.owner), ms = await sum(c.mgr);
+  assert(os - ms >= 8423 + 6197, `sales-summary owner ${os} vs MA ${ms}`);
+});
+
+check('changing a manager to another role removes their pay list, audited', async () => {
+  const c = await payCtx();
+  const mc = await makeUser(c.db, { role: 'manager', name: 'VerifyPA Manager Three' });
+  eq((await api('PUT', `/staff/pay-viewers/${mc}`, c.owner, { employee_ids: [c.e1] })).status, 200, 'set');
+  const r = await api('PUT', `/users/${mc}/change-role`, c.owner, { role: 'counter_staff' });
+  eq(r.status, 200, `change role ${JSON.stringify(r.body)}`);
+  const left = await c.db.prepare('SELECT COUNT(*) AS n FROM pay_viewers WHERE manager_id = ?').get(mc);
+  eq(Number(left.n), 0, 'rows removed');
+  const a = await c.db.prepare("SELECT action FROM audit_logs WHERE entity_type = 'pay_viewers' AND entity_id = ? ORDER BY id DESC LIMIT 1").get(mc);
+  eq(a && a.action, 'pay_viewers_cleared_role_change', 'audit');
+});
+
 async function cleanup() {
   const db = await getDb();
   try {
@@ -560,6 +620,10 @@ async function cleanup() {
   for (const id of createdAdvanceIds) {
     try { await db.prepare("DELETE FROM audit_logs WHERE entity_type = 'salary_advance' AND entity_id = ?").run(id); }
     catch (e) { console.error('cleanup advance audit ' + id + ': ' + e.message); }
+  }
+  for (const id of createdMoneyOutIds) {
+    try { await db.prepare('DELETE FROM staff_money_out WHERE id = ?').run(id); }
+    catch (e) { console.error('cleanup money out ' + id + ': ' + e.message); }
   }
   for (const id of createdItemIds) {
     try {

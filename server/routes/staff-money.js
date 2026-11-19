@@ -14,7 +14,7 @@ const { todayStr } = require('../utils/time');
 const { resolveItem, composeDescription } = require('../utils/expense-items');
 const { notifyByRole } = require('./notifications');
 const { riderMoneySummary } = require('../utils/rider-km-data');
-const { canSeePay } = require('../utils/pay-access');
+const { canSeePay, payVisibleIds } = require('../utils/pay-access');
 
 const router = express.Router();
 
@@ -780,6 +780,13 @@ router.get('/history', authenticate, authorize('owner', 'manager'), async (req, 
       where.push('mo.user_id = ?'); params.push(userId);
     }
     const db = await getDb();
+    // A to_salary line is a pay cut (spec 13.3): a manager sees only people
+    // whose pay they may see, plus money they gave themself.
+    const visible = await payVisibleIds(db, req.user);
+    if (visible !== 'all') {
+      where.push(`(mo.user_id IN (${visible.map(() => '?').join(', ')}) OR mo.given_by = ?)`);
+      params.push(...visible, Number(req.user.id));
+    }
     const rows = await db.prepare(`
       SELECT mo.*, u.name AS user_name, gb.name AS given_by_name, ab.name AS approved_by_name
       FROM staff_money_out mo

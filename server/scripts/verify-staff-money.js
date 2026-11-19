@@ -845,7 +845,16 @@ check('B3: the card marks lines late after the set days; history and My money', 
   eq(o.given_by_name, 'VerifySM Owner', 'given_by_name');
   for (const k of ['id', 'user_id', 'user_name', 'remaining', 'created_at', 'given_by_name', 'late']) assert(k in f, 'missing ' + k);
   eq((await api('GET', `/staff-money/open`, c.counter)).status, 400, 'open without a shop');
-  const h = await api('GET', `/staff-money/history?location_id=${TEST_LOCATION_ID}&user_id=${c.r1}`, c.mgr);
+  // Pay visibility (2026-11-19): a manager's history shows only people whose
+  // pay they may see (or money they gave), so switch r1 on for this read.
+  const hq = `/staff-money/history?location_id=${TEST_LOCATION_ID}&user_id=${c.r1}`;
+  const hidden = await api('GET', hq, c.mgr);
+  assert(hidden.body.data.every((x) => x.given_by === c.mgr), 'manager without pay access sees only lines they gave');
+  const pdb = await getDb();
+  await pdb.prepare('INSERT INTO pay_viewers (manager_id, employee_id, created_by) VALUES (?, ?, ?)').run(c.mgr, c.r1, c.owner);
+  let h;
+  try { h = await api('GET', hq, c.mgr); }
+  finally { await pdb.prepare('DELETE FROM pay_viewers WHERE manager_id = ? AND employee_id = ?').run(c.mgr, c.r1); }
   eq(h.status, 200, 'history');
   assert(h.body.data.length >= 2 && h.body.data.every((x) => x.user_id === c.r1), 'history filtered by person');
   const withBills = h.body.data.find((x) => x.id === flow.id);
