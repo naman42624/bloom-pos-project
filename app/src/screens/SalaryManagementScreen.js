@@ -483,7 +483,7 @@ export default function SalaryManagementScreen() {
                 </View>
               </View>
               {s.advance_limit != null && s.advance_limit !== '' && (
-                <Text style={styles.salaryType}>Advance limit {formatCurrency(Number(s.advance_limit))} a month</Text>
+                <Text style={styles.limitLine}>Advance limit {formatCurrency(Number(s.advance_limit))} a month</Text>
               )}
               <View style={styles.cardFooter}>
                 <TouchableOpacity style={styles.linkBtn} onPress={() => openSetModal(s, s)}>
@@ -1018,6 +1018,7 @@ const styles = StyleSheet.create({
   badgeText: { fontSize: FontSize.xs, color: '#fff', fontWeight: '600' },
   salaryAmount: { fontSize: FontSize.lg, fontWeight: '700', color: Colors.secondary },
   salaryType: { fontSize: FontSize.xs, color: Colors.textLight },
+  limitLine: { fontSize: FontSize.sm, color: Colors.textSecondary, paddingHorizontal: Spacing.md, paddingBottom: Spacing.sm },
   cardFooter: {
     flexDirection: 'row', borderTopWidth: 1, borderTopColor: Colors.border,
     padding: Spacing.sm, paddingHorizontal: Spacing.md,
