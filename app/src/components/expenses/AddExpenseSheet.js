@@ -16,6 +16,7 @@
  *   Date               Today                    ›   owner / manager only
  *   Note / bill photo  —                        ›
  *   ↗ Salary advance      ↗ Shopping money      ↗ Km reading   (in place)
+ *   [ This was a salary advance ]   change mode, owner only (OldExpenseAdvanceSheet)
  *   [              Save ₹50              ]
  *   Money coming back? Record a return
  *
@@ -56,6 +57,8 @@ import OptionList from './OptionList';
 import MethodSwitch from './MethodSwitch';
 import MoneyToStaffForm from './MoneyToStaffForm';
 import KmReadingForm from './KmReadingForm';
+import OldExpenseAdvanceSheet from './OldExpenseAdvanceSheet';
+import { canMarkSalaryAdvance } from '../../utils/oldExpenseAdvance';
 import { moneyLinksFor, heldBy, isBackHint } from '../../utils/staffMoney';
 import { Colors, FontSize, Spacing, BorderRadius } from '../../constants/theme';
 
@@ -566,6 +569,18 @@ function SheetBody({
     ]);
   };
 
+  // ── "This was a salary advance" (owner only, PR 2) ──
+  // Hidden when the server would refuse it (canMarkSalaryAdvance); the
+  // server stays the guard. Shop-local day, as the server's todayStr.
+  const canMarkAdvance = editing && user?.role === 'owner' && canMarkSalaryAdvance(expense, today);
+  const [showOldAdvance, setShowOldAdvance] = useState(false);
+  const openOldAdvance = () => {
+    if (saving || removing) return;
+    if (!dirty) { setShowOldAdvance(true); return; }
+    showConfirm('Leave without saving?', 'What you changed here will be lost.', () => setShowOldAdvance(true),
+      { confirmLabel: 'Leave', cancelLabel: 'Keep typing', destructive: true });
+  };
+
   // ── Date (owner / manager) ──
   const days = useMemo(() => lastSevenDays(today), [today]);
   const dateLabel = (days.find((d) => d.date === expenseDate) || {}).label || expenseDate;
@@ -925,6 +940,18 @@ function SheetBody({
             </Text>
           </TouchableOpacity>
         )}
+        {canMarkAdvance && (
+          <TouchableOpacity
+            style={styles.advanceBtn}
+            onPress={openOldAdvance}
+            disabled={busy}
+            accessibilityRole="button"
+            accessibilityLabel="This was a salary advance"
+          >
+            <Ionicons name="people-outline" size={20} color={Colors.primary} />
+            <Text style={styles.advanceText}>This was a salary advance</Text>
+          </TouchableOpacity>
+        )}
         {editing && (
           <TouchableOpacity style={styles.removeBtn} onPress={handleRemove} disabled={busy} accessibilityRole="button">
             <Ionicons name="trash-outline" size={20} color={Colors.error} />
@@ -945,6 +972,15 @@ function SheetBody({
           ? <ActivityIndicator color={Colors.white} />
           : <Text style={styles.saveText}>{saveText}</Text>}
       </TouchableOpacity>
+
+      {canMarkAdvance && (
+        <OldExpenseAdvanceSheet
+          visible={showOldAdvance}
+          expense={expense}
+          onClose={() => setShowOldAdvance(false)}
+          onDone={(result) => { setShowOldAdvance(false); onSaved && onSaved(result); }}
+        />
+      )}
 
       <OptionList
         visible={showKinds}
@@ -1195,6 +1231,12 @@ const styles = StyleSheet.create({
     minHeight: 48, marginBottom: Spacing.sm,
   },
   removeText: { color: Colors.error, fontWeight: '600', fontSize: FontSize.md },
+  advanceBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.xs,
+    minHeight: 48, marginTop: Spacing.md, marginBottom: Spacing.sm,
+    borderWidth: 1, borderColor: Colors.primary, borderRadius: BorderRadius.md, paddingHorizontal: Spacing.md,
+  },
+  advanceText: { color: Colors.primary, fontWeight: '700', fontSize: FontSize.md },
 
   salaryNote: {
     flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.xs,

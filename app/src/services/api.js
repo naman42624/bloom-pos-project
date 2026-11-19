@@ -835,6 +835,14 @@ class ApiService {
     return this.request(`/expenses/${id}`, { method: 'DELETE' });
   }
 
+  // Owner only: an old Cash/UPI expense was really a salary advance.
+  // preview: true checks it and lists salary paid since, without saving.
+  markExpenseSalaryAdvance(id, { employee_id, preview } = {}) {
+    const body = { employee_id };
+    if (preview) body.preview = true;
+    return this.request(`/expenses/${id}/salary-advance`, { method: 'POST', body: JSON.stringify(body) });
+  }
+
   getExpenseSummary(params = {}) {
     const query = new URLSearchParams(params).toString();
     return this.request(`/expenses/summary${query ? `?${query}` : ''}`);
