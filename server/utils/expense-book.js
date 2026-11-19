@@ -51,7 +51,9 @@ const EXPENSE_ROW_SELECT = `
       SELECT e.*, l.name as location_name, u.name as created_by_name,
              ei.name as item_name, gu.name as given_to_user_name, pb.name as paid_by_user_name,
              cr.opening_time as register_opened_at, cr.opened_at as register_opened_at_fallback,
-             cr.closed_at as register_closed_at
+             cr.closed_at as register_closed_at,
+             CASE WHEN EXISTS (SELECT 1 FROM salary_advances sa WHERE sa.expense_id = e.id AND sa.source = 'old_expense'
+                               AND sa.status = 'approved' AND COALESCE(sa.repaid_amount, 0) = 0) THEN 1 ELSE 0 END AS old_expense_advance
       FROM expenses e
       JOIN locations l ON e.location_id = l.id
       JOIN users u ON e.created_by = u.id
@@ -69,6 +71,8 @@ function normalizeExpenseRow(expense) {
     is_return: !!expense.is_return,
     register_opened_at: expense.register_opened_at || register_opened_at_fallback || null,
     given_to_display: given_to_user_name || expense.given_to_name || null,
+    // An untaken advance the owner made from an old expense (owner can re-point it).
+    old_expense_advance: Number(expense.old_expense_advance) === 1,
   };
 }
 

@@ -115,7 +115,8 @@ check('rememberOnItem stores usual amount and last given-to', async () => {
 });
 
 // ── Task 2: add and change with item, note, photo, Given to, back-dating ──
-const OWNER_ID = 7777, COUNTER_ID = 7778, CUSTOMER_ID = 7779, HELPER_ID = 6783;
+const OWNER_ID = 7777, COUNTER_ID = 7778, CUSTOMER_ID = 7779;
+let HELPER_ID = null; // made by ensureHelper(), removed in cleanup
 const GIVEN_TO_COPY = "That person can't be picked here. Tap Given to and pick again.";
 const DATE_COPY = 'Only the owner or a manager can enter an expense for another day.';
 const createdUserIds = [];
@@ -136,6 +137,20 @@ async function ensureRider() {
   createdUserIds.push(riderId);
   await db.prepare('INSERT INTO user_locations (user_id, location_id) VALUES (?, ?)').run(riderId, TEST_LOCATION_ID);
   return riderId;
+}
+
+// A throwaway helper whose access runs 30 days past today, so the run never
+// depends on a dev account that can expire.
+async function ensureHelper() {
+  if (HELPER_ID) return HELPER_ID;
+  const db = await getDb();
+  const row = await db.prepare(
+    "INSERT INTO users (phone, password, name, role, is_active, access_until) VALUES (?, 'x', 'VerifyEB Helper', 'helper', 1, ?) RETURNING id"
+  ).get('8' + String(Date.now() + 1).slice(-9), shopDay(30));
+  HELPER_ID = row.id;
+  createdUserIds.push(HELPER_ID);
+  await db.prepare('INSERT INTO user_locations (user_id, location_id) VALUES (?, ?)').run(HELPER_ID, TEST_LOCATION_ID);
+  return HELPER_ID;
 }
 
 // Opens a register at Test Loc for this run. Someone else's open register
@@ -301,7 +316,7 @@ check('GET /people: staff and riders of the shop, id/name/role only; helpers ref
   assert(rows.some((p) => p.id === 8447 && p.role === 'florist_staff'), 'florist missing');
   assert(!rows.some((p) => p.id === CUSTOMER_ID || p.role === 'customer' || p.role === 'helper'), 'customer or helper listed');
   for (const p of rows) assert(Object.keys(p).sort().join(',') === 'id,name,role', 'extra fields: ' + Object.keys(p).join(','));
-  const h = await api('GET', `/expenses/people?location_id=${TEST_LOCATION_ID}`, tokenFor(HELPER_ID));
+  const h = await api('GET', `/expenses/people?location_id=${TEST_LOCATION_ID}`, tokenFor(await ensureHelper()));
   assert(h.status === 403, `helper status ${h.status}`);
 });
 
@@ -413,7 +428,7 @@ check('suggest: last_given_to shows the user name or the free name; helpers refu
   const a = r.body.data.find((x) => x.id === f.p1), b = r.body.data.find((x) => x.id === f.p2);
   assert(a.last_given_to && a.last_given_to.user_id === rider && a.last_given_to.display_name === 'VerifyEB Rider', JSON.stringify(a.last_given_to));
   assert(b.last_given_to && b.last_given_to.name === 'VerifyEB Plumber2' && b.last_given_to.display_name === 'VerifyEB Plumber2', JSON.stringify(b.last_given_to));
-  const h = await api('GET', `/expenses/suggest?location_id=${TEST_LOCATION_ID}`, tokenFor(HELPER_ID));
+  const h = await api('GET', `/expenses/suggest?location_id=${TEST_LOCATION_ID}`, tokenFor(await ensureHelper()));
   assert(h.status === 403, 'helper ' + h.status);
 });
 
