@@ -435,6 +435,9 @@ check('fix 3: the owner re-points an untaken advance to another person', async (
   const listed = rows.find((x) => Number(x.id) === id);
   assert(listed, 'row not in list');
   eq(listed.old_expense_advance, true, 'list flag');
+  const viaChip = await api('PUT', `/expenses/${id}`, c.owner, { employee_id: c.emp2 });
+  eq(viaChip.status, 400, 'employee change through Change expense');
+  eq(viaChip.body.message, 'To give this advance to someone else, tap Change who this advance is for.', 'points to the button');
   const plain = rows.find((x) => Number(x.id) !== id);
   if (plain) eq(typeof plain.old_expense_advance, 'boolean', 'flag on other rows');
 

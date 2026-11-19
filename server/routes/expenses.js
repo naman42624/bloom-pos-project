@@ -1443,6 +1443,9 @@ const pickAudit = (e) => ({
 // changing its amount moves the advance, anything that would break the link
 // is refused, and nothing changes once payroll took any of it.
 const ADVANCE_LINK_MESSAGE = 'Remove it and give the advance again.';
+// A marked old expense: the person is changed with its own button, and
+// giving the advance again would take the money out twice.
+const OLD_ADVANCE_LINK_MESSAGE = 'To give this advance to someone else, tap Change who this advance is for.';
 const ADVANCE_TAKEN_MESSAGE = "This advance was already taken from pay, so it can't be changed or removed.";
 const centsOf = (n) => Math.round((Number(n) || 0) * 100);
 const advanceTaken = (adv) => adv.status === 'repaid' || centsOf(adv.repaid_amount) > 0;
@@ -1879,7 +1882,7 @@ router.put(
             || Number(nv.given_to_user_id) !== Number(advance.user_id)
             || nv.is_return
             || !['cash', 'upi'].includes(nv.payment_method);
-          if (breaksLink) throw httpError(400, ADVANCE_LINK_MESSAGE);
+          if (breaksLink) throw httpError(400, advance.source === 'old_expense' ? OLD_ADVANCE_LINK_MESSAGE : ADVANCE_LINK_MESSAGE);
           const moneyMoved = centsOf(nv.amount) !== centsOf(expense.amount) || nv.payment_method !== expense.payment_method;
           if (moneyMoved && advanceTaken(advance)) throw httpError(400, ADVANCE_TAKEN_MESSAGE);
         }
