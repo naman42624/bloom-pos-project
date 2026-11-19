@@ -596,7 +596,7 @@ router.put(
       .isIn([...VALID_ROLES, 'owner'])
       .withMessage('Role must be owner, manager, employee, counter_staff, florist_staff, delivery_partner, customer, or helper'),
   ],
-  (req, res, next) => {
+  async (req, res, next) => {
     try {
       const errors = validationResult(req);
       if (!errors.isEmpty()) {
@@ -651,6 +651,19 @@ router.put(
             updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
       `).run(role, role, clearApprovalPin, clearApprovalPin, clearApprovalPin, targetId);
+
+      // No longer a manager: whose pay they could see goes with the role.
+      if (targetUser.role === 'manager' && role !== 'manager') {
+        await withTransaction(async (tx) => {
+          const before = (await tx.prepare('SELECT employee_id FROM pay_viewers WHERE manager_id = ? ORDER BY employee_id').all(targetId)).map((r) => Number(r.employee_id));
+          if (!before.length) return;
+          await tx.prepare('DELETE FROM pay_viewers WHERE manager_id = ?').run(targetId);
+          await tx.prepare(`
+            INSERT INTO audit_logs (entity_type, entity_id, user_id, action, previous_state, new_state, created_at)
+            VALUES ('pay_viewers', ?, ?, 'pay_viewers_cleared_role_change', ?, ?, CURRENT_TIMESTAMP)
+          `).run(targetId, req.user.id, JSON.stringify({ employee_ids: before, role: targetUser.role }), JSON.stringify({ employee_ids: [], role }));
+        });
+      }
 
       const updatedUser = db.prepare(`SELECT ${USER_SELECT_FIELDS} FROM users WHERE id = ?`).get(targetId);
 

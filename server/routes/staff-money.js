@@ -14,6 +14,7 @@ const { todayStr } = require('../utils/time');
 const { resolveItem, composeDescription } = require('../utils/expense-items');
 const { notifyByRole } = require('./notifications');
 const { riderMoneySummary } = require('../utils/rider-km-data');
+const { canSeePay, payVisibleIds } = require('../utils/pay-access');
 
 const router = express.Router();
 
@@ -253,9 +254,9 @@ router.post('/advance', authenticate, authorize(...GIVER_ROLES), async (req, res
       data: { screen: 'Expenses', advanceId: result.advanceId, userId: g.userId },
     });
     const data = { advance_id: result.advanceId, expense_id: result.expenseId };
-    // A colleague's unpaid advances are private (spec 5.8): only the owner,
-    // a manager, or the person themself sees the total.
-    if (isBoss(g.giver.role) || Number(g.giver.id) === Number(g.userId)) {
+    // A colleague's unpaid advances are private (spec 5.8, 13.8): only
+    // someone who may see this person's pay (utils/pay-access.js) gets the total.
+    if (await canSeePay(g.db, g.giver, g.userId)) {
       const after = await sm.totals(g.db, { userId: g.userId });
       data.unpaid_after = after.advancesUnpaid;
     }
@@ -779,6 +780,14 @@ router.get('/history', authenticate, authorize('owner', 'manager'), async (req, 
       where.push('mo.user_id = ?'); params.push(userId);
     }
     const db = await getDb();
+    // A to_salary line is a pay cut (spec 13.3): a manager sees those lines only
+    // for people whose pay they may see, plus money they gave themself.
+    // Ordinary shopping money stays visible to managers.
+    const visible = await payVisibleIds(db, req.user);
+    if (visible !== 'all') {
+      where.push(`(mo.status <> 'to_salary' OR mo.user_id IN (${visible.map(() => '?').join(', ')}) OR mo.given_by = ?)`);
+      params.push(...visible, Number(req.user.id));
+    }
     const rows = await db.prepare(`
       SELECT mo.*, u.name AS user_name, gb.name AS given_by_name, ab.name AS approved_by_name
       FROM staff_money_out mo

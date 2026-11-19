@@ -1000,6 +1000,16 @@ function SalaryEmployeePicker({ locationId, value, onChange, error }) {
   const [loaded, setLoaded] = useState(false);
   const [recentPayroll, setRecentPayroll] = useState(null);
   const [recentSalary, setRecentSalary] = useState(null);
+  // Whose pay I may see (owner: all; manager: own + the owner's picks; others: own).
+  const [payAccess, setPayAccess] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    api.getPayAccess()
+      .then((res) => { if (!cancelled) setPayAccess(res.data || null); })
+      // Not loaded: fall back to own pay only, so the list never waits forever.
+      .catch(() => { if (!cancelled) setPayAccess({ all: false, ids: [Number(user?.id)] }); });
+    return () => { cancelled = true; };
+  }, []);
 
   // GET /users is owner/manager only. Counter staff use assignable-staff;
   // 'employee' is refused there too, so it falls back to staff-roster.
@@ -1022,12 +1032,13 @@ function SalaryEmployeePicker({ locationId, value, onChange, error }) {
   }, [locationId]);
 
   // Awareness only, never blocking: the server refuses a real overlap.
-  // Payroll history is only trustworthy for the owner, or for yourself
-  // (the server filters everyone else to the caller's own records).
+  // Payroll history only for people whose pay I may see (the server refuses
+  // or filters everyone else).
   useEffect(() => {
     if (!value) { setRecentPayroll(null); setRecentSalary(null); return undefined; }
     let cancelled = false;
-    const canRead = user?.role === 'owner' || value.id === user?.id;
+    const canRead = Number(value.id) === Number(user?.id)
+      || (!!payAccess && (payAccess.all || (payAccess.ids || []).map(Number).includes(Number(value.id))));
     Promise.all([
       canRead
         ? api.getPayrollHistory({ user_id: value.id, limit: 3 }).catch(() => ({ data: { payments: [] } }))
@@ -1043,13 +1054,21 @@ function SalaryEmployeePicker({ locationId, value, onChange, error }) {
       setRecentSalary(rows[0] || null);
     });
     return () => { cancelled = true; };
-  }, [value?.id]);
+  }, [value?.id, payAccess]);
+
+  // A manager is offered only the people whose pay they may see (spec 6.3);
+  // the owner sees everyone.
+  const isManager = user?.role === 'manager';
+  const shown = isManager
+    ? (payAccess ? staff.filter((u) => (payAccess.ids || []).map(Number).includes(Number(u.id))) : [])
+    : staff;
+  const listReady = loaded && (!isManager || !!payAccess);
 
   return (
     <View>
       <Text style={styles.label}>Which employee is this for?</Text>
       <View style={styles.chipWrap}>
-        {staff.map((u) => {
+        {shown.map((u) => {
           const active = value && Number(value.id) === Number(u.id);
           return (
             <TouchableOpacity
@@ -1064,9 +1083,11 @@ function SalaryEmployeePicker({ locationId, value, onChange, error }) {
           );
         })}
       </View>
-      {!loaded && <ActivityIndicator color={Colors.primary} style={{ marginTop: Spacing.sm }} />}
-      {loaded && staff.length === 0 && (
-        <Text style={styles.hint}>No staff found here — log this from Salary Management instead, or check Staff under More.</Text>
+      {!listReady && <ActivityIndicator color={Colors.primary} style={{ marginTop: Spacing.sm }} />}
+      {listReady && shown.length === 0 && (
+        <Text style={styles.hint}>{isManager
+          ? "There is nobody here whose salary you can log. Ask the owner to switch them on for you."
+          : 'No staff found here — log this from Salary Management instead, or check Staff under More.'}</Text>
       )}
       {!!error && <Text style={styles.error}>{error}</Text>}
       {(recentPayroll || recentSalary) && (

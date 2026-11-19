@@ -47,6 +47,9 @@ const dateToYMD = (date) => {
 export default function SalaryManagementScreen() {
   const { user } = useAuth();
   const navigation = useNavigation();
+  // A manager the owner switched on for some staff sees this screen view only:
+  // the salary list and each person's payments, no Set / Calculate / Pay.
+  const isOwner = user?.role === 'owner';
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [salaries, setSalaries] = useState([]);
@@ -99,11 +102,19 @@ export default function SalaryManagementScreen() {
   // POST /staff/payroll/disburse enforces server-side, but surfaced BEFORE the
   // manager taps Disburse rather than only as an error after (staff-ux-checklist #6).
   const [employeePayments, setEmployeePayments] = useState([]);
+  // View-only payments list for one person (manager path).
+  const [paymentsFor, setPaymentsFor] = useState(null); // { name, loading, payments }
 
   const fetchData = useCallback(async () => {
     try {
       const res = await api.getSalaries();
-      setSalaries(res.data?.salaries || []);
+      if (isOwner) {
+        setSalaries(res.data?.salaries || []);
+      } else {
+        // Manager shape: { salary: own | null, salaries: [people the owner allowed] }
+        const own = res.data?.salary ? [{ ...res.data.salary, user_role: res.data.salary.user_role || user?.role }] : [];
+        setSalaries([...own, ...(res.data?.salaries || [])]);
+      }
       setUnsetStaff(res.data?.unset || []);
     } catch (e) {
       console.error('Fetch salaries error:', e);
@@ -111,7 +122,7 @@ export default function SalaryManagementScreen() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [isOwner, user?.role]);
 
   useFocusEffect(useCallback(() => {
     fetchData();
@@ -149,6 +160,17 @@ export default function SalaryManagementScreen() {
       appAlert('Error', e.message || 'Failed to save salary.');
     } finally {
       setSaving(false);
+    }
+  };
+
+  const viewPayments = async (sal) => {
+    setPaymentsFor({ name: sal.user_name, loading: true, payments: [] });
+    try {
+      const res = await api.getPayrollHistory({ user_id: sal.user_id, limit: 50 });
+      setPaymentsFor({ name: sal.user_name, loading: false, payments: res.data?.payments || [] });
+    } catch (e) {
+      setPaymentsFor(null);
+      showAlert('Could not load payments', e.message || 'Check the internet and try again.');
     }
   };
 
@@ -397,6 +419,13 @@ export default function SalaryManagementScreen() {
         </View>
       )}
 
+      {!isOwner && (
+        <View style={styles.viewOnlyNote}>
+          <Ionicons name="eye-outline" size={20} color={Colors.textSecondary} />
+          <Text style={styles.viewOnlyText}>View only. Only the owner can change or pay salaries.</Text>
+        </View>
+      )}
+
       {viewTab === 'salaries' && (<>
       {/* Staff without salaries */}
       {unsetStaff.length > 0 && (
@@ -432,7 +461,9 @@ export default function SalaryManagementScreen() {
         {salaries.length === 0 && unsetStaff.length === 0 ? (
           <View style={styles.empty}>
             <Ionicons name="wallet-outline" size={48} color={Colors.textLight} />
-            <Text style={styles.emptyText}>No staff members yet</Text>
+            <Text style={styles.emptyText}>
+              {isOwner ? 'No staff members yet' : 'No salary set yet for the people you can see.'}
+            </Text>
           </View>
         ) : (
           salaries.map(s => (
@@ -451,6 +482,7 @@ export default function SalaryManagementScreen() {
                   </Text>
                 </View>
               </View>
+              {isOwner ? (
               <View style={styles.cardFooter}>
                 <TouchableOpacity style={styles.linkBtn} onPress={() => openSetModal(s, s)}>
                   <Ionicons name="create-outline" size={16} color={Colors.primary} />
@@ -461,6 +493,18 @@ export default function SalaryManagementScreen() {
                   <Text style={[styles.linkBtnText, { color: Colors.info }]}>History</Text>
                 </TouchableOpacity>
               </View>
+              ) : (
+              <TouchableOpacity
+                style={styles.paymentsRow}
+                onPress={() => viewPayments(s)}
+                accessibilityRole="button"
+                accessibilityLabel={`See payments for ${s.user_name}`}
+              >
+                <Ionicons name="receipt-outline" size={20} color={Colors.primary} />
+                <Text style={styles.paymentsRowText}>See payments</Text>
+                <Ionicons name="chevron-forward" size={20} color={Colors.textSecondary} />
+              </TouchableOpacity>
+              )}
             </View>
           ))
         )}
@@ -638,6 +682,39 @@ export default function SalaryManagementScreen() {
             </TouchableOpacity>
           </View>
         </KeyboardAvoidingView>
+      </Modal>
+
+      {/* ─── Payments for one person (view only) ─────────── */}
+      <Modal visible={!!paymentsFor} transparent animationType="slide" onRequestClose={() => setPaymentsFor(null)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Payments — {paymentsFor?.name}</Text>
+            {paymentsFor?.loading ? (
+              <ActivityIndicator color={Colors.primary} style={{ paddingVertical: Spacing.lg }} />
+            ) : (paymentsFor?.payments || []).length === 0 ? (
+              <Text style={styles.emptyText}>No salary paid yet.</Text>
+            ) : (
+              <ScrollView style={{ maxHeight: 360 }}>
+                {paymentsFor.payments.map((p) => (
+                  <View key={p.id} style={styles.historyRow}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.historyChange}>{formatCurrency(p.net_amount)} — {p.status === 'paid' ? 'Paid' : p.status === 'cancelled' ? 'Cancelled' : 'Pending'}</Text>
+                      <Text style={styles.historyMeta}>{p.period_start} to {p.period_end}</Text>
+                      {p.paid_at ? <Text style={styles.historyMeta}>Paid on {formatDate(p.paid_at)}{p.payment_method ? ` by ${p.payment_method}` : ''}</Text> : null}
+                    </View>
+                  </View>
+                ))}
+              </ScrollView>
+            )}
+            <TouchableOpacity
+              style={[styles.saveBtn, { alignSelf: 'flex-end', marginTop: Spacing.md, minHeight: 48, justifyContent: 'center' }]}
+              onPress={() => setPaymentsFor(null)}
+              accessibilityRole="button"
+            >
+              <Text style={styles.saveBtnText}>Close</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
       </Modal>
 
       {/* ─── Payroll Calculation Modal ───────────────────── */}
@@ -976,6 +1053,17 @@ const styles = StyleSheet.create({
     padding: Spacing.sm, paddingHorizontal: Spacing.md,
   },
   linkBtn: { flexDirection: 'row', alignItems: 'center', marginRight: Spacing.lg },
+  paymentsRow: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, minHeight: 48,
+    borderTopWidth: 1, borderTopColor: Colors.border, paddingHorizontal: Spacing.md,
+  },
+  paymentsRowText: { flex: 1, fontSize: FontSize.md, color: Colors.primary, fontWeight: '600' },
+  viewOnlyNote: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, marginBottom: Spacing.md,
+    padding: Spacing.md, borderRadius: BorderRadius.md, backgroundColor: Colors.surface,
+    borderWidth: 1, borderColor: Colors.border,
+  },
+  viewOnlyText: { flex: 1, fontSize: FontSize.md, color: Colors.textSecondary },
   linkBtnText: { fontSize: FontSize.sm, color: Colors.primary, marginLeft: 4 },
   setBtn: { alignItems: 'center' },
   setBtnText: { fontSize: FontSize.xs, color: Colors.primary, marginTop: 2 },

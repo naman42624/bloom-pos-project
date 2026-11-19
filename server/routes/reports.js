@@ -4,6 +4,7 @@ const { getDb } = require('../config/database');
 const { getDb: getAsyncDb } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
 const { todayStr: localToday } = require('../utils/time');
+const { payVisibleIds, salarySqlFilter } = require('../utils/pay-access');
 
 // Timestamps are stored in UTC (both DB layers run with timezone=UTC), so
 // date(created_at) gave the UTC day: sales between midnight and 5:30 AM in
@@ -135,15 +136,16 @@ router.get('/sales-summary', authenticate, authorize('owner', 'manager'), async 
       ${where}
     `).get(...params);
 
-    // Expenses
+    // Expenses (salary only for people whose pay the viewer may see, spec 6.1)
+    const payF = salarySqlFilter(await payVisibleIds(db, req.user), 'e');
     const expenses = await db.prepare(`
       SELECT
         COALESCE(SUM(e.amount), 0) as total_expenses,
         COUNT(*) as expense_count
       FROM expenses e
       WHERE date(${shopTime('e.created_at')}) BETWEEN ? AND ?
-      ${location_id ? 'AND e.location_id = ?' : ''}
-    `).get(...(location_id ? [dateFrom, dateTo, location_id] : [dateFrom, dateTo]));
+      ${location_id ? 'AND e.location_id = ?' : ''}${payF.sql}
+    `).get(...(location_id ? [dateFrom, dateTo, location_id] : [dateFrom, dateTo]), ...payF.params);
 
     res.json({
       success: true,
@@ -470,6 +472,9 @@ router.get('/dashboard', authenticate, authorize('owner', 'manager'), async (req
       WHERE date(${shopTime('s.created_at')}) = ? AND s.status != 'cancelled' ${locFilter}
     `).get(today, ...locParams);
 
+    // Salary only for people whose pay the viewer may see (spec 6.1).
+    const payF = salarySqlFilter(await payVisibleIds(db, req.user), 'e');
+
     // Run all independent dashboard queries in parallel
     const [
       todaySales,
@@ -503,9 +508,9 @@ router.get('/dashboard', authenticate, authorize('owner', 'manager'), async (req
         SELECT COUNT(*) as count FROM sales s WHERE s.status IN ('pending', 'preparing') ${locFilter}
       `).get(...locParams),
       db.prepare(`
-        SELECT COALESCE(SUM(amount), 0) as total FROM expenses
-        WHERE date(${shopTime('created_at')}) = ? ${location_id ? 'AND location_id = ?' : ''}
-      `).get(...(location_id ? [today, location_id] : [today])),
+        SELECT COALESCE(SUM(e.amount), 0) as total FROM expenses e
+        WHERE date(${shopTime('e.created_at')}) = ? ${location_id ? 'AND e.location_id = ?' : ''}${payF.sql}
+      `).get(...(location_id ? [today, location_id] : [today]), ...payF.params),
       db.prepare(`
         SELECT COUNT(DISTINCT user_id) as count FROM attendance WHERE date = ? AND clock_in IS NOT NULL AND clock_out IS NULL
       `).get(today),

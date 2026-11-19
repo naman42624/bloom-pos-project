@@ -1,9 +1,10 @@
 const express = require('express');
 const router = express.Router();
 const { getDb } = require('../config/database');
-const { getDb: getAsyncDb, withMoneyTx } = require('../config/database-async');
+const { getDb: getAsyncDb, withMoneyTx, withTransaction } = require('../config/database-async');
 const { authenticate, authorize } = require('../middleware/auth');
 const { nowLocal, todayStr } = require('../utils/time');
+const { payVisibleIds, canSeePay } = require('../utils/pay-access');
 const { computeShiftWork, findPartialDays, normalizeSegments, matchSegmentForTime, lateMinutesFor, timestampToMinutes } = require('../utils/shift-work');
 const { hasOpenRegister, lockOpenRegister, REGISTER_CLOSED_MESSAGE } = require('../utils/register-guard');
 const { createNotification } = require('./notifications');
@@ -11,6 +12,96 @@ const { payrollShopping, remainingPaise } = require('../utils/staff-money');
 const { payrollKm, lockCarryForPayroll, applyCarryAtPayroll, SETTLE_MSG: KM_MSG } = require('../utils/rider-km-data');
 
 router.use(authenticate);
+
+// ═══════════════════════════════════════════════════════════════
+// PAY VIEWERS (owner picks whose pay a manager may see)
+// ═══════════════════════════════════════════════════════════════
+const PAY_PICKABLE_ROLES = ['manager', 'employee', 'counter_staff', 'florist_staff', 'delivery_partner', 'helper'];
+
+router.get('/pay-viewers/:managerId', authorize('owner'), async (req, res) => {
+  try {
+    const db = await getAsyncDb();
+    const managerId = Number(req.params.managerId);
+    const mgr = Number.isInteger(managerId)
+      ? await db.prepare("SELECT id FROM users WHERE id = ? AND role = 'manager' AND is_active = 1").get(managerId)
+      : null;
+    if (!mgr) return res.status(400).json({ success: false, message: 'Pick a manager.' });
+    const rows = await db.prepare(`
+      SELECT pv.employee_id, u.name, u.role, u.is_active
+        FROM pay_viewers pv LEFT JOIN users u ON u.id = pv.employee_id
+       WHERE pv.manager_id = ? ORDER BY pv.employee_id
+    `).all(managerId);
+    // people: names for the saved ids, so the owner can switch off someone
+    // who left the shop or stopped working (pickable false).
+    res.json({
+      success: true,
+      data: {
+        employee_ids: rows.map((r) => Number(r.employee_id)),
+        people: rows.map((r) => ({
+          id: Number(r.employee_id), name: r.name || null, role: r.role || null,
+          pickable: !!r.is_active && PAY_PICKABLE_ROLES.includes(r.role),
+        })),
+      },
+    });
+  } catch (error) {
+    console.error('Get pay viewers error:', error);
+    res.status(500).json({ success: false, message: 'Could not load this list. Try again.' });
+  }
+});
+
+router.put('/pay-viewers/:managerId', authorize('owner'), async (req, res) => {
+  try {
+    const managerId = Number(req.params.managerId);
+    const raw = req.body && req.body.employee_ids;
+    if (!Array.isArray(raw)) return res.status(400).json({ success: false, message: 'One of those people can\'t be picked. Refresh and try again.' });
+    let ids = [...new Set(raw.map(Number))];
+    const result = await withTransaction(async (tx) => {
+      const mgr = Number.isInteger(managerId)
+        ? await tx.prepare("SELECT id FROM users WHERE id = ? AND role = 'manager' AND is_active = 1").get(managerId)
+        : null;
+      if (!mgr) return { error: 'Pick a manager.' };
+      if (ids.some((i) => !Number.isInteger(i) || i <= 0)) return { error: 'One of those people can\'t be picked. Refresh and try again.' };
+      const before = (await tx.prepare('SELECT employee_id FROM pay_viewers WHERE manager_id = ? ORDER BY employee_id').all(managerId)).map((r) => Number(r.employee_id));
+      if (ids.length) {
+        const ok = new Set((await tx.prepare(
+          `SELECT id FROM users WHERE is_active = 1 AND role IN (${PAY_PICKABLE_ROLES.map(() => '?').join(',')}) AND id IN (${ids.map(() => '?').join(',')})`
+        ).all(...PAY_PICKABLE_ROLES, ...ids)).map((r) => Number(r.id)));
+        // A new id must be pickable. An id already saved that has since left
+        // or changed role is dropped quietly, so the owner is never locked out.
+        if (ids.some((i) => !ok.has(i) && !before.includes(i))) return { error: 'One of those people can\'t be picked. Refresh and try again.' };
+        ids = ids.filter((i) => ok.has(i));
+      }
+      await tx.prepare('DELETE FROM pay_viewers WHERE manager_id = ?').run(managerId);
+      for (const id of ids) {
+        await tx.prepare('INSERT INTO pay_viewers (manager_id, employee_id, created_by) VALUES (?, ?, ?)').run(managerId, id, req.user.id);
+      }
+      const after = [...ids].sort((a, b) => a - b);
+      await tx.prepare(`
+        INSERT INTO audit_logs (entity_type, entity_id, user_id, action, previous_state, new_state, created_at)
+        VALUES ('pay_viewers', ?, ?, 'pay_viewers_set', ?, ?, CURRENT_TIMESTAMP)
+      `).run(managerId, req.user.id, JSON.stringify({ employee_ids: before }), JSON.stringify({ employee_ids: after }));
+      return { employee_ids: after };
+    });
+    if (result.error) return res.status(400).json({ success: false, message: result.error });
+    res.json({ success: true, data: { employee_ids: result.employee_ids } });
+  } catch (error) {
+    console.error('Set pay viewers error:', error);
+    res.status(500).json({ success: false, message: 'Could not save this list. Try again.' });
+  }
+});
+
+// Whose pay the caller may see: { all: true } for the owner, else the ids
+// (their own first). The app uses it to decide what to show.
+router.get('/pay-access', authorize('owner', 'manager', 'employee', 'counter_staff', 'florist_staff', 'delivery_partner'), async (req, res) => {
+  try {
+    const db = await getAsyncDb();
+    const visible = await payVisibleIds(db, req.user);
+    res.json({ success: true, data: visible === 'all' ? { all: true, ids: [] } : { all: false, ids: visible } });
+  } catch (error) {
+    console.error('Get pay access error:', error);
+    res.status(500).json({ success: false, message: 'Could not load this. Try again.' });
+  }
+});
 
 // ═══════════════════════════════════════════════════════════════
 // EMPLOYEE SHIFTS / SCHEDULES
@@ -207,6 +298,26 @@ router.get('/salaries', authorize('owner', 'manager', 'employee', 'counter_staff
       JOIN users u ON es.user_id = u.id
       WHERE es.user_id = ?
     `).get(req.user.id);
+
+    if (req.user.role === 'manager') {
+      // Managers also see the people the owner switched on for them
+      const allowed = (await payVisibleIds(db, req.user)).filter(id => id !== Number(req.user.id));
+      const salaries = allowed.length ? await db.prepare(`
+        SELECT es.*, u.name as user_name, u.phone as user_phone, u.role as user_role,
+               up.name as updater_name,
+               COALESCE((
+                 SELECT SUM(sa.amount - sa.repaid_amount) FROM salary_advances sa
+                 WHERE sa.user_id = es.user_id AND sa.status = 'approved' AND sa.repaid_amount < sa.amount
+               ), 0) as pending_advance_amount
+        FROM employee_salaries es
+        JOIN users u ON es.user_id = u.id
+        LEFT JOIN users up ON es.updated_by = up.id
+        WHERE u.role IN ('manager', 'employee', 'counter_staff', 'florist_staff', 'delivery_partner') AND u.is_active = 1
+          AND es.user_id IN (${allowed.map(() => '?').join(',')})
+        ORDER BY u.name
+      `).all(...allowed) : [];
+      return res.json({ success: true, data: { salary: salary || null, salaries } });
+    }
 
     res.json({ success: true, data: { salary: salary || null } });
   } catch (error) {
@@ -875,7 +986,13 @@ router.get('/payroll/history', authorize('owner', 'manager', 'employee', 'counte
     let where = [];
     const params = [];
 
-    if (req.user.role !== 'owner') {
+    if (req.user.role === 'manager' && user_id && Number(user_id) !== Number(req.user.id)) {
+      if (!(await canSeePay(db, req.user, user_id))) {
+        return res.status(403).json({ success: false, message: "You can't see this person's pay. Ask the owner." });
+      }
+      where.push('sp.user_id = ?');
+      params.push(Number(user_id));
+    } else if (req.user.role !== 'owner') {
       where.push('sp.user_id = ?');
       params.push(req.user.id);
     } else if (user_id) {

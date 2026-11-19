@@ -8,6 +8,7 @@ const { normalizeSegments, matchSegmentForTime, lateMinutesFor, overtimeMinutesF
 const { safeParseJSON } = require('../utils/json');
 const { hasOpenRegister } = require('../utils/register-guard');
 const { payAdvance } = require('../utils/advance-payout');
+const { payVisibleIds, canSeePay } = require('../utils/pay-access');
 
 // All attendance routes require auth
 router.use(authenticate);
@@ -786,6 +787,19 @@ router.get('/salary-advances', authorize('owner', 'manager', 'employee', 'counte
     if (['employee', 'counter_staff', 'florist_staff', 'delivery_partner'].includes(req.user.role)) {
       where.push('sa.user_id = ?');
       params.push(req.user.id);
+    } else if (req.user.role === 'manager') {
+      // Visible people (own + allowed), plus pending requests from staff at this manager's shops
+      const visible = await payVisibleIds(db, req.user);
+      const shop = `EXISTS (SELECT 1 FROM user_locations ul_s JOIN user_locations ul_m ON ul_m.location_id = ul_s.location_id AND ul_m.user_id = ? WHERE ul_s.user_id = sa.user_id)`;
+      const seen = `sa.user_id IN (${visible.map(() => '?').join(',')})`;
+      if (user_id && !visible.includes(Number(user_id))) {
+        where.push(`sa.user_id = ? AND sa.status = 'pending' AND ${shop}`);
+        params.push(Number(user_id), req.user.id);
+      } else {
+        if (user_id) { where.push('sa.user_id = ?'); params.push(Number(user_id)); }
+        where.push(`(${seen} OR (sa.status = 'pending' AND ${shop}))`);
+        params.push(...visible, req.user.id);
+      }
     } else if (user_id) {
       where.push('sa.user_id = ?');
       params.push(Number(user_id));
@@ -814,7 +828,7 @@ router.get('/salary-advances', authorize('owner', 'manager', 'employee', 'counte
 });
 
 // Mark advance repaid (must be before /:action route)
-router.put('/salary-advance/:id/repay', authorize('owner', 'manager'), (req, res) => {
+router.put('/salary-advance/:id/repay', authorize('owner', 'manager'), async (req, res) => {
   try {
     const db = getDb();
     const { amount } = req.body;
@@ -822,6 +836,9 @@ router.put('/salary-advance/:id/repay', authorize('owner', 'manager'), (req, res
 
     if (!advance) {
       return res.status(404).json({ success: false, message: 'Advance not found.' });
+    }
+    if (req.user.role === 'manager' && !(await canSeePay(await getAsyncDb(), req.user, advance.user_id))) {
+      return res.status(403).json({ success: false, message: "You can't see this person's pay. Ask the owner." });
     }
 
     if (advance.status !== 'approved') {
@@ -856,6 +873,13 @@ router.put('/salary-advance/:id/:action', authorize('owner', 'manager'), async (
     const advance = db.prepare('SELECT * FROM salary_advances WHERE id = ?').get(id);
     if (!advance) {
       return res.status(404).json({ success: false, message: 'Advance not found.' });
+    }
+
+    if (req.user.role === 'manager') {
+      const shared = await (await getAsyncDb()).prepare(`SELECT 1 AS ok FROM user_locations ul_s JOIN user_locations ul_m ON ul_m.location_id = ul_s.location_id AND ul_m.user_id = ? WHERE ul_s.user_id = ? LIMIT 1`).get(req.user.id, advance.user_id);
+      if (!shared) {
+        return res.status(403).json({ success: false, message: "This person isn't at your shop." });
+      }
     }
 
     if (advance.status !== 'pending') {

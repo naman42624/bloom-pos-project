@@ -1417,7 +1417,7 @@ const lockedCount = async (id) => {
   return r.close_count_locked == null ? null : Number(r.close_count_locked);
 };
 
-check('Fix I1: unpaid_after only for owner, manager or the person themself', async () => {
+check('Fix I1: unpaid_after only for owner, a manager allowed to see that pay, or the person themself', async () => {
   const c = await getCast();
   const u = await freshPerson();
   const byCounter = await give(c.counter, { user_id: u, amount: 10, payment_method: 'upi' });
@@ -1426,9 +1426,19 @@ check('Fix I1: unpaid_after only for owner, manager or the person themself', asy
   const byOwner = await give(c.owner, { user_id: u, amount: 10, payment_method: 'upi' });
   eq(byOwner.status, 201, 'owner gives');
   eq(byOwner.body.data.unpaid_after, 20, 'owner sees unpaid_after');
-  const byMgr = await give(c.mgr, { user_id: u, amount: 10, payment_method: 'upi' });
-  eq(byMgr.status, 201, 'manager gives');
-  eq(byMgr.body.data.unpaid_after, 30, 'manager sees unpaid_after');
+  // Pay visibility (2026-11-19): a manager sees it only for people the owner switched on.
+  const hidden = await give(c.mgr, { user_id: u, amount: 10, payment_method: 'upi' });
+  eq(hidden.status, 201, 'manager gives');
+  eq('unpaid_after' in hidden.body.data, false, 'manager without pay access sees no unpaid_after');
+  const db = await getDb();
+  await db.prepare('INSERT INTO pay_viewers (manager_id, employee_id, created_by) VALUES (?, ?, ?)').run(c.mgr, u, c.owner);
+  try {
+    const byMgr = await give(c.mgr, { user_id: u, amount: 10, payment_method: 'upi' });
+    eq(byMgr.status, 201, 'manager gives');
+    eq(byMgr.body.data.unpaid_after, 40, 'manager allowed to see pay sees unpaid_after');
+  } finally {
+    await db.prepare('DELETE FROM pay_viewers WHERE manager_id = ? AND employee_id = ?').run(c.mgr, u);
+  }
   const self = await give(c.mgr, { user_id: c.mgr, amount: 10, payment_method: 'upi' });
   eq(self.status, 201, 'manager self ' + JSON.stringify(self.body));
   assert(typeof self.body.data.unpaid_after === 'number', 'the person themself sees unpaid_after');
