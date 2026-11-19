@@ -179,11 +179,90 @@ check('live: a person with a salary row but no limit falls back to the shop limi
   eq(res.body.needs_pin, 'over_limit', 'reason');
 });
 
+// ── Owner sets the limit (Task 2) ──
+const LIMIT_INPUT = 'Type the monthly advance limit in rupees, or leave it empty to use the shop limit.';
+const LIMIT_NO_SALARY = 'Set a salary for this person first, then their advance limit.';
+const setLimit = (as, userId, v) => api('PUT', `/staff/salaries/${userId}/advance-limit`, as, v === undefined ? {} : { advance_limit: v });
+const dbLimit = async (id) => { const r = await (await getDb()).prepare('SELECT advance_limit FROM employee_salaries WHERE user_id = ?').get(id); return r ? r.advance_limit : undefined; };
+
+check('owner sets 3000, reads 3000 back, DB holds it, audit row written', async () => {
+  const c = await getCast();
+  const r = await recipient('VerifyAL Set', null);
+  const res = await setLimit(c.owner, r, 3000);
+  eq(res.status, 200, 'status ' + JSON.stringify(res.body));
+  eq(res.body.data.advance_limit, 3000, 'returned');
+  eq(res.body.data.user_id, r, 'user_id');
+  eq(Number(await dbLimit(r)), 3000, 'db');
+  const a = await (await getDb()).prepare("SELECT * FROM audit_logs WHERE entity_type = 'employee_salary' AND entity_id = ? AND action = 'advance_limit_set'").get(r);
+  assert(a, 'no audit row');
+  const js = (x) => (typeof x === 'string' ? JSON.parse(x) : x);
+  eq(js(a.new_state).advance_limit, 3000, 'audit new');
+  eq(js(a.previous_state).advance_limit, null, 'audit previous');
+  const hist = await (await getDb()).prepare('SELECT COUNT(*) AS n FROM salary_history WHERE user_id = ?').get(r);
+  eq(Number(hist.n), 0, 'no salary_history row');
+});
+check('a numeric string is accepted; null, empty and missing clear the limit', async () => {
+  const c = await getCast();
+  const r = await recipient('VerifyAL Clear', null);
+  eq((await setLimit(c.owner, r, '1500.50')).body.data.advance_limit, 1500.5, 'string');
+  for (const v of [null, '', '   ', undefined]) {
+    await setLimit(c.owner, r, 2000);
+    const res = await setLimit(c.owner, r, v);
+    eq(res.status, 200, 'status for ' + JSON.stringify(v));
+    eq(res.body.data.advance_limit, null, 'returned for ' + JSON.stringify(v));
+    eq(await dbLimit(r), null, 'db for ' + JSON.stringify(v));
+  }
+  eq((await setLimit(c.owner, r, 0)).body.data.advance_limit, 0, 'zero is a real limit');
+});
+check('bad values give 400 with the input message', async () => {
+  const c = await getCast();
+  const r = await recipient('VerifyAL Bad', 777);
+  for (const v of [-1, 'abc', 1.234, true, [5], 10000001, 'NaN', {}]) {
+    const res = await setLimit(c.owner, r, v);
+    eq(res.status, 400, 'status for ' + JSON.stringify(v));
+    eq(res.body.message, LIMIT_INPUT, 'message for ' + JSON.stringify(v));
+  }
+  eq(Number(await dbLimit(r)), 777, 'unchanged');
+});
+check('no salary row gives 400 with the set-salary message', async () => {
+  const c = await getCast();
+  const r = await recipient('VerifyAL NoSalary');
+  const res = await setLimit(c.owner, r, 100);
+  eq(res.status, 400, 'status');
+  eq(res.body.message, LIMIT_NO_SALARY, 'message');
+  eq((await setLimit(c.owner, 'abc', 100)).body.message, LIMIT_NO_SALARY, 'non-numeric id');
+  eq((await setLimit(c.owner, 0, 100)).status, 400, 'zero id');
+});
+check('manager and counter get 403', async () => {
+  const c = await getCast();
+  const r = await recipient('VerifyAL Forbid', 500);
+  eq((await setLimit(c.mgr, r, 100)).status, 403, 'manager');
+  eq((await setLimit(c.counter, r, 100)).status, 403, 'counter');
+  eq(Number(await dbLimit(r)), 500, 'unchanged');
+});
+check('GET /staff/salaries: no advance_limit for the person or a manager; owner rows have it', async () => {
+  const c = await getCast();
+  const r = await recipient('VerifyAL Reader', 4200);
+  const own = await api('GET', '/staff/salaries', r);
+  eq(own.status, 200, 'own status');
+  assert(own.body.data.salary, 'own salary row missing');
+  assert(!('advance_limit' in own.body.data.salary), 'person sees advance_limit');
+  const db = await getDb();
+  await db.prepare('INSERT INTO employee_salaries (user_id, monthly_salary, advance_limit, updated_by) VALUES (?, 9000, 100, ?)').run(c.mgr, c.owner);
+  const m = await api('GET', '/staff/salaries', c.mgr);
+  assert(m.body.data.salary && !('advance_limit' in m.body.data.salary), 'manager sees advance_limit');
+  const o = await api('GET', '/staff/salaries', c.owner);
+  const row = o.body.data.salaries.find((x) => x.user_id === r);
+  assert(row, 'owner row missing');
+  eq(Number(row.advance_limit), 4200, 'owner sees limit');
+});
+
 async function cleanup() {
   const db = await getDb();
   const del = async (label, sql, ...p) => { try { await db.prepare(sql).run(...p); } catch (e) { console.error(`cleanup ${label}: ${e.message}`); } };
   for (const id of createdAdvanceIds) await del('advance audit', "DELETE FROM audit_logs WHERE entity_type = 'salary_advance' AND entity_id = ?", id);
   for (const id of createdUserIds) {
+    await del('salary audits', "DELETE FROM audit_logs WHERE entity_type = 'employee_salary' AND entity_id = ?", id);
     await del('expense audits', "DELETE FROM audit_logs WHERE entity_type = 'expense' AND entity_id IN (SELECT id FROM expenses WHERE employee_id = ? OR created_by = ?)", id, id);
     await del('expenses', 'DELETE FROM expenses WHERE employee_id = ? OR created_by = ?', id, id);
     await del('notifications', 'DELETE FROM notifications WHERE user_id = ?', id);

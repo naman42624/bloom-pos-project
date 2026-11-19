@@ -208,6 +208,8 @@ router.get('/salaries', authorize('owner', 'manager', 'employee', 'counter_staff
       WHERE es.user_id = ?
     `).get(req.user.id);
 
+    // The advance limit is for the owner only; never send it to anyone else
+    if (salary) delete salary.advance_limit;
     res.json({ success: true, data: { salary: salary || null } });
   } catch (error) {
     console.error('Get salaries error:', error);
@@ -269,6 +271,58 @@ router.post('/salaries', authorize('owner'), (req, res) => {
   } catch (error) {
     console.error('Set salary error:', error);
     res.status(500).json({ success: false, message: 'Failed to set salary.' });
+  }
+});
+
+// Set a person's monthly advance limit — Owner only. Empty clears it (shop limit applies).
+const LIMIT_INPUT_MESSAGE = 'Type the monthly advance limit in rupees, or leave it empty to use the shop limit.';
+const LIMIT_NO_SALARY_MESSAGE = 'Set a salary for this person first, then their advance limit.';
+const LIMIT_CLEAR = Symbol('clear');
+const LIMIT_BAD = Symbol('bad');
+function parseAdvanceLimit(v) {
+  if (v === undefined || v === null) return LIMIT_CLEAR;
+  let n;
+  if (typeof v === 'string') {
+    const t = v.trim();
+    if (t === '') return LIMIT_CLEAR;
+    if (!/^\d+(\.\d{1,2})?$/.test(t)) return LIMIT_BAD;
+    n = Number(t);
+  } else if (typeof v === 'number') {
+    n = v;
+  } else {
+    return LIMIT_BAD;
+  }
+  if (!Number.isFinite(n) || n < 0 || n > 10000000) return LIMIT_BAD;
+  if (Math.abs(n * 100 - Math.round(n * 100)) > 1e-6) return LIMIT_BAD;
+  return Math.round(n * 100) / 100;
+}
+
+router.put('/salaries/:userId/advance-limit', authorize('owner'), async (req, res) => {
+  try {
+    const limit = parseAdvanceLimit(req.body ? req.body.advance_limit : undefined);
+    if (limit === LIMIT_BAD) return res.status(400).json({ success: false, message: LIMIT_INPUT_MESSAGE });
+    if (!/^[1-9]\d*$/.test(String(req.params.userId))) {
+      return res.status(400).json({ success: false, message: LIMIT_NO_SALARY_MESSAGE });
+    }
+    const userId = Number(req.params.userId);
+    const value = limit === LIMIT_CLEAR ? null : limit;
+    const out = await withMoneyTx(async (tx) => {
+      const row = await tx.prepare('SELECT advance_limit FROM employee_salaries WHERE user_id = ? FOR UPDATE').get(userId);
+      if (!row) return null;
+      const before = row.advance_limit === null || row.advance_limit === undefined ? null : Number(row.advance_limit);
+      await tx.prepare('UPDATE employee_salaries SET advance_limit = ?, updated_by = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?')
+        .run(value, req.user.id, userId);
+      await tx.prepare(`
+        INSERT INTO audit_logs (entity_type, entity_id, user_id, action, previous_state, new_state, created_at)
+        VALUES ('employee_salary', ?, ?, 'advance_limit_set', ?, ?, CURRENT_TIMESTAMP)
+      `).run(userId, req.user.id, JSON.stringify({ advance_limit: before }), JSON.stringify({ advance_limit: value }));
+      return true;
+    });
+    if (!out) return res.status(400).json({ success: false, message: LIMIT_NO_SALARY_MESSAGE });
+    res.json({ success: true, data: { user_id: userId, advance_limit: value } });
+  } catch (error) {
+    console.error('Set advance limit error:', error);
+    res.status(500).json({ success: false, message: 'Could not save the advance limit. Please try again.' });
   }
 });
 
