@@ -12,6 +12,7 @@ const {
 } = require('../utils/expense-items');
 
 const { previousRange, changePct, round2, lastMonths, SIGNED_AMOUNT, EXPENSE_ROW_SELECT, normalizeExpenseRow } = require('../utils/expense-book');
+const { ADVANCE_METHODS } = require('../utils/advance-payout');
 
 const router = express.Router();
 
@@ -1530,6 +1531,131 @@ async function unsettleBill(tx, mo, owes, expense, userId) {
     JSON.stringify({ status: mo.status, settled_amount: settledP / 100 }),
     JSON.stringify({ status, settled_amount: newSettledP / 100, expense_id: Number(expense.id), amount: amtP / 100, owes: owesChange }));
 }
+
+// ─── POST /api/expenses/:id/salary-advance ───────────────────
+// Owner only (PR 2). An old plain Cash/UPI expense was really money given to
+// an employee: it becomes the same salary expense payAdvance writes, plus an
+// approved advance (source old_expense) that Payroll cuts. No drawer move:
+// the cash left the drawer when the expense was first saved.
+const OLD_ADV_TOO_OLD_MESSAGE = 'Only expenses from the last 60 days can be marked as a salary advance.';
+const OLD_ADV_METHOD_MESSAGE = 'Only a Cash or UPI expense can be marked as a salary advance.';
+const OLD_ADV_NOT_PLAIN_MESSAGE = "This expense is linked to shopping money, a km account or money the shop owes, so it can't be marked as a salary advance.";
+const OLD_ADV_RETURN_MESSAGE = "A return can't be marked as a salary advance.";
+const OLD_ADV_ALREADY_MESSAGE = 'This is already a salary entry. Pull down to refresh.';
+const OLD_ADV_PERSON_MESSAGE = 'Pick the employee this money was given to.';
+const OLD_ADV_REASON = 'Old expense marked as salary advance';
+const OLD_ADV_MAX_DAYS = 60;
+const PAYROLL_ROLES = ['manager', 'employee', 'counter_staff', 'florist_staff', 'delivery_partner'];
+const EXPENSE_NOT_FOUND_MESSAGE = 'This expense was not found. It may have been removed already — pull down to refresh.';
+
+// Every rule, in one place. With lock: money rows first (advance, then shop
+// owes), then the expense, as everywhere in this file. Returns what the
+// preview and the commit need, or throws an httpError.
+async function checkOldAdvance(db, expenseId, rawEmployeeId, { lock }) {
+  const forUpdate = lock ? ' FOR UPDATE' : '';
+  let advance = lock ? await lockLinkedAdvance(db, expenseId) : null;
+  const owes = lock
+    ? await lockLinkedOwes(db, expenseId)
+    : ((await db.prepare("SELECT id FROM shop_owes WHERE expense_id = ? AND source = 'own_pocket' LIMIT 1").get(expenseId)) || null);
+  // Shop-local day (todayStr), never the DB CURRENT_DATE.
+  const expense = await db.prepare(`
+    SELECT e.*, TO_CHAR(e.expense_date, 'YYYY-MM-DD') AS day_str,
+           CASE WHEN e.expense_date >= CAST(? AS date) - ${OLD_ADV_MAX_DAYS} THEN 1 ELSE 0 END AS recent
+      FROM expenses e WHERE e.id = ?${forUpdate}
+  `).get(localToday(), expenseId);
+  if (!expense) throw httpError(404, EXPENSE_NOT_FOUND_MESSAGE);
+  // Read again under the expense lock: a call that won the race has committed by now.
+  advance = (await db.prepare('SELECT id FROM salary_advances WHERE expense_id = ? LIMIT 1').get(expenseId)) || advance;
+  if (advance || expense.category === 'salary') throw httpError(409, OLD_ADV_ALREADY_MESSAGE);
+  if (Number(expense.recent) !== 1) throw httpError(400, OLD_ADV_TOO_OLD_MESSAGE);
+  if (expense.is_return) throw httpError(400, OLD_ADV_RETURN_MESSAGE);
+  if (!ADVANCE_METHODS.includes(expense.payment_method)) throw httpError(400, OLD_ADV_METHOD_MESSAGE);
+  if (expense.money_out_id != null || expense.km_settlement_id != null || owes) throw httpError(400, OLD_ADV_NOT_PLAIN_MESSAGE);
+
+  const employeeId = Number(rawEmployeeId);
+  if (!Number.isInteger(employeeId) || employeeId <= 0) throw httpError(400, OLD_ADV_PERSON_MESSAGE);
+  const employee = await db.prepare('SELECT id, name, role, is_active FROM users WHERE id = ?').get(employeeId);
+  if (!employee || !Number(employee.is_active) || !PAYROLL_ROLES.includes(employee.role)) {
+    throw httpError(400, OLD_ADV_PERSON_MESSAGE);
+  }
+  return { expense, employee: { id: Number(employee.id), name: employee.name } };
+}
+
+// The day a salary payment was made, in shop-local days. paid_at is a
+// timestamp (read as UTC) on most databases and a plain date on some.
+function paidOnDay(p) {
+  const v = p.paid_at || p.created_at;
+  if (!v) return null;
+  if (v instanceof Date) return localToday(v);
+  return String(v).slice(0, 10);
+}
+
+router.post('/:id/salary-advance', authenticate, authorize('owner'), async (req, res, next) => {
+  try {
+    const expenseId = Number(req.params.id);
+    if (!Number.isInteger(expenseId) || expenseId <= 0) throw httpError(404, EXPENSE_NOT_FOUND_MESSAGE);
+    const employeeIdIn = req.body ? req.body.employee_id : undefined;
+    const adb = await getAsyncDb();
+
+    if (req.body && req.body.preview === true) {
+      const { expense, employee } = await checkOldAdvance(adb, expenseId, employeeIdIn, { lock: false });
+      const pays = await adb.prepare(`
+        SELECT id, paid_at, created_at, net_amount FROM salary_payments
+         WHERE user_id = ? AND COALESCE(status, 'paid') <> 'cancelled'
+      `).all(employee.id);
+      const after = pays
+        .map((p) => ({ id: Number(p.id), paid_on: paidOnDay(p), net_amount: Number(p.net_amount) || 0 }))
+        .filter((p) => p.paid_on && p.paid_on >= expense.day_str)
+        .sort((a, b) => (a.paid_on === b.paid_on ? b.id - a.id : (a.paid_on < b.paid_on ? 1 : -1)));
+      return res.json({
+        success: true,
+        data: {
+          expense_id: expenseId, amount: Number(expense.amount), expense_date: expense.day_str,
+          employee, salary_paid_after: after,
+        },
+      });
+    }
+
+    const advanceId = await withMoneyTx(async (tx) => {
+      const { expense, employee } = await checkOldAdvance(tx, expenseId, employeeIdIn, { lock: true });
+      const oldDescription = String(expense.description || '').trim();
+      const description = `Salary advance — ${employee.name}${oldDescription ? ` (was: ${oldDescription})` : ''}`;
+      // Only the salary shape changes; amount, method, day, register, note,
+      // photo and who added it stay as they were. No cash_registers write.
+      await tx.prepare(`
+        UPDATE expenses SET category = 'salary', employee_id = ?, given_to_user_id = ?, given_to_name = NULL,
+          item_id = NULL, description = ?
+        WHERE id = ?
+      `).run(employee.id, employee.id, description, expenseId);
+      const after = { ...expense, category: 'salary', employee_id: employee.id, given_to_user_id: employee.id, given_to_name: null, item_id: null, description };
+      await auditExpense(tx, expenseId, req.user.id, 'expense_marked_salary_advance', pickAudit(expense), pickAudit(after));
+
+      const amount = Number(expense.amount);
+      const row = await tx.prepare(`
+        INSERT INTO salary_advances (user_id, amount, repaid_amount, reason, status, approved_by, given_by, source,
+          payment_method, location_id, expense_id, date)
+        VALUES (?, ?, 0, ?, 'approved', ?, ?, 'old_expense', ?, ?, ?, CAST(? AS date))
+      `).run(employee.id, amount, OLD_ADV_REASON, req.user.id, expense.created_by,
+        expense.payment_method, expense.location_id, expenseId, expense.day_str);
+      const id = Number(row.lastInsertRowid);
+      await tx.prepare(`
+        INSERT INTO audit_logs (entity_type, entity_id, user_id, action, previous_state, new_state, created_at)
+        VALUES ('salary_advance', ?, ?, 'salary_advance_given', NULL, ?, CURRENT_TIMESTAMP)
+      `).run(id, req.user.id, JSON.stringify({
+        user_id: employee.id, amount, payment_method: expense.payment_method, location_id: Number(expense.location_id),
+        given_by: Number(expense.created_by), approved_by: Number(req.user.id), source: 'old_expense',
+        expense_id: expenseId, register_id: null, date: expense.day_str,
+      }));
+      return id;
+    });
+
+    const expense = await loadExpenseRow(adb, expenseId);
+    res.json({ success: true, data: { expense, advance_id: advanceId } });
+  } catch (err) {
+    if (err.statusCode) return res.status(err.statusCode).json({ success: false, message: err.message });
+    next(err);
+  }
+});
 
 // ─── PUT /api/expenses/:id ───────────────────────────────────
 router.put(
